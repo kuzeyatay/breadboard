@@ -1,0 +1,7 @@
+node_modules/
+.next/
+*.lock
+*.log
+.env*
+../quartz/node_modules/
+../chatmock/__pycache__/
