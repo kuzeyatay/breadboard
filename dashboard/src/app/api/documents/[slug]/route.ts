@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import db from '@/lib/db';
 import { refreshClusterIndex } from '@/lib/knowledge';
 import {
   requireOwnedClusterFromSlug,
@@ -292,12 +293,20 @@ function documentsToDeleteForSource(
 ): { slugs: string[]; assetUrls: string[] } {
   const clusterDir = safeClusterDir(contentPath, clusterSlug);
   if (!clusterDir || !fs.existsSync(clusterDir)) {
-    return { slugs: [sourceSlug], assetUrls: frontmatterArrayValue(sourceData, 'source_images') };
+    return {
+      slugs: [sourceSlug],
+      assetUrls: [
+        ...frontmatterArrayValue(sourceData, 'source_images'),
+        frontmatterStringValue(sourceData, 'source_pdf'),
+      ].filter(Boolean),
+    };
   }
 
   const sourceFile = frontmatterStringValue(sourceData, 'source_file');
   const slugs = new Set<string>([sourceSlug, ...frontmatterArrayValue(sourceData, 'topics')]);
   const assetUrls = new Set<string>(frontmatterArrayValue(sourceData, 'source_images'));
+  const sourcePdf = frontmatterStringValue(sourceData, 'source_pdf');
+  if (sourcePdf) assetUrls.add(sourcePdf);
 
   for (const entry of fs.readdirSync(clusterDir)) {
     if (!entry.endsWith('.md') || entry.toLowerCase() === '_index.md') continue;
@@ -335,11 +344,13 @@ async function getDocumentRequestContext(
     return { error: json({ error: 'slug is required' }, { status: 400 }) };
   }
 
+  let clusterId: number;
   let ownedClusterSlug: string;
   try {
     const { cluster } = access === 'read'
       ? await requireReadableClusterFromSlug(clusterSlug)
       : await requireOwnedClusterFromSlug(clusterSlug);
+    clusterId = cluster.id;
     ownedClusterSlug = cluster.slug;
   } catch (error) {
     return { error: routeErrorResponse(error) };
@@ -364,7 +375,13 @@ async function getDocumentRequestContext(
     return { error: json({ error: 'Document not found' }, { status: 404 }) };
   }
 
-  return { slug: document.slug, clusterSlug: ownedClusterSlug, contentPath, filePath: document.filePath };
+  return {
+    clusterId,
+    slug: document.slug,
+    clusterSlug: ownedClusterSlug,
+    contentPath,
+    filePath: document.filePath,
+  };
 }
 
 export async function PATCH(
@@ -453,6 +470,13 @@ export async function DELETE(
         if (assetPath) removePathInside(clusterDir, assetPath);
         removeQuartzPublicAsset(context.contentPath, context.clusterSlug, assetUrl);
       }
+    }
+
+    const deleteSavedPdf = db.prepare(
+      'DELETE FROM pdf_document_edits WHERE cluster_id = ? AND document_slug = ?',
+    );
+    for (const slug of deletePlan.slugs) {
+      deleteSavedPdf.run(context.clusterId, slug);
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {

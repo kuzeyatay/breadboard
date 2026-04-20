@@ -51,15 +51,29 @@ function parseJsonArray(value: string | undefined): string[] {
   }
 }
 
+function currentClusterFromUrl(): string {
+  const parts = window.location.pathname.replace(/^\//, "").split("/").filter(Boolean)
+  return parts[0] ?? ""
+}
+
 function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<ContentDetails>) {
   const allowedClusters = parseJsonArray(explorer.dataset.graphClusters)
   const hasGardenScope =
     explorer.dataset.gardenScope === "private" || explorer.dataset.gardenScope === "public"
 
+  // Fall back to URL-based cluster detection when frontmatter doesn't provide a scope
+  const urlCluster = currentClusterFromUrl()
+  const effectiveAllowed =
+    hasGardenScope && allowedClusters.length > 0
+      ? allowedClusters
+      : urlCluster
+        ? [urlCluster]
+        : null
+
   trie.children = trie.children.filter((node) => {
     if (GENERATED_GARDEN_ROOTS.has(node.slugSegment)) return false
-    if (!hasGardenScope) return true
-    return allowedClusters.includes(node.slugSegment)
+    if (!effectiveAllowed) return true
+    return effectiveAllowed.includes(node.slugSegment)
   })
 }
 

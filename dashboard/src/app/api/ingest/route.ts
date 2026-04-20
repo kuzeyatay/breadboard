@@ -108,6 +108,25 @@ function saveDataUrlAsset({
   return `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`;
 }
 
+function saveUploadedPdfAsset({
+  contentPath,
+  clusterSlug,
+  baseName,
+  buffer,
+}: {
+  contentPath: string;
+  clusterSlug: string;
+  baseName: string;
+  buffer: Buffer;
+}): string {
+  const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
+  fs.mkdirSync(assetDir, { recursive: true });
+  const fileBase = slugify(`${baseName}-source`);
+  const filePath = uniqueAssetPath(assetDir, fileBase, "pdf");
+  fs.writeFileSync(filePath, buffer);
+  return `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`;
+}
+
 function pageNumberFromLabel(label: string): number | undefined {
   const cleanLabel = label.trim();
   const prefixed = [
@@ -402,6 +421,7 @@ export async function POST(request: Request) {
     let plainText: string;
     let pages: DocumentPage[] = [];
     let screenshotWarning = "";
+    let sourcePdfPath: string | undefined;
 
     if (isImageExt(ext)) {
       const arrayBuffer = await file.arrayBuffer();
@@ -433,6 +453,12 @@ export async function POST(request: Request) {
     } else if (ext === "pdf") {
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
+      sourcePdfPath = saveUploadedPdfAsset({
+        contentPath,
+        clusterSlug: normalizedClusterSlug,
+        baseName: nameWithoutExt,
+        buffer,
+      });
       let screenshots: PdfScreenshotPage[] = [];
       try {
         screenshots = await getPdfScreenshotPages(buffer);
@@ -571,6 +597,7 @@ export async function POST(request: Request) {
       sourceFileName: filename,
       sourceType: ext || "text",
       sourceLabel: source,
+      sourcePdfPath,
       isHandwriting,
       markdownText,
       plainText,
