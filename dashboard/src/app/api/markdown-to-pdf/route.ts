@@ -231,6 +231,47 @@ function resolveImagePath(
   return fs.existsSync(imagePath) ? imagePath : null;
 }
 
+const ANNOTATION_RE = /^\[([A-Za-z][A-Za-z]*):\s*([\s\S]+?)\]$/;
+
+function renderAnnotation(
+  doc: PDFKit.PDFDocument,
+  tag: string,
+  description: string,
+  fonts: PdfFonts,
+  indent: number,
+): void {
+  ensureSpace(doc, 44);
+  const barX = left(doc, indent);
+  const textX = barX + 8;
+  const textWidth = contentWidth(doc, indent) - 8;
+  const startY = doc.y;
+
+  doc
+    .font(fonts.bold)
+    .fontSize(7.5)
+    .fillColor("#6b7280")
+    .text(tag.toUpperCase(), textX, doc.y, { width: textWidth, lineGap: 1 });
+
+  doc
+    .font(fonts.italic)
+    .fontSize(9.5)
+    .fillColor("#374151")
+    .text(description.trim(), textX, doc.y, {
+      width: textWidth,
+      lineGap: 3,
+    });
+
+  const endY = doc.y;
+  doc
+    .save()
+    .rect(barX, startY, 2.5, endY - startY)
+    .fillColor("#9ca3af")
+    .fill()
+    .restore();
+
+  doc.moveDown(0.55);
+}
+
 function renderImage(
   doc: PDFKit.PDFDocument,
   node: MarkdownNode,
@@ -251,20 +292,16 @@ function renderImage(
     return;
   }
 
-  ensureSpace(doc, 180);
+  doc.addPage();
   try {
-    doc.image(imagePath, left(doc, indent), doc.y, {
-      fit: [contentWidth(doc, indent), 320],
+    const pageW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const pageH = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+    doc.x = doc.page.margins.left;
+    doc.image(imagePath, {
+      fit: [pageW, pageH],
       align: "center",
+      valign: "top",
     });
-    doc.moveDown(0.35);
-    drawText(doc, caption, fonts, {
-      indent,
-      font: "italic",
-      size: 8.5,
-      color: "#6b7280",
-    });
-    doc.moveDown(0.65);
   } catch {
     drawText(doc, `[Image: ${caption}]`, fonts, {
       indent,
@@ -387,10 +424,40 @@ function renderNode(
       doc.moveDown(depth <= 2 ? 0.45 : 0.25);
       break;
     }
-    case "paragraph":
-      drawText(doc, inlineText(node), fonts, { indent });
-      doc.moveDown(0.55);
+    case "paragraph": {
+      const children = childrenOf(node);
+      const hasImage = children.some((c) => c.type === "image");
+      if (hasImage) {
+        let textParts: string[] = [];
+        const flushText = () => {
+          const text = textParts.join("").trim();
+          if (text) {
+            drawText(doc, text, fonts, { indent });
+            doc.moveDown(0.3);
+          }
+          textParts = [];
+        };
+        for (const child of children) {
+          if (child.type === "image") {
+            flushText();
+            renderImage(doc, child, fonts, clusterSlug, indent);
+          } else {
+            textParts.push(inlineText(child));
+          }
+        }
+        flushText();
+      } else {
+        const text = inlineText(node);
+        const annotMatch = text.match(ANNOTATION_RE);
+        if (annotMatch) {
+          renderAnnotation(doc, annotMatch[1], annotMatch[2], fonts, indent);
+        } else {
+          drawText(doc, text, fonts, { indent });
+          doc.moveDown(0.55);
+        }
+      }
       break;
+    }
     case "list":
       renderList(doc, node, fonts, clusterSlug, indent);
       break;

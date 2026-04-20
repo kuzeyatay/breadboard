@@ -822,7 +822,7 @@ export default function DashboardClient({
                   key={cluster.id}
                   onClick={(e) => handleClusterBorderClick(e, cluster)}
                   className={[
-                    "relative flex flex-col overflow-hidden bg-gray-900 border rounded-xl p-5 gap-4 transition-colors",
+                    "relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
                     resizingClusterId === cluster.id
                       ? "select-none ring-1 ring-[#7b97aa]/50"
                       : "",
