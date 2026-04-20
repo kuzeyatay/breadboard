@@ -353,13 +353,6 @@ This project applies that same philosophy to knowledge: raw information goes in,
 
 ---
 
-## License
-
-Add your license here.
-
-If this repository is source-available but not intended for unrestricted reuse, state that clearly in this section.
-
----
 
 ## Summary
 
