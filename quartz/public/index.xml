@@ -7,40 +7,10 @@
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
     <title>983068-english-annotated</title>
-    <link>https://localhost:8081/test-2/983068-english-annotated</link>
-    <guid>https://localhost:8081/test-2/983068-english-annotated</guid>
-    <description><![CDATA[ Summary Good morning Welcome back to the last week of lectures for this course next week on Monday We will have exam practice and a guest lecture by the colleague of ours of mine actually north yours Who’s working on space applications? So I’ll put an announcement on that on campus Things we’ll cove... ]]></description>
-    <pubDate>Mon, 20 Apr 2026 11:36:17 GMT</pubDate>
-  </item><item>
-    <title>983068-english-annotated</title>
     <link>https://localhost:8081/test/983068-english-annotated</link>
     <guid>https://localhost:8081/test/983068-english-annotated</guid>
     <description><![CDATA[ Summary Good morning Welcome back to the last week of lectures for this course next week on Monday We will have exam practice and a guest lecture by the colleague of ours of mine actually north yours Who’s working on space applications? So I’ll put an announcement on that on campus Things we’ll cove... ]]></description>
     <pubDate>Mon, 20 Apr 2026 11:27:07 GMT</pubDate>
-  </item><item>
-    <title>slides-CAC-15-18-memory_hierarchy</title>
-    <link>https://localhost:8081/test-2/slides-cac-15-18-memory-hierarchy</link>
-    <guid>https://localhost:8081/test-2/slides-cac-15-18-memory-hierarchy</guid>
-    <description><![CDATA[ Summary 5EIC0 – Computer Architecture I Memory Hierarchies Egor Bondarev Associate Professor Head of 3D Vision Lab, VCA/SPS group, EE, TUE 10 Taking Advantage of Locality Store all data in cache? Not possible – small size Use memory hierarchy Store everything on disk Copy recently accessed (and near... ]]></description>
-    <pubDate>Mon, 20 Apr 2026 10:32:53 GMT</pubDate>
-  </item><item>
-    <title>breadboard logo</title>
-    <link>https://localhost:8081/test-2/breadboard-logo</link>
-    <guid>https://localhost:8081/test-2/breadboard-logo</guid>
-    <description><![CDATA[ Summary Knowledge tree No knowledge topics were extracted. Source material Image No legible text found. ]]></description>
-    <pubDate>Mon, 20 Apr 2026 10:23:51 GMT</pubDate>
-  </item><item>
-    <title>983068_English</title>
-    <link>https://localhost:8081/test-2/983068-english</link>
-    <guid>https://localhost:8081/test-2/983068-english</guid>
-    <description><![CDATA[ Summary Good morning Welcome back to the last week of lectures for this course next week on Monday We will have exam practice and a guest lecture by the colleague of ours of mine actually north yours Who’s working on space applications? So I’ll put an announcement on that on campus Things we’ll cove... ]]></description>
-    <pubDate>Mon, 20 Apr 2026 07:39:38 GMT</pubDate>
-  </item><item>
-    <title>986217_English</title>
-    <link>https://localhost:8081/test-2/986217-english</link>
-    <guid>https://localhost:8081/test-2/986217-english</guid>
-    <description><![CDATA[ Summary Please take your seats. I’m going to start Welcome to this special day There will be a birthday treat in the break. ]]></description>
-    <pubDate>Mon, 20 Apr 2026 07:28:03 GMT</pubDate>
   </item><item>
     <title>breadboard</title>
     <link>https://localhost:8081/</link>
@@ -48,16 +18,16 @@
     <description><![CDATA[ Browse every knowledge cluster from one place. ]]></description>
     <pubDate>Mon, 20 Apr 2026 06:24:39 GMT</pubDate>
   </item><item>
-    <title>test</title>
-    <link>https://localhost:8081/test/</link>
-    <guid>https://localhost:8081/test/</guid>
-    <description><![CDATA[ Quartz garden generated from 1 source document, with 0 knowledge topics and 0 graph links. ]]></description>
+    <title>My library</title>
+    <link>https://localhost:8081/private-library/user-1/</link>
+    <guid>https://localhost:8081/private-library/user-1/</guid>
+    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
     <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
   </item><item>
-    <title>test</title>
-    <link>https://localhost:8081/test-2/</link>
-    <guid>https://localhost:8081/test-2/</guid>
-    <description><![CDATA[ Quartz garden generated from 5 source documents, with 0 knowledge topics and 3 graph links. ]]></description>
+    <title>My library</title>
+    <link>https://localhost:8081/private-library/user-2/</link>
+    <guid>https://localhost:8081/private-library/user-2/</guid>
+    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
     <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
   </item><item>
     <title>Public library</title>
@@ -65,6 +35,36 @@
     <guid>https://localhost:8081/public-library/</guid>
     <description><![CDATA[ Public library lists shared clusters ranked by popularity. ]]></description>
     <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+  </item><item>
+    <title>test</title>
+    <link>https://localhost:8081/test/</link>
+    <guid>https://localhost:8081/test/</guid>
+    <description><![CDATA[ Quartz garden generated from 1 source document, with 0 knowledge topics and 0 graph links. ]]></description>
+    <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+  </item><item>
+    <title>Associative Cache Sizing Example with Dirty Bit</title>
+    <link>https://localhost:8081/computer-architecture-2/associative-cache-sizing-example-with-dirty-bit</link>
+    <guid>https://localhost:8081/computer-architecture-2/associative-cache-sizing-example-with-dirty-bit</guid>
+    <description><![CDATA[ Associative Cache Sizing Example with Dirty Bit Source: Memory Hierarchies and Cache Organization Locations: Slide 77 The slides also include a sizing example for a 2-way set-associative cache. ]]></description>
+    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
+  </item><item>
+    <title>Associativity Comparison with Access Sequences</title>
+    <link>https://localhost:8081/computer-architecture-2/associativity-comparison-with-access-sequences</link>
+    <guid>https://localhost:8081/computer-architecture-2/associativity-comparison-with-access-sequences</guid>
+    <description><![CDATA[ Associativity Comparison with Access Sequences Source: Memory Hierarchies and Cache Organization Locations: Slide 61, Slide 62, Slide 68, Slide 69, Slide 74 The slides compare direct-mapped, 2-way set-associative, and fully associative caches using the same sequence of memory block accesses: 0, 8, 0... ]]></description>
+    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
+  </item><item>
+    <title>Cache Block Size and Address Field Decomposition</title>
+    <link>https://localhost:8081/computer-architecture-2/cache-block-size-and-address-field-decomposition</link>
+    <guid>https://localhost:8081/computer-architecture-2/cache-block-size-and-address-field-decomposition</guid>
+    <description><![CDATA[ Cache Block Size and Address Field Decomposition Source: Memory Hierarchies and Cache Organization Locations: Slide 26, Slide 27, Slide 28, Slide 30, Slide 31, Slide 32, Slide 33, Slide 35 The slides show how a memory address is divided into tag, index, and offset fields, and how this decomposition ... ]]></description>
+    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
+  </item><item>
+    <title>Cache Types and Multi-Level Organization</title>
+    <link>https://localhost:8081/computer-architecture-2/cache-types-and-multi-level-organization</link>
+    <guid>https://localhost:8081/computer-architecture-2/cache-types-and-multi-level-organization</guid>
+    <description><![CDATA[ Cache Types and Multi-Level Organization Source: Memory Hierarchies and Cache Organization Locations: Slide 50, Slide 54, Slide 51 The slides distinguish instruction caches from data caches and show how splitting them can improve performance. ]]></description>
+    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
   </item>
     </channel>
   </rss>

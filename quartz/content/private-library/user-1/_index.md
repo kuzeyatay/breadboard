@@ -4,22 +4,21 @@ date: "2026-04-20"
 description: "Your library collects the clusters attached to your account."
 knowledge_type: "garden-overview"
 garden_scope: "private"
-graph_clusters: ["test-2", "computer-architecture"]
-cluster_order: ["test-2", "computer-architecture"]
+graph_clusters: []
+cluster_order: []
 ---
 
 ## My library
 
 Your library collects the clusters attached to your account.
 
-- Clusters: 2
-- Source documents: 7
-- Knowledge topics: 99
+- Clusters: 0
+- Source documents: 0
+- Knowledge topics: 0
 - Generated chat notes: 0
-- Graph links: 1315
-- Indexed words: 136106
+- Graph links: 0
+- Indexed words: 0
 
 ## Clusters
 
-1. [test](/test-2/) - 5 source documents, 0 topics, 3 links
-2. [Computer Architecture](/computer-architecture/) - 2 source documents, 99 topics, 1312 links
+- No private clusters yet.
