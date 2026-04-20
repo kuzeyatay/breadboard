@@ -148,6 +148,7 @@ Rules:
 - Make 6-18 topics depending on the material. Use fewer only if the source is genuinely short.
 - Every topic must be useful as its own markdown note, with enough detail to study from without reopening the source.
 - For handwritten or scanned material, treat OCR as page-grounded lecture notes. Preserve equations, worked examples, labels, diagrams, definitions, and procedures instead of making a shallow overview.
+- When formulas, symbols, units, or derivations appear, preserve them as LaTeX-ready Markdown: inline math with $...$ and display equations with $$...$$.
 - Do not create one broad document topic and then weak derivative topics. Split the material into durable concepts and procedures that cover the full source.
 - The extracted topics should collectively cover the source. Every page with legible durable knowledge should appear in at least one topic location.
 - Explanations should usually be 120-300 words when the source supports that much detail.

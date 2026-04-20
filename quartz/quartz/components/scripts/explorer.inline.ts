@@ -166,14 +166,6 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   a.dataset.for = node.slug
   a.textContent = node.displayName
 
-  if (isSourceDocument) {
-    const label = document.createElement("span")
-    label.className = "source-document-label"
-    label.textContent = "Full source"
-    label.title = "Full source-generated markdown"
-    a.appendChild(label)
-  }
-
   if (currentSlug === node.slug) {
     a.classList.add("active")
   }

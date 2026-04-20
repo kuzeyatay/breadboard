@@ -858,6 +858,19 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
         </form>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={downloadEdited}
+            disabled={
+              loading ||
+              exporting ||
+              saveState === "saving" ||
+              !pdfDocumentRef.current
+            }
+            className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {exporting ? "Preparing" : "Save PDF"}
+          </button>
           {(["select", "highlight", "text", "draw"] as const).map((item) => (
             <button
               key={item}

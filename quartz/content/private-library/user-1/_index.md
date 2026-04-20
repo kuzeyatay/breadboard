@@ -13,13 +13,13 @@ cluster_order: ["test-2", "computer-architecture"]
 Your library collects the clusters attached to your account.
 
 - Clusters: 2
-- Source documents: 4
+- Source documents: 7
 - Knowledge topics: 99
 - Generated chat notes: 0
-- Graph links: 1313
-- Indexed words: 125473
+- Graph links: 1315
+- Indexed words: 136106
 
 ## Clusters
 
-1. [test](/test-2/) - 2 source documents, 0 topics, 1 link
+1. [test](/test-2/) - 5 source documents, 0 topics, 3 links
 2. [Computer Architecture](/computer-architecture/) - 2 source documents, 99 topics, 1312 links

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+    <channel>
+      <title>breadboard</title>
+      <link>https://localhost:8081</link>
+      <description>Last 10 notes on breadboard</description>
+      <generator>Quartz -- quartz.jzhao.xyz</generator>
+      <item>
+    <title>983068-english-annotated</title>
+    <link>https://localhost:8081/test-2/983068-english-annotated</link>
+    <guid>https://localhost:8081/test-2/983068-english-annotated</guid>
+    <description><![CDATA[ Summary Good morning Welcome back to the last week of lectures for this course next week on Monday We will have exam practice and a guest lecture by the colleague of ours of mine actually north yours Who’s working on space applications? So I’ll put an announcement on that on campus Things we’ll cove... ]]></description>
+    <pubDate>Mon, 20 Apr 2026 11:36:17 GMT</pubDate>
+  </item><item>
+    <title>983068-english-annotated</title>
+    <link>https://localhost:8081/test/983068-english-annotated</link>
+    <guid>https://localhost:8081/test/983068-english-annotated</guid>
+    <description><![CDATA[ Summary Good morning Welcome back to the last week of lectures for this course next week on Monday We will have exam practice and a guest lecture by the colleague of ours of mine actually north yours Who’s working on space applications? So I’ll put an announcement on that on campus Things we’ll cove... ]]></description>
+    <pubDate>Mon, 20 Apr 2026 11:27:07 GMT</pubDate>
+  </item><item>
+    <title>slides-CAC-15-18-memory_hierarchy</title>
+    <link>https://localhost:8081/test-2/slides-cac-15-18-memory-hierarchy</link>
+    <guid>https://localhost:8081/test-2/slides-cac-15-18-memory-hierarchy</guid>
+    <description><![CDATA[ Summary 5EIC0 – Computer Architecture I Memory Hierarchies Egor Bondarev Associate Professor Head of 3D Vision Lab, VCA/SPS group, EE, TUE 10 Taking Advantage of Locality Store all data in cache? Not possible – small size Use memory hierarchy Store everything on disk Copy recently accessed (and near... ]]></description>
+    <pubDate>Mon, 20 Apr 2026 10:32:53 GMT</pubDate>
+  </item><item>
+    <title>breadboard logo</title>
+    <link>https://localhost:8081/test-2/breadboard-logo</link>
+    <guid>https://localhost:8081/test-2/breadboard-logo</guid>
+    <description><![CDATA[ Summary Knowledge tree No knowledge topics were extracted. Source material Image No legible text found. ]]></description>
+    <pubDate>Mon, 20 Apr 2026 10:23:51 GMT</pubDate>
+  </item><item>
+    <title>983068_English</title>
+    <link>https://localhost:8081/test-2/983068-english</link>
+    <guid>https://localhost:8081/test-2/983068-english</guid>
+    <description><![CDATA[ Summary Good morning Welcome back to the last week of lectures for this course next week on Monday We will have exam practice and a guest lecture by the colleague of ours of mine actually north yours Who’s working on space applications? So I’ll put an announcement on that on campus Things we’ll cove... ]]></description>
+    <pubDate>Mon, 20 Apr 2026 07:39:38 GMT</pubDate>
+  </item><item>
+    <title>986217_English</title>
+    <link>https://localhost:8081/test-2/986217-english</link>
+    <guid>https://localhost:8081/test-2/986217-english</guid>
+    <description><![CDATA[ Summary Please take your seats. I’m going to start Welcome to this special day There will be a birthday treat in the break. ]]></description>
+    <pubDate>Mon, 20 Apr 2026 07:28:03 GMT</pubDate>
+  </item><item>
+    <title>breadboard</title>
+    <link>https://localhost:8081/</link>
+    <guid>https://localhost:8081/</guid>
+    <description><![CDATA[ Browse every knowledge cluster from one place. ]]></description>
+    <pubDate>Mon, 20 Apr 2026 06:24:39 GMT</pubDate>
+  </item><item>
+    <title>My library</title>
+    <link>https://localhost:8081/private-library/user-1/</link>
+    <guid>https://localhost:8081/private-library/user-1/</guid>
+    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
+    <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+  </item><item>
+    <title>My library</title>
+    <link>https://localhost:8081/private-library/user-2/</link>
+    <guid>https://localhost:8081/private-library/user-2/</guid>
+    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
+    <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+  </item><item>
+    <title>Public library</title>
+    <link>https://localhost:8081/public-library/</link>
+    <guid>https://localhost:8081/public-library/</guid>
+    <description><![CDATA[ Public library lists shared clusters ranked by popularity. ]]></description>
+    <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+  </item>
+    </channel>
+  </rss>
