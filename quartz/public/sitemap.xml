@@ -1,12 +1,12 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url>
+    <loc>https://localhost:8081/</loc>
+    <lastmod>2026-04-20T06:24:39.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/computer-architecture-2/32-bit-alu-organization-and-control-signals</loc>
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/computer-architecture-2/32-bit-ripple-carry-adder</loc>
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/</loc>
-    <lastmod>2026-04-18T22:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/computer-architecture-2/address-decomposition-into-tag-index-and-offset</loc>
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
@@ -305,14 +305,8 @@
     <loc>https://localhost:8081/computer-architecture-2/worked-direct-mapped-cache-trace</loc>
     <lastmod>2026-04-19T16:59:21.587Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/</loc>
-    <lastmod>2026-04-20T06:24:39.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/private-library/user-1/</loc>
-    <lastmod>2026-04-19T22:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/private-library/user-2/</loc>
-    <lastmod>2026-04-19T22:00:00.000Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/</loc>
+    <lastmod>2026-04-18T22:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/public-library/</loc>
     <lastmod>2026-04-19T22:00:00.000Z</lastmod>
@@ -321,5 +315,11 @@
     <lastmod>2026-04-20T11:27:07.454Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test/</loc>
+    <lastmod>2026-04-19T22:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/private-library/user-1/</loc>
+    <lastmod>2026-04-19T22:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/private-library/user-2/</loc>
     <lastmod>2026-04-19T22:00:00.000Z</lastmod>
   </url></urlset>
