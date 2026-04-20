@@ -137,9 +137,38 @@ export default function DashboardClient({
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
+  const [bgImage, setBgImage] = useState<string | null>(null);
+  const [showBgModal, setShowBgModal] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bgFileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const resizeSessionRef = useRef<ResizeSession | null>(null);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("dashboard:bg-image");
+    if (stored) setBgImage(stored);
+  }, []);
+
+  function handleBgFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const result = ev.target?.result as string;
+      setBgImage(result);
+      localStorage.setItem("dashboard:bg-image", result);
+      setShowBgModal(false);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
+
+  function removeBgImage() {
+    setBgImage(null);
+    localStorage.removeItem("dashboard:bg-image");
+    setShowBgModal(false);
+  }
 
   useEffect(() => {
     setMyClusters(initialClusters);
@@ -635,8 +664,27 @@ export default function DashboardClient({
     });
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col">
+    <div
+      className="min-h-screen bg-gray-950 text-white flex flex-col"
+      style={bgImage ? { backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundAttachment: "fixed" } : undefined}
+    >
       <NavBar email={userEmail} username={username} />
+
+      {/* Background image pen button */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setShowBgModal(true)}
+          title="Change dashboard background"
+          className="absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:text-gray-300"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+          </svg>
+        </button>
+      </div>
+
+      <input ref={bgFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleBgFileChange} />
 
       <div className="max-w-5xl mx-auto w-full px-6 py-12 flex-1">
         <div className="flex flex-col gap-5 mb-10">
@@ -1502,6 +1550,43 @@ export default function DashboardClient({
                 )}
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showBgModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowBgModal(false); }}
+        >
+          <div className="w-full max-w-sm bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+            <h2 className="text-base font-semibold mb-1">Dashboard background</h2>
+            <p className="text-sm text-gray-500 mb-5">Upload an image to use as the background for this page.</p>
+            <div className="flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => bgFileInputRef.current?.click()}
+                className="w-full py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                {bgImage ? "Replace image" : "Upload image"}
+              </button>
+              {bgImage && (
+                <button
+                  type="button"
+                  onClick={removeBgImage}
+                  className="w-full py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
+                >
+                  Remove — restore original
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowBgModal(false)}
+                className="w-full py-2.5 text-sm text-gray-600 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

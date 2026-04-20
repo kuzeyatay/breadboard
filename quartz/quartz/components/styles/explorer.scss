@@ -181,22 +181,6 @@ button.desktop-explorer {
         & > a.active {
           color: var(--tertiary);
         }
-
-        & .source-document-label {
-          display: inline-block;
-          margin-left: 0.4rem;
-          padding: 0.06rem 0.32rem;
-          border: 1px solid color-mix(in srgb, var(--tertiary) 44%, transparent);
-          border-radius: 6px;
-          color: var(--secondary);
-          font-size: 0.64rem;
-          font-weight: $semiBoldWeight;
-          line-height: 1;
-          text-transform: uppercase;
-          letter-spacing: 0;
-          vertical-align: middle;
-          background: color-mix(in srgb, var(--light) 75%, transparent);
-        }
       }
     }
   }

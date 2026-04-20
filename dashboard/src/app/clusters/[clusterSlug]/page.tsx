@@ -14,8 +14,6 @@ export default async function WorkspacePage({
   if (!session?.user) redirect("/auth/login");
 
   const userId = Number((session.user as { id?: string }).id);
-  const userEmail = session.user.email ?? "";
-  const username = session.user.name ?? userEmail;
   const { clusterSlug } = await params;
 
   // Try owner access first
@@ -65,8 +63,6 @@ export default async function WorkspacePage({
     <WorkspaceClient
       clusterSlug={clusterSlug}
       clusterName={cluster.name}
-      userEmail={userEmail}
-      username={username}
       isOwner={isOwner}
       clusterVisibility={cluster.visibility}
       chatAccessible={cluster.chat_accessible}

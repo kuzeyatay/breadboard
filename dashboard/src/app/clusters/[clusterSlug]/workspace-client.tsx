@@ -11,7 +11,6 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
-import NavBar from "@/app/components/navbar";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import { useToast, Toaster } from "@/app/components/toast";
@@ -58,8 +57,6 @@ interface GeneratedNoteResult {
 interface Props {
   clusterSlug: string;
   clusterName: string;
-  userEmail: string;
-  username: string;
   isOwner?: boolean;
   clusterVisibility: "private" | "public";
   chatAccessible: boolean;
@@ -429,8 +426,6 @@ function persistPrompts(prompts: SavedPrompt[]) {
 export default function WorkspaceClient({
   clusterSlug,
   clusterName,
-  userEmail,
-  username,
   isOwner = true,
   clusterVisibility,
   chatAccessible,
@@ -512,6 +507,9 @@ export default function WorkspaceClient({
   const [model, setModel] = useState("gpt-5.4");
   const [models, setModels] = useState<string[]>(["gpt-5.4"]);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  const [usageData, setUsageData] = useState<Record<string, unknown> | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
   const canViewPublicChats =
     isOwner && clusterVisibility === "public" && chatAccessible;
   const canForkCluster =
@@ -1462,8 +1460,6 @@ export default function WorkspaceClient({
 
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
-      <NavBar email={userEmail} username={username} />
-
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-3">
@@ -2317,6 +2313,81 @@ export default function WorkspaceClient({
                 Enter to send · Shift+Enter for new line
               </p>
               <div className="flex items-center gap-1.5">
+                {/* Usage limits */}
+                <div className="relative">
+                  <button
+                    onClick={() => {
+                      if (showUsage) { setShowUsage(false); return; }
+                      setShowUsage(true);
+                      setUsageLoading(true);
+                      fetch('/api/usage-limits')
+                        .then((r) => r.json())
+                        .then((d) => setUsageData(d))
+                        .catch(() => setUsageData(null))
+                        .finally(() => setUsageLoading(false));
+                    }}
+                    title="View usage limits"
+                    className={[
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-colors border",
+                      showUsage
+                        ? "text-blue-400 border-blue-800/60 bg-blue-950/30"
+                        : "text-gray-600 border-transparent hover:text-gray-300 hover:bg-gray-800",
+                    ].join(" ")}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
+                    </svg>
+                    Usage
+                  </button>
+                  {showUsage && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setShowUsage(false)} />
+                      <div className="absolute bottom-full right-0 mb-1.5 z-20 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 text-xs">
+                        <p className="text-gray-400 font-semibold mb-3">Usage Limits</p>
+                        {usageLoading ? (
+                          <p className="text-gray-500">Loading…</p>
+                        ) : !usageData || !usageData.available ? (
+                          <p className="text-gray-500">No data yet — send a message first.</p>
+                        ) : (
+                          <div className="space-y-3">
+                            {(usageData.captured_at as string) && (
+                              <p className="text-gray-600">Updated: {new Date(usageData.captured_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                            )}
+                            {(['primary', 'secondary'] as const).map((key) => {
+                              const w = usageData[key] as { used_percent: number; window_minutes?: number; resets_in_seconds?: number } | undefined;
+                              if (!w) return null;
+                              const used = Math.min(100, Math.max(0, w.used_percent));
+                              const left = Math.max(0, 100 - used);
+                              const label = key === 'primary' ? '⚡ 5-hour limit' : '📅 Weekly limit';
+                              const color = used >= 90 ? 'bg-red-500' : used >= 60 ? 'bg-yellow-500' : 'bg-green-500';
+                              let resetStr = '';
+                              if (w.resets_in_seconds != null) {
+                                const s = w.resets_in_seconds;
+                                const d = Math.floor(s / 86400);
+                                const h = Math.floor((s % 86400) / 3600);
+                                const m = Math.floor((s % 3600) / 60);
+                                resetStr = [d && `${d}d`, h && `${h}h`, m && `${m}m`].filter(Boolean).join(' ') || '<1m';
+                              }
+                              return (
+                                <div key={key}>
+                                  <div className="flex justify-between text-gray-400 mb-1">
+                                    <span>{label}</span>
+                                    <span>{used.toFixed(1)}% used · {left.toFixed(1)}% left</span>
+                                  </div>
+                                  <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                    <div className={`h-full rounded-full ${color}`} style={{ width: `${used}%` }} />
+                                  </div>
+                                  {resetStr && <p className="text-gray-600 mt-1">⏳ Resets in {resetStr}</p>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+
                 {/* Thinking toggle */}
                 <button
                   onClick={() => setThinkingMode((v) => !v)}

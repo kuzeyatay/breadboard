@@ -94,7 +94,6 @@ export const PageList: QuartzComponent = ({ cfg, fileData, allFiles, limit, sort
           <li class={`section-li${isSourceDocument ? " source-document-entry" : ""}`}>
             <div class="section">
               <p class="meta">
-                {isSourceDocument && <span class="source-document-badge">Full source</span>}
                 {page.dates && <Date date={getDate(cfg, page)!} locale={cfg.locale} />}
               </p>
               <div class="desc">

@@ -44,23 +44,6 @@ li.section-li {
       margin: 0 1em 0 0;
       opacity: 0.6;
     }
-
-    & .source-document-badge {
-      display: block;
-      width: fit-content;
-      margin-bottom: 0.25rem;
-      padding: 0.12rem 0.42rem;
-      border: 1px solid color-mix(in srgb, var(--tertiary) 45%, transparent);
-      border-radius: 6px;
-      color: var(--secondary);
-      font-size: 0.68rem;
-      font-weight: $semiBoldWeight;
-      line-height: 1.2;
-      text-transform: uppercase;
-      letter-spacing: 0;
-      background: color-mix(in srgb, var(--light) 78%, transparent);
-      opacity: 1;
-    }
   }
 }
 

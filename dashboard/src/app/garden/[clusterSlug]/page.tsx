@@ -3,8 +3,8 @@ import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { authOptions } from '@/lib/auth-options';
 import { getReadableCluster } from '@/app/actions/clusters';
-import NavBar from '@/app/components/navbar';
 import NewNoteButton from '@/app/components/new-note-button';
+import MarkdownToPdfButton from '@/app/components/markdown-to-pdf-button';
 import GardenClient from './garden-client';
 
 export default async function GardenPage({
@@ -18,8 +18,6 @@ export default async function GardenPage({
   if (!session?.user) redirect('/auth/login');
 
   const userId = Number((session.user as { id?: string }).id);
-  const userEmail = session.user.email ?? '';
-  const username = session.user.name ?? userEmail;
   const { clusterSlug } = await params;
   const { note, chat } = await searchParams;
 
@@ -28,8 +26,6 @@ export default async function GardenPage({
 
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
-      <NavBar email={userEmail} username={username} />
-
       <header className="flex items-center justify-between gap-4 px-6 py-3.5 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <Link
@@ -44,7 +40,10 @@ export default async function GardenPage({
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">{cluster.name}</h1>
         </div>
-        {cluster.isOwner && <NewNoteButton clusterSlug={clusterSlug} />}
+        <div className="flex items-center gap-2">
+          {cluster.isOwner && <NewNoteButton clusterSlug={clusterSlug} />}
+          <MarkdownToPdfButton clusterSlug={clusterSlug} initialNote={note} />
+        </div>
       </header>
 
       <GardenClient

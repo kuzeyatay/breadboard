@@ -43,6 +43,7 @@ Requirements for each note:
   * **Bold** for important terms
   * Bullet lists for related points
   * [[wikilinks]] to connect related concepts mentioned in this conversation
+  * LaTeX for formulas, symbols, or derivations when it improves clarity: inline math with $...$ and display equations with $$...$$
   * 100-300 words
 - tags: 3-8 specific subject terms, formulas, methods, named concepts, or domain terms
 - related: titles of notes/concepts that should be strongly connected to this note
