@@ -1,6 +1,6 @@
 ---
 title: "Public library"
-date: "2026-04-19"
+date: "2026-04-20"
 description: "Public library lists shared clusters ranked by popularity."
 knowledge_type: "garden-overview"
 garden_scope: "public"

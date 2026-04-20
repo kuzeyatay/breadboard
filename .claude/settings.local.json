@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(.venv/Scripts/python chatmock.py info)",
-      "Bash(npx quartz *)"
+      "Bash(npx quartz *)",
+      "Bash(npx tsc *)",
+      "Bash(git checkout *)",
+      "Bash(git ls-tree *)"
     ]
   }
 }

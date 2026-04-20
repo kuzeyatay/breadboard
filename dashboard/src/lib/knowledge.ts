@@ -73,6 +73,7 @@ export interface KnowledgeNode {
   type: string;
   sourceType: string;
   sourceFile: string;
+  sourcePdf: string;
   sourceDocument: string;
   flagColor: string;
   locations: string[];
@@ -1669,6 +1670,7 @@ export async function writeDocumentKnowledge({
   sourceFileName,
   sourceType,
   sourceLabel,
+  sourcePdfPath,
   isHandwriting,
   markdownText,
   plainText,
@@ -1683,6 +1685,7 @@ export async function writeDocumentKnowledge({
   sourceFileName: string;
   sourceType: string;
   sourceLabel: string;
+  sourcePdfPath?: string;
   isHandwriting?: boolean;
   markdownText: string;
   plainText: string;
@@ -1763,6 +1766,7 @@ export async function writeDocumentKnowledge({
     tags: sourceTags,
   };
   if (sourceImages.length > 0) sourceFrontmatter.source_images = sourceImages;
+  if (sourcePdfPath) sourceFrontmatter.source_pdf = sourcePdfPath;
   if (isHandwriting) {
     sourceFrontmatter.source_mode = "handwritten-or-scanned";
     sourceFrontmatter.extraction_method = "chatmock-vision-ocr";
@@ -1996,6 +2000,7 @@ export function scanClusterKnowledge(
     const title = frontmatterString(data, "title") || slug;
     const sourceType = frontmatterString(data, "source_type");
     const sourceFile = frontmatterString(data, "source_file");
+    const sourcePdf = frontmatterString(data, "source_pdf");
     const sourceDocument = frontmatterString(data, "source_document");
     const flagColor = frontmatterString(data, "flag_color");
     const locations = frontmatterArray(data, "locations");
@@ -2018,6 +2023,7 @@ export function scanClusterKnowledge(
       type,
       sourceType,
       sourceFile,
+      sourcePdf,
       sourceDocument,
       flagColor,
       locations,

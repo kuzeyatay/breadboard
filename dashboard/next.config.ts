@@ -28,6 +28,13 @@ const nextConfig: NextConfig = {
       'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
     },
   },
+  webpack: (config) => {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      'pdf-parse': 'pdf-parse/dist/pdf-parse/cjs/index.cjs',
+    };
+    return config;
+  },
 };
 
 export default nextConfig;

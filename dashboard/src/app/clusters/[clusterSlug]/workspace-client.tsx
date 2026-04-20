@@ -42,6 +42,7 @@ interface DocInfo {
   type: string;
   sourceType: string;
   sourceFile: string;
+  sourcePdf: string;
   flagColor: string;
   locations: string[];
   linkCount: number;
@@ -1295,6 +1296,13 @@ export default function WorkspaceClient({
       <ul className="py-1">
         {items.map((doc, index) => {
           const isSource = doc.type === "source-document";
+          const isPdfSource =
+            isSource &&
+            doc.sourceType?.toLowerCase() === "pdf" &&
+            Boolean(doc.sourcePdf);
+          const documentHref = isPdfSource
+            ? `/clusters/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
+            : `/garden/${clusterSlug}?note=${encodeURIComponent(doc.slug)}`;
           return (
             <li
               key={`${doc.slug}:${doc.type}:${index}`}
@@ -1385,18 +1393,23 @@ export default function WorkspaceClient({
               </svg>
               <div className="flex-1 min-w-0">
                 <Link
-                  href={`/garden/${clusterSlug}?note=${encodeURIComponent(doc.slug)}`}
+                  href={documentHref}
                   className={[
                     "block text-xs truncate transition-colors",
                     isSource
                       ? "text-cyan-100 hover:text-white font-medium"
                       : "text-gray-300 hover:text-white",
                   ].join(" ")}
+                  title={isPdfSource ? "Open PDF viewer" : "Open note"}
                 >
                   {doc.title ?? doc.name}
                 </Link>
                 <p className="text-[10px] text-gray-600 mt-0.5">
-                  {isSource ? "full source content" : markdownTypeLabel(doc)}{" "}
+                  {isPdfSource
+                    ? "PDF source"
+                    : isSource
+                      ? "full source content"
+                      : markdownTypeLabel(doc)}{" "}
                   &middot; {doc.wordCount}w
                 </p>
               </div>

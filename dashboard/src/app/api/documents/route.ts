@@ -32,6 +32,7 @@ export async function GET(request: Request) {
         type: node.type,
         sourceType: node.sourceType,
         sourceFile: node.sourceFile,
+        sourcePdf: node.sourcePdf,
         sourceDocument: node.sourceDocument,
         flagColor: node.flagColor,
         locations: node.locations,

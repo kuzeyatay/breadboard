@@ -69,11 +69,40 @@ if (!globalWithDb.db) {
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS pdf_document_edits (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      cluster_id         INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+      document_slug      TEXT    NOT NULL,
+      source_pdf_path    TEXT    NOT NULL,
+      pdf_data           BLOB    NOT NULL,
+      byte_length        INTEGER NOT NULL,
+      updated_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      updated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(cluster_id, document_slug)
+    );
+
+    CREATE TABLE IF NOT EXISTS pdf_document_edit_history (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      cluster_id         INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+      document_slug      TEXT    NOT NULL,
+      source_pdf_path    TEXT    NOT NULL,
+      pdf_data           BLOB    NOT NULL,
+      byte_length        INTEGER NOT NULL,
+      saved_by_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      saved_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_cluster_updated
       ON chat_sessions(cluster_id, updated_at DESC);
 
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session_order
       ON chat_messages(session_id, order_index);
+
+    CREATE INDEX IF NOT EXISTS idx_pdf_document_edits_cluster_slug
+      ON pdf_document_edits(cluster_id, document_slug);
+
+    CREATE INDEX IF NOT EXISTS idx_pdf_document_edit_history_cluster_slug
+      ON pdf_document_edit_history(cluster_id, document_slug, id DESC);
   `);
 }
 
@@ -111,11 +140,40 @@ db.exec(`
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS pdf_document_edits (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    cluster_id         INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+    document_slug      TEXT    NOT NULL,
+    source_pdf_path    TEXT    NOT NULL,
+    pdf_data           BLOB    NOT NULL,
+    byte_length        INTEGER NOT NULL,
+    updated_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    updated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(cluster_id, document_slug)
+  );
+
+  CREATE TABLE IF NOT EXISTS pdf_document_edit_history (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    cluster_id         INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+    document_slug      TEXT    NOT NULL,
+    source_pdf_path    TEXT    NOT NULL,
+    pdf_data           BLOB    NOT NULL,
+    byte_length        INTEGER NOT NULL,
+    saved_by_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    saved_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_chat_sessions_cluster_updated
     ON chat_sessions(cluster_id, updated_at DESC);
 
   CREATE INDEX IF NOT EXISTS idx_chat_messages_session_order
     ON chat_messages(session_id, order_index);
+
+  CREATE INDEX IF NOT EXISTS idx_pdf_document_edits_cluster_slug
+    ON pdf_document_edits(cluster_id, document_slug);
+
+  CREATE INDEX IF NOT EXISTS idx_pdf_document_edit_history_cluster_slug
+    ON pdf_document_edit_history(cluster_id, document_slug, id DESC);
 `);
 
 function ensureColumn(
