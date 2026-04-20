@@ -1,0 +1,265 @@
+@use "../../styles/variables.scss" as *;
+
+.graph {
+  & > h3 {
+    font-size: 1rem;
+    margin: 0;
+  }
+
+  & > .graph-outer {
+    border-radius: 5px;
+    border: 1px solid var(--lightgray);
+    box-sizing: border-box;
+    height: 260px;
+    margin: 0.5em 0;
+    position: relative;
+    overflow: hidden;
+    cursor: zoom-in;
+    background:
+      radial-gradient(circle at 28% 24%, color-mix(in srgb, var(--secondary) 20%, transparent), transparent 30%),
+      radial-gradient(circle at 74% 68%, color-mix(in srgb, var(--tertiary) 18%, transparent), transparent 34%),
+      color-mix(in srgb, var(--light) 94%, var(--dark));
+
+    & > .graph-container {
+      width: 100%;
+      height: 100%;
+
+      & > canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+      }
+    }
+
+    & > .global-graph-icon {
+      cursor: pointer;
+      background: none;
+      border: none;
+      color: var(--dark);
+      opacity: 0.5;
+      width: 24px;
+      height: 24px;
+      position: absolute;
+      padding: 0.2rem;
+      margin: 0.3rem;
+      top: 0;
+      right: 0;
+      border-radius: 4px;
+      background-color: transparent;
+      transition: background-color 0.5s ease;
+      cursor: pointer;
+      &:hover {
+        background-color: var(--lightgray);
+      }
+    }
+  }
+
+  & > .global-graph-outer {
+    position: fixed;
+    z-index: 9999;
+    left: 0;
+    top: 0;
+    width: 100vw;
+    height: 100vh;
+    backdrop-filter: none;
+    background:
+      radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--secondary) 16%, transparent), transparent 34%),
+      radial-gradient(circle at 84% 72%, color-mix(in srgb, var(--tertiary) 14%, transparent), transparent 38%),
+      var(--light);
+    display: none;
+    overflow: hidden;
+
+    &.active {
+      display: inline-block;
+    }
+
+    & > .global-graph-container {
+      border: 0;
+      background:
+        radial-gradient(circle at 22% 20%, color-mix(in srgb, var(--secondary) 13%, transparent), transparent 30%),
+        radial-gradient(circle at 78% 76%, color-mix(in srgb, var(--tertiary) 12%, transparent), transparent 34%),
+        var(--light);
+      border-radius: 0;
+      box-sizing: border-box;
+      position: fixed;
+      inset: 0;
+      height: 100vh;
+      width: 100%;
+      transform: none;
+
+      @media all and not ($desktop) {
+        width: 100%;
+      }
+    }
+
+    & > .global-graph-search {
+      position: fixed;
+      z-index: 10000;
+      top: 1.25rem;
+      left: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      max-width: min(34rem, calc(100vw - 6rem));
+      padding: 0.45rem;
+      border: 1px solid var(--lightgray);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--light) 90%, transparent);
+      box-shadow: 0 0.85rem 2rem rgba(0, 0, 0, 0.18);
+      backdrop-filter: blur(8px);
+
+      & > .global-graph-search-button,
+      & > .global-graph-search-clear {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 2rem;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--dark);
+        cursor: pointer;
+        font: inherit;
+        font-size: 0.78rem;
+      }
+
+      & > .global-graph-search-button {
+        width: 2rem;
+
+        & > svg {
+          width: 1rem;
+          height: 1rem;
+        }
+      }
+
+      & > .global-graph-search-clear {
+        padding: 0 0.55rem;
+        color: var(--gray);
+
+        &:hover {
+          border-color: var(--lightgray);
+          color: var(--dark);
+        }
+      }
+
+      & > .global-graph-search-input {
+        width: min(18rem, 38vw);
+        height: 2rem;
+        border: 1px solid var(--lightgray);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--light) 85%, transparent);
+        color: var(--dark);
+        font: inherit;
+        font-size: 0.85rem;
+        outline: none;
+        padding: 0 0.7rem;
+
+        &:focus {
+          border-color: var(--secondary);
+        }
+      }
+
+      & > .global-graph-search-status {
+        min-width: 4.5rem;
+        color: var(--gray);
+        font-size: 0.78rem;
+        white-space: nowrap;
+      }
+    }
+
+    & > .global-graph-close {
+      position: fixed;
+      z-index: 10000;
+      top: 1.25rem;
+      right: 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 2.25rem;
+      height: 2.25rem;
+      padding: 0;
+      border: 1px solid var(--lightgray);
+      border-radius: 8px;
+      background: var(--light);
+      color: var(--dark);
+      cursor: pointer;
+      opacity: 0.82;
+      transition:
+        opacity 0.2s ease,
+        background-color 0.2s ease;
+
+      &:hover {
+        opacity: 1;
+        background-color: var(--lightgray);
+      }
+
+      & > svg {
+        width: 1.1rem;
+        height: 1.1rem;
+      }
+    }
+  }
+}
+
+.graph.home-knowledge-graph {
+  margin: 1rem 0 1.25rem;
+
+  & > h3 {
+    font-size: 1.15rem;
+  }
+
+  & > .graph-outer {
+    height: min(64vh, 620px);
+    min-height: 420px;
+    margin: 0.75rem 0 0;
+  }
+}
+
+html.quartz-graph-preview,
+html.quartz-graph-preview body {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--light);
+}
+
+html.quartz-graph-preview .left.sidebar,
+html.quartz-graph-preview .right.sidebar,
+html.quartz-graph-preview .breadcrumb-container,
+html.quartz-graph-preview .article-title,
+html.quartz-graph-preview .content-meta,
+html.quartz-graph-preview .graph.home-knowledge-graph > h3,
+html.quartz-graph-preview .graph.home-knowledge-graph .global-graph-icon,
+html.quartz-graph-preview .graph.home-knowledge-graph .global-graph-outer,
+html.quartz-graph-preview article,
+html.quartz-graph-preview footer,
+html.quartz-graph-preview .page-footer,
+html.quartz-graph-preview .tags {
+  display: none !important;
+}
+
+html.quartz-graph-preview #quartz-root,
+html.quartz-graph-preview #quartz-body,
+html.quartz-graph-preview .center,
+html.quartz-graph-preview .page-header,
+html.quartz-graph-preview .popover-hint,
+html.quartz-graph-preview .graph.home-knowledge-graph {
+  display: block !important;
+  width: 100vw !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 100vh !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+html.quartz-graph-preview .graph.home-knowledge-graph > .graph-outer {
+  width: 100vw !important;
+  height: 100vh !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  cursor: default;
+}
