@@ -48,16 +48,16 @@
     <description><![CDATA[ Browse every knowledge cluster from one place. ]]></description>
     <pubDate>Mon, 20 Apr 2026 06:24:39 GMT</pubDate>
   </item><item>
-    <title>My library</title>
-    <link>https://localhost:8081/private-library/user-1/</link>
-    <guid>https://localhost:8081/private-library/user-1/</guid>
-    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
+    <title>test</title>
+    <link>https://localhost:8081/test/</link>
+    <guid>https://localhost:8081/test/</guid>
+    <description><![CDATA[ Quartz garden generated from 1 source document, with 0 knowledge topics and 0 graph links. ]]></description>
     <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
   </item><item>
-    <title>My library</title>
-    <link>https://localhost:8081/private-library/user-2/</link>
-    <guid>https://localhost:8081/private-library/user-2/</guid>
-    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
+    <title>test</title>
+    <link>https://localhost:8081/test-2/</link>
+    <guid>https://localhost:8081/test-2/</guid>
+    <description><![CDATA[ Quartz garden generated from 5 source documents, with 0 knowledge topics and 3 graph links. ]]></description>
     <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
   </item><item>
     <title>Public library</title>
