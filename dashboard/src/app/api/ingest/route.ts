@@ -4,6 +4,7 @@ import path from "path";
 import AdmZip from "adm-zip";
 import { PDFParse } from "pdf-parse";
 import type OpenAI from "openai";
+import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import {
   DEFAULT_MODEL,
   createChatmockClient,
@@ -378,6 +379,7 @@ function extractZipText(buffer: Buffer): string {
 
 export async function POST(request: Request) {
   try {
+    const { baseURL } = resolveChatmockBaseUrl(request);
     const formData = await request.formData();
 
     const file = formData.get("file");
@@ -413,7 +415,7 @@ export async function POST(request: Request) {
       typeof sourceLabel === "string" && sourceLabel.trim()
         ? sourceLabel.trim()
         : "upload";
-    const client = createChatmockClient();
+    const client = createChatmockClient(baseURL);
 
     // ── Text extraction ──────────────────────────────────────────────────────
 

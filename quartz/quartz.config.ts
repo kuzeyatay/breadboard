@@ -1,6 +1,19 @@
 import { QuartzConfig } from "./quartz/cfg"
 import * as Plugin from "./quartz/plugins"
 
+function normalizedBaseUrl(value?: string): string {
+  const trimmed = (value ?? "").trim()
+  if (!trimmed) return "localhost:8081"
+
+  return trimmed.replace(/^https?:\/\//i, "").replace(/\/+$/, "")
+}
+
+const quartzBaseUrl = normalizedBaseUrl(
+  process.env.QUARTZ_BASE_URL ?? process.env.NEXT_PUBLIC_QUARTZ_URL,
+)
+
+const enableCustomOgImages = process.env.QUARTZ_CUSTOM_OG_IMAGES !== "false"
+
 /**
  * Quartz 4 Configuration
  *
@@ -16,7 +29,7 @@ const config: QuartzConfig = {
       provider: "plausible",
     },
     locale: "en-US",
-    baseUrl: "localhost:8081",
+    baseUrl: quartzBaseUrl,
     ignorePatterns: ["private", "templates", ".obsidian"],
     defaultDateType: "modified",
     theme: {
@@ -88,8 +101,9 @@ const config: QuartzConfig = {
       Plugin.Static(),
       Plugin.Favicon(),
       Plugin.NotFoundPage(),
-      // Comment out CustomOgImages to speed up build time
-      Plugin.CustomOgImages(),
+      ...(enableCustomOgImages
+        ? [Plugin.CustomOgImages()]
+        : []),
     ],
   },
 }
