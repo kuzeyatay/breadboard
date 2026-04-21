@@ -14,7 +14,9 @@ import {
   setClusterCardSize,
 } from "@/app/actions/clusters";
 import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
+import type { ChatmockTarget } from "@/lib/chatmock-target";
 import NavBar from "@/app/components/navbar";
+import ChatmockTargetSwitch from "@/app/components/chatmock-target-switch";
 import { useToast, Toaster } from "@/app/components/toast";
 
 interface Props {
@@ -22,6 +24,7 @@ interface Props {
   username: string;
   initialClusters: Cluster[];
   initialPublicClusters: Cluster[];
+  initialChatmockTarget: ChatmockTarget;
 }
 
 const ACCEPTED =
@@ -100,6 +103,7 @@ export default function DashboardClient({
   username,
   initialClusters,
   initialPublicClusters,
+  initialChatmockTarget,
 }: Props) {
   const router = useRouter();
   const { toasts, addToast } = useToast();
@@ -668,7 +672,11 @@ export default function DashboardClient({
       className="min-h-screen bg-gray-950 text-white flex flex-col"
       style={bgImage ? { backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundAttachment: "fixed" } : undefined}
     >
-      <NavBar email={userEmail} username={username} />
+      <NavBar
+        email={userEmail}
+        username={username}
+        actions={<ChatmockTargetSwitch initialTarget={initialChatmockTarget} />}
+      />
 
       {/* Background image pen button */}
       <div className="relative">

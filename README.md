@@ -351,6 +351,12 @@ This project applies that same philosophy to knowledge: raw information goes in,
 - cluster templates
 - import/export flows
 
+## Deploying on Ubuntu
+
+For a small self-hosted machine, including a home server or old Mac mini running Ubuntu, see:
+
+- [DEPLOYMENT-UBUNTU.md](DEPLOYMENT-UBUNTU.md)
+
 ---
 
 

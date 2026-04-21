@@ -168,9 +168,9 @@ Rules:
 - Do not add weak or filler relationships just to increase count; every relationship should explain a real conceptual connection.
 - If the source has no durable knowledge, return topics: [] and an honest summary.`;
 
-export function createChatmockClient(): OpenAI {
+export function createChatmockClient(baseURL?: string): OpenAI {
   return new OpenAI({
-    baseURL: process.env.OPENAI_BASE_URL,
+    baseURL: baseURL ?? process.env.OPENAI_BASE_URL,
     apiKey: process.env.OPENAI_API_KEY,
   });
 }

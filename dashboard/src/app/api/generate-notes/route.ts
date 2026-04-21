@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
+import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge, semanticTagsFromText, slugify } from '@/lib/knowledge';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
@@ -177,6 +178,7 @@ function buildNoteBody(title: string, content: string, related: RelatedNote[]): 
 
 export async function POST(request: Request) {
   try {
+    const { baseURL } = resolveChatmockBaseUrl(request);
     const { clusterSlug, messages, model, mode } = await request.json();
 
     if (typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
@@ -241,7 +243,7 @@ export async function POST(request: Request) {
     }
 
     const client = new OpenAI({
-      baseURL: process.env.OPENAI_BASE_URL,
+      baseURL,
       apiKey: process.env.OPENAI_API_KEY,
     });
 

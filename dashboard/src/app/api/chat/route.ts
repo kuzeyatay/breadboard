@@ -5,6 +5,7 @@ import type {
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
+import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -60,6 +61,7 @@ function describeInventoryNode(node: KnowledgeNode): string {
 
 export async function POST(request: Request) {
   try {
+    const { baseURL } = resolveChatmockBaseUrl(request);
     const { messages, clusterSlug, model, thinking, attachments } = await request.json();
 
     if (!Array.isArray(messages) || typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
@@ -150,7 +152,6 @@ export async function POST(request: Request) {
         'Use the relevant notes and relationships to check your answer before responding.';
     }
 
-    const baseURL = process.env.OPENAI_BASE_URL;
     const client = new OpenAI({
       baseURL,
       apiKey: process.env.OPENAI_API_KEY,

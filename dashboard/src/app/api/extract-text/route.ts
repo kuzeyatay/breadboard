@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import { PDFParse } from 'pdf-parse';
+import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { DEFAULT_MODEL, createChatmockClient } from '@/lib/knowledge';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
 
@@ -84,6 +85,7 @@ function extractZipText(buffer: Buffer): string {
 // Returns { type: 'text', text } or { type: 'image', dataUrl, mimeType }
 export async function POST(request: Request) {
   try {
+    const { baseURL } = resolveChatmockBaseUrl(request);
     await requireUserId();
     const formData = await request.formData();
     const file = formData.get('file');
@@ -104,7 +106,7 @@ export async function POST(request: Request) {
 
       if (isHandwriting) {
         // OCR via vision model
-        const client = createChatmockClient();
+        const client = createChatmockClient(baseURL);
         const response = await client.chat.completions.create({
           model: DEFAULT_MODEL,
           messages: [{
