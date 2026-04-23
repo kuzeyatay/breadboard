@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
+import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
   requireOwnedClusterFromSlug,
   requireReadableClusterFromSlug,
@@ -14,6 +15,7 @@ type Frontmatter = Record<string, string>;
 type AccessMode = "read" | "write";
 type SourcePdfContext = {
   clusterId: number;
+  clusterSlug: string;
   documentSlug: string;
   fileName: string;
   pdfPath: string;
@@ -170,6 +172,7 @@ async function getSourcePdfContext(
 
   return {
     clusterId: cluster.id,
+    clusterSlug: cluster.slug,
     documentSlug,
     fileName: contentDispositionName(frontmatter.source_file ?? path.basename(pdfPath)),
     pdfPath,
@@ -312,6 +315,9 @@ export async function PUT(
       pdfBytes.length,
       context.userId,
       updatedAt,
+    );
+    await publishQuartzAfterMutation(
+      `update source PDF ${context.clusterSlug}/${context.documentSlug}`,
     );
 
     return NextResponse.json({

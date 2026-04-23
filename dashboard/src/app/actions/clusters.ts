@@ -9,6 +9,7 @@ import {
   refreshPrivateQuartzIndex,
   refreshPublicQuartzIndex,
 } from "@/lib/quartz-garden-index";
+import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { requireUserId } from "@/lib/server-auth";
 
 export interface Cluster {
@@ -297,6 +298,7 @@ export async function createCluster(
     }
 
     refreshPrivateQuartzIndex(userId);
+    await publishQuartzAfterMutation(`create cluster ${slug}`);
     revalidatePath("/dashboard");
     revalidatePath("/garden");
   } catch (err) {
@@ -338,6 +340,7 @@ export async function updateClusterDetails(
 
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
+    await publishQuartzAfterMutation(`update cluster ${cluster.slug}`);
     revalidatePath("/dashboard");
     revalidatePath("/garden");
     revalidatePath(`/clusters/${cluster.slug}`);
@@ -356,6 +359,11 @@ export async function setClusterVisibility(
   try {
     const userId = await requireUserId();
     const nextVisibility = normalizeVisibility(visibility);
+    const cluster = db
+      .prepare("SELECT slug FROM clusters WHERE id = ? AND user_id = ?")
+      .get(clusterId, userId) as { slug: string } | undefined;
+    if (!cluster) throw new Error("Cluster not found");
+
     const result = db
       .prepare(
         "UPDATE clusters SET visibility = ? WHERE id = ? AND user_id = ?",
@@ -366,6 +374,8 @@ export async function setClusterVisibility(
 
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
+    const scope = nextVisibility === "public" ? "publish" : "unpublish";
+    await publishQuartzAfterMutation(`${scope} cluster ${cluster.slug}`);
     revalidatePath("/dashboard");
     revalidatePath("/garden");
   } catch (err) {
@@ -550,6 +560,7 @@ export async function forkCluster(
 
     refreshClusterIndex(contentPath, targetSlug);
     refreshPrivateQuartzIndex(userId);
+    await publishQuartzAfterMutation(`fork cluster ${targetSlug}`);
     revalidatePath("/dashboard");
     revalidatePath("/garden");
     revalidatePath(`/clusters/${targetSlug}`);
@@ -600,6 +611,10 @@ export async function deleteCluster(clusterId: number): Promise<void> {
     revalidatePath("/garden");
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
+    await publishQuartzAfterMutation(`delete cluster ${cluster.slug}`);
+    if (contentPath) {
+      writeDeletedClusterRedirect(contentPath, cluster.slug);
+    }
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to delete cluster",

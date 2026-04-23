@@ -4,6 +4,7 @@ import path from 'path';
 import OpenAI from 'openai';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge, semanticTagsFromText, slugify } from '@/lib/knowledge';
+import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -238,6 +239,7 @@ export async function POST(request: Request) {
         'utf-8',
       );
       refreshClusterIndex(contentPath, normalizedClusterSlug);
+      await publishQuartzAfterMutation(`generate chat note in ${normalizedClusterSlug}`);
 
       return NextResponse.json({ success: true, notes: [{ slug: finalSlug, title }] });
     }
@@ -313,6 +315,7 @@ export async function POST(request: Request) {
     }
 
     refreshClusterIndex(contentPath, normalizedClusterSlug);
+    await publishQuartzAfterMutation(`generate notes in ${normalizedClusterSlug}`);
 
     return NextResponse.json({ success: true, notes: savedNotes });
   } catch (err) {

@@ -126,6 +126,9 @@ OPENAI_API_KEY=local
 
 NEXT_PUBLIC_QUARTZ_URL=https://garden.breadboard-app.com
 QUARTZ_CONTENT_PATH=/opt/breadboard/quartz/content
+QUARTZ_CUSTOM_OG_IMAGES=false
+QUARTZ_BUILD_CONCURRENCY=1
+# Optional on a slow box: QUARTZ_PUBLISH_MODE=background
 SECOND_BRAIN_INITIAL_INVITE_CODE=YOURINVITECODE
 ```
 
@@ -137,6 +140,9 @@ Notes:
 - If you do not care about the selector, you can point all three OpenAI variables at the same ChatMock endpoint.
 - `QUARTZ_CONTENT_PATH` should be an absolute path on the server.
 - `NEXT_PUBLIC_QUARTZ_URL` must be the externally reachable Quartz URL, including `https://`.
+- In production, the dashboard now auto-runs a Quartz rebuild after cluster and markdown changes so `quartz/public` stays in sync.
+- `QUARTZ_BUILD_CONCURRENCY=1` keeps Quartz on a single worker, which is friendlier on a 4 GB machine.
+- If Quartz publish latency feels too slow, set `QUARTZ_PUBLISH_MODE=background` so the dashboard returns sooner and Quartz catches up asynchronously.
 
 ## 7. Configure Quartz for production
 
@@ -177,6 +183,8 @@ Quartz output is served from:
 ```text
 /opt/breadboard/quartz/public
 ```
+
+You still need this initial Quartz build once during deployment. After that, content mutations from the dashboard will auto-publish Quartz in production.
 
 ## 9. Create systemd services
 
@@ -347,6 +355,8 @@ npm ci
 QUARTZ_BASE_URL=garden.breadboard-app.com QUARTZ_CUSTOM_OG_IMAGES=false npx quartz build
 sudo systemctl reload caddy
 ```
+
+The manual Quartz build above is still needed after pulling code changes. Day-to-day cluster, note, and source document edits now trigger Quartz republishes automatically from the dashboard service.
 
 ChatMock only needs reinstalling if its Python dependencies change:
 

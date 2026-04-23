@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import db from '@/lib/db';
 import { refreshClusterIndex } from '@/lib/knowledge';
+import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import {
   requireOwnedClusterFromSlug,
   requireReadableClusterFromSlug,
@@ -412,6 +413,7 @@ export async function PATCH(
 
   fs.writeFileSync(context.filePath, content, 'utf-8');
   refreshClusterIndex(context.contentPath, context.clusterSlug);
+  await publishQuartzAfterMutation(`update document ${context.clusterSlug}/${context.slug}`);
 
   return json({ success: true, slug: context.slug, flagColor });
 }
@@ -486,5 +488,6 @@ export async function DELETE(
   }
 
   refreshClusterIndex(context.contentPath, context.clusterSlug);
+  await publishQuartzAfterMutation(`delete document ${context.clusterSlug}/${context.slug}`);
   return json({ success: true, slug: context.slug, deletedSlugs });
 }
