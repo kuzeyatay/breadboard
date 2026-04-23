@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import OpenAI from "openai";
+import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 
 export const DEFAULT_MODEL = "gpt-5.4";
 
@@ -1888,6 +1889,7 @@ export async function writeDocumentKnowledge({
   }
 
   refreshClusterIndex(contentPath, clusterSlug);
+  await publishQuartzAfterMutation(`ingest knowledge into ${clusterSlug}`);
 
   return {
     sourceSlug,

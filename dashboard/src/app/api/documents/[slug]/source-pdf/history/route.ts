@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
+import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
   requireOwnedClusterFromSlug,
   routeErrorResponse,
@@ -189,6 +190,9 @@ export async function DELETE(
 
     // Remove this entry from history
     db.prepare(`DELETE FROM pdf_document_edit_history WHERE id = ?`).run(entry.id);
+    await publishQuartzAfterMutation(
+      `restore source PDF ${context.clusterSlug}/${context.documentSlug}`,
+    );
 
     return new Response(pdfBytes, {
       headers: {

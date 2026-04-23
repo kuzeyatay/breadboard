@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { refreshClusterIndex, scanClusterKnowledge, slugify } from '@/lib/knowledge';
+import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -92,6 +93,7 @@ export async function POST(request: Request) {
     fs.writeFileSync(path.join(clusterDir, `${slug}.md`), frontmatter + body_, 'utf-8');
 
     refreshClusterIndex(contentPath, cluster.slug);
+    await publishQuartzAfterMutation(`create document ${cluster.slug}/${slug}`);
 
     return NextResponse.json({ success: true, slug });
   } catch (err) {
