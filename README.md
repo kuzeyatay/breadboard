@@ -16,6 +16,7 @@
 ---
 
 ## What is Breadboard?
+>i promise its not a virus
 
 **Breadboard** is a multi-service knowledge workspace built around a simple idea:
 
