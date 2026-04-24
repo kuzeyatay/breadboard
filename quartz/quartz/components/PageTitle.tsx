@@ -7,12 +7,19 @@ const PageTitle: QuartzComponent = ({ cfg, displayClass }: QuartzComponentProps)
   const dashboardBaseUrl = (
     process.env.DASHBOARD_URL ??
     process.env.NEXT_PUBLIC_DASHBOARD_URL ??
-    "http://localhost:3000"
+    ""
   ).replace(/\/+$/, "")
-  const dashboardHref = `${dashboardBaseUrl}/dashboard`
+  const dashboardHref = `${dashboardBaseUrl || ""}/dashboard`
   return (
     <h2 class={classNames(displayClass, "page-title")}>
-      <a href={dashboardHref} class="page-title-link" data-dashboard-href={dashboardHref}>{title}</a>
+      <a
+        href={dashboardHref}
+        class="page-title-link"
+        data-dashboard-base-url={dashboardBaseUrl}
+        data-dashboard-href={dashboardHref}
+      >
+        {title}
+      </a>
     </h2>
   )
 }
@@ -30,6 +37,32 @@ PageTitle.css = `
 
 PageTitle.afterDOMLoaded = `
 document.querySelectorAll(".page-title-link").forEach(function(el) {
+  const resolveDashboardBaseUrl = (fallback) => {
+    const trimmed = (fallback || "").replace(/\\/+$/, "");
+    if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
+      return trimmed;
+    }
+    try {
+      if (document.referrer) {
+        const ref = new URL(document.referrer);
+        if (!/^garden\\./i.test(ref.hostname)) {
+          return ref.origin.replace(/\\/+$/, "");
+        }
+      }
+    } catch {}
+    try {
+      const current = new URL(window.location.href);
+      if (/^garden\\./i.test(current.hostname)) {
+        return current.origin.replace("//garden.", "//");
+      }
+      return current.origin.replace(/\\/+$/, "");
+    } catch {}
+    return trimmed;
+  };
+
+  const href = resolveDashboardBaseUrl(el.getAttribute("data-dashboard-base-url")) + "/dashboard";
+  el.setAttribute("data-dashboard-href", href);
+  el.setAttribute("href", href);
   el.addEventListener("click", function(e) {
     e.preventDefault();
     e.stopPropagation();

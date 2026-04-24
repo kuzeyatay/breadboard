@@ -94,6 +94,7 @@ function quartzMapPreviewUrl(clusterSlug: string, refreshKey: string): string {
 function KnowledgeGraph({ clusterSlug, refreshKey }: Props) {
   const [data, setData] = useState<GraphResponse | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [previewReady, setPreviewReady] = useState(false);
   const graph = data ?? emptyResponse;
   const loading = data === null;
 
@@ -110,6 +111,21 @@ function KnowledgeGraph({ clusterSlug, refreshKey }: Props) {
     () => quartzMapPreviewUrl(clusterSlug, refreshKey),
     [clusterSlug, refreshKey],
   );
+
+  useEffect(() => {
+    if (!sidebarOpen || loading || graph.nodes.length === 0) {
+      const timer = window.setTimeout(() => {
+        setPreviewReady(false);
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+
+    const timer = window.setTimeout(() => {
+      setPreviewReady(true);
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [graph.nodes.length, loading, quartzPreviewUrl, sidebarOpen]);
 
   return (
     <>
@@ -174,12 +190,13 @@ function KnowledgeGraph({ clusterSlug, refreshKey }: Props) {
               <div className="h-full flex items-center justify-center text-xs text-gray-700 px-8 text-center">
                 Upload a source to grow the map.
               </div>
-            ) : (
+            ) : previewReady ? (
               <>
                 <iframe
                   src={quartzPreviewUrl}
                   title="Quartz knowledge map preview"
                   className="pointer-events-none h-full w-full border-0 bg-gray-950"
+                  loading="lazy"
                   tabIndex={-1}
                   aria-hidden="true"
                 />
@@ -193,6 +210,10 @@ function KnowledgeGraph({ clusterSlug, refreshKey }: Props) {
                   </span>
                 </a>
               </>
+            ) : (
+              <div className="h-full flex items-center justify-center text-xs text-gray-700">
+                Preparing preview...
+              </div>
             )}
           </div>
         </div>

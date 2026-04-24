@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { signOut } from 'next-auth/react';
 import type { ReactNode } from 'react';
+import BreadboardLogo from './breadboard-logo';
 
 interface Props {
   email: string;
@@ -68,7 +69,7 @@ export default function NavBar({ email, username, actions }: Props) {
     <>
       <nav className="flex items-center justify-between px-6 py-3 border-b border-gray-800 bg-gray-950 shrink-0">
         <span className="flex items-center gap-2">
-          <img src="/logo.svg" alt="" className="w-5 h-4 invert" />
+          <BreadboardLogo className="w-5 h-4 text-white" />
           <span className="text-sm font-semibold text-white tracking-tight">breadboard</span>
         </span>
         <div className="flex items-center gap-4">

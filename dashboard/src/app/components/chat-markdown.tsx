@@ -1,7 +1,7 @@
 'use client';
 
-import { memo, useMemo, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { memo, useMemo, type ComponentProps, type ReactNode } from 'react';
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -25,7 +25,24 @@ const components = {
       {children}
     </a>
   ),
-};
+  img: ({ alt, src }: ComponentProps<'img'>) => (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      alt={alt ?? ''}
+      src={typeof src === 'string' ? src : undefined}
+      className="max-w-full rounded-xl border border-gray-800/80 shadow-lg my-3"
+      loading="lazy"
+    />
+  ),
+} satisfies Components;
+
+function chatUrlTransform(url: string, key: string): string {
+  if (key === 'src' && /^data:image\//i.test(url)) {
+    return url;
+  }
+
+  return defaultUrlTransform(url);
+}
 
 function ChatMarkdown({ content, compact = false }: Props) {
   const normalizedContent = useMemo(() => normalizeMathDelimiters(content), [content]);
@@ -36,6 +53,7 @@ function ChatMarkdown({ content, compact = false }: Props) {
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={components}
+        urlTransform={chatUrlTransform}
       >
         {normalizedContent}
       </ReactMarkdown>

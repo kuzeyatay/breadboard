@@ -475,6 +475,8 @@ export default function WorkspaceClient({
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const uploadCanceledRef = useRef(false);
 
   // Chat attachments (per-message, sent directly to the AI)
   type ChatAttachment =
@@ -506,6 +508,8 @@ export default function WorkspaceClient({
   // Model selector
   const [model, setModel] = useState("gpt-5.4");
   const [models, setModels] = useState<string[]>(["gpt-5.4"]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   const [usageData, setUsageData] = useState<Record<string, unknown> | null>(null);
@@ -519,17 +523,29 @@ export default function WorkspaceClient({
     setPrompts(loadPrompts());
   }, []);
 
-  useEffect(() => {
-    fetch("/api/models")
-      .then((r) => r.json())
-      .then((data) => {
-        const ids: string[] = (data.data ?? []).map(
-          (m: { id: string }) => m.id,
-        );
-        if (ids.length > 0) setModels(Array.from(new Set(["gpt-5.4", ...ids])));
-      })
-      .catch(() => {});
-  }, []);
+  const loadModels = useCallback(async () => {
+    if (modelsLoading || modelsLoaded) return;
+    setModelsLoading(true);
+    try {
+      const response = await fetch("/api/models");
+      const data = await response.json().catch(() => ({}));
+      const ids = Array.isArray(data.data)
+        ? data.data
+            .map((item: { id?: unknown }) =>
+              typeof item?.id === "string" ? item.id : null,
+            )
+            .filter((id: string | null): id is string => Boolean(id))
+        : [];
+      if (ids.length > 0) {
+        setModels(Array.from(new Set(["gpt-5.4", ...ids])));
+      }
+      setModelsLoaded(true);
+    } catch {
+      // Keep the default model when the model list cannot be loaded.
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [modelsLoaded, modelsLoading]);
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -627,6 +643,8 @@ export default function WorkspaceClient({
   // ── Upload modal ────────────────────────────────────────────────────────────
 
   function openUploadModal() {
+    uploadCanceledRef.current = false;
+    uploadAbortControllerRef.current = null;
     setUploadFiles([]);
     setUploadStatuses({});
     setUploadLabel("");
@@ -637,7 +655,10 @@ export default function WorkspaceClient({
   }
 
   function closeUploadModal() {
-    if (isUploading) return;
+    if (isUploading) {
+      uploadCanceledRef.current = true;
+      uploadAbortControllerRef.current?.abort();
+    }
     setShowUpload(false);
   }
 
@@ -662,6 +683,9 @@ export default function WorkspaceClient({
     e.preventDefault();
     if (uploadFiles.length === 0 || isUploading) return;
 
+    const abortController = new AbortController();
+    uploadAbortControllerRef.current = abortController;
+    uploadCanceledRef.current = false;
     setIsUploading(true);
     const initial: Record<string, FileStatus> = {};
     uploadFiles.forEach((f) => {
@@ -674,6 +698,8 @@ export default function WorkspaceClient({
     const screenshotWarnings: string[] = [];
 
     for (const file of uploadFiles) {
+      if (uploadCanceledRef.current || abortController.signal.aborted) break;
+
       const key = fileKey(file);
       setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
 
@@ -691,6 +717,7 @@ export default function WorkspaceClient({
         const res = await fetch("/api/ingest", {
           method: "POST",
           body: formData,
+          signal: abortController.signal,
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
@@ -705,13 +732,20 @@ export default function WorkspaceClient({
             screenshotWarnings.push(`${file.name}: ${data.screenshotWarning}`);
           }
         }
-      } catch {
+      } catch (error) {
+        const aborted =
+          abortController.signal.aborted ||
+          (error instanceof DOMException && error.name === "AbortError");
+        if (aborted) break;
+
         setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
         addToast(`${file.name}: Network error`);
       }
     }
 
-    if (successCount > 0) {
+    const canceled = uploadCanceledRef.current || abortController.signal.aborted;
+
+    if (!canceled && successCount > 0) {
       addToast(
         `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${isHandwriting && hasHandwritingCompatibleFile ? "handwriting OCR and map generation" : generateMap ? "map generation" : "no map generation"}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
       );
@@ -719,8 +753,27 @@ export default function WorkspaceClient({
       fetchDocuments();
       setSourceDocsExpanded(true);
       setGraphRefreshVersion((v) => v + 1);
+    } else if (canceled) {
+      if (successCount > 0) {
+        fetchDocuments();
+        setSourceDocsExpanded(true);
+        setGraphRefreshVersion((v) => v + 1);
+        addToast(
+          `Upload canceled after ${successCount} file${successCount > 1 ? "s were" : " was"} added`,
+        );
+      } else {
+        addToast("Upload canceled");
+      }
+      setUploadStatuses({});
+      setUploadFiles([]);
+      setUploadLabel("");
+      setIsHandwriting(false);
+      setGenerateMap(true);
+      setIsDragging(false);
     }
 
+    uploadAbortControllerRef.current = null;
+    uploadCanceledRef.current = false;
     setIsUploading(false);
   }
 
@@ -1163,7 +1216,25 @@ export default function WorkspaceClient({
         }),
       });
 
-      if (!res.ok || !res.body) throw new Error("Bad response");
+      if (!res.ok || !res.body) {
+        let message = "Something went wrong. Please try again.";
+        try {
+          const data = await res.json();
+          if (typeof data?.error === "string" && data.error.trim()) {
+            message = data.error.trim();
+          } else if (
+            data?.error &&
+            typeof data.error.message === "string" &&
+            data.error.message.trim()
+          ) {
+            message = data.error.message.trim();
+          }
+        } catch {
+          // Fall back to the generic message.
+        }
+
+        throw new Error(message);
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -1207,8 +1278,11 @@ export default function WorkspaceClient({
           }
         }
       }
-    } catch {
-      assistantMsg.content = "Something went wrong. Please try again.";
+    } catch (error) {
+      assistantMsg.content =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Something went wrong. Please try again.";
       finalMessages = [...nextMessages, { ...assistantMsg }];
       updateChatMessages(sessionId, finalMessages);
     } finally {
@@ -2418,7 +2492,11 @@ export default function WorkspaceClient({
                 {/* Model picker */}
                 <div className="relative">
                   <button
-                    onClick={() => setShowModelPicker((v) => !v)}
+                    onClick={() => {
+                      const next = !showModelPicker;
+                      setShowModelPicker(next);
+                      if (next) void loadModels();
+                    }}
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors border border-transparent hover:border-gray-700"
                   >
                     <svg
@@ -2457,6 +2535,11 @@ export default function WorkspaceClient({
                         onClick={() => setShowModelPicker(false)}
                       />
                       <div className="absolute bottom-full right-0 mb-1.5 z-20 min-w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden py-1">
+                        {modelsLoading && (
+                          <div className="px-3 py-2 text-xs text-gray-500">
+                            Loading models...
+                          </div>
+                        )}
                         {models.map((m) => (
                           <button
                             key={m}
@@ -3147,10 +3230,9 @@ export default function WorkspaceClient({
                 <button
                   type="button"
                   onClick={closeUploadModal}
-                  disabled={isUploading}
                   className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors disabled:opacity-40"
                 >
-                  {allDoneOrError ? "Close" : "Cancel"}
+                  {allDoneOrError ? "Close" : isUploading ? "Cancel upload" : "Cancel"}
                 </button>
                 {!allDoneOrError && (
                   <button

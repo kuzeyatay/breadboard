@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
 import { QUARTZ_BASE_URL, quartzUrl } from '@/lib/quartz-url';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
@@ -107,7 +109,44 @@ function injectPreviewShell(
     );
 }
 
+function localQuartzPublicPath(): string | null {
+  const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
+  if (!contentPath) return null;
+
+  const quartzRoot = path.dirname(path.resolve(contentPath));
+  const publicPath = path.join(quartzRoot, 'public');
+  return fs.existsSync(publicPath) ? publicPath : null;
+}
+
+function readLocalQuartzTextFile(...segments: string[]): string | null {
+  const publicPath = localQuartzPublicPath();
+  if (!publicPath) return null;
+
+  const filePath = path.resolve(publicPath, ...segments);
+  const normalizedPublicPath = `${publicPath}${path.sep}`;
+  if (filePath !== publicPath && !filePath.startsWith(normalizedPublicPath)) {
+    return null;
+  }
+
+  try {
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null;
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
 async function proxyQuartzJavaScript(asset: 'prescript' | 'postscript'): Promise<NextResponse> {
+  const localScript = readLocalQuartzTextFile(`${asset}.js`);
+  if (localScript !== null) {
+    return new NextResponse(localScript, {
+      headers: {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+
   const response = await fetch(`${QUARTZ_BASE_URL}/${asset}.js`, {
     cache: 'no-store',
   });
@@ -134,6 +173,29 @@ function filterContentIndex(contentIndexText: string, clusterSlug: string): stri
   return JSON.stringify(filtered);
 }
 
+async function readQuartzContentIndex(): Promise<{
+  ok: true;
+  text: string;
+} | {
+  ok: false;
+  status: number;
+}> {
+  const localContentIndex = readLocalQuartzTextFile('static', 'contentIndex.json');
+  if (localContentIndex !== null) {
+    return { ok: true, text: localContentIndex };
+  }
+
+  const response = await fetch(`${QUARTZ_BASE_URL}/static/contentIndex.json`, {
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    return { ok: false, status: response.status };
+  }
+
+  return { ok: true, text: await response.text() };
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = request.nextUrl;
@@ -148,16 +210,15 @@ export async function GET(request: NextRequest) {
     }
 
     if (asset === 'contentIndex') {
-      const response = await fetch(`${QUARTZ_BASE_URL}/static/contentIndex.json`, {
-        cache: 'no-store',
-      });
-
-      if (!response.ok) {
-        return NextResponse.json({ error: 'Quartz content index is not available.' }, { status: response.status });
+      const contentIndex = await readQuartzContentIndex();
+      if (!contentIndex.ok) {
+        return NextResponse.json(
+          { error: 'Quartz content index is not available.' },
+          { status: contentIndex.status },
+        );
       }
 
-      const contentIndex = await response.text();
-      const filteredContentIndex = filterContentIndex(contentIndex, cluster.slug);
+      const filteredContentIndex = filterContentIndex(contentIndex.text, cluster.slug);
 
       return new NextResponse(filteredContentIndex, {
         headers: {
@@ -168,18 +229,23 @@ export async function GET(request: NextRequest) {
     }
 
     const refresh = searchParams.get('refresh') ?? Date.now().toString();
+    const localHtml = readLocalQuartzTextFile(cluster.slug, 'index.html');
+    let html = localHtml;
+    if (html === null) {
+      const response = await fetch(quartzUrl(cluster.slug), {
+        cache: 'no-store',
+      });
 
-    const response = await fetch(quartzUrl(cluster.slug), {
-      cache: 'no-store',
-    });
+      if (!response.ok) {
+        return previewError('Quartz is not ready yet.', response.status);
+      }
 
-    if (!response.ok) {
-      return previewError('Quartz is not ready yet.', response.status);
+      html = await response.text();
     }
 
-    const html = injectPreviewShell(await response.text(), cluster.slug, refresh, request.nextUrl.origin);
+    const injectedHtml = injectPreviewShell(html, cluster.slug, refresh, request.nextUrl.origin);
 
-    return new NextResponse(html, {
+    return new NextResponse(injectedHtml, {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',

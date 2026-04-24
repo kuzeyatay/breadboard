@@ -23,6 +23,27 @@ interface PdfScreenshotPage {
   dataUrl: string;
 }
 
+class UploadAbortedError extends Error {
+  constructor() {
+    super("Upload canceled");
+    this.name = "AbortError";
+  }
+}
+
+function throwIfRequestAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new UploadAbortedError();
+}
+
+function cleanupCreatedFiles(filePaths: string[]) {
+  for (const filePath of [...filePaths].reverse()) {
+    try {
+      if (fs.existsSync(filePath)) fs.rmSync(filePath, { force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+}
+
 function imageMimeType(mimeType: string, ext = ""): string {
   if (mimeType.startsWith("image/")) return mimeType;
   if (ext === "png") return "image/png";
@@ -93,20 +114,26 @@ function saveDataUrlAsset({
   baseName,
   label,
   dataUrl,
+  createdFilePaths,
 }: {
   contentPath: string;
   clusterSlug: string;
   baseName: string;
   label: string;
   dataUrl: string;
-}): string {
+  createdFilePaths?: string[];
+}): { filePath: string; relativePath: string } {
   const { buffer, ext } = dataUrlToImage(dataUrl);
   const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
   fs.mkdirSync(assetDir, { recursive: true });
   const fileBase = slugify(`${baseName}-${label}`);
   const filePath = uniqueAssetPath(assetDir, fileBase, ext);
   fs.writeFileSync(filePath, buffer);
-  return `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`;
+  createdFilePaths?.push(filePath);
+  return {
+    filePath,
+    relativePath: `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`,
+  };
 }
 
 function saveUploadedPdfAsset({
@@ -114,18 +141,24 @@ function saveUploadedPdfAsset({
   clusterSlug,
   baseName,
   buffer,
+  createdFilePaths,
 }: {
   contentPath: string;
   clusterSlug: string;
   baseName: string;
   buffer: Buffer;
-}): string {
+  createdFilePaths?: string[];
+}): { filePath: string; relativePath: string } {
   const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
   fs.mkdirSync(assetDir, { recursive: true });
   const fileBase = slugify(`${baseName}-source`);
   const filePath = uniqueAssetPath(assetDir, fileBase, "pdf");
   fs.writeFileSync(filePath, buffer);
-  return `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`;
+  createdFilePaths?.push(filePath);
+  return {
+    filePath,
+    relativePath: `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`,
+  };
 }
 
 function pageNumberFromLabel(label: string): number | undefined {
@@ -154,23 +187,26 @@ function attachPdfScreenshotAssets({
   contentPath,
   clusterSlug,
   sourceTitle,
+  createdFilePaths,
 }: {
   pages: DocumentPage[];
   screenshots: PdfScreenshotPage[];
   contentPath: string;
   clusterSlug: string;
   sourceTitle: string;
+  createdFilePaths?: string[];
 }): DocumentPage[] {
   const imageByPageNumber = new Map<number, string>();
   for (const screenshot of screenshots) {
-    const imagePath = saveDataUrlAsset({
+    const imageAsset = saveDataUrlAsset({
       contentPath,
       clusterSlug,
       baseName: sourceTitle,
       label: `page-${String(screenshot.pageNumber).padStart(3, "0")}`,
       dataUrl: screenshot.dataUrl,
+      createdFilePaths,
     });
-    imageByPageNumber.set(screenshot.pageNumber, imagePath);
+    imageByPageNumber.set(screenshot.pageNumber, imageAsset.relativePath);
   }
 
   return pages.map((page) => {
@@ -378,9 +414,12 @@ function extractZipText(buffer: Buffer): string {
 }
 
 export async function POST(request: Request) {
+  const createdFilePaths: string[] = [];
+  const createdMarkdownPaths: string[] = [];
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
     const formData = await request.formData();
+    throwIfRequestAborted(request.signal);
 
     const file = formData.get("file");
     const clusterSlug = formData.get("clusterSlug");
@@ -399,6 +438,7 @@ export async function POST(request: Request) {
     }
 
     const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
+    throwIfRequestAborted(request.signal);
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
@@ -426,6 +466,7 @@ export async function POST(request: Request) {
     let sourcePdfPath: string | undefined;
 
     if (isImageExt(ext)) {
+      throwIfRequestAborted(request.signal);
       const arrayBuffer = await file.arrayBuffer();
       const base64 = Buffer.from(arrayBuffer).toString("base64");
       const dataUrl = `${mimeToBase64Prefix(file.type, ext)}${base64}`;
@@ -436,23 +477,26 @@ export async function POST(request: Request) {
         label: "Image",
         isHandwriting,
       });
-      const imagePath = saveDataUrlAsset({
+      throwIfRequestAborted(request.signal);
+      const imageAsset = saveDataUrlAsset({
         contentPath,
         clusterSlug: normalizedClusterSlug,
         baseName: nameWithoutExt,
         label: "image",
         dataUrl,
+        createdFilePaths,
       });
       pages = [
         {
           label: "Image",
           text: plainText,
-          imagePath,
+          imagePath: imageAsset.relativePath,
           imageAlt: nameWithoutExt,
         },
       ];
       markdownText = pageMarkdown(pages);
     } else if (ext === "pdf") {
+      throwIfRequestAborted(request.signal);
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       sourcePdfPath = saveUploadedPdfAsset({
@@ -460,7 +504,8 @@ export async function POST(request: Request) {
         clusterSlug: normalizedClusterSlug,
         baseName: nameWithoutExt,
         buffer,
-      });
+        createdFilePaths,
+      }).relativePath;
       let screenshots: PdfScreenshotPage[] = [];
       try {
         screenshots = await getPdfScreenshotPages(buffer);
@@ -475,12 +520,14 @@ export async function POST(request: Request) {
       if (isHandwriting) {
         if (screenshots.length > 0) {
           pages = await transcribePdfPages(client, screenshots);
+          throwIfRequestAborted(request.signal);
           pages = attachPdfScreenshotAssets({
             pages,
             screenshots,
             contentPath,
             clusterSlug: normalizedClusterSlug,
             sourceTitle: nameWithoutExt,
+            createdFilePaths,
           });
         } else {
           const parser = new PDFParse({ data: buffer });
@@ -503,12 +550,14 @@ export async function POST(request: Request) {
           label: `Page ${page.num}`,
           text: page.text,
         }));
+        throwIfRequestAborted(request.signal);
         pages = attachPdfScreenshotAssets({
           pages,
           screenshots,
           contentPath,
           clusterSlug: normalizedClusterSlug,
           sourceTitle: nameWithoutExt,
+          createdFilePaths,
         });
 
         const mdResponse = await client.chat.completions.create({
@@ -571,6 +620,7 @@ export async function POST(request: Request) {
     // ── Knowledge extraction (optional) ──────────────────────────────────────
 
     let extraction: KnowledgeExtraction;
+    throwIfRequestAborted(request.signal);
     if (generateMap) {
       extraction = await extractDocumentKnowledge({
         client,
@@ -591,6 +641,7 @@ export async function POST(request: Request) {
       };
     }
 
+    throwIfRequestAborted(request.signal);
     const saved = await writeDocumentKnowledge({
       client,
       contentPath,
@@ -605,6 +656,8 @@ export async function POST(request: Request) {
       plainText,
       pages,
       extraction,
+      abortSignal: request.signal,
+      createdFilePaths: createdMarkdownPaths,
     });
     const imageCount = pages.filter((page) => page.imagePath).length;
 
@@ -619,6 +672,11 @@ export async function POST(request: Request) {
       topics: saved.topics,
     });
   } catch (err) {
+    if (err instanceof UploadAbortedError || (err instanceof Error && err.name === "AbortError")) {
+      cleanupCreatedFiles(createdMarkdownPaths);
+      cleanupCreatedFiles(createdFilePaths);
+      return NextResponse.json({ error: "Upload canceled" }, { status: 499 });
+    }
     return routeErrorResponse(err);
   }
 }
