@@ -123,8 +123,16 @@ OPENAI_BASE_URL=http://127.0.0.1:8765/v1
 OPENAI_LOCAL_BASE_URL=http://127.0.0.1:8765/v1
 OPENAI_HOST_BASE_URL=http://YOUR_HOST_OR_IP:8765/v1
 OPENAI_API_KEY=local
+# Optional but useful if dashboard and ChatMock do not share the same home dir.
+# CHATMOCK_USAGE_LIMITS_PATH=/home/breadboard/.chatgpt-local/usage_limits.json
+# Optional: raises GitHub API rate limits when chat fetches public GitHub links.
+# GITHUB_TOKEN=github_pat_or_classic_token
+# Optional: cap public web links fetched per chat request.
+# LINK_FETCH_MAX_LINKS=6
 
 NEXT_PUBLIC_QUARTZ_URL=https://garden.breadboard-app.com
+DASHBOARD_URL=https://breadboard-app.com
+NEXT_PUBLIC_DASHBOARD_URL=https://breadboard-app.com
 QUARTZ_CONTENT_PATH=/opt/breadboard/quartz/content
 QUARTZ_CUSTOM_OG_IMAGES=false
 QUARTZ_BUILD_CONCURRENCY=1
@@ -138,8 +146,14 @@ Notes:
 - `OPENAI_LOCAL_BASE_URL` is used when the dashboard `Chat` selector is set to `Localhost`.
 - `OPENAI_HOST_BASE_URL` is used when the dashboard `Chat` selector is set to `Host`.
 - If you do not care about the selector, you can point all three OpenAI variables at the same ChatMock endpoint.
+- Chat now uses ChatMock's OpenAI-compatible `/v1/responses` route, which is what enables official `reasoning` payloads, image input, and image generation tool calls.
+- The chat can fetch public web links from user messages, including ordinary pages, text/JSON/XML/Markdown files, PDFs, and GitHub links.
+- For safety, link fetching blocks localhost, private LAN IPs, and internal hostnames.
+- `GITHUB_TOKEN` is optional, but useful if you hit GitHub rate limits or want a higher quota for public repos.
+- If the usage popover shows no data in production, make sure the dashboard can read the same `usage_limits.json` that ChatMock writes. Running both services as the same user is simplest; otherwise set `CHATMOCK_USAGE_LIMITS_PATH`.
 - `QUARTZ_CONTENT_PATH` should be an absolute path on the server.
 - `NEXT_PUBLIC_QUARTZ_URL` must be the externally reachable Quartz URL, including `https://`.
+- `DASHBOARD_URL` and `NEXT_PUBLIC_DASHBOARD_URL` should point at the public dashboard host so Quartz note pages can reliably link back to the app and call the markdown API.
 - In production, the dashboard now auto-runs a Quartz rebuild after cluster and markdown changes so `quartz/public` stays in sync.
 - `QUARTZ_BUILD_CONCURRENCY=1` keeps Quartz on a single worker, which is friendlier on a 4 GB machine.
 - If Quartz publish latency feels too slow, set `QUARTZ_PUBLISH_MODE=background` so the dashboard returns sooner and Quartz catches up asynchronously.
@@ -152,6 +166,7 @@ When building Quartz, set:
 
 ```bash
 export QUARTZ_BASE_URL=garden.breadboard-app.com
+export DASHBOARD_URL=https://breadboard-app.com
 ```
 
 Optional low-memory optimization:
@@ -175,7 +190,7 @@ Quartz:
 
 ```bash
 cd /opt/breadboard/quartz
-QUARTZ_BASE_URL=garden.breadboard-app.com QUARTZ_CUSTOM_OG_IMAGES=false npx quartz build
+QUARTZ_BASE_URL=garden.breadboard-app.com DASHBOARD_URL=https://breadboard-app.com QUARTZ_CUSTOM_OG_IMAGES=false npx quartz build
 ```
 
 Quartz output is served from:
@@ -202,6 +217,7 @@ Type=simple
 User=breadboard
 Group=breadboard
 WorkingDirectory=/opt/breadboard/dashboard
+Environment=HOME=/home/breadboard
 Environment=NODE_ENV=production
 Environment=NODE_OPTIONS=--max-old-space-size=768
 EnvironmentFile=/opt/breadboard/dashboard/.env.production

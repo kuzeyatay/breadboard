@@ -111,7 +111,14 @@ export interface ClusterKnowledge {
   };
 }
 
+interface ClusterKnowledgeCacheEntry {
+  signature: string;
+  knowledge: ClusterKnowledge;
+}
+
 type Frontmatter = Record<string, string | string[]>;
+
+const clusterKnowledgeCache = new Map<string, ClusterKnowledgeCacheEntry>();
 
 const KNOWLEDGE_SYSTEM_PROMPT = `You are a precise knowledge extraction engine for a second-brain system.
 
@@ -1663,6 +1670,14 @@ function appendMergedTopicSection({
   );
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const error = new Error("Upload canceled");
+    error.name = "AbortError";
+    throw error;
+  }
+}
+
 export async function writeDocumentKnowledge({
   client,
   model,
@@ -1678,6 +1693,8 @@ export async function writeDocumentKnowledge({
   plainText,
   pages = [],
   extraction,
+  abortSignal,
+  createdFilePaths = [],
 }: {
   client?: OpenAI;
   model?: string;
@@ -1693,7 +1710,10 @@ export async function writeDocumentKnowledge({
   plainText: string;
   pages?: DocumentPage[];
   extraction: KnowledgeExtraction;
+  abortSignal?: AbortSignal;
+  createdFilePaths?: string[];
 }): Promise<SavedKnowledge> {
+  throwIfAborted(abortSignal);
   const clusterDir = path.join(contentPath, clusterSlug.trim());
   fs.mkdirSync(clusterDir, { recursive: true });
   const cleanPages = cleanDocumentPages(pages);
@@ -1780,13 +1800,13 @@ export async function writeDocumentKnowledge({
     `## Knowledge tree\n\n${sourceLinks.length > 0 ? sourceLinks.join("\n") : "- No knowledge topics were extracted."}\n\n` +
     `## Source material\n\n${outputMarkdownText.trim() || outputPlainText.trim()}\n`;
 
-  fs.writeFileSync(
-    path.join(clusterDir, `${sourceSlug}.md`),
-    sourceContent,
-    "utf-8",
-  );
+  throwIfAborted(abortSignal);
+  const sourceFilePath = path.join(clusterDir, `${sourceSlug}.md`);
+  fs.writeFileSync(sourceFilePath, sourceContent, "utf-8");
+  createdFilePaths.push(sourceFilePath);
 
   for (const plan of topicPlans) {
+    throwIfAborted(abortSignal);
     const topic = plan.topic;
     const relatedTitles = [
       ...new Set([
@@ -1881,13 +1901,12 @@ export async function writeDocumentKnowledge({
         ? `### Relationships\n\n${relationLines.join("\n")}\n`
         : "");
 
-    fs.writeFileSync(
-      path.join(clusterDir, `${plan.finalSlug}.md`),
-      topicContent,
-      "utf-8",
-    );
+    const topicFilePath = path.join(clusterDir, `${plan.finalSlug}.md`);
+    fs.writeFileSync(topicFilePath, topicContent, "utf-8");
+    createdFilePaths.push(topicFilePath);
   }
 
+  throwIfAborted(abortSignal);
   refreshClusterIndex(contentPath, clusterSlug);
   await publishQuartzAfterMutation(`ingest knowledge into ${clusterSlug}`);
 
@@ -1993,10 +2012,30 @@ export function scanClusterKnowledge(
     };
   }
 
-  for (const entry of fs.readdirSync(clusterDir)) {
-    if (!entry.endsWith(".md") || entry === "_index.md") continue;
-    const filePath = path.join(clusterDir, entry);
-    const modifiedAt = fs.statSync(filePath).mtime.toISOString();
+  const markdownEntries = fs
+    .readdirSync(clusterDir)
+    .filter((entry) => entry.endsWith(".md") && entry !== "_index.md")
+    .map((entry) => {
+      const filePath = path.join(clusterDir, entry);
+      const stat = fs.statSync(filePath);
+      return { entry, filePath, stat };
+    })
+    .sort((a, b) => a.entry.localeCompare(b.entry));
+
+  const cacheKey = path.resolve(clusterDir);
+  const signature = markdownEntries
+    .map(
+      ({ entry, stat }) =>
+        `${entry}:${stat.size}:${Math.trunc(stat.mtimeMs)}`,
+    )
+    .join("|");
+  const cached = clusterKnowledgeCache.get(cacheKey);
+  if (cached?.signature === signature) {
+    return cached.knowledge;
+  }
+
+  for (const { entry, filePath, stat } of markdownEntries) {
+    const modifiedAt = stat.mtime.toISOString();
     const content = fs.readFileSync(filePath, "utf-8");
     const { data, body } = parseMarkdownFile(content);
     const slug = entry.replace(/\.md$/, "");
@@ -2112,7 +2151,7 @@ export function scanClusterKnowledge(
     (node) => !usedTopicSlugs.has(node.slug),
   );
 
-  return {
+  const knowledge = {
     nodes,
     edges,
     tree,
@@ -2125,6 +2164,14 @@ export function scanClusterKnowledge(
       words: nodes.reduce((sum, node) => sum + node.wordCount, 0),
     },
   };
+
+  clusterKnowledgeCache.set(cacheKey, { signature, knowledge });
+  if (clusterKnowledgeCache.size > 128) {
+    const oldestKey = clusterKnowledgeCache.keys().next().value;
+    if (typeof oldestKey === "string") clusterKnowledgeCache.delete(oldestKey);
+  }
+
+  return knowledge;
 }
 
 function readClusterIndexMeta(

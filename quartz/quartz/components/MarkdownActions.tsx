@@ -7,7 +7,7 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
   const dashboardBaseUrl = (
     process.env.DASHBOARD_URL ??
     process.env.NEXT_PUBLIC_DASHBOARD_URL ??
-    "http://localhost:3000"
+    ""
   ).replace(/\/+$/, "")
 
   return (
@@ -259,7 +259,30 @@ document.addEventListener("nav", () => {
     const setStatus = (message) => {
       if (status) status.textContent = message
     }
-    const dashboardBaseUrl = (actions.dataset.dashboardUrl || "http://localhost:3000").replace(/\\/+$/, "")
+    const resolveDashboardBaseUrl = (fallback) => {
+      const trimmed = (fallback || "").replace(/\\/+$/, "")
+      if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
+        return trimmed
+      }
+      try {
+        if (document.referrer) {
+          const ref = new URL(document.referrer)
+          if (!/^garden\\./i.test(ref.hostname)) {
+            return ref.origin.replace(/\\/+$/, "")
+          }
+        }
+      } catch {}
+      try {
+        const current = new URL(window.location.href)
+        if (/^garden\\./i.test(current.hostname)) {
+          return current.origin.replace("//garden.", "//")
+        }
+        return current.origin.replace(/\\/+$/, "")
+      } catch {}
+      return trimmed
+    }
+
+    const dashboardBaseUrl = resolveDashboardBaseUrl(actions.dataset.dashboardUrl)
     const clusterSlugFromNoteSlug = (value) => {
       let decoded = value || ""
       try {

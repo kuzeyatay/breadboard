@@ -1,21 +1,26 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import type {
-  ChatCompletionCreateParamsStreaming,
-  ChatCompletionMessageParam,
-} from 'openai/resources/chat/completions';
+  EasyInputMessage,
+  ResponseCreateParamsStreaming,
+  ResponseStreamEvent,
+} from 'openai/resources/responses/responses';
+import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
 
-type ChatmockReasoningOverride = {
-  reasoning?: {
-    effort: 'high';
-    summary: 'auto';
-  };
-};
+type JsonRecord = Record<string, unknown>;
+type Attachment =
+  | { type: 'text'; text: string; name: string }
+  | { type: 'image'; dataUrl: string; name: string };
+type ChatRequestMessage = { role: 'user' | 'assistant'; content: string };
+type SsePayload =
+  | { type: 'sources'; sources: string[] }
+  | { type: 'delta'; text: string }
+  | { type: 'thinking'; text: string };
 
 function tokenize(value: string): Set<string> {
   return new Set(
@@ -47,6 +52,168 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength).trimEnd()}\n\n[Context truncated]`;
 }
 
+function compactImageDataUrls(value: string): string {
+  return value.replace(
+    /!\[([^\]]*)\]\(data:image\/[^)]+\)/gi,
+    (_match, altText: string) =>
+      altText?.trim()
+        ? `[Generated image omitted from prompt context: ${altText.trim()}]`
+        : '[Generated image omitted from prompt context]',
+  );
+}
+
+function normalizePromptText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`*_~]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function wantsImageGeneration(text: string, hasImageAttachments: boolean): boolean {
+  const normalized = normalizePromptText(text);
+  if (!normalized) return false;
+
+  const generationVerb = /\b(generate|create|draw|illustrate|render|make|design|craft|produce)\b/;
+  const imageNoun =
+    /\b(image|picture|photo|illustration|art|artwork|drawing|logo|icon|poster|banner|thumbnail|wallpaper|background|avatar|sticker|meme|portrait)\b/;
+  const editVerb =
+    /\b(edit|modify|change|transform|recolor|restyle|remove|add|replace|retouch|crop|expand|extend|inpaint|outpaint|cleanup|clean up)\b/;
+
+  if (hasImageAttachments && editVerb.test(normalized)) return true;
+  if (/^(?:draw|illustrate|render)\b/.test(normalized)) return true;
+  if (/^(?:logo|poster|banner|thumbnail|wallpaper|avatar|sticker|meme)\b/.test(normalized)) {
+    return true;
+  }
+
+  return generationVerb.test(normalized) && imageNoun.test(normalized);
+}
+
+function imageGenerationAction(
+  text: string,
+  hasImageAttachments: boolean,
+): 'generate' | 'edit' | 'auto' {
+  const normalized = normalizePromptText(text);
+  if (
+    hasImageAttachments &&
+    /\b(edit|modify|change|transform|recolor|restyle|remove|add|replace|retouch|crop|expand|extend|inpaint|outpaint)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'edit';
+  }
+
+  return hasImageAttachments ? 'auto' : 'generate';
+}
+
+function parseChatMessages(messages: unknown[]): ChatRequestMessage[] {
+  return messages.flatMap((message) => {
+    if (!message || typeof message !== 'object') return [];
+    const record = message as JsonRecord;
+    const role = record.role;
+    const content = record.content;
+    if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string') {
+      return [];
+    }
+
+    return [
+      {
+        role,
+        content: compactImageDataUrls(content),
+      },
+    ];
+  });
+}
+
+function buildResponsesInput(
+  messages: ChatRequestMessage[],
+  attachments: Attachment[],
+): EasyInputMessage[] {
+  const lastUserIndex = messages.length - 1;
+
+  return messages.map((message, index) => {
+    const isLastUser = message.role === 'user' && index === lastUserIndex;
+    if (!isLastUser || attachments.length === 0) {
+      return message.role === 'assistant'
+        ? {
+            type: 'message',
+            role: 'assistant',
+            phase: 'final_answer',
+            content: message.content,
+          }
+        : {
+            type: 'message',
+            role: 'user',
+            content: message.content,
+          };
+    }
+
+    const textAttachments = attachments.filter(
+      (attachment): attachment is Extract<Attachment, { type: 'text' }> =>
+        attachment.type === 'text',
+    );
+    const imageAttachments = attachments.filter(
+      (attachment): attachment is Extract<Attachment, { type: 'image' }> =>
+        attachment.type === 'image',
+    );
+
+    const attachedText =
+      textAttachments.length > 0
+        ? textAttachments
+            .map((attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`)
+            .join('\n\n')
+        : '';
+
+    const contentParts: Array<
+      { type: 'input_text'; text: string } | { type: 'input_image'; image_url: string; detail: 'auto' }
+    > = [
+      {
+        type: 'input_text',
+        text: attachedText
+          ? `${attachedText}\n\n---\n\n${message.content}`
+          : message.content,
+      },
+    ];
+
+    for (const image of imageAttachments) {
+      contentParts.push({
+        type: 'input_image',
+        image_url: image.dataUrl,
+        detail: 'auto',
+      });
+    }
+
+    return {
+      type: 'message',
+      role: 'user',
+      content: contentParts,
+    };
+  });
+}
+
+function emittedImageMarkdown(result: string): string {
+  const trimmed = result.trim();
+  const dataUrl = /^data:image\//i.test(trimmed)
+    ? trimmed
+    : `data:image/png;base64,${trimmed}`;
+  return `\n\n![Generated image](${dataUrl})\n`;
+}
+
+function imageGenerationItemsFromUnknown(value: unknown): Array<{ id: string; result: string }> {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const record = item as JsonRecord;
+    if (record.type !== 'image_generation_call' || typeof record.result !== 'string') {
+      return [];
+    }
+
+    const id = typeof record.id === 'string' ? record.id : record.result.slice(0, 32);
+    return [{ id, result: record.result }];
+  });
+}
+
 function describeInventoryNode(node: KnowledgeNode): string {
   const details = [
     `type: ${node.type}`,
@@ -68,11 +235,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'messages and clusterSlug are required' }, { status: 400 });
     }
 
-    const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
+    const chatMessages = parseChatMessages(messages);
+    if (chatMessages.length === 0) {
+      return NextResponse.json({ error: 'At least one valid chat message is required' }, { status: 400 });
+    }
 
-    // attachments: Array<{ type: 'text'; text: string; name: string } | { type: 'image'; dataUrl: string; name: string }>
-    type Attachment = { type: 'text'; text: string; name: string } | { type: 'image'; dataUrl: string; name: string };
+    const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
     const chatAttachments: Attachment[] = Array.isArray(attachments) ? attachments : [];
+    const thinkingEnabled = Boolean(thinking);
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
@@ -80,12 +250,8 @@ export async function POST(request: Request) {
     }
 
     const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
-    const lastUserMessage = [...messages].reverse().find(
-      (message: { role: string }) => message.role === 'user',
-    );
-    const queryWords = tokenize(
-      typeof lastUserMessage?.content === 'string' ? lastUserMessage.content : '',
-    );
+    const lastUserMessage = [...chatMessages].reverse().find((message) => message.role === 'user');
+    const queryWords = tokenize(lastUserMessage?.content ?? '');
 
     const scored = knowledge.nodes
       .map((node) => ({ node, score: scoreNode(node, queryWords) }))
@@ -142,11 +308,19 @@ export async function POST(request: Request) {
       'Always format mathematical expressions using LaTeX delimiters: ' +
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
-      'Never write math in plain text with ^ or bracket notation — always use proper LaTeX.\n\n' +
+      'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
       `${graphContext}\n\nCluster inventory:\n\n${clusterInventory}\n\nRelevant markdown notes:\n\n${notesContext}`;
 
-    // Thinking mode: request deeper reasoning from the backend.
-    if (thinking) {
+    const urlLinkContext = await buildUrlLinkContext(chatMessages);
+    if (urlLinkContext.context) {
+      systemPrompt +=
+        '\n\nWeb link context fetched by the Breadboard server. ' +
+        'Use this context when the user asks about linked web content. ' +
+        'If a requested link could not be fetched, say that it may be private, unavailable, unsupported, or too large rather than claiming you cannot access links at all.\n\n' +
+        urlLinkContext.context;
+    }
+
+    if (thinkingEnabled) {
       systemPrompt +=
         '\n\nWhen the question is complex or analytical, think carefully before giving your final answer. ' +
         'Use the relevant notes and relationships to check your answer before responding.';
@@ -154,123 +328,113 @@ export async function POST(request: Request) {
 
     const client = new OpenAI({
       baseURL,
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: process.env.OPENAI_API_KEY || 'local',
     });
 
     const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-5.4';
+    const hasImageAttachments = chatAttachments.some((attachment) => attachment.type === 'image');
+    const shouldEnableImageGeneration = wantsImageGeneration(
+      lastUserMessage?.content ?? '',
+      hasImageAttachments,
+    );
 
-    // Build final messages list, injecting attachments into the last user message
-    const oaiMessages: ChatCompletionMessageParam[] = messages.map((m: { role: string; content: string }, idx: number) => {
-      const role = m.role === 'assistant' ? 'assistant' : 'user';
-      const isLastUser = m.role === 'user' && idx === messages.length - 1;
-      if (!isLastUser || chatAttachments.length === 0) return { role, content: m.content };
-
-      // Build multi-part content for the last user message
-      const textAttachments = chatAttachments.filter((a): a is { type: 'text'; text: string; name: string } => a.type === 'text');
-      const imageAttachments = chatAttachments.filter((a): a is { type: 'image'; dataUrl: string; name: string } => a.type === 'image');
-
-      const parts: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] = [];
-
-      if (textAttachments.length > 0) {
-        const attachedText = textAttachments
-          .map((a) => `--- Attached file: ${a.name} ---\n${a.text}`)
-          .join('\n\n');
-        parts.push({ type: 'text', text: `${attachedText}\n\n---\n\n${m.content}` });
-      } else {
-        parts.push({ type: 'text', text: m.content });
-      }
-
-      for (const img of imageAttachments) {
-        parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
-      }
-
-      return { role: 'user', content: parts };
-    });
-
-    const shouldSendChatmockReasoning =
-      Boolean(thinking) && Boolean(baseURL && !/api\.openai\.com/i.test(baseURL));
-
-    const chatRequest = {
+    const responsesRequest = {
       model: selectedModel,
-      messages: [{ role: 'system', content: systemPrompt }, ...oaiMessages],
+      instructions: systemPrompt,
+      input: buildResponsesInput(chatMessages, chatAttachments),
       stream: true,
-      ...(thinking ? { reasoning_effort: 'high' as const } : {}),
-      ...(shouldSendChatmockReasoning
-        ? { reasoning: { effort: 'high' as const, summary: 'auto' as const } }
+      store: false,
+      ...(thinkingEnabled
+        ? {
+            reasoning: {
+              effort: 'high' as const,
+              summary: 'auto' as const,
+            },
+          }
         : {}),
-    } satisfies ChatCompletionCreateParamsStreaming & ChatmockReasoningOverride;
+      ...(shouldEnableImageGeneration
+        ? {
+            tools: [
+              {
+                type: 'image_generation' as const,
+                action: imageGenerationAction(lastUserMessage?.content ?? '', hasImageAttachments),
+                background: 'auto' as const,
+                output_format: 'png' as const,
+                quality: 'auto' as const,
+                size: 'auto' as const,
+              },
+            ],
+            tool_choice: { type: 'image_generation' as const },
+          }
+        : {}),
+    } satisfies ResponseCreateParamsStreaming;
 
-    const stream = await client.chat.completions.create(chatRequest);
+    const stream = await client.responses.create(responsesRequest);
 
-    const sourceNames = selectedNodes.map((node) => node.fileName);
+    const sourceNames = Array.from(
+      new Set(
+        [...selectedNodes.map((node) => node.fileName), ...urlLinkContext.sources].filter(
+          (value): value is string => typeof value === 'string' && value.trim().length > 0,
+        ),
+      ),
+    );
 
     const readable = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
+        const emittedImageIds = new Set<string>();
 
-        // Emit sources first
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: 'sources', sources: sourceNames })}\n\n`,
-          ),
-        );
-
-        // Stream parser — splits <think>…</think> from regular content
-        let rawBuffer = '';
-        let inThink = false;
-
-        function emit(type: 'delta' | 'thinking', text: string) {
-          if (!text) return;
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ type, text })}\n\n`),
-          );
+        function emit(payload: SsePayload) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         }
 
-        function drainBuffer(flush = false) {
-          while (rawBuffer.length > 0) {
-            if (inThink) {
-              const closeIdx = rawBuffer.indexOf('</think>');
-              if (closeIdx >= 0) {
-                emit('thinking', rawBuffer.slice(0, closeIdx));
-                inThink = false;
-                rawBuffer = rawBuffer.slice(closeIdx + '</think>'.length);
-              } else {
-                // Keep last 8 chars in buffer (length of '</think>' - 1) to detect split tags
-                const safe = flush ? rawBuffer.length : Math.max(0, rawBuffer.length - 8);
-                emit('thinking', rawBuffer.slice(0, safe));
-                rawBuffer = rawBuffer.slice(safe);
-                break;
-              }
-            } else {
-              const openIdx = rawBuffer.indexOf('<think>');
-              if (openIdx >= 0) {
-                emit('delta', rawBuffer.slice(0, openIdx));
-                inThink = true;
-                rawBuffer = rawBuffer.slice(openIdx + '<think>'.length);
-              } else {
-                // Keep last 6 chars to detect a split '<think>' opener
-                const safe = flush ? rawBuffer.length : Math.max(0, rawBuffer.length - 6);
-                emit('delta', rawBuffer.slice(0, safe));
-                rawBuffer = rawBuffer.slice(safe);
-                break;
+        function emitText(type: 'delta' | 'thinking', text: string) {
+          if (!text) return;
+          const chunkSize = 24000;
+          for (let index = 0; index < text.length; index += chunkSize) {
+            emit({ type, text: text.slice(index, index + chunkSize) });
+          }
+        }
+
+        function emitImagesFromUnknown(value: unknown) {
+          for (const image of imageGenerationItemsFromUnknown(value)) {
+            if (emittedImageIds.has(image.id)) continue;
+            emittedImageIds.add(image.id);
+            emitText('delta', emittedImageMarkdown(image.result));
+          }
+        }
+
+        emit({ type: 'sources', sources: sourceNames });
+
+        try {
+          for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
+            if (event.type === 'response.output_text.delta') {
+              emitText('delta', event.delta);
+            } else if (
+              event.type === 'response.reasoning_summary_text.delta' ||
+              event.type === 'response.reasoning_text.delta'
+            ) {
+              emitText('thinking', event.delta);
+            } else if (event.type === 'response.output_item.done') {
+              emitImagesFromUnknown([event.item]);
+            } else if (event.type === 'response.completed') {
+              emitImagesFromUnknown(event.response.output);
+            } else if (event.type === 'response.failed') {
+              const response = event.response as unknown as JsonRecord | undefined;
+              const error = response?.error as JsonRecord | undefined;
+              if (typeof error?.message === 'string' && error.message.trim()) {
+                emitText('delta', `\n\n${error.message.trim()}`);
               }
             }
           }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'Something went wrong while streaming the response.';
+          emitText('delta', `\n\n${message}`);
+        } finally {
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
         }
-
-        for await (const chunk of stream) {
-          const text = chunk.choices[0]?.delta?.content ?? '';
-          if (text) {
-            rawBuffer += text;
-            drainBuffer();
-          }
-        }
-
-        // Flush remaining
-        drainBuffer(true);
-
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
       },
     });
 

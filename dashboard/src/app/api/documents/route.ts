@@ -24,6 +24,18 @@ export async function GET(request: Request) {
     }
 
     const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
+    const linkCountBySlug = new Map<string, number>();
+    for (const edge of knowledge.edges) {
+      linkCountBySlug.set(
+        edge.source,
+        (linkCountBySlug.get(edge.source) ?? 0) + 1,
+      );
+      linkCountBySlug.set(
+        edge.target,
+        (linkCountBySlug.get(edge.target) ?? 0) + 1,
+      );
+    }
+
     const documents = knowledge.nodes
       .map((node) => ({
         id: node.id,
@@ -42,7 +54,7 @@ export async function GET(request: Request) {
         wordCount: node.wordCount,
         excerpt: node.excerpt,
         name: node.title,
-        linkCount: knowledge.edges.filter((edge) => edge.source === node.slug || edge.target === node.slug).length,
+        linkCount: linkCountBySlug.get(node.slug) ?? 0,
       }))
       .sort((a, b) => {
         const typeRank = (type: string) => (type === 'source-document' ? 0 : type === 'knowledge-topic' ? 1 : 2);

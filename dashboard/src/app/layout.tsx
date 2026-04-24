@@ -22,7 +22,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "breadboard",
   description: "breadboard — your personal knowledge garden",
-  icons: { icon: "/logo.svg" },
+  icons: { icon: "/favicon.ico" },
 };
 
 export default function RootLayout({
