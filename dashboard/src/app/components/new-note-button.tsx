@@ -16,9 +16,12 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
   const [error, setError] = useState('');
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [selectedSlug, setSelectedSlug] = useState('');
+  const [folders, setFolders] = useState<string[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState('');
 
   const needsPicker = !fixedSlug;
   const [activeSlug, setActiveSlug] = useState(fixedSlug ?? '');
+  const targetSlug = activeSlug || fixedSlug || selectedSlug;
 
   useEffect(() => {
     if (!needsPicker) return;
@@ -47,13 +50,49 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
   function openModal() {
     setTitle('');
     setContent('');
+    setSelectedFolder('');
     setError('');
     setOpen(true);
   }
 
+  // Load the target cluster's folders so the note can be created inside one.
+  useEffect(() => {
+    if (!open || !targetSlug) {
+      setFolders([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/documents?clusterSlug=${encodeURIComponent(targetSlug)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setFolders(Array.isArray(d.folders) ? d.folders : []);
+      })
+      .catch(() => {
+        if (!cancelled) setFolders([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, targetSlug]);
+
+  useEffect(() => {
+    function handler(e: Event) {
+      e.preventDefault();
+      const cluster = (e as CustomEvent<{ cluster?: string }>).detail?.cluster;
+      if (cluster) {
+        setActiveSlug(cluster);
+        setSelectedSlug(cluster);
+      }
+      openModal();
+    }
+
+    window.addEventListener('sb:new-note', handler);
+    return () => window.removeEventListener('sb:new-note', handler);
+  }, []);
+
   async function handleSubmit(e: { preventDefault(): void }) {
     e.preventDefault();
-    const slug = activeSlug || fixedSlug || selectedSlug;
+    const slug = targetSlug;
     if (!title.trim() || !slug || saving) return;
     setSaving(true);
     setError('');
@@ -61,7 +100,12 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
       const res = await fetch('/api/documents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clusterSlug: slug, title: title.trim(), content }),
+        body: JSON.stringify({
+          clusterSlug: slug,
+          title: title.trim(),
+          content,
+          folder: selectedFolder,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data.error ?? 'Failed to save'); return; }
@@ -117,6 +161,19 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
                   ))}
                 </select>
               )}
+              <label className="flex items-center gap-2 text-xs text-gray-500">
+                <span className="shrink-0">Folder</span>
+                <select
+                  value={selectedFolder}
+                  onChange={(e) => setSelectedFolder(e.target.value)}
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600 transition-colors"
+                >
+                  <option value="">Garden root</option>
+                  {folders.map((folder) => (
+                    <option key={folder} value={folder}>{folder}</option>
+                  ))}
+                </select>
+              </label>
               <input
                 type="text"
                 value={title}

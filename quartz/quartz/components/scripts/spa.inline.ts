@@ -39,7 +39,15 @@ function notifyNav(url: FullSlug) {
   const event: CustomEventMap["nav"] = new CustomEvent("nav", { detail: { url } })
   document.dispatchEvent(event)
   if (window.parent !== window) {
-    window.parent.postMessage({ type: 'second-brain:navigate', slug: url }, '*')
+    window.parent.postMessage(
+      {
+        type: "second-brain:navigate",
+        slug: url,
+        title: document.title,
+        path: window.location.pathname,
+      },
+      "*",
+    )
   }
 }
 

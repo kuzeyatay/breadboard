@@ -6,7 +6,15 @@
       "Bash(npx tsc *)",
       "Bash(git checkout *)",
       "Bash(git ls-tree *)",
-      "Bash(xargs grep *)"
+      "Bash(xargs grep *)",
+      "Bash(npx next *)",
+      "Bash(node -e \"const s=require\\('./package.json'\\).scripts; console.log\\(JSON.stringify\\(s,null,2\\)\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node _footer_test.cjs)",
+      "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; npx tsc --noEmit 2>&1 | Select-Object -First 40; \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; Remove-Item -Recurse -Force \".next\\\\types\",\".next\\\\dev\\\\types\" -ErrorAction SilentlyContinue; npx tsc --noEmit 2>&1 | Select-Object -First 40; \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; Remove-Item -Recurse -Force \".next\\\\types\",\".next\\\\dev\\\\types\" -ErrorAction SilentlyContinue; npx tsc --noEmit 2>&1 | Select-Object -First 20; \"EXIT=$LASTEXITCODE\")",
+      "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; Remove-Item -Recurse -Force \".next\\\\types\",\".next\\\\dev\\\\types\" -ErrorAction SilentlyContinue; npx tsc --noEmit 2>&1 | Select-Object -First 30; \"EXIT=$LASTEXITCODE\")"
     ]
   }
 }

@@ -1,16 +1,16 @@
 ---
-title: "My library"
+title: "My garden"
 date: "2026-04-20"
-description: "Your library collects the clusters attached to your account."
+description: "Your garden collects the clusters attached to your account."
 knowledge_type: "garden-overview"
 garden_scope: "private"
 graph_clusters: ["test", "computer-architecture-2"]
 cluster_order: ["test", "computer-architecture-2"]
 ---
 
-## My library
+## My garden
 
-Your library collects the clusters attached to your account.
+Your garden collects the clusters attached to your account.
 
 - Clusters: 2
 - Source documents: 2

@@ -17,6 +17,11 @@ type Attachment =
   | { type: 'text'; text: string; name: string }
   | { type: 'image'; dataUrl: string; name: string };
 type ChatRequestMessage = { role: 'user' | 'assistant'; content: string };
+type ActiveMarkdownContext = {
+  slug: string;
+  title?: string;
+  content: string;
+};
 type SsePayload =
   | { type: 'sources'; sources: string[] }
   | { type: 'delta'; text: string }
@@ -214,6 +219,28 @@ function imageGenerationItemsFromUnknown(value: unknown): Array<{ id: string; re
   });
 }
 
+function parseSelectedDocumentSlugs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ].slice(0, 12);
+}
+
+function parseActiveMarkdownContext(value: unknown): ActiveMarkdownContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as JsonRecord;
+  const slug = typeof record.slug === 'string' ? record.slug.trim() : '';
+  const content = typeof record.content === 'string' ? record.content.trim() : '';
+  const title = typeof record.title === 'string' ? record.title.trim() : '';
+  if (!slug || !content) return null;
+  return { slug, title, content };
+}
+
 function describeInventoryNode(node: KnowledgeNode): string {
   const details = [
     `type: ${node.type}`,
@@ -229,7 +256,15 @@ function describeInventoryNode(node: KnowledgeNode): string {
 export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
-    const { messages, clusterSlug, model, thinking, attachments } = await request.json();
+    const {
+      messages,
+      clusterSlug,
+      model,
+      thinking,
+      attachments,
+      selectedDocumentSlugs,
+      activeMarkdown,
+    } = await request.json();
 
     if (!Array.isArray(messages) || typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
       return NextResponse.json({ error: 'messages and clusterSlug are required' }, { status: 400 });
@@ -242,6 +277,8 @@ export async function POST(request: Request) {
 
     const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
     const chatAttachments: Attachment[] = Array.isArray(attachments) ? attachments : [];
+    const selectedSourceSlugs = parseSelectedDocumentSlugs(selectedDocumentSlugs);
+    const activeMarkdownContext = parseActiveMarkdownContext(activeMarkdown);
     const thinkingEnabled = Boolean(thinking);
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
@@ -253,12 +290,35 @@ export async function POST(request: Request) {
     const lastUserMessage = [...chatMessages].reverse().find((message) => message.role === 'user');
     const queryWords = tokenize(lastUserMessage?.content ?? '');
 
+    const selectedSlugs = new Set<string>();
+    const selectedFocusSlugs = new Set<string>();
+    for (const slug of selectedSourceSlugs) {
+      selectedSlugs.add(slug);
+      selectedFocusSlugs.add(slug);
+      for (const edge of knowledge.edges) {
+        if (edge.source === slug) {
+          selectedSlugs.add(edge.target);
+          selectedFocusSlugs.add(edge.target);
+        }
+        if (edge.target === slug) {
+          selectedSlugs.add(edge.source);
+          selectedFocusSlugs.add(edge.source);
+        }
+      }
+      for (const node of knowledge.nodes) {
+        if (node.sourceDocument === slug) {
+          selectedSlugs.add(node.slug);
+          selectedFocusSlugs.add(node.slug);
+        }
+      }
+    }
+
     const scored = knowledge.nodes
       .map((node) => ({ node, score: scoreNode(node, queryWords) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
 
-    const selectedSlugs = new Set(scored.map(({ node }) => node.slug));
+    for (const { node } of scored) selectedSlugs.add(node.slug);
     for (const { node } of scored.slice(0, 3)) {
       for (const edge of knowledge.edges) {
         if (edge.source === node.slug) selectedSlugs.add(edge.target);
@@ -266,9 +326,21 @@ export async function POST(request: Request) {
       }
     }
 
-    const selectedNodes = knowledge.nodes
-      .filter((node) => selectedSlugs.has(node.slug))
-      .slice(0, 8);
+    const selectedSourceNodes = knowledge.nodes.filter((node) =>
+      selectedSourceSlugs.includes(node.slug),
+    );
+    const selectedDocumentNodes = knowledge.nodes.filter((node) =>
+      selectedFocusSlugs.has(node.slug),
+    );
+    const scoredNodes = knowledge.nodes.filter(
+      (node) =>
+        selectedSlugs.has(node.slug) &&
+        !selectedDocumentNodes.some((selected) => selected.slug === node.slug),
+    );
+    const selectedNodes = [
+      ...selectedDocumentNodes,
+      ...scoredNodes,
+    ].slice(0, selectedSourceSlugs.length > 0 ? 18 : 8);
 
     const graphContext = [
       `Cluster graph summary: ${knowledge.stats.documents} source documents, ${knowledge.stats.topics} extracted topics, ${knowledge.stats.links} links.`,
@@ -299,8 +371,19 @@ export async function POST(request: Request) {
       })
       .join('\n\n---\n\n');
 
+    const selectedDocumentContext =
+      selectedSourceNodes.length > 0
+        ? `\n\nUser-selected uploaded documents already provided for this request:\n${selectedSourceNodes
+            .map((node) => `- ${node.title} (${node.slug})`)
+            .join('\n')}\nThe user selected these documents in the UI, so treat them as the material they have provided. Do not ask the user to send or upload material when selected documents are present. If the user asks you to transform, explain, reconstruct, summarize, study, or write from "the material", "the PDFs", "the selected documents", or similar wording, do the task immediately using these selected documents and their connected topic notes as the primary context unless the user explicitly asks to broaden the scope.`
+        : '';
+
+    const activeMarkdownPromptContext = activeMarkdownContext
+      ? `\n\nThe user currently has this specific markdown note open in Quartz. When the user says "this note", "this markdown", "the current file", "what I have open", or asks anything that could refer to the visible markdown, treat this as the primary context before broader garden context. Do not ask the user to paste the markdown when this context is present. The surrounding application can edit the open markdown file; do not claim you lack filesystem or Quartz vault write access. If an edit request reaches you as normal chat, provide the intended edit or explain what you would change rather than saying it is impossible.\n\n# ${activeMarkdownContext.title || activeMarkdownContext.slug}\nSlug: ${activeMarkdownContext.slug}\n\n${truncate(activeMarkdownContext.content, 16000)}`
+      : '';
+
     let systemPrompt =
-      `You are a helpful assistant for the user's second brain cluster '${cluster.name}'. ` +
+      `You are a helpful assistant for the user's second brain garden '${cluster.name}'. ` +
       'Use the graph relationships and markdown notes as grounded context. ' +
       'You can answer questions about the knowledge map itself, including source documents, extracted topics, locations, page references, tags, and relationships. ' +
       'When the user asks where something appears, cite the note title and the Locations value from the context. ' +
@@ -309,7 +392,7 @@ export async function POST(request: Request) {
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
-      `${graphContext}\n\nCluster inventory:\n\n${clusterInventory}\n\nRelevant markdown notes:\n\n${notesContext}`;
+      `${graphContext}${selectedDocumentContext}${activeMarkdownPromptContext}\n\nCluster inventory:\n\n${clusterInventory}\n\nRelevant markdown notes:\n\n${notesContext}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
     if (urlLinkContext.context) {
@@ -331,7 +414,7 @@ export async function POST(request: Request) {
       apiKey: process.env.OPENAI_API_KEY || 'local',
     });
 
-    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-5.4';
+    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-5.5';
     const hasImageAttachments = chatAttachments.some((attachment) => attachment.type === 'image');
     const shouldEnableImageGeneration = wantsImageGeneration(
       lastUserMessage?.content ?? '',
@@ -378,6 +461,9 @@ export async function POST(request: Request) {
         ),
       ),
     );
+    if (activeMarkdownContext?.title || activeMarkdownContext?.slug) {
+      sourceNames.unshift(activeMarkdownContext.title || activeMarkdownContext.slug);
+    }
 
     const readable = new ReadableStream({
       async start(controller) {

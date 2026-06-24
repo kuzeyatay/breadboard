@@ -142,6 +142,7 @@ export const defaultListPageLayout: PageLayout = {
       }),
       condition: isClusterIndex,
     }),
+    Component.FolderPdfExport(),
   ],
   left: [
     Component.PageTitle(),

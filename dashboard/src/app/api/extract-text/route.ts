@@ -2,11 +2,30 @@ import { NextResponse } from 'next/server';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import { PDFParse } from 'pdf-parse';
+import type OpenAI from 'openai';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { DEFAULT_MODEL, createChatmockClient } from '@/lib/knowledge';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function isUsageLimitError(error: unknown): boolean {
+  const status =
+    typeof error === 'object' && error !== null && 'status' in error
+      ? Number((error as { status?: unknown }).status)
+      : undefined;
+  const message = errorMessage(error, '').toLowerCase();
+  return (
+    status === 429 ||
+    message.includes('usage limit') ||
+    message.includes('rate limit') ||
+    message.includes('quota')
+  );
+}
 
 function mimeToBase64Prefix(mimeType: string): string {
   if (mimeType === 'image/png') return 'data:image/png;base64,';
@@ -82,6 +101,184 @@ function extractZipText(buffer: Buffer): string {
   return parts.join('\n\n') || '(No readable text files found in archive)';
 }
 
+async function getPdfScreenshotPages(buffer: Buffer): Promise<Array<{ pageNumber: number; dataUrl: string }>> {
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const info = await parser.getInfo();
+    const pages: Array<{ pageNumber: number; dataUrl: string }> = [];
+
+    for (let first = 1; first <= info.total; first += 4) {
+      const last = Math.min(first + 3, info.total);
+      const screenshots = await parser.getScreenshot({
+        first,
+        last,
+        desiredWidth: 1200,
+        imageBuffer: false,
+        imageDataUrl: true,
+      });
+
+      pages.push(
+        ...screenshots.pages
+          .map((page) => ({ pageNumber: page.pageNumber, dataUrl: page.dataUrl }))
+          .filter((page) => Number.isFinite(page.pageNumber) && Boolean(page.dataUrl)),
+      );
+    }
+
+    return pages.sort((left, right) => left.pageNumber - right.pageNumber);
+  } finally {
+    await parser.destroy();
+  }
+}
+
+async function extractPdfText(buffer: Buffer): Promise<{ text: string; warning: string }> {
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const info = await parser.getInfo();
+    const pages: Array<{ pageNumber: number; text: string }> = [];
+    const warnings: string[] = [];
+
+    const readRange = async (first: number, last: number): Promise<void> => {
+      try {
+        const result = await parser.getText({ first, last, pageJoiner: '\n\n' });
+        pages.push(
+          ...result.pages.map((page) => ({
+            pageNumber: page.num,
+            text: page.text,
+          })),
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'PDF text extraction failed';
+        if (first < last) {
+          const middle = Math.floor((first + last) / 2);
+          await readRange(first, middle);
+          await readRange(middle + 1, last);
+          return;
+        }
+
+        warnings.push(`Page ${first}: ${reason}`);
+        pages.push({
+          pageNumber: first,
+          text: `[PDF text extraction failed for Page ${first}: ${reason}]`,
+        });
+      }
+    };
+
+    for (let first = 1; first <= info.total; first += 12) {
+      const last = Math.min(first + 11, info.total);
+      await readRange(first, last);
+    }
+
+    pages.sort((left, right) => left.pageNumber - right.pageNumber);
+
+    return {
+      text: pages
+        .map((page) => `[[Page ${page.pageNumber}]]\n${page.text}`)
+        .join('\n\n'),
+      warning:
+        warnings.length > 0
+          ? `PDF text extraction failed for ${warnings.length} page${warnings.length === 1 ? '' : 's'}: ${warnings.join('; ')}`
+          : '',
+    };
+  } finally {
+    await parser.destroy();
+  }
+}
+
+async function transcribeImage(
+  client: OpenAI,
+  dataUrl: string,
+  label: string,
+): Promise<string> {
+  const response = await client.chat.completions.create({
+    model: DEFAULT_MODEL,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: dataUrl } },
+        {
+          type: 'text',
+          text:
+            `Transcribe ${label} from a handwritten or scanned document. ` +
+            'Preserve headings, equations, bullets, labels, worked examples, tables, and line breaks. ' +
+            'Describe meaningful diagrams or arrows. If a word is uncertain, write [unclear]. Return only the transcription.',
+        },
+      ],
+    }],
+  });
+  return response.choices[0]?.message?.content?.trim() ?? '';
+}
+
+async function transcribePdf(
+  client: OpenAI,
+  buffer: Buffer,
+): Promise<{ text: string; warning: string }> {
+  let pages: Array<{ pageNumber: number; dataUrl: string }> = [];
+  try {
+    pages = await getPdfScreenshotPages(buffer);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'PDF screenshot capture failed';
+    const fallback = await extractPdfText(buffer);
+    return {
+      text: fallback.text,
+      warning:
+        `Handwriting OCR screenshot capture failed: ${reason}. Used embedded PDF text instead.` +
+        (fallback.warning ? ` ${fallback.warning}` : ''),
+    };
+  }
+
+  if (pages.length === 0) {
+    const fallback = await extractPdfText(buffer);
+    return {
+      text: fallback.text,
+      warning:
+        'No page screenshots were returned for handwriting OCR. Used embedded PDF text instead.' +
+        (fallback.warning ? ` ${fallback.warning}` : ''),
+    };
+  }
+
+  const text = new Array<string>(pages.length);
+  const warnings: string[] = [];
+  let usageLimitReason = '';
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < pages.length && !usageLimitReason) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const page = pages[index];
+      const label = `Page ${page.pageNumber}`;
+      try {
+        text[index] = `[[${label}]]\n${await transcribeImage(client, page.dataUrl, label)}`;
+      } catch (error) {
+        const reason = errorMessage(error, 'vision OCR failed');
+        if (isUsageLimitError(error)) {
+          usageLimitReason = reason;
+          return;
+        }
+        warnings.push(`${label}: ${reason}`);
+        text[index] = `[[${label}]]\n[OCR failed for ${label}: ${reason}]`;
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(3, pages.length) }, () => worker()));
+
+  if (usageLimitReason) {
+    return {
+      text: '',
+      warning: `Handwriting OCR could not run because the AI usage limit was reached: ${usageLimitReason}`,
+    };
+  }
+
+  return {
+    text: text.filter(Boolean).join('\n\n'),
+    warning:
+      warnings.length > 0
+        ? `Handwriting OCR failed for ${warnings.length} page${warnings.length === 1 ? '' : 's'}: ${warnings.join('; ')}`
+        : '',
+  };
+}
+
 // Returns { type: 'text', text } or { type: 'image', dataUrl, mimeType }
 export async function POST(request: Request) {
   try {
@@ -107,17 +304,8 @@ export async function POST(request: Request) {
       if (isHandwriting) {
         // OCR via vision model
         const client = createChatmockClient(baseURL);
-        const response = await client.chat.completions.create({
-          model: DEFAULT_MODEL,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: dataUrl } },
-              { type: 'text', text: 'Transcribe all handwritten text exactly, preserving structure.' },
-            ],
-          }],
-        });
-        return NextResponse.json({ type: 'text', text: response.choices[0]?.message?.content ?? '', name: file.name });
+        const text = await transcribeImage(client, dataUrl, 'Image');
+        return NextResponse.json({ type: 'text', text, name: file.name });
       }
 
       return NextResponse.json({ type: 'image', dataUrl, mimeType, name: file.name });
@@ -127,10 +315,17 @@ export async function POST(request: Request) {
 
     if (ext === 'pdf') {
       const buffer = Buffer.from(await file.arrayBuffer());
-      const parser = new PDFParse({ data: buffer });
-      const result = await parser.getText({ pageJoiner: '\n\n' });
-      await parser.destroy();
-      text = result.text;
+      if (isHandwriting) {
+        const client = createChatmockClient(baseURL);
+        const result = await transcribePdf(client, buffer);
+        return NextResponse.json({ type: 'text', text: result.text, warning: result.warning, name: file.name });
+      } else {
+        const result = await extractPdfText(buffer);
+        text = result.text;
+        if (result.warning) {
+          return NextResponse.json({ type: 'text', text, warning: result.warning, name: file.name });
+        }
+      }
     } else if (ext === 'docx') {
       text = extractDocxText(Buffer.from(await file.arrayBuffer()));
     } else if (ext === 'pptx') {

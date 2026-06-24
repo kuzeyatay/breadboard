@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr"><head><title>after 13.7 (gradiants)</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;family=IBM Plex Mono:wght@400;600&amp;display=swap"/><link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin="anonymous"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><script type="application/javascript" data-persist="true">(() => {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("embed") === "graph") {
+      document.documentElement.classList.add("quartz-graph-preview")
+    }
+  } catch {}
+})()</script><meta name="og:site_name" content="breadboard"/><meta property="og:title" content="after 13.7 (gradiants)"/><meta property="og:type" content="website"/><meta name="twitter:card" content="summary_large_image"/><meta name="twitter:title" content="after 13.7 (gradiants)"/><meta name="twitter:description" content="Gradients in Physics A physical quantity often starts as a number assigned to every point in space."/><meta property="og:description" content="Gradients in Physics A physical quantity often starts as a number assigned to every point in space."/><meta property="og:image:alt" content="Gradients in Physics A physical quantity often starts as a number assigned to every point in space."/><meta property="twitter:domain" content="localhost:8081"/><meta property="og:url" content="https://localhost:8081/math-2/after-13-7-gradiants-1781280160859"/><meta property="twitter:url" content="https://localhost:8081/math-2/after-13-7-gradiants-1781280160859"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="Gradients in Physics A physical quantity often starts as a number assigned to every point in space."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" data-persist="true"/><style>.expand-button {
+  position: absolute;
+  display: flex;
+  float: right;
+  padding: 0.4rem;
+  margin: 0.3rem;
+  right: 0;
+  color: var(--gray);
+  border-color: var(--dark);
+  background-color: var(--light);
+  border: 1px solid;
+  border-radius: 5px;
+  opacity: 0;
+  transition: 0.2s;
+}
+.expand-button > svg {
+  fill: var(--light);
+  filter: contrast(0.3);
+}
+.expand-button:hover {
+  cursor: pointer;
+  border-color: var(--secondary);
+}
+.expand-button:focus {
+  outline: 0;
+}
+
+pre:hover > .expand-button {
+  opacity: 1;
+  transition: 0.2s;
+}
+
+#mermaid-container {
+  position: fixed;
+  contain: layout;
+  z-index: 999;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: none;
+  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
+}
+#mermaid-container.active {
+  display: inline-block;
+}
+#mermaid-container > #mermaid-space {
+  border: 1px solid var(--lightgray);
+  background-color: var(--light);
+  border-radius: 5px;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  height: 80vh;
+  width: 80vw;
+  overflow: hidden;
+}
+#mermaid-container > #mermaid-space > .mermaid-content {
+  position: relative;
+  transform-origin: 0 0;
+  transition: transform 0.1s ease;
+  overflow: visible;
+  min-height: 200px;
+  min-width: 200px;
+}
+#mermaid-container > #mermaid-space > .mermaid-content pre {
+  margin: 0;
+  border: none;
+}
+#mermaid-container > #mermaid-space > .mermaid-content svg {
+  max-width: none;
+  height: auto;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: var(--light);
+  border: 1px solid var(--lightgray);
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 2;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--lightgray);
+  background: var(--light);
+  color: var(--dark);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  font-family: var(--bodyFont);
+  transition: all 0.2s ease;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:hover {
+  background: var(--lightgray);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:active {
+  transform: translateY(1px);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:nth-child(2) {
+  width: auto;
+  padding: 0 12px;
+  font-size: 14px;
+}
+/*# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VSb290IjoiQzpcXFVzZXJzXFwyMDI1MjA4MlxcT25lRHJpdmUgLSBUVSBFaW5kaG92ZW5cXERlc2t0b3BcXGJyZWFkYm9hcmRcXHF1YXJ0elxccXVhcnR6XFxjb21wb25lbnRzXFxzdHlsZXMiLCJzb3VyY2VzIjpbIm1lcm1haWQuaW5saW5lLnNjc3MiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUdGO0VBQ0U7OztBQUtGO0VBQ0U7RUFDQTs7O0FBSUo7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUVBO0VBQ0U7O0FBR0Y7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUlKO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7O0FBRUE7RUFDRTs7QUFHRjtFQUNFOztBQUlGO0VBQ0U7RUFDQTtFQUNBIiwic291cmNlc0NvbnRlbnQiOlsiLmV4cGFuZC1idXR0b24ge1xuICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gIGRpc3BsYXk6IGZsZXg7XG4gIGZsb2F0OiByaWdodDtcbiAgcGFkZGluZzogMC40cmVtO1xuICBtYXJnaW46IDAuM3JlbTtcbiAgcmlnaHQ6IDA7IC8vIE5PVEU6IHJpZ2h0IHdpbGwgYmUgc2V0IGluIG1lcm1haWQuaW5saW5lLnRzXG4gIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgYm9yZGVyLWNvbG9yOiB2YXIoLS1kYXJrKTtcbiAgYmFja2dyb3VuZC1jb2xvcjogdmFyKC0tbGlnaHQpO1xuICBib3JkZXI6IDFweCBzb2xpZDtcbiAgYm9yZGVyLXJhZGl1czogNXB4O1xuICBvcGFjaXR5OiAwO1xuICB0cmFuc2l0aW9uOiAwLjJzO1xuXG4gICYgPiBzdmcge1xuICAgIGZpbGw6IHZhcigtLWxpZ2h0KTtcbiAgICBmaWx0ZXI6IGNvbnRyYXN0KDAuMyk7XG4gIH1cblxuICAmOmhvdmVyIHtcbiAgICBjdXJzb3I6IHBvaW50ZXI7XG4gICAgYm9yZGVyLWNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICB9XG5cbiAgJjpmb2N1cyB7XG4gICAgb3V0bGluZTogMDtcbiAgfVxufVxuXG5wcmUge1xuICAmOmhvdmVyID4gLmV4cGFuZC1idXR0b24ge1xuICAgIG9wYWNpdHk6IDE7XG4gICAgdHJhbnNpdGlvbjogMC4ycztcbiAgfVxufVxuXG4jbWVybWFpZC1jb250YWluZXIge1xuICBwb3NpdGlvbjogZml4ZWQ7XG4gIGNvbnRhaW46IGxheW91dDtcbiAgei1pbmRleDogOTk5O1xuICBsZWZ0OiAwO1xuICB0b3A6IDA7XG4gIHdpZHRoOiAxMDB2dztcbiAgaGVpZ2h0OiAxMDB2aDtcbiAgb3ZlcmZsb3c6IGhpZGRlbjtcbiAgZGlzcGxheTogbm9uZTtcbiAgYmFja2Ryb3AtZmlsdGVyOiBibHVyKDRweCk7XG4gIGJhY2tncm91bmQ6IHJnYmEoMCwgMCwgMCwgMC41KTtcblxuICAmLmFjdGl2ZSB7XG4gICAgZGlzcGxheTogaW5saW5lLWJsb2NrO1xuICB9XG5cbiAgJiA+ICNtZXJtYWlkLXNwYWNlIHtcbiAgICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgIGJhY2tncm91bmQtY29sb3I6IHZhcigtLWxpZ2h0KTtcbiAgICBib3JkZXItcmFkaXVzOiA1cHg7XG4gICAgcG9zaXRpb246IGZpeGVkO1xuICAgIHRvcDogNTAlO1xuICAgIGxlZnQ6IDUwJTtcbiAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZSgtNTAlLCAtNTAlKTtcbiAgICBoZWlnaHQ6IDgwdmg7XG4gICAgd2lkdGg6IDgwdnc7XG4gICAgb3ZlcmZsb3c6IGhpZGRlbjtcblxuICAgICYgPiAubWVybWFpZC1jb250ZW50IHtcbiAgICAgIHBvc2l0aW9uOiByZWxhdGl2ZTtcbiAgICAgIHRyYW5zZm9ybS1vcmlnaW46IDAgMDtcbiAgICAgIHRyYW5zaXRpb246IHRyYW5zZm9ybSAwLjFzIGVhc2U7XG4gICAgICBvdmVyZmxvdzogdmlzaWJsZTtcbiAgICAgIG1pbi1oZWlnaHQ6IDIwMHB4O1xuICAgICAgbWluLXdpZHRoOiAyMDBweDtcblxuICAgICAgcHJlIHtcbiAgICAgICAgbWFyZ2luOiAwO1xuICAgICAgICBib3JkZXI6IG5vbmU7XG4gICAgICB9XG5cbiAgICAgIHN2ZyB7XG4gICAgICAgIG1heC13aWR0aDogbm9uZTtcbiAgICAgICAgaGVpZ2h0OiBhdXRvO1xuICAgICAgfVxuICAgIH1cblxuICAgICYgPiAubWVybWFpZC1jb250cm9scyB7XG4gICAgICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gICAgICBib3R0b206IDIwcHg7XG4gICAgICByaWdodDogMjBweDtcbiAgICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgICBnYXA6IDhweDtcbiAgICAgIHBhZGRpbmc6IDhweDtcbiAgICAgIGJhY2tncm91bmQ6IHZhcigtLWxpZ2h0KTtcbiAgICAgIGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLWxpZ2h0Z3JheSk7XG4gICAgICBib3JkZXItcmFkaXVzOiA2cHg7XG4gICAgICBib3gtc2hhZG93OiAwIDJweCA0cHggcmdiYSgwLCAwLCAwLCAwLjEpO1xuICAgICAgei1pbmRleDogMjtcblxuICAgICAgLm1lcm1haWQtY29udHJvbC1idXR0b24ge1xuICAgICAgICBkaXNwbGF5OiBmbGV4O1xuICAgICAgICBhbGlnbi1pdGVtczogY2VudGVyO1xuICAgICAgICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjtcbiAgICAgICAgd2lkdGg6IDMycHg7XG4gICAgICAgIGhlaWdodDogMzJweDtcbiAgICAgICAgcGFkZGluZzogMDtcbiAgICAgICAgYm9yZGVyOiAxcHggc29saWQgdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHQpO1xuICAgICAgICBjb2xvcjogdmFyKC0tZGFyayk7XG4gICAgICAgIGJvcmRlci1yYWRpdXM6IDRweDtcbiAgICAgICAgY3Vyc29yOiBwb2ludGVyO1xuICAgICAgICBmb250LXNpemU6IDE2cHg7XG4gICAgICAgIGZvbnQtZmFtaWx5OiB2YXIoLS1ib2R5Rm9udCk7XG4gICAgICAgIHRyYW5zaXRpb246IGFsbCAwLjJzIGVhc2U7XG5cbiAgICAgICAgJjpob3ZlciB7XG4gICAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgfVxuXG4gICAgICAgICY6YWN0aXZlIHtcbiAgICAgICAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMXB4KTtcbiAgICAgICAgfVxuXG4gICAgICAgIC8vIFN0eWxlIHRoZSByZXNldCBidXR0b24gZGlmZmVyZW50bHlcbiAgICAgICAgJjpudGgtY2hpbGQoMikge1xuICAgICAgICAgIHdpZHRoOiBhdXRvO1xuICAgICAgICAgIHBhZGRpbmc6IDAgMTJweDtcbiAgICAgICAgICBmb250LXNpemU6IDE0cHg7XG4gICAgICAgIH1cbiAgICAgIH1cbiAgICB9XG4gIH1cbn1cbiJdfQ== */</style><link href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" rel="stylesheet" type="text/css" data-persist="true"/><script src="../prescript.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script><link rel="alternate" type="application/rss+xml" title="RSS Feed" href="https://localhost:8081/index.xml"/><meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/><meta property="og:image" content="https://localhost:8081/math-2/after-13-7-gradiants-1781280160859-og-image.webp"/><meta property="og:image:url" content="https://localhost:8081/math-2/after-13-7-gradiants-1781280160859-og-image.webp"/><meta name="twitter:image" content="https://localhost:8081/math-2/after-13-7-gradiants-1781280160859-og-image.webp"/><meta property="og:image:type" content="image/.webp"/></head><body data-slug="math-2/after-13-7-gradiants-1781280160859"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="/dashboard" class="page-title-link" data-dashboard-base-url data-dashboard-href="/dashboard">breadboard</a></h2><a class=" dashboard-back-link" href="/clusters/math-2" target="_top" data-dashboard-base-url data-cluster-slug="math-2">Back to cluster</a><div class="spacer mobile-only"></div><div class="flex-component" style="flex-direction: row; flex-wrap: nowrap; gap: 1rem;"><div style="flex-grow: 1; flex-shrink: 1; flex-basis: auto; order: 0; align-self: center; justify-self: center;"><div class="search"><button class="search-button"><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg><p>Search</p></button><div class="search-container"><div class="search-space"><input autocomplete="off" class="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div class="search-layout" data-preview="true"></div></div></div></div></div></div><div class="explorer" data-behavior="link" data-collapsed="collapsed" data-savestate="true" data-garden-scope data-graph-clusters="[]" data-data-fns="{&quot;order&quot;:[&quot;filter&quot;,&quot;map&quot;,&quot;sort&quot;],&quot;sortFn&quot;:&quot;(a,b)=>{let aIsSource=a.data?.knowledgeType===\&quot;source-document\&quot;,bIsSource=b.data?.knowledgeType===\&quot;source-document\&quot;;return!a.isFolder&amp;&amp;!b.isFolder||a.isFolder&amp;&amp;b.isFolder?aIsSource&amp;&amp;!bIsSource?-1:!aIsSource&amp;&amp;bIsSource?1:a.displayName.localeCompare(b.displayName,void 0,{numeric:!0,sensitivity:\&quot;base\&quot;}):!a.isFolder&amp;&amp;b.isFolder?1:-1}&quot;,&quot;filterFn&quot;:&quot;node=>node.slugSegment!==\&quot;tags\&quot;&quot;,&quot;mapFn&quot;:&quot;node=>node&quot;}"><button type="button" class="explorer-toggle mobile-explorer hide-until-loaded" data-mobile="true" aria-controls="explorer-542"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-menu"><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line></svg></button><button type="button" class="title-button explorer-toggle desktop-explorer" data-mobile="false" aria-expanded="true"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-542" class="explorer-content" aria-expanded="false" role="group"><ul class="explorer-ul overflow" id="list-0"><li class="overflow-end"></li></ul></div><template id="template-file"><li><a href="#"></a></li></template><template id="template-folder"><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div><button class="folder-button"><span class="folder-title"></span></button></div></div><div class="folder-outer"><ul class="content"></ul></div></li></template></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../math-2/">Math 2</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>after 13.7 (gradiants)</a></div></nav><h1 class="article-title">after 13.7 (gradiants)</h1><p show-comma="true" class="content-meta"><time datetime="2026-06-12T16:02:40.859Z">Jun 12, 2026</time><span>17 min read</span></p><div class="markdown-actions" data-dashboard-url data-note-slug="math-2/after-13-7-gradiants-1781280160859"><button class="markdown-action-button markdown-edit-button" type="button">Edit markdown</button><button class="markdown-action-button markdown-delete-button danger" type="button">Delete</button><span class="markdown-action-status" aria-live="polite"></span><div class="markdown-editor-modal" hidden><div class="markdown-editor-panel"><div class="markdown-editor-header"><div><p class="markdown-editor-kicker">Markdown</p><h2>Edit note</h2></div><button class="markdown-editor-close" type="button" aria-label="Close editor">Close</button></div><textarea class="markdown-editor-textarea" spellcheck="false"></textarea><input class="markdown-editor-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden/><div class="markdown-editor-footer"><div class="markdown-editor-insert-tools"><button class="markdown-editor-image" type="button">Add images</button><label class="markdown-editor-placement-label">Place<select class="markdown-editor-placement"><option value="cursor">Cursor</option><option value="top">Top</option><option value="bottom">Bottom</option></select></label></div><div class="markdown-editor-footer-actions"><button class="markdown-editor-cancel" type="button">Cancel</button><button class="markdown-editor-save" type="button">Save</button></div></div></div></div></div></div></div><article class="popover-hint"><h1 id="gradients-in-physics">Gradients in Physics<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#gradients-in-physics" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>A physical quantity often starts as a number assigned to every point in space. The temperature in a room, the concentration of charge carriers inside a semiconductor, the potential energy of a mass in a force field, and the electric potential around a charge are all examples of this kind of quantity. At one point the number may be large, at another point it may be small, and the central physical question is not only “what is the value here?” but also “which way does the quantity change, and how strongly does it change?”</p>
+<p>This is the problem solved by the gradient. A partial derivative tells us how a function changes when we move in one coordinate direction, such as the (x)-direction. But in physics, space is not one-dimensional. A particle, charge carrier, or test charge can move in many directions. The gradient collects the spatial rates of change in all coordinate directions into one vector. This vector points in the direction where the scalar quantity increases fastest, and its magnitude tells the maximum rate of increase per unit distance. In physical models where motion or force goes toward lower values, the relevant direction is often the negative gradient.</p>
+<p>This topic appears here because the course has already introduced functions of several variables and partial derivatives. A function of several variables, such as (f(x,y,z)), assigns a number to each point in space. A partial derivative, such as (\partial f/\partial x), measures how that number changes when only (x) changes while the other variables are held fixed. The gradient is the next natural step: instead of treating the coordinate directions separately, it combines all these directional changes into one vector object that can describe physical direction and strength.</p>
+<p>[Insert Figure: Studio Classroom Week 6, slide 7 or slide 9. Use the figure showing a scalar surface with level curves and gradient arrows. This figure belongs here because it visually connects three ideas: a scalar field, level sets, and the gradient direction perpendicular to the level sets.]</p>
+<p>A scalar field is a function that assigns a scalar, meaning a single numerical value, to every point in a region of space. For example, (T(x,y,z)) could be temperature, (\phi(x,y,z)) could be concentration, (U(x,y,z)) could be potential energy, and (V(x,y,z)) could be electric potential. A vector field assigns a vector to every point in space. A vector has both magnitude and direction. Force, current density, and electric field are examples of vector fields.</p>
+<p>For a scalar field (f(x,y,z)) in Cartesian coordinates, the gradient is</p>
+<h1 id="nabla-f">[
+\nabla f<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-f" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{\partial f}{\partial x},\hat{\mathbf i}
++
+\frac{\partial f}{\partial y},\hat{\mathbf j}
++
+\frac{\partial f}{\partial z},\hat{\mathbf k}.
+]</p>
+<p>Here, (\nabla), read as “del” or “nabla,” is the gradient operator when it acts on a scalar field. The symbols (\hat{\mathbf i}), (\hat{\mathbf j}), and (\hat{\mathbf k}) are unit vectors in the positive (x)-, (y)-, and (z)-directions. The quantities (\partial f/\partial x), (\partial f/\partial y), and (\partial f/\partial z) are the partial derivatives of (f), measuring the spatial rate of change of (f) in the three coordinate directions. The result (\nabla f) is not a scalar anymore; it is a vector field.</p>
+<p>The word “spatial” is important. The gradient describes how a quantity changes from place to place, not how it changes with time. A concentration (\phi(x,t)) may depend on both position (x) and time (t). The derivative (\partial \phi/\partial t) measures time change at a fixed position. The derivative (\partial \phi/\partial x), and in higher dimensions the gradient (\nabla \phi), measures spatial change at a fixed time. In the physics examples below, the gradient tells us what direction in space produces the strongest change.</p>
+<h2 id="diffusion-motion-caused-by-concentration-differences">Diffusion: motion caused by concentration differences<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#diffusion-motion-caused-by-concentration-differences" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>A first physical example is diffusion in a semiconductor. Diffusion is the tendency of particles to spread out from regions of high concentration toward regions of low concentration. The key point is that diffusion is caused by a concentration difference, not directly by the charge of the carriers. Temperature causes carriers to move randomly in all directions, but when there are more carriers on one side than the other, the random motion does not balance perfectly. There is a net flow toward the lower concentration side.</p>
+<p>[Insert Figure: Studio Classroom Week 6, slide 11. Use the diffusion-current figure with carrier motion, net flow, and the concentration curve. This figure belongs here because it shows why a concentration slope produces a directed net flow even though individual thermal motion is random.]</p>
+<p>Let (\phi(x,t)) denote the concentration of particles at position (x) and time (t). Concentration means “number of particles per unit volume.” Let (J_x(x,t)) denote the diffusive flux in the (x)-direction. Flux here means the number of particles crossing a unit area per unit time. If particles are more concentrated on the left than on the right, the concentration decreases as (x) increases, and the particles tend to flow toward increasing (x).</p>
+<p>In one spatial dimension, Fick’s law expresses this idea as</p>
+<h1 id="j_xxt">[
+J_x(x,t)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#j_xxt" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-D,\frac{\partial \phi(x,t)}{\partial x}.
+]</p>
+<p>Here, (J_x(x,t)) is the particle flux in the (x)-direction, (D) is the diffusivity or diffusion coefficient, and (\partial \phi/\partial x) is the spatial derivative of concentration. The diffusivity (D) is positive and measures how easily particles diffuse through the material. The minus sign is the essential physical sign: particles flow toward lower concentration, while the derivative (\partial \phi/\partial x) points toward increasing concentration.</p>
+<p>The formula can be understood without memorizing it. If (\partial \phi/\partial x>0), then concentration increases as (x) increases. The higher concentration lies in the positive (x)-direction, so diffusion should go toward the negative (x)-direction. The formula gives (J_x&lt;0), exactly that. If (\partial \phi/\partial x&lt;0), concentration decreases as (x) increases, so diffusion should go toward the positive (x)-direction. The formula gives (J_x>0).</p>
+<p>In three dimensions, the concentration may vary with (x), (y), and (z), so one derivative is not enough. The gradient gives the direction of greatest increase of concentration, and the negative gradient gives the direction of greatest decrease. Fick’s law becomes</p>
+<h1 id="mathbf-j">[
+\mathbf J<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mathbf-j" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-D\nabla \phi.
+]</p>
+<p>Here, (\mathbf J) is the diffusive flux vector field, (D) is the diffusivity, and (\nabla \phi) is the gradient of the concentration field (\phi(x,y,z,t)) with respect to the spatial variables. The vector (\mathbf J) points in the local direction of particle flow. Since (D>0), the direction of (\mathbf J) is the direction of (-\nabla \phi), which means the direction toward lower concentration.</p>
+<p>This example also shows why one must distinguish particle flux from electric current density. Particle flux describes the motion of particles. Electric current density also takes the carrier charge into account. Electrons and holes can produce current directions with opposite signs because they have opposite charge signs, even if their concentration gradients are described by the same geometric idea. The gradient tells where the concentration rises fastest; the physical current formula then adds the charge sign and mobility constants appropriate to the carrier type.</p>
+<p>For semiconductors, if (n) denotes electron concentration and (p) denotes hole concentration, the diffusion contribution to current density is written in one-dimensional models using concentration derivatives such as (dn/dx) and (dp/dx). A typical form is</p>
+<h1 id="j_textdiffusion">[
+J_{\text{diffusion}}<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#j_textdiffusion" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h2 id="ktleftmu_n-fracdndx">kT
+\left(
+\mu_n \frac{dn}{dx}<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#ktleftmu_n-fracdndx" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>\mu_p \frac{dp}{dx}
+\right).
+]</p>
+<p>Here, (J_{\text{diffusion}}) is the total diffusion current density in one dimension, (k) is Boltzmann’s constant, (T) is absolute temperature, (\mu_n) is electron mobility, (\mu_p) is hole mobility, (n) is electron concentration, and (p) is hole concentration. This formula should be read as a semiconductor-specific current formula, not as the pure particle-flux formula. The gradient idea is still the same: spatial concentration differences create directed transport.</p>
+<p>The practical lesson is that a concentration field is scalar, but diffusion is directional. The gradient is the bridge between them. It translates a map of “how many particles are here?” into a vector direction saying “which way will the imbalance push particles?”</p>
+<h2 id="conservative-forces-motion-caused-by-potential-energy-differences">Conservative forces: motion caused by potential-energy differences<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#conservative-forces-motion-caused-by-potential-energy-differences" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>A second physical use of gradients appears in conservative forces. A force is called conservative when it can be obtained from a potential energy function. Potential energy is a scalar field: it assigns an energy value to each position. Force is a vector field: it gives a direction and magnitude of push or pull at each position. The gradient is again the bridge from a scalar map to a vector field.</p>
+<p>In one dimension, let (U(x)) be the potential energy of a system at position (x). The force component in the (x)-direction is</p>
+<h1 id="f_xx">[
+F_x(x)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#f_xx" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{dU(x)}{dx}.
+]</p>
+<p>Here, (F_x(x)) is the force in the (x)-direction, (U(x)) is potential energy as a function of position, and (dU/dx) is the spatial rate of change of potential energy. The derivative (dU/dx) points toward increasing potential energy. The minus sign means that the force acts toward decreasing potential energy.</p>
+<p>This formula immediately explains why large slopes of the potential energy graph produce large forces. If (U(x)) changes rapidly with (x), then (|dU/dx|) is large, so (|F_x|) is large. If (U(x)) is flat, then (dU/dx=0), so the conservative force is zero.</p>
+<p>[Insert Figure: Studio Classroom Week 6, slide 15. Use the elastic-potential-energy figure. This figure belongs here because it shows how the slope of the potential-energy graph determines the restoring spring force.]</p>
+<p>For a spring, the elastic potential energy is</p>
+<h1 id="ux">[
+U(x)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#ux" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{1}{2}kx^2.
+]</p>
+<p>Here, (U(x)) is the spring’s potential energy, (k) is the spring constant, and (x) is the displacement from the equilibrium position. The larger (k) is, the stiffer the spring is. The equilibrium position is (x=0), where the spring is neither stretched nor compressed.</p>
+<p>The force is obtained by differentiating (U) and adding the minus sign:</p>
+<h1 id="f_xx-1">[
+F_x(x)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#f_xx-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h1 id="-fracddxleftfrac12kx2right">-\frac{d}{dx}\left(\frac{1}{2}kx^2\right)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#-fracddxleftfrac12kx2right" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-kx.
+]</p>
+<p>Here, (F_x(x)) is the spring force. If (x>0), the force is negative, so the spring pulls back toward the left. If (x&lt;0), the force is positive, so the spring pushes back toward the right. In both cases, the force points toward (x=0), where the potential energy is lowest. The formula is therefore not just algebra; it encodes the restoring behaviour of the spring.</p>
+<p>[Insert Figure: Studio Classroom Week 6, slide 16. Use the gravitational-potential-energy figure. This figure belongs here because it contrasts the curved spring potential with a linear gravitational potential near Earth.]</p>
+<p>Near the surface of Earth, gravitational potential energy can be modelled as</p>
+<h1 id="uy">[
+U(y)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#uy" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>mgy.
+]</p>
+<p>Here, (U(y)) is gravitational potential energy, (m) is mass, (g) is the gravitational acceleration near Earth, and (y) is vertical position measured upward. The higher the object is, the larger (y) is, and therefore the larger the potential energy is.</p>
+<p>The gravitational force is</p>
+<h1 id="f_yy">[
+F_y(y)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#f_yy" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h1 id="-fracddymgy">-\frac{d}{dy}(mgy)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#-fracddymgy" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-mg.
+]</p>
+<p>Here, (F_y(y)) is the vertical force component. Since (y) is measured upward, the negative sign means the force points downward. The derivative (dU/dy=mg) is constant, so the force magnitude is constant in this near-Earth model.</p>
+<p>These two examples show the same principle with different potential-energy shapes. A spring has a quadratic potential energy, so the slope changes with displacement and the force grows with distance from equilibrium. Near-Earth gravity has a linear potential energy, so the slope is constant and the force is constant.</p>
+<p>In three dimensions, potential energy may depend on all three coordinates:</p>
+<p>[
+U=U(x,y,z).
+]</p>
+<p>Here, (U) is a scalar field assigning potential energy to each point ((x,y,z)). The force has three components because it can point in any spatial direction:</p>
+<h1 id="f_x">[
+F_x<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#f_x" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h1 id="-fracpartial-upartial-xqquadf_y">-\frac{\partial U}{\partial x},
+\qquad
+F_y<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#-fracpartial-upartial-xqquadf_y" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h1 id="-fracpartial-upartial-yqquadf_z">-\frac{\partial U}{\partial y},
+\qquad
+F_z<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#-fracpartial-upartial-yqquadf_z" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{\partial U}{\partial z}.
+]</p>
+<p>Here, (F_x), (F_y), and (F_z) are the force components in the (x)-, (y)-, and (z)-directions. Each partial derivative measures the slope of potential energy in one coordinate direction. Combining these components gives the vector formula</p>
+<h1 id="mathbf-f">[
+\mathbf F<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mathbf-f" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\nabla U.
+]</p>
+<p>Here, (\mathbf F) is the force vector field, and (\nabla U) is the gradient of the potential energy field. The gradient (\nabla U) points toward the direction in which potential energy increases fastest. The force (-\nabla U) points toward the direction in which potential energy decreases fastest.</p>
+<p>This distinction is crucial. The gradient itself is not the force unless the model defines the force that way. For conservative mechanical forces, the force is the negative gradient of potential energy. The scalar field (U) stores energy information; the vector field (\mathbf F) describes the actual push or pull.</p>
+<h2 id="electric-field-from-electric-potential">Electric field from electric potential<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#electric-field-from-electric-potential" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>A static electric field gives another direct use of the same idea. Electric potential is a scalar field, usually denoted by (V). It assigns a voltage value to each point in space. Electric field is a vector field, usually denoted by (\mathbf E). It gives the force per unit positive charge at each point.</p>
+<p>The relation is</p>
+<h1 id="mathbf-e">[
+\mathbf E<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mathbf-e" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\nabla V.
+]</p>
+<p>Here, (\mathbf E) is the electric field, (V) is electric potential, and (\nabla V) is the spatial gradient of electric potential. The minus sign means that the electric field points in the direction where electric potential decreases fastest. This mirrors the conservative-force formula (\mathbf F=-\nabla U): potential is scalar, field is vector, and the negative gradient converts the scalar potential landscape into a direction of physical action.</p>
+<p>[Insert Figure: Studio Classroom Week 6, slide 18. Use the problem statement for the line charge and point charge potentials. This figure belongs here because it provides the two course examples where the electric field is calculated from a potential.]</p>
+<p>Consider first an infinitely long line charge with constant charge density (\rho_L), measured in coulombs per metre. In Cartesian coordinates, the electric potential is given by</p>
+<h1 id="vxy">[
+V(x,y)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#vxy" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{\rho_L}{2\pi\varepsilon_0}
+\ln\sqrt{x^2+y^2}.
+]</p>
+<p>Here, (V(x,y)) is electric potential, (\rho_L) is the line charge density, and (\varepsilon_0) is the permittivity of free space. The expression (\sqrt{x^2+y^2}) is the distance from the (z)-axis, where the line charge lies. There is no (z)-dependence because an infinitely long line looks the same at every height (z).</p>
+<p>To compute the electric field, apply (\mathbf E=-\nabla V). First write the gradient in Cartesian coordinates:</p>
+<h1 id="nabla-v">[
+\nabla V<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-v" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{\partial V}{\partial x},\hat{\mathbf i}
++
+\frac{\partial V}{\partial y},\hat{\mathbf j}
++
+\frac{\partial V}{\partial z},\hat{\mathbf k}.
+]</p>
+<p>Since (V) does not depend on (z), the derivative (\partial V/\partial z) is zero. Using</p>
+<h1 id="lnsqrtx2y2">[
+\ln\sqrt{x^2+y^2}<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#lnsqrtx2y2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{1}{2}\ln(x^2+y^2),
+]</p>
+<p>we get</p>
+<h1 id="fracpartial-vpartial-x">[
+\frac{\partial V}{\partial x}<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#fracpartial-vpartial-x" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h1 id="-fracrho_l2pivarepsilon_0fracxx2y2qquadfracpartial-vpartial-y">-\frac{\rho_L}{2\pi\varepsilon_0}
+\frac{x}{x^2+y^2},
+\qquad
+\frac{\partial V}{\partial y}<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#-fracrho_l2pivarepsilon_0fracxx2y2qquadfracpartial-vpartial-y" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{\rho_L}{2\pi\varepsilon_0}
+\frac{y}{x^2+y^2}.
+]</p>
+<p>Here, the factors (x/(x^2+y^2)) and (y/(x^2+y^2)) come from the chain rule applied to the logarithm. Therefore,</p>
+<h1 id="nabla-v-1">[
+\nabla V<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-v-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{\rho_L}{2\pi\varepsilon_0}
+\frac{x\hat{\mathbf i}+y\hat{\mathbf j}}{x^2+y^2}.
+]</p>
+<p>Applying the negative sign in (\mathbf E=-\nabla V) gives</p>
+<h1 id="mathbf-e-1">[
+\mathbf E<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mathbf-e-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{\rho_L}{2\pi\varepsilon_0}
+\frac{x\hat{\mathbf i}+y\hat{\mathbf j}}{x^2+y^2}.
+]</p>
+<p>This field points radially away from the (z)-axis if (\rho_L>0). The numerator (x\hat{\mathbf i}+y\hat{\mathbf j}) is the horizontal position vector away from the line, and the denominator (x^2+y^2) controls how the magnitude decreases with distance.</p>
+<p>The same example becomes simpler in cylindrical coordinates. Cylindrical coordinates are natural when a problem has symmetry around an axis. Let (r) be the distance from the (z)-axis, (\theta) the angle around the axis, and (z) the vertical coordinate. The gradient of a scalar field (f(r,\theta,z)) in cylindrical coordinates is</p>
+<h1 id="nabla-f-1">[
+\nabla f<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-f-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{\partial f}{\partial r},\hat{\mathbf r}
++
+\frac{1}{r}\frac{\partial f}{\partial \theta},\hat{\boldsymbol\theta}
++
+\frac{\partial f}{\partial z},\hat{\mathbf k}.
+]</p>
+<p>Here, (\hat{\mathbf r}) is the radial unit vector, (\hat{\boldsymbol\theta}) is the angular unit vector, and (\hat{\mathbf k}) is the vertical unit vector. The factor (1/r) appears because changing the angle (\theta) by a small amount corresponds to an arc length (r,d\theta), not simply (d\theta).</p>
+<p>For the line charge, the potential is</p>
+<h1 id="vr">[
+V(r)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#vr" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{\rho_L}{2\pi\varepsilon_0}\ln r.
+]</p>
+<p>Here, (r) is the distance from the line charge. Since (V) depends only on (r), the (\theta)- and (z)-derivatives are zero. Thus,</p>
+<h1 id="nabla-v-2">[
+\nabla V<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-v-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{\rho_L}{2\pi\varepsilon_0}
+\frac{1}{r}\hat{\mathbf r},
+]</p>
+<p>and therefore</p>
+<h1 id="mathbf-e-2">[
+\mathbf E<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mathbf-e-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{\rho_L}{2\pi\varepsilon_0 r}\hat{\mathbf r}.
+]</p>
+<p>This is the same field as the Cartesian result, but the cylindrical form displays the physics more clearly: the field is purely radial, and its magnitude depends only on distance from the line.</p>
+<p>Now consider a point charge (q) at the origin. In Cartesian coordinates, the electric potential is</p>
+<h1 id="vxyz">[
+V(x,y,z)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#vxyz" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{q}{4\pi\varepsilon_0\sqrt{x^2+y^2+z^2}}.
+]</p>
+<p>Here, (q) is the charge, (\varepsilon_0) is the permittivity of free space, and (\sqrt{x^2+y^2+z^2}) is the distance from the origin. Let</p>
+<p>[
+R=\sqrt{x^2+y^2+z^2}.
+]</p>
+<p>Here, (R) is the radial distance from the origin. Then</p>
+<h1 id="v">[
+V<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#v" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{q}{4\pi\varepsilon_0 R}.
+]</p>
+<p>The gradient of (V) points in the radial direction because the potential depends only on distance from the origin. In Cartesian form,</p>
+<h1 id="nabla-v-3">[
+\nabla V<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-v-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{q}{4\pi\varepsilon_0}
+\frac{x\hat{\mathbf i}+y\hat{\mathbf j}+z\hat{\mathbf k}}{(x^2+y^2+z^2)^{3/2}}.
+]</p>
+<p>Therefore,</p>
+<h1 id="mathbf-e-3">[
+\mathbf E<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mathbf-e-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h1 id="-nabla-v">-\nabla V<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#-nabla-v" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{q}{4\pi\varepsilon_0}
+\frac{x\hat{\mathbf i}+y\hat{\mathbf j}+z\hat{\mathbf k}}{(x^2+y^2+z^2)^{3/2}}.
+]</p>
+<p>This formula says that the electric field of a positive point charge points away from the origin. The vector (x\hat{\mathbf i}+y\hat{\mathbf j}+z\hat{\mathbf k}) points from the origin to the observation point, and the denominator gives the inverse-square behaviour after accounting for the length of that vector.</p>
+<p>In spherical coordinates, this same computation becomes even cleaner. Let (R) be the distance from the origin, (\phi) the angle measured from the positive (z)-axis, and (\theta) the angle around the (z)-axis. The gradient of a scalar field (f(R,\phi,\theta)) in spherical coordinates is</p>
+<h1 id="nabla-f-2">[
+\nabla f<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-f-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{\partial f}{\partial R},\hat{\mathbf R}
++
+\frac{1}{R}\frac{\partial f}{\partial \phi},\hat{\boldsymbol\phi}
++
+\frac{1}{R\sin\phi}\frac{\partial f}{\partial \theta},\hat{\boldsymbol\theta}.
+]</p>
+<p>Here, (\hat{\mathbf R}) is the radial unit vector, (\hat{\boldsymbol\phi}) is the unit vector in the direction of increasing (\phi), and (\hat{\boldsymbol\theta}) is the unit vector in the direction of increasing (\theta). The factors (1/R) and (1/(R\sin\phi)) appear because angular changes correspond to arc lengths, not straight coordinate distances.</p>
+<p>For a point charge,</p>
+<h1 id="vr-1">[
+V(R)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#vr-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{q}{4\pi\varepsilon_0R}.
+]</p>
+<p>Since (V) depends only on (R), the angular derivatives are zero. Thus,</p>
+<h1 id="nabla-v-4">[
+\nabla V<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#nabla-v-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>-\frac{q}{4\pi\varepsilon_0R^2}\hat{\mathbf R},
+]</p>
+<p>and therefore</p>
+<h1 id="mathbf-e-4">[
+\mathbf E<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mathbf-e-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>\frac{q}{4\pi\varepsilon_0R^2}\hat{\mathbf R}.
+]</p>
+<p>This is the familiar radial electric field of a point charge. The spherical-coordinate calculation is shorter because the coordinate system matches the symmetry of the physical situation.</p>
+<p>The coordinate formulas should not be treated as interchangeable decorations. The Cartesian gradient formula is used when the scalar field is written as (f(x,y,z)). The cylindrical formula is used when the scalar field is written as (f(r,\theta,z)). The spherical formula is used when the scalar field is written as (f(R,\phi,\theta)). If the field is written in a coordinate system that matches the physical symmetry, the calculation often becomes simpler and the direction of the result becomes easier to interpret.</p>
+<h2 id="why-the-negative-gradient-appears-so-often">Why the negative gradient appears so often<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#why-the-negative-gradient-appears-so-often" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The gradient points toward greatest increase. Many physical processes move toward decrease. Diffusion moves particles toward lower concentration. Conservative mechanical forces push systems toward lower potential energy. Static electric fields point toward lower electric potential for positive test charges. This is why the formulas often contain a minus sign:</p>
+<p>[
+\mathbf J=-D\nabla\phi,
+\qquad
+\mathbf F=-\nabla U,
+\qquad
+\mathbf E=-\nabla V.
+]</p>
+<p>In the first formula, (\mathbf J) is diffusive flux, (D) is diffusivity, and (\phi) is concentration. In the second formula, (\mathbf F) is force and (U) is potential energy. In the third formula, (\mathbf E) is electric field and (V) is electric potential. The common structure is that a scalar field stores a spatial landscape, and the negative gradient gives a vector field directed downhill on that landscape.</p>
+<p>The sign should not be memorized as a random convention. It has physical content. If a quantity represents something that the system tends to reduce, such as concentration imbalance or potential energy, then the physical vector points opposite the gradient. If a problem asks only for “the direction of greatest increase” of a scalar field, the answer is the gradient. If it asks for diffusion direction, conservative force, or electric field from potential, the answer usually involves the negative gradient.</p>
+<h2 id="synthesis">Synthesis<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#synthesis" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The gradient is the mathematical operation that turns spatial variation into direction. A scalar field such as concentration, potential energy, or electric potential tells us how much of something is present at each point. Its gradient tells us where that scalar increases fastest and how rapidly it increases per unit distance. In physics, the most important vector fields in this section arise because systems respond to spatial differences: particles diffuse down concentration gradients, conservative forces push systems down potential-energy gradients, and static electric fields point down electric-potential gradients. The recurring structure is therefore simple: first identify the scalar field, then compute its gradient in the coordinate system appropriate to the geometry, and finally interpret the sign and direction according to the physical law.</p></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph "><h3>Knowledge Map</h3><div class="graph-outer"><div class="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:false,&quot;scale&quot;:0.95,&quot;repelForce&quot;:1.25,&quot;centerForce&quot;:0.08,&quot;linkDistance&quot;:120,&quot;fontSize&quot;:0.72,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><button class="global-graph-icon" aria-label="Expand Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                  s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                  c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                  C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                  c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                  v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                  s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                  C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                  S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                  s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                  s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div class="global-graph-outer"><div class="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:true,&quot;scale&quot;:1.05,&quot;repelForce&quot;:2.3,&quot;centerForce&quot;:0.04,&quot;linkDistance&quot;:165,&quot;fontSize&quot;:0.8,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><div class="global-graph-search" role="search"><button class="global-graph-search-button" type="button" aria-label="Search nodes"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="7"></circle></svg></button><input class="global-graph-search-input" type="search" placeholder="Search nodes..." autocomplete="off" spellcheck="false"/><button class="global-graph-search-clear" type="button" aria-label="Clear node search">Clear</button><span class="global-graph-search-status" aria-live="polite"></span></div><button class="global-graph-close" type="button" aria-label="Close Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button></div></div><div class="toc desktop-only"><button type="button" class="toc-header" aria-controls="toc-254" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><ul id="list-1" class="toc-content overflow"><li class="depth-0"><a href="#gradients-in-physics" data-for="gradients-in-physics">Gradients in Physics</a></li><li class="depth-0"><a href="#nabla-f" data-for="nabla-f">[
+\nabla f</a></li><li class="depth-1"><a href="#diffusion-motion-caused-by-concentration-differences" data-for="diffusion-motion-caused-by-concentration-differences">Diffusion: motion caused by concentration differences</a></li><li class="depth-0"><a href="#j_xxt" data-for="j_xxt">[
+J_x(x,t)</a></li><li class="depth-0"><a href="#mathbf-j" data-for="mathbf-j">[
+\mathbf J</a></li><li class="depth-0"><a href="#j_textdiffusion" data-for="j_textdiffusion">[
+J_{\text{diffusion}}</a></li><li class="depth-1"><a href="#ktleftmu_n-fracdndx" data-for="ktleftmu_n-fracdndx">kT
+\left(
+\mu_n \frac{dn}{dx}</a></li><li class="depth-1"><a href="#conservative-forces-motion-caused-by-potential-energy-differences" data-for="conservative-forces-motion-caused-by-potential-energy-differences">Conservative forces: motion caused by potential-energy differences</a></li><li class="depth-0"><a href="#f_xx" data-for="f_xx">[
+F_x(x)</a></li><li class="depth-0"><a href="#ux" data-for="ux">[
+U(x)</a></li><li class="depth-0"><a href="#f_xx-1" data-for="f_xx-1">[
+F_x(x)</a></li><li class="depth-0"><a href="#-fracddxleftfrac12kx2right" data-for="-fracddxleftfrac12kx2right">-\frac{d}{dx}\left(\frac{1}{2}kx^2\right)</a></li><li class="depth-0"><a href="#uy" data-for="uy">[
+U(y)</a></li><li class="depth-0"><a href="#f_yy" data-for="f_yy">[
+F_y(y)</a></li><li class="depth-0"><a href="#-fracddymgy" data-for="-fracddymgy">-\frac{d}{dy}(mgy)</a></li><li class="depth-0"><a href="#f_x" data-for="f_x">[
+F_x</a></li><li class="depth-0"><a href="#-fracpartial-upartial-xqquadf_y" data-for="-fracpartial-upartial-xqquadf_y">-\frac{\partial U}{\partial x},
+\qquad
+F_y</a></li><li class="depth-0"><a href="#-fracpartial-upartial-yqquadf_z" data-for="-fracpartial-upartial-yqquadf_z">-\frac{\partial U}{\partial y},
+\qquad
+F_z</a></li><li class="depth-0"><a href="#mathbf-f" data-for="mathbf-f">[
+\mathbf F</a></li><li class="depth-1"><a href="#electric-field-from-electric-potential" data-for="electric-field-from-electric-potential">Electric field from electric potential</a></li><li class="depth-0"><a href="#mathbf-e" data-for="mathbf-e">[
+\mathbf E</a></li><li class="depth-0"><a href="#vxy" data-for="vxy">[
+V(x,y)</a></li><li class="depth-0"><a href="#nabla-v" data-for="nabla-v">[
+\nabla V</a></li><li class="depth-0"><a href="#lnsqrtx2y2" data-for="lnsqrtx2y2">[
+\ln\sqrt{x^2+y^2}</a></li><li class="depth-0"><a href="#fracpartial-vpartial-x" data-for="fracpartial-vpartial-x">[
+\frac{\partial V}{\partial x}</a></li><li class="depth-0"><a href="#-fracrho_l2pivarepsilon_0fracxx2y2qquadfracpartial-vpartial-y" data-for="-fracrho_l2pivarepsilon_0fracxx2y2qquadfracpartial-vpartial-y">-\frac{\rho_L}{2\pi\varepsilon_0}
+\frac{x}{x^2+y^2},
+\qquad
+\frac{\partial V}{\partial y}</a></li><li class="depth-0"><a href="#nabla-v-1" data-for="nabla-v-1">[
+\nabla V</a></li><li class="depth-0"><a href="#mathbf-e-1" data-for="mathbf-e-1">[
+\mathbf E</a></li><li class="depth-0"><a href="#nabla-f-1" data-for="nabla-f-1">[
+\nabla f</a></li><li class="depth-0"><a href="#vr" data-for="vr">[
+V(r)</a></li><li class="depth-0"><a href="#nabla-v-2" data-for="nabla-v-2">[
+\nabla V</a></li><li class="depth-0"><a href="#mathbf-e-2" data-for="mathbf-e-2">[
+\mathbf E</a></li><li class="depth-0"><a href="#vxyz" data-for="vxyz">[
+V(x,y,z)</a></li><li class="depth-0"><a href="#v" data-for="v">[
+V</a></li><li class="depth-0"><a href="#nabla-v-3" data-for="nabla-v-3">[
+\nabla V</a></li><li class="depth-0"><a href="#mathbf-e-3" data-for="mathbf-e-3">[
+\mathbf E</a></li><li class="depth-0"><a href="#-nabla-v" data-for="-nabla-v">-\nabla V</a></li><li class="depth-0"><a href="#nabla-f-2" data-for="nabla-f-2">[
+\nabla f</a></li><li class="depth-0"><a href="#vr-1" data-for="vr-1">[
+V(R)</a></li><li class="depth-0"><a href="#nabla-v-4" data-for="nabla-v-4">[
+\nabla V</a></li><li class="depth-0"><a href="#mathbf-e-4" data-for="mathbf-e-4">[
+\mathbf E</a></li><li class="depth-1"><a href="#why-the-negative-gradient-appears-so-often" data-for="why-the-negative-gradient-appears-so-often">Why the negative gradient appears so often</a></li><li class="depth-1"><a href="#synthesis" data-for="synthesis">Synthesis</a></li><li class="overflow-end"></li></ul></div></div></div></div></body><script type="application/javascript" data-persist="true">function n(){let t=this.parentElement;t.classList.toggle("is-collapsed");let e=t.getElementsByClassName("callout-content")[0];if(!e)return;let l=t.classList.contains("is-collapsed");e.style.gridTemplateRows=l?"0fr":"1fr"}function c(){let t=document.getElementsByClassName("callout is-collapsible");for(let e of t){let l=e.getElementsByClassName("callout-title")[0],s=e.getElementsByClassName("callout-content")[0];if(!l||!s)continue;l.addEventListener("click",n),window.addCleanup(()=>l.removeEventListener("click",n));let o=e.classList.contains("is-collapsed");s.style.gridTemplateRows=o?"0fr":"1fr"}}document.addEventListener("nav",c);
+</script><script type="module" data-persist="true">function E(a,e){if(!a)return;function t(o){o.target===this&&(o.preventDefault(),o.stopPropagation(),e())}function n(o){o.key.startsWith("Esc")&&(o.preventDefault(),e())}a?.addEventListener("click",t),window.addCleanup(()=>a?.removeEventListener("click",t)),document.addEventListener("keydown",n),window.addCleanup(()=>document.removeEventListener("keydown",n))}function f(a){for(;a.firstChild;)a.removeChild(a.firstChild)}var m=class{constructor(e,t){this.container=e;this.content=t;this.setupEventListeners(),this.setupNavigationControls(),this.resetTransform()}isDragging=!1;startPan={x:0,y:0};currentPan={x:0,y:0};scale=1;MIN_SCALE=.5;MAX_SCALE=3;cleanups=[];setupEventListeners(){let e=this.onMouseDown.bind(this),t=this.onMouseMove.bind(this),n=this.onMouseUp.bind(this),o=this.onTouchStart.bind(this),r=this.onTouchMove.bind(this),i=this.onTouchEnd.bind(this),s=this.resetTransform.bind(this);this.container.addEventListener("mousedown",e),document.addEventListener("mousemove",t),document.addEventListener("mouseup",n),this.container.addEventListener("touchstart",o,{passive:!1}),document.addEventListener("touchmove",r,{passive:!1}),document.addEventListener("touchend",i),window.addEventListener("resize",s),this.cleanups.push(()=>this.container.removeEventListener("mousedown",e),()=>document.removeEventListener("mousemove",t),()=>document.removeEventListener("mouseup",n),()=>this.container.removeEventListener("touchstart",o),()=>document.removeEventListener("touchmove",r),()=>document.removeEventListener("touchend",i),()=>window.removeEventListener("resize",s))}cleanup(){for(let e of this.cleanups)e()}setupNavigationControls(){let e=document.createElement("div");e.className="mermaid-controls";let t=this.createButton("+",()=>this.zoom(.1)),n=this.createButton("-",()=>this.zoom(-.1)),o=this.createButton("Reset",()=>this.resetTransform());e.appendChild(n),e.appendChild(o),e.appendChild(t),this.container.appendChild(e)}createButton(e,t){let n=document.createElement("button");return n.textContent=e,n.className="mermaid-control-button",n.addEventListener("click",t),window.addCleanup(()=>n.removeEventListener("click",t)),n}onMouseDown(e){e.button===0&&(this.isDragging=!0,this.startPan={x:e.clientX-this.currentPan.x,y:e.clientY-this.currentPan.y},this.container.style.cursor="grabbing")}onMouseMove(e){this.isDragging&&(e.preventDefault(),this.currentPan={x:e.clientX-this.startPan.x,y:e.clientY-this.startPan.y},this.updateTransform())}onMouseUp(){this.isDragging=!1,this.container.style.cursor="grab"}onTouchStart(e){if(e.touches.length!==1)return;this.isDragging=!0;let t=e.touches[0];this.startPan={x:t.clientX-this.currentPan.x,y:t.clientY-this.currentPan.y}}onTouchMove(e){if(!this.isDragging||e.touches.length!==1)return;e.preventDefault();let t=e.touches[0];this.currentPan={x:t.clientX-this.startPan.x,y:t.clientY-this.startPan.y},this.updateTransform()}onTouchEnd(){this.isDragging=!1}zoom(e){let t=Math.min(Math.max(this.scale+e,this.MIN_SCALE),this.MAX_SCALE),n=this.content.getBoundingClientRect(),o=n.width/2,r=n.height/2,i=t-this.scale;this.currentPan.x-=o*i,this.currentPan.y-=r*i,this.scale=t,this.updateTransform()}updateTransform(){this.content.style.transform=`translate(${this.currentPan.x}px, ${this.currentPan.y}px) scale(${this.scale})`}resetTransform(){let t=this.content.querySelector("svg").getBoundingClientRect(),n=t.width/this.scale,o=t.height/this.scale;this.scale=1,this.currentPan={x:(this.container.clientWidth-n)/2,y:(this.container.clientHeight-o)/2},this.updateTransform()}},T=["--secondary","--tertiary","--gray","--light","--lightgray","--highlight","--dark","--darkgray","--codeFont"],y;document.addEventListener("nav",async()=>{let e=document.querySelector(".center").querySelectorAll("code.mermaid");if(e.length===0)return;y||=await import("https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.0/mermaid.esm.min.mjs");let t=y.default,n=new WeakMap;for(let r of e)n.set(r,r.innerText);async function o(){for(let s of e){s.removeAttribute("data-processed");let c=n.get(s);c&&(s.innerHTML=c)}let r=T.reduce((s,c)=>(s[c]=window.getComputedStyle(document.documentElement).getPropertyValue(c),s),{}),i=document.documentElement.getAttribute("saved-theme")==="dark";t.initialize({startOnLoad:!1,securityLevel:"loose",theme:i?"dark":"base",themeVariables:{fontFamily:r["--codeFont"],primaryColor:r["--light"],primaryTextColor:r["--darkgray"],primaryBorderColor:r["--tertiary"],lineColor:r["--darkgray"],secondaryColor:r["--secondary"],tertiaryColor:r["--tertiary"],clusterBkg:r["--light"],edgeLabelBackground:r["--highlight"]}}),await t.run({nodes:e})}await o(),document.addEventListener("themechange",o),window.addCleanup(()=>document.removeEventListener("themechange",o));for(let r=0;r<e.length;r++){let v=function(){let g=l.querySelector("#mermaid-space"),h=l.querySelector(".mermaid-content");if(!h)return;f(h);let w=i.querySelector("svg").cloneNode(!0);h.appendChild(w),l.classList.add("active"),g.style.cursor="grab",u=new m(g,h)},M=function(){l.classList.remove("active"),u?.cleanup(),u=null},i=e[r],s=i.parentElement,c=s.querySelector(".clipboard-button"),d=s.querySelector(".expand-button"),p=window.getComputedStyle(c),L=c.offsetWidth+parseFloat(p.marginLeft||"0")+parseFloat(p.marginRight||"0");d.style.right=`calc(${L}px + 0.3rem)`,s.prepend(d);let l=s.querySelector("#mermaid-container");if(!l)return;let u=null;d.addEventListener("click",v),E(l,M),window.addCleanup(()=>{u?.cleanup(),d.removeEventListener("click",v)})}});
+</script><script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/copy-tex.min.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">
+        const socket = new WebSocket('ws://localhost:3001')
+        // reload(true) ensures resources like images and scripts are fetched again in firefox
+        socket.addEventListener('message', () => document.location.reload(true))
+      </script><script src="../postscript.js?v=mqrs8ckb" type="module" data-persist="true"></script></html>

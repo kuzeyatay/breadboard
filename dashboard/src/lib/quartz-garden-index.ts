@@ -12,6 +12,7 @@ interface GardenClusterRow {
   visibility: "private" | "public";
   border_color: string;
   view_count: number | null;
+  folder: string | null;
   created_at: string;
   ownerUsername?: string | null;
   ownerEmail?: string | null;
@@ -120,7 +121,10 @@ function writeGardenIndex({
     0,
   );
 
-  const ranking = clusters.map(({ row, stats }, index) => {
+  const clusterLine = (
+    { row, stats }: GardenCluster,
+    index: number,
+  ): string => {
     const owner =
       scope === "public" && (row.ownerUsername || row.ownerEmail)
         ? ` by ${row.ownerUsername ?? row.ownerEmail}`
@@ -130,7 +134,41 @@ function writeGardenIndex({
         ? `, ${countLabel(Number(row.view_count) || 0, "view")}`
         : "";
     return `${index + 1}. ${quartzLink(row.slug, row.name)}${owner} - ${countLabel(stats.documents, "source document")}, ${countLabel(stats.topics, "topic")}, ${countLabel(stats.links, "link")}${popularity}`;
-  });
+  };
+
+  // Private gardens group clusters under their virtual folder; public stays flat.
+  const renderClusters = (): string => {
+    if (clusters.length === 0) return `- ${emptyText}`;
+    if (scope !== "private") {
+      return clusters.map((cluster, index) => clusterLine(cluster, index)).join("\n");
+    }
+
+    const groups = new Map<string, GardenCluster[]>();
+    for (const cluster of clusters) {
+      const key = (cluster.row.folder ?? "").trim();
+      const list = groups.get(key) ?? [];
+      list.push(cluster);
+      groups.set(key, list);
+    }
+
+    const sections: string[] = [];
+    const ungrouped = groups.get("") ?? [];
+    if (ungrouped.length > 0) {
+      sections.push(
+        ungrouped.map((cluster, index) => clusterLine(cluster, index)).join("\n"),
+      );
+    }
+    for (const name of [...groups.keys()]
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))) {
+      const list = groups.get(name) ?? [];
+      sections.push(
+        `### ${name}\n\n` +
+          list.map((cluster, index) => clusterLine(cluster, index)).join("\n"),
+      );
+    }
+    return sections.join("\n\n");
+  };
 
   const content =
     frontmatter({
@@ -144,14 +182,14 @@ function writeGardenIndex({
     }) +
     `## ${title}\n\n` +
     `${description}\n\n` +
-    `- Clusters: ${clusters.length}\n` +
+    `- Gardens: ${clusters.length}\n` +
     `- Source documents: ${totalSources}\n` +
     `- Knowledge topics: ${totalTopics}\n` +
     `- Generated chat notes: ${totalNotes}\n` +
     `- Graph links: ${totalLinks}\n` +
     `- Indexed words: ${totalWords}\n\n` +
-    `## Clusters\n\n` +
-    `${ranking.length > 0 ? ranking.join("\n") : `- ${emptyText}`}\n`;
+    `## Gardens\n\n` +
+    `${renderClusters()}\n`;
 
   fs.writeFileSync(path.join(pageDir, "_index.md"), content, "utf-8");
   return pageSlug;
@@ -173,11 +211,11 @@ export function refreshPrivateQuartzIndex(userId: number): string | null {
   return writeGardenIndex({
     baseContentPath,
     pageSlug: `${PRIVATE_LIBRARY_ROOT}/user-${userId}`,
-    title: "My library",
-    description: "Your library collects the clusters attached to your account.",
+    title: "My garden",
+    description: "All the gardens attached to your account.",
     scope: "private",
     clusters: rows.map((row) => readClusterStats(baseContentPath, row)),
-    emptyText: "No private clusters yet.",
+    emptyText: "No private gardens yet.",
   });
 }
 
@@ -198,10 +236,10 @@ export function refreshPublicQuartzIndex(): string | null {
   return writeGardenIndex({
     baseContentPath,
     pageSlug: PUBLIC_LIBRARY_ROOT,
-    title: "Public library",
-    description: "Public library lists shared clusters ranked by popularity.",
+    title: "Public garden",
+    description: "Shared gardens ranked by popularity.",
     scope: "public",
     clusters: rows.map((row) => readClusterStats(baseContentPath, row)),
-    emptyText: "No public clusters yet.",
+    emptyText: "No public gardens yet.",
   });
 }

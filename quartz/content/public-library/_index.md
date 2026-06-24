@@ -1,16 +1,16 @@
 ---
-title: "Public library"
-date: "2026-04-20"
-description: "Public library lists shared clusters ranked by popularity."
+title: "Public garden"
+date: "2026-06-11"
+description: "Public garden lists shared clusters ranked by popularity."
 knowledge_type: "garden-overview"
 garden_scope: "public"
 graph_clusters: []
 cluster_order: []
 ---
 
-## Public library
+## Public garden
 
-Public library lists shared clusters ranked by popularity.
+Public garden lists shared clusters ranked by popularity.
 
 - Clusters: 0
 - Source documents: 0

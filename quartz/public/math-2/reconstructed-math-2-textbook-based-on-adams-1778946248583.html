@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr"><head><title>Reconstructed Math 2 Textbook Based on Adams</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;family=IBM Plex Mono:wght@400;600&amp;display=swap"/><link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin="anonymous"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><script type="application/javascript" data-persist="true">(() => {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("embed") === "graph") {
+      document.documentElement.classList.add("quartz-graph-preview")
+    }
+  } catch {}
+})()</script><meta name="og:site_name" content="breadboard"/><meta property="og:title" content="Reconstructed Math 2 Textbook Based on Adams"/><meta property="og:type" content="website"/><meta name="twitter:card" content="summary_large_image"/><meta name="twitter:title" content="Reconstructed Math 2 Textbook Based on Adams"/><meta name="twitter:description" content="Reconstructed Math 2 Textbook Based on Adams Overview This reconstructed textbook reorganizes the Math 2 course around the Adams Calculus: A Complete Course structure, while inserting bridge material where the lectures rely on ideas that the official study guide may not explicitly list."/><meta property="og:description" content="Reconstructed Math 2 Textbook Based on Adams Overview This reconstructed textbook reorganizes the Math 2 course around the Adams Calculus: A Complete Course structure, while inserting bridge material where the lectures rely on ideas that the official study guide may not explicitly list."/><meta property="og:image:alt" content="Reconstructed Math 2 Textbook Based on Adams Overview This reconstructed textbook reorganizes the Math 2 course around the Adams Calculus: A Complete Course structure, while inserting bridge material where the lectures rely on ideas that the official study guide may not explicitly list."/><meta property="twitter:domain" content="localhost:8081"/><meta property="og:url" content="https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583"/><meta property="twitter:url" content="https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="Reconstructed Math 2 Textbook Based on Adams Overview This reconstructed textbook reorganizes the Math 2 course around the Adams Calculus: A Complete Course structure, while inserting bridge material where the lectures rely on ideas that the official study guide may not explicitly list."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" data-persist="true"/><style>.expand-button {
+  position: absolute;
+  display: flex;
+  float: right;
+  padding: 0.4rem;
+  margin: 0.3rem;
+  right: 0;
+  color: var(--gray);
+  border-color: var(--dark);
+  background-color: var(--light);
+  border: 1px solid;
+  border-radius: 5px;
+  opacity: 0;
+  transition: 0.2s;
+}
+.expand-button > svg {
+  fill: var(--light);
+  filter: contrast(0.3);
+}
+.expand-button:hover {
+  cursor: pointer;
+  border-color: var(--secondary);
+}
+.expand-button:focus {
+  outline: 0;
+}
+
+pre:hover > .expand-button {
+  opacity: 1;
+  transition: 0.2s;
+}
+
+#mermaid-container {
+  position: fixed;
+  contain: layout;
+  z-index: 999;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: none;
+  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
+}
+#mermaid-container.active {
+  display: inline-block;
+}
+#mermaid-container > #mermaid-space {
+  border: 1px solid var(--lightgray);
+  background-color: var(--light);
+  border-radius: 5px;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  height: 80vh;
+  width: 80vw;
+  overflow: hidden;
+}
+#mermaid-container > #mermaid-space > .mermaid-content {
+  position: relative;
+  transform-origin: 0 0;
+  transition: transform 0.1s ease;
+  overflow: visible;
+  min-height: 200px;
+  min-width: 200px;
+}
+#mermaid-container > #mermaid-space > .mermaid-content pre {
+  margin: 0;
+  border: none;
+}
+#mermaid-container > #mermaid-space > .mermaid-content svg {
+  max-width: none;
+  height: auto;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: var(--light);
+  border: 1px solid var(--lightgray);
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 2;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--lightgray);
+  background: var(--light);
+  color: var(--dark);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  font-family: var(--bodyFont);
+  transition: all 0.2s ease;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:hover {
+  background: var(--lightgray);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:active {
+  transform: translateY(1px);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:nth-child(2) {
+  width: auto;
+  padding: 0 12px;
+  font-size: 14px;
+}
+/*# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VSb290IjoiQzpcXFVzZXJzXFwyMDI1MjA4MlxcT25lRHJpdmUgLSBUVSBFaW5kaG92ZW5cXERlc2t0b3BcXGJyZWFkYm9hcmRcXHF1YXJ0elxccXVhcnR6XFxjb21wb25lbnRzXFxzdHlsZXMiLCJzb3VyY2VzIjpbIm1lcm1haWQuaW5saW5lLnNjc3MiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUdGO0VBQ0U7OztBQUtGO0VBQ0U7RUFDQTs7O0FBSUo7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUVBO0VBQ0U7O0FBR0Y7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUlKO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7O0FBRUE7RUFDRTs7QUFHRjtFQUNFOztBQUlGO0VBQ0U7RUFDQTtFQUNBIiwic291cmNlc0NvbnRlbnQiOlsiLmV4cGFuZC1idXR0b24ge1xuICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gIGRpc3BsYXk6IGZsZXg7XG4gIGZsb2F0OiByaWdodDtcbiAgcGFkZGluZzogMC40cmVtO1xuICBtYXJnaW46IDAuM3JlbTtcbiAgcmlnaHQ6IDA7IC8vIE5PVEU6IHJpZ2h0IHdpbGwgYmUgc2V0IGluIG1lcm1haWQuaW5saW5lLnRzXG4gIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgYm9yZGVyLWNvbG9yOiB2YXIoLS1kYXJrKTtcbiAgYmFja2dyb3VuZC1jb2xvcjogdmFyKC0tbGlnaHQpO1xuICBib3JkZXI6IDFweCBzb2xpZDtcbiAgYm9yZGVyLXJhZGl1czogNXB4O1xuICBvcGFjaXR5OiAwO1xuICB0cmFuc2l0aW9uOiAwLjJzO1xuXG4gICYgPiBzdmcge1xuICAgIGZpbGw6IHZhcigtLWxpZ2h0KTtcbiAgICBmaWx0ZXI6IGNvbnRyYXN0KDAuMyk7XG4gIH1cblxuICAmOmhvdmVyIHtcbiAgICBjdXJzb3I6IHBvaW50ZXI7XG4gICAgYm9yZGVyLWNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICB9XG5cbiAgJjpmb2N1cyB7XG4gICAgb3V0bGluZTogMDtcbiAgfVxufVxuXG5wcmUge1xuICAmOmhvdmVyID4gLmV4cGFuZC1idXR0b24ge1xuICAgIG9wYWNpdHk6IDE7XG4gICAgdHJhbnNpdGlvbjogMC4ycztcbiAgfVxufVxuXG4jbWVybWFpZC1jb250YWluZXIge1xuICBwb3NpdGlvbjogZml4ZWQ7XG4gIGNvbnRhaW46IGxheW91dDtcbiAgei1pbmRleDogOTk5O1xuICBsZWZ0OiAwO1xuICB0b3A6IDA7XG4gIHdpZHRoOiAxMDB2dztcbiAgaGVpZ2h0OiAxMDB2aDtcbiAgb3ZlcmZsb3c6IGhpZGRlbjtcbiAgZGlzcGxheTogbm9uZTtcbiAgYmFja2Ryb3AtZmlsdGVyOiBibHVyKDRweCk7XG4gIGJhY2tncm91bmQ6IHJnYmEoMCwgMCwgMCwgMC41KTtcblxuICAmLmFjdGl2ZSB7XG4gICAgZGlzcGxheTogaW5saW5lLWJsb2NrO1xuICB9XG5cbiAgJiA+ICNtZXJtYWlkLXNwYWNlIHtcbiAgICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgIGJhY2tncm91bmQtY29sb3I6IHZhcigtLWxpZ2h0KTtcbiAgICBib3JkZXItcmFkaXVzOiA1cHg7XG4gICAgcG9zaXRpb246IGZpeGVkO1xuICAgIHRvcDogNTAlO1xuICAgIGxlZnQ6IDUwJTtcbiAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZSgtNTAlLCAtNTAlKTtcbiAgICBoZWlnaHQ6IDgwdmg7XG4gICAgd2lkdGg6IDgwdnc7XG4gICAgb3ZlcmZsb3c6IGhpZGRlbjtcblxuICAgICYgPiAubWVybWFpZC1jb250ZW50IHtcbiAgICAgIHBvc2l0aW9uOiByZWxhdGl2ZTtcbiAgICAgIHRyYW5zZm9ybS1vcmlnaW46IDAgMDtcbiAgICAgIHRyYW5zaXRpb246IHRyYW5zZm9ybSAwLjFzIGVhc2U7XG4gICAgICBvdmVyZmxvdzogdmlzaWJsZTtcbiAgICAgIG1pbi1oZWlnaHQ6IDIwMHB4O1xuICAgICAgbWluLXdpZHRoOiAyMDBweDtcblxuICAgICAgcHJlIHtcbiAgICAgICAgbWFyZ2luOiAwO1xuICAgICAgICBib3JkZXI6IG5vbmU7XG4gICAgICB9XG5cbiAgICAgIHN2ZyB7XG4gICAgICAgIG1heC13aWR0aDogbm9uZTtcbiAgICAgICAgaGVpZ2h0OiBhdXRvO1xuICAgICAgfVxuICAgIH1cblxuICAgICYgPiAubWVybWFpZC1jb250cm9scyB7XG4gICAgICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gICAgICBib3R0b206IDIwcHg7XG4gICAgICByaWdodDogMjBweDtcbiAgICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgICBnYXA6IDhweDtcbiAgICAgIHBhZGRpbmc6IDhweDtcbiAgICAgIGJhY2tncm91bmQ6IHZhcigtLWxpZ2h0KTtcbiAgICAgIGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLWxpZ2h0Z3JheSk7XG4gICAgICBib3JkZXItcmFkaXVzOiA2cHg7XG4gICAgICBib3gtc2hhZG93OiAwIDJweCA0cHggcmdiYSgwLCAwLCAwLCAwLjEpO1xuICAgICAgei1pbmRleDogMjtcblxuICAgICAgLm1lcm1haWQtY29udHJvbC1idXR0b24ge1xuICAgICAgICBkaXNwbGF5OiBmbGV4O1xuICAgICAgICBhbGlnbi1pdGVtczogY2VudGVyO1xuICAgICAgICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjtcbiAgICAgICAgd2lkdGg6IDMycHg7XG4gICAgICAgIGhlaWdodDogMzJweDtcbiAgICAgICAgcGFkZGluZzogMDtcbiAgICAgICAgYm9yZGVyOiAxcHggc29saWQgdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHQpO1xuICAgICAgICBjb2xvcjogdmFyKC0tZGFyayk7XG4gICAgICAgIGJvcmRlci1yYWRpdXM6IDRweDtcbiAgICAgICAgY3Vyc29yOiBwb2ludGVyO1xuICAgICAgICBmb250LXNpemU6IDE2cHg7XG4gICAgICAgIGZvbnQtZmFtaWx5OiB2YXIoLS1ib2R5Rm9udCk7XG4gICAgICAgIHRyYW5zaXRpb246IGFsbCAwLjJzIGVhc2U7XG5cbiAgICAgICAgJjpob3ZlciB7XG4gICAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgfVxuXG4gICAgICAgICY6YWN0aXZlIHtcbiAgICAgICAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMXB4KTtcbiAgICAgICAgfVxuXG4gICAgICAgIC8vIFN0eWxlIHRoZSByZXNldCBidXR0b24gZGlmZmVyZW50bHlcbiAgICAgICAgJjpudGgtY2hpbGQoMikge1xuICAgICAgICAgIHdpZHRoOiBhdXRvO1xuICAgICAgICAgIHBhZGRpbmc6IDAgMTJweDtcbiAgICAgICAgICBmb250LXNpemU6IDE0cHg7XG4gICAgICAgIH1cbiAgICAgIH1cbiAgICB9XG4gIH1cbn1cbiJdfQ== */</style><link href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" rel="stylesheet" type="text/css" data-persist="true"/><script src="../prescript.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script><link rel="alternate" type="application/rss+xml" title="RSS Feed" href="https://localhost:8081/index.xml"/><meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/><meta property="og:image" content="https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583-og-image.webp"/><meta property="og:image:url" content="https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583-og-image.webp"/><meta name="twitter:image" content="https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583-og-image.webp"/><meta property="og:image:type" content="image/.webp"/></head><body data-slug="math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="/dashboard" class="page-title-link" data-dashboard-base-url data-dashboard-href="/dashboard">breadboard</a></h2><a class=" dashboard-back-link" href="/clusters/math-2" target="_top" data-dashboard-base-url data-cluster-slug="math-2">Back to cluster</a><div class="spacer mobile-only"></div><div class="flex-component" style="flex-direction: row; flex-wrap: nowrap; gap: 1rem;"><div style="flex-grow: 1; flex-shrink: 1; flex-basis: auto; order: 0; align-self: center; justify-self: center;"><div class="search"><button class="search-button"><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg><p>Search</p></button><div class="search-container"><div class="search-space"><input autocomplete="off" class="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div class="search-layout" data-preview="true"></div></div></div></div></div></div><div class="explorer" data-behavior="link" data-collapsed="collapsed" data-savestate="true" data-garden-scope data-graph-clusters="[]" data-data-fns="{&quot;order&quot;:[&quot;filter&quot;,&quot;map&quot;,&quot;sort&quot;],&quot;sortFn&quot;:&quot;(a,b)=>{let aIsSource=a.data?.knowledgeType===\&quot;source-document\&quot;,bIsSource=b.data?.knowledgeType===\&quot;source-document\&quot;;return!a.isFolder&amp;&amp;!b.isFolder||a.isFolder&amp;&amp;b.isFolder?aIsSource&amp;&amp;!bIsSource?-1:!aIsSource&amp;&amp;bIsSource?1:a.displayName.localeCompare(b.displayName,void 0,{numeric:!0,sensitivity:\&quot;base\&quot;}):!a.isFolder&amp;&amp;b.isFolder?1:-1}&quot;,&quot;filterFn&quot;:&quot;node=>node.slugSegment!==\&quot;tags\&quot;&quot;,&quot;mapFn&quot;:&quot;node=>node&quot;}"><button type="button" class="explorer-toggle mobile-explorer hide-until-loaded" data-mobile="true" aria-controls="explorer-651"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-menu"><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line></svg></button><button type="button" class="title-button explorer-toggle desktop-explorer" data-mobile="false" aria-expanded="true"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-651" class="explorer-content" aria-expanded="false" role="group"><ul class="explorer-ul overflow" id="list-0"><li class="overflow-end"></li></ul></div><template id="template-file"><li><a href="#"></a></li></template><template id="template-folder"><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div><button class="folder-button"><span class="folder-title"></span></button></div></div><div class="folder-outer"><ul class="content"></ul></div></li></template></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../math-2/">Math 2</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>Reconstructed Math 2 Textbook Based on Adams</a></div></nav><h1 class="article-title">Reconstructed Math 2 Textbook Based on Adams</h1><p show-comma="true" class="content-meta"><time datetime="2026-05-16T15:44:08.583Z">May 16, 2026</time><span>12 min read</span></p><div class="markdown-actions" data-dashboard-url data-note-slug="math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583"><button class="markdown-action-button markdown-edit-button" type="button">Edit markdown</button><button class="markdown-action-button markdown-delete-button danger" type="button">Delete</button><span class="markdown-action-status" aria-live="polite"></span><div class="markdown-editor-modal" hidden><div class="markdown-editor-panel"><div class="markdown-editor-header"><div><p class="markdown-editor-kicker">Markdown</p><h2>Edit note</h2></div><button class="markdown-editor-close" type="button" aria-label="Close editor">Close</button></div><textarea class="markdown-editor-textarea" spellcheck="false"></textarea><input class="markdown-editor-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden/><div class="markdown-editor-footer"><div class="markdown-editor-insert-tools"><button class="markdown-editor-image" type="button">Add images</button><label class="markdown-editor-placement-label">Place<select class="markdown-editor-placement"><option value="cursor">Cursor</option><option value="top">Top</option><option value="bottom">Bottom</option></select></label></div><div class="markdown-editor-footer-actions"><button class="markdown-editor-cancel" type="button">Cancel</button><button class="markdown-editor-save" type="button">Save</button></div></div></div></div></div><ul class="tags"><li><a href="../tags/multivariable-calculus" class="internal tag-link">multivariable-calculus</a></li><li><a href="../tags/adams-calculus" class="internal tag-link">adams-calculus</a></li><li><a href="../tags/analytic-geometry" class="internal tag-link">analytic-geometry</a></li><li><a href="../tags/quadric-surfaces" class="internal tag-link">quadric-surfaces</a></li><li><a href="../tags/cylindrical-coordinates" class="internal tag-link">cylindrical-coordinates</a></li><li><a href="../tags/spherical-coordinates" class="internal tag-link">spherical-coordinates</a></li><li><a href="../tags/vector-valued-functions" class="internal tag-link">vector-valued-functions</a></li><li><a href="../tags/chain-rule" class="internal tag-link">chain-rule</a></li></ul></div></div><article class="popover-hint"><h1 id="reconstructed-math-2-textbook-based-on-adams">Reconstructed Math 2 Textbook Based on Adams<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#reconstructed-math-2-textbook-based-on-adams" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h2 id="overview">Overview<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#overview" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>This reconstructed textbook reorganizes the Math 2 course around the Adams <em>Calculus: A Complete Course</em> structure, while inserting bridge material where the lectures rely on ideas that the official study guide may not explicitly list.</p>
+<p>The goal is to make the course flow conceptually:</p>
+<ol>
+<li>Geometry of space</li>
+<li>Surfaces and coordinate systems</li>
+<li>Curves and motion</li>
+<li>Scalar fields, limits, and continuity</li>
+<li>Partial derivatives and the chain rule</li>
+<li>Local approximation, gradients, and Taylor formula</li>
+<li>Double integrals</li>
+<li>Triple integrals and coordinate changes</li>
+<li>Vector fields and line integrals</li>
+<li>Surface integrals and flux</li>
+<li>Gradient, divergence, curl, and synthesis</li>
+</ol>
+<p>Source basis: Adams, <em>Calculus: A Complete Course</em>, especially Chapters 10, 12, 13, 15, 16, and 17.</p>
+<hr/>
+<h1 id="chapter-1--the-geometry-of-space">Chapter 1 — The Geometry of Space<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-1--the-geometry-of-space" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course week:</strong> Week 1</p>
+<p>This chapter combines the official Week 1 material with the vector-algebra material Adams assumes. Even if the study guide officially lists only Sections 10.1, 10.5, and 10.6, the lectures use dot products, cross products, normal vectors, and planes. Therefore, Adams Sections 10.2–10.4 should be inserted here as bridge material.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">1.1</td><td>Points and coordinates in three-dimensional space</td><td>10.1 — Analytic Geometry in Three Dimensions</td></tr><tr><td style="text-align:right;">1.2</td><td>Bridge: vectors, length, distance, and angle</td><td>10.2 — Vectors</td></tr><tr><td style="text-align:right;">1.3</td><td>Bridge: dot product and projections</td><td>10.2 — Vectors</td></tr><tr><td style="text-align:right;">1.4</td><td>Bridge: cross product, orientation, and right-handed systems</td><td>10.3 — The Cross Product in 3-Space</td></tr><tr><td style="text-align:right;">1.5</td><td>Lines and planes in space</td><td>10.4 — Planes and Lines</td></tr><tr><td style="text-align:right;">1.6</td><td>Normal vectors and equations of planes</td><td>10.4 — Planes and Lines</td></tr><tr><td style="text-align:right;">1.7</td><td>Intersections of planes and geometric systems</td><td>10.4 — Planes and Lines</td></tr><tr><td style="text-align:right;">1.8</td><td>Half-spaces, octants, and regions in space</td><td>10.1 — Analytic Geometry in Three Dimensions</td></tr><tr><td style="text-align:right;">1.9</td><td>Open balls, neighborhoods, boundary points, open and closed sets</td><td>Bridge to 13.2 — Limits and Continuity</td></tr></tbody></table></div>
+<hr/>
+<h1 id="chapter-2--surfaces-and-coordinate-systems">Chapter 2 — Surfaces and Coordinate Systems<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-2--surfaces-and-coordinate-systems" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course week:</strong> Week 1</p>
+<p>This chapter should be separate from Chapter 1 because quadric surfaces and coordinate systems are visually and conceptually important. Adams treats these topics in Chapter 10, and the first lectures already spend significant time on them.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">2.1</td><td>From conic sections to surfaces in space</td><td>Bridge from P.3 — Graphs of Quadratic Equations</td></tr><tr><td style="text-align:right;">2.2</td><td>Quadric surfaces as second-degree equations</td><td>10.5 — Quadric Surfaces</td></tr><tr><td style="text-align:right;">2.3</td><td>Spheres and ellipsoids</td><td>10.5 — Quadric Surfaces</td></tr><tr><td style="text-align:right;">2.4</td><td>Circular, elliptic, parabolic, and hyperbolic cylinders</td><td>10.5 — Quadric Surfaces</td></tr><tr><td style="text-align:right;">2.5</td><td>Cones</td><td>10.5 — Quadric Surfaces</td></tr><tr><td style="text-align:right;">2.6</td><td>Elliptic and hyperbolic paraboloids</td><td>10.5 — Quadric Surfaces</td></tr><tr><td style="text-align:right;">2.7</td><td>Hyperboloids of one sheet and two sheets</td><td>10.5 — Quadric Surfaces</td></tr><tr><td style="text-align:right;">2.8</td><td>Recognizing surfaces from equations</td><td>10.5 — Quadric Surfaces</td></tr><tr><td style="text-align:right;">2.9</td><td>Cylindrical coordinates</td><td>10.6 — Cylindrical and Spherical Coordinates</td></tr><tr><td style="text-align:right;">2.10</td><td>Spherical coordinates</td><td>10.6 — Cylindrical and Spherical Coordinates</td></tr><tr><td style="text-align:right;">2.11</td><td>Coordinate surfaces: cylinders, spheres, cones, and half-planes</td><td>10.6 — Cylindrical and Spherical Coordinates</td></tr></tbody></table></div>
+<hr/>
+<h1 id="chapter-3--curves-parametrizations-and-motion">Chapter 3 — Curves, Parametrizations, and Motion<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-3--curves-parametrizations-and-motion" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course week:</strong> Week 1</p>
+<p>This chapter follows naturally after 3-D geometry, because Adams Chapter 12 treats vector-valued functions of one variable after the 3-D geometry chapter.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">3.1</td><td>Bridge: one-variable derivatives as rates of change</td><td>2.2 — The Derivative</td></tr><tr><td style="text-align:right;">3.2</td><td>Bridge: differentiation rules and chain rule</td><td>2.3 — Differentiation Rules; 2.4 — The Chain Rule</td></tr><tr><td style="text-align:right;">3.3</td><td>Vector functions of one variable</td><td>12.1 — Vector Functions of One Variable</td></tr><tr><td style="text-align:right;">3.4</td><td>Position vectors and parametrized motion</td><td>12.1 — Vector Functions of One Variable</td></tr><tr><td style="text-align:right;">3.5</td><td>Velocity, speed, and acceleration</td><td>12.1 — Vector Functions of One Variable</td></tr><tr><td style="text-align:right;">3.6</td><td>Constant acceleration in vector form</td><td>12.1 — Vector Functions of One Variable</td></tr><tr><td style="text-align:right;">3.7</td><td>Differentiation rules for vector functions</td><td>12.1 — Vector Functions of One Variable</td></tr><tr><td style="text-align:right;">3.8</td><td>Dot-product and cross-product differentiation</td><td>12.1 — Vector Functions of One Variable</td></tr><tr><td style="text-align:right;">3.9</td><td>Constant speed and perpendicular acceleration</td><td>12.1 — Vector Functions of One Variable</td></tr><tr><td style="text-align:right;">3.10</td><td>Curves as parametrized objects</td><td>12.3 — Curves and Parametrizations</td></tr><tr><td style="text-align:right;">3.11</td><td>Reparametrization: same curve, different motion</td><td>12.3 — Curves and Parametrizations</td></tr><tr><td style="text-align:right;">3.12</td><td>Bridge: definite integrals as accumulated length</td><td>5.3 — The Definite Integral; 5.5 — The Fundamental Theorem of Calculus</td></tr><tr><td style="text-align:right;">3.13</td><td>Arc length of parametrized curves</td><td>12.3 — Curves and Parametrizations</td></tr><tr><td style="text-align:right;">3.14</td><td>Curves of intersection of surfaces</td><td>12.3 — Curves and Parametrizations</td></tr></tbody></table></div>
+<hr/>
+<h1 id="chapter-4--scalar-fields-limits-and-continuity">Chapter 4 — Scalar Fields, Limits, and Continuity<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-4--scalar-fields-limits-and-continuity" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course week:</strong> Week 2</p>
+<p>This chapter begins the main multivariable-calculus content. Adams Chapter 13 starts with functions of several variables and then immediately moves to limits and continuity, so these topics should stay together.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">4.1</td><td>Bridge: functions, domains, ranges, and graphs</td><td>P.4 — Functions and Their Graphs</td></tr><tr><td style="text-align:right;">4.2</td><td>Functions of two and three variables</td><td>13.1 — Functions of Several Variables</td></tr><tr><td style="text-align:right;">4.3</td><td>Domains in the plane and in space</td><td>13.1 — Functions of Several Variables</td></tr><tr><td style="text-align:right;">4.4</td><td>Graphs of functions of two variables</td><td>13.1 — Functions of Several Variables</td></tr><tr><td style="text-align:right;">4.5</td><td>Level curves</td><td>13.1 — Functions of Several Variables</td></tr><tr><td style="text-align:right;">4.6</td><td>Level surfaces</td><td>13.1 — Functions of Several Variables</td></tr><tr><td style="text-align:right;">4.7</td><td>Scalar fields: temperature, height, density, and potential</td><td>13.1 — Functions of Several Variables</td></tr><tr><td style="text-align:right;">4.8</td><td>Bridge: one-variable limits</td><td>1.2 — Limits of Functions</td></tr><tr><td style="text-align:right;">4.9</td><td>Bridge: one-variable continuity</td><td>1.4 — Continuity</td></tr><tr><td style="text-align:right;">4.10</td><td>Multivariable limits</td><td>13.2 — Limits and Continuity</td></tr><tr><td style="text-align:right;">4.11</td><td>Path dependence and failure of limits</td><td>13.2 — Limits and Continuity</td></tr><tr><td style="text-align:right;">4.12</td><td>Proving multivariable limits exist</td><td>13.2 — Limits and Continuity</td></tr><tr><td style="text-align:right;">4.13</td><td>Continuity of scalar fields</td><td>13.2 — Limits and Continuity</td></tr></tbody></table></div>
+<hr/>
+<h1 id="chapter-5--partial-differentiation-and-the-chain-rule">Chapter 5 — Partial Differentiation and the Chain Rule<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-5--partial-differentiation-and-the-chain-rule" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course week:</strong> Week 3</p>
+<p>This chapter combines Adams Sections 13.3–13.5, because these form one natural block: first partial derivatives, higher derivatives, and the multivariable chain rule.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">5.1</td><td>Bridge: ordinary derivatives and partial change</td><td>2.2 — The Derivative; 2.3 — Differentiation Rules</td></tr><tr><td style="text-align:right;">5.2</td><td>First partial derivatives</td><td>13.3 — Partial Derivatives</td></tr><tr><td style="text-align:right;">5.3</td><td>Geometric meaning of partial derivatives</td><td>13.3 — Partial Derivatives</td></tr><tr><td style="text-align:right;">5.4</td><td>Tangent planes</td><td>13.3 — Partial Derivatives</td></tr><tr><td style="text-align:right;">5.5</td><td>Normal lines to surfaces</td><td>13.3 — Partial Derivatives</td></tr><tr><td style="text-align:right;">5.6</td><td>Higher-order partial derivatives</td><td>13.4 — Higher-Order Derivatives</td></tr><tr><td style="text-align:right;">5.7</td><td>Pure and mixed partial derivatives</td><td>13.4 — Higher-Order Derivatives</td></tr><tr><td style="text-align:right;">5.8</td><td>Equality of mixed partial derivatives</td><td>13.4 — Higher-Order Derivatives</td></tr><tr><td style="text-align:right;">5.9</td><td>The multivariable chain rule</td><td>13.5 — The Chain Rule</td></tr><tr><td style="text-align:right;">5.10</td><td>Dependency diagrams and composed variables</td><td>13.5 — The Chain Rule</td></tr><tr><td style="text-align:right;">5.11</td><td>Chain rule along parametrized curves</td><td>13.5 — The Chain Rule; supported by 12.3 — Curves and Parametrizations</td></tr><tr><td style="text-align:right;">5.12</td><td>Chain rule and coordinate changes</td><td>13.5 — The Chain Rule; supported by 10.6 — Cylindrical and Spherical Coordinates</td></tr></tbody></table></div>
+<hr/>
+<h1 id="chapter-6--local-approximation-gradients-and-taylor-formula">Chapter 6 — Local Approximation, Gradients, and Taylor Formula<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-6--local-approximation-gradients-and-taylor-formula" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course weeks:</strong> Weeks 4–5</p>
+<p>This chapter should stay together because Adams Sections 13.6, 13.7, and 13.9 all describe local behavior of scalar fields: linear approximation, directional change, and quadratic approximation.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">6.1</td><td>Bridge: one-variable linear approximation</td><td>4.9 — Linear Approximations</td></tr><tr><td style="text-align:right;">6.2</td><td>Linear approximation in several variables</td><td>13.6 — Linear Approximations, Differentiability, and Differentials</td></tr><tr><td style="text-align:right;">6.3</td><td>Differentiability</td><td>13.6 — Linear Approximations, Differentiability, and Differentials</td></tr><tr><td style="text-align:right;">6.4</td><td>Differentials and small changes</td><td>13.6 — Linear Approximations, Differentiability, and Differentials</td></tr><tr><td style="text-align:right;">6.5</td><td>Directional derivatives</td><td>13.7 — Gradients and Directional Derivatives</td></tr><tr><td style="text-align:right;">6.6</td><td>The gradient vector</td><td>13.7 — Gradients and Directional Derivatives</td></tr><tr><td style="text-align:right;">6.7</td><td>Direction of steepest increase</td><td>13.7 — Gradients and Directional Derivatives</td></tr><tr><td style="text-align:right;">6.8</td><td>Gradients and level curves</td><td>13.7 — Gradients and Directional Derivatives</td></tr><tr><td style="text-align:right;">6.9</td><td>Gradients and level surfaces</td><td>13.7 — Gradients and Directional Derivatives</td></tr><tr><td style="text-align:right;">6.10</td><td>Bridge: one-variable Taylor polynomials</td><td>4.10 — Taylor Polynomials</td></tr><tr><td style="text-align:right;">6.11</td><td>Taylor formula in several variables</td><td>13.9 — Taylor’s Formula, Taylor Series, and Approximations</td></tr><tr><td style="text-align:right;">6.12</td><td>Second-degree Taylor polynomials</td><td>13.9 — Taylor’s Formula, Taylor Series, and Approximations</td></tr><tr><td style="text-align:right;">6.13</td><td>Local quadratic models</td><td>13.9 — Taylor’s Formula, Taylor Series, and Approximations</td></tr></tbody></table></div>
+<h2 id="midterm-placement">Midterm placement<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#midterm-placement" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The midterm naturally belongs after <strong>Section 6.9</strong>, because the study guide says the intermediate test covers material up to and including Week 4.</p>
+<p>So the likely midterm boundary is:</p>
+<blockquote>
+<p><strong>Chapter 1 through Chapter 6, Section 6.9</strong></p>
+</blockquote>
+<p>That is, up to gradients and level surfaces, but before the full Taylor-formula material.</p>
+<hr/>
+<h1 id="chapter-7--double-integrals-over-plane-regions">Chapter 7 — Double Integrals over Plane Regions<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-7--double-integrals-over-plane-regions" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course weeks:</strong> Weeks 5–6</p>
+<p>This chapter should cover all two-dimensional integration before moving to triple integrals.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">7.1</td><td>Bridge: definite integrals as accumulated quantity</td><td>5.3 — The Definite Integral; 5.4 — Properties of the Definite Integral; 5.5 — The Fundamental Theorem of Calculus</td></tr><tr><td style="text-align:right;">7.2</td><td>From single integrals to double integrals</td><td>15.1 — Double Integrals</td></tr><tr><td style="text-align:right;">7.3</td><td>Double integrals over rectangles</td><td>15.1 — Double Integrals</td></tr><tr><td style="text-align:right;">7.4</td><td>Double integrals over general regions</td><td>15.1 — Double Integrals</td></tr><tr><td style="text-align:right;">7.5</td><td>Meaning of double integrals: volume, mass, charge, accumulated quantity</td><td>15.1 — Double Integrals</td></tr><tr><td style="text-align:right;">7.6</td><td>Iterated integrals in Cartesian coordinates</td><td>15.2 — Iteration of Double Integrals in Cartesian Coordinates</td></tr><tr><td style="text-align:right;">7.7</td><td>Type I and Type II regions</td><td>15.2 — Iteration of Double Integrals in Cartesian Coordinates</td></tr><tr><td style="text-align:right;">7.8</td><td>Reversing the order of integration</td><td>15.2 — Iteration of Double Integrals in Cartesian Coordinates</td></tr><tr><td style="text-align:right;">7.9</td><td>Bridge: polar coordinates revisited</td><td>10.6 — Cylindrical and Spherical Coordinates</td></tr><tr><td style="text-align:right;">7.10</td><td>Double integrals in polar coordinates</td><td>15.4 — Double Integrals in Polar Coordinates</td></tr><tr><td style="text-align:right;">7.11</td><td>Why <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">d</span><span class="mord mathnormal">A</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal" style="margin-right:0.02778em;">r</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.02778em;">r</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.02778em;">θ</span></span></span></span></td><td>15.4 — Double Integrals in Polar Coordinates</td></tr><tr><td style="text-align:right;">7.12</td><td>Choosing Cartesian or polar coordinates</td><td>15.4 — Double Integrals in Polar Coordinates</td></tr></tbody></table></div>
+<hr/>
+<h1 id="chapter-8--triple-integrals-coordinate-changes-and-surface-area">Chapter 8 — Triple Integrals, Coordinate Changes, and Surface Area<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-8--triple-integrals-coordinate-changes-and-surface-area" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course weeks:</strong> Weeks 6–7</p>
+<p>This chapter should not be split too much. Adams Sections 15.5 and 15.6 form a single conceptual block: integration over 3-D solids, then changing coordinates in 3-D. The surface-area part of Section 15.7 fits at the end because it is still an application of multiple integration.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">8.1</td><td>Triple integrals over boxes</td><td>15.5 — Triple Integrals</td></tr><tr><td style="text-align:right;">8.2</td><td>Triple integrals over general solids</td><td>15.5 — Triple Integrals</td></tr><tr><td style="text-align:right;">8.3</td><td>Setting up bounds in <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.625em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.03588em;">y</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.04398em;">z</span></span></span></span></td><td>15.5 — Triple Integrals</td></tr><tr><td style="text-align:right;">8.4</td><td>Volumes, masses, and average values</td><td>15.5 — Triple Integrals</td></tr><tr><td style="text-align:right;">8.5</td><td>Bridge: cylindrical coordinates for solids</td><td>10.6 — Cylindrical and Spherical Coordinates</td></tr><tr><td style="text-align:right;">8.6</td><td>Bridge: spherical coordinates for solids</td><td>10.6 — Cylindrical and Spherical Coordinates</td></tr><tr><td style="text-align:right;">8.7</td><td>Change of variables in triple integrals</td><td>15.6 — Change of Variables in Triple Integrals</td></tr><tr><td style="text-align:right;">8.8</td><td>The Jacobian determinant</td><td>15.6 — Change of Variables in Triple Integrals</td></tr><tr><td style="text-align:right;">8.9</td><td>Cylindrical-coordinate integration</td><td>15.6 — Change of Variables in Triple Integrals</td></tr><tr><td style="text-align:right;">8.10</td><td>Spherical-coordinate integration</td><td>15.6 — Change of Variables in Triple Integrals</td></tr><tr><td style="text-align:right;">8.11</td><td>Choosing coordinates from symmetry</td><td>15.6 — Change of Variables in Triple Integrals</td></tr><tr><td style="text-align:right;">8.12</td><td>Surface area of a graph</td><td>15.7 — Applications of Multiple Integrals, only “The surface area of a graph”</td></tr></tbody></table></div>
+<h2 id="note-on-adams-157">Note on Adams 15.7<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#note-on-adams-157" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The study guide explicitly restricts Adams Section 15.7 to:</p>
+<blockquote>
+<p><strong>The surface area of a graph</strong></p>
+</blockquote>
+<p>So other applications from Section 15.7 should not be treated as required notebook material unless the instructor adds them separately.</p>
+<hr/>
+<h1 id="chapter-9--vector-fields-conservative-fields-and-line-integrals">Chapter 9 — Vector Fields, Conservative Fields, and Line Integrals<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-9--vector-fields-conservative-fields-and-line-integrals" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course weeks:</strong> Weeks 7–8</p>
+<p>This chapter is where Adams moves from scalar-valued multivariable functions to vector-valued fields. It should include conservative fields before line integrals, because conservative fields explain why some vector line integrals become path independent.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">9.1</td><td>Bridge: scalar fields versus vector fields</td><td>13.1 — Functions of Several Variables; then 16.1 — Vector and Scalar Fields</td></tr><tr><td style="text-align:right;">9.2</td><td>Vector and scalar fields</td><td>16.1 — Vector and Scalar Fields</td></tr><tr><td style="text-align:right;">9.3</td><td>Field lines, trajectories, and streamlines</td><td>16.1 — Vector and Scalar Fields</td></tr><tr><td style="text-align:right;">9.4</td><td>Physical examples: velocity, force, electric, and magnetic fields</td><td>16.1 — Vector and Scalar Fields</td></tr><tr><td style="text-align:right;">9.5</td><td>Conservative fields</td><td>16.2 — Conservative Fields</td></tr><tr><td style="text-align:right;">9.6</td><td>Potential functions</td><td>16.2 — Conservative Fields</td></tr><tr><td style="text-align:right;">9.7</td><td>Equipotential curves and surfaces</td><td>16.2 — Conservative Fields</td></tr><tr><td style="text-align:right;">9.8</td><td>Bridge: integrating along a parametrized curve</td><td>12.3 — Curves and Parametrizations</td></tr><tr><td style="text-align:right;">9.9</td><td>Scalar line integrals</td><td>16.3 — Line Integrals</td></tr><tr><td style="text-align:right;">9.10</td><td>Vector line integrals</td><td>16.4 — Line Integrals of Vector Fields</td></tr><tr><td style="text-align:right;">9.11</td><td>Work done by a force field</td><td>16.4 — Line Integrals of Vector Fields</td></tr><tr><td style="text-align:right;">9.12</td><td>Orientation of curves</td><td>16.4 — Line Integrals of Vector Fields</td></tr><tr><td style="text-align:right;">9.13</td><td>Path independence and conservative fields</td><td>16.4 — Line Integrals of Vector Fields; linked to 16.2 — Conservative Fields</td></tr></tbody></table></div>
+<h2 id="excluded-topic">Excluded topic<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#excluded-topic" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The study guide excludes the <strong>Lyapunov functions</strong> part of Adams Section 16.1. Therefore, Lyapunov functions should not be part of the required notebook.</p>
+<hr/>
+<h1 id="chapter-10--surface-integrals-and-flux">Chapter 10 — Surface Integrals and Flux<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-10--surface-integrals-and-flux" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course week:</strong> Week 8</p>
+<p>This deserves its own chapter. Surface integrals are not just “triple integrals on surfaces”; they introduce parametrized surfaces, normal vectors, orientation, and flux.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">10.1</td><td>Bridge: parametrized surfaces as two-parameter objects</td><td>16.5 — Surfaces and Surface Integrals</td></tr><tr><td style="text-align:right;">10.2</td><td>Tangent vectors to a surface</td><td>16.5 — Surfaces and Surface Integrals</td></tr><tr><td style="text-align:right;">10.3</td><td>Surface normals from cross products</td><td>16.5 — Surfaces and Surface Integrals</td></tr><tr><td style="text-align:right;">10.4</td><td>Surface area element <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6944em;"></span><span class="mord mathnormal">d</span><span class="mord mathnormal" style="margin-right:0.05764em;">S</span></span></span></span></td><td>16.5 — Surfaces and Surface Integrals</td></tr><tr><td style="text-align:right;">10.5</td><td>Scalar surface integrals</td><td>16.5 — Surfaces and Surface Integrals</td></tr><tr><td style="text-align:right;">10.6</td><td>Evaluating surface integrals</td><td>16.5 — Surfaces and Surface Integrals</td></tr><tr><td style="text-align:right;">10.7</td><td>Oriented surfaces</td><td>16.6 — Oriented Surfaces and Flux Integrals</td></tr><tr><td style="text-align:right;">10.8</td><td>Choosing a normal direction</td><td>16.6 — Oriented Surfaces and Flux Integrals</td></tr><tr><td style="text-align:right;">10.9</td><td>Flux integrals</td><td>16.6 — Oriented Surfaces and Flux Integrals</td></tr><tr><td style="text-align:right;">10.10</td><td>Physical meaning of flux</td><td>16.6 — Oriented Surfaces and Flux Integrals</td></tr></tbody></table></div>
+<hr/>
+<h1 id="chapter-11--gradient-divergence-curl-and-course-synthesis">Chapter 11 — Gradient, Divergence, Curl, and Course Synthesis<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#chapter-11--gradient-divergence-curl-and-course-synthesis" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Course weeks:</strong> Weeks 8–9</p>
+<p>This should be the final chapter. Adams Section 17.1 is officially included. Later sections such as Green’s Theorem, the Divergence Theorem, and Stokes’s Theorem are not in the study guide. However, because Adams’s own front formula pages list them as versions of the Fundamental Theorem of Calculus, they are useful as conceptual orientation, not examinable core.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Section</th><th>Textbook section title</th><th>Adams section</th></tr></thead><tbody><tr><td style="text-align:right;">11.1</td><td>Bridge: what line integrals and surface integrals measure globally</td><td>16.3 — Line Integrals; 16.4 — Line Integrals of Vector Fields; 16.6 — Oriented Surfaces and Flux Integrals</td></tr><tr><td style="text-align:right;">11.2</td><td>The nabla operator <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord">∇</span></span></span></span></td><td>17.1 — Gradient, Divergence, and Curl</td></tr><tr><td style="text-align:right;">11.3</td><td>Gradient as spatial change</td><td>17.1 — Gradient, Divergence, and Curl; linked to 13.7 — Gradients and Directional Derivatives</td></tr><tr><td style="text-align:right;">11.4</td><td>Divergence as local source strength</td><td>17.1 — Gradient, Divergence, and Curl</td></tr><tr><td style="text-align:right;">11.5</td><td>Curl as local rotation</td><td>17.1 — Gradient, Divergence, and Curl</td></tr><tr><td style="text-align:right;">11.6</td><td>Computing gradient, divergence, and curl</td><td>17.1 — Gradient, Divergence, and Curl</td></tr><tr><td style="text-align:right;">11.7</td><td>Physical interpretation in vector fields</td><td>17.1 — Gradient, Divergence, and Curl</td></tr><tr><td style="text-align:right;">11.8</td><td>Connecting gradient, conservative fields, line integrals, divergence, flux, and curl</td><td>Synthesis of 16.1–16.6 and 17.1</td></tr><tr><td style="text-align:right;">11.9</td><td>Optional conceptual preview: Green, Divergence, and Stokes Theorems</td><td>17.3 — Green’s Theorem in the Plane; 17.4 — The Divergence Theorem in 3-Space; 17.5 — Stokes’s Theorem</td></tr><tr><td style="text-align:right;">11.10</td><td>Final exam problem classification</td><td>All assigned sections</td></tr></tbody></table></div>
+<h2 id="excluded-topic-1">Excluded topic<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#excluded-topic-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The official final-test list includes:</p>
+<blockquote>
+<p>17.1 — Gradient, Divergence, and Curl</p>
+</blockquote>
+<p>but excludes:</p>
+<blockquote>
+<p>Distributions and delta functions</p>
+</blockquote>
+<p>Therefore, distributions and delta functions should not be included as required material.</p>
+<hr/>
+<h1 id="final-master-map">Final Master Map<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#final-master-map" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th style="text-align:right;">Chapter</th><th>Textbook title</th><th>Main Adams sections</th><th>Course week</th></tr></thead><tbody><tr><td style="text-align:right;">1</td><td>The Geometry of Space</td><td>10.1 — Analytic Geometry in Three Dimensions; bridges from 10.2 — Vectors, 10.3 — The Cross Product in 3-Space, 10.4 — Planes and Lines</td><td>Week 1</td></tr><tr><td style="text-align:right;">2</td><td>Surfaces and Coordinate Systems</td><td>10.5 — Quadric Surfaces; 10.6 — Cylindrical and Spherical Coordinates</td><td>Week 1</td></tr><tr><td style="text-align:right;">3</td><td>Curves, Parametrizations, and Motion</td><td>12.1 — Vector Functions of One Variable; 12.3 — Curves and Parametrizations</td><td>Week 1</td></tr><tr><td style="text-align:right;">4</td><td>Scalar Fields, Limits, and Continuity</td><td>13.1 — Functions of Several Variables; 13.2 — Limits and Continuity</td><td>Week 2</td></tr><tr><td style="text-align:right;">5</td><td>Partial Differentiation and the Chain Rule</td><td>13.3 — Partial Derivatives; 13.4 — Higher-Order Derivatives; 13.5 — The Chain Rule</td><td>Week 3</td></tr><tr><td style="text-align:right;">6</td><td>Local Approximation, Gradients, and Taylor Formula</td><td>13.6 — Linear Approximations, Differentiability, and Differentials; 13.7 — Gradients and Directional Derivatives; 13.9 — Taylor’s Formula, Taylor Series, and Approximations</td><td>Weeks 4–5</td></tr><tr><td style="text-align:right;">7</td><td>Double Integrals over Plane Regions</td><td>15.1 — Double Integrals; 15.2 — Iteration of Double Integrals in Cartesian Coordinates; 15.4 — Double Integrals in Polar Coordinates</td><td>Weeks 5–6</td></tr><tr><td style="text-align:right;">8</td><td>Triple Integrals, Coordinate Changes, and Surface Area</td><td>15.5 — Triple Integrals; 15.6 — Change of Variables in Triple Integrals; 15.7 — Applications of Multiple Integrals, only surface area of a graph</td><td>Weeks 6–7</td></tr><tr><td style="text-align:right;">9</td><td>Vector Fields, Conservative Fields, and Line Integrals</td><td>16.1 — Vector and Scalar Fields; 16.2 — Conservative Fields; 16.3 — Line Integrals; 16.4 — Line Integrals of Vector Fields</td><td>Weeks 7–8</td></tr><tr><td style="text-align:right;">10</td><td>Surface Integrals and Flux</td><td>16.5 — Surfaces and Surface Integrals; 16.6 — Oriented Surfaces and Flux Integrals</td><td>Week 8</td></tr><tr><td style="text-align:right;">11</td><td>Gradient, Divergence, Curl, and Course Synthesis</td><td>17.1 — Gradient, Divergence, and Curl, excluding distributions/delta functions</td><td>Weeks 8–9</td></tr></tbody></table></div>
+<hr/>
+<h1 id="assessment-boundaries">Assessment Boundaries<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#assessment-boundaries" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h2 id="intermediate-test--midterm">Intermediate test / midterm<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#intermediate-test--midterm" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Likely coverage:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Assessment</th><th>Likely coverage</th></tr></thead><tbody><tr><td>Midterm</td><td>Chapter 1 through Chapter 6, Section 6.9</td></tr></tbody></table></div>
+<p>That means the midterm likely includes:</p>
+<ul>
+<li>3-D geometry</li>
+<li>vectors, dot products, cross products</li>
+<li>planes and lines</li>
+<li>quadric surfaces</li>
+<li>cylindrical and spherical coordinates</li>
+<li>vector functions and parametrized curves</li>
+<li>scalar fields</li>
+<li>multivariable limits and continuity</li>
+<li>partial derivatives</li>
+<li>tangent planes and normal lines</li>
+<li>higher-order partials</li>
+<li>chain rule</li>
+<li>linear approximation and differentials</li>
+<li>gradients and directional derivatives</li>
+<li>gradients with level curves and level surfaces</li>
+</ul>
+<p>It likely stops before the full multivariable Taylor-formula section.</p>
+<h2 id="final-test">Final test<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#final-test" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Likely coverage:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Assessment</th><th>Likely coverage</th></tr></thead><tbody><tr><td>Final</td><td>All assigned sections, with emphasis on post-midterm material</td></tr></tbody></table></div>
+<p>The final should include everything assigned, especially:</p>
+<ul>
+<li>Taylor formula in several variables</li>
+<li>double integrals</li>
+<li>polar integration</li>
+<li>triple integrals</li>
+<li>cylindrical and spherical integration</li>
+<li>Jacobians and coordinate changes</li>
+<li>surface area of a graph</li>
+<li>vector fields</li>
+<li>conservative fields</li>
+<li>line integrals</li>
+<li>surface integrals</li>
+<li>flux</li>
+<li>gradient, divergence, and curl</li>
+</ul>
+<p>Optional conceptual orientation:</p>
+<ul>
+<li>Green’s Theorem</li>
+<li>Divergence Theorem</li>
+<li>Stokes’s Theorem</li>
+</ul>
+<p>But these are not listed as required core material unless the instructor explicitly adds them.</p></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph "><h3>Knowledge Map</h3><div class="graph-outer"><div class="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:false,&quot;scale&quot;:0.95,&quot;repelForce&quot;:1.25,&quot;centerForce&quot;:0.08,&quot;linkDistance&quot;:120,&quot;fontSize&quot;:0.72,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><button class="global-graph-icon" aria-label="Expand Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                  s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                  c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                  C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                  c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                  v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                  s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                  C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                  S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                  s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                  s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div class="global-graph-outer"><div class="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:true,&quot;scale&quot;:1.05,&quot;repelForce&quot;:2.3,&quot;centerForce&quot;:0.04,&quot;linkDistance&quot;:165,&quot;fontSize&quot;:0.8,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><div class="global-graph-search" role="search"><button class="global-graph-search-button" type="button" aria-label="Search nodes"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="7"></circle></svg></button><input class="global-graph-search-input" type="search" placeholder="Search nodes..." autocomplete="off" spellcheck="false"/><button class="global-graph-search-clear" type="button" aria-label="Clear node search">Clear</button><span class="global-graph-search-status" aria-live="polite"></span></div><button class="global-graph-close" type="button" aria-label="Close Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button></div></div><div class="toc desktop-only"><button type="button" class="toc-header" aria-controls="toc-279" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><ul id="list-1" class="toc-content overflow"><li class="depth-0"><a href="#reconstructed-math-2-textbook-based-on-adams" data-for="reconstructed-math-2-textbook-based-on-adams">Reconstructed Math 2 Textbook Based on Adams</a></li><li class="depth-1"><a href="#overview" data-for="overview">Overview</a></li><li class="depth-0"><a href="#chapter-1--the-geometry-of-space" data-for="chapter-1--the-geometry-of-space">Chapter 1 — The Geometry of Space</a></li><li class="depth-0"><a href="#chapter-2--surfaces-and-coordinate-systems" data-for="chapter-2--surfaces-and-coordinate-systems">Chapter 2 — Surfaces and Coordinate Systems</a></li><li class="depth-0"><a href="#chapter-3--curves-parametrizations-and-motion" data-for="chapter-3--curves-parametrizations-and-motion">Chapter 3 — Curves, Parametrizations, and Motion</a></li><li class="depth-0"><a href="#chapter-4--scalar-fields-limits-and-continuity" data-for="chapter-4--scalar-fields-limits-and-continuity">Chapter 4 — Scalar Fields, Limits, and Continuity</a></li><li class="depth-0"><a href="#chapter-5--partial-differentiation-and-the-chain-rule" data-for="chapter-5--partial-differentiation-and-the-chain-rule">Chapter 5 — Partial Differentiation and the Chain Rule</a></li><li class="depth-0"><a href="#chapter-6--local-approximation-gradients-and-taylor-formula" data-for="chapter-6--local-approximation-gradients-and-taylor-formula">Chapter 6 — Local Approximation, Gradients, and Taylor Formula</a></li><li class="depth-1"><a href="#midterm-placement" data-for="midterm-placement">Midterm placement</a></li><li class="depth-0"><a href="#chapter-7--double-integrals-over-plane-regions" data-for="chapter-7--double-integrals-over-plane-regions">Chapter 7 — Double Integrals over Plane Regions</a></li><li class="depth-0"><a href="#chapter-8--triple-integrals-coordinate-changes-and-surface-area" data-for="chapter-8--triple-integrals-coordinate-changes-and-surface-area">Chapter 8 — Triple Integrals, Coordinate Changes, and Surface Area</a></li><li class="depth-1"><a href="#note-on-adams-157" data-for="note-on-adams-157">Note on Adams 15.7</a></li><li class="depth-0"><a href="#chapter-9--vector-fields-conservative-fields-and-line-integrals" data-for="chapter-9--vector-fields-conservative-fields-and-line-integrals">Chapter 9 — Vector Fields, Conservative Fields, and Line Integrals</a></li><li class="depth-1"><a href="#excluded-topic" data-for="excluded-topic">Excluded topic</a></li><li class="depth-0"><a href="#chapter-10--surface-integrals-and-flux" data-for="chapter-10--surface-integrals-and-flux">Chapter 10 — Surface Integrals and Flux</a></li><li class="depth-0"><a href="#chapter-11--gradient-divergence-curl-and-course-synthesis" data-for="chapter-11--gradient-divergence-curl-and-course-synthesis">Chapter 11 — Gradient, Divergence, Curl, and Course Synthesis</a></li><li class="depth-1"><a href="#excluded-topic-1" data-for="excluded-topic-1">Excluded topic</a></li><li class="depth-0"><a href="#final-master-map" data-for="final-master-map">Final Master Map</a></li><li class="depth-0"><a href="#assessment-boundaries" data-for="assessment-boundaries">Assessment Boundaries</a></li><li class="depth-1"><a href="#intermediate-test--midterm" data-for="intermediate-test--midterm">Intermediate test / midterm</a></li><li class="depth-1"><a href="#final-test" data-for="final-test">Final test</a></li><li class="overflow-end"></li></ul></div><div class="backlinks"><h3>Backlinks</h3><ul id="list-2" class="overflow"><li><a href="../math-2/" class="internal">Math 2</a></li><li class="overflow-end"></li></ul></div></div></div></div></body><script type="application/javascript" data-persist="true">function n(){let t=this.parentElement;t.classList.toggle("is-collapsed");let e=t.getElementsByClassName("callout-content")[0];if(!e)return;let l=t.classList.contains("is-collapsed");e.style.gridTemplateRows=l?"0fr":"1fr"}function c(){let t=document.getElementsByClassName("callout is-collapsible");for(let e of t){let l=e.getElementsByClassName("callout-title")[0],s=e.getElementsByClassName("callout-content")[0];if(!l||!s)continue;l.addEventListener("click",n),window.addCleanup(()=>l.removeEventListener("click",n));let o=e.classList.contains("is-collapsed");s.style.gridTemplateRows=o?"0fr":"1fr"}}document.addEventListener("nav",c);
+</script><script type="module" data-persist="true">function E(a,e){if(!a)return;function t(o){o.target===this&&(o.preventDefault(),o.stopPropagation(),e())}function n(o){o.key.startsWith("Esc")&&(o.preventDefault(),e())}a?.addEventListener("click",t),window.addCleanup(()=>a?.removeEventListener("click",t)),document.addEventListener("keydown",n),window.addCleanup(()=>document.removeEventListener("keydown",n))}function f(a){for(;a.firstChild;)a.removeChild(a.firstChild)}var m=class{constructor(e,t){this.container=e;this.content=t;this.setupEventListeners(),this.setupNavigationControls(),this.resetTransform()}isDragging=!1;startPan={x:0,y:0};currentPan={x:0,y:0};scale=1;MIN_SCALE=.5;MAX_SCALE=3;cleanups=[];setupEventListeners(){let e=this.onMouseDown.bind(this),t=this.onMouseMove.bind(this),n=this.onMouseUp.bind(this),o=this.onTouchStart.bind(this),r=this.onTouchMove.bind(this),i=this.onTouchEnd.bind(this),s=this.resetTransform.bind(this);this.container.addEventListener("mousedown",e),document.addEventListener("mousemove",t),document.addEventListener("mouseup",n),this.container.addEventListener("touchstart",o,{passive:!1}),document.addEventListener("touchmove",r,{passive:!1}),document.addEventListener("touchend",i),window.addEventListener("resize",s),this.cleanups.push(()=>this.container.removeEventListener("mousedown",e),()=>document.removeEventListener("mousemove",t),()=>document.removeEventListener("mouseup",n),()=>this.container.removeEventListener("touchstart",o),()=>document.removeEventListener("touchmove",r),()=>document.removeEventListener("touchend",i),()=>window.removeEventListener("resize",s))}cleanup(){for(let e of this.cleanups)e()}setupNavigationControls(){let e=document.createElement("div");e.className="mermaid-controls";let t=this.createButton("+",()=>this.zoom(.1)),n=this.createButton("-",()=>this.zoom(-.1)),o=this.createButton("Reset",()=>this.resetTransform());e.appendChild(n),e.appendChild(o),e.appendChild(t),this.container.appendChild(e)}createButton(e,t){let n=document.createElement("button");return n.textContent=e,n.className="mermaid-control-button",n.addEventListener("click",t),window.addCleanup(()=>n.removeEventListener("click",t)),n}onMouseDown(e){e.button===0&&(this.isDragging=!0,this.startPan={x:e.clientX-this.currentPan.x,y:e.clientY-this.currentPan.y},this.container.style.cursor="grabbing")}onMouseMove(e){this.isDragging&&(e.preventDefault(),this.currentPan={x:e.clientX-this.startPan.x,y:e.clientY-this.startPan.y},this.updateTransform())}onMouseUp(){this.isDragging=!1,this.container.style.cursor="grab"}onTouchStart(e){if(e.touches.length!==1)return;this.isDragging=!0;let t=e.touches[0];this.startPan={x:t.clientX-this.currentPan.x,y:t.clientY-this.currentPan.y}}onTouchMove(e){if(!this.isDragging||e.touches.length!==1)return;e.preventDefault();let t=e.touches[0];this.currentPan={x:t.clientX-this.startPan.x,y:t.clientY-this.startPan.y},this.updateTransform()}onTouchEnd(){this.isDragging=!1}zoom(e){let t=Math.min(Math.max(this.scale+e,this.MIN_SCALE),this.MAX_SCALE),n=this.content.getBoundingClientRect(),o=n.width/2,r=n.height/2,i=t-this.scale;this.currentPan.x-=o*i,this.currentPan.y-=r*i,this.scale=t,this.updateTransform()}updateTransform(){this.content.style.transform=`translate(${this.currentPan.x}px, ${this.currentPan.y}px) scale(${this.scale})`}resetTransform(){let t=this.content.querySelector("svg").getBoundingClientRect(),n=t.width/this.scale,o=t.height/this.scale;this.scale=1,this.currentPan={x:(this.container.clientWidth-n)/2,y:(this.container.clientHeight-o)/2},this.updateTransform()}},T=["--secondary","--tertiary","--gray","--light","--lightgray","--highlight","--dark","--darkgray","--codeFont"],y;document.addEventListener("nav",async()=>{let e=document.querySelector(".center").querySelectorAll("code.mermaid");if(e.length===0)return;y||=await import("https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.0/mermaid.esm.min.mjs");let t=y.default,n=new WeakMap;for(let r of e)n.set(r,r.innerText);async function o(){for(let s of e){s.removeAttribute("data-processed");let c=n.get(s);c&&(s.innerHTML=c)}let r=T.reduce((s,c)=>(s[c]=window.getComputedStyle(document.documentElement).getPropertyValue(c),s),{}),i=document.documentElement.getAttribute("saved-theme")==="dark";t.initialize({startOnLoad:!1,securityLevel:"loose",theme:i?"dark":"base",themeVariables:{fontFamily:r["--codeFont"],primaryColor:r["--light"],primaryTextColor:r["--darkgray"],primaryBorderColor:r["--tertiary"],lineColor:r["--darkgray"],secondaryColor:r["--secondary"],tertiaryColor:r["--tertiary"],clusterBkg:r["--light"],edgeLabelBackground:r["--highlight"]}}),await t.run({nodes:e})}await o(),document.addEventListener("themechange",o),window.addCleanup(()=>document.removeEventListener("themechange",o));for(let r=0;r<e.length;r++){let v=function(){let g=l.querySelector("#mermaid-space"),h=l.querySelector(".mermaid-content");if(!h)return;f(h);let w=i.querySelector("svg").cloneNode(!0);h.appendChild(w),l.classList.add("active"),g.style.cursor="grab",u=new m(g,h)},M=function(){l.classList.remove("active"),u?.cleanup(),u=null},i=e[r],s=i.parentElement,c=s.querySelector(".clipboard-button"),d=s.querySelector(".expand-button"),p=window.getComputedStyle(c),L=c.offsetWidth+parseFloat(p.marginLeft||"0")+parseFloat(p.marginRight||"0");d.style.right=`calc(${L}px + 0.3rem)`,s.prepend(d);let l=s.querySelector("#mermaid-container");if(!l)return;let u=null;d.addEventListener("click",v),E(l,M),window.addCleanup(()=>{u?.cleanup(),d.removeEventListener("click",v)})}});
+</script><script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/copy-tex.min.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">
+        const socket = new WebSocket('ws://localhost:3001')
+        // reload(true) ensures resources like images and scripts are fetched again in firefox
+        socket.addEventListener('message', () => document.location.reload(true))
+      </script><script src="../postscript.js?v=mqrs8ckb" type="module" data-persist="true"></script></html>

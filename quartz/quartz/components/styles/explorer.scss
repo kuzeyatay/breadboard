@@ -182,6 +182,23 @@ button.desktop-explorer {
           color: var(--tertiary);
         }
       }
+
+      &.chat-node-note {
+        margin: 0.1rem 0 0.35rem -0.15rem;
+        padding: 0.25rem 0.35rem 0.3rem 0.25rem;
+        border: 1px solid color-mix(in srgb, var(--secondary) 48%, transparent);
+        background: color-mix(in srgb, var(--secondary) 11%, transparent);
+
+        & > a {
+          color: var(--dark);
+          opacity: 1;
+          font-weight: $semiBoldWeight;
+        }
+
+        & > a.active {
+          color: var(--secondary);
+        }
+      }
     }
   }
 

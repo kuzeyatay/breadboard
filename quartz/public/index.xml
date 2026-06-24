@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>My library</title>
+    <title>Physics for EE</title>
+    <link>https://localhost:8081/physics-for-ee/</link>
+    <guid>https://localhost:8081/physics-for-ee/</guid>
+    <description><![CDATA[ Quartz garden generated from 0 source documents, with 0 knowledge topics and 0 graph links. ]]></description>
+    <pubDate>Tue, 23 Jun 2026 22:00:00 GMT</pubDate>
+  </item><item>
+    <title>My garden</title>
     <link>https://localhost:8081/private-library/user-1/</link>
     <guid>https://localhost:8081/private-library/user-1/</guid>
-    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
-    <pubDate>Mon, 20 Apr 2026 22:00:00 GMT</pubDate>
+    <description><![CDATA[ All the gardens attached to your account. ]]></description>
+    <pubDate>Tue, 23 Jun 2026 22:00:00 GMT</pubDate>
   </item><item>
-    <title>983068-english-annotated</title>
-    <link>https://localhost:8081/test/983068-english-annotated</link>
-    <guid>https://localhost:8081/test/983068-english-annotated</guid>
-    <description><![CDATA[ Summary Good morning Welcome back to the last week of lectures for this course next week on Monday We will have exam practice and a guest lecture by the colleague of ours of mine actually north yours Who’s working on space applications? So I’ll put an announcement on that on campus Things we’ll cove... ]]></description>
-    <pubDate>Mon, 20 Apr 2026 11:27:07 GMT</pubDate>
+    <title>The Physical Channel</title>
+    <link>https://localhost:8081/communication-1/notes/the-physical-channel-1782132376763</link>
+    <guid>https://localhost:8081/communication-1/notes/the-physical-channel-1782132376763</guid>
+    <description><![CDATA[ The Physical Channel Until now, the course has mostly treated communication as a sequence of signal-processing choices. ]]></description>
+    <pubDate>Mon, 22 Jun 2026 12:46:16 GMT</pubDate>
   </item><item>
-    <title>breadboard</title>
-    <link>https://localhost:8081/</link>
-    <guid>https://localhost:8081/</guid>
-    <description><![CDATA[ Browse every knowledge cluster from one place. ]]></description>
-    <pubDate>Mon, 20 Apr 2026 06:24:39 GMT</pubDate>
+    <title>Communication 1</title>
+    <link>https://localhost:8081/communication-1/</link>
+    <guid>https://localhost:8081/communication-1/</guid>
+    <description><![CDATA[ Quartz garden generated from 6 source documents, with 128 knowledge topics and 2263 graph links. ]]></description>
+    <pubDate>Sun, 21 Jun 2026 22:00:00 GMT</pubDate>
   </item><item>
-    <title>test</title>
-    <link>https://localhost:8081/test/</link>
-    <guid>https://localhost:8081/test/</guid>
-    <description><![CDATA[ Quartz garden generated from 1 source document, with 0 knowledge topics and 0 graph links. ]]></description>
-    <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+    <title>MATHEMATICS 2 — FINAL EXAM FORMULA + CONCEPT CHECKLIST</title>
+    <link>https://localhost:8081/math-2/notes/mathematics-2-final-exam-formula-concept-checklist-1782061436099</link>
+    <guid>https://localhost:8081/math-2/notes/mathematics-2-final-exam-formula-concept-checklist-1782061436099</guid>
+    <description><![CDATA[ MATHEMATICS 2 — FINAL EXAM FORMULA + CONCEPT CHECKLIST 1. BASIC 3D GEOMETRY Points, vectors, length A point in 3D is P=(x,y,z). ]]></description>
+    <pubDate>Sun, 21 Jun 2026 17:03:56 GMT</pubDate>
   </item><item>
-    <title>Public library</title>
-    <link>https://localhost:8081/public-library/</link>
-    <guid>https://localhost:8081/public-library/</guid>
-    <description><![CDATA[ Public library lists shared clusters ranked by popularity. ]]></description>
-    <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+    <title>16.5 Surfaces and Surface Integrals</title>
+    <link>https://localhost:8081/math-2/notes/16-5-surfaces-and-surface-integrals-1782042092919</link>
+    <guid>https://localhost:8081/math-2/notes/16-5-surfaces-and-surface-integrals-1782042092919</guid>
+    <description><![CDATA[ 16.5 Surfaces and Surface Integrals In the previous parts of the course, integration was extended step by step from intervals to larger geometric objects. ]]></description>
+    <pubDate>Sun, 21 Jun 2026 11:41:32 GMT</pubDate>
   </item><item>
-    <title>My library</title>
-    <link>https://localhost:8081/private-library/user-2/</link>
-    <guid>https://localhost:8081/private-library/user-2/</guid>
-    <description><![CDATA[ Your library collects the clusters attached to your account. ]]></description>
-    <pubDate>Sun, 19 Apr 2026 22:00:00 GMT</pubDate>
+    <title>16.4: Line Integrals of Vector Fields</title>
+    <link>https://localhost:8081/math-2/notes/adams-16-4-line-integrals-of-vector-fields-1782028842377</link>
+    <guid>https://localhost:8081/math-2/notes/adams-16-4-line-integrals-of-vector-fields-1782028842377</guid>
+    <description><![CDATA[ Adams 16.4: Line Integrals of Vector Fields In the previous section, a line integral was used to add a scalar quantity along a curve. ]]></description>
+    <pubDate>Sun, 21 Jun 2026 08:00:42 GMT</pubDate>
   </item><item>
-    <title>Associative Cache Sizing Example with Dirty Bit</title>
-    <link>https://localhost:8081/computer-architecture-2/associative-cache-sizing-example-with-dirty-bit</link>
-    <guid>https://localhost:8081/computer-architecture-2/associative-cache-sizing-example-with-dirty-bit</guid>
-    <description><![CDATA[ Associative Cache Sizing Example with Dirty Bit Source: Memory Hierarchies and Cache Organization Locations: Slide 77 The slides also include a sizing example for a 2-way set-associative cache. ]]></description>
-    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
+    <title>Math 2</title>
+    <link>https://localhost:8081/math-2/</link>
+    <guid>https://localhost:8081/math-2/</guid>
+    <description><![CDATA[ Quartz garden generated from 24 source documents, with 0 knowledge topics and 99 graph links. ]]></description>
+    <pubDate>Sat, 20 Jun 2026 22:00:00 GMT</pubDate>
   </item><item>
-    <title>Associativity Comparison with Access Sequences</title>
-    <link>https://localhost:8081/computer-architecture-2/associativity-comparison-with-access-sequences</link>
-    <guid>https://localhost:8081/computer-architecture-2/associativity-comparison-with-access-sequences</guid>
-    <description><![CDATA[ Associativity Comparison with Access Sequences Source: Memory Hierarchies and Cache Organization Locations: Slide 61, Slide 62, Slide 68, Slide 69, Slide 74 The slides compare direct-mapped, 2-way set-associative, and fully associative caches using the same sequence of memory block accesses: 0, 8, 0... ]]></description>
-    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
+    <title>Frequency and Phase Modulation</title>
+    <link>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/frequency-and-phase-modulation-1781971492074</link>
+    <guid>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/frequency-and-phase-modulation-1781971492074</guid>
+    <description><![CDATA[ Frequency and Phase Modulation: Modulation Index, Frequency Deviation, Carson’s Rule, and the FM Spectrum Table After amplitude modulation, the natural next question is whether the information must always be carried by the amplitude of a carrier wave. ]]></description>
+    <pubDate>Sat, 20 Jun 2026 16:04:52 GMT</pubDate>
   </item><item>
-    <title>Cache Block Size and Address Field Decomposition</title>
-    <link>https://localhost:8081/computer-architecture-2/cache-block-size-and-address-field-decomposition</link>
-    <guid>https://localhost:8081/computer-architecture-2/cache-block-size-and-address-field-decomposition</guid>
-    <description><![CDATA[ Cache Block Size and Address Field Decomposition Source: Memory Hierarchies and Cache Organization Locations: Slide 26, Slide 27, Slide 28, Slide 30, Slide 31, Slide 32, Slide 33, Slide 35 The slides show how a memory address is divided into tag, index, and offset fields, and how this decomposition ... ]]></description>
-    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
-  </item><item>
-    <title>Cache Types and Multi-Level Organization</title>
-    <link>https://localhost:8081/computer-architecture-2/cache-types-and-multi-level-organization</link>
-    <guid>https://localhost:8081/computer-architecture-2/cache-types-and-multi-level-organization</guid>
-    <description><![CDATA[ Cache Types and Multi-Level Organization Source: Memory Hierarchies and Cache Organization Locations: Slide 50, Slide 54, Slide 51 The slides distinguish instruction caches from data caches and show how splitting them can improve performance. ]]></description>
-    <pubDate>Sun, 19 Apr 2026 16:59:21 GMT</pubDate>
+    <title>Amplitude Modulation</title>
+    <link>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/amplitude-modulation-1781959396325</link>
+    <guid>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/amplitude-modulation-1781959396325</guid>
+    <description><![CDATA[ Amplitude Modulation: Signal Formula, Modulation Percentage, Efficiency, Spectrum, and Detection Amplitude modulation appears at this point in the course because we have already learned how to describe signals in time and frequency, and we have already seen that information signals often start as ba... ]]></description>
+    <pubDate>Sat, 20 Jun 2026 12:43:16 GMT</pubDate>
   </item>
     </channel>
   </rss>

@@ -93,6 +93,110 @@ function sendFlagColor(slug: FullSlug, flagColor: string) {
   )
 }
 
+// ── Folder drag-and-drop (only when embedded in the dashboard iframe) ─────────
+const insideDashboard = typeof window !== "undefined" && window.parent !== window
+let draggedSlug: string | null = null
+
+// A note's full slug is "<cluster>/<...folder>/<basename>".
+function clusterAndBasename(slug: string): { cluster: string; basename: string } {
+  const parts = slug.split("/").filter(Boolean)
+  return { cluster: parts[0] ?? "", basename: parts[parts.length - 1] ?? "" }
+}
+
+// A folder's slug is "<cluster>/<...folder>/index"; "<cluster>/index" is the root.
+function clusterAndRelFolder(folderSlug: string): { cluster: string; relFolder: string } {
+  const parts = folderSlug.split("/").filter(Boolean)
+  if (parts[parts.length - 1] === "index") parts.pop()
+  return { cluster: parts[0] ?? "", relFolder: parts.slice(1).join("/") }
+}
+
+function clearDropTargets() {
+  for (const el of document.querySelectorAll(".explorer .drop-target")) {
+    el.classList.remove("drop-target")
+  }
+}
+
+function sendMoveNote(cluster: string, slug: string, toFolder: string) {
+  window.parent?.postMessage({ type: "second-brain:move-note", cluster, slug, toFolder }, "*")
+}
+
+function sendCreateFolder(cluster: string, folder: string) {
+  window.parent?.postMessage({ type: "second-brain:create-folder", cluster, folder }, "*")
+}
+
+function sendDeleteFolder(cluster: string, folder: string) {
+  window.parent?.postMessage({ type: "second-brain:delete-folder", cluster, folder }, "*")
+}
+
+function makeFileDraggable(li: HTMLElement, slug: FullSlug) {
+  if (!insideDashboard) return
+  li.draggable = true
+  li.classList.add("explorer-draggable")
+  li.addEventListener("dragstart", (event) => {
+    draggedSlug = slug
+    event.dataTransfer?.setData("text/plain", slug)
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"
+  })
+  li.addEventListener("dragend", () => {
+    draggedSlug = null
+    clearDropTargets()
+  })
+}
+
+function makeFolderDropTarget(el: HTMLElement, folderSlug: string) {
+  if (!insideDashboard) return
+  const target = clusterAndRelFolder(folderSlug)
+
+  el.addEventListener("dragover", (event) => {
+    if (!draggedSlug) return
+    if (clusterAndBasename(draggedSlug).cluster !== target.cluster) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move"
+    el.classList.add("drop-target")
+  })
+  el.addEventListener("dragleave", () => el.classList.remove("drop-target"))
+  el.addEventListener("drop", (event) => {
+    el.classList.remove("drop-target")
+    if (!draggedSlug) return
+    const dragged = clusterAndBasename(draggedSlug)
+    if (dragged.cluster !== target.cluster) return
+    event.preventDefault()
+    event.stopPropagation()
+    sendMoveNote(target.cluster, dragged.basename, target.relFolder)
+    draggedSlug = null
+  })
+}
+
+let dndStylesInjected = false
+function ensureDndStyles() {
+  if (dndStylesInjected || typeof document === "undefined") return
+  dndStylesInjected = true
+  const style = document.createElement("style")
+  style.textContent = `
+    .explorer .drop-target { background: rgba(56, 189, 248, 0.18); outline: 1px solid rgba(56, 189, 248, 0.5); border-radius: 4px; }
+    .explorer .explorer-draggable { cursor: grab; }
+    .folder-container .explorer-folder-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      border: 0;
+      background: transparent;
+      color: var(--secondary);
+      opacity: 0;
+      cursor: pointer;
+      padding: 2px;
+      border-radius: 4px;
+      transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+    }
+    .folder-container .explorer-folder-add { margin-left: auto; }
+    .folder-container:hover .explorer-folder-action { opacity: 0.55; }
+    .folder-container .explorer-folder-add:hover { opacity: 1; color: var(--tertiary); background: var(--lightgray); }
+    .folder-container .explorer-folder-del:hover { opacity: 1; color: #dc2626; background: color-mix(in srgb, #dc2626 12%, transparent); }
+  `
+  document.head.appendChild(style)
+}
+
 let currentExplorerState: Array<FolderState>
 function toggleExplorer(this: HTMLElement) {
   const nearestExplorer = this.closest(".explorer") as HTMLElement
@@ -160,11 +264,15 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const a = li.querySelector("a") as HTMLAnchorElement
   const flagColor = validFlagColor(node.data?.flagColor)
   const isSourceDocument = node.data?.knowledgeType === "source-document"
+  const isChatNodeNote =
+    node.data?.knowledgeType === "generated-note" && node.data?.generatedNoteType === "chat-node"
   li.classList.add("explorer-file")
   if (isSourceDocument) li.classList.add("source-document")
+  if (isChatNodeNote) li.classList.add("chat-node-note")
   a.href = resolveRelative(currentSlug, node.slug)
   a.dataset.for = node.slug
   a.textContent = node.displayName
+  makeFileDraggable(li, node.slug)
 
   if (currentSlug === node.slug) {
     a.classList.add("active")
@@ -268,6 +376,48 @@ function createFolderNode(
     folderContainer.classList.add("active")
   }
 
+  // Allow dropping notes into this folder and creating/deleting sub-folders from the dashboard.
+  makeFolderDropTarget(folderContainer, folderPath)
+  if (insideDashboard) {
+    const { cluster, relFolder } = clusterAndRelFolder(folderPath)
+
+    const addBtn = document.createElement("button")
+    addBtn.type = "button"
+    addBtn.className = "explorer-folder-add explorer-folder-action"
+    addBtn.title = "New sub-folder"
+    addBtn.ariaLabel = "New sub-folder"
+    addBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`
+    addBtn.addEventListener("click", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const name = window.prompt("New folder name")
+      if (!name || !name.trim()) return
+      const folder = relFolder ? `${relFolder}/${name.trim()}` : name.trim()
+      sendCreateFolder(cluster, folder)
+    })
+    folderContainer.appendChild(addBtn)
+
+    // The cluster root has no relFolder and cannot be deleted from here.
+    if (relFolder) {
+      const delBtn = document.createElement("button")
+      delBtn.type = "button"
+      delBtn.className = "explorer-folder-del explorer-folder-action"
+      delBtn.title = "Delete folder"
+      delBtn.ariaLabel = "Delete folder"
+      delBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`
+      delBtn.addEventListener("click", (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        const ok = window.confirm(
+          `Delete the folder "${relFolder}" and all notes inside it? This cannot be undone.`,
+        )
+        if (!ok) return
+        sendDeleteFolder(cluster, relFolder)
+      })
+      folderContainer.appendChild(delBtn)
+    }
+  }
+
   if (opts.folderClickBehavior === "link") {
     // Replace button with link for link behavior
     const button = titleContainer.querySelector(".folder-button") as HTMLElement
@@ -308,6 +458,7 @@ function createFolderNode(
 }
 
 async function setupExplorer(currentSlug: FullSlug) {
+  ensureDndStyles()
   const allExplorers = document.querySelectorAll("div.explorer") as NodeListOf<HTMLElement>
 
   for (const explorer of allExplorers) {

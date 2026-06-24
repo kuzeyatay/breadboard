@@ -16,6 +16,7 @@ export type ContentDetails = {
   links: SimpleSlug[]
   tags: string[]
   knowledgeType?: string
+  generatedNoteType?: string
   sourceType?: string
   sourceFile?: string
   sourceDocument?: string
@@ -124,6 +125,8 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
             links: file.data.links ?? [],
             tags: file.data.frontmatter?.tags ?? [],
             knowledgeType: typeof fm?.knowledge_type === "string" ? fm.knowledge_type : undefined,
+            generatedNoteType:
+              typeof fm?.generated_note_type === "string" ? fm.generated_note_type : undefined,
             sourceType: typeof fm?.source_type === "string" ? fm.source_type : undefined,
             sourceFile: typeof fm?.source_file === "string" ? fm.source_file : undefined,
             sourceDocument:

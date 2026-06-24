@@ -169,7 +169,7 @@ export async function GET(request: Request) {
 
   const access = getClusterAccess(clusterSlug);
   if (!access)
-    return NextResponse.json({ error: "Cluster not found" }, { status: 404 });
+    return NextResponse.json({ error: "Garden not found" }, { status: 404 });
 
   const isOwner = access.ownerId === userId;
   const includePublicChats =
@@ -179,7 +179,7 @@ export async function GET(request: Request) {
     access.chatAccessible;
 
   if (!isOwner && !access.chatAccessible) {
-    return NextResponse.json({ error: "Cluster not found" }, { status: 404 });
+    return NextResponse.json({ error: "Garden not found" }, { status: 404 });
   }
 
   const sessions = readSessions(
@@ -208,11 +208,11 @@ export async function POST(request: Request) {
 
   const access = getClusterAccess(clusterSlug);
   if (!access)
-    return NextResponse.json({ error: "Cluster not found" }, { status: 404 });
+    return NextResponse.json({ error: "Garden not found" }, { status: 404 });
 
   const isOwner = access.ownerId === userId;
   if (!isOwner && !access.chatAccessible) {
-    return NextResponse.json({ error: "Cluster not found" }, { status: 404 });
+    return NextResponse.json({ error: "Garden not found" }, { status: 404 });
   }
 
   const result = db

@@ -61,7 +61,7 @@ export default async function GardenHomePage({
           </Link>
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">
-            {view === "public" ? "Public library" : "My library"}
+            {view === "public" ? "Public garden" : "My garden"}
           </h1>
         </div>
         <div className="flex items-center gap-2">
@@ -76,14 +76,14 @@ export default async function GardenHomePage({
               aria-current={view === "private" ? "page" : undefined}
               className={switchClass(view === "private")}
             >
-              My library
+              My garden
             </Link>
             <Link
               href="/garden?view=public"
               aria-current={view === "public" ? "page" : undefined}
               className={switchClass(view === "public")}
             >
-              Public Library
+              Public garden
             </Link>
           </nav>
         </div>
@@ -91,7 +91,7 @@ export default async function GardenHomePage({
 
       <LibraryGardenClient
         src={quartzSlug ? quartzUrl(quartzSlug) : quartzUrl()}
-        title={view === "public" ? "Public library" : "My library"}
+        title={view === "public" ? "Public garden" : "My garden"}
       />
     </div>
   );

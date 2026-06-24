@@ -202,7 +202,7 @@ export async function GET(request: NextRequest) {
     const asset = searchParams.get('asset');
     const clusterSlug = searchParams.get('clusterSlug')?.trim();
 
-    if (!clusterSlug) return previewError('Missing cluster.', 400);
+    if (!clusterSlug) return previewError('Missing garden.', 400);
     const { cluster } = await requireReadableClusterFromSlug(clusterSlug);
 
     if (asset === 'prescript' || asset === 'postscript') {

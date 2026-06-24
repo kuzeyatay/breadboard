@@ -26,6 +26,23 @@ li.section-li {
     }
   }
 
+  &.chat-node-note-entry {
+    margin-bottom: 1.35em;
+    padding: 0.9rem 1rem;
+    border: 1px solid color-mix(in srgb, var(--secondary) 48%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--secondary) 9%, transparent);
+
+    & > .section {
+      align-items: center;
+    }
+
+    & h3 a {
+      color: var(--dark);
+      font-weight: $semiBoldWeight;
+    }
+  }
+
   & > .section {
     display: grid;
     grid-template-columns: fit-content(8em) 3fr 1fr;

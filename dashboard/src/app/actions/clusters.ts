@@ -26,6 +26,7 @@ export interface Cluster {
   fork_allowed: boolean;
   view_count: number;
   last_viewed_at: string | null;
+  folder: string | null;
   created_at: string;
   noteCount: number;
   ownerEmail?: string;
@@ -132,6 +133,10 @@ function toCluster(
     fork_allowed: Boolean(row.fork_allowed),
     view_count: Number(row.view_count) || 0,
     last_viewed_at: row.last_viewed_at ?? null,
+    folder:
+      typeof row.folder === "string" && row.folder.trim()
+        ? row.folder.trim()
+        : null,
     noteCount,
     isOwner: typeof userId === "number" ? row.user_id === userId : row.isOwner,
   };
@@ -144,7 +149,7 @@ function slugifyClusterName(name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-  return slug || "cluster";
+  return slug || "garden";
 }
 
 function uniqueClusterSlug(name: string): string {
@@ -185,11 +190,11 @@ function deletedClusterRedirectHtml(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="0; url=/">
-<title>Cluster deleted</title>
+<title>Garden deleted</title>
 <script>window.location.replace('/');</script>
 <body style="margin:0;background:#161618;color:#ebebec;font-family:system-ui,sans-serif;display:grid;min-height:100vh;place-items:center">
   <main style="max-width:32rem;padding:2rem;text-align:center">
-    <h1 style="font-size:1.5rem;margin:0 0 .75rem">This cluster was deleted.</h1>
+    <h1 style="font-size:1.5rem;margin:0 0 .75rem">This garden was deleted.</h1>
     <p style="color:#646464;margin:0 0 1.25rem">Taking you back to the garden home.</p>
     <a href="/" style="color:#7b97aa">Open garden home</a>
   </main>
@@ -228,7 +233,7 @@ export async function getClusters(userId: number): Promise<Cluster[]> {
       toCluster(c, countNotes(contentPath, c.slug), userId),
     );
   } catch {
-    throw new Error("Failed to load clusters");
+    throw new Error("Failed to load gardens");
   }
 }
 
@@ -249,7 +254,7 @@ export async function getPublicClusters(userId: number): Promise<Cluster[]> {
       toCluster(c, countNotes(contentPath, c.slug), userId),
     );
   } catch {
-    throw new Error("Failed to load public clusters");
+    throw new Error("Failed to load public gardens");
   }
 }
 
@@ -303,7 +308,7 @@ export async function createCluster(
     revalidatePath("/garden");
   } catch (err) {
     throw new Error(
-      err instanceof Error ? err.message : "Failed to create cluster",
+      err instanceof Error ? err.message : "Failed to create garden",
     );
   }
 }
@@ -317,12 +322,12 @@ export async function updateClusterDetails(
     const userId = await requireUserId();
     const cleanName = name.trim();
     const cleanDescription = description.trim();
-    if (!cleanName) throw new Error("Cluster name is required");
+    if (!cleanName) throw new Error("Garden name is required");
 
     const cluster = db
       .prepare("SELECT slug FROM clusters WHERE id = ? AND user_id = ?")
       .get(clusterId, userId) as { slug: string } | undefined;
-    if (!cluster) throw new Error("Cluster not found");
+    if (!cluster) throw new Error("Garden not found");
 
     db.prepare(
       "UPDATE clusters SET name = ?, description = ? WHERE id = ? AND user_id = ?",
@@ -343,11 +348,11 @@ export async function updateClusterDetails(
     await publishQuartzAfterMutation(`update cluster ${cluster.slug}`);
     revalidatePath("/dashboard");
     revalidatePath("/garden");
-    revalidatePath(`/clusters/${cluster.slug}`);
+    revalidatePath(`/gardens/${cluster.slug}`);
     revalidatePath(`/garden/${cluster.slug}`);
   } catch (err) {
     throw new Error(
-      err instanceof Error ? err.message : "Failed to update cluster",
+      err instanceof Error ? err.message : "Failed to update garden",
     );
   }
 }
@@ -362,7 +367,7 @@ export async function setClusterVisibility(
     const cluster = db
       .prepare("SELECT slug FROM clusters WHERE id = ? AND user_id = ?")
       .get(clusterId, userId) as { slug: string } | undefined;
-    if (!cluster) throw new Error("Cluster not found");
+    if (!cluster) throw new Error("Garden not found");
 
     const result = db
       .prepare(
@@ -370,7 +375,7 @@ export async function setClusterVisibility(
       )
       .run(nextVisibility, clusterId, userId);
 
-    if (result.changes !== 1) throw new Error("Cluster not found");
+    if (result.changes !== 1) throw new Error("Garden not found");
 
     refreshPrivateQuartzIndex(userId);
     refreshPublicQuartzIndex();
@@ -382,7 +387,144 @@ export async function setClusterVisibility(
     throw new Error(
       err instanceof Error
         ? err.message
-        : "Failed to update cluster visibility",
+        : "Failed to update garden visibility",
+    );
+  }
+}
+
+function normalizeFolderName(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+}
+
+export async function getClusterFolders(userId: number): Promise<string[]> {
+  try {
+    const registered = db
+      .prepare("SELECT name FROM cluster_folders WHERE user_id = ?")
+      .all(userId) as { name: string }[];
+    const assigned = db
+      .prepare(
+        "SELECT DISTINCT folder AS name FROM clusters WHERE user_id = ? AND folder IS NOT NULL AND folder <> ''",
+      )
+      .all(userId) as { name: string }[];
+
+    const names = new Set<string>();
+    for (const row of [...registered, ...assigned]) {
+      const name = normalizeFolderName(row.name);
+      if (name) names.add(name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+export async function createClusterFolder(name: string): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    const folder = normalizeFolderName(name);
+    if (!folder) throw new Error("Cluster name is required");
+
+    db.prepare(
+      "INSERT OR IGNORE INTO cluster_folders (user_id, name) VALUES (?, ?)",
+    ).run(userId, folder);
+
+    refreshPrivateQuartzIndex(userId);
+    revalidatePath("/dashboard");
+    revalidatePath("/garden");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to create cluster",
+    );
+  }
+}
+
+export async function setClusterFolder(
+  clusterId: number,
+  folder: string | null,
+): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    const cluster = db
+      .prepare("SELECT slug FROM clusters WHERE id = ? AND user_id = ?")
+      .get(clusterId, userId) as { slug: string } | undefined;
+    if (!cluster) throw new Error("Garden not found");
+
+    const cleanFolder = normalizeFolderName(folder);
+    if (cleanFolder) {
+      db.prepare(
+        "INSERT OR IGNORE INTO cluster_folders (user_id, name) VALUES (?, ?)",
+      ).run(userId, cleanFolder);
+    }
+
+    db.prepare(
+      "UPDATE clusters SET folder = ? WHERE id = ? AND user_id = ?",
+    ).run(cleanFolder || null, clusterId, userId);
+
+    refreshPrivateQuartzIndex(userId);
+    revalidatePath("/dashboard");
+    revalidatePath("/garden");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to move garden",
+    );
+  }
+}
+
+export async function renameClusterFolder(
+  oldName: string,
+  newName: string,
+): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    const from = normalizeFolderName(oldName);
+    const to = normalizeFolderName(newName);
+    if (!from || !to) throw new Error("Cluster name is required");
+
+    const tx = db.transaction(() => {
+      db.prepare(
+        "INSERT OR IGNORE INTO cluster_folders (user_id, name) VALUES (?, ?)",
+      ).run(userId, to);
+      db.prepare(
+        "DELETE FROM cluster_folders WHERE user_id = ? AND name = ?",
+      ).run(userId, from);
+      db.prepare(
+        "UPDATE clusters SET folder = ? WHERE user_id = ? AND folder = ?",
+      ).run(to, userId, from);
+    });
+    tx();
+
+    refreshPrivateQuartzIndex(userId);
+    revalidatePath("/dashboard");
+    revalidatePath("/garden");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to rename cluster",
+    );
+  }
+}
+
+export async function deleteClusterFolder(name: string): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    const folder = normalizeFolderName(name);
+    if (!folder) throw new Error("Cluster name is required");
+
+    const tx = db.transaction(() => {
+      db.prepare(
+        "UPDATE clusters SET folder = NULL WHERE user_id = ? AND folder = ?",
+      ).run(userId, folder);
+      db.prepare(
+        "DELETE FROM cluster_folders WHERE user_id = ? AND name = ?",
+      ).run(userId, folder);
+    });
+    tx();
+
+    refreshPrivateQuartzIndex(userId);
+    revalidatePath("/dashboard");
+    revalidatePath("/garden");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to delete cluster",
     );
   }
 }
@@ -399,14 +541,14 @@ export async function setClusterChatAccessible(
       )
       .run(accessible ? 1 : 0, clusterId, userId);
 
-    if (result.changes !== 1) throw new Error("Cluster not found");
+    if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
   } catch (err) {
     throw new Error(
       err instanceof Error
         ? err.message
-        : "Failed to update cluster accessibility",
+        : "Failed to update garden accessibility",
     );
   }
 }
@@ -423,14 +565,14 @@ export async function setClusterForkAllowed(
       )
       .run(allowed ? 1 : 0, clusterId, userId);
 
-    if (result.changes !== 1) throw new Error("Cluster not found");
+    if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
   } catch (err) {
     throw new Error(
       err instanceof Error
         ? err.message
-        : "Failed to update cluster fork setting",
+        : "Failed to update garden fork setting",
     );
   }
 }
@@ -448,7 +590,7 @@ export async function setClusterBorderColor(
       )
       .run(color, clusterId, userId);
 
-    if (result.changes !== 1) throw new Error("Cluster not found");
+    if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
   } catch (err) {
@@ -473,12 +615,12 @@ export async function setClusterCardSize(
       )
       .run(cardWidth, cardHeight, clusterId, userId);
 
-    if (result.changes !== 1) throw new Error("Cluster not found");
+    if (result.changes !== 1) throw new Error("Garden not found");
 
     revalidatePath("/dashboard");
   } catch (err) {
     throw new Error(
-      err instanceof Error ? err.message : "Failed to update cluster size",
+      err instanceof Error ? err.message : "Failed to update garden size",
     );
   }
 }
@@ -489,7 +631,7 @@ export async function forkCluster(
   try {
     const userId = await requireUserId();
     const cleanSourceSlug = sourceSlug.trim();
-    if (!cleanSourceSlug) throw new Error("Cluster slug is required");
+    if (!cleanSourceSlug) throw new Error("Garden slug is required");
 
     const source = db
       .prepare(
@@ -502,9 +644,9 @@ export async function forkCluster(
       )
       .get(cleanSourceSlug) as ClusterRow | undefined;
 
-    if (!source) throw new Error("This cluster cannot be forked");
+    if (!source) throw new Error("This garden cannot be forked");
     if (source.user_id === userId) {
-      throw new Error("You already own this cluster");
+      throw new Error("You already own this garden");
     }
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
@@ -513,7 +655,7 @@ export async function forkCluster(
     const targetSlug = uniqueClusterSlug(source.name);
     const sourceDir = resolveChildPath(contentPath, source.slug);
     const targetDir = resolveChildPath(contentPath, targetSlug);
-    if (!sourceDir || !targetDir) throw new Error("Invalid cluster path");
+    if (!sourceDir || !targetDir) throw new Error("Invalid garden path");
     if (fs.existsSync(targetDir)) throw new Error("Fork target already exists");
 
     if (fs.existsSync(sourceDir)) {
@@ -563,13 +705,13 @@ export async function forkCluster(
     await publishQuartzAfterMutation(`fork cluster ${targetSlug}`);
     revalidatePath("/dashboard");
     revalidatePath("/garden");
-    revalidatePath(`/clusters/${targetSlug}`);
+    revalidatePath(`/gardens/${targetSlug}`);
     revalidatePath(`/garden/${targetSlug}`);
 
     return { slug: targetSlug };
   } catch (err) {
     throw new Error(
-      err instanceof Error ? err.message : "Failed to fork cluster",
+      err instanceof Error ? err.message : "Failed to fork garden",
     );
   }
 }
@@ -606,7 +748,7 @@ export async function deleteCluster(clusterId: number): Promise<void> {
     }
 
     revalidatePath("/dashboard");
-    revalidatePath(`/clusters/${cluster.slug}`);
+    revalidatePath(`/gardens/${cluster.slug}`);
     revalidatePath(`/garden/${cluster.slug}`);
     revalidatePath("/garden");
     refreshPrivateQuartzIndex(userId);
@@ -617,7 +759,7 @@ export async function deleteCluster(clusterId: number): Promise<void> {
     }
   } catch (err) {
     throw new Error(
-      err instanceof Error ? err.message : "Failed to delete cluster",
+      err instanceof Error ? err.message : "Failed to delete garden",
     );
   }
 }

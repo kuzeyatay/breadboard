@@ -11,6 +11,11 @@ function knowledgeType(file: QuartzPluginData): string {
   return typeof frontmatter?.knowledge_type === "string" ? frontmatter.knowledge_type : ""
 }
 
+function generatedNoteType(file: QuartzPluginData): string {
+  const frontmatter = file.frontmatter as Record<string, unknown> | undefined
+  return typeof frontmatter?.generated_note_type === "string" ? frontmatter.generated_note_type : ""
+}
+
 function sourceDocumentSort(f1: QuartzPluginData, f2: QuartzPluginData): number {
   const f1IsSource = knowledgeType(f1) === "source-document"
   const f2IsSource = knowledgeType(f2) === "source-document"
@@ -89,9 +94,15 @@ export const PageList: QuartzComponent = ({ cfg, fileData, allFiles, limit, sort
         const title = page.frontmatter?.title
         const tags = page.frontmatter?.tags ?? []
         const isSourceDocument = knowledgeType(page) === "source-document"
+        const isChatNodeNote =
+          knowledgeType(page) === "generated-note" && generatedNoteType(page) === "chat-node"
 
         return (
-          <li class={`section-li${isSourceDocument ? " source-document-entry" : ""}`}>
+          <li
+            class={`section-li${isSourceDocument ? " source-document-entry" : ""}${
+              isChatNodeNote ? " chat-node-note-entry" : ""
+            }`}
+          >
             <div class="section">
               <p class="meta">
                 {page.dates && <Date date={getDate(cfg, page)!} locale={cfg.locale} />}

@@ -1,0 +1,2067 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr"><head><title>Signals, Basis Functions, and Fourier Analysis</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;family=IBM Plex Mono:wght@400;600&amp;display=swap"/><link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin="anonymous"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><script type="application/javascript" data-persist="true">(() => {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("embed") === "graph") {
+      document.documentElement.classList.add("quartz-graph-preview")
+    }
+  } catch {}
+})()</script><meta name="og:site_name" content="breadboard"/><meta property="og:title" content="Signals, Basis Functions, and Fourier Analysis"/><meta property="og:type" content="website"/><meta name="twitter:card" content="summary_large_image"/><meta name="twitter:title" content="Signals, Basis Functions, and Fourier Analysis"/><meta name="twitter:description" content="Communication begins with a simple but deep problem: information must be carried by physical signals."/><meta property="og:description" content="Communication begins with a simple but deep problem: information must be carried by physical signals."/><meta property="og:image:alt" content="Communication begins with a simple but deep problem: information must be carried by physical signals."/><meta property="twitter:domain" content="localhost:8081"/><meta property="og:url" content="https://localhost:8081/communication-1/signals-basis-functions-and-fourier-analysis-1778577984581"/><meta property="twitter:url" content="https://localhost:8081/communication-1/signals-basis-functions-and-fourier-analysis-1778577984581"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="Communication begins with a simple but deep problem: information must be carried by physical signals."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" data-persist="true"/><style>.expand-button {
+  position: absolute;
+  display: flex;
+  float: right;
+  padding: 0.4rem;
+  margin: 0.3rem;
+  right: 0;
+  color: var(--gray);
+  border-color: var(--dark);
+  background-color: var(--light);
+  border: 1px solid;
+  border-radius: 5px;
+  opacity: 0;
+  transition: 0.2s;
+}
+.expand-button > svg {
+  fill: var(--light);
+  filter: contrast(0.3);
+}
+.expand-button:hover {
+  cursor: pointer;
+  border-color: var(--secondary);
+}
+.expand-button:focus {
+  outline: 0;
+}
+
+pre:hover > .expand-button {
+  opacity: 1;
+  transition: 0.2s;
+}
+
+#mermaid-container {
+  position: fixed;
+  contain: layout;
+  z-index: 999;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: none;
+  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
+}
+#mermaid-container.active {
+  display: inline-block;
+}
+#mermaid-container > #mermaid-space {
+  border: 1px solid var(--lightgray);
+  background-color: var(--light);
+  border-radius: 5px;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  height: 80vh;
+  width: 80vw;
+  overflow: hidden;
+}
+#mermaid-container > #mermaid-space > .mermaid-content {
+  position: relative;
+  transform-origin: 0 0;
+  transition: transform 0.1s ease;
+  overflow: visible;
+  min-height: 200px;
+  min-width: 200px;
+}
+#mermaid-container > #mermaid-space > .mermaid-content pre {
+  margin: 0;
+  border: none;
+}
+#mermaid-container > #mermaid-space > .mermaid-content svg {
+  max-width: none;
+  height: auto;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: var(--light);
+  border: 1px solid var(--lightgray);
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 2;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--lightgray);
+  background: var(--light);
+  color: var(--dark);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  font-family: var(--bodyFont);
+  transition: all 0.2s ease;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:hover {
+  background: var(--lightgray);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:active {
+  transform: translateY(1px);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:nth-child(2) {
+  width: auto;
+  padding: 0 12px;
+  font-size: 14px;
+}
+/*# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VSb290IjoiQzpcXFVzZXJzXFwyMDI1MjA4MlxcT25lRHJpdmUgLSBUVSBFaW5kaG92ZW5cXERlc2t0b3BcXGJyZWFkYm9hcmRcXHF1YXJ0elxccXVhcnR6XFxjb21wb25lbnRzXFxzdHlsZXMiLCJzb3VyY2VzIjpbIm1lcm1haWQuaW5saW5lLnNjc3MiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUdGO0VBQ0U7OztBQUtGO0VBQ0U7RUFDQTs7O0FBSUo7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUVBO0VBQ0U7O0FBR0Y7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUlKO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7O0FBRUE7RUFDRTs7QUFHRjtFQUNFOztBQUlGO0VBQ0U7RUFDQTtFQUNBIiwic291cmNlc0NvbnRlbnQiOlsiLmV4cGFuZC1idXR0b24ge1xuICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gIGRpc3BsYXk6IGZsZXg7XG4gIGZsb2F0OiByaWdodDtcbiAgcGFkZGluZzogMC40cmVtO1xuICBtYXJnaW46IDAuM3JlbTtcbiAgcmlnaHQ6IDA7IC8vIE5PVEU6IHJpZ2h0IHdpbGwgYmUgc2V0IGluIG1lcm1haWQuaW5saW5lLnRzXG4gIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgYm9yZGVyLWNvbG9yOiB2YXIoLS1kYXJrKTtcbiAgYmFja2dyb3VuZC1jb2xvcjogdmFyKC0tbGlnaHQpO1xuICBib3JkZXI6IDFweCBzb2xpZDtcbiAgYm9yZGVyLXJhZGl1czogNXB4O1xuICBvcGFjaXR5OiAwO1xuICB0cmFuc2l0aW9uOiAwLjJzO1xuXG4gICYgPiBzdmcge1xuICAgIGZpbGw6IHZhcigtLWxpZ2h0KTtcbiAgICBmaWx0ZXI6IGNvbnRyYXN0KDAuMyk7XG4gIH1cblxuICAmOmhvdmVyIHtcbiAgICBjdXJzb3I6IHBvaW50ZXI7XG4gICAgYm9yZGVyLWNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICB9XG5cbiAgJjpmb2N1cyB7XG4gICAgb3V0bGluZTogMDtcbiAgfVxufVxuXG5wcmUge1xuICAmOmhvdmVyID4gLmV4cGFuZC1idXR0b24ge1xuICAgIG9wYWNpdHk6IDE7XG4gICAgdHJhbnNpdGlvbjogMC4ycztcbiAgfVxufVxuXG4jbWVybWFpZC1jb250YWluZXIge1xuICBwb3NpdGlvbjogZml4ZWQ7XG4gIGNvbnRhaW46IGxheW91dDtcbiAgei1pbmRleDogOTk5O1xuICBsZWZ0OiAwO1xuICB0b3A6IDA7XG4gIHdpZHRoOiAxMDB2dztcbiAgaGVpZ2h0OiAxMDB2aDtcbiAgb3ZlcmZsb3c6IGhpZGRlbjtcbiAgZGlzcGxheTogbm9uZTtcbiAgYmFja2Ryb3AtZmlsdGVyOiBibHVyKDRweCk7XG4gIGJhY2tncm91bmQ6IHJnYmEoMCwgMCwgMCwgMC41KTtcblxuICAmLmFjdGl2ZSB7XG4gICAgZGlzcGxheTogaW5saW5lLWJsb2NrO1xuICB9XG5cbiAgJiA+ICNtZXJtYWlkLXNwYWNlIHtcbiAgICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgIGJhY2tncm91bmQtY29sb3I6IHZhcigtLWxpZ2h0KTtcbiAgICBib3JkZXItcmFkaXVzOiA1cHg7XG4gICAgcG9zaXRpb246IGZpeGVkO1xuICAgIHRvcDogNTAlO1xuICAgIGxlZnQ6IDUwJTtcbiAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZSgtNTAlLCAtNTAlKTtcbiAgICBoZWlnaHQ6IDgwdmg7XG4gICAgd2lkdGg6IDgwdnc7XG4gICAgb3ZlcmZsb3c6IGhpZGRlbjtcblxuICAgICYgPiAubWVybWFpZC1jb250ZW50IHtcbiAgICAgIHBvc2l0aW9uOiByZWxhdGl2ZTtcbiAgICAgIHRyYW5zZm9ybS1vcmlnaW46IDAgMDtcbiAgICAgIHRyYW5zaXRpb246IHRyYW5zZm9ybSAwLjFzIGVhc2U7XG4gICAgICBvdmVyZmxvdzogdmlzaWJsZTtcbiAgICAgIG1pbi1oZWlnaHQ6IDIwMHB4O1xuICAgICAgbWluLXdpZHRoOiAyMDBweDtcblxuICAgICAgcHJlIHtcbiAgICAgICAgbWFyZ2luOiAwO1xuICAgICAgICBib3JkZXI6IG5vbmU7XG4gICAgICB9XG5cbiAgICAgIHN2ZyB7XG4gICAgICAgIG1heC13aWR0aDogbm9uZTtcbiAgICAgICAgaGVpZ2h0OiBhdXRvO1xuICAgICAgfVxuICAgIH1cblxuICAgICYgPiAubWVybWFpZC1jb250cm9scyB7XG4gICAgICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gICAgICBib3R0b206IDIwcHg7XG4gICAgICByaWdodDogMjBweDtcbiAgICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgICBnYXA6IDhweDtcbiAgICAgIHBhZGRpbmc6IDhweDtcbiAgICAgIGJhY2tncm91bmQ6IHZhcigtLWxpZ2h0KTtcbiAgICAgIGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLWxpZ2h0Z3JheSk7XG4gICAgICBib3JkZXItcmFkaXVzOiA2cHg7XG4gICAgICBib3gtc2hhZG93OiAwIDJweCA0cHggcmdiYSgwLCAwLCAwLCAwLjEpO1xuICAgICAgei1pbmRleDogMjtcblxuICAgICAgLm1lcm1haWQtY29udHJvbC1idXR0b24ge1xuICAgICAgICBkaXNwbGF5OiBmbGV4O1xuICAgICAgICBhbGlnbi1pdGVtczogY2VudGVyO1xuICAgICAgICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjtcbiAgICAgICAgd2lkdGg6IDMycHg7XG4gICAgICAgIGhlaWdodDogMzJweDtcbiAgICAgICAgcGFkZGluZzogMDtcbiAgICAgICAgYm9yZGVyOiAxcHggc29saWQgdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHQpO1xuICAgICAgICBjb2xvcjogdmFyKC0tZGFyayk7XG4gICAgICAgIGJvcmRlci1yYWRpdXM6IDRweDtcbiAgICAgICAgY3Vyc29yOiBwb2ludGVyO1xuICAgICAgICBmb250LXNpemU6IDE2cHg7XG4gICAgICAgIGZvbnQtZmFtaWx5OiB2YXIoLS1ib2R5Rm9udCk7XG4gICAgICAgIHRyYW5zaXRpb246IGFsbCAwLjJzIGVhc2U7XG5cbiAgICAgICAgJjpob3ZlciB7XG4gICAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgfVxuXG4gICAgICAgICY6YWN0aXZlIHtcbiAgICAgICAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMXB4KTtcbiAgICAgICAgfVxuXG4gICAgICAgIC8vIFN0eWxlIHRoZSByZXNldCBidXR0b24gZGlmZmVyZW50bHlcbiAgICAgICAgJjpudGgtY2hpbGQoMikge1xuICAgICAgICAgIHdpZHRoOiBhdXRvO1xuICAgICAgICAgIHBhZGRpbmc6IDAgMTJweDtcbiAgICAgICAgICBmb250LXNpemU6IDE0cHg7XG4gICAgICAgIH1cbiAgICAgIH1cbiAgICB9XG4gIH1cbn1cbiJdfQ== */</style><link href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" rel="stylesheet" type="text/css" data-persist="true"/><script src="../prescript.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script><link rel="alternate" type="application/rss+xml" title="RSS Feed" href="https://localhost:8081/index.xml"/><meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/><meta property="og:image" content="https://localhost:8081/communication-1/signals-basis-functions-and-fourier-analysis-1778577984581-og-image.webp"/><meta property="og:image:url" content="https://localhost:8081/communication-1/signals-basis-functions-and-fourier-analysis-1778577984581-og-image.webp"/><meta name="twitter:image" content="https://localhost:8081/communication-1/signals-basis-functions-and-fourier-analysis-1778577984581-og-image.webp"/><meta property="og:image:type" content="image/.webp"/></head><body data-slug="communication-1/signals-basis-functions-and-fourier-analysis-1778577984581"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="/dashboard" class="page-title-link" data-dashboard-base-url data-dashboard-href="/dashboard">breadboard</a></h2><a class=" dashboard-back-link" href="/clusters/communication-1" target="_top" data-dashboard-base-url data-cluster-slug="communication-1">Back to cluster</a><div class="spacer mobile-only"></div><div class="flex-component" style="flex-direction: row; flex-wrap: nowrap; gap: 1rem;"><div style="flex-grow: 1; flex-shrink: 1; flex-basis: auto; order: 0; align-self: center; justify-self: center;"><div class="search"><button class="search-button"><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg><p>Search</p></button><div class="search-container"><div class="search-space"><input autocomplete="off" class="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div class="search-layout" data-preview="true"></div></div></div></div></div></div><div class="explorer" data-behavior="link" data-collapsed="collapsed" data-savestate="true" data-garden-scope data-graph-clusters="[]" data-data-fns="{&quot;order&quot;:[&quot;filter&quot;,&quot;map&quot;,&quot;sort&quot;],&quot;sortFn&quot;:&quot;(a,b)=>{let aIsSource=a.data?.knowledgeType===\&quot;source-document\&quot;,bIsSource=b.data?.knowledgeType===\&quot;source-document\&quot;;return!a.isFolder&amp;&amp;!b.isFolder||a.isFolder&amp;&amp;b.isFolder?aIsSource&amp;&amp;!bIsSource?-1:!aIsSource&amp;&amp;bIsSource?1:a.displayName.localeCompare(b.displayName,void 0,{numeric:!0,sensitivity:\&quot;base\&quot;}):!a.isFolder&amp;&amp;b.isFolder?1:-1}&quot;,&quot;filterFn&quot;:&quot;node=>node.slugSegment!==\&quot;tags\&quot;&quot;,&quot;mapFn&quot;:&quot;node=>node&quot;}"><button type="button" class="explorer-toggle mobile-explorer hide-until-loaded" data-mobile="true" aria-controls="explorer-280"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-menu"><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line></svg></button><button type="button" class="title-button explorer-toggle desktop-explorer" data-mobile="false" aria-expanded="true"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-280" class="explorer-content" aria-expanded="false" role="group"><ul class="explorer-ul overflow" id="list-0"><li class="overflow-end"></li></ul></div><template id="template-file"><li><a href="#"></a></li></template><template id="template-folder"><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div><button class="folder-button"><span class="folder-title"></span></button></div></div><div class="folder-outer"><ul class="content"></ul></div></li></template></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../communication-1/">Communication 1</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>Signals, Basis Functions, and Fourier Analysis</a></div></nav><h1 class="article-title">Signals, Basis Functions, and Fourier Analysis</h1><p show-comma="true" class="content-meta"><time datetime="2026-05-12T09:26:24.581Z">May 12, 2026</time><span>36 min read</span></p><div class="markdown-actions" data-dashboard-url data-note-slug="communication-1/signals-basis-functions-and-fourier-analysis-1778577984581"><button class="markdown-action-button markdown-edit-button" type="button">Edit markdown</button><button class="markdown-action-button markdown-delete-button danger" type="button">Delete</button><span class="markdown-action-status" aria-live="polite"></span><div class="markdown-editor-modal" hidden><div class="markdown-editor-panel"><div class="markdown-editor-header"><div><p class="markdown-editor-kicker">Markdown</p><h2>Edit note</h2></div><button class="markdown-editor-close" type="button" aria-label="Close editor">Close</button></div><textarea class="markdown-editor-textarea" spellcheck="false"></textarea><input class="markdown-editor-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden/><div class="markdown-editor-footer"><div class="markdown-editor-insert-tools"><button class="markdown-editor-image" type="button">Add images</button><label class="markdown-editor-placement-label">Place<select class="markdown-editor-placement"><option value="cursor">Cursor</option><option value="top">Top</option><option value="bottom">Bottom</option></select></label></div><div class="markdown-editor-footer-actions"><button class="markdown-editor-cancel" type="button">Cancel</button><button class="markdown-editor-save" type="button">Save</button></div></div></div></div></div></div></div><article class="popover-hint"><p>Communication begins with a simple but deep problem: information must be carried by physical signals. A spoken word becomes air pressure, then a microphone voltage. A wireless transmission becomes an electromagnetic wave. A digital file becomes a sequence of voltage levels, light pulses, or radio-frequency changes. In every case, the message is not transmitted as an abstract idea. It is represented by a signal whose form changes as it moves through a communication system. The same information may appear first as an acoustic pressure wave, then as an analog voltage, later as a sequence of numbers, later as a line-coded electrical signal, and eventually again as an analog waveform at the receiver. The physical form changes, but the purpose remains the same: preserve and transfer information with sufficient fidelity.</p>
+<p>[Graph: Course reader Figure 1, the Communication 1 topic map, should be placed here to show the transmitter-channel-receiver chain and the way the message changes form.]</p>
+<p>A signal is therefore the central object of communication theory. At first, it is natural to think of a signal as a curve drawn against time. A microphone voltage, for example, may be written as</p>
+<p>x(t),</p>
+<p>where t is time and x(t) is the value of the signal at that instant. If the signal is analog, time varies continuously and the amplitude may also vary continuously. This means that, in principle, the signal has a value at every possible instant. Such a waveform may look like a curve, but for communication theory this visual picture is not enough. We need to know how to describe the signal, how to compare it with other signals, how to decompose it into simpler parts, and how to understand what frequencies it contains.</p>
+<p>This is why the first mathematical step is representation. Before a signal can be transmitted, filtered, modulated, sampled, reconstructed, or analyzed, we need a language for saying what it is made of. Fourier analysis provides that language. It says that many signals can be represented in terms of sinusoidal components. The same signal can be viewed in time, where we see how it changes instant by instant, or in frequency, where we see which oscillatory components are present. These are not two different signals. The Fourier series or Fourier transform does not create a new function. It gives an alternative representation of the same function. In the time domain, the function is described by its value at each instant. In the frequency domain, the same function is described by how much of each sinusoidal basis function it contains. The object is unchanged; only the coordinate system has changed.</p>
+<p>The idea behind this representation is not unique to Fourier analysis. It is the same idea that appears in linear algebra when a vector is represented using a basis. A vector is not defined by one specific coordinate system. The same vector may be described using different basis vectors, depending on which description is most useful. Signals behave in the same way. A time-domain description tells us how the signal behaves as time passes. A frequency-domain description tells us how much of each sinusoidal pattern is present. Fourier analysis is the change of representation that takes us from one view to the other.</p>
+<p>To make this precise, we first need to understand why signals may be treated as vectors. A vector does not have to mean an arrow in two- or three-dimensional physical space. More generally, a vector is an object that can be added to another object of the same kind and multiplied by a scalar while remaining inside the same set of objects. Signals have this structure. If x(t) and y(t) are signals, then</p>
+<p>x(t)+y(t)</p>
+<p>is also a signal. If c is a scalar, then</p>
+<p>cx(t)</p>
+<p>is also a signal. Therefore, signals naturally form vector spaces. This viewpoint is essential because it lets us use the ideas of basis, projection, orthogonality, and coordinates for signals.</p>
+<p>In digital signal processing, one important signal vector space is denoted by</p>
+<p>S.</p>
+<p>The elements of S are complete discrete-time signals. A signal in S is an infinite sequence</p>
+<p>{y
+k
+​</p>
+<p>},</p>
+<p>where the index k ranges over all integers. Such a signal has the form</p>
+<p>…, y
+−2
+​</p>
+<p>, y
+−1
+​</p>
+<p>, y
+0
+​</p>
+<p>, y
+1
+​</p>
+<p>, y
+2
+​</p>
+<p>,…</p>
+<p>This is an infinite-dimensional signal vector space. It contains whole discrete-time signals, not just short sample blocks. This distinction matters. A finite block of N samples,</p>
+<p>x=
+​</p>
+<p>x[0]
+x[1]
+⋮
+x[N−1]
+​</p>
+<pre><code>​
+</code></pre>
+<p>,</p>
+<p>belongs to</p>
+<p>R
+N</p>
+<p>if the samples are real, or to</p>
+<p>C
+N</p>
+<p>if the samples are complex. Such a vector may be a finite window taken from a signal in S, but it is not the same object as the entire doubly infinite sequence. The full space S is the theoretical space of complete discrete-time signals. The finite space R
+N
+or C
+N
+is the computational space used when a computer processes a finite block of samples.</p>
+<p>A basic signal in S is the discrete-time delta signal, denoted by δ, defined by</p>
+<p>δ
+k
+​</p>
+<p>={
+1,
+0,
+​</p>
+<p>k=0,
+k
+
+=0.
+​</p>
+<p>A shifted delta signal is zero everywhere except at one chosen integer index. These shifted deltas isolate sample positions. In a finite-dimensional space such as R
+N
+, the analogous objects are the standard basis vectors</p>
+<p>e
+0
+​</p>
+<p>,e
+1
+​</p>
+<p>,…,e
+N−1
+​</p>
+<p>.</p>
+<p>Each one has a single nonzero entry. Therefore any finite sample vector can be written as</p>
+<p>x=x[0]e
+0
+​</p>
+<p>+x[1]e
+1
+​</p>
+<p>+⋯+x[N−1]e
+N−1
+​</p>
+<p>.</p>
+<p>This is a true finite basis expansion. The sample values are the coordinates, and the standard basis vectors identify the sample positions.</p>
+<p>For a complete discrete-time signal, one often writes formally</p>
+<p>x[k]=
+n=−∞
+∑
+∞
+​</p>
+<p>x[n]δ[k−n].</p>
+<p>This equation says that the signal can be assembled from shifted deltas weighted by the sample values. However, there is a subtle point. This is an infinite sum. In ordinary algebraic vector-space language, a basis expansion uses only a finite linear combination. Therefore, the shifted deltas form an ordinary algebraic basis for finite-support signals, meaning signals with only finitely many nonzero samples. For general signals in S, the expression is better understood as an infinite coordinate expansion. This is one of the places where signal spaces are richer than the finite-dimensional spaces first encountered in linear algebra.</p>
+<p>The reason basis representations are useful is that they let us describe a complicated object through simpler building blocks. In the plane, a vector</p>
+<p>v=[
+v
+1
+​</p>
+<p>v
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>]</p>
+<p>is usually written using the standard basis vectors</p>
+<p>e
+1
+​</p>
+<p>=[
+1
+0
+​</p>
+<p>],e
+2
+​</p>
+<p>=[
+0
+1
+​</p>
+<p>].</p>
+<p>Then</p>
+<p>v=v
+1
+​</p>
+<p>e
+1
+​</p>
+<p>+v
+2
+​</p>
+<p>e
+2
+​</p>
+<p>.</p>
+<p>The coordinates v
+1
+​</p>
+<p>and v
+2
+​</p>
+<p>tell us how much of each basis direction is present. But another basis could also be used. The vector itself would not change; only its coordinate description would change.</p>
+<p>[Graph: Course reader Figure 2, the 2D vector-space visualization with
+i
+^
+and
+j
+^
+​</p>
+<p>, should be placed here.]</p>
+<p>A set of basis vectors must satisfy two conditions. First, the vectors must be linearly independent: no vector in the set may be written as a combination of the others. Algebraically, if</p>
+<p>c
+1
+​</p>
+<p>v
+1
+​</p>
+<p>+c
+2
+​</p>
+<p>v
+2
+​</p>
+<p>+⋯+c
+k
+​</p>
+<p>v
+k
+​</p>
+<p>=0,</p>
+<p>then the only solution must be</p>
+<p>c
+1
+​</p>
+<p>=c
+2
+​</p>
+<p>=⋯=c
+k
+​</p>
+<p>=0.</p>
+<p>If there were a nonzero solution, then at least one vector could be written in terms of the others, meaning that the set would contain a redundant direction.</p>
+<p>Second, the vectors must span the space: every vector in the space must be expressible as a linear combination of them. If</p>
+<p>S={v
+1
+​</p>
+<p>,v
+2
+​</p>
+<p>,…,v
+k
+​</p>
+<p>}</p>
+<p>is a basis for a space, then every vector w in that space can be written as</p>
+<p>w=a
+1
+​</p>
+<p>v
+1
+​</p>
+<p>+a
+2
+​</p>
+<p>v
+2
+​</p>
+<p>+⋯+a
+k
+​</p>
+<p>v
+k
+​</p>
+<p>,</p>
+<p>where the coefficients a
+1
+​</p>
+<p>,a
+2
+​</p>
+<p>,…,a
+k
+​</p>
+<p>scale the basis vectors. Linear independence prevents redundancy. Spanning prevents incompleteness. Together, they make a set of vectors a basis.</p>
+<p>The same principle applies to signals. If we describe a finite sample vector using the standard sample-position basis, we are asking how much signal value is present at each sample index. Fourier analysis asks a different question: how much of each sinusoidal pattern is present? The signal does not change. Its coordinates change. Instead of coordinates indexed by time position, we obtain coordinates indexed by frequency.</p>
+<p>To make coordinates useful, we need a way to measure how much of one direction is present in another. This is the role of the dot product. The dot product takes two vectors and returns a single number. For</p>
+<p>v=[
+v
+1
+​</p>
+<pre><code>​
+</code></pre>
+<p>v
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>⋯
+​</p>
+<p>v
+n
+​</p>
+<pre><code>​
+</code></pre>
+<p>],w=
+​</p>
+<p>w
+1
+​</p>
+<p>w
+2
+​</p>
+<p>⋮
+w
+n
+​</p>
+<pre><code>​
+
+​
+</code></pre>
+<p>,</p>
+<p>the dot product is</p>
+<p>v⋅w=v
+1
+​</p>
+<p>w
+1
+​</p>
+<p>+v
+2
+​</p>
+<p>w
+2
+​</p>
+<p>+⋯+v
+n
+​</p>
+<p>w
+n
+​</p>
+<p>.</p>
+<p>This number measures how strongly the two vectors align. If it is large and positive, the vectors point strongly in similar directions. If it is negative, they point partly in opposite directions. If it is zero, the vectors are orthogonal: one has no component in the direction of the other.</p>
+<p>Two vectors are orthogonal if their dot product is zero:</p>
+<p>v
+i
+​</p>
+<p>⋅v
+j
+​</p>
+<p>=0for i
+
+=j.</p>
+<p>Orthogonality means that the directions do not interfere with each other. If a vector is measured along one orthogonal direction, that measurement is not contaminated by the components in the other directions. If the basis vectors are also of length one, the basis is called orthonormal.</p>
+<p>Projection explains why this matters. In three dimensions, a vector can be decomposed along three mutually perpendicular axes. Suppose</p>
+<p>A=A
+x
+​</p>
+<p>x
+^
++A
+y
+​</p>
+<p>y
+^
+​</p>
+<p>+A
+z
+​</p>
+<p>z
+^
+.</p>
+<p>The coordinate A
+x
+​</p>
+<p>measures how much of A lies along the x-axis, A
+y
+​</p>
+<p>measures how much lies along the y-axis, and A
+z
+​</p>
+<p>measures how much lies along the z-axis. These are not three different vectors; they are the three coordinates of the same vector in the chosen basis. Because the axes are orthogonal, each coordinate can be found independently.</p>
+<p>[Graph: Use a 3D projection diagram here, matching the left side of Course reader Figure 4. Show a vector A in 3D and its projections A
+x
+​</p>
+<p>, A
+y
+​</p>
+<p>, and A
+z
+​</p>
+<p>on the three orthogonal axes.]</p>
+<p>If x is projected onto a nonzero vector u, the projection coefficient is</p>
+<p>a=
+u⋅u
+x⋅u
+​</p>
+<p>.</p>
+<p>The numerator measures overlap between x and u. The denominator corrects for the length of u. If u has unit length, then</p>
+<p>u⋅u=1,</p>
+<p>and the coefficient becomes</p>
+<p>a=x⋅u.</p>
+<p>Thus, in an orthogonal basis, coefficients are found by projection and by dividing by the squared length of the basis vector. In an orthonormal basis, that squared length is already one, so the coefficient is just the projection inner product.</p>
+<p>For complex-valued finite sample vectors, the dot product must be replaced by the complex inner product. If</p>
+<p>x,y∈C
+N
+,</p>
+<p>then</p>
+<p>⟨x,y⟩=
+n=0
+∑
+N−1
+​</p>
+<p>x[n]y
+∗
+[n],</p>
+<p>where y
+∗
+[n] denotes complex conjugation. The conjugate is not a technical decoration. It is needed so that length and energy behave correctly. With this definition,</p>
+<p>⟨x,x⟩=
+n=0
+∑
+N−1
+​</p>
+<p>x[n]x
+∗
+[n]=
+n=0
+∑
+N−1
+​</p>
+<p>∣x[n]∣
+2
+,</p>
+<p>which is real and nonnegative. This is the finite signal energy. Without the conjugate, a complex vector could have a “length squared” that is complex or even zero for a nonzero vector, which would destroy the geometry needed for projection.</p>
+<p>The imaginary unit j also has a useful geometric meaning. It is often introduced by the algebraic rule</p>
+<p>j
+2
+=−1,</p>
+<p>but in signal analysis it is helpful to think of multiplication by j as a 90
+∘
+rotation in the complex plane. Multiplying by j rotates a complex quantity by 90
+∘
+, and multiplying by j
+2
+=−1 rotates it by 180
+∘
+. This viewpoint makes Euler’s formula intuitive:</p>
+<p>e
+jωt
+=cos(ωt)+jsin(ωt).</p>
+<p>The cosine term lies along the real axis, while the sine term lies along the 90
+∘
+-shifted imaginary axis. Thus a complex exponential packages two orthogonal sinusoidal directions into one compact expression.</p>
+<p>This finite-dimensional viewpoint leads naturally to the Discrete Fourier Transform, or DFT. A computer does not process an entire continuous-time function directly. It processes finite lists of samples. Therefore, it needs a finite-dimensional Fourier tool: a way to take a length-N sample vector and describe it using a finite set of sinusoidal patterns.</p>
+<p>For a length-N sample block, the k-th Fourier vector is</p>
+<p>v
+k
+​</p>
+<p>=
+​</p>
+<p>1
+e
+j2πk/N
+e
+j2πk2/N
+⋮
+e
+j2πk(N−1)/N
+​</p>
+<pre><code>​
+</code></pre>
+<p>.</p>
+<p>Its n-th entry is</p>
+<p>v
+k
+​</p>
+<p>[n]=e
+j2πkn/N
+.</p>
+<p>Here n is the sample index, meaning position inside the finite time block. The index k is the frequency index, meaning which sinusoidal pattern is being tested. The case k=0 corresponds to a constant pattern, called the DC component. The case k=1 corresponds to one full cycle across the N-sample block. The case k=2 corresponds to two cycles across the block, and so on. If the samples were taken at sampling frequency f
+s
+​</p>
+<p>, the frequency spacing between DFT bins is</p>
+<p>Δf=
+N
+f
+s
+​</p>
+<pre><code>​
+</code></pre>
+<p>,</p>
+<p>so the bin k corresponds to</p>
+<p>f
+k
+​</p>
+<p>=
+N
+kf
+s
+​</p>
+<pre><code>​
+</code></pre>
+<p>,</p>
+<p>with the usual interpretation that the upper DFT bins represent negative frequencies.</p>
+<p>A subtle but important normalization issue appears here. Each individual complex exponential value</p>
+<p>e
+j2πkn/N</p>
+<p>has magnitude one, because it lies on the unit circle. But the whole vector v
+k
+​</p>
+<p>does not have length one. It has N entries, each with magnitude one, so</p>
+<p>⟨v
+k
+​</p>
+<p>,v
+k
+​</p>
+<p>⟩=
+n=0
+∑
+N−1
+​</p>
+<h1 id="ej2πknn2">∣e
+j2πkn/N
+∣
+2<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#ej2πknn2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>n=0
+∑
+N−1
+​</p>
+<p>1=N.</p>
+<p>Therefore,</p>
+<p>∥v
+k
+​</p>
+<p>∥=
+N
+​</p>
+<p>.</p>
+<p>The Fourier vectors are orthogonal, but not orthonormal. They point in independent frequency directions, but their length is
+N
+​</p>
+<p>, not one. Their orthogonality follows from the finite sum</p>
+<p>n=0
+∑
+N−1
+​</p>
+<p>e
+j2π(k−m)n/N
+={
+N,
+0,
+​</p>
+<p>k=m,
+k
+
+=m.
+​</p>
+<p>If k=m, every term in the sum is 1, so the result is N. If k
+
+=m, the terms are equally spaced points around the unit circle. They complete an integer number of rotations and cancel to zero. This is the finite-dimensional version of harmonic orthogonality.</p>
+<p>The DFT is obtained by comparing the signal vector with each Fourier vector. Using the complex inner product,</p>
+<p>⟨x,v
+k
+​</p>
+<p>⟩=
+n=0
+∑
+N−1
+​</p>
+<p>x[n]v
+k
+∗
+​</p>
+<p>[n].</p>
+<p>Since</p>
+<p>v
+k
+​</p>
+<p>[n]=e
+j2πkn/N
+,</p>
+<p>we have</p>
+<p>v
+k
+∗
+​</p>
+<p>[n]=e
+−j2πkn/N
+.</p>
+<p>Therefore,</p>
+<p>⟨x,v
+k
+​</p>
+<p>⟩=
+n=0
+∑
+N−1
+​</p>
+<p>x[n]e
+−j2πkn/N
+.</p>
+<p>This is the usual DFT formula:</p>
+<p>X[k]=
+n=0
+∑
+N−1
+​</p>
+<p>x[n]e
+−j2πkn/N
+.</p>
+<p>Thus X[k] is the raw overlap between the sampled signal and the k-th Fourier vector. If the signal strongly contains that frequency pattern, the terms in the sum reinforce and ∣X[k]∣ becomes large. If the pattern is absent, the rotating complex terms cancel and X[k] becomes small or zero.</p>
+<p>Because v
+k
+​</p>
+<p>is not unit length, the usual DFT output is not the normalized coordinate directly. It is an unnormalized Fourier coordinate. The actual coefficient in the expansion</p>
+<p>x=
+k=0
+∑
+N−1
+​</p>
+<p>a
+k
+​</p>
+<p>v
+k
+​</p>
+<p>is obtained from the projection formula:</p>
+<p>a
+k
+​</p>
+<p>=
+⟨v
+k
+​</p>
+<p>,v
+k
+​</p>
+<p>⟩
+⟨x,v
+k
+​</p>
+<p>⟩
+​</p>
+<p>.</p>
+<p>Since</p>
+<p>⟨v
+k
+​</p>
+<p>,v
+k
+​</p>
+<p>⟩=N,</p>
+<p>we get</p>
+<p>a
+k
+​</p>
+<p>=
+N
+X[k]
+​</p>
+<p>.</p>
+<p>This is why the inverse DFT contains the factor 1/N:</p>
+<p>x[n]=
+N
+1
+​</p>
+<p>k=0
+∑
+N−1
+​</p>
+<p>X[k]e
+j2πkn/N
+.</p>
+<p>The factor 1/N is not arbitrary. It corrects for the fact that the usual Fourier vectors have squared length N. The forward DFT computes raw overlaps. The inverse DFT converts those raw overlaps into the correct reconstruction weights.</p>
+<p>For example, suppose</p>
+<p>x[n]=Afor all n.</p>
+<p>This is a constant signal, so it contains only the DC pattern. For k=0,</p>
+<p>X[0]=
+n=0
+∑
+N−1
+​</p>
+<p>A=NA.</p>
+<p>The DFT gives NA, not A, because it has accumulated the contribution over all N samples. The actual coefficient of the constant basis vector is</p>
+<p>N
+X[0]
+​</p>
+<p>=A.</p>
+<p>For k
+
+=0, the complex exponentials complete full rotations and cancel, so</p>
+<p>X[k]=0.</p>
+<p>Thus the DFT result says that the finite sample block contains only a DC component. Its raw overlap is NA, and its actual coordinate is A.</p>
+<p>The magnitude</p>
+<p>∣X[k]∣</p>
+<p>therefore tells how strongly the finite sample block overlaps with the k-th frequency pattern, up to the chosen normalization convention. The phase</p>
+<p>∠X[k]</p>
+<p>tells the phase alignment of that component. A large magnitude means that the frequency is strongly present in the finite observation window. A small magnitude means that the pattern is weak or absent.</p>
+<p>One may also define normalized Fourier vectors,</p>
+<p>u
+k
+​</p>
+<p>=
+N
+​</p>
+<p>1
+​</p>
+<p>v
+k
+​</p>
+<p>.</p>
+<p>Then</p>
+<p>∥u
+k
+​</p>
+<p>∥=1,</p>
+<p>so the basis is orthonormal. In that convention, the Fourier coefficient is directly</p>
+<p>X
+[k]=⟨x,u
+k
+​</p>
+<p>⟩=
+N
+​</p>
+<p>1
+​</p>
+<p>X[k],</p>
+<p>and reconstruction becomes</p>
+<p>x=
+k=0
+∑
+N−1
+​</p>
+<p>X
+[k]u
+k
+​</p>
+<p>.</p>
+<p>This is the same geometry with a different normalization. The usual engineering convention places all normalization in the inverse transform. The unitary convention splits normalization evenly between the forward and inverse transforms. Both describe the same change of basis.</p>
+<p>The DFT is therefore the finite-dimensional version of Fourier analysis. It rewrites a finite sample vector in a frequency basis. Its results are not mysterious new quantities; they are frequency-domain overlaps, with magnitude and phase, scaled according to the normalization convention. This finite-dimensional picture prepares the same idea in a more general setting: continuous-time signals are also vectors, but now the vectors are functions.</p>
+<p>In a function space, basis vectors become basis functions. A signal may be represented as</p>
+<p>x(t)=
+i
+∑
+​</p>
+<p>a
+i
+​</p>
+<p>ϕ
+i
+​</p>
+<p>(t),</p>
+<p>where ϕ
+i
+​</p>
+<p>(t) are basis functions and a
+i
+​</p>
+<p>are coefficients. Basis functions need not be sinusoidal. A Taylor series, for example, uses polynomial basis functions:</p>
+<p>f(t)=a
+0
+​</p>
+<p>+a
+1
+​</p>
+<p>t+a
+2
+​</p>
+<p>t
+2
++a
+3
+​</p>
+<p>t
+3
++⋯=
+n=0
+∑
+∞
+​</p>
+<p>a
+n
+​</p>
+<p>t
+n
+.</p>
+<p>Here the basis functions are</p>
+<p>1, t, t
+2
+, t
+3
+,…</p>
+<p>[Graph: Course reader Figure 3, showing a function decomposed into a sum of five basis functions, should be placed here.]</p>
+<p>Fourier analysis chooses a different family:</p>
+<p>sin(ωt),cos(ωt),e
+jωt
+.</p>
+<p>This choice is made because communication systems are naturally described in terms of frequency. Filters pass some frequencies and suppress others. Channels have bandwidth. Antennas operate over frequency ranges. Modulation shifts information to different frequency bands. Therefore, a basis that reveals frequency content is especially useful.</p>
+<p>To project one function onto another, the finite sum in the inner product becomes an integral:</p>
+<p>⟨f,g⟩=∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>f(t)g
+∗
+(t)dt.</p>
+<p>This is the continuous analogue of the dot product. Instead of multiplying corresponding vector entries and summing, we multiply corresponding function values and integrate. A function space equipped with such an inner product, together with the appropriate completeness property, is called a Hilbert space. For the present purpose, the essential idea is that functions can be treated like vectors: they can be projected onto basis functions, and coefficients can be found by inner products.</p>
+<p>The analogy with ordinary three-dimensional projection is direct. In three dimensions, the coordinate of a vector
+A
+along the x-axis is found by projecting
+A
+onto the unit vector
+x
+^
+:</p>
+<p>A
+x
+​</p>
+<p>=
+A
+⋅
+x
+^
+.</p>
+<p>The dot product measures how much of
+A
+lies in the
+x
+^
+direction. Because the x, y, and z axes are mutually orthogonal, projection onto one axis does not pick up components from the other axes.</p>
+<p>In a Hilbert space of functions, the “axes” are no longer physical coordinate axes. They are basis functions. For a periodic signal, these basis functions are often chosen as complex exponentials,</p>
+<p>e
+jkω
+0
+​</p>
+<p>t
+,</p>
+<p>or equivalently as sine and cosine functions. The Fourier coefficient</p>
+<p>c
+k
+​</p>
+<p>=
+T
+1
+​</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)e
+−jkω
+0
+​</p>
+<p>t
+dt</p>
+<p>is the function-space version of a coordinate projection. The finite dot product has become an integral over time. The basis vector
+x
+^
+has become the basis function e
+jkω
+0
+​</p>
+<p>t
+. The coordinate A
+x
+​</p>
+<p>has become the Fourier coefficient c
+k
+​</p>
+<p>. The integer k selects which orthogonal function-axis, or harmonic direction, is being measured.</p>
+<p>[Graph: Course reader Figure 4, “From 3D Axes to Function Axes,” should be placed here. It should show the 3D projection A
+x
+​</p>
+<p>=
+A
+⋅
+x
+^
+next to the function projection c
+k
+​</p>
+<p>=
+T
+1
+​</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)e
+−jkω
+0
+​</p>
+<p>t
+dt.]</p>
+<p>A set of basis functions {ϕ
+k
+​</p>
+<p>(t)} is orthogonal on the interval [t
+1
+​</p>
+<p>,t
+2
+​</p>
+<p>] if</p>
+<p>∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>ϕ
+i
+​</p>
+<p>(t)ϕ
+j
+∗
+​</p>
+<p>(t)dt=0for i
+
+=j.</p>
+<p>The squared length, or energy, of one basis function is</p>
+<p>λ
+k
+​</p>
+<p>=∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>∣ϕ
+k
+​</p>
+<p>(t)∣
+2
+dt.</p>
+<p>If</p>
+<p>λ
+k
+​</p>
+<p>=1</p>
+<p>for every k, the basis is orthonormal.</p>
+<p>Suppose a signal can be represented as</p>
+<p>x(t)=
+k
+∑
+​</p>
+<p>a
+k
+​</p>
+<p>ϕ
+k
+​</p>
+<p>(t).</p>
+<p>To find a
+m
+​</p>
+<p>, multiply both sides by ϕ
+m
+∗
+​</p>
+<p>(t) and integrate:</p>
+<p>∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>x(t)ϕ
+m
+∗
+​</p>
+<p>(t)dt=∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>(
+k
+∑
+​</p>
+<p>a
+k
+​</p>
+<p>ϕ
+k
+​</p>
+<p>(t))ϕ
+m
+∗
+​</p>
+<p>(t)dt.</p>
+<p>By linearity,</p>
+<p>∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>x(t)ϕ
+m
+∗
+​</p>
+<p>(t)dt=
+k
+∑
+​</p>
+<p>a
+k
+​</p>
+<p>∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>ϕ
+k
+​</p>
+<p>(t)ϕ
+m
+∗
+​</p>
+<p>(t)dt.</p>
+<p>Orthogonality removes every term except the one with k=m:</p>
+<p>∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>x(t)ϕ
+m
+∗
+​</p>
+<p>(t)dt=a
+m
+​</p>
+<p>∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>∣ϕ
+m
+​</p>
+<p>(t)∣
+2
+dt.</p>
+<p>Using</p>
+<p>λ
+m
+​</p>
+<p>=∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>∣ϕ
+m
+​</p>
+<p>(t)∣
+2
+dt,</p>
+<p>we obtain</p>
+<p>a
+m
+​</p>
+<p>=
+λ
+m
+​</p>
+<p>1
+​</p>
+<p>∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>ϕ
+m
+∗
+​</p>
+<p>(t)x(t)dt.</p>
+<p>This is the general projection formula for orthogonal basis functions. If the basis is orthonormal, then λ
+m
+​</p>
+<p>=1, and</p>
+<p>a
+m
+​</p>
+<p>=∫
+t
+1
+​</p>
+<p>t
+2
+​</p>
+<pre><code>​
+</code></pre>
+<p>ϕ
+m
+∗
+​</p>
+<p>(t)x(t)dt.</p>
+<p>This is the reason Fourier coefficients are found by multiplying by a basis function and integrating. The integral is not a memorized trick; it is projection in a function space.</p>
+<p>The projection idea also has a direct area interpretation. When a signal is multiplied by a basis function and integrated, the integral measures the net signed area of their product. If the signal truly contains that basis function, the product has a nonzero net area. If the basis function does not match the signal’s structure, positive and negative areas cancel. This is the functional version of saying that one vector has zero projection onto an orthogonal direction.</p>
+<p>For example, suppose</p>
+<p>x(t)=2sin(t)+0.5cos(t).</p>
+<p>If this signal is projected onto the correct basis functions, sin(t) and cos(t), the coefficients are significant: the projections recover the weights 2 and 0.5. The basis functions are actually present in the signal. But if the same signal is projected onto the wrong basis functions, such as sin(2t) and cos(2t), the products oscillate in such a way that the positive and negative areas cancel. The resulting coefficients are zero or nearly zero. This is exactly what orthogonality means in practice: a basis function that is not present in the signal has no surviving projection.</p>
+<p>[Graph: Course reader Figure 5, correct basis and wrong basis projection example, should be placed here. Use panel (a) for the correct basis sin(t), cos(t), and panel (b) for the wrong basis sin(2t), cos(2t), where the shaded areas cancel.]</p>
+<p>This area-cancellation picture is one of the most important intuitions in Fourier analysis. A Fourier coefficient is not a mysterious number produced by a formula. It is the signed area of a comparison. The signal is multiplied by a candidate basis function, and the integral asks whether the product has a surviving average contribution or whether the oscillations cancel out.</p>
+<p>For periodic signals, the natural Fourier basis functions are complex exponentials,</p>
+<p>e
+jkω
+0
+​</p>
+<p>t
+,</p>
+<p>where</p>
+<p>ω
+0
+​</p>
+<p>=
+T
+2π
+​</p>
+<p>is the fundamental angular frequency of a signal with period T. The integer k selects the harmonic. A periodic signal satisfies</p>
+<p>x(t)=x(t+T),</p>
+<p>and it can be represented as</p>
+<p>x(t)=
+k=−∞
+∑
+∞
+​</p>
+<p>c
+k
+​</p>
+<p>e
+jkω
+0
+​</p>
+<p>t
+.</p>
+<p>Here each exponential e
+jkω
+0
+​</p>
+<p>t
+serves as a basis function for the space of signals with period T. These exponentials are orthogonal over one period:</p>
+<p>∫
+0
+T
+​</p>
+<p>e
+jmω
+0
+​</p>
+<p>t
+e
+−jnω
+0
+​</p>
+<p>t
+dt=0m
+
+=n.</p>
+<p>To see why, combine the exponentials:</p>
+<p>e
+jmω
+0
+​</p>
+<p>t
+e
+−jnω
+0
+​</p>
+<p>t
+=e
+j(m−n)ω
+0
+​</p>
+<p>t
+.</p>
+<p>If m=n, the exponent is zero and the integral becomes</p>
+<p>∫
+0
+T
+​</p>
+<p>1dt=T.</p>
+<p>If m
+
+=n, then</p>
+<p>∫
+0
+T
+​</p>
+<p>e
+j(m−n)ω
+0
+​</p>
+<p>t
+dt=[
+j(m−n)ω
+0
+​</p>
+<p>e
+j(m−n)ω
+0
+​</p>
+<p>t
+​</p>
+<p>]
+0
+T
+​</p>
+<p>.</p>
+<p>Since ω
+0
+​</p>
+<p>T=2π,</p>
+<p>e
+j(m−n)ω
+0
+​</p>
+<p>T
+=e
+j(m−n)2π
+=1,</p>
+<p>so the numerator becomes 1−1=0, and the integral is zero. Therefore different harmonics are orthogonal.</p>
+<p>This orthogonality is what allows a Fourier coefficient to isolate one frequency component. To find c
+m
+​</p>
+<p>, multiply the Fourier series by e
+−jmω
+0
+​</p>
+<p>t
+and integrate over one period:</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)e
+−jmω
+0
+​</p>
+<p>t
+dt=∫
+0
+T
+​</p>
+<p>(
+k=−∞
+∑
+∞
+​</p>
+<p>c
+k
+​</p>
+<p>e
+jkω
+0
+​</p>
+<p>t
+)e
+−jmω
+0
+​</p>
+<p>t
+dt.</p>
+<p>Move the summation outside the integral:</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)e
+−jmω
+0
+​</p>
+<p>t
+dt=
+k=−∞
+∑
+∞
+​</p>
+<p>c
+k
+​</p>
+<p>∫
+0
+T
+​</p>
+<p>e
+j(k−m)ω
+0
+​</p>
+<p>t
+dt.</p>
+<p>All terms disappear except the one with k=m. Therefore,</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)e
+−jmω
+0
+​</p>
+<p>t
+dt=c
+m
+​</p>
+<p>T.</p>
+<p>Solving for c
+m
+​</p>
+<p>gives</p>
+<p>c
+m
+​</p>
+<p>=
+T
+1
+​</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)e
+−jmω
+0
+​</p>
+<p>t
+dt.</p>
+<p>The factor 1/T appears because the energy of e
+jmω
+0
+​</p>
+<p>t
+over one period is T. It is exactly the normalization factor from the general projection formula.</p>
+<p>Using Euler’s formula,</p>
+<p>e
+jθ
+=cosθ+jsinθ,</p>
+<p>the same periodic signal can also be written as a sine-cosine Fourier series:</p>
+<p>x(t)=
+2
+a
+0
+​</p>
+<pre><code>​
+</code></pre>
+<p>+
+n=1
+∑
+∞
+​</p>
+<p>[a
+n
+​</p>
+<p>cos(nω
+0
+​</p>
+<p>t)+b
+n
+​</p>
+<p>sin(nω
+0
+​</p>
+<p>t)].</p>
+<p>The term a
+0
+​</p>
+<p>/2 is the DC component, or average value. The coefficients are</p>
+<p>a
+n
+​</p>
+<p>=
+T
+2
+​</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)cos(nω
+0
+​</p>
+<p>t)dt,
+b
+n
+​</p>
+<p>=
+T
+2
+​</p>
+<p>∫
+0
+T
+​</p>
+<p>x(t)sin(nω
+0
+​</p>
+<p>t)dt.</p>
+<p>The factor 2/T appears because the energy of sin(nω
+0
+​</p>
+<p>t) or cos(nω
+0
+​</p>
+<p>t) over one period is T/2. Again, the coefficient formulas are projection formulas.</p>
+<p>The sine and cosine functions are also orthogonal over a full period when their frequencies are harmonics of the fundamental frequency. This is crucial because it explains why the sine-cosine Fourier series can isolate each harmonic independently.</p>
+<p>Let</p>
+<p>ω
+0
+​</p>
+<p>=
+T
+2π
+​</p>
+<p>.</p>
+<p>Consider two sine functions with harmonic indices n and k:</p>
+<p>sin(nω
+0
+​</p>
+<p>t)andsin(kω
+0
+​</p>
+<p>t).</p>
+<p>To test whether they are orthogonal, compute</p>
+<p>∫
+0
+T
+​</p>
+<p>sin(nω
+0
+​</p>
+<p>t)sin(kω
+0
+​</p>
+<p>t)dt.</p>
+<p>Using the identity</p>
+<p>sinAsinB=
+2
+1
+​</p>
+<p>[cos(A−B)−cos(A+B)],</p>
+<p>we get</p>
+<p>∫
+0
+T
+​</p>
+<p>sin(nω
+0
+​</p>
+<p>t)sin(kω
+0
+​</p>
+<p>t)dt=
+2
+1
+​</p>
+<p>∫
+0
+T
+​</p>
+<p>[cos((n−k)ω
+0
+​</p>
+<p>t)−cos((n+k)ω
+0
+​</p>
+<p>t)]dt.</p>
+<p>If n
+
+=k, both cosine terms complete an integer number of cycles over 0≤t≤T, so their integrals vanish. Therefore,</p>
+<p>∫
+0
+T
+​</p>
+<p>sin(nω
+0
+​</p>
+<p>t)sin(kω
+0
+​</p>
+<p>t)dt=0n
+
+=k.</p>
+<p>If n=k, then</p>
+<p>sin(nω
+0
+​</p>
+<p>t)sin(nω
+0
+​</p>
+<p>t)=sin
+2
+(nω
+0
+​</p>
+<p>t),</p>
+<p>and over one full period the average value of sin
+2
+is 1/2. Therefore,</p>
+<p>∫
+0
+T
+​</p>
+<p>sin
+2
+(nω
+0
+​</p>
+<p>t)dt=
+2
+T
+​</p>
+<p>.</p>
+<p>The same reasoning applies to cosine functions. Using</p>
+<p>cosAcosB=
+2
+1
+​</p>
+<p>[cos(A−B)+cos(A+B)],</p>
+<p>we obtain</p>
+<p>∫
+0
+T
+​</p>
+<p>cos(nω
+0
+​</p>
+<p>t)cos(kω
+0
+​</p>
+<p>t)dt=0n
+
+=k,</p>
+<p>and</p>
+<p>∫
+0
+T
+​</p>
+<p>cos
+2
+(nω
+0
+​</p>
+<p>t)dt=
+2
+T
+​</p>
+<p>.</p>
+<p>Finally, sine and cosine functions are mutually orthogonal. Using</p>
+<p>sinAcosB=
+2
+1
+​</p>
+<p>[sin(A+B)+sin(A−B)],</p>
+<p>we find that</p>
+<p>∫
+0
+T
+​</p>
+<p>sin(nω
+0
+​</p>
+<p>t)cos(kω
+0
+​</p>
+<p>t)dt=0</p>
+<p>for harmonic frequencies over a full period. The sine-cosine products oscillate symmetrically, so the positive and negative areas cancel.</p>
+<p>This proves the essential trigonometric orthogonality used by Fourier series. Different harmonics do not interfere with one another under the integral. The coefficient of one harmonic can therefore be extracted without contamination from the others.</p>
+<p>The quadrature form of the Fourier series writes the same idea over a symmetric interval. Let the period be</p>
+<p>T=2L.</p>
+<p>Then a periodic signal may be written as</p>
+<p>f(t)=
+2
+a
+0
+​</p>
+<pre><code>​
+</code></pre>
+<p>+
+n=1
+∑
+∞
+​</p>
+<p>[a
+n
+​</p>
+<p>cos(
+L
+nπt
+​</p>
+<p>)+b
+n
+​</p>
+<p>sin(
+L
+nπt
+​</p>
+<p>)].</p>
+<p>Here the basis functions are</p>
+<p>cos(
+L
+nπt
+​</p>
+<p>)andsin(
+L
+nπt
+​</p>
+<p>),</p>
+<p>and the fundamental angular frequency is consistent with</p>
+<p>ω
+0
+​</p>
+<p>=
+T
+2π
+​</p>
+<p>=
+L
+π
+​</p>
+<p>.</p>
+<p>The coefficients are obtained by projection over the symmetric interval [−L,L]:</p>
+<p>a
+n
+​</p>
+<p>=
+L
+1
+​</p>
+<p>∫
+−L
+L
+​</p>
+<p>f(t)cos(
+L
+nπt
+​</p>
+<p>)dt,
+b
+n
+​</p>
+<p>=
+L
+1
+​</p>
+<p>∫
+−L
+L
+​</p>
+<p>f(t)sin(
+L
+nπt
+​</p>
+<p>)dt.</p>
+<p>The factor 1/L appears because the energy of each sine or cosine basis function over [−L,L] is L. The DC component requires careful notation. The actual DC value, meaning the average value of the signal over one period, is</p>
+<p>2
+a
+0
+​</p>
+<pre><code>​
+</code></pre>
+<p>=
+T
+1
+​</p>
+<p>∫
+−L
+L
+​</p>
+<p>f(t)dt.</p>
+<p>Since T=2L, this is equivalent to</p>
+<p>a
+0
+​</p>
+<p>=
+L
+1
+​</p>
+<p>∫
+−L
+L
+​</p>
+<p>f(t)dt.</p>
+<p>This distinction matters. The term that appears in the Fourier series is a
+0
+​</p>
+<p>/2, which is the average level of the signal. The symbol a
+0
+​</p>
+<p>is twice that value in the classical notation.</p>
+<p>The quadrature form is especially useful for practical calculation. Periodic signals such as square, rectangular, and sawtooth waves often have symmetry. If a function is even, its sine coefficients vanish because an even function multiplied by an odd sine function gives an odd product whose integral over [−L,L] is zero. If a function is odd, its cosine coefficients vanish because an odd function multiplied by an even cosine function gives an odd product. This is why symmetry can greatly reduce the work needed to calculate Fourier coefficients.</p>
+<p>[Graph: Course reader Mini-lab/Fourier coefficient figure may be placed here. Use it to show how manually chosen a
+n
+​</p>
+<p>and b
+n
+​</p>
+<p>coefficients reconstruct different periodic shapes.]</p>
+<p>The degree to which an oscillating wave with frequency ω is represented in a signal can be calculated by finding the area under the graph after multiplication. In the Fourier series equations, this area is the overlap between the signal and a candidate sinusoidal function. Each frequency has its own integral result, and that result becomes the coefficient, or weight, of the sinusoid in the reconstructed signal. The actual area of the candidate sinusoid itself is not the point. The important quantity is the computed overlap area after the signal and the sinusoid are multiplied.</p>
+<p>[Graph: Course reader Figures 7–10 should be placed here. These show a square wave multiplied by sinusoids of different frequencies and the shaded net-area/cancellation idea.]</p>
+<p>Fourier series applies to periodic signals. The spectrum of a periodic signal consists of discrete harmonics: integer multiples of the fundamental frequency. Non-periodic signals require the Fourier transform. The idea remains the same, but the frequency variable becomes continuous. Instead of a sum over harmonics, we use an integral over all frequencies.</p>
+<p>There are two common notations for the Fourier transform. Using angular frequency ω, measured in radians per second, the transform is written as</p>
+<p>F(ω)=∫
+−∞
+∞
+​</p>
+<p>f(t)e
+−jωt
+dt.</p>
+<p>Using ordinary frequency f, measured in hertz, the same idea is written as</p>
+<p>X(f)=∫
+−∞
+∞
+​</p>
+<p>x(t)e
+−j2πft
+dt.</p>
+<p>The two frequency variables are related by</p>
+<p>ω=2πf.</p>
+<p>Thus e
+−jωt
+and e
+−j2πft
+play the same role, but they use different frequency units. In angular-frequency notation, the inverse transform is usually written with a normalization factor:</p>
+<p>f(t)=
+2π
+1
+​</p>
+<p>∫
+−∞
+∞
+​</p>
+<p>F(ω)e
+jωt
+dω.</p>
+<p>In hertz notation, the inverse transform is commonly written as</p>
+<p>x(t)=∫
+−∞
+∞
+​</p>
+<p>X(f)e
+j2πft
+df.</p>
+<p>Both forms express the same principle: the Fourier transform is the continuous-frequency version of the Fourier series. It gives the spectrum of a non-periodic signal. The function F(ω) or X(f) tells how the signal is represented in terms of complex exponentials at each frequency.</p>
+<p>There is also a useful geometric way to understand what the Fourier transform means. At one chosen frequency f, the Fourier transform compares the signal with two reference waves at that frequency: a cosine wave and a sine wave. This becomes clear from Euler’s formula,</p>
+<p>e
+−j2πft
+=cos(2πft)−jsin(2πft).</p>
+<p>Substituting this into the Fourier transform gives</p>
+<p>X(f)=∫
+−∞
+∞
+​</p>
+<p>x(t)cos(2πft)dt−j∫
+−∞
+∞
+​</p>
+<p>x(t)sin(2πft)dt.</p>
+<p>The first integral is the net area obtained after multiplying the signal by a cosine wave at frequency f. This is the real component of X(f). Geometrically, it is the horizontal side, or base, of a right triangle in the complex plane. The second integral is the net area obtained after multiplying the signal by a sine wave at the same frequency. Because of the convention e
+−j2πft
+, this sine contribution appears with a minus sign in the imaginary part. Geometrically, it still gives the vertical side, or height, of the triangle, with its sign determining whether the height points upward or downward in the complex plane.</p>
+<p>So for each frequency f, the Fourier transform produces one complex number. That complex number can be drawn as an arrow. The horizontal component is the cosine overlap. The vertical component is the sine overlap, with the sign determined by the Fourier convention. The magnitude</p>
+<p>∣X(f)∣</p>
+<p>is the length of this arrow. In the triangle picture, it is the hypotenuse. It combines the cosine area and sine area through the Pythagorean theorem:</p>
+<p>∣X(f)∣=
+(cosine area)
+2
++(sine area)
+2
+​</p>
+<p>.</p>
+<p>The magnitude therefore tells how strongly the signal contains that frequency overall, without caring whether the contribution appears mainly in the cosine direction or mainly in the sine direction.</p>
+<p>The phase</p>
+<p>∠X(f)</p>
+<p>is the angle of the same arrow. It tells how the frequency component is aligned between the cosine and sine directions. In other words, phase describes the relative size and sign of the two net areas. If the phase is 0
+∘
+, the sine contribution is zero, so the triangle has no height and the frequency component lies entirely along the cosine direction. If the phase is 45
+∘
+or −45
+∘
+, the absolute values of the cosine and sine contributions are equal, giving a 45
+∘
+-45
+∘
+-90
+∘
+triangle. A positive or negative phase indicates on which side of the complex plane the vertical component lies. Thus phase is not a mysterious extra quantity; it is the angle that records how the cosine and sine overlaps combine.</p>
+<p>This triangle picture makes the Fourier transform less abstract. At each frequency, the transform asks two questions at once: how much does the signal resemble the cosine at that frequency, and how much does it resemble the sine at that frequency? The real and imaginary parts store those two perpendicular measurements. The magnitude gives their combined size. The phase gives their angular balance.</p>
+<p>[Graph: Insert a custom geometric figure here. It should show cosine overlap as the horizontal side, sine overlap as the vertical side, magnitude as the hypotenuse, and phase as the angle.]</p>
+<p>The same idea can be shown through shaded areas. When a square wave is multiplied by a sinusoid of a matching frequency, the product has a nonzero net area. That nonzero area means the square wave contains a component at that frequency. If the square wave is multiplied by a sinusoid whose frequency does not match a component of the signal, the product oscillates so that positive and negative shaded regions cancel. The integral becomes small or zero.</p>
+<p>[Graph: Course reader Figures 7–10 should be placed here. Figure 7 shows a square wave multiplied by a 1 Hz sinusoid with nonzero shaded net area. Figures 8–10 show the same area-correlation idea at different frequencies, including the cancellation case.]</p>
+<p>A useful example is a single rectangular pulse,</p>
+<p>w(t)={
+1,
+0,
+​</p>
+<p>∣t∣&lt;
+2
+T
+​</p>
+<p>,
+otherwise.
+​</p>
+<p>This is not a periodic square wave. It occurs once and does not repeat in time. Therefore, it is represented by a Fourier transform, not by a Fourier series. Using the hertz-frequency convention, its Fourier transform is</p>
+<p>W(f)=∫
+−∞
+∞
+​</p>
+<p>w(t)e
+−j2πft
+dt.</p>
+<p>Since w(t)=1 only on (−T/2,T/2),</p>
+<p>W(f)=∫
+−T/2
+T/2
+​</p>
+<p>e
+−j2πft
+dt.</p>
+<p>Integrating gives</p>
+<p>W(f)=[
+−j2πf
+e
+−j2πft
+​</p>
+<p>]
+−T/2
+T/2
+​</p>
+<p>.</p>
+<p>Therefore,</p>
+<p>W(f)=
+−j2πf
+e
+−jπfT
+−e
+jπfT
+​</p>
+<p>.</p>
+<p>Using</p>
+<p>e
+−jα
+−e
+jα
+=−2jsinα,</p>
+<p>we obtain</p>
+<p>W(f)=
+−j2πf
+−2jsin(πfT)
+​</p>
+<p>=
+πf
+sin(πfT)
+​</p>
+<p>.</p>
+<p>Multiplying and dividing by T,</p>
+<p>W(f)=T
+πfT
+sin(πfT)
+​</p>
+<p>.</p>
+<p>With</p>
+<p>sinc(x)=
+πx
+sin(πx)
+​</p>
+<p>,</p>
+<p>this becomes</p>
+<p>W(f)=Tsinc(fT).</p>
+<p>Thus a rectangular pulse in time has a sinc-shaped spectrum. The pulse is localized in time, but its spectrum spreads across frequency. This example is important because it shows that sharp time-domain features require many frequency components. A sudden edge in time cannot be described by only one sinusoid. It needs a wide combination of sinusoidal basis functions.</p>
+<p>[Graph: Course reader Figure 11 should be placed here. It shows a single square pulse and its Fourier transform, which has a sinc-like magnitude spectrum.]</p>
+<p>Several properties make the Fourier transform especially useful. Linearity means that the transform of a sum is the sum of the transforms:</p>
+<p>F{ax(t)+by(t)}=aX(f)+bY(f).</p>
+<p>This matters because communication signals are often built by adding components, and linearity lets their spectra be handled component by component.</p>
+<p>Time shifting changes phase but not magnitude. If</p>
+<p>x(t)⟷X(f),</p>
+<p>then</p>
+<p>x(t−t
+0
+​</p>
+<p>)⟷X(f)e
+−j2πft
+0
+​</p>
+<p>.</p>
+<p>A delay therefore appears in the frequency domain as a phase factor. The magnitude spectrum remains unchanged. This is physically sensible: delaying a signal does not change which frequencies it contains, but it changes their phase alignment.</p>
+<p>Frequency shifting is equally important. Multiplying a signal by a complex exponential shifts its spectrum:</p>
+<p>x(t)e
+j2πf
+0
+​</p>
+<p>t
+⟷X(f−f
+0
+​</p>
+<p>).</p>
+<p>This is the mathematical basis of modulation: multiplying by an oscillation moves spectral content to another frequency range.</p>
+<p>Time scaling changes the width of the spectrum. If</p>
+<p>x(t)⟷X(f),</p>
+<p>then</p>
+<p>x(at)⟷
+∣a∣
+1
+​</p>
+<p>X(
+a
+f
+​</p>
+<p>).</p>
+<p>Compressing a signal in time spreads it in frequency, while stretching a signal in time compresses it in frequency. This is another expression of the time-frequency trade-off.</p>
+<p>Differentiation in time becomes multiplication by frequency. If</p>
+<p>x(t)⟷X(f),</p>
+<p>then</p>
+<p>dt
+d
+​</p>
+<p>x(t)⟷j2πfX(f).</p>
+<p>This property explains why rapid changes in time correspond to stronger high-frequency content. A derivative emphasizes fast variations, and in the frequency domain this appears as multiplication by a factor proportional to frequency.</p>
+<p>Convolution is another central property. If two signals are convolved in time,</p>
+<p>z(t)=x(t)∗h(t),</p>
+<p>then their Fourier transforms multiply:</p>
+<p>Z(f)=X(f)H(f).</p>
+<p>This property explains why filters are described by frequency responses. A linear time-invariant system with impulse response h(t) modifies the spectrum of an input x(t) by multiplication with H(f). Frequencies for which H(f) is large pass strongly; frequencies for which H(f) is small are attenuated.</p>
+<p>Multiplication in time corresponds to convolution in frequency:</p>
+<p>x(t)y(t)⟷X(f)∗Y(f).</p>
+<p>This is the dual of the previous property and is fundamental later when sampled or modulated waveforms are analyzed. Multiplying by a sinusoid, for example, does not merely change the amplitude of a signal; it shifts and spreads spectral content according to this multiplication-convolution relationship.</p>
+<p>The complete chain is now visible. Signals can be treated as vector-space objects. Finite sample windows belong to R
+N
+or C
+N
+, while complete discrete-time signals belong to the infinite-dimensional signal vector space S. Basis representations allow the same object to be described in different coordinate systems. Orthogonality makes projections independent. Inner products measure overlap. The 3D projection picture explains why coefficients are coordinates along independent directions, and Hilbert space extends that same idea to functions. In finite dimensions, the DFT rewrites a sample block in terms of finite sinusoidal patterns. In function spaces, Fourier series and Fourier transforms rewrite signals in terms of sinusoidal basis functions. The sine and cosine functions are orthogonal over a period when their frequencies are harmonics of the fundamental frequency, which is why each harmonic coefficient can be isolated by integration. The Fourier representation is therefore not a different signal; it is an alternative representation of the same signal, chosen because frequency content is the language in which communication systems, channels, filtering, and modulation become understandable.</p></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph "><h3>Knowledge Map</h3><div class="graph-outer"><div class="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:false,&quot;scale&quot;:0.95,&quot;repelForce&quot;:1.25,&quot;centerForce&quot;:0.08,&quot;linkDistance&quot;:120,&quot;fontSize&quot;:0.72,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><button class="global-graph-icon" aria-label="Expand Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                  s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                  c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                  C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                  c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                  v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                  s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                  C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                  S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                  s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                  s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div class="global-graph-outer"><div class="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:true,&quot;scale&quot;:1.05,&quot;repelForce&quot;:2.3,&quot;centerForce&quot;:0.04,&quot;linkDistance&quot;:165,&quot;fontSize&quot;:0.8,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><div class="global-graph-search" role="search"><button class="global-graph-search-button" type="button" aria-label="Search nodes"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="7"></circle></svg></button><input class="global-graph-search-input" type="search" placeholder="Search nodes..." autocomplete="off" spellcheck="false"/><button class="global-graph-search-clear" type="button" aria-label="Clear node search">Clear</button><span class="global-graph-search-status" aria-live="polite"></span></div><button class="global-graph-close" type="button" aria-label="Close Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button></div></div></div></div></div></body><script type="application/javascript" data-persist="true">function n(){let t=this.parentElement;t.classList.toggle("is-collapsed");let e=t.getElementsByClassName("callout-content")[0];if(!e)return;let l=t.classList.contains("is-collapsed");e.style.gridTemplateRows=l?"0fr":"1fr"}function c(){let t=document.getElementsByClassName("callout is-collapsible");for(let e of t){let l=e.getElementsByClassName("callout-title")[0],s=e.getElementsByClassName("callout-content")[0];if(!l||!s)continue;l.addEventListener("click",n),window.addCleanup(()=>l.removeEventListener("click",n));let o=e.classList.contains("is-collapsed");s.style.gridTemplateRows=o?"0fr":"1fr"}}document.addEventListener("nav",c);
+</script><script type="module" data-persist="true">function E(a,e){if(!a)return;function t(o){o.target===this&&(o.preventDefault(),o.stopPropagation(),e())}function n(o){o.key.startsWith("Esc")&&(o.preventDefault(),e())}a?.addEventListener("click",t),window.addCleanup(()=>a?.removeEventListener("click",t)),document.addEventListener("keydown",n),window.addCleanup(()=>document.removeEventListener("keydown",n))}function f(a){for(;a.firstChild;)a.removeChild(a.firstChild)}var m=class{constructor(e,t){this.container=e;this.content=t;this.setupEventListeners(),this.setupNavigationControls(),this.resetTransform()}isDragging=!1;startPan={x:0,y:0};currentPan={x:0,y:0};scale=1;MIN_SCALE=.5;MAX_SCALE=3;cleanups=[];setupEventListeners(){let e=this.onMouseDown.bind(this),t=this.onMouseMove.bind(this),n=this.onMouseUp.bind(this),o=this.onTouchStart.bind(this),r=this.onTouchMove.bind(this),i=this.onTouchEnd.bind(this),s=this.resetTransform.bind(this);this.container.addEventListener("mousedown",e),document.addEventListener("mousemove",t),document.addEventListener("mouseup",n),this.container.addEventListener("touchstart",o,{passive:!1}),document.addEventListener("touchmove",r,{passive:!1}),document.addEventListener("touchend",i),window.addEventListener("resize",s),this.cleanups.push(()=>this.container.removeEventListener("mousedown",e),()=>document.removeEventListener("mousemove",t),()=>document.removeEventListener("mouseup",n),()=>this.container.removeEventListener("touchstart",o),()=>document.removeEventListener("touchmove",r),()=>document.removeEventListener("touchend",i),()=>window.removeEventListener("resize",s))}cleanup(){for(let e of this.cleanups)e()}setupNavigationControls(){let e=document.createElement("div");e.className="mermaid-controls";let t=this.createButton("+",()=>this.zoom(.1)),n=this.createButton("-",()=>this.zoom(-.1)),o=this.createButton("Reset",()=>this.resetTransform());e.appendChild(n),e.appendChild(o),e.appendChild(t),this.container.appendChild(e)}createButton(e,t){let n=document.createElement("button");return n.textContent=e,n.className="mermaid-control-button",n.addEventListener("click",t),window.addCleanup(()=>n.removeEventListener("click",t)),n}onMouseDown(e){e.button===0&&(this.isDragging=!0,this.startPan={x:e.clientX-this.currentPan.x,y:e.clientY-this.currentPan.y},this.container.style.cursor="grabbing")}onMouseMove(e){this.isDragging&&(e.preventDefault(),this.currentPan={x:e.clientX-this.startPan.x,y:e.clientY-this.startPan.y},this.updateTransform())}onMouseUp(){this.isDragging=!1,this.container.style.cursor="grab"}onTouchStart(e){if(e.touches.length!==1)return;this.isDragging=!0;let t=e.touches[0];this.startPan={x:t.clientX-this.currentPan.x,y:t.clientY-this.currentPan.y}}onTouchMove(e){if(!this.isDragging||e.touches.length!==1)return;e.preventDefault();let t=e.touches[0];this.currentPan={x:t.clientX-this.startPan.x,y:t.clientY-this.startPan.y},this.updateTransform()}onTouchEnd(){this.isDragging=!1}zoom(e){let t=Math.min(Math.max(this.scale+e,this.MIN_SCALE),this.MAX_SCALE),n=this.content.getBoundingClientRect(),o=n.width/2,r=n.height/2,i=t-this.scale;this.currentPan.x-=o*i,this.currentPan.y-=r*i,this.scale=t,this.updateTransform()}updateTransform(){this.content.style.transform=`translate(${this.currentPan.x}px, ${this.currentPan.y}px) scale(${this.scale})`}resetTransform(){let t=this.content.querySelector("svg").getBoundingClientRect(),n=t.width/this.scale,o=t.height/this.scale;this.scale=1,this.currentPan={x:(this.container.clientWidth-n)/2,y:(this.container.clientHeight-o)/2},this.updateTransform()}},T=["--secondary","--tertiary","--gray","--light","--lightgray","--highlight","--dark","--darkgray","--codeFont"],y;document.addEventListener("nav",async()=>{let e=document.querySelector(".center").querySelectorAll("code.mermaid");if(e.length===0)return;y||=await import("https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.0/mermaid.esm.min.mjs");let t=y.default,n=new WeakMap;for(let r of e)n.set(r,r.innerText);async function o(){for(let s of e){s.removeAttribute("data-processed");let c=n.get(s);c&&(s.innerHTML=c)}let r=T.reduce((s,c)=>(s[c]=window.getComputedStyle(document.documentElement).getPropertyValue(c),s),{}),i=document.documentElement.getAttribute("saved-theme")==="dark";t.initialize({startOnLoad:!1,securityLevel:"loose",theme:i?"dark":"base",themeVariables:{fontFamily:r["--codeFont"],primaryColor:r["--light"],primaryTextColor:r["--darkgray"],primaryBorderColor:r["--tertiary"],lineColor:r["--darkgray"],secondaryColor:r["--secondary"],tertiaryColor:r["--tertiary"],clusterBkg:r["--light"],edgeLabelBackground:r["--highlight"]}}),await t.run({nodes:e})}await o(),document.addEventListener("themechange",o),window.addCleanup(()=>document.removeEventListener("themechange",o));for(let r=0;r<e.length;r++){let v=function(){let g=l.querySelector("#mermaid-space"),h=l.querySelector(".mermaid-content");if(!h)return;f(h);let w=i.querySelector("svg").cloneNode(!0);h.appendChild(w),l.classList.add("active"),g.style.cursor="grab",u=new m(g,h)},M=function(){l.classList.remove("active"),u?.cleanup(),u=null},i=e[r],s=i.parentElement,c=s.querySelector(".clipboard-button"),d=s.querySelector(".expand-button"),p=window.getComputedStyle(c),L=c.offsetWidth+parseFloat(p.marginLeft||"0")+parseFloat(p.marginRight||"0");d.style.right=`calc(${L}px + 0.3rem)`,s.prepend(d);let l=s.querySelector("#mermaid-container");if(!l)return;let u=null;d.addEventListener("click",v),E(l,M),window.addCleanup(()=>{u?.cleanup(),d.removeEventListener("click",v)})}});
+</script><script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/copy-tex.min.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">
+        const socket = new WebSocket('ws://localhost:3001')
+        // reload(true) ensures resources like images and scripts are fetched again in firefox
+        socket.addEventListener('message', () => document.location.reload(true))
+      </script><script src="../postscript.js?v=mqrs8ckb" type="module" data-persist="true"></script></html>
