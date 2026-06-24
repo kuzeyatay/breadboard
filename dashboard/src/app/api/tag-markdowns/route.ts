@@ -383,7 +383,8 @@ export async function POST(request: Request) {
       const node = editableBySlug.get(slug);
       if (!node) continue;
 
-      const filePath = path.resolve(clusterDir, `${node.slug}.md`);
+      // node.relPath includes any sub-folder (e.g. sources/, generated/).
+      const filePath = path.resolve(clusterDir, node.relPath);
       if (!filePath.startsWith(`${path.resolve(clusterDir)}${path.sep}`) || !fs.existsSync(filePath)) {
         continue;
       }

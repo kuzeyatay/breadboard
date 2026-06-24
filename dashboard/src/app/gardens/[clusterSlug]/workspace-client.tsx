@@ -3313,8 +3313,8 @@ export default function WorkspaceClient({
           </aside>
         )}
 
-        {/* Chat area */}
-        <div className="flex-1 flex flex-col min-h-0">
+        {/* Chat area — warm paper surface so the green sidebars read as a frame */}
+        <div className="flex-1 flex flex-col min-h-0 bg-gray-900">
           <main className="flex-1 overflow-y-auto px-4 py-6">
             <ChatTranscript
               clusterName={clusterName}
@@ -3506,7 +3506,7 @@ export default function WorkspaceClient({
                 rows={1}
                 placeholder="Ask about your documents…"
                 disabled={isStreaming || loadingChats}
-                className="flex-1 resize-none bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-700 transition-colors disabled:opacity-50 max-h-40 overflow-y-auto"
+                className="flex-1 resize-none bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 transition-colors disabled:opacity-50 max-h-40 overflow-y-auto"
                 style={{ fieldSizing: "content" } as React.CSSProperties}
               />
               <button
@@ -3516,7 +3516,7 @@ export default function WorkspaceClient({
                   loadingChats ||
                   (!input.trim() && chatAttachments.length === 0)
                 }
-                className="shrink-0 w-9 h-9 flex items-center justify-center bg-white text-gray-950 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gray-100 text-gray-950 rounded-full hover:bg-white transition-colors disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed"
                 aria-label="Send"
               >
                 {isStreaming ? (
@@ -3550,7 +3550,7 @@ export default function WorkspaceClient({
                     <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"
+                      d="M4.5 12h15m0 0-6-6m6 6-6 6"
                     />
                   </svg>
                 )}

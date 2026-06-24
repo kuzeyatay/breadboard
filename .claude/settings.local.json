@@ -18,7 +18,8 @@
       "Bash(find quartz *)",
       "Bash(grep -nE \"#[0-9a-fA-F]{3,6}|rgba?\\\\\\(\" custom.scss)",
       "Bash(grep -nE \"#[0-9a-fA-F]{3,6}\" base.scss)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(grep -rnE \"path\\\\.join\\\\\\([^\\)]*\\(clusterDir|contentPath|clusterSlug\\)[^\\)]*\\\\.md|\\\\\\\\\\\\$\\\\{slug\\\\}\\\\.md|\\\\\\\\\\\\$\\\\{.*[Ss]lug\\\\}\\\\.md\" --include=*.ts)"
     ]
   }
 }

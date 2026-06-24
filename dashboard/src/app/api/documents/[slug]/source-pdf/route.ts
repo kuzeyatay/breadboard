@@ -3,6 +3,7 @@ import path from "path";
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
+import { walkClusterMarkdown } from "@/lib/knowledge";
 import {
   requireOwnedClusterFromSlug,
   requireReadableClusterFromSlug,
@@ -97,6 +98,14 @@ function safeClusterDir(contentPath: string, clusterSlug: string): string | null
 
 function resolveMarkdownPath(clusterDir: string, slug: string): string | null {
   if (!slug || slug.includes("/") || slug.includes("\\")) return null;
+  // Source notes live in the sources/ sub-folder, so find by basename slug.
+  const wanted = slug.replace(/\.md$/i, "");
+  for (const item of walkClusterMarkdown(clusterDir)) {
+    if (item.entry.replace(/\.md$/i, "") === wanted) {
+      const found = path.resolve(item.filePath);
+      return found.startsWith(clusterDir + path.sep) ? found : null;
+    }
+  }
   const filePath = path.resolve(clusterDir, `${slug}.md`);
   if (!filePath.startsWith(clusterDir + path.sep)) return null;
   return filePath;

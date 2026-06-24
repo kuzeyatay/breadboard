@@ -764,6 +764,38 @@ export function walkClusterMarkdown(clusterDir: string): ClusterMarkdownEntry[] 
 }
 
 /**
+ * Folder (relative to the cluster directory) that ingested source documents are
+ * written into, and the one that AI-generated topic notes are written into.
+ * Notes are still identified by their basename slug, so links resolve across
+ * folders (Quartz uses shortest-path link resolution).
+ */
+export const SOURCE_NOTE_FOLDER = "sources";
+export const GENERATED_NOTE_FOLDER = "generated";
+
+/**
+ * Locate a note file by its basename slug anywhere inside the cluster
+ * (root or any sub-folder such as `sources/` or `generated/`). Returns the
+ * note's absolute path and cluster-relative path, or null when it does not
+ * exist. Use this instead of assuming a note lives at the cluster root.
+ */
+export function resolveClusterNoteFile(
+  contentPath: string,
+  clusterSlug: string,
+  slug: string,
+): { filePath: string; relPath: string; entry: string } | null {
+  const clusterDir = path.join(contentPath, clusterSlug.trim());
+  const wanted = slug.replace(/\.md$/i, "");
+  const wantedSlug = slugify(wanted);
+  for (const item of walkClusterMarkdown(clusterDir)) {
+    const base = item.entry.replace(/\.md$/i, "");
+    if (base === wanted || slugify(base) === wantedSlug) {
+      return { filePath: item.filePath, relPath: item.relPath, entry: item.entry };
+    }
+  }
+  return null;
+}
+
+/**
  * List every sub-folder of a cluster (POSIX paths relative to the cluster dir),
  * including empty ones, so the dashboard tree can show folders that contain no
  * notes yet. Skips `assets/` and dotfiles.
@@ -1879,6 +1911,12 @@ export async function writeDocumentKnowledge({
   throwIfAborted(abortSignal);
   const clusterDir = path.join(contentPath, clusterSlug.trim());
   fs.mkdirSync(clusterDir, { recursive: true });
+  // Ingested source markdown lives in sources/, AI-generated topic notes in
+  // generated/. Notes stay identified by basename slug so links keep resolving.
+  const sourcesDir = path.join(clusterDir, SOURCE_NOTE_FOLDER);
+  const generatedDir = path.join(clusterDir, GENERATED_NOTE_FOLDER);
+  fs.mkdirSync(sourcesDir, { recursive: true });
+  fs.mkdirSync(generatedDir, { recursive: true });
   const cleanPages = cleanDocumentPages(pages);
   const outputMarkdownText = cleanGeneratedText(markdownText);
   const outputPlainText = cleanGeneratedText(plainText);
@@ -1964,7 +2002,7 @@ export async function writeDocumentKnowledge({
     `## Source material\n\n${outputMarkdownText.trim() || outputPlainText.trim()}\n`;
 
   throwIfAborted(abortSignal);
-  const sourceFilePath = path.join(clusterDir, `${sourceSlug}.md`);
+  const sourceFilePath = path.join(sourcesDir, `${sourceSlug}.md`);
   fs.writeFileSync(sourceFilePath, sourceContent, "utf-8");
   createdFilePaths.push(sourceFilePath);
 
@@ -2067,7 +2105,7 @@ export async function writeDocumentKnowledge({
         ? `### Relationships\n\n${relationLines.join("\n")}\n`
         : "");
 
-    const topicFilePath = path.join(clusterDir, `${plan.finalSlug}.md`);
+    const topicFilePath = path.join(generatedDir, `${plan.finalSlug}.md`);
     fs.writeFileSync(topicFilePath, topicContent, "utf-8");
     createdFilePaths.push(topicFilePath);
   }

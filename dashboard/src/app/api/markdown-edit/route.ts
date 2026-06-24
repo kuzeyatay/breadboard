@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
-import { normalizeTopicTags, refreshClusterIndex } from '@/lib/knowledge';
+import { normalizeTopicTags, refreshClusterIndex, resolveClusterNoteFile } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
@@ -36,7 +36,12 @@ function normalizeDocumentSlug(clusterSlug: string, slug: string): string | null
 
 function documentPath(contentPath: string, clusterSlug: string, slug: string): string | null {
   const clusterDir = path.resolve(contentPath, clusterSlug);
-  const filePath = path.resolve(clusterDir, `${slug}.md`);
+  // Notes may live in sub-folders (sources/, generated/), so resolve by slug
+  // across the cluster; fall back to the root path for not-yet-created notes.
+  const resolved = resolveClusterNoteFile(contentPath, clusterSlug, slug);
+  const filePath = resolved
+    ? path.resolve(resolved.filePath)
+    : path.resolve(clusterDir, `${slug}.md`);
   if (filePath !== clusterDir && filePath.startsWith(`${clusterDir}${path.sep}`)) return filePath;
   return null;
 }

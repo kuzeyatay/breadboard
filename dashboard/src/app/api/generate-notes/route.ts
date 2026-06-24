@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
-import { normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge, semanticTagsFromText, slugify } from '@/lib/knowledge';
+import { normalizeTopicTags, refreshClusterIndex, resolveClusterNoteFile, scanClusterKnowledge, semanticTagsFromText, slugify } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
@@ -491,7 +491,9 @@ export async function POST(request: Request) {
       );
 
       if (placementDecision.action === 'merge' && placementDecision.targetSlug) {
-        const targetPath = path.join(clusterDir, `${placementDecision.targetSlug}.md`);
+        const targetPath =
+          resolveClusterNoteFile(contentPath, normalizedClusterSlug, placementDecision.targetSlug)?.filePath ??
+          path.join(clusterDir, `${placementDecision.targetSlug}.md`);
         if (fs.existsSync(targetPath)) {
           const target = placementCandidates.find((note) => note.slug === placementDecision.targetSlug);
           const harmonized = await harmonizeChatNote({
@@ -611,7 +613,9 @@ export async function POST(request: Request) {
       });
 
       if (notePlacement.action === 'merge' && notePlacement.targetSlug) {
-        const targetPath = path.join(clusterDir, `${notePlacement.targetSlug}.md`);
+        const targetPath =
+          resolveClusterNoteFile(contentPath, normalizedClusterSlug, notePlacement.targetSlug)?.filePath ??
+          path.join(clusterDir, `${notePlacement.targetSlug}.md`);
         if (fs.existsSync(targetPath)) {
           const harmonized = await harmonizeChatNote({
             client,
