@@ -221,7 +221,19 @@ ensureColumn(
   "fork_allowed",
   "fork_allowed INTEGER NOT NULL DEFAULT 0",
 );
+// Virtual grouping of clusters into folders on the dashboard / garden overview.
+ensureColumn("clusters", "folder", "folder TEXT");
 ensureColumn("users", "username", "username TEXT");
+
+// Persist cluster-group folders even while they contain no clusters yet.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS cluster_folders (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    name    TEXT    NOT NULL,
+    UNIQUE(user_id, name)
+  )
+`);
 
 function usernameBaseFromEmail(email: string): string {
   const localPart = email.split("@")[0] ?? "user";

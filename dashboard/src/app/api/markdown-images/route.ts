@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
+import { walkClusterMarkdown } from '@/lib/knowledge';
 
 export const dynamic = 'force-dynamic';
 
@@ -196,11 +197,14 @@ export async function POST(request: Request) {
 
     const clusterDir = safeClusterDir(contentPath, cluster.slug);
     if (!clusterDir) {
-      return NextResponse.json({ error: 'Invalid cluster path' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid garden path' }, { status: 400 });
     }
 
-    const notePath = path.resolve(/* turbopackIgnore: true */ clusterDir, `${normalizedNoteSlug}.md`);
-    if (!notePath.startsWith(clusterDir + path.sep) || !fs.existsSync(notePath)) {
+    // The note may live in any sub-folder; match on its basename.
+    const noteEntry = walkClusterMarkdown(clusterDir).find(
+      (item) => item.entry.replace(/\.md$/i, '') === normalizedNoteSlug,
+    );
+    if (!noteEntry) {
       return NextResponse.json({ error: 'Markdown note not found' }, { status: 404 });
     }
 

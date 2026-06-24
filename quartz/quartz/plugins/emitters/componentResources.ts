@@ -259,8 +259,20 @@ function addGlobalPageResources(ctx: BuildCtx, componentResources: ComponentReso
     componentResources.afterDOMLoaded.push(`
       window.spaNavigate = (url, _) => window.location.assign(url)
       window.addCleanup = () => {}
-      const event = new CustomEvent("nav", { detail: { url: document.body.dataset.slug } })
+      const slug = document.body.dataset.slug
+      const event = new CustomEvent("nav", { detail: { url: slug } })
       document.dispatchEvent(event)
+      if (window.parent !== window && slug) {
+        window.parent.postMessage(
+          {
+            type: "second-brain:navigate",
+            slug,
+            title: document.title,
+            path: window.location.pathname,
+          },
+          "*",
+        )
+      }
     `)
   }
 }

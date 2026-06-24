@@ -29,13 +29,13 @@ export default async function GardenPage({
       <header className="flex items-center justify-between gap-4 px-6 py-3.5 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <Link
-            href={cluster.isOwner ? `/clusters/${clusterSlug}` : '/dashboard'}
+            href={cluster.isOwner ? `/gardens/${clusterSlug}` : '/dashboard'}
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5 shrink-0"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
             </svg>
-            {cluster.isOwner ? 'Back to cluster' : 'Back to clusters'}
+            {cluster.isOwner ? 'Back to garden' : 'Back to gardens'}
           </Link>
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">{cluster.name}</h1>

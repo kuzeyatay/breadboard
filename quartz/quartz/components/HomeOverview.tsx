@@ -115,9 +115,9 @@ const HomeOverview: QuartzComponent = (props: QuartzComponentProps) => {
       <div class="home-overview-header">
         <p class="eyebrow">
           {scope === "public"
-            ? "Public library"
+            ? "Public garden"
             : scope === "private"
-              ? "My library"
+              ? "My garden"
               : "Digital Garden"}
         </p>
         <p>{headerText}</p>

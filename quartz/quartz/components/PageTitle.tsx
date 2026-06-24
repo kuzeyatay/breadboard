@@ -43,6 +43,14 @@ document.querySelectorAll(".page-title-link").forEach(function(el) {
       return trimmed;
     }
     try {
+      if (trimmed) {
+        const fallbackUrl = new URL(trimmed);
+        if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(fallbackUrl.hostname)) {
+          return fallbackUrl.protocol + "//" + fallbackUrl.hostname + ":3000";
+        }
+      }
+    } catch {}
+    try {
       if (document.referrer) {
         const ref = new URL(document.referrer);
         if (!/^garden\\./i.test(ref.hostname)) {
@@ -54,6 +62,9 @@ document.querySelectorAll(".page-title-link").forEach(function(el) {
       const current = new URL(window.location.href);
       if (/^garden\\./i.test(current.hostname)) {
         return current.origin.replace("//garden.", "//");
+      }
+      if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(current.hostname) || current.port === "8081") {
+        return current.protocol + "//" + current.hostname + ":3000";
       }
       return current.origin.replace(/\\/+$/, "");
     } catch {}

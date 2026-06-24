@@ -6,7 +6,7 @@ const DISABLED_ENV_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 const DEFAULT_BUILD_CONCURRENCY = 1;
 const DEFAULT_BUILD_TIMEOUT_MS = 15 * 60 * 1000;
 
-let pendingReasons = new Set<string>();
+const pendingReasons = new Set<string>();
 let activePublish: Promise<void> | null = null;
 
 function envValue(rawValue: string | undefined): string {

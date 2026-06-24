@@ -12,11 +12,15 @@ import {
   setClusterChatAccessible,
   setClusterForkAllowed,
   setClusterCardSize,
+  setClusterFolder,
+  createClusterFolder,
+  deleteClusterFolder,
 } from "@/app/actions/clusters";
 import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
 import type { ChatmockTarget } from "@/lib/chatmock-target";
 import NavBar from "@/app/components/navbar";
 import ChatmockTargetSwitch from "@/app/components/chatmock-target-switch";
+import KnowledgeTerminal from "@/app/components/knowledge-terminal";
 import { useToast, Toaster } from "@/app/components/toast";
 
 interface Props {
@@ -24,6 +28,7 @@ interface Props {
   username: string;
   initialClusters: Cluster[];
   initialPublicClusters: Cluster[];
+  initialClusterFolders: string[];
   initialChatmockTarget: ChatmockTarget;
 }
 
@@ -48,6 +53,18 @@ const CARD_MIN_WIDTH = 280;
 const CARD_MAX_WIDTH = 640;
 const CARD_MIN_HEIGHT = 190;
 const CARD_MAX_HEIGHT = 440;
+
+// Masonry grid: small base track + gap so resizable cards pack tightly and
+// backfill gaps instead of leaving the staggered voids a flex-wrap row leaves.
+const CARD_GRID_UNIT = 8;
+const CARD_GRID_GAP = 16;
+
+function cardGridSpan(sizePx: number): number {
+  return Math.max(
+    1,
+    Math.round((sizePx + CARD_GRID_GAP) / (CARD_GRID_UNIT + CARD_GRID_GAP)),
+  );
+}
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
 type ClusterView = "mine" | "public";
@@ -103,10 +120,11 @@ export default function DashboardClient({
   username,
   initialClusters,
   initialPublicClusters,
+  initialClusterFolders,
   initialChatmockTarget,
 }: Props) {
   const router = useRouter();
-  const { toasts, addToast } = useToast();
+  const { toasts, addToast, dismissToast } = useToast();
   const [modalOpen, setModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -120,6 +138,12 @@ export default function DashboardClient({
   const [searchQuery, setSearchQuery] = useState("");
   const [myClusters, setMyClusters] = useState(initialClusters);
   const [publicClusters, setPublicClusters] = useState(initialPublicClusters);
+  const [clusterFolders, setClusterFolders] = useState<string[]>(initialClusterFolders);
+  const [draggingClusterId, setDraggingClusterId] = useState<number | null>(null);
+  const [dragOverFolderKey, setDragOverFolderKey] = useState<string | null>(null);
+  const [expandedClusterFolders, setExpandedClusterFolders] = useState<Set<string>>(
+    new Set(),
+  );
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmVisibilityId, setConfirmVisibilityId] = useState<number | null>(
@@ -135,6 +159,7 @@ export default function DashboardClient({
   const [uploadStatuses, setUploadStatuses] = useState<
     Record<string, FileStatus>
   >({});
+  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
@@ -201,6 +226,259 @@ export default function DashboardClient({
     });
   }, [activeClusters, searchQuery]);
 
+  useEffect(() => {
+    setClusterFolders(initialClusterFolders);
+  }, [initialClusterFolders]);
+
+  type ClusterRenderEntry =
+    | { kind: "header"; folder: string | null; key: string }
+    | { kind: "card"; cluster: Cluster };
+
+  const clusterRenderList = useMemo<ClusterRenderEntry[]>(() => {
+    if (clusterView !== "mine") {
+      return filteredClusters.map((cluster) => ({ kind: "card", cluster }));
+    }
+
+    const names = new Set<string>(clusterFolders.filter(Boolean));
+    for (const cluster of filteredClusters) {
+      if (cluster.folder) names.add(cluster.folder);
+    }
+    const ordered = [...names].sort((a, b) => a.localeCompare(b));
+
+    // With no folders, show every cluster flat (no accordion headers).
+    if (ordered.length === 0) {
+      return filteredClusters.map((cluster) => ({ kind: "card", cluster }));
+    }
+
+    const entries: ClusterRenderEntry[] = [];
+    const ungroupedKey = "__ungrouped__";
+    entries.push({ kind: "header", folder: null, key: ungroupedKey });
+    if (expandedClusterFolders.has(ungroupedKey)) {
+      for (const cluster of filteredClusters.filter((c) => !c.folder)) {
+        entries.push({ kind: "card", cluster });
+      }
+    }
+    for (const name of ordered) {
+      const key = `folder:${name}`;
+      entries.push({ kind: "header", folder: name, key });
+      if (expandedClusterFolders.has(key)) {
+        for (const cluster of filteredClusters.filter((c) => c.folder === name)) {
+          entries.push({ kind: "card", cluster });
+        }
+      }
+    }
+    return entries;
+  }, [clusterView, filteredClusters, clusterFolders, expandedClusterFolders]);
+
+  // Fold the flat header/card list into per-folder sections so each group packs
+  // (masonry) on its own and cards never bleed across a folder boundary.
+  const clusterSections = useMemo(() => {
+    const sections: {
+      key: string;
+      header: { folder: string | null; key: string } | null;
+      cards: Cluster[];
+    }[] = [];
+    let current: (typeof sections)[number] | null = null;
+    for (const entry of clusterRenderList) {
+      if (entry.kind === "header") {
+        current = {
+          key: entry.key,
+          header: { folder: entry.folder, key: entry.key },
+          cards: [],
+        };
+        sections.push(current);
+      } else {
+        if (!current) {
+          current = { key: "__flat__", header: null, cards: [] };
+          sections.push(current);
+        }
+        current.cards.push(entry.cluster);
+      }
+    }
+    return sections;
+  }, [clusterRenderList]);
+
+  function toggleClusterFolder(key: string) {
+    setExpandedClusterFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function handleDeleteClusterFolder(name: string) {
+    const count = myClusters.filter((c) => c.folder === name).length;
+    const ok = window.confirm(
+      count > 0
+        ? `Delete cluster "${name}"? Its ${count} garden${count === 1 ? "" : "s"} will be moved to Ungrouped (the gardens are not deleted).`
+        : `Delete cluster "${name}"?`,
+    );
+    if (!ok) return;
+
+    setMyClusters((prev) =>
+      prev.map((c) => (c.folder === name ? { ...c, folder: null } : c)),
+    );
+    setClusterFolders((prev) => prev.filter((f) => f !== name));
+    startTransition(async () => {
+      try {
+        await deleteClusterFolder(name);
+        router.refresh();
+      } catch (err) {
+        addToast(err instanceof Error ? err.message : "Failed to delete cluster");
+        router.refresh();
+      }
+    });
+  }
+
+  function handleMoveClusterToFolder(clusterId: number, folder: string | null) {
+    setDraggingClusterId(null);
+    setDragOverFolderKey(null);
+    const target = folder && folder.trim() ? folder.trim() : null;
+    const existing = myClusters.find((c) => c.id === clusterId);
+    if (!existing || (existing.folder ?? null) === target) return;
+
+    setMyClusters((prev) =>
+      prev.map((c) => (c.id === clusterId ? { ...c, folder: target } : c)),
+    );
+    startTransition(async () => {
+      try {
+        await setClusterFolder(clusterId, target);
+        router.refresh();
+      } catch (err) {
+        addToast(err instanceof Error ? err.message : "Failed to move garden");
+        setMyClusters((prev) =>
+          prev.map((c) =>
+            c.id === clusterId ? { ...c, folder: existing.folder ?? null } : c,
+          ),
+        );
+      }
+    });
+  }
+
+  function handleCreateClusterFolder() {
+    const input = window.prompt("New cluster name");
+    if (input === null) return;
+    const folder = input.trim();
+    if (!folder) return;
+    if (!clusterFolders.includes(folder)) {
+      setClusterFolders((prev) =>
+        [...prev, folder].sort((a, b) => a.localeCompare(b)),
+      );
+    }
+    startTransition(async () => {
+      try {
+        await createClusterFolder(folder);
+        router.refresh();
+      } catch (err) {
+        addToast(err instanceof Error ? err.message : "Failed to create cluster");
+      }
+    });
+  }
+
+  function renderFolderHeader(folder: string | null, key: string) {
+    const isOver = dragOverFolderKey === key;
+    const isExpanded = expandedClusterFolders.has(key);
+    const count = folder
+      ? myClusters.filter((c) => c.folder === folder).length
+      : myClusters.filter((c) => !c.folder).length;
+    return (
+      <div
+        key={key}
+        role="button"
+        tabIndex={0}
+        onClick={() => toggleClusterFolder(key)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleClusterFolder(key);
+          }
+        }}
+        onDragOver={(e) => {
+          if (draggingClusterId == null) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (dragOverFolderKey !== key) setDragOverFolderKey(key);
+          // Reveal a collapsed folder so it's clear where the cluster will land.
+          if (!expandedClusterFolders.has(key)) {
+            setExpandedClusterFolders((prev) => new Set(prev).add(key));
+          }
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setDragOverFolderKey((prev) => (prev === key ? null : prev));
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const id = Number(e.dataTransfer.getData("text/plain")) || draggingClusterId;
+          if (id != null) handleMoveClusterToFolder(id, folder);
+        }}
+        className={[
+          "basis-full w-full mt-2 flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-left transition-colors",
+          isOver
+            ? "border-cyan-400/60 bg-cyan-950/20"
+            : "border-gray-800 hover:border-gray-700 hover:bg-gray-900/50",
+        ].join(" ")}
+      >
+        <svg
+          className={`h-3.5 w-3.5 shrink-0 text-gray-500 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+        </svg>
+        <svg
+          className="h-4 w-4 shrink-0 text-amber-300/70"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={1.5}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"
+          />
+        </svg>
+        <span className="text-sm font-medium text-gray-300">
+          {folder ?? "Ungrouped"}
+        </span>
+        <span className="text-[11px] text-gray-600">{count}</span>
+        {folder && (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeleteClusterFolder(folder);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                handleDeleteClusterFolder(folder);
+              }
+            }}
+            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-red-950/40 hover:text-red-300"
+            aria-label={`Delete cluster ${folder}`}
+            title="Delete cluster"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166M19.228 5.79 18.16 19.673A2.25 2.25 0 0 1 15.916 21.75H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .563c.34-.059.68-.114 1.022-.166m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
+              />
+            </svg>
+          </span>
+        )}
+      </div>
+    );
+  }
+
   function openModal() {
     setName("");
     setDescription("");
@@ -255,7 +533,7 @@ export default function DashboardClient({
         router.refresh();
       } catch (err: unknown) {
         setError(
-          err instanceof Error ? err.message : "Failed to create cluster",
+          err instanceof Error ? err.message : "Failed to create garden",
         );
       }
     });
@@ -289,7 +567,7 @@ export default function DashboardClient({
           description: previous.description,
         }));
         setEditError(
-          err instanceof Error ? err.message : "Failed to update cluster",
+          err instanceof Error ? err.message : "Failed to update garden",
         );
       }
     });
@@ -309,7 +587,7 @@ export default function DashboardClient({
         router.refresh();
       } catch (err: unknown) {
         addToast(
-          err instanceof Error ? err.message : "Failed to delete cluster",
+          err instanceof Error ? err.message : "Failed to delete garden",
         );
       } finally {
         setDeletingId(null);
@@ -340,7 +618,7 @@ export default function DashboardClient({
       addToast(
         err instanceof Error
           ? err.message
-          : "Failed to update cluster visibility",
+          : "Failed to update garden visibility",
       );
     }
   }
@@ -362,7 +640,7 @@ export default function DashboardClient({
       addToast(
         err instanceof Error
           ? err.message
-          : "Failed to update cluster accessibility",
+          : "Failed to update garden accessibility",
       );
     }
   }
@@ -550,6 +828,7 @@ export default function DashboardClient({
     setUploadCluster(cluster);
     setUploadFiles([]);
     setUploadStatuses({});
+    setUploadErrors({});
     setUploadLabel("");
     setIsHandwriting(false);
     setGenerateMap(true);
@@ -580,7 +859,23 @@ export default function DashboardClient({
   }
 
   function removeUploadFile(index: number) {
-    setUploadFiles((prev) => prev.filter((_, i) => i !== index));
+    setUploadFiles((prev) => {
+      const removed = prev[index];
+      if (removed) {
+        const key = fileKey(removed);
+        setUploadStatuses((statuses) => {
+          const next = { ...statuses };
+          delete next[key];
+          return next;
+        });
+        setUploadErrors((errors) => {
+          const next = { ...errors };
+          delete next[key];
+          return next;
+        });
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   }
 
   async function handleUploadSubmit(e: React.FormEvent) {
@@ -595,6 +890,7 @@ export default function DashboardClient({
       initial[fileKey(f)] = "pending";
     });
     setUploadStatuses(initial);
+    setUploadErrors({});
 
     let successCount = 0;
     let snapshotCount = 0;
@@ -623,10 +919,17 @@ export default function DashboardClient({
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
+          const message = typeof data.error === "string" ? data.error : "Upload failed";
           setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-          addToast(`${file.name}: ${data.error ?? "Upload failed"}`);
+          setUploadErrors((prev) => ({ ...prev, [key]: message }));
+          addToast(`${file.name}: ${message}`);
         } else {
           setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
+          setUploadErrors((prev) => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
           successCount++;
           snapshotCount +=
             typeof data.imageCount === "number" ? data.imageCount : 0;
@@ -636,8 +939,10 @@ export default function DashboardClient({
         }
       } catch (err) {
         if ((err as Error).name === "AbortError") break;
+        const message = err instanceof Error ? err.message : "Network error";
         setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-        addToast(`${file.name}: Network error`);
+        setUploadErrors((prev) => ({ ...prev, [key]: message }));
+        addToast(`${file.name}: ${message}`);
       }
     }
 
@@ -669,7 +974,7 @@ export default function DashboardClient({
 
   return (
     <div
-      className="min-h-screen bg-gray-950 text-white flex flex-col"
+      className="min-h-screen bg-gray-950 text-white flex flex-col pb-12"
       style={bgImage ? { backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundAttachment: "fixed" } : undefined}
     >
       <NavBar
@@ -699,7 +1004,7 @@ export default function DashboardClient({
           <div className="flex items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight">
-                Clusters
+                Gardens
               </h1>
               <p className="text-sm text-gray-500 mt-1">
                 {clusterView === "mine"
@@ -718,7 +1023,7 @@ export default function DashboardClient({
                 onClick={openModal}
                 className="px-4 py-2 bg-white text-gray-950 text-sm font-medium rounded-lg hover:bg-gray-100 transition-colors"
               >
-                New cluster
+                New garden
               </button>
             </div>
           </div>
@@ -735,7 +1040,7 @@ export default function DashboardClient({
                     : "text-gray-400 hover:text-white",
                 ].join(" ")}
               >
-                My clusters
+                My gardens
               </button>
               <button
                 type="button"
@@ -747,7 +1052,7 @@ export default function DashboardClient({
                     : "text-gray-400 hover:text-white",
                 ].join(" ")}
               >
-                Public clusters
+                Public gardens
               </button>
             </div>
 
@@ -770,8 +1075,8 @@ export default function DashboardClient({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={
                   clusterView === "mine"
-                    ? "Search your clusters"
-                    : "Search public clusters"
+                    ? "Search your gardens"
+                    : "Search public gardens"
                 }
                 className="w-full rounded-lg border border-gray-800 bg-gray-900 px-9 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-gray-600"
               />
@@ -805,29 +1110,82 @@ export default function DashboardClient({
           <div className="flex flex-col items-center justify-center py-32 text-gray-600">
             <p className="text-lg">
               {searchQuery
-                ? "No matching clusters."
+                ? "No matching gardens."
                 : clusterView === "mine"
-                  ? "No clusters yet."
-                  : "No public clusters yet."}
+                  ? "No gardens yet."
+                  : "No public gardens yet."}
             </p>
             <p className="text-sm mt-1">
               {searchQuery
                 ? "Try a different search."
                 : clusterView === "mine"
                   ? "Create one to get started."
-                  : "Make one of your clusters public to share it here."}
+                  : "Make one of your gardens public to share it here."}
             </p>
           </div>
         ) : (
-          <div className="flex flex-wrap items-start gap-4">
-            {filteredClusters.map((cluster) => {
-              const isDeleting = deletingId === cluster.id;
-              const canManage = clusterView === "mine" && cluster.isOwner;
-              const descriptionText = cluster.description?.trim();
+          <>
+            {clusterView === "mine" && (
+              <div className="mb-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCreateClusterFolder}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.6}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
+                    />
+                  </svg>
+                  New cluster
+                </button>
+              </div>
+            )}
+            <div className="flex flex-col gap-2">
+              {clusterSections.map((section) => (
+                <div key={section.key} className="flex flex-col">
+                  {section.header &&
+                    renderFolderHeader(section.header.folder, section.header.key)}
+                  {section.cards.length > 0 && (
+                    <div
+                      className="mt-2 grid"
+                      style={{
+                        gridTemplateColumns: `repeat(auto-fill, ${CARD_GRID_UNIT}px)`,
+                        gridAutoRows: `${CARD_GRID_UNIT}px`,
+                        gridAutoFlow: "row dense",
+                        gap: `${CARD_GRID_GAP}px`,
+                      }}
+                    >
+                      {section.cards.map((cluster) => {
+                        const isDeleting = deletingId === cluster.id;
+                        const canManage =
+                          clusterView === "mine" && cluster.isOwner;
+                        const descriptionText = cluster.description?.trim();
+                        const cardDraggable =
+                          clusterView === "mine" && Boolean(cluster.isOwner);
 
-              return (
+                        return (
                 <div
                   key={cluster.id}
+                  draggable={cardDraggable}
+                  onDragStart={(e) => {
+                    if (!cardDraggable) return;
+                    e.dataTransfer.setData("text/plain", String(cluster.id));
+                    e.dataTransfer.effectAllowed = "move";
+                    setDraggingClusterId(cluster.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingClusterId(null);
+                    setDragOverFolderKey(null);
+                  }}
                   onClick={(e) => handleClusterBorderClick(e, cluster)}
                   className={[
                     "relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
@@ -837,9 +1195,8 @@ export default function DashboardClient({
                   ].join(" ")}
                   style={{
                     borderColor: cluster.border_color,
-                    width: `${cluster.card_width}px`,
-                    height: `${cluster.card_height}px`,
-                    maxWidth: "100%",
+                    gridColumn: `span ${cardGridSpan(cluster.card_width)}`,
+                    gridRow: `span ${cardGridSpan(cluster.card_height)}`,
                   }}
                   title={
                     canManage
@@ -945,8 +1302,8 @@ export default function DashboardClient({
                           type="button"
                           onClick={() => openEditModal(cluster)}
                           className="p-1 text-gray-500 hover:text-white transition-colors"
-                          title="Edit cluster"
-                          aria-label="Edit cluster"
+                          title="Edit garden"
+                          aria-label="Edit garden"
                         >
                           <svg
                             className="w-3.5 h-3.5"
@@ -976,7 +1333,7 @@ export default function DashboardClient({
                           onClick={() => setConfirmDeleteId(cluster.id)}
                           disabled={isDeleting || isPending}
                           className="p-1 text-gray-700 hover:text-red-500 transition-colors disabled:opacity-40"
-                          title="Delete cluster"
+                          title="Delete garden"
                         >
                           {isDeleting ? (
                             <Spinner className="w-3.5 h-3.5" />
@@ -1136,9 +1493,9 @@ export default function DashboardClient({
                       data-card-action="true"
                       href={
                         clusterView === "mine"
-                          ? `/clusters/${cluster.slug}`
+                          ? `/gardens/${cluster.slug}`
                           : cluster.chat_accessible
-                            ? `/clusters/${cluster.slug}`
+                            ? `/gardens/${cluster.slug}`
                             : `/garden/${cluster.slug}`
                       }
                       className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
@@ -1155,7 +1512,7 @@ export default function DashboardClient({
                         data-card-action="true"
                         role="separator"
                         aria-orientation="vertical"
-                        aria-label="Resize cluster width"
+                        aria-label="Resize garden width"
                         onPointerDown={(e) =>
                           handleClusterResizePointerDown(e, cluster, "right")
                         }
@@ -1165,7 +1522,7 @@ export default function DashboardClient({
                         data-card-action="true"
                         role="separator"
                         aria-orientation="horizontal"
-                        aria-label="Resize cluster height"
+                        aria-label="Resize garden height"
                         onPointerDown={(e) =>
                           handleClusterResizePointerDown(e, cluster, "bottom")
                         }
@@ -1174,7 +1531,7 @@ export default function DashboardClient({
                       <div
                         data-card-action="true"
                         role="button"
-                        aria-label="Resize cluster"
+                        aria-label="Resize garden"
                         onPointerDown={(e) =>
                           handleClusterResizePointerDown(e, cluster, "corner")
                         }
@@ -1186,9 +1543,14 @@ export default function DashboardClient({
                     </>
                   )}
                 </div>
-              );
-            })}
-          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
@@ -1200,7 +1562,7 @@ export default function DashboardClient({
           }}
         >
           <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold mb-5">New cluster</h2>
+            <h2 className="text-lg font-semibold mb-5">New garden</h2>
             <form onSubmit={handleCreate} className="space-y-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">
@@ -1224,7 +1586,7 @@ export default function DashboardClient({
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   rows={3}
-                  placeholder="What's this cluster about?"
+                  placeholder="What's this garden about?"
                   className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors resize-none"
                 />
               </div>
@@ -1259,7 +1621,7 @@ export default function DashboardClient({
           }}
         >
           <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold mb-5">Edit cluster</h2>
+            <h2 className="text-lg font-semibold mb-5">Edit garden</h2>
             <form onSubmit={handleUpdateCluster} className="space-y-4">
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">
@@ -1282,7 +1644,7 @@ export default function DashboardClient({
                   value={editDescription}
                   onChange={(e) => setEditDescription(e.target.value)}
                   rows={4}
-                  placeholder="What's this cluster about?"
+                  placeholder="What's this garden about?"
                   className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors resize-none"
                 />
               </div>
@@ -1379,80 +1741,79 @@ export default function DashboardClient({
                     {uploadFiles.map((f, i) => {
                       const key = fileKey(f);
                       const status = uploadStatuses[key];
+                      const error = uploadErrors[key];
                       return (
                         <div
                           key={key}
-                          className="flex items-center gap-2 px-3 py-2 bg-gray-800/50 rounded-lg"
+                          className="rounded-lg bg-gray-800/50 px-3 py-2"
                         >
-                          <svg
-                            className="w-4 h-4 text-gray-500 shrink-0"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                            />
-                          </svg>
-                          <span className="flex-1 text-xs text-gray-300 truncate">
-                            {f.name}
-                          </span>
-                          {status === "uploading" && (
-                            <Spinner className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                          )}
-                          {status === "done" && (
+                          <div className="flex items-center gap-2">
                             <svg
-                              className="w-3.5 h-3.5 text-green-400 shrink-0"
+                              className="w-4 h-4 text-gray-500 shrink-0"
                               fill="none"
                               viewBox="0 0 24 24"
                               stroke="currentColor"
-                              strokeWidth={2.5}
+                              strokeWidth={1.5}
                             >
                               <path
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
-                                d="m4.5 12.75 6 6 9-13.5"
+                                d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
                               />
                             </svg>
-                          )}
-                          {status === "error" && (
-                            <svg
-                              className="w-3.5 h-3.5 text-red-400 shrink-0"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M6 18 18 6M6 6l12 12"
-                              />
-                            </svg>
-                          )}
-                          {!isUploading && (
-                            <button
-                              type="button"
-                              onClick={() => removeUploadFile(i)}
-                              className="p-0.5 text-gray-600 hover:text-white transition-colors shrink-0"
-                            >
+                            <span className="flex-1 text-xs text-gray-300 truncate">
+                              {f.name}
+                            </span>
+                            {status === "uploading" && (
+                              <Spinner className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                            )}
+                            {status === "done" && (
                               <svg
-                                className="w-3.5 h-3.5"
+                                className="w-3.5 h-3.5 text-green-400 shrink-0"
                                 fill="none"
                                 viewBox="0 0 24 24"
                                 stroke="currentColor"
-                                strokeWidth={2}
+                                strokeWidth={2.5}
                               >
                                 <path
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
-                                  d="M6 18 18 6M6 6l12 12"
+                                  d="m4.5 12.75 6 6 9-13.5"
                                 />
                               </svg>
-                            </button>
+                            )}
+                            {status === "error" && (
+                              <span className="shrink-0 text-[11px] font-medium text-red-300">
+                                Failed
+                              </span>
+                            )}
+                            {!isUploading && (
+                              <button
+                                type="button"
+                                onClick={() => removeUploadFile(i)}
+                                className="p-0.5 text-gray-600 hover:text-white transition-colors shrink-0"
+                                aria-label={`Remove ${f.name}`}
+                              >
+                                <svg
+                                  className="w-3.5 h-3.5"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="M6 18 18 6M6 6l12 12"
+                                  />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                          {status === "error" && error && (
+                            <p className="mt-1.5 pl-6 text-[11px] leading-4 text-red-300">
+                              {error}
+                            </p>
                           )}
                         </div>
                       );
@@ -1599,7 +1960,9 @@ export default function DashboardClient({
         </div>
       )}
 
-      <Toaster toasts={toasts} />
+      <Toaster toasts={toasts} onDismiss={dismissToast} />
+
+      <KnowledgeTerminal />
     </div>
   );
 }

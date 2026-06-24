@@ -25,6 +25,7 @@ type PromiseConstructorWithResolvers = PromiseConstructor & {
 };
 type PdfViewerMode = "select" | "highlight" | "text" | "draw";
 type SaveState = "saved" | "dirty" | "saving" | "error";
+type PdfOutlineItem = Awaited<ReturnType<PDFDocumentProxy["getOutline"]>>[number];
 
 type EventBusLike = {
   on(eventName: string, listener: (event: Record<string, unknown>) => void): void;
@@ -32,6 +33,7 @@ type EventBusLike = {
 };
 
 type LinkServiceLike = {
+  goToDestination(dest: string | unknown[]): Promise<void>;
   setDocument(pdfDocument: PDFDocumentProxy | null, baseUrl?: string | null): void;
   setViewer(viewer: PdfViewerLike): void;
 };
@@ -87,6 +89,7 @@ interface Props {
   clusterSlug: string;
   documentSlug: string;
   title: string;
+  browserTitle?: string;
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
@@ -154,7 +157,97 @@ function downloadBytes(bytes: Uint8Array, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Props) {
+function fileNameFromTitle(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .trim()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug || "document"}-annotated.pdf`;
+}
+
+function outlineItemKey(item: PdfOutlineItem, indexPath: number[]) {
+  return `${indexPath.join("-")}-${item.title}`;
+}
+
+// Keys of every outline entry that has children, so they can start collapsed.
+function collectCollapsibleKeys(
+  items: PdfOutlineItem[],
+  indexPath: number[] = [],
+): string[] {
+  const keys: string[] = [];
+  items.forEach((item, index) => {
+    const path = [...indexPath, index];
+    if (item.items.length > 0) {
+      keys.push(outlineItemKey(item, path));
+      keys.push(...collectCollapsibleKeys(item.items, path));
+    }
+  });
+  return keys;
+}
+
+function OutlineItem({
+  item,
+  indexPath,
+  collapsedKeys,
+  onToggle,
+  onNavigate,
+}: {
+  item: PdfOutlineItem;
+  indexPath: number[];
+  collapsedKeys: Set<string>;
+  onToggle: (key: string) => void;
+  onNavigate: (item: PdfOutlineItem) => void;
+}) {
+  const key = outlineItemKey(item, indexPath);
+  const hasChildren = item.items.length > 0;
+  const isCollapsed = collapsedKeys.has(key);
+
+  return (
+    <li>
+      <div
+        className="flex min-w-0 items-center gap-1"
+        style={{ paddingLeft: `${Math.max(0, indexPath.length - 1) * 12}px` }}
+      >
+        <button
+          type="button"
+          onClick={() => onToggle(key)}
+          disabled={!hasChildren}
+          aria-label={isCollapsed ? "Expand outline section" : "Collapse outline section"}
+          className="flex h-5 w-4 shrink-0 items-center justify-center text-[10px] text-gray-300 transition-colors hover:text-white disabled:cursor-default disabled:text-transparent"
+        >
+          {isCollapsed ? ">" : "v"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onNavigate(item)}
+          disabled={!item.dest}
+          className="min-w-0 flex-1 truncate rounded px-1 py-0.5 text-left text-xs leading-5 text-gray-200 transition-colors hover:bg-gray-700 hover:text-white disabled:cursor-default disabled:text-gray-500 disabled:hover:bg-transparent"
+          title={item.title}
+        >
+          {item.title}
+        </button>
+      </div>
+      {hasChildren && !isCollapsed && (
+        <ul>
+          {item.items.map((child, childIndex) => (
+            <OutlineItem
+              key={outlineItemKey(child, [...indexPath, childIndex])}
+              item={child}
+              indexPath={[...indexPath, childIndex]}
+              collapsedKeys={collapsedKeys}
+              onToggle={onToggle}
+              onNavigate={onNavigate}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+export default function PdfViewerClient({ clusterSlug, documentSlug, title, browserTitle }: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -170,10 +263,15 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
   const saveEditedPdfRef = useRef<() => Promise<boolean>>(async () => true);
   const hasInMemoryUndoRef = useRef(false);
   const serverUndoRef = useRef<() => Promise<void>>(async () => {});
+  const restoredPageRef = useRef(false);
   const [pageCount, setPageCount] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [scaleLabel, setScaleLabel] = useState("100%");
   const [loading, setLoading] = useState(true);
+  const [outlineOpen, setOutlineOpen] = useState(true);
+  const [outlineLoading, setOutlineLoading] = useState(false);
+  const [outline, setOutline] = useState<PdfOutlineItem[]>([]);
+  const [collapsedOutlineKeys, setCollapsedOutlineKeys] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<PdfViewerMode>("select");
@@ -181,6 +279,10 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [lastSavedAt, setLastSavedAt] = useState("");
   const [serverHistoryCount, setServerHistoryCount] = useState(0);
+  const [documentTitle, setDocumentTitle] = useState(title);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(title);
+  const [savingTitle, setSavingTitle] = useState(false);
 
   const pdfUrl = useMemo(() => {
     const params = new URLSearchParams({ clusterSlug });
@@ -193,9 +295,48 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
   }, [clusterSlug, documentSlug]);
 
   const editedFileName = useMemo(
-    () => `${documentSlug || "document"}-annotated.pdf`,
-    [documentSlug],
+    () => fileNameFromTitle(documentTitle || documentSlug),
+    [documentSlug, documentTitle],
   );
+
+  // Remember the last viewed page per document so it reopens where you left off.
+  const pageStorageKey = useMemo(
+    () => `sb:pdf-last-page:${clusterSlug}:${documentSlug}`,
+    [clusterSlug, documentSlug],
+  );
+  const readSavedPage = useCallback((): number | null => {
+    try {
+      const raw = Number(localStorage.getItem(pageStorageKey));
+      return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : null;
+    } catch {
+      return null;
+    }
+  }, [pageStorageKey]);
+  const writeSavedPage = useCallback(
+    (page: number) => {
+      try {
+        if (Number.isFinite(page) && page >= 1) {
+          localStorage.setItem(pageStorageKey, String(Math.floor(page)));
+        }
+      } catch {
+        // Ignore storage failures (private mode, quota, etc.).
+      }
+    },
+    [pageStorageKey],
+  );
+
+  useEffect(() => {
+    setDocumentTitle(title);
+    setDraftTitle(title);
+  }, [title]);
+
+  useEffect(() => {
+    const nextTitle = browserTitle?.trim() || documentTitle || title || "PDF editor";
+    document.title = nextTitle;
+    return () => {
+      document.title = "breadboard";
+    };
+  }, [browserTitle, documentTitle, title]);
 
   const clearScheduledSave = useCallback(() => {
     if (!saveTimeoutRef.current) return;
@@ -292,6 +433,22 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
     [scheduleAutoSave],
   );
 
+  const loadOutline = useCallback(async (pdfDocument: PDFDocumentProxy) => {
+    setOutlineLoading(true);
+    setCollapsedOutlineKeys(new Set());
+    try {
+      const nextOutline = await pdfDocument.getOutline();
+      const items = nextOutline ?? [];
+      setOutline(items);
+      // Start with every section collapsed so only top-level entries show.
+      setCollapsedOutlineKeys(new Set(collectCollapsibleKeys(items)));
+    } catch {
+      setOutline([]);
+    } finally {
+      setOutlineLoading(false);
+    }
+  }, []);
+
   const reloadFromBytes = useCallback(
     async (bytes: Uint8Array) => {
       const pdfjs = pdfjsRef.current;
@@ -320,14 +477,17 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
         wireDocument(newDoc);
         linkService.setDocument(newDoc, null);
         findController.setDocument(newDoc);
+        restoredPageRef.current = false;
         pdfViewer.setDocument(newDoc);
         setPageCount(newDoc.numPages);
-        setPageNumber(1);
+        const reloadPage = readSavedPage();
+        setPageNumber(reloadPage && reloadPage <= newDoc.numPages ? reloadPage : 1);
+        await loadOutline(newDoc);
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "Could not reload PDF.");
       }
     },
-    [clearScheduledSave, wireDocument],
+    [clearScheduledSave, loadOutline, readSavedPage, wireDocument],
   );
 
   const serverUndo = useCallback(async () => {
@@ -362,6 +522,68 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
     return lastSavedAt ? `Saved ${lastSavedAt}` : "Saved";
   }, [lastSavedAt, saveState]);
 
+  const startRenameTitle = useCallback(() => {
+    setDraftTitle(documentTitle);
+    setEditingTitle(true);
+  }, [documentTitle]);
+
+  const cancelRenameTitle = useCallback(() => {
+    setDraftTitle(documentTitle);
+    setEditingTitle(false);
+  }, [documentTitle]);
+
+  const saveDocumentTitle = useCallback(async () => {
+    const nextTitle = draftTitle.trim().replace(/\s+/g, " ");
+    if (!nextTitle) {
+      setError("PDF name cannot be empty.");
+      return;
+    }
+    if (nextTitle === documentTitle) {
+      setEditingTitle(false);
+      return;
+    }
+
+    setSavingTitle(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ clusterSlug });
+      const response = await fetch(
+        `/api/documents/${encodeURIComponent(documentSlug)}?${params.toString()}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: nextTitle }),
+        },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.success) {
+        throw new Error(
+          typeof body.error === "string" ? body.error : "Could not rename PDF.",
+        );
+      }
+      setDocumentTitle(
+        typeof body.title === "string" && body.title.trim()
+          ? body.title
+          : nextTitle,
+      );
+      setDraftTitle(
+        typeof body.title === "string" && body.title.trim()
+          ? body.title
+          : nextTitle,
+      );
+      setEditingTitle(false);
+      router.refresh();
+    } catch (renameError) {
+      setError(
+        renameError instanceof Error
+          ? renameError.message
+          : "Could not rename PDF.",
+      );
+    } finally {
+      setSavingTitle(false);
+    }
+  }, [clusterSlug, documentSlug, documentTitle, draftTitle, router]);
+
   useEffect(() => {
     const hasPendingSave = saveState === "dirty" || saveState === "saving";
     if (!hasPendingSave) return;
@@ -389,9 +611,12 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
     setError("");
     setPageCount(0);
     setPageNumber(1);
+    setOutline([]);
+    setCollapsedOutlineKeys(new Set());
     setMode("select");
     setSaveState("saved");
     setLastSavedAt("");
+    restoredPageRef.current = false;
     clearScheduledSave();
 
     async function loadPdf() {
@@ -446,9 +671,26 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
           const count = Number(event.pagesCount);
           if (Number.isFinite(count)) setPageCount(count);
         });
+        eventBus.on("pagesinit", () => {
+          const viewer = pdfViewerRef.current;
+          restoredPageRef.current = true;
+          if (!viewer) return;
+          const total = viewer.pagesCount || 0;
+          const saved = readSavedPage();
+          if (saved && total > 0 && saved <= total) {
+            try {
+              viewer.currentPageNumber = saved;
+            } catch {
+              // Page views may not be laid out yet; pdf.js clamps the value.
+            }
+            setPageNumber(saved);
+          }
+        });
         eventBus.on("pagechanging", (event) => {
           const nextPage = Number(event.pageNumber);
-          if (Number.isFinite(nextPage)) setPageNumber(nextPage);
+          if (!Number.isFinite(nextPage)) return;
+          setPageNumber(nextPage);
+          if (restoredPageRef.current) writeSavedPage(nextPage);
         });
         eventBus.on("scalechanging", (event) => {
           const scale = Number(event.scale);
@@ -495,7 +737,11 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
         pdfViewer.setDocument(pdfDocument);
         pdfViewer.currentScaleValue = "page-width";
         setPageCount(pdfDocument.numPages);
-        setPageNumber(1);
+        const initialPage = readSavedPage();
+        setPageNumber(
+          initialPage && initialPage <= pdfDocument.numPages ? initialPage : 1,
+        );
+        await loadOutline(pdfDocument);
 
         // Fetch server history count so Ctrl+Z can fall back to it
         const histResp = await fetch(historyUrl).catch(() => null);
@@ -556,7 +802,16 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
       void pdfDocument?.destroy();
       if (workerBlobUrl) URL.revokeObjectURL(workerBlobUrl);
     };
-  }, [clearScheduledSave, historyUrl, pdfUrl, scheduleAutoSave, wireDocument]);
+  }, [
+    clearScheduledSave,
+    historyUrl,
+    loadOutline,
+    pdfUrl,
+    readSavedPage,
+    scheduleAutoSave,
+    wireDocument,
+    writeSavedPage,
+  ]);
 
   const goBack = useCallback(async () => {
     if (saveState === "saving") {
@@ -569,11 +824,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
       if (!saved) return;
     }
 
-    if (window.history.length > 1) {
-      router.back();
-      return;
-    }
-    router.push(`/clusters/${clusterSlug}`);
+    router.push(`/gardens/${clusterSlug}`);
   }, [clusterSlug, router, saveEditedPdfToServer, saveState]);
 
   const goToPreviousPage = useCallback(() => {
@@ -610,6 +861,24 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
     setMode(nextMode);
   }, []);
 
+  const toggleOutlineItem = useCallback((key: string) => {
+    setCollapsedOutlineKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
+  const goToOutlineItem = useCallback((item: PdfOutlineItem) => {
+    const destination = item.dest;
+    if (!destination) return;
+    void linkServiceRef.current?.goToDestination(destination);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const eventBus = eventBusRef.current;
@@ -638,11 +907,11 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
   }, []);
 
   const runFind = useCallback(
-    (type: "again" | "" = "") => {
+    (type: "again" | "" = "", findPrevious = false) => {
       eventBusRef.current?.dispatch("find", {
         caseSensitive: false,
         entireWord: false,
-        findPrevious: false,
+        findPrevious,
         highlightAll: true,
         matchDiacritics: true,
         query,
@@ -709,7 +978,103 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
             <p className="text-[10px] uppercase tracking-wider text-gray-600">
               PDF source
             </p>
-            <h1 className="truncate text-sm font-semibold text-white">{title}</h1>
+            {editingTitle ? (
+              <form
+                className="flex min-w-0 items-center gap-1.5"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveDocumentTitle();
+                }}
+              >
+                <input
+                  value={draftTitle}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      cancelRenameTitle();
+                    }
+                  }}
+                  autoFocus
+                  disabled={savingTitle}
+                  className="h-8 min-w-0 max-w-sm rounded-md border border-gray-700 bg-gray-900 px-2 text-sm font-semibold text-white outline-none transition-colors focus:border-gray-500 disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={savingTitle}
+                  className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Save PDF name"
+                  aria-label="Save PDF name"
+                >
+                  {savingTitle ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : (
+                    <svg
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="m4.5 12.75 6 6 9-13.5"
+                      />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelRenameTitle}
+                  disabled={savingTitle}
+                  className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Cancel rename"
+                  aria-label="Cancel rename"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M6 18 18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </form>
+            ) : (
+              <div className="flex min-w-0 items-center gap-1.5">
+                <h1 className="truncate text-sm font-semibold text-white">
+                  {documentTitle}
+                </h1>
+                <button
+                  type="button"
+                  onClick={startRenameTitle}
+                  className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-900 hover:text-white"
+                  title="Rename PDF"
+                  aria-label="Rename PDF"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+                    />
+                  </svg>
+                </button>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -789,6 +1154,21 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => setOutlineOpen((open) => !open)}
+            disabled={loading}
+            className={`rounded-md border px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              outlineOpen
+                ? "border-gray-600 bg-gray-800 text-white"
+                : "border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-500 hover:text-white"
+            }`}
+            aria-pressed={outlineOpen}
+            aria-expanded={outlineOpen}
+            aria-controls="pdf-document-outline"
+          >
+            Outline
+          </button>
+          <button
+            type="button"
             onClick={goToPreviousPage}
             disabled={loading || pageNumber <= 1}
             className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
@@ -849,7 +1229,15 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
           </button>
           <button
             type="button"
-            onClick={() => runFind("again")}
+            onClick={() => runFind("again", true)}
+            disabled={loading || !query.trim()}
+            className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous match
+          </button>
+          <button
+            type="button"
+            onClick={() => runFind("again", false)}
             disabled={loading || !query.trim()}
             className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -871,31 +1259,34 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
           >
             {exporting ? "Preparing" : "Save PDF"}
           </button>
-          {(["select", "highlight", "text", "draw"] as const).map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => setEditorMode(item)}
-              disabled={loading}
-              className={`rounded-md border px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                mode === item
-                  ? "border-gray-300 bg-gray-100 text-gray-950"
-                  : "border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white"
-              }`}
-            >
-              {item === "select"
-                ? "Select"
-                : item === "highlight"
-                  ? "Highlight"
-                  : item === "text"
-                    ? "Text"
-                    : "Draw"}
-            </button>
-          ))}
+          <div className="flex rounded-md border border-gray-800 bg-gray-950 p-0.5">
+            {(["select", "highlight", "text", "draw"] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setEditorMode(item)}
+                disabled={loading}
+                aria-pressed={mode === item}
+                className={`rounded px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  mode === item
+                    ? "bg-gray-800 text-white shadow-sm"
+                    : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
+                }`}
+              >
+                {item === "select"
+                  ? "Select"
+                  : item === "highlight"
+                    ? "Highlight"
+                    : item === "text"
+                      ? "Text"
+                      : "Draw"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <section className="relative min-h-0 flex-1 bg-gray-900">
+      <section className="relative flex min-h-0 flex-1 bg-gray-900">
         {loading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-900 text-gray-500">
             <span className="flex items-center gap-2 text-sm">
@@ -909,12 +1300,74 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title }: Pr
             {error}
           </div>
         )}
-        <div
-          id="viewerContainer"
-          ref={containerRef}
-          className="absolute inset-0 overflow-auto bg-gray-900 [--page-border:1px_solid_#393639] [--page-margin:12px_auto_4px] [--pdfViewer-padding-bottom:24px]"
+        {outlineOpen && (
+        <aside
+          id="pdf-document-outline"
+          className="hidden w-64 shrink-0 border-r border-gray-800 bg-[#3f3e4d] text-gray-100 shadow-inner md:flex md:min-h-0 md:flex-col"
         >
-          <div ref={viewerRef} className="pdfViewer" />
+          <div className="flex h-11 shrink-0 items-center gap-2 border-b border-gray-700/60 px-4">
+            <svg
+              className="h-4 w-4 text-gray-200"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M4 4h4v4H4V4Zm8 0h4v4h-4V4ZM4 12h4v4H4v-4Zm8 0h4v4h-4v-4Z" />
+            </svg>
+            <span className="truncate text-sm font-medium">Document outline</span>
+            <button
+              type="button"
+              onClick={() => setOutlineOpen(false)}
+              className="ml-auto flex h-7 w-7 items-center justify-center rounded text-gray-300 transition-colors hover:bg-gray-700 hover:text-white"
+              aria-label="Close document outline"
+              title="Close document outline"
+            >
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto overscroll-contain px-2 py-3">
+            {outlineLoading ? (
+              <div className="flex items-center gap-2 px-2 text-xs text-gray-300">
+                <Spinner className="h-3.5 w-3.5" />
+                Loading outline
+              </div>
+            ) : outline.length > 0 ? (
+              <ul className="space-y-0.5">
+                {outline.map((item, index) => (
+                  <OutlineItem
+                    key={outlineItemKey(item, [index])}
+                    item={item}
+                    indexPath={[index]}
+                    collapsedKeys={collapsedOutlineKeys}
+                    onToggle={toggleOutlineItem}
+                    onNavigate={goToOutlineItem}
+                  />
+                ))}
+              </ul>
+            ) : (
+              <p className="px-2 text-xs leading-5 text-gray-300">
+                No document outline was found for this PDF.
+              </p>
+            )}
+          </div>
+        </aside>
+        )}
+        <div className="relative min-w-0 flex-1">
+          <div
+            id="viewerContainer"
+            ref={containerRef}
+            className="absolute inset-0 overflow-auto bg-gray-900 [--page-border:1px_solid_#393639] [--page-margin:12px_auto_4px] [--pdfViewer-padding-bottom:24px]"
+          >
+            <div ref={viewerRef} className="pdfViewer" />
+          </div>
         </div>
       </section>
     </main>

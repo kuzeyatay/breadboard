@@ -3,7 +3,7 @@ import path from "path";
 import OpenAI from "openai";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 
-export const DEFAULT_MODEL = "gpt-5.4";
+export const DEFAULT_MODEL = "gpt-5.5";
 
 export interface DocumentPage {
   label: string;
@@ -70,6 +70,8 @@ export interface KnowledgeNode {
   id: string;
   slug: string;
   fileName: string;
+  folder: string;
+  relPath: string;
   title: string;
   type: string;
   sourceType: string;
@@ -268,31 +270,66 @@ const GENERIC_TAGS = new Set([
 
 const TAG_STOP_WORDS = new Set([
   ...STOP_WORDS,
+  "all",
   "also",
+  "any",
+  "are",
   "based",
   "because",
   "before",
   "being",
+  "can",
+  "could",
   "does",
   "during",
   "each",
+  "had",
+  "has",
   "have",
+  "how",
+  "its",
   "into",
+  "let",
+  "may",
+  "might",
+  "must",
+  "not",
+  "now",
   "only",
+  "our",
+  "out",
   "over",
+  "own",
+  "per",
   "same",
+  "set",
+  "shall",
+  "should",
+  "since",
+  "some",
   "such",
   "than",
   "their",
+  "them",
+  "then",
   "these",
   "those",
+  "thus",
+  "use",
+  "used",
+  "uses",
   "using",
+  "via",
+  "was",
+  "were",
+  "when",
   "where",
   "which",
   "while",
   "will",
   "within",
   "without",
+  "would",
 ]);
 
 function isUsefulTagSlug(tag: string): boolean {
@@ -677,13 +714,84 @@ function uniqueSlug(baseSlug: string, used: Set<string>): string {
   return candidate;
 }
 
+export interface ClusterMarkdownEntry {
+  /** Basename, e.g. "note.md". */
+  entry: string;
+  /** Absolute path on disk. */
+  filePath: string;
+  /** POSIX path relative to the cluster directory, e.g. "caches/note.md". */
+  relPath: string;
+  /** POSIX directory relative to the cluster directory, "" for the cluster root. */
+  folder: string;
+  stat: fs.Stats;
+}
+
+/**
+ * Recursively enumerate the markdown notes of a cluster, descending into
+ * sub-folders. Skips the `assets/` directory, dotfiles, and folder index files
+ * (`_index.md` / `index.md`). Note identity stays the basename, so filenames are
+ * expected to be unique within a cluster regardless of folder.
+ */
+export function walkClusterMarkdown(clusterDir: string): ClusterMarkdownEntry[] {
+  if (!fs.existsSync(clusterDir)) return [];
+
+  const results: ClusterMarkdownEntry[] = [];
+  const walk = (dir: string, relDir: string) => {
+    for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const name = dirent.name;
+      if (dirent.isDirectory()) {
+        if (name === "assets" || name.startsWith(".")) continue;
+        walk(path.join(dir, name), relDir ? `${relDir}/${name}` : name);
+        continue;
+      }
+      if (!dirent.isFile() || !name.endsWith(".md")) continue;
+      const lower = name.toLowerCase();
+      if (lower === "_index.md" || lower === "index.md") continue;
+
+      const filePath = path.join(dir, name);
+      results.push({
+        entry: name,
+        filePath,
+        relPath: relDir ? `${relDir}/${name}` : name,
+        folder: relDir,
+        stat: fs.statSync(filePath),
+      });
+    }
+  };
+
+  walk(clusterDir, "");
+  return results.sort((a, b) => a.relPath.localeCompare(b.relPath));
+}
+
+/**
+ * List every sub-folder of a cluster (POSIX paths relative to the cluster dir),
+ * including empty ones, so the dashboard tree can show folders that contain no
+ * notes yet. Skips `assets/` and dotfiles.
+ */
+export function listClusterFolders(clusterDir: string): string[] {
+  if (!fs.existsSync(clusterDir)) return [];
+
+  const folders: string[] = [];
+  const walk = (dir: string, relDir: string) => {
+    for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!dirent.isDirectory()) continue;
+      const name = dirent.name;
+      if (name === "assets" || name.startsWith(".")) continue;
+      const rel = relDir ? `${relDir}/${name}` : name;
+      folders.push(rel);
+      walk(path.join(dir, name), rel);
+    }
+  };
+
+  walk(clusterDir, "");
+  return folders.sort((a, b) => a.localeCompare(b));
+}
+
 function extractExistingSlugs(clusterDir: string): Set<string> {
-  if (!fs.existsSync(clusterDir)) return new Set();
   return new Set(
-    fs
-      .readdirSync(clusterDir)
-      .filter((entry) => entry.endsWith(".md"))
-      .map((entry) => entry.replace(/\.md$/, "")),
+    walkClusterMarkdown(clusterDir).map((item) =>
+      item.entry.replace(/\.md$/, ""),
+    ),
   );
 }
 
@@ -1416,22 +1524,24 @@ function overlapScore(a: Set<string>, b: Set<string>): number {
 function inferKnowledgeType(data: Frontmatter): string {
   const explicit = frontmatterString(data, "knowledge_type");
   if (explicit) return explicit;
-  if (frontmatterString(data, "source_document")) return "knowledge-topic";
   const tags = frontmatterArray(data, "tags");
-  if (tags.includes("generated")) return "generated-note";
   const source = frontmatterString(data, "source");
+  const generatedBy = frontmatterString(data, "generated_by");
+  if (
+    tags.includes("generated") ||
+    source === "generated-chat" ||
+    generatedBy === "chatmock"
+  ) {
+    return "generated-note";
+  }
+  if (frontmatterString(data, "source_document")) return "knowledge-topic";
   if (source && !tags.includes("generated")) return "source-document";
   return "note";
 }
 
 function readExistingTopicNotes(clusterDir: string): ExistingTopicNote[] {
-  if (!fs.existsSync(clusterDir)) return [];
-
-  return fs
-    .readdirSync(clusterDir)
-    .filter((entry) => entry.endsWith(".md") && entry !== "_index.md")
-    .map((entry) => {
-      const filePath = path.join(clusterDir, entry);
+  return walkClusterMarkdown(clusterDir)
+    .map(({ entry, filePath }) => {
       const content = fs.readFileSync(filePath, "utf-8");
       const { data, body } = parseMarkdownFile(content);
       const type = inferKnowledgeType(data);
@@ -1444,9 +1554,10 @@ function readExistingTopicNotes(clusterDir: string): ExistingTopicNote[] {
         return undefined;
       }
 
+      const slug = entry.replace(/\.md$/, "");
       return {
-        slug: entry.replace(/\.md$/, ""),
-        title: frontmatterString(data, "title") || entry.replace(/\.md$/, ""),
+        slug,
+        title: frontmatterString(data, "title") || slug,
         tags: normalizeTopicTags(frontmatterArray(data, "tags"), body, 8, body),
         body,
         content,
@@ -1633,41 +1744,93 @@ async function decideTopicWritePlans({
   }
 }
 
-function appendMergedTopicSection({
+async function harmonizeTopicNote({
+  client,
+  model,
   target,
   topic,
   sourceSlug,
   sourceTitle,
   sourceLabel,
   imagePages,
+  outputPlainText,
 }: {
+  client?: OpenAI;
+  model?: string;
   target: ExistingTopicNote;
   topic: ExtractedTopic;
   sourceSlug: string;
   sourceTitle: string;
   sourceLabel: string;
   imagePages: DocumentPage[];
-}): void {
-  const locations =
-    topic.locations.length > 0 ? topic.locations : ["Uploaded document"];
+  outputPlainText: string;
+}): Promise<void> {
   const sourceLink = wikilink(sourceSlug, sourceTitle);
-  const snapshots = formatSourceSnapshots(imagePages);
-
   if (target.content.includes(sourceLink)) return;
 
-  const section =
-    `\n\n## Added from ${sourceLink}\n\n` +
-    `Source label: ${sourceLabel}\n\n` +
-    `Locations: ${locations.join(", ")}\n\n` +
-    `${topic.explanation}\n\n` +
-    (snapshots ? `### Source snapshots\n\n${snapshots}\n\n` : "") +
-    `### New key points\n\n${formatBullets(topic.keyPoints)}\n`;
+  const locations = topic.locations.length > 0 ? topic.locations : ["Uploaded document"];
+  const snapshots = formatSourceSnapshots(imagePages);
 
-  fs.writeFileSync(
-    target.filePath,
-    `${target.content.trimEnd()}${section}`,
-    "utf-8",
+  const newContentParts = [
+    `Source: ${sourceLink}`,
+    `Locations: ${locations.join(", ")}`,
+    topic.explanation,
+    topic.keyPoints.length > 0 ? `Key points:\n${formatBullets(topic.keyPoints)}` : "",
+    topic.sourceEvidence.length > 0 ? `Source evidence:\n${formatBullets(topic.sourceEvidence)}` : "",
+    snapshots ? `Source snapshots:\n\n${snapshots}` : "",
+  ].filter(Boolean).join("\n\n");
+
+  let mergedBody = "";
+  if (client) {
+    try {
+      const response = await client.chat.completions.create({
+        model: model?.trim() || DEFAULT_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Merge two markdown notes on the same topic into one coherent note. " +
+              "Integrate the new content naturally into the existing structure, expanding or refining sections with new details. " +
+              "Eliminate redundancy while preserving unique facts from both. " +
+              "Keep a clean heading hierarchy with no duplicate headings. " +
+              "Return ONLY the merged markdown body — no frontmatter, no code fences.",
+          },
+          {
+            role: "user",
+            content: `### Existing note\n\n${target.body}\n\n### New content to integrate\n\n${newContentParts}`,
+          },
+        ],
+      });
+      mergedBody = response.choices[0]?.message?.content?.trim() ?? "";
+    } catch {
+      mergedBody = "";
+    }
+  }
+
+  if (!mergedBody) {
+    const section =
+      `\n\n## Added from ${sourceLink}\n\n` +
+      `Source label: ${sourceLabel}\n\n` +
+      `Locations: ${locations.join(", ")}\n\n` +
+      `${topic.explanation}\n\n` +
+      (snapshots ? `### Source snapshots\n\n${snapshots}\n\n` : "") +
+      `### New key points\n\n${formatBullets(topic.keyPoints)}\n`;
+    fs.writeFileSync(target.filePath, `${target.content.trimEnd()}${section}`, "utf-8");
+    return;
+  }
+
+  const { data } = parseMarkdownFile(target.content);
+  const newTags = normalizeTopicTags(
+    topic.tags,
+    [topic.title, topic.explanation].join("\n"),
+    8,
+    [topic.title, outputPlainText].join("\n"),
   );
+  const existingTags = frontmatterArray(data, "tags");
+  const mergedTags = [...new Set([...existingTags, ...newTags])].slice(0, 10);
+
+  const updatedFrontmatter = frontmatter({ ...data, date: new Date().toISOString(), tags: mergedTags });
+  fs.writeFileSync(target.filePath, `${updatedFrontmatter}${mergedBody}\n`, "utf-8");
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -1852,13 +2015,16 @@ export async function writeDocumentKnowledge({
     );
 
     if (plan.action === "merged" && plan.target) {
-      appendMergedTopicSection({
+      await harmonizeTopicNote({
+        client,
+        model,
         target: plan.target,
         topic,
         sourceSlug,
         sourceTitle: extraction.documentTitle || sourceTitle,
         sourceLabel,
         imagePages,
+        outputPlainText,
       });
       continue;
     }
@@ -2012,21 +2178,13 @@ export function scanClusterKnowledge(
     };
   }
 
-  const markdownEntries = fs
-    .readdirSync(clusterDir)
-    .filter((entry) => entry.endsWith(".md") && entry !== "_index.md")
-    .map((entry) => {
-      const filePath = path.join(clusterDir, entry);
-      const stat = fs.statSync(filePath);
-      return { entry, filePath, stat };
-    })
-    .sort((a, b) => a.entry.localeCompare(b.entry));
+  const markdownEntries = walkClusterMarkdown(clusterDir);
 
   const cacheKey = path.resolve(clusterDir);
   const signature = markdownEntries
     .map(
-      ({ entry, stat }) =>
-        `${entry}:${stat.size}:${Math.trunc(stat.mtimeMs)}`,
+      ({ relPath, stat }) =>
+        `${relPath}:${stat.size}:${Math.trunc(stat.mtimeMs)}`,
     )
     .join("|");
   const cached = clusterKnowledgeCache.get(cacheKey);
@@ -2034,7 +2192,7 @@ export function scanClusterKnowledge(
     return cached.knowledge;
   }
 
-  for (const { entry, filePath, stat } of markdownEntries) {
+  for (const { entry, filePath, folder, relPath, stat } of markdownEntries) {
     const modifiedAt = stat.mtime.toISOString();
     const content = fs.readFileSync(filePath, "utf-8");
     const { data, body } = parseMarkdownFile(content);
@@ -2061,6 +2219,8 @@ export function scanClusterKnowledge(
       id: slug,
       slug,
       fileName: entry,
+      folder,
+      relPath,
       title,
       type,
       sourceType,

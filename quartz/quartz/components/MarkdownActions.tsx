@@ -239,6 +239,18 @@ MarkdownActions.css = `
 `
 
 MarkdownActions.afterDOMLoaded = `
+// Persist the open editor + draft so it survives the live-reload triggered by
+// saving an image asset, and is restored when you return to the same note.
+var SB_EDITOR_DRAFT_KEY = "second-brain:md-editor-draft"
+function sbReadEditorDraft() {
+  try { return JSON.parse(sessionStorage.getItem(SB_EDITOR_DRAFT_KEY) || "null") } catch (e) { return null }
+}
+function sbWriteEditorDraft(draftSlug, content) {
+  try { sessionStorage.setItem(SB_EDITOR_DRAFT_KEY, JSON.stringify({ slug: draftSlug, content: content })) } catch (e) {}
+}
+function sbClearEditorDraft() {
+  try { sessionStorage.removeItem(SB_EDITOR_DRAFT_KEY) } catch (e) {}
+}
 document.addEventListener("nav", () => {
   for (const actions of document.querySelectorAll(".markdown-actions")) {
     if (actions.dataset.bound === "true") continue
@@ -265,6 +277,14 @@ document.addEventListener("nav", () => {
         return trimmed
       }
       try {
+        if (trimmed) {
+          const fallbackUrl = new URL(trimmed)
+          if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(fallbackUrl.hostname)) {
+            return fallbackUrl.protocol + "//" + fallbackUrl.hostname + ":3000"
+          }
+        }
+      } catch {}
+      try {
         if (document.referrer) {
           const ref = new URL(document.referrer)
           if (!/^garden\\./i.test(ref.hostname)) {
@@ -276,6 +296,9 @@ document.addEventListener("nav", () => {
         const current = new URL(window.location.href)
         if (/^garden\\./i.test(current.hostname)) {
           return current.origin.replace("//garden.", "//")
+        }
+        if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(current.hostname) || current.port === "8081") {
+          return current.protocol + "//" + current.hostname + ":3000"
         }
         return current.origin.replace(/\\/+$/, "")
       } catch {}
@@ -328,10 +351,27 @@ document.addEventListener("nav", () => {
       textarea.value = content || ""
       modal.hidden = false
       textarea.focus()
+      sbWriteEditorDraft(slug, textarea.value)
     }
 
     const hideModal = () => {
       if (modal) modal.hidden = true
+    }
+    const closeEditor = () => {
+      sbClearEditorDraft()
+      hideModal()
+    }
+
+    // Track edits so a live-reload or navigation never loses in-progress work.
+    if (textarea) {
+      textarea.addEventListener("input", () => sbWriteEditorDraft(slug, textarea.value))
+    }
+
+    // Reopen the editor with the saved draft after a reload / when returning here.
+    const restoredDraft = sbReadEditorDraft()
+    if (restoredDraft && restoredDraft.slug === slug && modal && textarea) {
+      textarea.value = restoredDraft.content
+      modal.hidden = false
     }
 
     edit?.addEventListener("click", () => {
@@ -382,46 +422,41 @@ document.addEventListener("nav", () => {
       imageInput?.click()
     })
 
-    imageInput?.addEventListener("change", () => {
-      const files = Array.from(imageInput.files || [])
-      imageInput.value = ""
-      if (files.length === 0) return
+    const allowedImageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"]
+    const readImage = (file) =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.addEventListener("load", () => {
+          if (typeof reader.result === "string") {
+            resolve({
+              fileName: file.name,
+              mimeType: file.type,
+              dataUrl: reader.result,
+            })
+          } else {
+            reject(new Error("Could not read image"))
+          }
+        })
+        reader.addEventListener("error", () => reject(new Error("Could not read image")))
+        reader.readAsDataURL(file)
+      })
 
+    const uploadImages = (files) => {
+      if (!files || files.length === 0) return
       if (files.length > 20) {
         setStatus("Add 20 images or fewer")
         return
       }
-
-      const allowedTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"]
-      const invalid = files.find((file) => !allowedTypes.includes(file.type))
+      const invalid = files.find((file) => !allowedImageTypes.includes(file.type))
       if (invalid) {
         setStatus("Use PNG, JPEG, WEBP, or GIF")
         return
       }
-
       const tooLarge = files.find((file) => file.size > 10 * 1024 * 1024)
       if (tooLarge) {
         setStatus("Each image must be 10 MB or smaller")
         return
       }
-
-      const readImage = (file) =>
-        new Promise((resolve, reject) => {
-          const reader = new FileReader()
-          reader.addEventListener("load", () => {
-            if (typeof reader.result === "string") {
-              resolve({
-                fileName: file.name,
-                mimeType: file.type,
-                dataUrl: reader.result,
-              })
-            } else {
-              reject(new Error("Could not read image"))
-            }
-          })
-          reader.addEventListener("error", () => reject(new Error("Could not read image")))
-          reader.readAsDataURL(file)
-        })
 
       setStatus(files.length === 1 ? "Adding image..." : "Adding images...")
       if (addImage) addImage.disabled = true
@@ -437,12 +472,44 @@ document.addEventListener("nav", () => {
           setStatus("Could not read image")
           if (addImage) addImage.disabled = false
         })
+    }
+
+    imageInput?.addEventListener("change", () => {
+      const files = Array.from(imageInput.files || [])
+      imageInput.value = ""
+      uploadImages(files)
     })
 
-    close?.addEventListener("click", hideModal)
-    cancel?.addEventListener("click", hideModal)
+    // Paste a screenshot or copied image straight into the note (Ctrl/Cmd+V).
+    textarea?.addEventListener("paste", (event) => {
+      const items = Array.from((event.clipboardData && event.clipboardData.items) || [])
+      const imageItems = items.filter(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      )
+      if (imageItems.length === 0) return
+      event.preventDefault()
+      if (requireDashboardFrame()) return
+
+      const files = imageItems
+        .map((item, index) => {
+          const file = item.getAsFile()
+          if (!file) return null
+          if (file.name && file.name !== "image.png") return file
+          // Pasted screenshots usually have no useful name; give them a unique one.
+          const ext = (item.type.split("/")[1] || "png").replace("jpeg", "jpg")
+          const suffix = imageItems.length > 1 ? "-" + (index + 1) : ""
+          return new File([file], "pasted-" + Date.now() + suffix + "." + ext, {
+            type: item.type,
+          })
+        })
+        .filter(Boolean)
+      uploadImages(files)
+    })
+
+    close?.addEventListener("click", closeEditor)
+    cancel?.addEventListener("click", closeEditor)
     modal?.addEventListener("click", (event) => {
-      if (event.target === modal) hideModal()
+      if (event.target === modal) closeEditor()
     })
   }
 })
@@ -498,6 +565,7 @@ window.addEventListener("message", (event) => {
       if (textarea) textarea.value = data.content
       if (modal) modal.hidden = false
       textarea?.focus()
+      sbWriteEditorDraft(data.slug, data.content)
       setStatus("")
     } else {
       setStatus(data.error || "Could not open")
@@ -506,7 +574,10 @@ window.addEventListener("message", (event) => {
 
   if (data.type === "second-brain:markdown-save-result") {
     setStatus(data.ok ? "Saved" : data.error || "Could not save")
-    if (data.ok && modal) modal.hidden = true
+    if (data.ok) {
+      sbClearEditorDraft()
+      if (modal) modal.hidden = true
+    }
     window.setTimeout(() => { setStatus("") }, 1800)
   }
 
@@ -515,6 +586,7 @@ window.addEventListener("message", (event) => {
     if (data.ok && typeof data.markdown === "string" && data.markdown) {
       const snippetCount = typeof data.count === "number" ? data.count : 1
       insertSnippet(data.markdown)
+      if (textarea) sbWriteEditorDraft(data.slug, textarea.value)
       setStatus(snippetCount === 1 ? "Image inserted in editor. Click Save to publish." : "Images inserted in editor. Click Save to publish.")
     } else {
       setStatus(data.error || "Could not add image")

@@ -1,7 +1,9 @@
 'use client';
 
 import {
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -17,6 +19,16 @@ interface ChatMessage {
   thinking?: string;
 }
 
+interface ChatSession {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  isOwn?: boolean;
+  ownerUsername?: string;
+  messages: ChatMessage[];
+}
+
 interface GraphStats {
   documents: number;
   topics: number;
@@ -25,9 +37,26 @@ interface GraphStats {
   words: number;
 }
 
+interface SavedPrompt {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+  isDefault?: boolean;
+}
+
+interface ActiveMarkdown {
+  cluster: string;
+  slug: string;
+  title?: string;
+  content?: string;
+  loading?: boolean;
+}
+
 interface Props {
   activeClusterSlug: string | null;
   activeClusterName?: string;
+  activeMarkdown?: ActiveMarkdown | null;
   initialOpen?: boolean;
 }
 
@@ -40,12 +69,98 @@ const EMPTY_STATS: GraphStats = {
 };
 
 const SUGGESTED_PROMPTS = [
-  'What are the main topics in this cluster?',
+  'What are the main topics in this garden?',
   'Where is this concept discussed in the source pages?',
   'Summarize the source tree and how the topics connect.',
   'Which notes should I read first?',
 ];
+const PROMPTS_KEY = 'sb_prompts_v1';
+const DEFAULT_PROMPTS: SavedPrompt[] = [
+  {
+    id: 'dp-1',
+    title: 'Summarize all documents',
+    content:
+      'Summarize the key points from all documents in this garden into a concise, structured overview with clear headings.',
+    category: 'Summary',
+    isDefault: true,
+  },
+  {
+    id: 'dp-2',
+    title: 'Study guide',
+    content:
+      'Create a comprehensive study guide from my materials. Include key concepts, definitions, important facts, and any formulas or equations. Organize by topic.',
+    category: 'Study',
+    isDefault: true,
+  },
+  {
+    id: 'dp-3',
+    title: 'Quiz me',
+    content:
+      'Generate 8 quiz questions based on the content in this garden to test my understanding. Mix multiple choice and open questions. Include correct answers at the end.',
+    category: 'Study',
+    isDefault: true,
+  },
+  {
+    id: 'dp-4',
+    title: "Explain like I'm a beginner",
+    content:
+      'Explain the main concepts in this garden as if I have no prior background in the subject. Use simple language, analogies, and real-world examples.',
+    category: 'Study',
+    isDefault: true,
+  },
+  {
+    id: 'dp-5',
+    title: 'Find connections',
+    content:
+      'Identify and explain the key connections, relationships, and dependencies between the topics and documents in this garden. Show how ideas link together.',
+    category: 'Analysis',
+    isDefault: true,
+  },
+  {
+    id: 'dp-6',
+    title: 'Gaps and contradictions',
+    content:
+      'Analyze my documents and identify: (1) gaps in information where more research is needed, (2) any contradictions or conflicting information between sources, (3) assumptions that may be worth questioning.',
+    category: 'Analysis',
+    isDefault: true,
+  },
+  {
+    id: 'dp-7',
+    title: 'Extract key formulas and terms',
+    content:
+      'List all important formulas, equations, technical terms, and definitions from my documents. Format each with a brief explanation of what it means and when to use it.',
+    category: 'Analysis',
+    isDefault: true,
+  },
+  {
+    id: 'dp-8',
+    title: 'Essay outline',
+    content:
+      'Based on my documents, write a detailed outline for an academic essay or report covering the main topic. Include thesis, main arguments, supporting points, and a suggested conclusion.',
+    category: 'Writing',
+    isDefault: true,
+  },
+  {
+    id: 'dp-9',
+    title: 'Action items and tasks',
+    content:
+      'Extract all action items, tasks, to-dos, deadlines, and next steps mentioned anywhere in my documents. Present as a prioritized list.',
+    category: 'Summary',
+    isDefault: true,
+  },
+  {
+    id: 'dp-10',
+    title: 'Timeline of events',
+    content:
+      'Create a chronological timeline of all events, milestones, dates, or sequential steps mentioned in my materials. Include brief descriptions for each entry.',
+    category: 'Summary',
+    isDefault: true,
+  },
+];
+const PROMPT_CATEGORIES = ['All', 'Summary', 'Study', 'Analysis', 'Writing', 'Custom'];
 const PANEL_WIDTH_KEY = 'second-brain:garden-assistant-width';
+const QUARTZ_CHAT_HISTORY_KEY_PREFIX = 'second-brain:quartz-ai-history:';
+const MAX_QUARTZ_CHAT_SESSIONS = 30;
 const DEFAULT_PANEL_WIDTH = 420;
 const MIN_PANEL_WIDTH = 320;
 const MAX_PANEL_WIDTH = 680;
@@ -58,9 +173,99 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat('en').format(value);
 }
 
+function markdownFileLabel(markdown: ActiveMarkdown): string {
+  const label = markdown.title || markdown.slug;
+  const clean = label.split('/').filter(Boolean).at(-1) || label;
+  return /\.md$/i.test(clean) ? clean : `${clean}.md`;
+}
+
+function wantsOpenMarkdownEdit(text: string): boolean {
+  const normalized = text.toLowerCase();
+  const refersToOpenMarkdown =
+    /\b(this|current|open|opened|visible)\s+(markdown|md|note|file|document)\b/.test(normalized) ||
+    /\b(markdown|md|note|file|document)\s+(i\s+have\s+open|is\s+open|currently\s+open)\b/.test(normalized) ||
+    /\b(the|this)\s+(markdown|md|note|file|document)\b/.test(normalized) ||
+    /\b(markdown|md|note|file|document)\b/.test(normalized);
+  if (!refersToOpenMarkdown) return false;
+
+  return /\b(add|append|insert|change|update|edit|rewrite|revise|fix|repair|clean|format|reformat|correct|remove|delete|replace|overwrite|swap|use|apply|tag|tags|frontmatter|yaml|latex|math|equation|version)\b/.test(
+    normalized,
+  );
+}
+
+function chatTitleFromText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ').slice(0, 64) || 'New chat';
+}
+
+function formatChatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function loadPrompts(): SavedPrompt[] {
+  if (typeof window === 'undefined') return DEFAULT_PROMPTS;
+  try {
+    const raw = localStorage.getItem(PROMPTS_KEY);
+    if (!raw) return DEFAULT_PROMPTS;
+    const stored = JSON.parse(raw) as SavedPrompt[];
+    const storedIds = new Set(stored.map((prompt) => prompt.id));
+    return [...DEFAULT_PROMPTS.filter((prompt) => !storedIds.has(prompt.id)), ...stored];
+  } catch {
+    return DEFAULT_PROMPTS;
+  }
+}
+
+function persistPrompts(prompts: SavedPrompt[]) {
+  localStorage.setItem(PROMPTS_KEY, JSON.stringify(prompts));
+}
+
+function quartzHistoryKey(clusterSlug: string): string {
+  return `${QUARTZ_CHAT_HISTORY_KEY_PREFIX}${clusterSlug}`;
+}
+
+function loadQuartzChatSessions(clusterSlug: string | null): ChatSession[] {
+  if (typeof window === 'undefined' || !clusterSlug) return [];
+  try {
+    const raw = window.localStorage.getItem(quartzHistoryKey(clusterSlug));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ChatSession[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((session) => typeof session.id === 'number' && typeof session.title === 'string')
+      .map((session) => ({
+        ...session,
+        messages: Array.isArray(session.messages)
+          ? session.messages.filter(
+              (message) =>
+                (message.role === 'user' || message.role === 'assistant') &&
+                typeof message.content === 'string',
+            )
+          : [],
+      }))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, MAX_QUARTZ_CHAT_SESSIONS);
+  } catch {
+    return [];
+  }
+}
+
+function persistQuartzChatSessions(clusterSlug: string | null, sessions: ChatSession[]) {
+  if (typeof window === 'undefined' || !clusterSlug) return;
+  window.localStorage.setItem(
+    quartzHistoryKey(clusterSlug),
+    JSON.stringify(
+      sessions
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        .slice(0, MAX_QUARTZ_CHAT_SESSIONS),
+    ),
+  );
+}
+
 export default function GardenAssistant({
   activeClusterSlug,
   activeClusterName,
+  activeMarkdown,
   initialOpen = false,
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -69,17 +274,36 @@ export default function GardenAssistant({
   const [chatOpen, setChatOpen] = useState(initialOpen);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [thinkingMode, setThinkingMode] = useState(false);
+  const [model, setModel] = useState('gpt-5.5');
+  const [models, setModels] = useState<string[]>(['gpt-5.5', 'gpt-5.4']);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  const [usageData, setUsageData] = useState<Record<string, unknown> | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
+  const [showPrompts, setShowPrompts] = useState(false);
+  const [promptSearch, setPromptSearch] = useState('');
+  const [promptCategory, setPromptCategory] = useState('All');
+  const [editingPrompt, setEditingPrompt] = useState<SavedPrompt | null>(null);
 
   const hasActiveCluster = Boolean(activeClusterSlug);
-  const clusterLabel = activeClusterName || activeClusterSlug || 'Open a cluster';
+  const clusterLabel = activeClusterName || activeClusterSlug || 'Open a garden';
+  const activeChat = chatSessions.find((session) => session.id === activeChatId) ?? null;
 
   useEffect(() => {
     const savedWidth = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
     if (Number.isFinite(savedWidth)) setPanelWidth(clampPanelWidth(savedWidth));
+    setPrompts(loadPrompts());
   }, []);
 
   useEffect(() => {
@@ -90,8 +314,63 @@ export default function GardenAssistant({
     if (previousClusterRef.current === activeClusterSlug) return;
     previousClusterRef.current = activeClusterSlug;
     setInput('');
-    setMessages([]);
+    setShowHistory(false);
   }, [activeClusterSlug]);
+
+  useEffect(() => {
+    const sessions = loadQuartzChatSessions(activeClusterSlug);
+    setChatSessions(sessions);
+    setActiveChatId(sessions[0]?.id ?? null);
+    setMessages(sessions[0]?.messages ?? []);
+  }, [activeClusterSlug]);
+
+  useEffect(() => {
+    setMessages(activeChat?.messages ?? []);
+  }, [activeChat?.id, activeChat?.messages]);
+
+  const loadModels = useCallback(async () => {
+    if (modelsLoading || modelsLoaded) return;
+    setModelsLoading(true);
+    try {
+      const response = await fetch('/api/models');
+      const data = await response.json().catch(() => ({}));
+      const ids = Array.isArray(data.data)
+        ? data.data
+            .map((item: { id?: unknown }) => (typeof item?.id === 'string' ? item.id : null))
+            .filter((id: string | null): id is string => Boolean(id))
+        : [];
+      if (ids.length > 0) {
+        setModels(Array.from(new Set(['gpt-5.5', 'gpt-5.4', ...ids])));
+      }
+      setModelsLoaded(true);
+    } catch {
+      // Keep local defaults when the endpoint is unavailable.
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [modelsLoaded, modelsLoading]);
+
+  const activeMarkdownContext =
+    activeMarkdown?.content
+      ? {
+          cluster: activeMarkdown.cluster,
+          slug: activeMarkdown.slug,
+          title: activeMarkdown.title || activeMarkdown.slug,
+          content: activeMarkdown.content,
+        }
+      : undefined;
+
+  const filteredPrompts = useMemo(() => {
+    const q = promptSearch.toLowerCase();
+    return prompts.filter((prompt) => {
+      const matchCategory = promptCategory === 'All' || prompt.category === promptCategory;
+      const matchSearch =
+        !q ||
+        prompt.title.toLowerCase().includes(q) ||
+        prompt.content.toLowerCase().includes(q);
+      return matchCategory && matchSearch;
+    });
+  }, [promptCategory, promptSearch, prompts]);
 
   useEffect(() => {
     if (!activeClusterSlug) {
@@ -129,9 +408,97 @@ export default function GardenAssistant({
     messagesEndRef.current?.scrollIntoView({ block: 'end' });
   }, [messages, isStreaming]);
 
+  function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
+    setChatSessions((previous) => {
+      const sessions = previous
+        .map((session) =>
+          session.id === sessionId
+            ? {
+                ...session,
+                title: title ?? session.title,
+                messages: nextMessages,
+                updated_at: new Date().toISOString(),
+              }
+            : session,
+        )
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      persistQuartzChatSessions(activeClusterSlug, sessions);
+      return sessions;
+    });
+  }
+
+  async function createChatSession(title = 'New chat'): Promise<ChatSession | null> {
+    if (!activeClusterSlug) return null;
+    const now = new Date().toISOString();
+    const session: ChatSession = {
+      id: Date.now(),
+      title,
+      created_at: now,
+      updated_at: now,
+      isOwn: true,
+      messages: [],
+    };
+    setChatSessions((previous) => {
+      const sessions = [session, ...previous].slice(0, MAX_QUARTZ_CHAT_SESSIONS);
+      persistQuartzChatSessions(activeClusterSlug, sessions);
+      return sessions;
+    });
+    setActiveChatId(session.id);
+    setMessages([]);
+    return session;
+  }
+
+  async function persistChatSession(sessionId: number, nextMessages: ChatMessage[], title?: string) {
+    updateSessionMessages(sessionId, nextMessages, title);
+  }
+
+  async function startNewChat() {
+    if (isStreaming) return;
+    const session = await createChatSession();
+    if (session) {
+      setMessages([]);
+      setShowHistory(false);
+    }
+  }
+
+  function openChatSession(session: ChatSession) {
+    if (isStreaming) return;
+    setActiveChatId(session.id);
+    setMessages(session.messages ?? []);
+    setShowHistory(false);
+  }
+
+  function deleteChatSession(sessionId: number) {
+    if (isStreaming) return;
+    setChatSessions((previous) => {
+      const sessions = previous.filter((session) => session.id !== sessionId);
+      persistQuartzChatSessions(activeClusterSlug, sessions);
+      if (activeChatId === sessionId) {
+        setActiveChatId(sessions[0]?.id ?? null);
+        setMessages(sessions[0]?.messages ?? []);
+      }
+      return sessions;
+    });
+  }
+
   async function sendMessage(textOverride?: string) {
     const text = (textOverride ?? input).trim();
     if (!text || isStreaming || !activeClusterSlug) return;
+
+    let session = activeChat;
+    let sessionTitle: string | undefined;
+    if (!session || session.isOwn === false) {
+      sessionTitle = chatTitleFromText(text);
+      session = await createChatSession(sessionTitle);
+      if (!session) {
+        setMessages([
+          ...messages,
+          { role: 'user', content: text },
+          { role: 'assistant', content: 'I could not create a chat history entry yet.', sources: [] },
+        ]);
+        return;
+      }
+    }
 
     const userMessage: ChatMessage = { role: 'user', content: text };
     const nextMessages = [...messages, userMessage];
@@ -142,14 +509,79 @@ export default function GardenAssistant({
     setMessages([...nextMessages, assistantMessage]);
 
     try {
+      if (activeMarkdown && wantsOpenMarkdownEdit(text)) {
+        const response = await fetch('/api/markdown-edit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clusterSlug: activeMarkdown.cluster || activeClusterSlug,
+            slug: activeMarkdown.slug,
+            instruction: text,
+            messages: nextMessages.map(({ role, content }) => ({ role, content })).slice(-8),
+            model,
+            thinking: thinkingMode,
+          }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || !body.success) {
+          throw new Error(typeof body.error === 'string' ? body.error : 'Markdown edit failed');
+        }
+        const title =
+          typeof body.title === 'string' && body.title.trim()
+            ? body.title.trim()
+            : activeMarkdown.title || activeMarkdown.slug;
+        const slug =
+          typeof body.slug === 'string' && body.slug.trim()
+            ? body.slug.trim()
+            : activeMarkdown.slug;
+        const content =
+          typeof body.content === 'string' ? body.content : activeMarkdown.content;
+        const summary =
+          typeof body.summary === 'string' && body.summary.trim()
+            ? body.summary.trim()
+            : 'Updated the open markdown note.';
+        const tags = Array.isArray(body.tags)
+          ? body.tags.filter((tag: unknown): tag is string => typeof tag === 'string')
+          : [];
+        assistantMessage = {
+          role: 'assistant',
+          content: [
+            `${summary}`,
+            '',
+            `Saved changes to **${title}**.`,
+            tags.length > 0
+              ? `Tags now: ${tags.map((tag: string) => `\`${tag}\``).join(', ')}`
+              : '',
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          sources: [title || slug],
+        };
+        const finalMessages = [...nextMessages, assistantMessage];
+        setMessages(finalMessages);
+        await persistChatSession(session.id, finalMessages, sessionTitle);
+        window.dispatchEvent(
+          new CustomEvent('sb:markdown-updated', {
+            detail: {
+              cluster: activeMarkdown.cluster || activeClusterSlug,
+              slug,
+              title,
+              content,
+            },
+          }),
+        );
+        return;
+      }
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clusterSlug: activeClusterSlug,
           messages: nextMessages.map(({ role, content }) => ({ role, content })),
-          model: 'gpt-5.4',
-          thinking: false,
+          model,
+          thinking: thinkingMode,
+          activeMarkdown: activeMarkdownContext,
         }),
       });
 
@@ -214,16 +646,19 @@ export default function GardenAssistant({
           }
         }
       }
+      await persistChatSession(session.id, [...nextMessages, assistantMessage], sessionTitle);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Assistant could not answer right now';
-      setMessages([
+      const finalMessages: ChatMessage[] = [
         ...nextMessages,
         {
           role: 'assistant',
-          content: `I could not reach the assistant for this cluster yet. ${message}`,
+          content: `I could not reach the assistant for this garden yet. ${message}`,
           sources: [],
         },
-      ]);
+      ];
+      setMessages(finalMessages);
+      await persistChatSession(session.id, finalMessages, sessionTitle);
     } finally {
       setIsStreaming(false);
     }
@@ -266,6 +701,53 @@ export default function GardenAssistant({
     document.body.style.userSelect = '';
   }
 
+  function applyPrompt(prompt: SavedPrompt) {
+    setInput(prompt.content);
+    setShowPrompts(false);
+  }
+
+  function openNewPrompt() {
+    setEditingPrompt({ id: '', title: '', content: '', category: 'Custom' });
+    setShowPrompts(false);
+  }
+
+  function openEditPrompt(prompt: SavedPrompt) {
+    setEditingPrompt({ ...prompt });
+    setShowPrompts(false);
+  }
+
+  function savePrompt(prompt: SavedPrompt) {
+    const next = prompt.id
+      ? { ...prompt }
+      : { ...prompt, id: `user-${Date.now()}`, isDefault: false };
+    const updated = prompt.id
+      ? prompts.map((item) => (item.id === next.id ? next : item))
+      : [next, ...prompts];
+    setPrompts(updated);
+    persistPrompts(updated);
+    setEditingPrompt(null);
+  }
+
+  function deletePrompt(id: string) {
+    const updated = prompts.filter((prompt) => prompt.id !== id);
+    setPrompts(updated);
+    persistPrompts(updated);
+  }
+
+  function loadUsage() {
+    if (showUsage) {
+      setShowUsage(false);
+      return;
+    }
+    setShowUsage(true);
+    setUsageLoading(true);
+    fetch('/api/usage-limits')
+      .then((response) => response.json())
+      .then((data) => setUsageData(data))
+      .catch(() => setUsageData(null))
+      .finally(() => setUsageLoading(false));
+  }
+
   const chatPanelStyle = {
     '--assistant-panel-width': `${panelWidth}px`,
   } as CSSProperties;
@@ -283,7 +765,7 @@ export default function GardenAssistant({
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-white">Assistant</p>
             <p className="truncate text-xs text-gray-400">
-              {hasActiveCluster ? `${clusterLabel} knowledge map` : 'Open a cluster or note to ask its map'}
+              {hasActiveCluster ? `${clusterLabel} knowledge map` : 'Open a garden or note to ask its map'}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -310,6 +792,48 @@ export default function GardenAssistant({
             </div>
           ))}
         </div>
+
+        <div className="mt-2 flex min-w-0 items-center gap-2 border-t border-gray-900 pt-2">
+          <button
+            type="button"
+            onClick={() => setShowHistory(true)}
+            disabled={!activeClusterSlug}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
+            title="Chat history"
+            aria-label="Chat history"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.75A8.25 8.25 0 1 1 6.4 15.8" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25v4.5h4.5" />
+            </svg>
+          </button>
+          <div
+            className={`flex min-w-0 max-w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs ${
+              activeMarkdown && activeMarkdown.cluster === activeClusterSlug
+                ? 'bg-gray-800 text-gray-200'
+                : 'border border-gray-800 bg-gray-950/60 text-gray-600'
+            }`}
+            title={
+              activeMarkdown && activeMarkdown.cluster === activeClusterSlug
+                ? `Current markdown: ${activeMarkdown.slug}`
+                : 'No markdown note is currently open'
+            }
+          >
+            <svg className="h-3.5 w-3.5 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5A3.375 3.375 0 0 0 10.125 2.25H6.75A2.25 2.25 0 0 0 4.5 4.5v15A2.25 2.25 0 0 0 6.75 21.75h10.5a2.25 2.25 0 0 0 2.25-2.25v-5.25Z" />
+            </svg>
+            <span className="truncate">
+              {activeMarkdown && activeMarkdown.cluster === activeClusterSlug
+                ? markdownFileLabel(activeMarkdown)
+                : 'No markdown open'}
+            </span>
+            {activeMarkdown?.loading && activeMarkdown.cluster === activeClusterSlug ? (
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300" title="Loading markdown context" />
+            ) : activeMarkdown?.content && activeMarkdown.cluster === activeClusterSlug ? (
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" title="Markdown context loaded" />
+            ) : null}
+          </div>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
@@ -317,15 +841,15 @@ export default function GardenAssistant({
           <div className="space-y-4">
             <div>
               <p className="text-sm font-medium text-gray-100">
-                {hasActiveCluster ? 'Ask about the map, notes, pages, or relationships.' : 'Open a cluster to start asking.'}
+                {hasActiveCluster ? 'Ask about the map, notes, pages, or relationships.' : 'Open a garden to start asking.'}
               </p>
               <p className="mt-2 text-sm leading-6 text-gray-400">
                 {hasActiveCluster
-                  ? 'I can use the cluster inventory, topic notes, source locations, and graph links as context.'
-                  : 'The assistant follows the cluster or note you open from this library view.'}
+                  ? 'I can use the garden inventory, topic notes, source locations, and graph links as context.'
+                  : 'The assistant follows the garden or note you open from this library view.'}
               </p>
               <p className="mt-2 text-xs text-gray-500">
-                {formatNumber(stats.words)} words are indexed for this cluster.
+                {formatNumber(stats.words)} words are indexed for this garden.
               </p>
             </div>
             <div className="space-y-2">
@@ -393,24 +917,386 @@ export default function GardenAssistant({
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleInputKeyDown}
-          placeholder={hasActiveCluster ? 'Ask about a topic, page, source, or link...' : 'Open a cluster first...'}
+          placeholder={hasActiveCluster ? 'Ask about a topic, page, source, or link...' : 'Open a garden first...'}
           rows={3}
           disabled={!hasActiveCluster}
           className="block w-full resize-none rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm leading-6 text-gray-100 outline-none transition placeholder:text-gray-600 focus:border-gray-500 disabled:cursor-not-allowed disabled:opacity-60"
         />
         <div className="mt-2 flex items-center justify-between gap-3">
           <span className="text-xs text-gray-500">Enter to send, Shift+Enter for a new line</span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={loadUsage}
+              title="View usage limits"
+              className={`rounded-md border px-2.5 py-1 text-xs transition ${showUsage ? 'border-blue-700 bg-blue-950/30 text-blue-300' : 'border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'}`}
+            >
+              Usage
+            </button>
+            <button
+              type="button"
+              onClick={() => setThinkingMode((value) => !value)}
+              title="Extended thinking"
+              className={`rounded-md border px-2.5 py-1 text-xs transition ${thinkingMode ? 'border-purple-700 bg-purple-950/30 text-purple-300' : 'border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'}`}
+            >
+              Think
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPrompts(true)}
+              className="rounded-md border border-gray-800 px-2.5 py-1 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
+            >
+              Prompts
+            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showModelPicker;
+                  setShowModelPicker(next);
+                  if (next) void loadModels();
+                }}
+                className="rounded-md border border-gray-800 px-2.5 py-1 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
+              >
+                {model}
+              </button>
+              {showModelPicker ? (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
+                  <div className="absolute bottom-full right-0 z-20 mb-1.5 max-h-64 min-w-48 overflow-y-auto rounded-md border border-gray-700 bg-gray-900 py-1 shadow-2xl">
+                    {modelsLoading ? <div className="px-3 py-2 text-xs text-gray-500">Loading models...</div> : null}
+                    {models.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => {
+                          setModel(item);
+                          setShowModelPicker(false);
+                        }}
+                        className={`block w-full px-3 py-2 text-left text-sm transition ${item === model ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+            <button
+              type="submit"
+              disabled={!input.trim() || isStreaming || !hasActiveCluster}
+              className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-semibold text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
+            >
+              {isStreaming ? 'Thinking' : 'Send'}
+            </button>
+          </div>
+        </div>
+      </form>
+
+      {showUsage ? (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setShowUsage(false)} />
+          <div className="absolute bottom-16 right-3 z-20 w-72 rounded-md border border-gray-700 bg-gray-900 p-4 text-xs shadow-2xl">
+            <p className="mb-3 font-semibold text-gray-300">Usage Limits</p>
+            {usageLoading ? (
+              <p className="text-gray-500">Loading...</p>
+            ) : !usageData || !usageData.available ? (
+              <p className="text-gray-500">No data yet. Send a message first.</p>
+            ) : (
+              <div className="space-y-3">
+                {(usageData.captured_at as string) ? (
+                  <p className="text-gray-600">
+                    Updated: {new Date(usageData.captured_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                ) : null}
+                {(['primary', 'secondary'] as const).map((key) => {
+                  const windowData = usageData[key] as { used_percent?: number; resets_in_seconds?: number } | undefined;
+                  if (!windowData) return null;
+                  const used = Math.min(100, Math.max(0, Number(windowData.used_percent) || 0));
+                  const resetSeconds = Number(windowData.resets_in_seconds);
+                  const resetMinutes = Number.isFinite(resetSeconds) ? Math.max(0, Math.round(resetSeconds / 60)) : null;
+                  return (
+                    <div key={key}>
+                      <div className="mb-1 flex justify-between text-gray-400">
+                        <span>{key === 'primary' ? '5-hour limit' : 'Weekly limit'}</span>
+                        <span>{used.toFixed(1)}% used</span>
+                      </div>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-gray-800">
+                        <div className="h-full rounded-full bg-gray-300" style={{ width: `${used}%` }} />
+                      </div>
+                      {resetMinutes !== null ? <p className="mt-1 text-gray-600">Resets in {resetMinutes}m</p> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      ) : null}
+    </aside>
+  );
+
+  const historyPanel = showHistory ? (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) setShowHistory(false);
+      }}
+    >
+      <div className="flex max-h-[78vh] w-full max-w-lg flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 shadow-2xl sm:rounded-md">
+        <div className="flex items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-white">Quartz AI history</h2>
+            <p className="text-xs text-gray-500">{chatSessions.length} chats for {clusterLabel}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void startNewChat()}
+              disabled={isStreaming || !activeClusterSlug}
+              className="rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-gray-950 disabled:opacity-50"
+            >
+              New chat
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowHistory(false)}
+              className="rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {chatSessions.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-gray-500">No Quartz AI chats yet.</div>
+          ) : (
+            <ul className="space-y-1">
+              {chatSessions.map((session) => {
+                const preview =
+                  session.messages.find((message) => message.role === 'user')?.content ||
+                  session.messages.at(-1)?.content ||
+                  'Empty chat';
+                return (
+                  <li key={session.id} className="group flex items-start gap-2 rounded-md hover:bg-gray-800/70">
+                    <button
+                      type="button"
+                      onClick={() => openChatSession(session)}
+                      disabled={isStreaming}
+                      className={`min-w-0 flex-1 rounded-md px-3 py-2 text-left transition ${
+                        session.id === activeChatId ? 'bg-gray-800 text-white' : 'text-gray-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate text-sm font-medium">{session.title}</p>
+                        <span className="shrink-0 text-[10px] text-gray-600">
+                          {formatChatTime(session.updated_at)}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">{preview}</p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteChatSession(session.id)}
+                      disabled={isStreaming}
+                      className="mr-1 mt-2 rounded p-1 text-gray-600 opacity-0 transition hover:bg-gray-900 hover:text-red-300 group-hover:opacity-100 disabled:opacity-30"
+                      aria-label="Delete chat"
+                      title="Delete chat"
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m6 6 12 12M18 6 6 18" />
+                      </svg>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const promptsPanel = showPrompts ? (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) setShowPrompts(false);
+      }}
+    >
+      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 shadow-2xl sm:rounded-md">
+        <div className="flex items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-white">Prompt library</h2>
+            <p className="text-xs text-gray-500">{filteredPrompts.length} prompts</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={openNewPrompt}
+              className="rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-gray-950"
+            >
+              New prompt
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPrompts(false)}
+              className="rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <div className="space-y-2 border-b border-gray-800 px-4 py-3">
+          <input
+            value={promptSearch}
+            onChange={(event) => setPromptSearch(event.target.value)}
+            placeholder="Search prompts..."
+            className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-600 focus:border-gray-500"
+          />
+          <div className="flex gap-1.5 overflow-x-auto">
+            {PROMPT_CATEGORIES.map((category) => (
+              <button
+                key={category}
+                type="button"
+                onClick={() => setPromptCategory(category)}
+                className={`shrink-0 rounded-md border px-3 py-1 text-xs transition ${promptCategory === category ? 'border-gray-500 bg-gray-700 text-white' : 'border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'}`}
+              >
+                {category}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {filteredPrompts.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-gray-500">No prompts match your search.</div>
+          ) : (
+            <ul className="divide-y divide-gray-800">
+              {filteredPrompts.map((prompt) => (
+                <li key={prompt.id} className="flex items-start gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm font-medium text-white">{prompt.title}</p>
+                      <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-400">
+                        {prompt.category}
+                      </span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-gray-500">{prompt.content}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => openEditPrompt(prompt)}
+                      className="rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 hover:text-white"
+                    >
+                      Edit
+                    </button>
+                    {!prompt.isDefault ? (
+                      <button
+                        type="button"
+                        onClick={() => deletePrompt(prompt.id)}
+                        className="rounded-md border border-gray-800 px-2 py-1 text-xs text-red-300"
+                      >
+                        Delete
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => applyPrompt(prompt)}
+                      className="rounded-md bg-white px-3 py-1 text-xs font-semibold text-gray-950"
+                    >
+                      Use
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const promptEditor = editingPrompt ? (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) setEditingPrompt(null);
+      }}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (editingPrompt.title.trim() && editingPrompt.content.trim()) savePrompt(editingPrompt);
+        }}
+        className="w-full max-w-lg rounded-md border border-gray-800 bg-gray-900 p-5 shadow-2xl"
+      >
+        <h2 className="mb-4 text-lg font-semibold text-white">
+          {editingPrompt.id ? 'Edit prompt' : 'New prompt'}
+        </h2>
+        <label className="mb-3 block">
+          <span className="mb-1 block text-sm text-gray-400">Title</span>
+          <input
+            value={editingPrompt.title}
+            onChange={(event) =>
+              setEditingPrompt((prompt) =>
+                prompt ? { ...prompt, title: event.target.value } : prompt,
+              )
+            }
+            className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-gray-600"
+          />
+        </label>
+        <div className="mb-3">
+          <p className="mb-1 text-sm text-gray-400">Category</p>
+          <div className="flex flex-wrap gap-2">
+            {PROMPT_CATEGORIES.filter((category) => category !== 'All').map((category) => (
+              <button
+                key={category}
+                type="button"
+                onClick={() =>
+                  setEditingPrompt((prompt) =>
+                    prompt ? { ...prompt, category } : prompt,
+                  )
+                }
+                className={`rounded-md border px-3 py-1.5 text-xs ${editingPrompt.category === category ? 'border-gray-500 bg-gray-700 text-white' : 'border-gray-800 text-gray-500'}`}
+              >
+                {category}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="block">
+          <span className="mb-1 block text-sm text-gray-400">Prompt content</span>
+          <textarea
+            value={editingPrompt.content}
+            onChange={(event) =>
+              setEditingPrompt((prompt) =>
+                prompt ? { ...prompt, content: event.target.value } : prompt,
+              )
+            }
+            rows={5}
+            className="w-full resize-none rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-gray-600"
+          />
+        </label>
+        <div className="mt-4 flex gap-3">
+          <button
+            type="button"
+            onClick={() => setEditingPrompt(null)}
+            className="flex-1 rounded-md border border-gray-800 py-2 text-sm text-gray-400 hover:text-white"
+          >
+            Cancel
+          </button>
           <button
             type="submit"
-            disabled={!input.trim() || isStreaming || !hasActiveCluster}
-            className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-semibold text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
+            disabled={!editingPrompt.title.trim() || !editingPrompt.content.trim()}
+            className="flex-1 rounded-md bg-white py-2 text-sm font-semibold text-gray-950 disabled:opacity-50"
           >
-            {isStreaming ? 'Thinking' : 'Send'}
+            Save prompt
           </button>
         </div>
       </form>
-    </aside>
-  );
+    </div>
+  ) : null;
 
   return chatOpen ? (
     <>
@@ -428,14 +1314,22 @@ export default function GardenAssistant({
         <span className={`h-16 w-px rounded-full transition-colors ${isResizing ? 'bg-gray-400' : 'bg-gray-700'}`} />
       </button>
       {chatPanel}
+      {historyPanel}
+      {promptsPanel}
+      {promptEditor}
     </>
   ) : (
-    <button
-      type="button"
-      onClick={() => setChatOpen(true)}
-      className="fixed bottom-5 right-5 z-30 rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-semibold text-gray-100 shadow-xl transition hover:border-gray-500 hover:bg-gray-900 lg:absolute"
-    >
-      Ask map
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() => setChatOpen(true)}
+        className="fixed bottom-5 right-5 z-[70] rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-semibold text-gray-100 shadow-xl transition hover:border-gray-500 hover:bg-gray-900"
+      >
+        Ask map
+      </button>
+      {historyPanel}
+      {promptsPanel}
+      {promptEditor}
+    </>
   );
 }

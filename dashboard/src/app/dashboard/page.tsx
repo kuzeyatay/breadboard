@@ -2,7 +2,11 @@ import { getServerSession } from 'next-auth/next';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { authOptions } from '@/lib/auth-options';
-import { getClusters, getPublicClusters } from '@/app/actions/clusters';
+import {
+  getClusters,
+  getClusterFolders,
+  getPublicClusters,
+} from '@/app/actions/clusters';
 import DashboardClient from './dashboard-client';
 import {
   CHATMOCK_TARGET_COOKIE,
@@ -19,6 +23,7 @@ export default async function DashboardPage() {
   const username = session.user.name ?? userEmail;
   const clusters = await getClusters(userId);
   const publicClusters = await getPublicClusters(userId);
+  const clusterFolders = await getClusterFolders(userId);
   const initialChatmockTarget = normalizeChatmockTarget(
     cookieStore.get(CHATMOCK_TARGET_COOKIE)?.value,
   );
@@ -29,6 +34,7 @@ export default async function DashboardPage() {
       username={username}
       initialClusters={clusters}
       initialPublicClusters={publicClusters}
+      initialClusterFolders={clusterFolders}
       initialChatmockTarget={initialChatmockTarget}
     />
   );

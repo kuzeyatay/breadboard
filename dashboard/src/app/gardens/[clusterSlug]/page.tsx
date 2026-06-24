@@ -51,6 +51,7 @@ export default async function WorkspacePage({
         fork_allowed: Boolean(fullRow.fork_allowed),
         view_count: Number(fullRow.view_count) || 0,
         last_viewed_at: (fullRow.last_viewed_at as string | null) ?? null,
+        folder: (fullRow.folder as string | null) ?? null,
         created_at: fullRow.created_at as string,
         noteCount: 0,
         isOwner: false,

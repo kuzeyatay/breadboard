@@ -27,6 +27,7 @@ import DashboardBackLink from "./DashboardBackLink"
 import MarkdownActions from "./MarkdownActions"
 import Empty from "./Empty"
 import HomeOverview from "./HomeOverview"
+import FolderPdfExport from "./FolderPdfExport"
 
 export {
   ArticleTitle,
@@ -58,4 +59,5 @@ export {
   MarkdownActions,
   Empty,
   HomeOverview,
+  FolderPdfExport,
 }

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
-import { refreshClusterIndex, scanClusterKnowledge, slugify } from '@/lib/knowledge';
+import { listClusterFolders, refreshClusterIndex, scanClusterKnowledge, slugify } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
@@ -41,6 +41,8 @@ export async function GET(request: Request) {
         id: node.id,
         slug: node.slug,
         fileName: node.fileName,
+        folder: node.folder,
+        relPath: node.relPath,
         title: node.title,
         type: node.type,
         sourceType: node.sourceType,
@@ -64,7 +66,9 @@ export async function GET(request: Request) {
         return dateDiff || a.title.localeCompare(b.title);
       });
 
-    return NextResponse.json({ documents, stats: knowledge.stats });
+    const folders = listClusterFolders(path.join(contentPath, cluster.slug));
+
+    return NextResponse.json({ documents, folders, stats: knowledge.stats });
   } catch (error) {
     return routeErrorResponse(error);
   }
@@ -73,7 +77,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { clusterSlug, title, content } = body;
+    const { clusterSlug, title, content, folder } = body;
 
     if (typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
       return NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 });
@@ -92,8 +96,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 });
     }
 
-    const clusterDir = path.join(contentPath, cluster.slug);
-    fs.mkdirSync(clusterDir, { recursive: true });
+    const clusterDir = path.resolve(contentPath, cluster.slug);
+
+    // Optional target sub-folder (slugified, kept inside the cluster directory).
+    const relFolder =
+      typeof folder === 'string'
+        ? folder
+            .replace(/\\/g, '/')
+            .split('/')
+            .map((segment) => segment.trim())
+            .filter((segment) => segment && segment !== '.' && segment !== '..')
+            .map((segment) => slugify(segment))
+            .filter(Boolean)
+            .join('/')
+        : '';
+    const targetDir = path.resolve(clusterDir, relFolder);
+    if (targetDir !== clusterDir && !targetDir.startsWith(clusterDir + path.sep)) {
+      return NextResponse.json({ error: 'Invalid folder path' }, { status: 400 });
+    }
+    fs.mkdirSync(targetDir, { recursive: true });
 
     const baseSlug = slugify(title.trim());
     const timestamp = Date.now();
@@ -102,7 +123,7 @@ export async function POST(request: Request) {
 
     const frontmatter = `---\ntitle: ${JSON.stringify(title.trim())}\ndate: ${JSON.stringify(date)}\nsource: "user-note"\nknowledge_type: "user-note"\n---\n\n`;
     const body_ = content.trim() ? content : `## ${title.trim()}\n\n`;
-    fs.writeFileSync(path.join(clusterDir, `${slug}.md`), frontmatter + body_, 'utf-8');
+    fs.writeFileSync(path.join(targetDir, `${slug}.md`), frontmatter + body_, 'utf-8');
 
     refreshClusterIndex(contentPath, cluster.slug);
     await publishQuartzAfterMutation(`create document ${cluster.slug}/${slug}`);

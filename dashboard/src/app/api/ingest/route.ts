@@ -23,11 +23,55 @@ interface PdfScreenshotPage {
   dataUrl: string;
 }
 
+interface MarkdownInputPage {
+  label: string;
+  text: string;
+  pageNumber: number;
+  sectionTitle: string;
+}
+
+interface PdfOutlineEntry {
+  title: string;
+  pageNumber: number;
+  source: "toc" | "heading";
+}
+
+interface MarkdownChunk {
+  pages: MarkdownInputPage[];
+  sectionTitle: string;
+}
+
+const PDF_MARKDOWN_CHUNK_MAX_PAGES = 12;
+const PDF_MARKDOWN_CHUNK_MAX_CHARS = 18_000;
+const PDF_MARKDOWN_PAGE_PART_MAX_CHARS = 7_500;
+const PDF_OUTLINE_SCAN_PAGES = 12;
+const PDF_OUTLINE_SCAN_LINES = 18;
+const PDF_OUTLINE_MAX_ENTRIES = 36;
+const PDF_SOURCE_SNAPSHOT_LIMIT = 24;
+
 class UploadAbortedError extends Error {
   constructor() {
     super("Upload canceled");
     this.name = "AbortError";
   }
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function isUsageLimitError(error: unknown): boolean {
+  const status =
+    typeof error === "object" && error !== null && "status" in error
+      ? Number((error as { status?: unknown }).status)
+      : undefined;
+  const message = errorMessage(error, "").toLowerCase();
+  return (
+    status === 429 ||
+    message.includes("usage limit") ||
+    message.includes("rate limit") ||
+    message.includes("quota")
+  );
 }
 
 function throwIfRequestAborted(signal?: AbortSignal) {
@@ -62,10 +106,18 @@ function isImageExt(ext: string): boolean {
   return ["jpg", "jpeg", "png", "webp"].includes(ext);
 }
 
-function pageMarkdown(pages: DocumentPage[]): string {
+function pageMarkdown(
+  pages: Array<
+    Pick<DocumentPage, "label" | "text"> &
+      Partial<Pick<DocumentPage, "imagePath" | "imageAlt">>
+  >,
+  options?: { includeImages?: boolean },
+): string {
+  const includeImages = options?.includeImages ?? true;
+
   return pages
     .map((page) => {
-      const image = page.imagePath
+      const image = includeImages && page.imagePath
         ? `![${page.imageAlt || page.label}](${page.imagePath})\n\n`
         : "";
       return `## ${page.label}\n\n${image}${page.text.trim() || "_No legible text found._"}`;
@@ -73,7 +125,9 @@ function pageMarkdown(pages: DocumentPage[]): string {
     .join("\n\n");
 }
 
-function pagePlainText(pages: DocumentPage[]): string {
+function pagePlainText(
+  pages: Array<Pick<DocumentPage, "label" | "text">>,
+): string {
   return pages
     .map(
       (page) =>
@@ -82,16 +136,501 @@ function pagePlainText(pages: DocumentPage[]): string {
     .join("\n\n");
 }
 
+function splitMarkdownPageText(text: string, maxChars: number): string[] {
+  const cleaned = text.trim() || "No legible text found.";
+  if (cleaned.length <= maxChars) return [cleaned];
+
+  const paragraphs = cleaned
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const segments: string[] = [];
+  let current = "";
+
+  const pushCurrent = () => {
+    if (current.trim()) {
+      segments.push(current.trim());
+      current = "";
+    }
+  };
+
+  const pushHardSplit = (value: string) => {
+    const matches = value.match(new RegExp(`[\\s\\S]{1,${maxChars}}`, "g"));
+    if (!matches) return;
+    for (const match of matches) {
+      const trimmed = match.trim();
+      if (trimmed) segments.push(trimmed);
+    }
+  };
+
+  if (paragraphs.length === 0) {
+    pushHardSplit(cleaned);
+    return segments.length > 0 ? segments : [cleaned];
+  }
+
+  for (const paragraph of paragraphs) {
+    if (paragraph.length > maxChars) {
+      pushCurrent();
+      pushHardSplit(paragraph);
+      continue;
+    }
+
+    const next = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (next.length > maxChars) {
+      pushCurrent();
+      current = paragraph;
+      continue;
+    }
+    current = next;
+  }
+
+  pushCurrent();
+  return segments.length > 0 ? segments : [cleaned];
+}
+
+function pageTextLines(text: string): string[] {
+  return text
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function normalizeOutlineTitle(value: string): string {
+  return value
+    .replace(/^[\-\*\u2022]+\s*/, "")
+    .replace(/\s*\.{2,}\s*\d+\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeOutlineKey(value: string): string {
+  return normalizeOutlineTitle(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function lineWordCount(value: string): number {
+  return value.split(/\s+/).filter(Boolean).length;
+}
+
+function looksMostlyUppercase(value: string): boolean {
+  const letters = value.match(/[A-Za-z]/g)?.length ?? 0;
+  const uppercase = value.match(/[A-Z]/g)?.length ?? 0;
+  return letters > 0 && uppercase / letters >= 0.72;
+}
+
+function looksLikeTitleCase(value: string): boolean {
+  const words = value
+    .split(/\s+/)
+    .map((word) => word.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, ""))
+    .filter(Boolean);
+  if (words.length === 0) return false;
+
+  const smallWords = new Set([
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "via",
+    "with",
+  ]);
+
+  let significant = 0;
+  let titleLike = 0;
+  for (const word of words) {
+    if (!/[A-Za-z]/.test(word)) continue;
+    const lower = word.toLowerCase();
+    if (smallWords.has(lower)) continue;
+    significant += 1;
+    if (/^[A-Z][a-z0-9]/.test(word) || /^[A-Z0-9]{2,}$/.test(word)) {
+      titleLike += 1;
+    }
+  }
+
+  if (significant === 0) return false;
+  return titleLike / significant >= 0.6;
+}
+
+function isLikelyHeadingLine(value: string): boolean {
+  const line = normalizeOutlineTitle(value);
+  if (!line) return false;
+  if (line.length < 4 || line.length > 110) return false;
+  if (!/[A-Za-z]/.test(line)) return false;
+  if (/^page\s+\d+\b/i.test(line)) return false;
+  if (/^[\[\(]?[0-9]{1,4}[\]\)]?$/.test(line)) return false;
+  if (/^[\-\*\u2022]/.test(line)) return false;
+  if (/[.!?]$/.test(line)) return false;
+
+  const words = lineWordCount(line);
+  if (words > 14) return false;
+
+  if (
+    /^(chapter|section|unit|module|part|week|lecture|lesson|topic|appendix|introduction|overview|summary|conclusion|references|bibliography)\b/i.test(
+      line,
+    )
+  ) {
+    return true;
+  }
+
+  if (/^\d+(?:\.\d+){0,3}\s+\S/.test(line)) return true;
+  if (/^[ivxlcdm]+\.\s+\S/i.test(line)) return true;
+  if (looksMostlyUppercase(line) && words <= 12) return true;
+  return looksLikeTitleCase(line) && words <= 12;
+}
+
+function repeatedLeadingLines(pages: DocumentPage[]): Set<string> {
+  const counts = new Map<string, number>();
+
+  for (const page of pages) {
+    const lines = pageTextLines(page.text).slice(0, 5);
+    for (const line of lines) {
+      const key = normalizeOutlineKey(line);
+      if (!key || key.length < 4 || key.length > 70) continue;
+      if (/^page \d+\b/.test(key)) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+
+  return new Set(
+    [...counts.entries()]
+      .filter(([, count]) => count >= 3)
+      .map(([key]) => key),
+  );
+}
+
+function parseTocLine(
+  line: string,
+  totalPages: number,
+): PdfOutlineEntry | null {
+  const compact = line.replace(/\s+/g, " ").trim();
+  if (!compact) return null;
+
+  const match = compact.match(
+    /^(.+?)(?:\s+\.{2,}\s*|\s{2,}|\s+-+\s+|\s+)(\d{1,4})$/,
+  );
+  if (!match) return null;
+
+  const title = normalizeOutlineTitle(match[1] ?? "");
+  const pageNumber = Number.parseInt(match[2] ?? "", 10);
+  if (!title || !Number.isFinite(pageNumber)) return null;
+  if (pageNumber < 1 || pageNumber > totalPages) return null;
+  if (lineWordCount(title) > 18) return null;
+  if (!/[A-Za-z]/.test(title)) return null;
+
+  return { title, pageNumber, source: "toc" };
+}
+
+function extractTocOutline(pages: DocumentPage[]): PdfOutlineEntry[] {
+  const totalPages = pages.length;
+  const collected: PdfOutlineEntry[] = [];
+  let foundTocPage = false;
+
+  for (const page of pages.slice(0, PDF_OUTLINE_SCAN_PAGES)) {
+    const lines = pageTextLines(page.text).slice(0, 80);
+    const matches = lines
+      .map((line) => parseTocLine(line, totalPages))
+      .filter((entry): entry is PdfOutlineEntry => Boolean(entry));
+    const hasTocHeader = lines.some((line) =>
+      /\b(table of contents|contents)\b/i.test(line),
+    );
+
+    if (hasTocHeader || matches.length >= 4 || (foundTocPage && matches.length >= 2)) {
+      foundTocPage = true;
+      collected.push(...matches);
+    }
+  }
+
+  if (collected.length < 3) return [];
+
+  const deduped = new Map<string, PdfOutlineEntry>();
+  for (const entry of collected) {
+    const key = `${entry.pageNumber}:${normalizeOutlineKey(entry.title)}`;
+    if (!deduped.has(key)) deduped.set(key, entry);
+  }
+
+  return [...deduped.values()]
+    .sort((left, right) => left.pageNumber - right.pageNumber)
+    .slice(0, PDF_OUTLINE_MAX_ENTRIES);
+}
+
+function extractHeadingOutline(
+  title: string,
+  pages: DocumentPage[],
+): PdfOutlineEntry[] {
+  const repeated = repeatedLeadingLines(pages);
+  const titleKey = normalizeOutlineKey(title);
+  const outline: PdfOutlineEntry[] = [];
+  let lastKey = "";
+
+  for (let index = 0; index < pages.length; index += 1) {
+    const page = pages[index];
+    const pageNumber = pageNumberFromLabel(page.label) ?? index + 1;
+    const lines = pageTextLines(page.text).slice(0, PDF_OUTLINE_SCAN_LINES);
+
+    const candidate = lines.find((line) => {
+      const key = normalizeOutlineKey(line);
+      if (!key || repeated.has(key) || key === titleKey) return false;
+      return isLikelyHeadingLine(line);
+    });
+
+    if (!candidate) continue;
+
+    const normalized = normalizeOutlineTitle(candidate);
+    const key = normalizeOutlineKey(normalized);
+    if (!key || key === lastKey) continue;
+
+    outline.push({
+      title: normalized,
+      pageNumber,
+      source: "heading",
+    });
+    lastKey = key;
+  }
+
+  return outline.slice(0, PDF_OUTLINE_MAX_ENTRIES);
+}
+
+function detectPdfOutline(title: string, pages: DocumentPage[]): PdfOutlineEntry[] {
+  const tocOutline = extractTocOutline(pages);
+  if (tocOutline.length >= 3) return tocOutline;
+
+  const headingOutline = extractHeadingOutline(title, pages);
+  return headingOutline.length >= 2 ? headingOutline : [];
+}
+
+function renderPdfOutlineContext(
+  title: string,
+  totalPages: number,
+  outline: PdfOutlineEntry[],
+): string {
+  if (outline.length === 0) {
+    return (
+      `Full PDF title: ${title}\n` +
+      `Total pages: ${totalPages}\n` +
+      "Detected outline: no reliable section outline was found, so preserve page order and local headings."
+    );
+  }
+
+  const lines = outline
+    .slice(0, PDF_OUTLINE_MAX_ENTRIES)
+    .map(
+      (entry) =>
+        `- Page ${entry.pageNumber}: ${entry.title} (${entry.source === "toc" ? "table of contents" : "page heading"})`,
+    )
+    .join("\n");
+
+  return (
+    `Full PDF title: ${title}\n` +
+    `Total pages: ${totalPages}\n` +
+    `Detected outline for the whole PDF:\n${lines}`
+  );
+}
+
+function sectionTitleForPage(
+  pageNumber: number,
+  fallbackTitle: string,
+  outline: PdfOutlineEntry[],
+): string {
+  if (outline.length === 0) return fallbackTitle;
+
+  let selected: PdfOutlineEntry | undefined;
+  for (const entry of outline) {
+    if (entry.pageNumber > pageNumber) break;
+    selected = entry;
+  }
+
+  if (!selected) return "Front matter";
+  return selected.title;
+}
+
+function pdfMarkdownInputPages(
+  pages: DocumentPage[],
+  title: string,
+  outline: PdfOutlineEntry[],
+): MarkdownInputPage[] {
+  return pages.flatMap((page, index) => {
+    const pageNumber = pageNumberFromLabel(page.label) ?? index + 1;
+    const sectionTitle = sectionTitleForPage(pageNumber, title, outline);
+    const parts = splitMarkdownPageText(
+      page.text,
+      PDF_MARKDOWN_PAGE_PART_MAX_CHARS,
+    );
+
+    if (parts.length <= 1) {
+      return [
+        {
+          label: page.label,
+          text: parts[0] ?? page.text,
+          pageNumber,
+          sectionTitle,
+        },
+      ];
+    }
+
+    return parts.map((text, partIndex) => ({
+      label: `${page.label} (part ${partIndex + 1}/${parts.length})`,
+      text,
+      pageNumber,
+      sectionTitle,
+    }));
+  });
+}
+
+function chunkPdfMarkdownInputPages(pages: MarkdownInputPage[]): MarkdownChunk[] {
+  const chunks: MarkdownChunk[] = [];
+  let currentPages: MarkdownInputPage[] = [];
+  let currentChars = 0;
+  let currentSection = "";
+
+  const flush = () => {
+    if (currentPages.length === 0) return;
+    chunks.push({
+      pages: currentPages,
+      sectionTitle: currentSection || "Document",
+    });
+    currentPages = [];
+    currentChars = 0;
+    currentSection = "";
+  };
+
+  for (const page of pages) {
+    const pageChars = page.label.length + page.text.length + 32;
+    const nextSection = page.sectionTitle || "Document";
+    const sectionChanged =
+      currentPages.length > 0 && nextSection !== currentSection;
+    const exceedsLimits =
+      currentPages.length > 0 &&
+      (currentPages.length >= PDF_MARKDOWN_CHUNK_MAX_PAGES ||
+        currentChars + pageChars > PDF_MARKDOWN_CHUNK_MAX_CHARS);
+
+    if (sectionChanged || exceedsLimits) {
+      flush();
+    }
+
+    if (!currentSection) currentSection = nextSection;
+    currentPages.push(page);
+    currentChars += pageChars;
+  }
+
+  flush();
+  return chunks;
+}
+
+function chunkPageRange(pages: MarkdownInputPage[]): string {
+  const numbers = [...new Set(pages.map((page) => page.pageNumber))].sort(
+    (left, right) => left - right,
+  );
+  if (numbers.length === 0) {
+    const first = pages[0]?.label ?? "chunk";
+    const last = pages[pages.length - 1]?.label ?? first;
+    return first === last ? first : `${first} to ${last}`;
+  }
+
+  const first = numbers[0];
+  const last = numbers[numbers.length - 1];
+  return first === last ? `Page ${first}` : `Pages ${first}-${last}`;
+}
+
+function chunkLabel(chunk: MarkdownChunk): string {
+  const range = chunkPageRange(chunk.pages);
+  return chunk.sectionTitle ? `${chunk.sectionTitle} (${range})` : range;
+}
+
+async function formatPdfPagesAsMarkdown({
+  client,
+  title,
+  pages,
+  signal,
+}: {
+  client: OpenAI;
+  title: string;
+  pages: DocumentPage[];
+  signal?: AbortSignal;
+}): Promise<{ markdownText: string; warning: string }> {
+  const outline = detectPdfOutline(title, pages);
+  const outlineContext = renderPdfOutlineContext(title, pages.length, outline);
+  const inputPages = pdfMarkdownInputPages(pages, title, outline);
+  const chunks = chunkPdfMarkdownInputPages(inputPages);
+  const markdownChunks: string[] = [];
+  const warnings: string[] = [];
+
+  for (const chunk of chunks) {
+    throwIfRequestAborted(signal);
+    const label = chunkLabel(chunk);
+
+    try {
+      const response = await client.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Convert raw PDF-extracted text into well-structured Markdown. " +
+              "You are formatting one chunk from a larger PDF, so use the provided full-document outline to keep terminology and heading hierarchy consistent across chunks. " +
+              "Preserve all content. Keep page labels as Markdown headings so page boundaries stay visible. " +
+              "If a page is split into parts, keep the part labels. Clean up obvious PDF artifacts, but do not summarize, omit, or merge away content. " +
+              "Return only Markdown, no commentary.",
+          },
+          {
+            role: "user",
+            content:
+              `Document title: ${title}\n` +
+              `Chunk: ${label}\n` +
+              `Current section: ${chunk.sectionTitle}\n\n` +
+              `${outlineContext}\n\n` +
+              `Convert this PDF chunk to Markdown:\n\n${pagePlainText(chunk.pages)}`,
+          },
+        ],
+      });
+
+      markdownChunks.push(
+        response.choices[0]?.message?.content?.trim() ||
+          pageMarkdown(chunk.pages, { includeImages: false }),
+      );
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : "model formatting failed";
+      warnings.push(`${label}: ${reason}`);
+      markdownChunks.push(pageMarkdown(chunk.pages, { includeImages: false }));
+    }
+  }
+
+  return {
+    markdownText: markdownChunks.join("\n\n"),
+    warning:
+      warnings.length > 0
+        ? `Chunked PDF formatting fallback used for ${warnings.length} part${warnings.length === 1 ? "" : "s"}: ${warnings.join("; ")}`
+        : "",
+  };
+}
+
 function dataUrlToImage(dataUrl: string): { buffer: Buffer; ext: string } {
-  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!match) throw new Error("Invalid screenshot data URL");
-  const mimeType = match[1].toLowerCase();
+  const commaIndex = dataUrl.indexOf(",");
+  if (commaIndex === -1) throw new Error("Invalid screenshot data URL");
+
+  const header = dataUrl.slice(0, commaIndex);
+  const base64 = dataUrl.slice(commaIndex + 1);
+  const headerMatch = header.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64$/);
+  if (!headerMatch) throw new Error("Invalid screenshot data URL");
+
+  const mimeType = headerMatch[1].toLowerCase();
   const ext = mimeType.includes("png")
     ? "png"
     : mimeType.includes("webp")
       ? "webp"
       : "jpg";
-  return { buffer: Buffer.from(match[2], "base64"), ext };
+  return { buffer: Buffer.from(base64, "base64"), ext };
 }
 
 function uniqueAssetPath(
@@ -236,6 +775,52 @@ function appendSnapshots(markdownText: string, pages: DocumentPage[]): string {
   return `${markdownText.trim()}\n\n## Source snapshots\n\n${snapshots}`;
 }
 
+function pdfFallbackMarkdown(
+  title: string,
+  sourcePdfPath: string | undefined,
+  reason: string,
+): string {
+  const sourceLink = sourcePdfPath
+    ? `\n\nOriginal PDF: [${title}](${sourcePdfPath})`
+    : "";
+  return (
+    `## ${title}\n\n` +
+    `Automatic PDF extraction could not finish for this file.\n\n` +
+    `Reason: ${reason}${sourceLink}\n\n` +
+    `You can still open the attached source PDF from this note.`
+  );
+}
+
+function scannedPdfMarkdown(
+  title: string,
+  sourcePdfPath: string | undefined,
+): string {
+  const sourceLink = sourcePdfPath
+    ? `\n\nOriginal PDF: [${title}](${sourcePdfPath})`
+    : "";
+  return (
+    `## ${title}\n\n` +
+    `This PDF appears to be scanned or image-based, so there was not enough embedded text to build a knowledge map automatically.${sourceLink}\n\n` +
+    `Upload it again with handwriting OCR enabled to transcribe the pages.`
+  );
+}
+
+function ocrUnavailableMarkdown(
+  title: string,
+  sourcePdfPath: string | undefined,
+  reason: string,
+): string {
+  const sourceLink = sourcePdfPath
+    ? `\n\nOriginal PDF: [${title}](${sourcePdfPath})`
+    : "";
+  return (
+    `## ${title}\n\n` +
+    `Handwriting OCR could not run right now because the AI usage limit was reached.\n\n` +
+    `Reason: ${reason}${sourceLink}\n\n` +
+    `No generated OCR text or knowledge topics were created from this failed run. Try again after the usage limit resets.`
+  );
+}
+
 async function transcribePageImage({
   client,
   dataUrl,
@@ -270,21 +855,104 @@ async function transcribePageImage({
 
 async function getPdfScreenshotPages(
   buffer: Buffer,
+  options?: { maxPages?: number; desiredWidth?: number },
 ): Promise<PdfScreenshotPage[]> {
   const parser = new PDFParse({ data: buffer });
   try {
-    const screenshots = await parser.getScreenshot({
-      desiredWidth: 1400,
-      imageBuffer: false,
-      imageDataUrl: true,
+    const info = await parser.getInfo();
+    const pages: PdfScreenshotPage[] = [];
+    const maxPage = options?.maxPages
+      ? Math.min(info.total, Math.max(1, options.maxPages))
+      : info.total;
+    const desiredWidth = options?.desiredWidth ?? 1200;
+
+    for (let first = 1; first <= maxPage; first += 4) {
+      const last = Math.min(first + 3, maxPage);
+      const screenshots = await parser.getScreenshot({
+        first,
+        last,
+        desiredWidth,
+        imageBuffer: false,
+        imageDataUrl: true,
+      });
+
+      pages.push(
+        ...screenshots.pages
+          .map((page) => ({
+            pageNumber: page.pageNumber,
+            dataUrl: page.dataUrl,
+          }))
+          .filter(
+            (page) => Number.isFinite(page.pageNumber) && Boolean(page.dataUrl),
+          ),
+      );
+    }
+
+    return pages.sort((a, b) => a.pageNumber - b.pageNumber);
+  } finally {
+    await parser.destroy();
+  }
+}
+
+async function getPdfTextPages(
+  buffer: Buffer,
+): Promise<{ text: string; pages: DocumentPage[]; warning: string }> {
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const info = await parser.getInfo();
+    const pages: DocumentPage[] = [];
+    const warnings: string[] = [];
+
+    const readRange = async (first: number, last: number): Promise<void> => {
+      try {
+        const result = await parser.getText({
+          first,
+          last,
+          pageJoiner: "\n\n",
+        });
+        pages.push(
+          ...result.pages.map((page) => ({
+            label: `Page ${page.num}`,
+            text: page.text,
+          })),
+        );
+      } catch (error) {
+        const reason =
+          error instanceof Error ? error.message : "PDF text extraction failed";
+        if (first < last) {
+          const middle = Math.floor((first + last) / 2);
+          await readRange(first, middle);
+          await readRange(middle + 1, last);
+          return;
+        }
+
+        warnings.push(`Page ${first}: ${reason}`);
+        pages.push({
+          label: `Page ${first}`,
+          text: `[PDF text extraction failed for Page ${first}: ${reason}]`,
+        });
+      }
+    };
+
+    for (let first = 1; first <= info.total; first += 12) {
+      const last = Math.min(first + 11, info.total);
+      await readRange(first, last);
+    }
+
+    pages.sort((left, right) => {
+      const leftPage = pageNumberFromLabel(left.label) ?? 0;
+      const rightPage = pageNumberFromLabel(right.label) ?? 0;
+      return leftPage - rightPage;
     });
 
-    return screenshots.pages
-      .map((page) => ({ pageNumber: page.pageNumber, dataUrl: page.dataUrl }))
-      .filter(
-        (page) => Number.isFinite(page.pageNumber) && Boolean(page.dataUrl),
-      )
-      .sort((a, b) => a.pageNumber - b.pageNumber);
+    return {
+      text: pagePlainText(pages),
+      pages,
+      warning:
+        warnings.length > 0
+          ? `PDF text extraction failed for ${warnings.length} page${warnings.length === 1 ? "" : "s"}: ${warnings.join("; ")}`
+          : "",
+    };
   } finally {
     await parser.destroy();
   }
@@ -293,23 +961,64 @@ async function getPdfScreenshotPages(
 async function transcribePdfPages(
   client: OpenAI,
   screenshots: PdfScreenshotPage[],
-): Promise<DocumentPage[]> {
-  const pages: DocumentPage[] = [];
+  signal?: AbortSignal,
+): Promise<{ pages: DocumentPage[]; warning: string; usageLimitReason?: string }> {
+  const pages = new Array<DocumentPage>(screenshots.length);
+  const warnings: string[] = [];
+  let usageLimitReason = "";
+  let nextIndex = 0;
 
-  for (const page of screenshots) {
-    const label = `Page ${page.pageNumber}`;
-    pages.push({
-      label,
-      text: await transcribePageImage({
-        client,
-        dataUrl: page.dataUrl,
-        label,
-        isHandwriting: true,
-      }),
-    });
+  async function worker() {
+    while (nextIndex < screenshots.length && !usageLimitReason) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const page = screenshots[index];
+      throwIfRequestAborted(signal);
+      const label = `Page ${page.pageNumber}`;
+      try {
+        pages[index] = {
+          label,
+          text: await transcribePageImage({
+            client,
+            dataUrl: page.dataUrl,
+            label,
+            isHandwriting: true,
+          }),
+        };
+      } catch (error) {
+        const reason = errorMessage(error, "vision OCR failed");
+        if (isUsageLimitError(error)) {
+          usageLimitReason = reason;
+          return;
+        }
+        warnings.push(`${label}: ${reason}`);
+        pages[index] = {
+          label,
+          text: `[OCR failed for ${label}: ${reason}]`,
+        };
+      }
+    }
   }
 
-  return pages;
+  await Promise.all(
+    Array.from({ length: Math.min(3, screenshots.length) }, () => worker()),
+  );
+
+  if (usageLimitReason) {
+    return {
+      pages: [],
+      warning: `Handwriting OCR could not run because the AI usage limit was reached: ${usageLimitReason}`,
+      usageLimitReason,
+    };
+  }
+
+  return {
+    pages: pages.filter(Boolean),
+    warning:
+      warnings.length > 0
+        ? `Handwriting OCR failed for ${warnings.length} page${warnings.length === 1 ? "" : "s"}: ${warnings.join("; ")}`
+        : "",
+  };
 }
 
 function stripXml(xml: string): string {
@@ -455,7 +1164,8 @@ export async function POST(request: Request) {
       typeof sourceLabel === "string" && sourceLabel.trim()
         ? sourceLabel.trim()
         : "upload";
-    const client = createChatmockClient(baseURL);
+
+    const client = generateMap ? createChatmockClient(baseURL) : undefined;
 
     // ── Text extraction ──────────────────────────────────────────────────────
 
@@ -464,6 +1174,7 @@ export async function POST(request: Request) {
     let pages: DocumentPage[] = [];
     let screenshotWarning = "";
     let sourcePdfPath: string | undefined;
+    let skipKnowledgeExtraction = false;
 
     if (isImageExt(ext)) {
       throwIfRequestAborted(request.signal);
@@ -471,12 +1182,14 @@ export async function POST(request: Request) {
       const base64 = Buffer.from(arrayBuffer).toString("base64");
       const dataUrl = `${mimeToBase64Prefix(file.type, ext)}${base64}`;
 
-      plainText = await transcribePageImage({
-        client,
-        dataUrl,
-        label: "Image",
-        isHandwriting,
-      });
+      plainText = generateMap
+        ? await transcribePageImage({
+            client: client!,
+            dataUrl,
+            label: "Image",
+            isHandwriting,
+          })
+        : "";
       throwIfRequestAborted(request.signal);
       const imageAsset = saveDataUrlAsset({
         contentPath,
@@ -506,84 +1219,164 @@ export async function POST(request: Request) {
         buffer,
         createdFilePaths,
       }).relativePath;
-      let screenshots: PdfScreenshotPage[] = [];
       try {
-        screenshots = await getPdfScreenshotPages(buffer);
-      } catch (error) {
-        screenshotWarning =
-          error instanceof Error
-            ? `PDF screenshot capture failed: ${error.message}`
-            : "PDF screenshot capture failed.";
-        screenshots = [];
-      }
+        if (!generateMap) {
+          const extractedPdf = await getPdfTextPages(buffer);
+          plainText = extractedPdf.text;
+          pages = extractedPdf.pages;
+          screenshotWarning = extractedPdf.warning;
+          markdownText = pageMarkdown(pages, { includeImages: false });
+        } else if (isHandwriting) {
+          let screenshots: PdfScreenshotPage[] = [];
+          try {
+            screenshots = await getPdfScreenshotPages(buffer, {
+              desiredWidth: 900,
+            });
+          } catch (error) {
+            screenshotWarning =
+              error instanceof Error
+                ? `PDF screenshot capture failed: ${error.message}`
+                : "PDF screenshot capture failed.";
+          }
 
-      if (isHandwriting) {
-        if (screenshots.length > 0) {
-          pages = await transcribePdfPages(client, screenshots);
-          throwIfRequestAborted(request.signal);
-          pages = attachPdfScreenshotAssets({
-            pages,
-            screenshots,
-            contentPath,
-            clusterSlug: normalizedClusterSlug,
-            sourceTitle: nameWithoutExt,
-            createdFilePaths,
-          });
+          if (screenshots.length > 0) {
+            const transcription = await transcribePdfPages(
+              client!,
+              screenshots,
+              request.signal,
+            );
+            if (transcription.usageLimitReason) {
+              skipKnowledgeExtraction = true;
+              screenshotWarning = transcription.warning;
+              pages = [
+                {
+                  label: "Handwriting OCR unavailable",
+                  text: `OCR was not run because the AI usage limit was reached: ${transcription.usageLimitReason}`,
+                },
+              ];
+              plainText = pagePlainText(pages);
+              markdownText = ocrUnavailableMarkdown(
+                nameWithoutExt,
+                sourcePdfPath,
+                transcription.usageLimitReason,
+              );
+            } else {
+              pages = transcription.pages;
+              if (transcription.warning) {
+                screenshotWarning = screenshotWarning
+                  ? `${screenshotWarning} ${transcription.warning}`
+                  : transcription.warning;
+              }
+              throwIfRequestAborted(request.signal);
+              const snapshotPages = screenshots.slice(
+                0,
+                PDF_SOURCE_SNAPSHOT_LIMIT,
+              );
+              pages = attachPdfScreenshotAssets({
+                pages,
+                screenshots: snapshotPages,
+                contentPath,
+                clusterSlug: normalizedClusterSlug,
+                sourceTitle: nameWithoutExt,
+                createdFilePaths,
+              });
+              if (screenshots.length > snapshotPages.length) {
+                const limitWarning = `Saved source snapshots for the first ${snapshotPages.length} page${snapshotPages.length === 1 ? "" : "s"} to keep the upload stable. OCR still processed ${screenshots.length} pages.`;
+                screenshotWarning = screenshotWarning
+                  ? `${screenshotWarning} ${limitWarning}`
+                  : limitWarning;
+              }
+            }
+          } else {
+            const extractedPdf = await getPdfTextPages(buffer);
+            pages = extractedPdf.pages;
+            if (extractedPdf.warning) {
+              screenshotWarning = screenshotWarning
+                ? `${screenshotWarning} ${extractedPdf.warning}`
+                : extractedPdf.warning;
+            }
+          }
+          plainText = pagePlainText(pages);
+          markdownText = pageMarkdown(pages);
         } else {
-          const parser = new PDFParse({ data: buffer });
-          const result = await parser.getText({ pageJoiner: "\n\n" });
-          await parser.destroy();
-          pages = result.pages.map((page) => ({
-            label: `Page ${page.num}`,
-            text: page.text,
-          }));
+          const extractedPdf = await getPdfTextPages(buffer);
+          plainText = extractedPdf.text;
+          pages = extractedPdf.pages;
+          if (extractedPdf.warning) {
+            screenshotWarning = screenshotWarning
+              ? `${screenshotWarning} ${extractedPdf.warning}`
+              : extractedPdf.warning;
+          }
+
+          const wordCount = plainText.trim().split(/\s+/).filter(Boolean).length;
+          if (wordCount < 30) {
+            skipKnowledgeExtraction = true;
+            screenshotWarning = screenshotWarning
+              ? `${screenshotWarning} This PDF appears to be scanned/image-based, so no embedded text was available for map generation.`
+              : "This PDF appears to be scanned/image-based, so no embedded text was available for map generation.";
+            pages = [
+              {
+                label: "Scanned PDF",
+                text: "No embedded text was found. Re-upload with handwriting OCR enabled to transcribe the pages.",
+              },
+            ];
+            plainText = pagePlainText(pages);
+            markdownText = scannedPdfMarkdown(nameWithoutExt, sourcePdfPath);
+          } else {
+            let screenshots: PdfScreenshotPage[] = [];
+            try {
+              screenshots = await getPdfScreenshotPages(buffer, {
+                maxPages: PDF_SOURCE_SNAPSHOT_LIMIT,
+                desiredWidth: 900,
+              });
+            } catch (error) {
+              const reason =
+                error instanceof Error
+                  ? error.message
+                  : "PDF screenshot capture failed.";
+              screenshotWarning = screenshotWarning
+                ? `${screenshotWarning} PDF screenshot capture failed: ${reason}`
+                : `PDF screenshot capture failed: ${reason}`;
+            }
+            throwIfRequestAborted(request.signal);
+            pages = attachPdfScreenshotAssets({
+              pages,
+              screenshots,
+              contentPath,
+              clusterSlug: normalizedClusterSlug,
+              sourceTitle: nameWithoutExt,
+              createdFilePaths,
+            });
+            const formattedPdf = await formatPdfPagesAsMarkdown({
+              client: client!,
+              title: nameWithoutExt,
+              pages,
+              signal: request.signal,
+            });
+
+            if (formattedPdf.warning) {
+              screenshotWarning = screenshotWarning
+                ? `${screenshotWarning} ${formattedPdf.warning}`
+                : formattedPdf.warning;
+            }
+
+            markdownText = appendSnapshots(formattedPdf.markdownText, pages);
+          }
         }
-        plainText = pagePlainText(pages);
-        markdownText = pageMarkdown(pages);
-      } else {
-        const parser = new PDFParse({ data: buffer });
-        const result = await parser.getText({ pageJoiner: "\n\n" });
-        await parser.destroy();
-
-        plainText = result.text;
-        pages = result.pages.map((page) => ({
-          label: `Page ${page.num}`,
-          text: page.text,
-        }));
-        throwIfRequestAborted(request.signal);
-        pages = attachPdfScreenshotAssets({
-          pages,
-          screenshots,
-          contentPath,
-          clusterSlug: normalizedClusterSlug,
-          sourceTitle: nameWithoutExt,
-          createdFilePaths,
-        });
-
-        const mdResponse = await client.chat.completions.create({
-          model: DEFAULT_MODEL,
-          messages: [
-            {
-              role: "system",
-              content:
-                "Convert raw PDF-extracted text into well-structured Markdown. " +
-                "Preserve all content. Add headers, bullet lists, bold for key terms. " +
-                "Clean up PDF artifacts. Return only Markdown, no commentary.",
-            },
-            {
-              role: "user",
-              content: `Convert this to Markdown:\n\n${plainText}`,
-            },
-          ],
-        });
-
-        markdownText = appendSnapshots(
-          mdResponse.choices[0]?.message?.content ?? plainText,
-          pages,
-        );
-      }
-      if (screenshots.length === 0 && !screenshotWarning) {
-        screenshotWarning = "No page screenshots were returned for this PDF.";
+      } catch (error) {
+        if (
+          error instanceof UploadAbortedError ||
+          (error instanceof Error && error.name === "AbortError")
+        ) {
+          throw error;
+        }
+        const reason =
+          error instanceof Error ? error.message : "PDF extraction failed.";
+        skipKnowledgeExtraction = true;
+        screenshotWarning = `Rich PDF extraction failed: ${reason}. Saved the original PDF as a source note instead.`;
+        plainText = `PDF upload fallback for ${filename}. ${reason}`;
+        pages = [{ label: "PDF", text: plainText }];
+        markdownText = pdfFallbackMarkdown(nameWithoutExt, sourcePdfPath, reason);
       }
     } else if (ext === "csv") {
       plainText = await file.text();
@@ -621,9 +1414,9 @@ export async function POST(request: Request) {
 
     let extraction: KnowledgeExtraction;
     throwIfRequestAborted(request.signal);
-    if (generateMap) {
+    if (generateMap && !skipKnowledgeExtraction) {
       extraction = await extractDocumentKnowledge({
-        client,
+        client: client!,
         title: nameWithoutExt,
         sourceType: ext || "text",
         sourceLabel: source,
@@ -632,9 +1425,12 @@ export async function POST(request: Request) {
         text: plainText,
       });
     } else {
+      const summary = plainText.trim()
+        ? plainText.trim().slice(0, 300)
+        : `Uploaded ${filename} without map generation.`;
       extraction = {
         documentTitle: nameWithoutExt,
-        summary: plainText.slice(0, 300),
+        summary,
         topics: [],
         relationships: [],
         suggestedTags: [],
@@ -676,6 +1472,9 @@ export async function POST(request: Request) {
       cleanupCreatedFiles(createdMarkdownPaths);
       cleanupCreatedFiles(createdFilePaths);
       return NextResponse.json({ error: "Upload canceled" }, { status: 499 });
+    }
+    if (createdMarkdownPaths.length === 0) {
+      cleanupCreatedFiles(createdFilePaths);
     }
     return routeErrorResponse(err);
   }

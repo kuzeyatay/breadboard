@@ -60,11 +60,35 @@ interface RelatedNote {
   title: string;
 }
 
+interface PlacementCandidate {
+  slug: string;
+  title: string;
+  tags: string[];
+  excerpt: string;
+  content: string;
+  score: number;
+}
+
+interface PlacementDecision {
+  action: 'create' | 'merge';
+  targetSlug?: string;
+  reason?: string;
+}
+
 function stripMarkdownFence(value: string): string {
   return value
     .replace(/^```(?:json|markdown|md)?\s*/m, '')
     .replace(/\s*```$/m, '')
     .trim();
+}
+
+function stripFrontmatter(value: string): string {
+  return value.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim();
+}
+
+function truncateForPrompt(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength).trimEnd()}\n\n[Truncated]`;
 }
 
 function titleFromMarkdown(content: string): string {
@@ -177,6 +201,233 @@ function buildNoteBody(title: string, content: string, related: RelatedNote[]): 
   return `${contentWithHeading(title, content).trim()}${relatedSection}`;
 }
 
+function chatPlacementCandidates({
+  contentPath,
+  clusterSlug,
+  title,
+  content,
+  tags,
+}: {
+  contentPath: string;
+  clusterSlug: string;
+  title: string;
+  content: string;
+  tags: string[];
+}): PlacementCandidate[] {
+  const queryTokens = tokenSet(`${title}\n${content}\n${tags.join(' ')}`);
+  const titleTokens = tokenSet(title);
+  const tagSet = new Set(tags);
+
+  return scanClusterKnowledge(contentPath, clusterSlug)
+    .nodes
+    .filter((node) => node.type !== 'source-document' && node.type !== 'cluster-index')
+    .map((node) => {
+      const sharedTags = node.tags.filter((tag) => tagSet.has(tag)).length;
+      const titleOverlap = overlapScore(titleTokens, tokenSet(node.title));
+      const contentOverlap = overlapScore(
+        queryTokens,
+        tokenSet(`${node.title}\n${node.excerpt}\n${node.tags.join(' ')}`),
+      );
+      return {
+        slug: node.slug,
+        title: node.title,
+        tags: node.tags,
+        excerpt: node.excerpt,
+        content: stripFrontmatter(node.content),
+        score: sharedTags * 0.35 + titleOverlap * 0.4 + contentOverlap * 0.25,
+      };
+    })
+    .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
+    .slice(0, 10);
+}
+
+async function decideChatNotePlacement({
+  client,
+  model,
+  clusterInventory,
+  candidates,
+  title,
+  content,
+  tags,
+}: {
+  client: OpenAI;
+  model: string;
+  clusterInventory: PlacementCandidate[];
+  candidates: PlacementCandidate[];
+  title: string;
+  content: string;
+  tags: string[];
+}): Promise<PlacementDecision> {
+  if (candidates.length === 0) return { action: 'create', reason: 'No candidate notes exist.' };
+
+  const response = await client.chat.completions.create({
+    model,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You decide whether a newly saved chat markdown belongs inside an existing digital-garden markdown note or should become a new note. Return ONLY JSON. Merge only when the new content is the same topic, a direct expansion of the same note, or substantially duplicate material. Create a new note when it is broader, narrower, adjacent, only related, or would make the target note incoherent.',
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          newNote: {
+            title,
+            tags,
+            content: truncateForPrompt(content, 6000),
+          },
+          clusterInventory: clusterInventory.map((note) => ({
+            slug: note.slug,
+            title: note.title,
+            tags: note.tags,
+            excerpt: truncateForPrompt(note.excerpt, 450),
+          })),
+          fullCandidateNotes: candidates.map((note) => ({
+            slug: note.slug,
+            title: note.title,
+            tags: note.tags,
+            content: truncateForPrompt(note.content, 2200),
+          })),
+          responseShape: {
+            action: 'create or merge',
+            targetSlug: 'required only when action is merge',
+            reason: 'short explanation',
+          },
+        }),
+      },
+    ],
+  });
+
+  const raw = stripMarkdownFence(response.choices[0]?.message?.content ?? '{}');
+  try {
+    const parsed = JSON.parse(raw) as PlacementDecision;
+    if (parsed.action === 'merge' && candidates.some((note) => note.slug === parsed.targetSlug)) {
+      return parsed;
+    }
+    return { action: 'create', reason: parsed.reason ?? 'No valid merge target selected.' };
+  } catch {
+    return { action: 'create', reason: 'Placement decision could not be parsed.' };
+  }
+}
+
+async function generateChatNoteTags(
+  client: OpenAI,
+  model: string,
+  title: string,
+  content: string,
+): Promise<string[]> {
+  try {
+    const response = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Return a JSON array of 4–8 lowercase hyphenated subject tags for the given content. ' +
+            'Use precise domain terms, named concepts, methods, formulas, or named entities from the material. ' +
+            'Never include generic words, common verbs, articles, or modal words (e.g. note, content, use, can, may, not, how, all, any).',
+        },
+        {
+          role: 'user',
+          content: `Title: ${title}\n\n${content.slice(0, 4000)}`,
+        },
+      ],
+    });
+    const raw = stripMarkdownFence(response.choices[0]?.message?.content ?? '[]');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((t): t is string => typeof t === 'string');
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function wordOverlap(a: string, b: string): number {
+  const words = (text: string) =>
+    new Set(text.toLowerCase().split(/\W+/).filter((w) => w.length > 3));
+  const wa = words(a);
+  const wb = words(b);
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let shared = 0;
+  for (const w of wb) if (wa.has(w)) shared++;
+  return shared / Math.max(wa.size, wb.size);
+}
+
+async function harmonizeChatNote({
+  client,
+  model,
+  existingFileContent,
+  newTitle,
+  newContent,
+  newTags,
+}: {
+  client: OpenAI;
+  model: string;
+  existingFileContent: string;
+  newTitle: string;
+  newContent: string;
+  newTags: string[];
+}): Promise<string> {
+  const existingBody = stripFrontmatter(existingFileContent);
+
+  // Skip harmonization when the new content is near-identical to what's already saved
+  // (e.g. saving the same chat twice with no new messages)
+  if (wordOverlap(existingBody, newContent) > 0.7) {
+    return existingFileContent;
+  }
+
+  let mergedBody = '';
+
+  try {
+    const response = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Merge two markdown notes on the same topic into one coherent note. ' +
+            'Integrate the new content naturally into the existing structure, expanding or refining sections with new details. ' +
+            'Eliminate redundancy while preserving unique facts from both. ' +
+            'Keep a clean heading hierarchy with no duplicate headings. ' +
+            'Return ONLY the merged markdown body — no frontmatter, no code fences.',
+        },
+        {
+          role: 'user',
+          content: `### Existing note\n\n${existingBody}\n\n### New content to integrate\n\n${newContent}`,
+        },
+      ],
+    });
+    mergedBody = response.choices[0]?.message?.content?.trim() ?? '';
+  } catch {
+    mergedBody = '';
+  }
+
+  if (!mergedBody) {
+    return `${existingFileContent.trimEnd()}\n\n---\n\n${contentWithHeading(newTitle, newContent).trim()}\n`;
+  }
+
+  const fmMatch = existingFileContent.match(/^(---\r?\n[\s\S]*?\r?\n---\r?\n?)/);
+  if (!fmMatch) return `${mergedBody}\n`;
+
+  let fm = fmMatch[1];
+  fm = fm.replace(/^date:.*$/m, `date: ${yamlQuote(new Date().toISOString())}`);
+
+  const existingTagsMatch = fm.match(/^tags:\s*(\[.*?\])/m);
+  if (existingTagsMatch) {
+    const existingTags = existingTagsMatch[1]
+      .slice(1, -1)
+      .split(',')
+      .map((t) => t.trim().replace(/^["']|["']$/g, ''))
+      .filter(Boolean);
+    const mergedTags = [...new Set([...existingTags, ...newTags])].slice(0, 10);
+    fm = fm.replace(/^tags:.*$/m, `tags: ${yamlArray(mergedTags)}`);
+  }
+
+  return `${fm}${mergedBody}\n`;
+}
+
 export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
@@ -201,6 +452,7 @@ export async function POST(request: Request) {
     fs.mkdirSync(clusterDir, { recursive: true });
     const timestamp = Date.now();
     const date = new Date().toISOString();
+    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-5.5';
 
     if (mode === 'chat-note') {
       const sourceMessage = latestAssistantMessage(messages as ChatMessage[]);
@@ -211,11 +463,63 @@ export async function POST(request: Request) {
 
       const title = titleFromMarkdown(sourceContent);
       const finalSlug = `${slugify(title)}-${timestamp}`;
+      const chatClient = new OpenAI({ baseURL, apiKey: process.env.OPENAI_API_KEY });
+      const preliminaryTags = semanticTagsFromText(`${title}\n${sourceContent}`, 8);
+      const placementCandidates = chatPlacementCandidates({
+        contentPath,
+        clusterSlug: normalizedClusterSlug,
+        title,
+        content: sourceContent,
+        tags: preliminaryTags,
+      });
+      const [llmTags, placementDecision] = await Promise.all([
+        generateChatNoteTags(chatClient, selectedModel, title, sourceContent),
+        decideChatNotePlacement({
+          client: chatClient,
+          model: selectedModel,
+          clusterInventory: placementCandidates,
+          candidates: placementCandidates.slice(0, 5),
+          title,
+          content: sourceContent,
+          tags: preliminaryTags,
+        }),
+      ]);
       const tags = normalizeTopicTags(
-        semanticTagsFromText(`${title}\n${sourceContent}`, 8),
+        llmTags.length >= 3 ? llmTags : preliminaryTags,
         sourceContent,
         8,
       );
+
+      if (placementDecision.action === 'merge' && placementDecision.targetSlug) {
+        const targetPath = path.join(clusterDir, `${placementDecision.targetSlug}.md`);
+        if (fs.existsSync(targetPath)) {
+          const target = placementCandidates.find((note) => note.slug === placementDecision.targetSlug);
+          const harmonized = await harmonizeChatNote({
+            client: chatClient,
+            model: selectedModel,
+            existingFileContent: fs.readFileSync(targetPath, 'utf-8'),
+            newTitle: title,
+            newContent: sourceContent,
+            newTags: tags,
+          });
+          fs.writeFileSync(targetPath, harmonized, 'utf-8');
+          refreshClusterIndex(contentPath, normalizedClusterSlug);
+          await publishQuartzAfterMutation(`harmonize chat note into ${placementDecision.targetSlug}`);
+
+          return NextResponse.json({
+            success: true,
+            notes: [
+              {
+                slug: placementDecision.targetSlug,
+                title: target?.title ?? title,
+                action: 'merged',
+                reason: placementDecision.reason ?? '',
+              },
+            ],
+          });
+        }
+      }
+
       const related = findRelatedNotes({
         contentPath,
         clusterSlug: normalizedClusterSlug,
@@ -232,6 +536,7 @@ export async function POST(request: Request) {
           date,
           source: 'generated-chat',
           knowledge_type: 'generated-note',
+          generated_note_type: 'chat-node',
           generated_by: 'chatmock',
           related: related.map((note) => note.slug),
           tags,
@@ -241,7 +546,7 @@ export async function POST(request: Request) {
       refreshClusterIndex(contentPath, normalizedClusterSlug);
       await publishQuartzAfterMutation(`generate chat note in ${normalizedClusterSlug}`);
 
-      return NextResponse.json({ success: true, notes: [{ slug: finalSlug, title }] });
+      return NextResponse.json({ success: true, notes: [{ slug: finalSlug, title, action: 'created' }] });
     }
 
     const client = new OpenAI({
@@ -252,8 +557,6 @@ export async function POST(request: Request) {
     const conversationText = messages
       .map((message: { role: string; content: string }) => `${message.role.toUpperCase()}: ${message.content}`)
       .join('\n\n');
-
-    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-5.4';
 
     const response = await client.chat.completions.create({
       model: selectedModel,
@@ -289,6 +592,41 @@ export async function POST(request: Request) {
         note.content,
         8,
       );
+
+      const noteCandidates = chatPlacementCandidates({
+        contentPath,
+        clusterSlug: normalizedClusterSlug,
+        title: note.title,
+        content: note.content,
+        tags,
+      });
+      const notePlacement = await decideChatNotePlacement({
+        client,
+        model: selectedModel,
+        clusterInventory: noteCandidates,
+        candidates: noteCandidates.slice(0, 5),
+        title: note.title,
+        content: note.content,
+        tags,
+      });
+
+      if (notePlacement.action === 'merge' && notePlacement.targetSlug) {
+        const targetPath = path.join(clusterDir, `${notePlacement.targetSlug}.md`);
+        if (fs.existsSync(targetPath)) {
+          const harmonized = await harmonizeChatNote({
+            client,
+            model: selectedModel,
+            existingFileContent: fs.readFileSync(targetPath, 'utf-8'),
+            newTitle: note.title,
+            newContent: note.content,
+            newTags: tags,
+          });
+          fs.writeFileSync(targetPath, harmonized, 'utf-8');
+          savedNotes.push({ slug: notePlacement.targetSlug, title: note.title });
+          continue;
+        }
+      }
+
       const related = findRelatedNotes({
         contentPath,
         clusterSlug: normalizedClusterSlug,

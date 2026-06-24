@@ -37,6 +37,8 @@ interface ChatSession {
 interface DocInfo {
   name: string;
   slug: string;
+  folder: string;
+  relPath: string;
   title: string;
   type: string;
   sourceType: string;
@@ -49,9 +51,43 @@ interface DocInfo {
   date: string;
 }
 
+function normalizedSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function documentSearchText(doc: DocInfo): string {
+  return normalizedSearchText(
+    [
+      doc.title,
+      doc.name,
+      doc.slug,
+      doc.sourceFile,
+      doc.sourcePdf,
+      doc.folder,
+      doc.relPath,
+      doc.sourceType,
+      ...(Array.isArray(doc.locations) ? doc.locations : []),
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
 interface GeneratedNoteResult {
   slug: string;
   title: string;
+  action?: "created" | "merged";
+  reason?: string;
+}
+
+interface MarkdownTagUpdateResult {
+  slug: string;
+  title: string;
+  tags: string[];
+  reason?: string;
 }
 
 interface Props {
@@ -136,11 +172,85 @@ function isGardenSaveCommand(text: string): boolean {
   return patterns.some((pattern) => pattern.test(normalized));
 }
 
+function hasRecentMarkdownTaggingContext(messages: Message[]): boolean {
+  const recentText = messages
+    .slice(-8)
+    .map((message) => message.content.toLowerCase())
+    .join("\n\n");
+
+  return (
+    /\b(?:tags?|tagging|frontmatter)\b/.test(recentText) &&
+    /\b(?:week-[1-9]|midterm-topic|final-topic|exam-prep|lab-[1-3])\b/.test(
+      recentText,
+    )
+  );
+}
+
+function isMarkdownTagCommand(text: string, messages: Message[] = []): boolean {
+  const normalized = text
+    .trim()
+    .toLowerCase()
+    .replace(/[,.!?]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^please\s+/, "")
+    .trim();
+
+  if (!normalized) return false;
+  if (/^(?:how|what|why|where|when|who)\b/.test(normalized)) return false;
+
+  const targets =
+    "(?:markdowns?|notes?|documents?|topics?|sources?|materials?|garden\\s+notes?|chat\\s+notes?)";
+  const patterns = [
+    new RegExp(
+      `^(?:can|could|would)?\\s*(?:you\\s+)?(?:add|apply|set|update|replace|retag|tag)\\b.*\\btags?\\b.*\\b(?:to|for|on|across|in)\\b.*\\b${targets}\\b`,
+    ),
+    new RegExp(
+      `^(?:can|could|would)?\\s*(?:you\\s+)?(?:tag|retag)\\b.*\\b${targets}\\b`,
+    ),
+    new RegExp(
+      `^(?:can|could|would)?\\s*(?:you\\s+)?(?:categorize|classify|label|organize)\\b.*\\b${targets}\\b.*\\b(?:with|using|by|based\\s+on)\\b`,
+    ),
+  ];
+
+  if (patterns.some((pattern) => pattern.test(normalized))) return true;
+
+  if (!hasRecentMarkdownTaggingContext(messages)) return false;
+
+  return (
+    /\btags?\b/.test(normalized) &&
+    /\b(?:add|apply|include|use|also|extra|suggested|relevant|them|these|those)\b/.test(
+      normalized,
+    )
+  );
+}
+
 function markdownTypeLabel(doc: DocInfo): string {
   if (doc.type === "generated-note") return "chat note";
   if (doc.type === "knowledge-topic") return "topic";
   if (doc.type === "source-document") return doc.sourceType || "source";
   return doc.type || "note";
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Could not read image"));
+      }
+    };
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Could not read image"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function pastedImageName(file: File, index: number): string {
+  if (file.name && file.name !== "image.png") return file.name;
+  const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+  return `pasted-screenshot-${index + 1}.${ext}`;
 }
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
@@ -317,7 +427,7 @@ const DEFAULT_PROMPTS: SavedPrompt[] = [
     id: "dp-1",
     title: "Summarize all documents",
     content:
-      "Summarize the key points from all documents in this cluster into a concise, structured overview with clear headings.",
+      "Summarize the key points from all documents in this garden into a concise, structured overview with clear headings.",
     category: "Summary",
     isDefault: true,
   },
@@ -333,7 +443,7 @@ const DEFAULT_PROMPTS: SavedPrompt[] = [
     id: "dp-3",
     title: "Quiz me",
     content:
-      "Generate 8 quiz questions based on the content in this cluster to test my understanding. Mix multiple choice and open questions. Include correct answers at the end.",
+      "Generate 8 quiz questions based on the content in this garden to test my understanding. Mix multiple choice and open questions. Include correct answers at the end.",
     category: "Study",
     isDefault: true,
   },
@@ -341,7 +451,7 @@ const DEFAULT_PROMPTS: SavedPrompt[] = [
     id: "dp-4",
     title: "Explain like I'm a beginner",
     content:
-      "Explain the main concepts in this cluster as if I have no prior background in the subject. Use simple language, analogies, and real-world examples.",
+      "Explain the main concepts in this garden as if I have no prior background in the subject. Use simple language, analogies, and real-world examples.",
     category: "Study",
     isDefault: true,
   },
@@ -349,7 +459,7 @@ const DEFAULT_PROMPTS: SavedPrompt[] = [
     id: "dp-5",
     title: "Find connections",
     content:
-      "Identify and explain the key connections, relationships, and dependencies between the topics and documents in this cluster. Show how ideas link together.",
+      "Identify and explain the key connections, relationships, and dependencies between the topics and documents in this garden. Show how ideas link together.",
     category: "Analysis",
     isDefault: true,
   },
@@ -432,16 +542,26 @@ export default function WorkspaceClient({
   forkAllowed,
 }: Props) {
   const router = useRouter();
-  const { toasts, addToast } = useToast();
+  const { toasts, addToast, dismissToast } = useToast();
 
   // Documents sidebar
   const [documents, setDocuments] = useState<DocInfo[]>([]);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [draggingSlug, setDraggingSlug] = useState<string | null>(null);
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+  const [movingSlug, setMovingSlug] = useState<string | null>(null);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [loadingDocs, setLoadingDocs] = useState(true);
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
   const [docsExpanded, setDocsExpanded] = useState(false);
-  const [sourceDocsExpanded, setSourceDocsExpanded] = useState(true);
+  const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
+  const [sourceDocSearch, setSourceDocSearch] = useState("");
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [savingFlagSlug, setSavingFlagSlug] = useState<string | null>(null);
+  const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
+    [],
+  );
   const [openFlagPaletteSlug, setOpenFlagPaletteSlug] = useState<string | null>(
     null,
   );
@@ -457,6 +577,11 @@ export default function WorkspaceClient({
   const [confirmDeleteChatId, setConfirmDeleteChatId] = useState<number | null>(
     null,
   );
+  const [editingChatId, setEditingChatId] = useState<number | null>(null);
+  const [editingChatTitle, setEditingChatTitle] = useState("");
+  const [savingChatTitleId, setSavingChatTitleId] = useState<number | null>(
+    null,
+  );
   const [isForking, setIsForking] = useState(false);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -469,6 +594,7 @@ export default function WorkspaceClient({
   const [uploadStatuses, setUploadStatuses] = useState<
     Record<string, FileStatus>
   >({});
+  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
@@ -503,11 +629,12 @@ export default function WorkspaceClient({
   const [showNewNote, setShowNewNote] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState("");
   const [newNoteContent, setNewNoteContent] = useState("");
+  const [newNoteFolder, setNewNoteFolder] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
 
   // Model selector
-  const [model, setModel] = useState("gpt-5.4");
-  const [models, setModels] = useState<string[]>(["gpt-5.4"]);
+  const [model, setModel] = useState("gpt-5.5");
+  const [models, setModels] = useState<string[]>(["gpt-5.5", "gpt-5.4"]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -537,7 +664,7 @@ export default function WorkspaceClient({
             .filter((id: string | null): id is string => Boolean(id))
         : [];
       if (ids.length > 0) {
-        setModels(Array.from(new Set(["gpt-5.4", ...ids])));
+        setModels(Array.from(new Set(["gpt-5.5", "gpt-5.4", ...ids])));
       }
       setModelsLoaded(true);
     } catch {
@@ -555,6 +682,7 @@ export default function WorkspaceClient({
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents ?? []);
+        setFolders(Array.isArray(data.folders) ? data.folders : []);
       }
     } catch {
       // ignore
@@ -605,9 +733,10 @@ export default function WorkspaceClient({
 
   // ── New markdown note ────────────────────────────────────────────────────────
 
-  function openNewNoteModal() {
+  function openNewNoteModal(defaultFolder = "") {
     setNewNoteTitle("");
     setNewNoteContent("");
+    setNewNoteFolder(defaultFolder);
     setShowNewNote(true);
   }
 
@@ -623,6 +752,7 @@ export default function WorkspaceClient({
           clusterSlug,
           title: newNoteTitle.trim(),
           content: newNoteContent,
+          folder: newNoteFolder,
         }),
       });
       if (!res.ok) {
@@ -632,7 +762,7 @@ export default function WorkspaceClient({
       }
       setShowNewNote(false);
       await fetchDocuments();
-      addToast("Note saved");
+      addToast("Note saved", "success");
     } catch {
       addToast("Failed to save note");
     } finally {
@@ -647,6 +777,7 @@ export default function WorkspaceClient({
     uploadAbortControllerRef.current = null;
     setUploadFiles([]);
     setUploadStatuses({});
+    setUploadErrors({});
     setUploadLabel("");
     setIsHandwriting(false);
     setGenerateMap(true);
@@ -676,7 +807,23 @@ export default function WorkspaceClient({
   }
 
   function removeUploadFile(index: number) {
-    setUploadFiles((prev) => prev.filter((_, i) => i !== index));
+    setUploadFiles((prev) => {
+      const removed = prev[index];
+      if (removed) {
+        const key = fileKey(removed);
+        setUploadStatuses((statuses) => {
+          const next = { ...statuses };
+          delete next[key];
+          return next;
+        });
+        setUploadErrors((errors) => {
+          const next = { ...errors };
+          delete next[key];
+          return next;
+        });
+      }
+      return prev.filter((_, i) => i !== index);
+    });
   }
 
   async function handleUpload(e: React.FormEvent) {
@@ -692,6 +839,7 @@ export default function WorkspaceClient({
       initial[fileKey(f)] = "pending";
     });
     setUploadStatuses(initial);
+    setUploadErrors({});
 
     let successCount = 0;
     let snapshotCount = 0;
@@ -721,10 +869,17 @@ export default function WorkspaceClient({
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
+          const message = typeof data.error === "string" ? data.error : "Upload failed";
           setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-          addToast(`${file.name}: ${data.error ?? "Upload failed"}`);
+          setUploadErrors((prev) => ({ ...prev, [key]: message }));
+          addToast(`${file.name}: ${message}`);
         } else {
           setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
+          setUploadErrors((prev) => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
           successCount++;
           snapshotCount +=
             typeof data.imageCount === "number" ? data.imageCount : 0;
@@ -739,7 +894,9 @@ export default function WorkspaceClient({
         if (aborted) break;
 
         setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-        addToast(`${file.name}: Network error`);
+        const message = error instanceof Error ? error.message : "Network error";
+        setUploadErrors((prev) => ({ ...prev, [key]: message }));
+        addToast(`${file.name}: ${message}`);
       }
     }
 
@@ -765,6 +922,7 @@ export default function WorkspaceClient({
         addToast("Upload canceled");
       }
       setUploadStatuses({});
+      setUploadErrors({});
       setUploadFiles([]);
       setUploadLabel("");
       setIsHandwriting(false);
@@ -779,9 +937,7 @@ export default function WorkspaceClient({
 
   // ── Chat attachments ────────────────────────────────────────────────────────
 
-  async function handleChatFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
+  async function attachChatFiles(files: File[]) {
     if (files.length === 0) return;
 
     setExtractingAttachments(true);
@@ -794,11 +950,14 @@ export default function WorkspaceClient({
           // Extract via API (handles vision / OCR)
           const fd = new FormData();
           fd.append("file", file);
+          fd.append("isHandwriting", String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)));
           const res = await fetch("/api/extract-text", {
             method: "POST",
             body: fd,
           });
           const data = await res.json();
+          if (!res.ok || data.error) throw new Error(data.error ?? "Extraction failed");
+          if (data.warning) addToast(`${file.name}: ${data.warning}`);
           if (data.type === "image") {
             results.push({
               type: "image",
@@ -838,16 +997,18 @@ export default function WorkspaceClient({
           // Binary formats (pdf, docx, pptx, xlsx, zip) — extract server-side
           const fd = new FormData();
           fd.append("file", file);
+          fd.append("isHandwriting", String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)));
           const res = await fetch("/api/extract-text", {
             method: "POST",
             body: fd,
           });
           const data = await res.json();
-          if (data.error) throw new Error(data.error);
+          if (!res.ok || data.error) throw new Error(data.error ?? "Extraction failed");
+          if (data.warning) addToast(`${file.name}: ${data.warning}`);
           results.push({ type: "text", text: data.text, name: file.name });
         }
-      } catch {
-        addToast(`Could not read ${file.name}`);
+      } catch (error) {
+        addToast(error instanceof Error ? `${file.name}: ${error.message}` : `Could not read ${file.name}`);
       }
     }
 
@@ -855,8 +1016,51 @@ export default function WorkspaceClient({
     setExtractingAttachments(false);
   }
 
+  async function handleChatFileInput(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    await attachChatFiles(files);
+  }
+
+  async function handleChatPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const imageFiles = Array.from(e.clipboardData.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    if (imageFiles.length === 0) return;
+
+    e.preventDefault();
+    setExtractingAttachments(true);
+    try {
+      const pastedImages = await Promise.all(
+        imageFiles.map(async (file, index) => ({
+          type: "image" as const,
+          dataUrl: await fileToDataUrl(file),
+          name: pastedImageName(file, index),
+        })),
+      );
+      setChatAttachments((prev) => [...prev, ...pastedImages]);
+      addToast(
+        `Pasted ${pastedImages.length} screenshot${pastedImages.length === 1 ? "" : "s"}`,
+      );
+    } catch {
+      addToast("Could not read pasted image");
+    } finally {
+      setExtractingAttachments(false);
+    }
+  }
+
   function removeChatAttachment(index: number) {
     setChatAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function toggleSelectedDocument(slug: string) {
+    setSelectedDocumentSlugs((prev) =>
+      prev.includes(slug)
+        ? prev.filter((item) => item !== slug)
+        : [...prev, slug],
+    );
   }
 
   // ── Document delete ─────────────────────────────────────────────────────────
@@ -925,7 +1129,7 @@ export default function WorkspaceClient({
       const deleted = new Set(deletedSlugs);
       setDocuments((prev) => prev.filter((item) => !deleted.has(item.slug)));
       setGraphRefreshVersion((v) => v + 1);
-      addToast(isSource ? "Source PDF deleted" : "Document deleted");
+      addToast(isSource ? "Source PDF deleted" : "Document deleted", "success");
     } catch {
       setDocuments(previousDocuments);
       addToast("Failed to delete document");
@@ -1020,11 +1224,11 @@ export default function WorkspaceClient({
     setIsForking(true);
     try {
       const forked = await forkCluster(clusterSlug);
-      addToast("Forked into your private clusters");
-      router.push(`/clusters/${forked.slug}`);
+      addToast("Forked into your private gardens", "success");
+      router.push(`/gardens/${forked.slug}`);
       router.refresh();
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to fork cluster");
+      addToast(err instanceof Error ? err.message : "Failed to fork garden");
     } finally {
       setIsForking(false);
     }
@@ -1052,6 +1256,53 @@ export default function WorkspaceClient({
 
   // ── Garden note generation ──────────────────────────────────────────────────
 
+  function startRenameChat(session: ChatSession) {
+    if (isStreaming || session.isOwn === false) return;
+    setConfirmDeleteChatId(null);
+    setEditingChatId(session.id);
+    setEditingChatTitle(session.title);
+  }
+
+  function cancelRenameChat() {
+    setEditingChatId(null);
+    setEditingChatTitle("");
+  }
+
+  async function saveChatTitle(sessionId: number) {
+    const title = editingChatTitle.trim().replace(/\s+/g, " ");
+    if (!title) {
+      addToast("Chat name cannot be empty");
+      return;
+    }
+
+    const session = chatSessions.find((item) => item.id === sessionId);
+    if (!session || session.isOwn === false) return;
+
+    const previousSessions = chatSessions;
+    setSavingChatTitleId(sessionId);
+    setChatSessions((prev) =>
+      prev.map((item) => (item.id === sessionId ? { ...item, title } : item)),
+    );
+
+    try {
+      const res = await fetch(`/api/chat-sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? "Failed to rename chat");
+      }
+      cancelRenameChat();
+    } catch (err) {
+      setChatSessions(previousSessions);
+      addToast(err instanceof Error ? err.message : "Failed to rename chat");
+    } finally {
+      setSavingChatTitleId(null);
+    }
+  }
+
   async function generateGardenNotes(
     sourceMessages: Message[],
     mode: "atomic" | "chat-note" = "atomic",
@@ -1073,20 +1324,68 @@ export default function WorkspaceClient({
     return (data.notes ?? []) as GeneratedNoteResult[];
   }
 
+  async function tagMarkdownsFromRequest(
+    requestText: string,
+    sourceMessages: Message[],
+    pendingAttachments: ChatAttachment[],
+  ): Promise<{
+    summary: string;
+    updated: MarkdownTagUpdateResult[];
+  }> {
+    const response = await fetch("/api/tag-markdowns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clusterSlug,
+        request: requestText,
+        messages: sourceMessages.map(({ role, content }) => ({ role, content })),
+        model,
+        attachments: pendingAttachments,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+      throw new Error(data.error ?? "Failed to update markdown tags");
+    }
+
+    return {
+      summary:
+        typeof data.summary === "string" && data.summary.trim()
+          ? data.summary.trim()
+          : "Updated markdown tags.",
+      updated: Array.isArray(data.updated)
+        ? (data.updated as MarkdownTagUpdateResult[])
+        : [],
+    };
+  }
+
   async function handleGenerateNotes() {
     if (messages.length === 0 || isGenerating) return;
     setIsGenerating(true);
     try {
-      const notes = await generateGardenNotes(messages);
+      const hasAssistantResponse = messages.some(
+        (message) => message.role === "assistant" && message.content.trim(),
+      );
+      if (!hasAssistantResponse) {
+        addToast("No assistant response to save as markdown yet");
+        setDocsExpanded(true);
+        return;
+      }
+
+      const notes = await generateGardenNotes(messages, "chat-note");
       const count = notes.length;
+      const mergedCount = notes.filter((note) => note.action === "merged").length;
       addToast(
         count > 0
-          ? `Generated ${count} garden note${count === 1 ? "" : "s"} from this conversation`
-          : "No new notes could be extracted from this conversation",
+          ? mergedCount > 0
+            ? `Updated existing markdown note: ${notes.map((note) => note.title).join(", ")}`
+            : `Created markdown note: ${notes.map((note) => note.title).join(", ")}`
+          : "No assistant response could be saved as markdown",
+        count > 0 ? "success" : "error",
       );
+      setDocsExpanded(true);
       if (count > 0) {
         await fetchDocuments();
-        setDocsExpanded(true);
         setGraphRefreshVersion((v) => v + 1);
       }
     } catch (err) {
@@ -1198,6 +1497,42 @@ export default function WorkspaceClient({
       return;
     }
 
+    if (isMarkdownTagCommand(text, session.messages)) {
+      try {
+        const result = await tagMarkdownsFromRequest(
+          text,
+          nextMessages,
+          pendingAttachments,
+        );
+        if (result.updated.length > 0) {
+          const updates = result.updated
+            .map(
+              (note) =>
+                `- [${note.title}](/garden/${clusterSlug}?note=${encodeURIComponent(note.slug)}) — ${note.tags.map((tag) => `\`${tag}\``).join(", ")}`,
+            )
+            .join("\n");
+          assistantMsg.content = `${result.summary}\n\n${updates}`;
+          await fetchDocuments();
+          setDocsExpanded(true);
+          setGraphRefreshVersion((v) => v + 1);
+        } else {
+          assistantMsg.content = result.summary;
+        }
+      } catch (err) {
+        assistantMsg.content =
+          err instanceof Error
+            ? err.message
+            : "Failed to update markdown tags.";
+      } finally {
+        finalMessages = [...nextMessages, { ...assistantMsg }];
+        updateChatMessages(sessionId, finalMessages);
+        await persistChatSession(sessionId, finalMessages, title);
+        setIsStreaming(false);
+        textareaRef.current?.focus();
+      }
+      return;
+    }
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -1213,6 +1548,7 @@ export default function WorkspaceClient({
           model,
           thinking: thinkingMode,
           attachments: pendingAttachments,
+          selectedDocumentSlugs,
         }),
       });
 
@@ -1354,8 +1690,22 @@ export default function WorkspaceClient({
   const sourceDocuments = documents.filter(
     (doc) => doc.type === "source-document",
   );
+  const sourceDocSearchTerms = normalizedSearchText(sourceDocSearch)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const filteredSourceDocuments =
+    sourceDocSearchTerms.length === 0
+      ? sourceDocuments
+      : sourceDocuments.filter((doc) => {
+          const haystack = documentSearchText(doc);
+          return sourceDocSearchTerms.every((term) => haystack.includes(term));
+        });
   const markdownDocuments = documents.filter(
     (doc) => doc.type !== "source-document",
+  );
+  const selectedChatDocuments = sourceDocuments.filter((doc) =>
+    selectedDocumentSlugs.includes(doc.slug),
   );
   const primarySourceDocument = sourceDocuments[0];
 
@@ -1373,7 +1723,7 @@ export default function WorkspaceClient({
             doc.sourceType?.toLowerCase() === "pdf" &&
             Boolean(doc.sourcePdf);
           const documentHref = isPdfSource
-            ? `/clusters/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
+            ? `/gardens/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
             : `/garden/${clusterSlug}?note=${encodeURIComponent(doc.slug)}`;
           return (
             <li
@@ -1385,6 +1735,24 @@ export default function WorkspaceClient({
                   : "hover:bg-gray-900",
               ].join(" ")}
             >
+              {isSource && (
+                <label
+                  className="mt-0.5 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center"
+                  title={
+                    selectedDocumentSlugs.includes(doc.slug)
+                      ? "Selected for chat context"
+                      : "Select this document for chat"
+                  }
+                  aria-label="Select document for chat"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedDocumentSlugs.includes(doc.slug)}
+                    onChange={() => toggleSelectedDocument(doc.slug)}
+                    className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-cyan-300"
+                  />
+                </label>
+              )}
               <div className="relative shrink-0 mt-0.5">
                 <button
                   type="button"
@@ -1530,7 +1898,666 @@ export default function WorkspaceClient({
     );
   }
 
+  type FolderTreeNode = {
+    path: string;
+    name: string;
+    childFolders: FolderTreeNode[];
+    files: DocInfo[];
+  };
+
+  const handleCreateFolder = async (parentPath = "") => {
+    const input = window.prompt(
+      parentPath ? `New folder inside "${parentPath}"` : "New folder name",
+    );
+    if (input === null) return;
+    if (!input.trim()) return;
+    const folder = parentPath ? `${parentPath}/${input.trim()}` : input.trim();
+    setCreatingFolder(true);
+    try {
+      const res = await fetch("/api/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clusterSlug, folder }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        addToast(data.error ?? "Failed to create folder");
+        return;
+      }
+      setDocsExpanded(true);
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        if (typeof data.folder === "string") next.add(data.folder);
+        if (parentPath) next.add(parentPath);
+        return next;
+      });
+      await fetchDocuments();
+    } catch {
+      addToast("Failed to create folder");
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const handleMoveNote = async (slug: string, toFolder: string) => {
+    setDraggingSlug(null);
+    setDragOverFolder(null);
+    const doc = documents.find((d) => d.slug === slug);
+    if (!doc || (doc.folder || "") === toFolder) return;
+    setMovingSlug(slug);
+    try {
+      const res = await fetch("/api/folders", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clusterSlug, slug, toFolder }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        addToast(data.error ?? "Failed to move note");
+        return;
+      }
+      if (toFolder) setExpandedFolders((prev) => new Set(prev).add(toFolder));
+      await fetchDocuments();
+    } catch {
+      addToast("Failed to move note");
+    } finally {
+      setMovingSlug(null);
+    }
+  };
+
+  const toggleFolderExpand = (folderPath: string) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderPath)) next.delete(folderPath);
+      else next.add(folderPath);
+      return next;
+    });
+  };
+
+  const handleDeleteFolder = async (folderPath: string) => {
+    const inFolder = documents.filter(
+      (d) =>
+        (d.folder || "") === folderPath ||
+        (d.folder || "").startsWith(`${folderPath}/`),
+    ).length;
+    const confirmed = window.confirm(
+      inFolder > 0
+        ? `Delete folder "${folderPath}" and its ${inFolder} note${inFolder === 1 ? "" : "s"}? This cannot be undone.`
+        : `Delete folder "${folderPath}"?`,
+    );
+    if (!confirmed) return;
+    try {
+      const res = await fetch("/api/folders", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clusterSlug, folder: folderPath }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        addToast(data.error ?? "Failed to delete folder");
+        return;
+      }
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        next.delete(folderPath);
+        return next;
+      });
+      await fetchDocuments();
+    } catch {
+      addToast("Failed to delete folder");
+    }
+  };
+
+  const buildMarkdownTree = (
+    items: DocInfo[],
+    folderPaths: string[],
+  ): FolderTreeNode => {
+    const root: FolderTreeNode = { path: "", name: "", childFolders: [], files: [] };
+    const nodeByPath = new Map<string, FolderTreeNode>([["", root]]);
+
+    const ensureFolder = (folderPath: string): FolderTreeNode => {
+      if (!folderPath) return root;
+      const existing = nodeByPath.get(folderPath);
+      if (existing) return existing;
+      const segments = folderPath.split("/");
+      const parent = ensureFolder(segments.slice(0, -1).join("/"));
+      const node: FolderTreeNode = {
+        path: folderPath,
+        name: segments[segments.length - 1],
+        childFolders: [],
+        files: [],
+      };
+      parent.childFolders.push(node);
+      nodeByPath.set(folderPath, node);
+      return node;
+    };
+
+    for (const folderPath of folderPaths) ensureFolder(folderPath);
+    for (const doc of items) ensureFolder(doc.folder || "").files.push(doc);
+
+    const sortNode = (node: FolderTreeNode) => {
+      node.childFolders.sort((a, b) => a.name.localeCompare(b.name));
+      node.childFolders.forEach(sortNode);
+    };
+    sortNode(root);
+    return root;
+  };
+
+  const countFiles = (node: FolderTreeNode): number =>
+    node.files.length +
+    node.childFolders.reduce((sum, child) => sum + countFiles(child), 0);
+
+  const renderMarkdownFileRow = (doc: DocInfo, depth: number) => (
+    <li
+      key={`${doc.slug}:${doc.type}`}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/plain", doc.slug);
+        e.dataTransfer.effectAllowed = "move";
+        setDraggingSlug(doc.slug);
+      }}
+      onDragEnd={() => {
+        setDraggingSlug(null);
+        setDragOverFolder(null);
+      }}
+      className={[
+        "group flex items-start gap-2.5 py-2 pr-4 transition-colors",
+        movingSlug === doc.slug ? "opacity-50" : "",
+        draggingSlug === doc.slug ? "opacity-40" : "hover:bg-gray-900",
+      ].join(" ")}
+      style={{ paddingLeft: `${16 + depth * 14}px` }}
+    >
+      <div className="relative shrink-0 mt-0.5">
+        <button
+          type="button"
+          onClick={() =>
+            setOpenFlagPaletteSlug((slug) =>
+              slug === doc.slug ? null : doc.slug,
+            )
+          }
+          disabled={savingFlagSlug === doc.slug}
+          className={[
+            "h-5 w-5 rounded border border-gray-700 bg-gray-950",
+            "flex items-center justify-center transition-colors hover:border-gray-500",
+            savingFlagSlug === doc.slug
+              ? "opacity-50 cursor-wait"
+              : "cursor-pointer",
+          ].join(" ")}
+          title={doc.flagColor ? `Flagged ${doc.flagColor}` : "Flag note"}
+          aria-label="Flag note"
+          aria-expanded={openFlagPaletteSlug === doc.slug}
+        >
+          <span
+            className="h-3 w-3 rounded-sm border border-gray-800"
+            style={{ backgroundColor: doc.flagColor || "transparent" }}
+          />
+        </button>
+        {openFlagPaletteSlug === doc.slug && (
+          <div className="absolute left-0 top-6 z-20 w-32 rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl">
+            <div className="grid grid-cols-5 gap-1.5">
+              {FLAG_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  onClick={() => {
+                    setOpenFlagPaletteSlug(null);
+                    handleDocumentFlag(doc.slug, color);
+                  }}
+                  className={[
+                    "h-4 w-4 rounded border transition-transform hover:scale-110",
+                    doc.flagColor === color ? "border-white" : "border-gray-800",
+                  ].join(" ")}
+                  style={{ backgroundColor: color }}
+                  aria-label={`Flag ${color}`}
+                  title={color}
+                />
+              ))}
+            </div>
+            {doc.flagColor && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOpenFlagPaletteSlug(null);
+                  handleDocumentFlag(doc.slug, "");
+                }}
+                className="mt-2 w-full rounded border border-gray-800 px-2 py-1 text-[10px] text-gray-500 transition-colors hover:border-gray-700 hover:text-white"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <svg
+        className="w-3.5 h-3.5 text-gray-600 shrink-0 mt-0.5"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={1.5}
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+        />
+      </svg>
+      <div className="flex-1 min-w-0">
+        <Link
+          href={`/garden/${clusterSlug}?note=${encodeURIComponent(
+            doc.relPath ? doc.relPath.replace(/\.md$/i, "") : doc.slug,
+          )}`}
+          className="block text-xs text-gray-300 hover:text-white truncate transition-colors"
+        >
+          {doc.title ?? doc.name}
+        </Link>
+        <p className="text-[10px] text-gray-600 mt-0.5">
+          {markdownTypeLabel(doc)} &middot; {doc.wordCount}w
+        </p>
+      </div>
+    </li>
+  );
+
+  const renderFolderTree = (node: FolderTreeNode, depth: number) => {
+    const isExpanded = expandedFolders.has(node.path);
+    const isDropTarget = dragOverFolder === node.path;
+    return (
+      <li key={`folder:${node.path}`}>
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            if (dragOverFolder !== node.path) setDragOverFolder(node.path);
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+              setDragOverFolder((p) => (p === node.path ? null : p));
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            const slug = e.dataTransfer.getData("text/plain") || draggingSlug;
+            if (slug) handleMoveNote(slug, node.path);
+          }}
+          onClick={() => toggleFolderExpand(node.path)}
+          className={[
+            "group flex items-center gap-1.5 py-2 pr-2 text-xs cursor-pointer transition-colors",
+            isDropTarget
+              ? "bg-cyan-950/30 ring-1 ring-inset ring-cyan-400/40"
+              : "hover:bg-gray-900",
+          ].join(" ")}
+          style={{ paddingLeft: `${10 + depth * 14}px` }}
+        >
+          <svg
+            className={`w-3 h-3 shrink-0 text-gray-600 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+          </svg>
+          <svg
+            className="w-3.5 h-3.5 shrink-0 text-amber-300/70"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"
+            />
+          </svg>
+          <span className="flex-1 min-w-0 truncate text-gray-300 group-hover:text-white">
+            {node.name}
+          </span>
+          <span className="text-[10px] text-gray-600">{countFiles(node)}</span>
+          <span
+            role="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleCreateFolder(node.path);
+            }}
+            className="p-0.5 rounded text-gray-700 opacity-0 transition hover:bg-gray-800 hover:text-white group-hover:opacity-100"
+            aria-label={`New folder inside ${node.name}`}
+            title="New subfolder"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+          </span>
+          <span
+            role="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeleteFolder(node.path);
+            }}
+            className="p-0.5 rounded text-gray-700 opacity-0 transition hover:bg-red-950/40 hover:text-red-300 group-hover:opacity-100"
+            aria-label={`Delete folder ${node.name}`}
+            title="Delete folder"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166M19.228 5.79 18.16 19.673A2.25 2.25 0 0 1 15.916 21.75H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .563c.34-.059.68-.114 1.022-.166m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
+              />
+            </svg>
+          </span>
+        </div>
+        {isExpanded && (node.childFolders.length > 0 || node.files.length > 0) && (
+          <ul>
+            {node.childFolders.map((child) => renderFolderTree(child, depth + 1))}
+            {node.files.map((doc) => renderMarkdownFileRow(doc, depth + 1))}
+          </ul>
+        )}
+      </li>
+    );
+  };
+
+  const renderMarkdownTreeRoot = () => {
+    const tree = buildMarkdownTree(markdownDocuments, folders);
+    const isRootDrop = dragOverFolder === "";
+    return (
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (dragOverFolder !== "") setDragOverFolder("");
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setDragOverFolder((p) => (p === "" ? null : p));
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const slug = e.dataTransfer.getData("text/plain") || draggingSlug;
+          if (slug) handleMoveNote(slug, "");
+        }}
+        className={isRootDrop ? "ring-1 ring-inset ring-cyan-400/40 bg-cyan-950/10" : ""}
+      >
+        <ul className="py-1">
+          {tree.childFolders.map((child) => renderFolderTree(child, 0))}
+          {tree.files.map((doc) => renderMarkdownFileRow(doc, 0))}
+        </ul>
+      </div>
+    );
+  };
+
   // ── Render ──────────────────────────────────────────────────────────────────
+
+  const renderDocumentLibrary = () => (
+    <>
+      <div className="border-t border-gray-800 shrink-0">
+        <button
+          onClick={() => setSourceDocsExpanded((v) => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+              />
+            </svg>
+            Documents
+            {sourceDocuments.length > 0
+              ? sourceDocSearchTerms.length > 0
+                ? ` (${filteredSourceDocuments.length}/${sourceDocuments.length})`
+                : ` (${sourceDocuments.length})`
+              : ""}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span
+              role="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openUploadModal();
+              }}
+              className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+              aria-label="Add document"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
+                />
+              </svg>
+            </span>
+            <svg
+              className={`w-3.5 h-3.5 transition-transform duration-200 ${sourceDocsExpanded ? "" : "rotate-180"}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m4.5 15.75 7.5-7.5 7.5 7.5"
+              />
+            </svg>
+          </div>
+        </button>
+        {sourceDocsExpanded && (
+          <div className="border-t border-gray-800">
+            {!loadingDocs && sourceDocuments.length > 0 && (
+              <div className="border-b border-gray-800 px-3 py-2">
+                <div className="relative">
+                  <svg
+                    className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-600"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.7}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+                    />
+                  </svg>
+                  <input
+                    value={sourceDocSearch}
+                    onChange={(e) => setSourceDocSearch(e.target.value)}
+                    placeholder="Search PDFs"
+                    className="h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                    aria-label="Search source PDFs"
+                  />
+                  {sourceDocSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setSourceDocSearch("")}
+                      className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                      aria-label="Clear PDF search"
+                      title="Clear search"
+                    >
+                      <svg
+                        className="h-3.5 w-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M6 18 18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="max-h-44 overflow-y-auto">
+              {loadingDocs ? (
+                <div className="flex justify-center py-6">
+                  <Spinner className="w-4 h-4 text-gray-700" />
+                </div>
+              ) : sourceDocuments.length === 0 ? (
+                <div className="flex flex-col items-center py-6 px-4 text-center">
+                  <p className="text-xs text-gray-600 mb-2">
+                    No source documents yet
+                  </p>
+                  <button
+                    onClick={openUploadModal}
+                    className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
+                  >
+                    Upload your first
+                  </button>
+                </div>
+              ) : filteredSourceDocuments.length === 0 ? (
+                <div className="flex flex-col items-center px-4 py-6 text-center">
+                  <p className="text-xs text-gray-600">
+                    No PDFs match {sourceDocSearch.trim()}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setSourceDocSearch("")}
+                    className="mt-2 text-xs text-gray-500 underline underline-offset-2 transition-colors hover:text-white"
+                  >
+                    Clear search
+                  </button>
+                </div>
+              ) : (
+                renderMarkdownRows(filteredSourceDocuments)
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-gray-800 shrink-0">
+        <button
+          onClick={() => setDocsExpanded((v) => !v)}
+          className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+              />
+            </svg>
+            Markdown
+            {markdownDocuments.length > 0
+              ? ` (${markdownDocuments.length})`
+              : ""}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span
+              role="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!creatingFolder) handleCreateFolder("");
+              }}
+              className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+              aria-label="New folder"
+              title="New folder"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.6}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
+                />
+              </svg>
+            </span>
+            <span
+              role="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openNewNoteModal();
+              }}
+              className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+              aria-label="New markdown note"
+              title="New note"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
+                />
+              </svg>
+            </span>
+            <svg
+              className={`w-3.5 h-3.5 transition-transform duration-200 ${docsExpanded ? "" : "rotate-180"}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m4.5 15.75 7.5-7.5 7.5 7.5"
+              />
+            </svg>
+          </div>
+        </button>
+        {docsExpanded && (
+          <div className="max-h-56 overflow-y-auto border-t border-gray-800">
+            {loadingDocs ? (
+              <div className="flex justify-center py-6">
+                <Spinner className="w-4 h-4 text-gray-700" />
+              </div>
+            ) : markdownDocuments.length === 0 && folders.length === 0 ? (
+              <div className="flex flex-col items-center py-6 px-4 text-center">
+                <p className="text-xs text-gray-600 mb-2">
+                  No markdown notes yet
+                </p>
+                <button
+                  onClick={openUploadModal}
+                  className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
+                >
+                  Upload your first
+                </button>
+              </div>
+            ) : (
+              renderMarkdownTreeRoot()
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
 
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
@@ -1598,7 +2625,7 @@ export default function WorkspaceClient({
                       d="M8.25 7.5V6A2.25 2.25 0 0 1 10.5 3.75h7.5A2.25 2.25 0 0 1 20.25 6v7.5A2.25 2.25 0 0 1 18 15.75h-1.5M5.25 8.25h7.5A2.25 2.25 0 0 1 15 10.5v7.5a2.25 2.25 0 0 1-2.25 2.25h-7.5A2.25 2.25 0 0 1 3 18v-7.5a2.25 2.25 0 0 1 2.25-2.25Z"
                     />
                   </svg>
-                  Fork cluster
+                  Fork garden
                 </>
               )}
             </button>
@@ -1625,7 +2652,7 @@ export default function WorkspaceClient({
           <button
             onClick={handleGenerateNotes}
             disabled={messages.length === 0 || isGenerating}
-            title="Extract knowledge from this conversation and save as garden notes"
+            title="Save the latest assistant response as a markdown note"
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isGenerating ? (
@@ -1648,7 +2675,7 @@ export default function WorkspaceClient({
                     d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z"
                   />
                 </svg>
-                Generate markdown
+                Save markdown
               </>
             )}
           </button>
@@ -1657,7 +2684,7 @@ export default function WorkspaceClient({
 
       {/* Body */}
       <div className="flex flex-1 min-h-0">
-        {/* Left sidebar: chat sessions + collapsible documents */}
+        {/* Left sidebar: chat sessions */}
         {leftSidebarOpen ? (
           <aside className="w-64 shrink-0 border-r border-gray-800 flex flex-col bg-gray-950">
             {/* New chat */}
@@ -1741,31 +2768,112 @@ export default function WorkspaceClient({
                       {chatSessions.map((session) => {
                         const canDeleteSession =
                           session.isOwn !== false || isOwner;
+                        const canRenameSession = session.isOwn !== false;
+                        const isEditingChat = editingChatId === session.id;
                         return (
                           <li key={session.id} className="relative group">
-                            <button
-                              onClick={() =>
-                                !isStreaming && setActiveChatId(session.id)
-                              }
-                              className={[
-                                "w-full text-left px-3 py-2 pr-9 text-sm rounded-lg transition-colors flex items-center gap-2",
-                                session.id === activeChatId
-                                  ? "bg-gray-800 text-white"
-                                  : "text-gray-400 hover:bg-gray-900 hover:text-white",
-                              ].join(" ")}
-                            >
-                              <div className="flex-1 min-w-0">
-                                <span className="block truncate">
-                                  {session.title}
-                                </span>
-                                {(viewPublicChats || isOwner) &&
-                                  session.ownerUsername && (
-                                    <span className="block truncate text-[10px] text-gray-600 mt-0.5">
-                                      {session.ownerUsername}
-                                    </span>
+                            {isEditingChat ? (
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  void saveChatTitle(session.id);
+                                }}
+                                className={[
+                                  "flex items-center gap-1 rounded-lg px-2 py-1.5",
+                                  session.id === activeChatId
+                                    ? "bg-gray-800"
+                                    : "bg-gray-900",
+                                ].join(" ")}
+                              >
+                                <input
+                                  value={editingChatTitle}
+                                  onChange={(e) =>
+                                    setEditingChatTitle(e.target.value)
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      cancelRenameChat();
+                                    }
+                                  }}
+                                  autoFocus
+                                  disabled={savingChatTitleId === session.id}
+                                  className="min-w-0 flex-1 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-white outline-none focus:border-gray-500 disabled:opacity-50"
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={savingChatTitleId === session.id}
+                                  className="shrink-0 rounded p-1 text-gray-500 transition-colors hover:bg-gray-800 hover:text-white disabled:opacity-40"
+                                  aria-label="Save chat name"
+                                  title="Save"
+                                >
+                                  {savingChatTitleId === session.id ? (
+                                    <Spinner className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <svg
+                                      className="h-3.5 w-3.5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={2}
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="m4.5 12.75 6 6 9-13.5"
+                                      />
+                                    </svg>
                                   )}
-                              </div>
-                            </button>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={cancelRenameChat}
+                                  disabled={savingChatTitleId === session.id}
+                                  className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white disabled:opacity-40"
+                                  aria-label="Cancel rename"
+                                  title="Cancel"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                    strokeWidth={2}
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M6 18 18 6M6 6l12 12"
+                                    />
+                                  </svg>
+                                </button>
+                              </form>
+                            ) : (
+                              <button
+                                onClick={() =>
+                                  !isStreaming && setActiveChatId(session.id)
+                                }
+                                onDoubleClick={() => startRenameChat(session)}
+                                className={[
+                                  "w-full text-left px-3 py-2 pr-14 text-sm rounded-lg transition-colors flex items-center gap-2",
+                                  session.id === activeChatId
+                                    ? "bg-gray-800 text-white"
+                                    : "text-gray-400 hover:bg-gray-900 hover:text-white",
+                                ].join(" ")}
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <span className="block truncate">
+                                    {session.title}
+                                  </span>
+                                  {(viewPublicChats || isOwner) &&
+                                    session.ownerUsername && (
+                                      <span className="block truncate text-[10px] text-gray-600 mt-0.5">
+                                        {session.ownerUsername}
+                                      </span>
+                                    )}
+                                </div>
+                              </button>
+                            )}
                             {canDeleteSession &&
                             confirmDeleteChatId === session.id ? (
                               <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900 px-2 py-1 shadow-lg">
@@ -1794,31 +2902,64 @@ export default function WorkspaceClient({
                                   No
                                 </button>
                               </div>
-                            ) : canDeleteSession ? (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setConfirmDeleteChatId(session.id);
-                                }}
-                                disabled={isStreaming}
-                                className="absolute right-2 top-1/2 shrink-0 -translate-y-1/2 p-0.5 text-gray-600 opacity-0 transition-colors hover:text-red-400 disabled:hidden group-hover:opacity-100"
-                                aria-label="Delete chat"
-                              >
-                                <svg
-                                  className="w-3.5 h-3.5"
-                                  fill="none"
-                                  viewBox="0 0 24 24"
-                                  stroke="currentColor"
-                                  strokeWidth={2}
-                                >
-                                  <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    d="M6 18 18 6M6 6l12 12"
-                                  />
-                                </svg>
-                              </button>
+                            ) : !isEditingChat &&
+                              (canRenameSession || canDeleteSession) ? (
+                              <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                {canRenameSession && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      startRenameChat(session);
+                                    }}
+                                    disabled={isStreaming}
+                                    className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-white disabled:hidden"
+                                    aria-label="Rename chat"
+                                    title="Rename chat"
+                                  >
+                                    <svg
+                                      className="w-3.5 h-3.5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={1.8}
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+                                      />
+                                    </svg>
+                                  </button>
+                                )}
+                                {canDeleteSession && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setConfirmDeleteChatId(session.id);
+                                    }}
+                                    disabled={isStreaming}
+                                    className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-red-400 disabled:hidden"
+                                    aria-label="Delete chat"
+                                    title="Delete chat"
+                                  >
+                                    <svg
+                                      className="w-3.5 h-3.5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={2}
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M6 18 18 6M6 6l12 12"
+                                      />
+                                    </svg>
+                                  </button>
+                                )}
+                              </div>
                             ) : null}
                           </li>
                         );
@@ -1830,7 +2971,7 @@ export default function WorkspaceClient({
             </div>
 
             {/* Sources — collapsible at bottom */}
-            <div className="border-t border-gray-800 shrink-0">
+            <div className="hidden">
               <button
                 onClick={() => setSourceDocsExpanded((v) => !v)}
                 className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
@@ -1851,7 +2992,9 @@ export default function WorkspaceClient({
                   </svg>
                   Documents
                   {sourceDocuments.length > 0
-                    ? ` (${sourceDocuments.length})`
+                    ? sourceDocSearchTerms.length > 0
+                      ? ` (${filteredSourceDocuments.length}/${sourceDocuments.length})`
+                      : ` (${sourceDocuments.length})`
                     : ""}
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -1894,31 +3037,95 @@ export default function WorkspaceClient({
                 </div>
               </button>
               {sourceDocsExpanded && (
-                <div className="max-h-44 overflow-y-auto border-t border-gray-800">
-                  {loadingDocs ? (
-                    <div className="flex justify-center py-6">
-                      <Spinner className="w-4 h-4 text-gray-700" />
+                <div className="border-t border-gray-800">
+                  {!loadingDocs && sourceDocuments.length > 0 && (
+                    <div className="border-b border-gray-800 px-3 py-2">
+                      <div className="relative">
+                        <svg
+                          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-600"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={1.7}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+                          />
+                        </svg>
+                        <input
+                          value={sourceDocSearch}
+                          onChange={(e) => setSourceDocSearch(e.target.value)}
+                          placeholder="Search PDFs"
+                          className="h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                          aria-label="Search source PDFs"
+                        />
+                        {sourceDocSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setSourceDocSearch("")}
+                            className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                            aria-label="Clear PDF search"
+                            title="Clear search"
+                          >
+                            <svg
+                              className="h-3.5 w-3.5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={2}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M6 18 18 6M6 6l12 12"
+                              />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  ) : sourceDocuments.length === 0 ? (
-                    <div className="flex flex-col items-center py-6 px-4 text-center">
-                      <p className="text-xs text-gray-600 mb-2">
-                        No source documents yet
-                      </p>
-                      <button
-                        onClick={openUploadModal}
-                        className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
-                      >
-                        Upload your first
-                      </button>
-                    </div>
-                  ) : (
-                    renderMarkdownRows(sourceDocuments)
                   )}
+                  <div className="max-h-44 overflow-y-auto">
+                    {loadingDocs ? (
+                      <div className="flex justify-center py-6">
+                        <Spinner className="w-4 h-4 text-gray-700" />
+                      </div>
+                    ) : sourceDocuments.length === 0 ? (
+                      <div className="flex flex-col items-center py-6 px-4 text-center">
+                        <p className="text-xs text-gray-600 mb-2">
+                          No source documents yet
+                        </p>
+                        <button
+                          onClick={openUploadModal}
+                          className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
+                        >
+                          Upload your first
+                        </button>
+                      </div>
+                    ) : filteredSourceDocuments.length === 0 ? (
+                      <div className="flex flex-col items-center px-4 py-6 text-center">
+                        <p className="text-xs text-gray-600">
+                          No PDFs match {sourceDocSearch.trim()}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setSourceDocSearch("")}
+                          className="mt-2 text-xs text-gray-500 underline underline-offset-2 transition-colors hover:text-white"
+                        >
+                          Clear search
+                        </button>
+                      </div>
+                    ) : (
+                      renderMarkdownRows(filteredSourceDocuments)
+                    )}
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className="border-t border-gray-800 shrink-0">
+            <div className="hidden">
               <button
                 onClick={() => setDocsExpanded((v) => !v)}
                 className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
@@ -1947,10 +3154,35 @@ export default function WorkspaceClient({
                     role="button"
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (!creatingFolder) handleCreateFolder("");
+                    }}
+                    className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
+                    aria-label="New folder"
+                    title="New folder"
+                  >
+                    <svg
+                      className="w-3.5 h-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.6}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
+                      />
+                    </svg>
+                  </span>
+                  <span
+                    role="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
                       openNewNoteModal();
                     }}
                     className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
                     aria-label="New markdown note"
+                    title="New note"
                   >
                     <svg
                       className="w-3.5 h-3.5"
@@ -1987,7 +3219,7 @@ export default function WorkspaceClient({
                     <div className="flex justify-center py-6">
                       <Spinner className="w-4 h-4 text-gray-700" />
                     </div>
-                  ) : markdownDocuments.length === 0 ? (
+                  ) : markdownDocuments.length === 0 && folders.length === 0 ? (
                     <div className="flex flex-col items-center py-6 px-4 text-center">
                       <p className="text-xs text-gray-600 mb-2">
                         No markdown notes yet
@@ -2000,109 +3232,7 @@ export default function WorkspaceClient({
                       </button>
                     </div>
                   ) : (
-                    <ul className="py-1">
-                      {markdownDocuments.map((doc, index) => (
-                        <li
-                          key={`${doc.slug}:${doc.type}:${index}`}
-                          className="group flex items-start gap-2.5 px-4 py-2 hover:bg-gray-900 transition-colors"
-                        >
-                          <div className="relative shrink-0 mt-0.5">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setOpenFlagPaletteSlug((slug) =>
-                                  slug === doc.slug ? null : doc.slug,
-                                )
-                              }
-                              disabled={savingFlagSlug === doc.slug}
-                              className={[
-                                "h-5 w-5 rounded border border-gray-700 bg-gray-950",
-                                "flex items-center justify-center transition-colors hover:border-gray-500",
-                                savingFlagSlug === doc.slug
-                                  ? "opacity-50 cursor-wait"
-                                  : "cursor-pointer",
-                              ].join(" ")}
-                              title={
-                                doc.flagColor
-                                  ? `Flagged ${doc.flagColor}`
-                                  : "Flag note"
-                              }
-                              aria-label="Flag note"
-                              aria-expanded={openFlagPaletteSlug === doc.slug}
-                            >
-                              <span
-                                className="h-3 w-3 rounded-sm border border-gray-800"
-                                style={{
-                                  backgroundColor:
-                                    doc.flagColor || "transparent",
-                                }}
-                              />
-                            </button>
-                            {openFlagPaletteSlug === doc.slug && (
-                              <div className="absolute left-0 top-6 z-20 w-32 rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl">
-                                <div className="grid grid-cols-5 gap-1.5">
-                                  {FLAG_COLORS.map((color) => (
-                                    <button
-                                      key={color}
-                                      type="button"
-                                      onClick={() => {
-                                        setOpenFlagPaletteSlug(null);
-                                        handleDocumentFlag(doc.slug, color);
-                                      }}
-                                      className={[
-                                        "h-4 w-4 rounded border transition-transform hover:scale-110",
-                                        doc.flagColor === color
-                                          ? "border-white"
-                                          : "border-gray-800",
-                                      ].join(" ")}
-                                      style={{ backgroundColor: color }}
-                                      aria-label={`Flag ${color}`}
-                                      title={color}
-                                    />
-                                  ))}
-                                </div>
-                                {doc.flagColor && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenFlagPaletteSlug(null);
-                                      handleDocumentFlag(doc.slug, "");
-                                    }}
-                                    className="mt-2 w-full rounded border border-gray-800 px-2 py-1 text-[10px] text-gray-500 transition-colors hover:border-gray-700 hover:text-white"
-                                  >
-                                    Clear
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          <svg
-                            className="w-3.5 h-3.5 text-gray-600 shrink-0 mt-0.5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                            />
-                          </svg>
-                          <div className="flex-1 min-w-0">
-                            <Link
-                              href={`/garden/${clusterSlug}?note=${encodeURIComponent(doc.slug)}`}
-                              className="block text-xs text-gray-300 hover:text-white truncate transition-colors"
-                            >
-                              {doc.title ?? doc.name}
-                            </Link>
-                            <p className="text-[10px] text-gray-600 mt-0.5">
-                              {markdownTypeLabel(doc)} &middot; {doc.wordCount}w
-                            </p>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                    renderMarkdownTreeRoot()
                   )}
                 </div>
               )}
@@ -2151,26 +3281,6 @@ export default function WorkspaceClient({
                 />
               </svg>
             </button>
-            <button
-              onClick={openUploadModal}
-              title="Add documents"
-              className="mt-2 flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-900 hover:text-white transition-colors"
-              aria-label="Add documents"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m3.75 9.375v6m3-3H9"
-                />
-              </svg>
-            </button>
           </aside>
         )}
 
@@ -2189,6 +3299,42 @@ export default function WorkspaceClient({
           {/* Input area */}
           <div className="shrink-0 border-t border-gray-800 px-4 py-4">
             {/* Chat attachment preview strip */}
+            {selectedChatDocuments.length > 0 && (
+              <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-1.5">
+                <span className="text-[10px] uppercase tracking-wider text-gray-600">
+                  Chat focus
+                </span>
+                {selectedChatDocuments.map((doc) => (
+                  <span
+                    key={doc.slug}
+                    className="flex max-w-[220px] items-center gap-1.5 rounded-lg border border-cyan-900/60 bg-cyan-950/20 px-2.5 py-1 text-xs text-cyan-100"
+                  >
+                    <span className="truncate">{doc.title ?? doc.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleSelectedDocument(doc.slug)}
+                      className="shrink-0 text-cyan-600 transition-colors hover:text-white"
+                      aria-label="Remove document from chat focus"
+                    >
+                      <svg
+                        className="h-3 w-3"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M6 18 18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
             {chatAttachments.length > 0 && (
               <div className="max-w-2xl mx-auto mb-2 flex flex-wrap gap-1.5">
                 {chatAttachments.map((a, i) => (
@@ -2327,6 +3473,7 @@ export default function WorkspaceClient({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handleChatPaste}
                 rows={1}
                 placeholder="Ask about your documents…"
                 disabled={isStreaming || loadingChats}
@@ -2584,6 +3731,7 @@ export default function WorkspaceClient({
         <KnowledgeGraph
           clusterSlug={clusterSlug}
           refreshKey={graphRefreshKey}
+          sourceLibrary={renderDocumentLibrary()}
         />
       </div>
 
@@ -2628,6 +3776,21 @@ export default function WorkspaceClient({
               </button>
             </div>
             <div className="flex flex-col gap-3 px-4 py-4 overflow-y-auto flex-1">
+              <label className="flex items-center gap-2 text-xs text-gray-500">
+                <span className="shrink-0">Folder</span>
+                <select
+                  value={newNoteFolder}
+                  onChange={(e) => setNewNoteFolder(e.target.value)}
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600 transition-colors"
+                >
+                  <option value="">Garden root</option>
+                  {folders.map((folder) => (
+                    <option key={folder} value={folder}>
+                      {folder}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <input
                 type="text"
                 value={newNoteTitle}
@@ -3068,80 +4231,79 @@ export default function WorkspaceClient({
                     {uploadFiles.map((f, i) => {
                       const key = fileKey(f);
                       const status = uploadStatuses[key];
+                      const error = uploadErrors[key];
                       return (
                         <div
                           key={key}
-                          className="flex items-center gap-2 px-3 py-2 bg-gray-800/50 rounded-lg"
+                          className="rounded-lg bg-gray-800/50 px-3 py-2"
                         >
-                          <svg
-                            className="w-4 h-4 text-gray-500 shrink-0"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                            />
-                          </svg>
-                          <span className="flex-1 text-xs text-gray-300 truncate">
-                            {f.name}
-                          </span>
-                          {status === "uploading" && (
-                            <Spinner className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                          )}
-                          {status === "done" && (
+                          <div className="flex items-center gap-2">
                             <svg
-                              className="w-3.5 h-3.5 text-green-400 shrink-0"
+                              className="w-4 h-4 text-gray-500 shrink-0"
                               fill="none"
                               viewBox="0 0 24 24"
                               stroke="currentColor"
-                              strokeWidth={2.5}
+                              strokeWidth={1.5}
                             >
                               <path
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
-                                d="m4.5 12.75 6 6 9-13.5"
+                                d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
                               />
                             </svg>
-                          )}
-                          {status === "error" && (
-                            <svg
-                              className="w-3.5 h-3.5 text-red-400 shrink-0"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M6 18 18 6M6 6l12 12"
-                              />
-                            </svg>
-                          )}
-                          {!isUploading && (
-                            <button
-                              type="button"
-                              onClick={() => removeUploadFile(i)}
-                              className="p-0.5 text-gray-600 hover:text-white transition-colors shrink-0"
-                            >
+                            <span className="flex-1 text-xs text-gray-300 truncate">
+                              {f.name}
+                            </span>
+                            {status === "uploading" && (
+                              <Spinner className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                            )}
+                            {status === "done" && (
                               <svg
-                                className="w-3.5 h-3.5"
+                                className="w-3.5 h-3.5 text-green-400 shrink-0"
                                 fill="none"
                                 viewBox="0 0 24 24"
                                 stroke="currentColor"
-                                strokeWidth={2}
+                                strokeWidth={2.5}
                               >
                                 <path
                                   strokeLinecap="round"
                                   strokeLinejoin="round"
-                                  d="M6 18 18 6M6 6l12 12"
+                                  d="m4.5 12.75 6 6 9-13.5"
                                 />
                               </svg>
-                            </button>
+                            )}
+                            {status === "error" && (
+                              <span className="shrink-0 text-[11px] font-medium text-red-300">
+                                Failed
+                              </span>
+                            )}
+                            {!isUploading && (
+                              <button
+                                type="button"
+                                onClick={() => removeUploadFile(i)}
+                                className="p-0.5 text-gray-600 hover:text-white transition-colors shrink-0"
+                                aria-label={`Remove ${f.name}`}
+                              >
+                                <svg
+                                  className="w-3.5 h-3.5"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="M6 18 18 6M6 6l12 12"
+                                  />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                          {status === "error" && error && (
+                            <p className="mt-1.5 pl-6 text-[11px] leading-4 text-red-300">
+                              {error}
+                            </p>
                           )}
                         </div>
                       );
@@ -3252,7 +4414,7 @@ export default function WorkspaceClient({
         </div>
       )}
 
-      <Toaster toasts={toasts} />
+      <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

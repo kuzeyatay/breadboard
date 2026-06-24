@@ -12085,6 +12085,11 @@ function knowledgeType(file) {
   return typeof frontmatter?.knowledge_type === "string" ? frontmatter.knowledge_type : "";
 }
 __name(knowledgeType, "knowledgeType");
+function generatedNoteType(file) {
+  const frontmatter = file.frontmatter;
+  return typeof frontmatter?.generated_note_type === "string" ? frontmatter.generated_note_type : "";
+}
+__name(generatedNoteType, "generatedNoteType");
 function sourceDocumentSort(f1, f2) {
   const f1IsSource = knowledgeType(f1) === "source-document";
   const f2IsSource = knowledgeType(f2) === "source-document";
@@ -12124,18 +12129,25 @@ var PageList = /* @__PURE__ */ __name(({ cfg, fileData, allFiles, limit, sort })
     const title = page.frontmatter?.title;
     const tags = page.frontmatter?.tags ?? [];
     const isSourceDocument = knowledgeType(page) === "source-document";
-    return /* @__PURE__ */ jsx9("li", { class: `section-li${isSourceDocument ? " source-document-entry" : ""}`, children: /* @__PURE__ */ jsxs3("div", { class: "section", children: [
-      /* @__PURE__ */ jsx9("p", { class: "meta", children: page.dates && /* @__PURE__ */ jsx9(Date2, { date: getDate(cfg, page), locale: cfg.locale }) }),
-      /* @__PURE__ */ jsx9("div", { class: "desc", children: /* @__PURE__ */ jsx9("h3", { children: /* @__PURE__ */ jsx9("a", { href: resolveRelative(fileData.slug, page.slug), class: "internal", children: title }) }) }),
-      /* @__PURE__ */ jsx9("ul", { class: "tags", children: tags.map((tag) => /* @__PURE__ */ jsx9("li", { children: /* @__PURE__ */ jsx9(
-        "a",
-        {
-          class: "internal tag-link",
-          href: resolveRelative(fileData.slug, `tags/${tag}`),
-          children: tag
-        }
-      ) })) })
-    ] }) });
+    const isChatNodeNote = knowledgeType(page) === "generated-note" && generatedNoteType(page) === "chat-node";
+    return /* @__PURE__ */ jsx9(
+      "li",
+      {
+        class: `section-li${isSourceDocument ? " source-document-entry" : ""}${isChatNodeNote ? " chat-node-note-entry" : ""}`,
+        children: /* @__PURE__ */ jsxs3("div", { class: "section", children: [
+          /* @__PURE__ */ jsx9("p", { class: "meta", children: page.dates && /* @__PURE__ */ jsx9(Date2, { date: getDate(cfg, page), locale: cfg.locale }) }),
+          /* @__PURE__ */ jsx9("div", { class: "desc", children: /* @__PURE__ */ jsx9("h3", { children: /* @__PURE__ */ jsx9("a", { href: resolveRelative(fileData.slug, page.slug), class: "internal", children: title }) }) }),
+          /* @__PURE__ */ jsx9("ul", { class: "tags", children: tags.map((tag) => /* @__PURE__ */ jsx9("li", { children: /* @__PURE__ */ jsx9(
+            "a",
+            {
+              class: "internal tag-link",
+              href: resolveRelative(fileData.slug, `tags/${tag}`),
+              children: tag
+            }
+          ) })) })
+        ] })
+      }
+    );
   }) });
 }, "PageList");
 PageList.css = `
@@ -13261,9 +13273,18 @@ var Head_default = /* @__PURE__ */ __name((() => {
 import { jsx as jsx19 } from "preact/jsx-runtime";
 var PageTitle = /* @__PURE__ */ __name(({ cfg, displayClass }) => {
   const title = cfg?.pageTitle ?? i18n(cfg.locale).propertyDefaults.title;
-  const dashboardBaseUrl = (process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "http://localhost:3000").replace(/\/+$/, "");
-  const dashboardHref = `${dashboardBaseUrl}/dashboard`;
-  return /* @__PURE__ */ jsx19("h2", { class: classNames(displayClass, "page-title"), children: /* @__PURE__ */ jsx19("a", { href: dashboardHref, class: "page-title-link", "data-dashboard-href": dashboardHref, children: title }) });
+  const dashboardBaseUrl = (process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "").replace(/\/+$/, "");
+  const dashboardHref = `${dashboardBaseUrl || ""}/dashboard`;
+  return /* @__PURE__ */ jsx19("h2", { class: classNames(displayClass, "page-title"), children: /* @__PURE__ */ jsx19(
+    "a",
+    {
+      href: dashboardHref,
+      class: "page-title-link",
+      "data-dashboard-base-url": dashboardBaseUrl,
+      "data-dashboard-href": dashboardHref,
+      children: title
+    }
+  ) });
 }, "PageTitle");
 PageTitle.css = `
 .page-title {
@@ -13277,6 +13298,43 @@ PageTitle.css = `
 `;
 PageTitle.afterDOMLoaded = `
 document.querySelectorAll(".page-title-link").forEach(function(el) {
+  const resolveDashboardBaseUrl = (fallback) => {
+    const trimmed = (fallback || "").replace(/\\/+$/, "");
+    if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
+      return trimmed;
+    }
+    try {
+      if (trimmed) {
+        const fallbackUrl = new URL(trimmed);
+        if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(fallbackUrl.hostname)) {
+          return fallbackUrl.protocol + "//" + fallbackUrl.hostname + ":3000";
+        }
+      }
+    } catch {}
+    try {
+      if (document.referrer) {
+        const ref = new URL(document.referrer);
+        if (!/^garden\\./i.test(ref.hostname)) {
+          return ref.origin.replace(/\\/+$/, "");
+        }
+      }
+    } catch {}
+    try {
+      const current = new URL(window.location.href);
+      if (/^garden\\./i.test(current.hostname)) {
+        return current.origin.replace("//garden.", "//");
+      }
+      if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(current.hostname) || current.port === "8081") {
+        return current.protocol + "//" + current.hostname + ":3000";
+      }
+      return current.origin.replace(/\\/+$/, "");
+    } catch {}
+    return trimmed;
+  };
+
+  const href = resolveDashboardBaseUrl(el.getAttribute("data-dashboard-base-url")) + "/dashboard";
+  el.setAttribute("data-dashboard-href", href);
+  el.setAttribute("href", href);
   el.addEventListener("click", function(e) {
     e.preventDefault();
     e.stopPropagation();
@@ -14038,11 +14096,21 @@ function clusterSlug(fileSlug) {
 __name(clusterSlug, "clusterSlug");
 var DashboardBackLink_default = /* @__PURE__ */ __name(((opts) => {
   const DashboardBackLink = /* @__PURE__ */ __name(({ fileData, displayClass }) => {
-    const dashboardBaseUrl = (opts?.dashboardBaseUrl ?? process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+    const dashboardBaseUrl = (opts?.dashboardBaseUrl ?? process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "").replace(/\/+$/, "");
     const slug = clusterSlug(fileData.slug);
-    const href = slug ? `${dashboardBaseUrl}/clusters/${encodeURIComponent(slug)}` : `${dashboardBaseUrl}/dashboard`;
+    const href = slug ? `${dashboardBaseUrl || ""}/clusters/${encodeURIComponent(slug)}` : `${dashboardBaseUrl || ""}/dashboard`;
     const label = slug ? "Back to cluster" : "Back to dashboard";
-    return /* @__PURE__ */ jsx37("a", { class: `${displayClass ?? ""} dashboard-back-link`, href, target: "_top", children: label });
+    return /* @__PURE__ */ jsx37(
+      "a",
+      {
+        class: `${displayClass ?? ""} dashboard-back-link`,
+        href,
+        target: "_top",
+        "data-dashboard-base-url": dashboardBaseUrl,
+        "data-cluster-slug": slug ?? "",
+        children: label
+      }
+    );
   }, "DashboardBackLink");
   DashboardBackLink.css = `
 .dashboard-back-link {
@@ -14070,6 +14138,53 @@ var DashboardBackLink_default = /* @__PURE__ */ __name(((opts) => {
   color: var(--tertiary);
 }
 `;
+  DashboardBackLink.afterDOMLoaded = `
+function resolveDashboardBaseUrl(fallback) {
+  const trimmed = (fallback || "").replace(/\\/+$/, "")
+  if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
+    return trimmed
+  }
+  try {
+    if (trimmed) {
+      const fallbackUrl = new URL(trimmed)
+      if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(fallbackUrl.hostname)) {
+        return fallbackUrl.protocol + "//" + fallbackUrl.hostname + ":3000"
+      }
+    }
+  } catch {}
+  try {
+    if (document.referrer) {
+      const ref = new URL(document.referrer)
+      if (!/^garden\\./i.test(ref.hostname)) {
+        return ref.origin.replace(/\\/+$/, "")
+      }
+    }
+  } catch {}
+  try {
+    const current = new URL(window.location.href)
+    if (/^garden\\./i.test(current.hostname)) {
+      return current.origin.replace("//garden.", "//")
+    }
+    if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(current.hostname) || current.port === "8081") {
+      return current.protocol + "//" + current.hostname + ":3000"
+    }
+    return current.origin.replace(/\\/+$/, "")
+  } catch {}
+  return trimmed
+}
+
+function patchDashboardBackLinks() {
+  document.querySelectorAll(".dashboard-back-link").forEach(function(el) {
+    const base = resolveDashboardBaseUrl(el.getAttribute("data-dashboard-base-url"))
+    const slug = el.getAttribute("data-cluster-slug") || ""
+    const href = slug ? base + "/clusters/" + encodeURIComponent(slug) : base + "/dashboard"
+    if (href) el.setAttribute("href", href)
+  })
+}
+
+patchDashboardBackLinks()
+document.addEventListener("nav", patchDashboardBackLinks)
+`;
   return DashboardBackLink;
 }), "default");
 
@@ -14078,7 +14193,7 @@ import { jsx as jsx38, jsxs as jsxs21 } from "preact/jsx-runtime";
 var MarkdownActions = /* @__PURE__ */ __name(({ fileData, displayClass }) => {
   const slug = fileData.slug;
   if (!slug || slug === "index" || slug.endsWith("/index") || slug.startsWith("tags/")) return null;
-  const dashboardBaseUrl = (process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+  const dashboardBaseUrl = (process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "").replace(/\/+$/, "");
   return /* @__PURE__ */ jsxs21(
     "div",
     {
@@ -14298,6 +14413,18 @@ MarkdownActions.css = `
 }
 `;
 MarkdownActions.afterDOMLoaded = `
+// Persist the open editor + draft so it survives the live-reload triggered by
+// saving an image asset, and is restored when you return to the same note.
+var SB_EDITOR_DRAFT_KEY = "second-brain:md-editor-draft"
+function sbReadEditorDraft() {
+  try { return JSON.parse(sessionStorage.getItem(SB_EDITOR_DRAFT_KEY) || "null") } catch (e) { return null }
+}
+function sbWriteEditorDraft(draftSlug, content) {
+  try { sessionStorage.setItem(SB_EDITOR_DRAFT_KEY, JSON.stringify({ slug: draftSlug, content: content })) } catch (e) {}
+}
+function sbClearEditorDraft() {
+  try { sessionStorage.removeItem(SB_EDITOR_DRAFT_KEY) } catch (e) {}
+}
 document.addEventListener("nav", () => {
   for (const actions of document.querySelectorAll(".markdown-actions")) {
     if (actions.dataset.bound === "true") continue
@@ -14318,7 +14445,41 @@ document.addEventListener("nav", () => {
     const setStatus = (message) => {
       if (status) status.textContent = message
     }
-    const dashboardBaseUrl = (actions.dataset.dashboardUrl || "http://localhost:3000").replace(/\\/+$/, "")
+    const resolveDashboardBaseUrl = (fallback) => {
+      const trimmed = (fallback || "").replace(/\\/+$/, "")
+      if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
+        return trimmed
+      }
+      try {
+        if (trimmed) {
+          const fallbackUrl = new URL(trimmed)
+          if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(fallbackUrl.hostname)) {
+            return fallbackUrl.protocol + "//" + fallbackUrl.hostname + ":3000"
+          }
+        }
+      } catch {}
+      try {
+        if (document.referrer) {
+          const ref = new URL(document.referrer)
+          if (!/^garden\\./i.test(ref.hostname)) {
+            return ref.origin.replace(/\\/+$/, "")
+          }
+        }
+      } catch {}
+      try {
+        const current = new URL(window.location.href)
+        if (/^garden\\./i.test(current.hostname)) {
+          return current.origin.replace("//garden.", "//")
+        }
+        if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(current.hostname) || current.port === "8081") {
+          return current.protocol + "//" + current.hostname + ":3000"
+        }
+        return current.origin.replace(/\\/+$/, "")
+      } catch {}
+      return trimmed
+    }
+
+    const dashboardBaseUrl = resolveDashboardBaseUrl(actions.dataset.dashboardUrl)
     const clusterSlugFromNoteSlug = (value) => {
       let decoded = value || ""
       try {
@@ -14364,10 +14525,27 @@ document.addEventListener("nav", () => {
       textarea.value = content || ""
       modal.hidden = false
       textarea.focus()
+      sbWriteEditorDraft(slug, textarea.value)
     }
 
     const hideModal = () => {
       if (modal) modal.hidden = true
+    }
+    const closeEditor = () => {
+      sbClearEditorDraft()
+      hideModal()
+    }
+
+    // Track edits so a live-reload or navigation never loses in-progress work.
+    if (textarea) {
+      textarea.addEventListener("input", () => sbWriteEditorDraft(slug, textarea.value))
+    }
+
+    // Reopen the editor with the saved draft after a reload / when returning here.
+    const restoredDraft = sbReadEditorDraft()
+    if (restoredDraft && restoredDraft.slug === slug && modal && textarea) {
+      textarea.value = restoredDraft.content
+      modal.hidden = false
     }
 
     edit?.addEventListener("click", () => {
@@ -14418,46 +14596,41 @@ document.addEventListener("nav", () => {
       imageInput?.click()
     })
 
-    imageInput?.addEventListener("change", () => {
-      const files = Array.from(imageInput.files || [])
-      imageInput.value = ""
-      if (files.length === 0) return
+    const allowedImageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"]
+    const readImage = (file) =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.addEventListener("load", () => {
+          if (typeof reader.result === "string") {
+            resolve({
+              fileName: file.name,
+              mimeType: file.type,
+              dataUrl: reader.result,
+            })
+          } else {
+            reject(new Error("Could not read image"))
+          }
+        })
+        reader.addEventListener("error", () => reject(new Error("Could not read image")))
+        reader.readAsDataURL(file)
+      })
 
+    const uploadImages = (files) => {
+      if (!files || files.length === 0) return
       if (files.length > 20) {
         setStatus("Add 20 images or fewer")
         return
       }
-
-      const allowedTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"]
-      const invalid = files.find((file) => !allowedTypes.includes(file.type))
+      const invalid = files.find((file) => !allowedImageTypes.includes(file.type))
       if (invalid) {
         setStatus("Use PNG, JPEG, WEBP, or GIF")
         return
       }
-
       const tooLarge = files.find((file) => file.size > 10 * 1024 * 1024)
       if (tooLarge) {
         setStatus("Each image must be 10 MB or smaller")
         return
       }
-
-      const readImage = (file) =>
-        new Promise((resolve, reject) => {
-          const reader = new FileReader()
-          reader.addEventListener("load", () => {
-            if (typeof reader.result === "string") {
-              resolve({
-                fileName: file.name,
-                mimeType: file.type,
-                dataUrl: reader.result,
-              })
-            } else {
-              reject(new Error("Could not read image"))
-            }
-          })
-          reader.addEventListener("error", () => reject(new Error("Could not read image")))
-          reader.readAsDataURL(file)
-        })
 
       setStatus(files.length === 1 ? "Adding image..." : "Adding images...")
       if (addImage) addImage.disabled = true
@@ -14473,12 +14646,44 @@ document.addEventListener("nav", () => {
           setStatus("Could not read image")
           if (addImage) addImage.disabled = false
         })
+    }
+
+    imageInput?.addEventListener("change", () => {
+      const files = Array.from(imageInput.files || [])
+      imageInput.value = ""
+      uploadImages(files)
     })
 
-    close?.addEventListener("click", hideModal)
-    cancel?.addEventListener("click", hideModal)
+    // Paste a screenshot or copied image straight into the note (Ctrl/Cmd+V).
+    textarea?.addEventListener("paste", (event) => {
+      const items = Array.from((event.clipboardData && event.clipboardData.items) || [])
+      const imageItems = items.filter(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      )
+      if (imageItems.length === 0) return
+      event.preventDefault()
+      if (requireDashboardFrame()) return
+
+      const files = imageItems
+        .map((item, index) => {
+          const file = item.getAsFile()
+          if (!file) return null
+          if (file.name && file.name !== "image.png") return file
+          // Pasted screenshots usually have no useful name; give them a unique one.
+          const ext = (item.type.split("/")[1] || "png").replace("jpeg", "jpg")
+          const suffix = imageItems.length > 1 ? "-" + (index + 1) : ""
+          return new File([file], "pasted-" + Date.now() + suffix + "." + ext, {
+            type: item.type,
+          })
+        })
+        .filter(Boolean)
+      uploadImages(files)
+    })
+
+    close?.addEventListener("click", closeEditor)
+    cancel?.addEventListener("click", closeEditor)
     modal?.addEventListener("click", (event) => {
-      if (event.target === modal) hideModal()
+      if (event.target === modal) closeEditor()
     })
   }
 })
@@ -14534,6 +14739,7 @@ window.addEventListener("message", (event) => {
       if (textarea) textarea.value = data.content
       if (modal) modal.hidden = false
       textarea?.focus()
+      sbWriteEditorDraft(data.slug, data.content)
       setStatus("")
     } else {
       setStatus(data.error || "Could not open")
@@ -14542,7 +14748,10 @@ window.addEventListener("message", (event) => {
 
   if (data.type === "second-brain:markdown-save-result") {
     setStatus(data.ok ? "Saved" : data.error || "Could not save")
-    if (data.ok && modal) modal.hidden = true
+    if (data.ok) {
+      sbClearEditorDraft()
+      if (modal) modal.hidden = true
+    }
     window.setTimeout(() => { setStatus("") }, 1800)
   }
 
@@ -14551,6 +14760,7 @@ window.addEventListener("message", (event) => {
     if (data.ok && typeof data.markdown === "string" && data.markdown) {
       const snippetCount = typeof data.count === "number" ? data.count : 1
       insertSnippet(data.markdown)
+      if (textarea) sbWriteEditorDraft(data.slug, textarea.value)
       setStatus(snippetCount === 1 ? "Image inserted in editor. Click Save to publish." : "Images inserted in editor. Click Save to publish.")
     } else {
       setStatus(data.error || "Could not add image")
@@ -14647,7 +14857,7 @@ var HomeOverview = /* @__PURE__ */ __name((props) => {
   const headerText = scope === "public" ? "Shared clusters live here, ranked by popularity." : scope === "private" ? "Your account's clusters live here. Open a cluster to work inside its scoped map." : "A full map of every cluster lives here. Open a cluster to work inside its own scoped map.";
   return /* @__PURE__ */ jsxs22("section", { class: "home-overview", children: [
     /* @__PURE__ */ jsxs22("div", { class: "home-overview-header", children: [
-      /* @__PURE__ */ jsx39("p", { class: "eyebrow", children: scope === "public" ? "Public library" : scope === "private" ? "My library" : "Digital Garden" }),
+      /* @__PURE__ */ jsx39("p", { class: "eyebrow", children: scope === "public" ? "Public garden" : scope === "private" ? "My garden" : "Digital Garden" }),
       /* @__PURE__ */ jsx39("p", { children: headerText })
     ] }),
     /* @__PURE__ */ jsxs22("div", { class: "home-overview-stats", "aria-label": "Garden totals", children: [
@@ -14702,6 +14912,462 @@ var HomeOverview = /* @__PURE__ */ __name((props) => {
 }, "HomeOverview");
 HomeOverview.css = homeOverview_default;
 var HomeOverview_default = /* @__PURE__ */ __name((() => HomeOverview), "default");
+
+// quartz/components/FolderPdfExport.tsx
+import { jsx as jsx40, jsxs as jsxs23 } from "preact/jsx-runtime";
+function displayNameFromSlug(slug) {
+  const segment = slug.split("/").filter(Boolean).at(-1) ?? "folder";
+  return segment.replace(/[-_]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+__name(displayNameFromSlug, "displayNameFromSlug");
+var FolderPdfExport = /* @__PURE__ */ __name(({ fileData, allFiles }) => {
+  const pageSlug = fileData.slug ?? "";
+  if (!pageSlug.endsWith("/index") || pageSlug.startsWith("tags/")) return null;
+  const folderSlug = pageSlug.replace(/\/index$/, "");
+  const clusterSlug2 = folderSlug.split("/").filter(Boolean)[0] ?? "";
+  if (!clusterSlug2) return null;
+  const prefix = `${folderSlug}/`;
+  const documents = allFiles.filter((file) => {
+    const slug = file.slug ?? "";
+    return slug.startsWith(prefix) && !slug.endsWith("/index") && !slug.startsWith("tags/");
+  }).map((file) => ({
+    slug: file.slug,
+    title: file.frontmatter?.title || displayNameFromSlug(file.slug)
+  })).sort((left, right) => left.title.localeCompare(right.title));
+  if (documents.length === 0) return null;
+  const rawTitle = fileData.frontmatter?.title?.trim() ?? "";
+  const folderTitle = rawTitle && !rawTitle.toLowerCase().startsWith("folder:") ? rawTitle : displayNameFromSlug(folderSlug);
+  return /* @__PURE__ */ jsxs23(
+    "div",
+    {
+      class: "folder-pdf-export",
+      "data-cluster-slug": clusterSlug2,
+      "data-folder-slug": folderSlug,
+      "data-folder-title": folderTitle,
+      children: [
+        /* @__PURE__ */ jsx40("button", { class: "folder-pdf-open", type: "button", children: "Export folder as PDF" }),
+        /* @__PURE__ */ jsx40("div", { class: "folder-pdf-modal", hidden: true, children: /* @__PURE__ */ jsxs23("div", { class: "folder-pdf-panel", role: "dialog", "aria-modal": "true", "aria-label": "Export folder", children: [
+          /* @__PURE__ */ jsxs23("div", { class: "folder-pdf-header", children: [
+            /* @__PURE__ */ jsxs23("div", { children: [
+              /* @__PURE__ */ jsx40("p", { class: "folder-pdf-kicker", children: "Folder PDF" }),
+              /* @__PURE__ */ jsx40("h2", { children: "Select and arrange notes" }),
+              /* @__PURE__ */ jsx40("p", { class: "folder-pdf-description", children: "Choose the Markdown notes to include. Drag them or use the arrows to set their PDF order." })
+            ] }),
+            /* @__PURE__ */ jsx40("button", { class: "folder-pdf-close", type: "button", "aria-label": "Close folder PDF export", children: "Close" })
+          ] }),
+          /* @__PURE__ */ jsxs23("div", { class: "folder-pdf-toolbar", children: [
+            /* @__PURE__ */ jsx40("span", { class: "folder-pdf-count", "aria-live": "polite" }),
+            /* @__PURE__ */ jsxs23("div", { class: "folder-pdf-select-actions", children: [
+              /* @__PURE__ */ jsx40("button", { class: "folder-pdf-select-all", type: "button", children: "Select all" }),
+              /* @__PURE__ */ jsx40("button", { class: "folder-pdf-clear", type: "button", children: "Clear" })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsx40("ol", { class: "folder-pdf-list", children: documents.map((document) => /* @__PURE__ */ jsxs23(
+            "li",
+            {
+              class: "folder-pdf-item",
+              "data-slug": document.slug,
+              "data-title": document.title,
+              draggable: true,
+              children: [
+                /* @__PURE__ */ jsx40("span", { class: "folder-pdf-drag", "aria-hidden": "true", children: "::" }),
+                /* @__PURE__ */ jsxs23("label", { class: "folder-pdf-note", children: [
+                  /* @__PURE__ */ jsx40("input", { class: "folder-pdf-checkbox", type: "checkbox", checked: true }),
+                  /* @__PURE__ */ jsxs23("span", { children: [
+                    /* @__PURE__ */ jsx40("strong", { children: document.title }),
+                    /* @__PURE__ */ jsx40("small", { children: document.slug })
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxs23("div", { class: "folder-pdf-order-actions", children: [
+                  /* @__PURE__ */ jsx40(
+                    "button",
+                    {
+                      class: "folder-pdf-up",
+                      type: "button",
+                      "aria-label": `Move ${document.title} up`,
+                      children: "Up"
+                    }
+                  ),
+                  /* @__PURE__ */ jsx40(
+                    "button",
+                    {
+                      class: "folder-pdf-down",
+                      type: "button",
+                      "aria-label": `Move ${document.title} down`,
+                      children: "Down"
+                    }
+                  )
+                ] })
+              ]
+            }
+          )) }),
+          /* @__PURE__ */ jsxs23("div", { class: "folder-pdf-footer", children: [
+            /* @__PURE__ */ jsx40("span", { class: "folder-pdf-status", "aria-live": "polite" }),
+            /* @__PURE__ */ jsxs23("div", { class: "folder-pdf-footer-actions", children: [
+              /* @__PURE__ */ jsx40("button", { class: "folder-pdf-cancel", type: "button", children: "Cancel" }),
+              /* @__PURE__ */ jsx40("button", { class: "folder-pdf-export-button", type: "button", children: "Export selected PDF" })
+            ] })
+          ] })
+        ] }) })
+      ]
+    }
+  );
+}, "FolderPdfExport");
+FolderPdfExport.css = `
+.folder-pdf-export {
+  margin: 0.55rem 0 0.85rem;
+}
+
+.folder-pdf-open,
+.folder-pdf-close,
+.folder-pdf-select-all,
+.folder-pdf-clear,
+.folder-pdf-up,
+.folder-pdf-down,
+.folder-pdf-cancel,
+.folder-pdf-export-button {
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  color: var(--secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1;
+  padding: 0.48rem 0.68rem;
+}
+
+.folder-pdf-open:hover,
+.folder-pdf-close:hover,
+.folder-pdf-select-all:hover,
+.folder-pdf-clear:hover,
+.folder-pdf-up:hover,
+.folder-pdf-down:hover,
+.folder-pdf-cancel:hover {
+  border-color: var(--secondary);
+  color: var(--tertiary);
+}
+
+.folder-pdf-modal[hidden] {
+  display: none;
+}
+
+.folder-pdf-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.64);
+  backdrop-filter: blur(4px);
+}
+
+.folder-pdf-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(54rem, calc(100vw - 2rem));
+  max-height: min(46rem, calc(100vh - 2rem));
+  border: 1px solid var(--lightgray);
+  border-radius: 10px;
+  background: var(--light);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+
+.folder-pdf-header,
+.folder-pdf-toolbar,
+.folder-pdf-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+}
+
+.folder-pdf-header,
+.folder-pdf-toolbar {
+  border-bottom: 1px solid var(--lightgray);
+}
+
+.folder-pdf-footer {
+  border-top: 1px solid var(--lightgray);
+}
+
+.folder-pdf-kicker,
+.folder-pdf-description {
+  margin: 0;
+  color: var(--gray);
+  font-size: 0.8rem;
+}
+
+.folder-pdf-header h2 {
+  margin: 0.2rem 0;
+  color: var(--dark);
+  font-size: 1.1rem;
+}
+
+.folder-pdf-select-actions,
+.folder-pdf-footer-actions,
+.folder-pdf-order-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.folder-pdf-count,
+.folder-pdf-status {
+  color: var(--gray);
+  font-size: 0.82rem;
+}
+
+.folder-pdf-list {
+  counter-reset: folder-pdf-order;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0.85rem 1rem;
+  overflow: auto;
+  list-style: none;
+}
+
+.folder-pdf-item {
+  counter-increment: folder-pdf-order;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0;
+  padding: 0.68rem 0.75rem;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 78%, var(--lightgray));
+}
+
+.folder-pdf-item.dragging {
+  opacity: 0.45;
+}
+
+.folder-pdf-drag {
+  cursor: grab;
+  color: var(--gray);
+  font-family: var(--codeFont);
+}
+
+.folder-pdf-note {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.folder-pdf-note span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.folder-pdf-note strong::before {
+  content: counter(folder-pdf-order) ". ";
+  color: var(--gray);
+  font-weight: normal;
+}
+
+.folder-pdf-note strong,
+.folder-pdf-note small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-pdf-note strong {
+  color: var(--dark);
+  font-size: 0.9rem;
+}
+
+.folder-pdf-note small {
+  color: var(--gray);
+  font-size: 0.72rem;
+}
+
+.folder-pdf-checkbox {
+  flex: 0 0 auto;
+}
+
+.folder-pdf-export-button {
+  border-color: var(--dark);
+  background: var(--dark);
+  color: var(--light);
+}
+
+.folder-pdf-export-button:hover {
+  opacity: 0.86;
+}
+
+.folder-pdf-export-button:disabled {
+  cursor: wait;
+  opacity: 0.52;
+}
+
+@media (max-width: 600px) {
+  .folder-pdf-header,
+  .folder-pdf-footer {
+    align-items: flex-start;
+  }
+
+  .folder-pdf-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .folder-pdf-order-actions {
+    grid-column: 2;
+  }
+}
+`;
+FolderPdfExport.afterDOMLoaded = `
+document.addEventListener("nav", () => {
+  for (const root of document.querySelectorAll(".folder-pdf-export")) {
+    if (root.dataset.bound === "true") continue
+    root.dataset.bound = "true"
+
+    const open = root.querySelector(".folder-pdf-open")
+    const modal = root.querySelector(".folder-pdf-modal")
+    const close = root.querySelector(".folder-pdf-close")
+    const cancel = root.querySelector(".folder-pdf-cancel")
+    const selectAll = root.querySelector(".folder-pdf-select-all")
+    const clear = root.querySelector(".folder-pdf-clear")
+    const list = root.querySelector(".folder-pdf-list")
+    const count = root.querySelector(".folder-pdf-count")
+    const status = root.querySelector(".folder-pdf-status")
+    const exportButton = root.querySelector(".folder-pdf-export-button")
+    let dragged = null
+
+    const items = () => Array.from(list?.querySelectorAll(".folder-pdf-item") || [])
+    const selectedItems = () =>
+      items().filter((item) => item.querySelector(".folder-pdf-checkbox")?.checked)
+    const setStatus = (message) => {
+      if (status) status.textContent = message || ""
+    }
+    const updateCount = () => {
+      const selected = selectedItems().length
+      const total = items().length
+      if (count) count.textContent = selected + " of " + total + " notes selected"
+      if (exportButton) exportButton.disabled = selected === 0 || root.dataset.exporting === "true"
+    }
+    const hideModal = () => {
+      if (root.dataset.exporting === "true") return
+      if (modal) modal.hidden = true
+      setStatus("")
+    }
+    const moveItem = (item, direction) => {
+      if (!list || !item) return
+      const sibling = direction < 0 ? item.previousElementSibling : item.nextElementSibling
+      if (!sibling) return
+      if (direction < 0) list.insertBefore(item, sibling)
+      else list.insertBefore(sibling, item)
+    }
+
+    open?.addEventListener("click", () => {
+      if (modal) modal.hidden = false
+      updateCount()
+    })
+    close?.addEventListener("click", hideModal)
+    cancel?.addEventListener("click", hideModal)
+    modal?.addEventListener("click", (event) => {
+      if (event.target === modal) hideModal()
+    })
+    selectAll?.addEventListener("click", () => {
+      for (const item of items()) {
+        const checkbox = item.querySelector(".folder-pdf-checkbox")
+        if (checkbox) checkbox.checked = true
+      }
+      updateCount()
+    })
+    clear?.addEventListener("click", () => {
+      for (const item of items()) {
+        const checkbox = item.querySelector(".folder-pdf-checkbox")
+        if (checkbox) checkbox.checked = false
+      }
+      updateCount()
+    })
+    list?.addEventListener("change", updateCount)
+    list?.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("button")
+      const item = event.target?.closest?.(".folder-pdf-item")
+      if (!button || !item) return
+      if (button.classList.contains("folder-pdf-up")) moveItem(item, -1)
+      if (button.classList.contains("folder-pdf-down")) moveItem(item, 1)
+    })
+    list?.addEventListener("dragstart", (event) => {
+      const item = event.target?.closest?.(".folder-pdf-item")
+      if (!item) return
+      dragged = item
+      item.classList.add("dragging")
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"
+    })
+    list?.addEventListener("dragend", () => {
+      dragged?.classList.remove("dragging")
+      dragged = null
+    })
+    list?.addEventListener("dragover", (event) => {
+      if (!dragged || !list) return
+      event.preventDefault()
+      const target = event.target?.closest?.(".folder-pdf-item")
+      if (!target || target === dragged) return
+      const rect = target.getBoundingClientRect()
+      const after = event.clientY > rect.top + rect.height / 2
+      list.insertBefore(dragged, after ? target.nextElementSibling : target)
+    })
+
+    exportButton?.addEventListener("click", () => {
+      const selected = selectedItems().map((item) => ({
+        slug: item.dataset.slug || "",
+        title: item.dataset.title || item.dataset.slug || "Markdown note",
+      }))
+      if (selected.length === 0) return
+      if (window.parent === window) {
+        setStatus("Open this folder from the dashboard to export it.")
+        return
+      }
+
+      const requestId = Date.now().toString(36) + Math.random().toString(36).slice(2)
+      root.dataset.requestId = requestId
+      root.dataset.exporting = "true"
+      setStatus("Preparing PDF...")
+      updateCount()
+      window.parent.postMessage({
+        type: "second-brain:export-folder-pdf",
+        requestId,
+        cluster: root.dataset.clusterSlug || "",
+        folderSlug: root.dataset.folderSlug || "",
+        folderTitle: root.dataset.folderTitle || "Folder",
+        documents: selected,
+      }, "*")
+    })
+
+    updateCount()
+  }
+})
+
+window.addEventListener("message", (event) => {
+  const data = event.data
+  if (!data || data.type !== "second-brain:folder-pdf-result") return
+  for (const root of document.querySelectorAll(".folder-pdf-export")) {
+    if (!data.requestId || root.dataset.requestId !== data.requestId) continue
+    root.dataset.exporting = "false"
+    const status = root.querySelector(".folder-pdf-status")
+    const exportButton = root.querySelector(".folder-pdf-export-button")
+    const selected = root.querySelectorAll(".folder-pdf-checkbox:checked").length
+    if (exportButton) exportButton.disabled = selected === 0
+    if (status) status.textContent = data.ok ? "PDF downloaded." : data.error || "Could not export PDF."
+  }
+})
+`;
+var FolderPdfExport_default = /* @__PURE__ */ __name((() => FolderPdfExport), "default");
 
 // quartz.layout.ts
 var frontmatterString2 = /* @__PURE__ */ __name((page, key) => {
@@ -14834,7 +15500,8 @@ var defaultListPageLayout = {
         }
       }),
       condition: isClusterIndex
-    })
+    }),
+    FolderPdfExport_default()
   ],
   left: [
     PageTitle_default(),
@@ -15196,7 +15863,7 @@ var FolderPage = /* @__PURE__ */ __name((userOpts) => {
 
 // quartz/plugins/emitters/contentIndex.tsx
 import { toHtml as toHtml2 } from "hast-util-to-html";
-import { jsx as jsx40 } from "preact/jsx-runtime";
+import { jsx as jsx41 } from "preact/jsx-runtime";
 var defaultOptions19 = {
   enableSiteMap: true,
   enableRSS: true,
@@ -15268,6 +15935,7 @@ var ContentIndex = /* @__PURE__ */ __name((opts) => {
             links: file.data.links ?? [],
             tags: file.data.frontmatter?.tags ?? [],
             knowledgeType: typeof fm?.knowledge_type === "string" ? fm.knowledge_type : void 0,
+            generatedNoteType: typeof fm?.generated_note_type === "string" ? fm.generated_note_type : void 0,
             sourceType: typeof fm?.source_type === "string" ? fm.source_type : void 0,
             sourceFile: typeof fm?.source_file === "string" ? fm.source_file : void 0,
             sourceDocument: typeof fm?.source_document === "string" ? fm.source_document : void 0,
@@ -15315,7 +15983,7 @@ var ContentIndex = /* @__PURE__ */ __name((opts) => {
       if (opts?.enableRSS) {
         return {
           additionalHead: [
-            /* @__PURE__ */ jsx40(
+            /* @__PURE__ */ jsx41(
               "link",
               {
                 rel: "alternate",
@@ -15708,8 +16376,20 @@ function addGlobalPageResources(ctx, componentResources) {
     componentResources.afterDOMLoaded.push(`
       window.spaNavigate = (url, _) => window.location.assign(url)
       window.addCleanup = () => {}
-      const event = new CustomEvent("nav", { detail: { url: document.body.dataset.slug } })
+      const slug = document.body.dataset.slug
+      const event = new CustomEvent("nav", { detail: { url: slug } })
       document.dispatchEvent(event)
+      if (window.parent !== window && slug) {
+        window.parent.postMessage(
+          {
+            type: "second-brain:navigate",
+            slug,
+            title: document.title,
+            path: window.location.pathname,
+          },
+          "*",
+        )
+      }
     `);
   }
 }
@@ -15856,6 +16536,30 @@ var NotFoundPage = /* @__PURE__ */ __name(() => {
 }, "NotFoundPage");
 
 // quartz.config.ts
+function normalizedBaseUrl(value) {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) return "";
+  return trimmed.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+}
+__name(normalizedBaseUrl, "normalizedBaseUrl");
+function derivedQuartzBaseUrlFromDashboard(value) {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    if (/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(url.hostname)) {
+      return `${url.hostname}:8081`;
+    }
+    return `garden.${url.host}`;
+  } catch {
+    return "";
+  }
+}
+__name(derivedQuartzBaseUrlFromDashboard, "derivedQuartzBaseUrlFromDashboard");
+var quartzBaseUrl = normalizedBaseUrl(process.env.QUARTZ_BASE_URL ?? process.env.NEXT_PUBLIC_QUARTZ_URL) || derivedQuartzBaseUrlFromDashboard(
+  process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL
+) || "localhost:8081";
+var enableCustomOgImages = process.env.QUARTZ_CUSTOM_OG_IMAGES !== "false";
 var config = {
   configuration: {
     pageTitle: "breadboard",
@@ -15866,7 +16570,7 @@ var config = {
       provider: "plausible"
     },
     locale: "en-US",
-    baseUrl: "localhost:8081",
+    baseUrl: quartzBaseUrl,
     ignorePatterns: ["private", "templates", ".obsidian"],
     defaultDateType: "modified",
     theme: {
@@ -15938,8 +16642,7 @@ var config = {
       Static(),
       Favicon(),
       NotFoundPage(),
-      // Comment out CustomOgImages to speed up build time
-      CustomOgImages()
+      ...enableCustomOgImages ? [CustomOgImages()] : []
     ]
   }
 };

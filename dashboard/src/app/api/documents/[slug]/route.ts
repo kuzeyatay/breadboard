@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import db from '@/lib/db';
-import { refreshClusterIndex } from '@/lib/knowledge';
+import { normalizeTopicTags, refreshClusterIndex, walkClusterMarkdown } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import {
   requireOwnedClusterFromSlug,
@@ -168,38 +168,36 @@ function resolveDocument(
   contentPath: string,
   clusterSlug: string,
   slug: string,
-): { slug: string; filePath: string } | null {
+): { slug: string; filePath: string; relPath: string } | null {
   const clusterDir = safeClusterDir(contentPath, clusterSlug);
   if (!clusterDir) return null;
 
   const noteSlug = normalizeDocumentSlug(clusterSlug, slug);
   if (!noteSlug) return null;
 
-  const filePath = path.resolve(clusterDir, `${noteSlug}.md`);
-  if (!filePath.startsWith(clusterDir + path.sep)) return null;
-  if (fs.existsSync(filePath)) return { slug: noteSlug, filePath };
-
+  // Note identity is the basename; the file may live in any sub-folder.
+  const entries = walkClusterMarkdown(clusterDir);
   const candidateSlugs = new Set([noteSlug, slugify(noteSlug), slugify(decodeSlug(slug))]);
-  if (!fs.existsSync(clusterDir)) return { slug: noteSlug, filePath };
 
-  for (const entry of fs.readdirSync(clusterDir)) {
-    if (!entry.endsWith('.md') || entry.toLowerCase() === '_index.md') continue;
-
-    const candidatePath = path.resolve(clusterDir, entry);
-    if (!candidatePath.startsWith(clusterDir + path.sep)) continue;
-
-    const fileSlug = entry.replace(/\.md$/i, '');
+  for (const entry of entries) {
+    const fileSlug = entry.entry.replace(/\.md$/i, '');
     if (candidateSlugs.has(fileSlug) || candidateSlugs.has(slugify(fileSlug))) {
-      return { slug: fileSlug, filePath: candidatePath };
-    }
-
-    const title = frontmatterTitle(fs.readFileSync(candidatePath, 'utf-8'));
-    if (title && candidateSlugs.has(slugify(title))) {
-      return { slug: fileSlug, filePath: candidatePath };
+      return { slug: fileSlug, filePath: entry.filePath, relPath: entry.relPath };
     }
   }
 
-  return { slug: noteSlug, filePath };
+  for (const entry of entries) {
+    const title = frontmatterTitle(fs.readFileSync(entry.filePath, 'utf-8'));
+    if (title && candidateSlugs.has(slugify(title))) {
+      const fileSlug = entry.entry.replace(/\.md$/i, '');
+      return { slug: fileSlug, filePath: entry.filePath, relPath: entry.relPath };
+    }
+  }
+
+  // Not found on disk: fall back to the root path so callers 404 cleanly.
+  const filePath = path.resolve(clusterDir, `${noteSlug}.md`);
+  if (!filePath.startsWith(clusterDir + path.sep)) return null;
+  return { slug: noteSlug, filePath, relPath: `${noteSlug}.md` };
 }
 
 function updateFrontmatterValue(content: string, key: string, value: string): string {
@@ -229,6 +227,41 @@ function updateFrontmatterValue(content: string, key: string, value: string): st
   return `---\n${nextLines.join('\n').trimEnd()}\n---\n\n${body}`;
 }
 
+function yamlQuote(value: string): string {
+  return JSON.stringify(value.replace(/\r/g, ''));
+}
+
+function yamlArray(values: string[]): string {
+  return `[${values.map((value) => yamlQuote(value)).join(', ')}]`;
+}
+
+function updateFrontmatterArrayValue(content: string, key: string, values: string[]): string {
+  const field = `${key}: ${yamlArray(values)}`;
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+
+  if (!match) {
+    return values.length > 0 ? `---\n${field}\n---\n\n${content}` : content;
+  }
+
+  const body = content.slice(match[0].length).replace(/^\r?\n/, '');
+  const lines = (match[1] ?? '').split(/\r?\n/);
+  let found = false;
+  const nextLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.trimStart().startsWith(`${key}:`)) {
+      found = true;
+      if (values.length > 0) nextLines.push(field);
+    } else {
+      nextLines.push(line);
+    }
+  }
+
+  if (!found && values.length > 0) nextLines.push(field);
+
+  return `---\n${nextLines.join('\n').trimEnd()}\n---\n\n${body}`;
+}
+
 function removePathInside(root: string, target: string): void {
   const rootPath = path.resolve(root);
   const targetPath = path.resolve(target);
@@ -237,23 +270,16 @@ function removePathInside(root: string, target: string): void {
   fs.rmSync(targetPath, { recursive: true, force: true });
 }
 
-function removeQuartzPublicArtifacts(contentPath: string, clusterSlug: string, slug: string): void {
+// `relSlug` is the note's path relative to the cluster dir, without the `.md`
+// extension (e.g. "caches/direct-mapped"). For root-level notes it is just the slug.
+function removeQuartzPublicArtifacts(contentPath: string, clusterSlug: string, relSlug: string): void {
   const publicRoot = path.resolve(contentPath, '..', 'public');
   const clusterPublicDir = path.resolve(publicRoot, clusterSlug.trim());
   if (!clusterPublicDir.startsWith(publicRoot + path.sep)) return;
 
-  removePathInside(clusterPublicDir, path.join(clusterPublicDir, `${slug}.html`));
-  removePathInside(clusterPublicDir, path.join(clusterPublicDir, `${slug}-og-image.webp`));
-  removePathInside(clusterPublicDir, path.join(clusterPublicDir, slug));
-}
-
-function resolveSlugPath(clusterDir: string, slug: string): string | null {
-  const cleanSlug = slug.trim().replace(/\\/g, '/').replace(/[?#].*$/, '').replace(/\.md$/i, '');
-  if (!cleanSlug || cleanSlug.includes('/')) return null;
-
-  const filePath = path.resolve(clusterDir, `${cleanSlug}.md`);
-  if (!filePath.startsWith(clusterDir + path.sep)) return null;
-  return filePath;
+  removePathInside(clusterPublicDir, path.join(clusterPublicDir, `${relSlug}.html`));
+  removePathInside(clusterPublicDir, path.join(clusterPublicDir, `${relSlug}-og-image.webp`));
+  removePathInside(clusterPublicDir, path.join(clusterPublicDir, relSlug));
 }
 
 function contentAssetPath(contentPath: string, clusterSlug: string, assetUrl: string): string | null {
@@ -309,12 +335,9 @@ function documentsToDeleteForSource(
   const sourcePdf = frontmatterStringValue(sourceData, 'source_pdf');
   if (sourcePdf) assetUrls.add(sourcePdf);
 
-  for (const entry of fs.readdirSync(clusterDir)) {
-    if (!entry.endsWith('.md') || entry.toLowerCase() === '_index.md') continue;
-
-    const slug = entry.replace(/\.md$/i, '');
-    const filePath = path.resolve(clusterDir, entry);
-    if (!filePath.startsWith(clusterDir + path.sep)) continue;
+  for (const item of walkClusterMarkdown(clusterDir)) {
+    const slug = item.entry.replace(/\.md$/i, '');
+    const filePath = item.filePath;
 
     const data = parseFrontmatter(fs.readFileSync(filePath, 'utf-8'));
     const sourceDocument = frontmatterStringValue(data, 'source_document');
@@ -394,12 +417,25 @@ export async function PATCH(
 
   const body = await request.json().catch(() => ({}));
   let content = fs.readFileSync(context.filePath, 'utf-8');
+  let tags = frontmatterArrayValue(parseFrontmatter(content), 'tags');
 
   if (Object.prototype.hasOwnProperty.call(body, 'content')) {
     if (typeof body.content !== 'string') {
       return json({ error: 'content must be a string' }, { status: 400 });
     }
     content = body.content;
+  }
+
+  let title = frontmatterTitle(content);
+  if (Object.prototype.hasOwnProperty.call(body, 'title')) {
+    if (typeof body.title !== 'string') {
+      return json({ error: 'title must be a string' }, { status: 400 });
+    }
+    title = body.title.trim().replace(/\s+/g, ' ').slice(0, 160);
+    if (!title) {
+      return json({ error: 'title cannot be empty' }, { status: 400 });
+    }
+    content = updateFrontmatterValue(content, 'title', title);
   }
 
   let flagColor = '';
@@ -411,11 +447,24 @@ export async function PATCH(
     content = updateFrontmatterValue(content, 'flag_color', flagColor);
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, 'tags')) {
+    if (!Array.isArray(body.tags) || body.tags.some((tag: unknown) => typeof tag !== 'string')) {
+      return json({ error: 'tags must be an array of strings' }, { status: 400 });
+    }
+    tags = normalizeTopicTags(
+      body.tags.map((tag: string) => tag.trim()),
+      content,
+      8,
+      `${frontmatterTitle(content)}\n${content}`,
+    );
+    content = updateFrontmatterArrayValue(content, 'tags', tags);
+  }
+
   fs.writeFileSync(context.filePath, content, 'utf-8');
   refreshClusterIndex(context.contentPath, context.clusterSlug);
   await publishQuartzAfterMutation(`update document ${context.clusterSlug}/${context.slug}`);
 
-  return json({ success: true, slug: context.slug, flagColor });
+  return json({ success: true, slug: context.slug, title, flagColor, tags });
 }
 
 export async function GET(
@@ -453,13 +502,26 @@ export async function DELETE(
 
   const deletedSlugs: string[] = [];
 
+  // Resolve each basename slug to its on-disk location (any sub-folder).
+  const entryBySlug = new Map<string, { filePath: string; relPath: string }>();
+  for (const item of walkClusterMarkdown(clusterDir)) {
+    entryBySlug.set(item.entry.replace(/\.md$/i, ''), {
+      filePath: item.filePath,
+      relPath: item.relPath,
+    });
+  }
+
   try {
     for (const slug of deletePlan.slugs) {
-      const filePath = resolveSlugPath(clusterDir, slug);
-      if (!filePath || !fs.existsSync(filePath)) continue;
-      fs.unlinkSync(filePath);
+      const found = entryBySlug.get(slug);
+      if (!found || !fs.existsSync(found.filePath)) continue;
+      fs.unlinkSync(found.filePath);
       deletedSlugs.push(slug);
-      removeQuartzPublicArtifacts(context.contentPath, context.clusterSlug, slug);
+      removeQuartzPublicArtifacts(
+        context.contentPath,
+        context.clusterSlug,
+        found.relPath.replace(/\.md$/i, ''),
+      );
     }
 
     if (deletedSlugs.length === 0) {

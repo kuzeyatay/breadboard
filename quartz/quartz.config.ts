@@ -3,14 +3,32 @@ import * as Plugin from "./quartz/plugins"
 
 function normalizedBaseUrl(value?: string): string {
   const trimmed = (value ?? "").trim()
-  if (!trimmed) return "localhost:8081"
+  if (!trimmed) return ""
 
   return trimmed.replace(/^https?:\/\//i, "").replace(/\/+$/, "")
 }
 
-const quartzBaseUrl = normalizedBaseUrl(
-  process.env.QUARTZ_BASE_URL ?? process.env.NEXT_PUBLIC_QUARTZ_URL,
-)
+function derivedQuartzBaseUrlFromDashboard(value?: string): string {
+  const trimmed = (value ?? "").trim()
+  if (!trimmed) return ""
+
+  try {
+    const url = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`)
+    if (/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(url.hostname)) {
+      return `${url.hostname}:8081`
+    }
+    return `garden.${url.host}`
+  } catch {
+    return ""
+  }
+}
+
+const quartzBaseUrl =
+  normalizedBaseUrl(process.env.QUARTZ_BASE_URL ?? process.env.NEXT_PUBLIC_QUARTZ_URL) ||
+  derivedQuartzBaseUrlFromDashboard(
+    process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL,
+  ) ||
+  "localhost:8081"
 
 const enableCustomOgImages = process.env.QUARTZ_CUSTOM_OG_IMAGES !== "false"
 

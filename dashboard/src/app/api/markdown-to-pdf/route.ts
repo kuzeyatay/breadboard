@@ -6,6 +6,13 @@ import { unified } from "unified";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
+import { mathjax } from "mathjax-full/js/mathjax.js";
+import { TeX } from "mathjax-full/js/input/tex.js";
+import { SVG } from "mathjax-full/js/output/svg.js";
+import { liteAdaptor } from "mathjax-full/js/adaptors/liteAdaptor.js";
+import { RegisterHTMLHandler } from "mathjax-full/js/handlers/html.js";
+import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
+import SVGtoPDF from "svg-to-pdfkit";
 import { authOptions } from "@/lib/auth-options";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +28,7 @@ type MarkdownNode = {
   url?: string;
   alt?: string;
   lang?: string;
+  align?: Array<string | null>;
 };
 
 type PdfFonts = {
@@ -107,6 +115,144 @@ function registerFonts(
   };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Math rendering (LaTeX -> SVG -> PDF vector)                                 */
+/* -------------------------------------------------------------------------- */
+
+// MathJax reports dimensions in `ex` units. This scales an `ex` to PDF points
+// relative to the surrounding font size so a rendered formula's x-height tracks
+// the body text x-height (≈0.52 of the em for the bundled sans fonts).
+const MATH_EX_RATIO = 0.52;
+// Surrounding font size used to scale display ($$...$$) equations.
+const BLOCK_MATH_SIZE = 10.5;
+
+type MathRenderer = {
+  convert: (tex: string, options: { display: boolean }) => unknown;
+  innerHTML: (node: unknown) => string;
+};
+
+let mathRenderer: MathRenderer | null = null;
+const mathSvgCache = new Map<string, string>();
+
+function getMathRenderer(): MathRenderer {
+  if (!mathRenderer) {
+    const adaptor = liteAdaptor();
+    RegisterHTMLHandler(adaptor);
+    const mathDocument = mathjax.document("", {
+      InputJax: new TeX({ packages: AllPackages }),
+      OutputJax: new SVG({ fontCache: "local" }),
+    });
+    mathRenderer = {
+      convert: (tex, options) => mathDocument.convert(tex, options),
+      innerHTML: (node) =>
+        adaptor.innerHTML(node as Parameters<typeof adaptor.innerHTML>[0]),
+    };
+  }
+  return mathRenderer;
+}
+
+function mathToSvg(latex: string, display: boolean): string {
+  const key = (display ? "D|" : "I|") + latex;
+  const cached = mathSvgCache.get(key);
+  if (cached !== undefined) return cached;
+  const renderer = getMathRenderer();
+  const svg = renderer.innerHTML(renderer.convert(latex, { display }));
+  mathSvgCache.set(key, svg);
+  return svg;
+}
+
+// Pull `ex`-based dimensions out of the MathJax SVG markup. `depth` is how far
+// the formula extends below the text baseline (from `vertical-align`).
+function svgDimensions(
+  svg: string,
+): { width: number; height: number; depth: number } | null {
+  const width = svg.match(/width="([\d.]+)ex"/);
+  const height = svg.match(/height="([\d.]+)ex"/);
+  if (!width || !height) return null;
+  const verticalAlign = svg.match(/vertical-align:\s*(-?[\d.]+)ex/);
+  const va = verticalAlign ? parseFloat(verticalAlign[1]) : 0;
+  return {
+    width: parseFloat(width[1]),
+    height: parseFloat(height[1]),
+    depth: va < 0 ? -va : 0,
+  };
+}
+
+type MathRun = {
+  kind: "math";
+  svg: string;
+  latex: string;
+  width: number;
+  height: number;
+  depth: number;
+};
+
+// Renders a LaTeX string to a sized vector run, or null if MathJax/the SVG
+// could not be produced (callers fall back to the raw `$...$` source).
+function renderMathRun(
+  latex: string,
+  display: boolean,
+  size: number,
+): MathRun | null {
+  const source = latex.trim();
+  if (!source) return null;
+  try {
+    const svg = mathToSvg(source, display);
+    const dims = svgDimensions(svg);
+    if (!dims) return null;
+    const exToPt = size * MATH_EX_RATIO;
+    return {
+      kind: "math",
+      svg,
+      latex: source,
+      width: dims.width * exToPt,
+      height: dims.height * exToPt,
+      depth: dims.depth * exToPt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function drawMathSvg(
+  doc: PDFKit.PDFDocument,
+  fonts: PdfFonts,
+  svg: string,
+  latex: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  fallbackSize: number,
+): void {
+  doc.save();
+  try {
+    SVGtoPDF(doc, svg, x, y, { width, height, assumePt: false });
+  } catch {
+    doc
+      .font(fonts.code)
+      .fontSize(fallbackSize)
+      .fillColor("#b91c1c")
+      .text(`$${latex}$`, x, y, { lineBreak: false });
+  }
+  doc.restore();
+}
+
+function fontMetrics(
+  doc: PDFKit.PDFDocument,
+  fontName: string,
+  size: number,
+): { ascent: number; descent: number } {
+  doc.font(fontName).fontSize(size);
+  const font = (doc as unknown as {
+    _font: { ascender: number; descender: number };
+  })._font;
+  return {
+    ascent: (font.ascender / 1000) * size,
+    descent: (Math.abs(font.descender) / 1000) * size,
+  };
+}
+
 function parseFrontmatter(content: string): { body: string; title: string } {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if (!match) return { body: content, title: "" };
@@ -174,6 +320,276 @@ function inlineText(node: MarkdownNode): string {
   }
 
   return childrenOf(node).map(inlineText).join("");
+}
+
+/* -------------------------------------------------------------------------- */
+/* Inline layout (text + inline math on the same line)                         */
+/* -------------------------------------------------------------------------- */
+
+type InlineStyle = { font: keyof PdfFonts; size: number; color: string };
+type InlineRun =
+  | ({ kind: "text"; text: string } & InlineStyle)
+  | MathRun
+  | { kind: "break" };
+
+const BODY_STYLE: InlineStyle = { font: "body", size: 10.5, color: "#111827" };
+
+// Flattens a markdown inline subtree into styled runs, turning inline math into
+// vector runs so it can flow alongside text.
+function buildInline(
+  node: MarkdownNode,
+  style: InlineStyle,
+  out: InlineRun[],
+): void {
+  switch (node.type) {
+    case "text":
+      out.push({ kind: "text", text: node.value ?? "", ...style });
+      break;
+    case "strong":
+      childrenOf(node).forEach((child) =>
+        buildInline(child, { ...style, font: "bold" }, out),
+      );
+      break;
+    case "emphasis":
+      childrenOf(node).forEach((child) =>
+        buildInline(child, { ...style, font: "italic" }, out),
+      );
+      break;
+    case "delete":
+      childrenOf(node).forEach((child) => buildInline(child, style, out));
+      break;
+    case "inlineCode":
+      out.push({
+        kind: "text",
+        text: node.value ?? "",
+        font: "code",
+        size: style.size,
+        color: style.color,
+      });
+      break;
+    case "break":
+      out.push({ kind: "break" });
+      break;
+    case "inlineMath": {
+      const math = renderMathRun(node.value ?? "", false, style.size);
+      if (math) out.push(math);
+      else out.push({ kind: "text", text: `$${node.value ?? ""}$`, ...style });
+      break;
+    }
+    case "link": {
+      const linkStyle: InlineStyle = { ...style, color: "#2563eb" };
+      childrenOf(node).forEach((child) => buildInline(child, linkStyle, out));
+      const label = childrenOf(node).map(inlineText).join("").trim();
+      if (node.url && node.url !== label) {
+        out.push({
+          kind: "text",
+          text: ` (${node.url})`,
+          font: style.font,
+          size: style.size,
+          color: "#6b7280",
+        });
+      }
+      break;
+    }
+    case "image":
+      out.push({
+        kind: "text",
+        text: node.alt ? `[Image: ${node.alt}]` : "[Image]",
+        font: "italic",
+        size: style.size,
+        color: "#4b5563",
+      });
+      break;
+    default:
+      if (typeof node.value === "string") {
+        out.push({ kind: "text", text: node.value, ...style });
+      } else {
+        childrenOf(node).forEach((child) => buildInline(child, style, out));
+      }
+  }
+}
+
+function buildInlineChildren(
+  node: MarkdownNode,
+  style: InlineStyle,
+  out: InlineRun[],
+): void {
+  childrenOf(node).forEach((child) => buildInline(child, style, out));
+}
+
+type LineAtom =
+  | {
+      type: "word";
+      text: string;
+      font: keyof PdfFonts;
+      size: number;
+      color: string;
+      width: number;
+      ascent: number;
+      descent: number;
+      spaceAfter: number;
+    }
+  | {
+      type: "math";
+      svg: string;
+      latex: string;
+      size: number;
+      width: number;
+      ascent: number;
+      descent: number;
+      spaceAfter: number;
+    };
+
+// Greedy line-breaking renderer that places styled words and inline math on the
+// same baseline, wrapping at the content width and paging when needed.
+function renderInline(
+  doc: PDFKit.PDFDocument,
+  runs: InlineRun[],
+  fonts: PdfFonts,
+  options: { indent?: number; lineGap?: number } = {},
+): void {
+  const indent = options.indent ?? 0;
+  const startX = left(doc, indent);
+  const maxWidth = contentWidth(doc, indent);
+  const lineGap = options.lineGap ?? 3;
+
+  const metricsCache = new Map<string, { ascent: number; descent: number }>();
+  const metricsFor = (font: keyof PdfFonts, size: number) => {
+    const key = `${font}:${size}`;
+    let cached = metricsCache.get(key);
+    if (!cached) {
+      cached = fontMetrics(doc, fonts[font], size);
+      metricsCache.set(key, cached);
+    }
+    return cached;
+  };
+
+  const atoms: LineAtom[] = [];
+  const attachSpace = (width: number) => {
+    const prev = atoms[atoms.length - 1];
+    if (prev && prev.spaceAfter === 0) prev.spaceAfter = width;
+  };
+
+  for (const run of runs) {
+    if (run.kind === "break") {
+      // Zero-width marker: the layout loop treats it as a forced line break.
+      atoms.push({
+        type: "word",
+        text: "",
+        font: "body",
+        size: BODY_STYLE.size,
+        color: BODY_STYLE.color,
+        width: 0,
+        ascent: 0,
+        descent: 0,
+        spaceAfter: 0,
+      });
+      continue;
+    }
+    if (run.kind === "math") {
+      atoms.push({
+        type: "math",
+        svg: run.svg,
+        latex: run.latex,
+        size: BLOCK_MATH_SIZE,
+        width: run.width,
+        ascent: run.height - run.depth,
+        descent: run.depth,
+        spaceAfter: 0,
+      });
+      continue;
+    }
+
+    doc.font(fonts[run.font]).fontSize(run.size);
+    const spaceWidth = doc.widthOfString(" ");
+    const metrics = metricsFor(run.font, run.size);
+    const segments = run.text.split(/(\s+)/);
+    for (const segment of segments) {
+      if (!segment) continue;
+      if (/^\s+$/.test(segment)) {
+        attachSpace(spaceWidth);
+        continue;
+      }
+      atoms.push({
+        type: "word",
+        text: segment,
+        font: run.font,
+        size: run.size,
+        color: run.color,
+        width: doc.widthOfString(segment),
+        ascent: metrics.ascent,
+        descent: metrics.descent,
+        spaceAfter: 0,
+      });
+    }
+  }
+  let line: LineAtom[] = [];
+  let lineWidth = 0;
+
+  const flushLine = () => {
+    const visible = line.filter((atom) => atom.width > 0 || atom.type === "math");
+    let maxAscent = 0;
+    let maxDescent = 0;
+    line.forEach((atom) => {
+      maxAscent = Math.max(maxAscent, atom.ascent);
+      maxDescent = Math.max(maxDescent, atom.descent);
+    });
+    if (maxAscent === 0) maxAscent = metricsFor("body", BODY_STYLE.size).ascent;
+
+    if (
+      doc.y + maxAscent + maxDescent >
+      doc.page.height - doc.page.margins.bottom
+    ) {
+      doc.addPage();
+    }
+    const baselineY = doc.y + maxAscent;
+    let x = startX;
+    if (visible.length > 0) {
+      for (let index = 0; index < line.length; index += 1) {
+        const atom = line[index];
+        if (atom.type === "word") {
+          if (atom.text) {
+            doc
+              .font(fonts[atom.font])
+              .fontSize(atom.size)
+              .fillColor(atom.color)
+              .text(atom.text, x, baselineY - atom.ascent, { lineBreak: false });
+          }
+        } else {
+          drawMathSvg(
+            doc,
+            fonts,
+            atom.svg,
+            atom.latex,
+            x,
+            baselineY - atom.ascent,
+            atom.width,
+            atom.ascent + atom.descent,
+            atom.size,
+          );
+        }
+        x += atom.width + atom.spaceAfter;
+      }
+    }
+    doc.x = startX;
+    doc.y = baselineY + maxDescent + lineGap;
+    line = [];
+    lineWidth = 0;
+  };
+
+  for (const atom of atoms) {
+    const isBreakMarker = atom.type === "word" && atom.text === "" && atom.width === 0;
+    if (isBreakMarker) {
+      flushLine();
+      continue;
+    }
+    if (line.length > 0 && lineWidth + atom.width > maxWidth) {
+      flushLine();
+    }
+    line.push(atom);
+    lineWidth += atom.width + atom.spaceAfter;
+  }
+  flushLine();
 }
 
 function drawText(
@@ -281,7 +697,7 @@ function renderImage(
 ): void {
   const imagePath = resolveImagePath(node.url, clusterSlug);
   const caption = node.alt || node.url || "Image";
-  if (!imagePath) {
+  const drawPlaceholder = () => {
     drawText(doc, `[Image: ${caption}]`, fonts, {
       indent,
       font: "italic",
@@ -289,27 +705,47 @@ function renderImage(
       color: "#4b5563",
     });
     doc.moveDown(0.45);
+  };
+
+  if (!imagePath) {
+    drawPlaceholder();
     return;
   }
 
-  doc.addPage();
   try {
-    const pageW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-    const pageH = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
-    doc.x = doc.page.margins.left;
-    doc.image(imagePath, {
-      fit: [pageW, pageH],
-      align: "center",
-      valign: "top",
-    });
+    // Open once to read the natural size, then draw it inline within the text
+    // flow. PDFKit's doc.image() does NOT advance doc.y, so we must scale to fit
+    // and move the cursor ourselves — otherwise following content overlaps it.
+    const image = (
+      doc as unknown as {
+        openImage: (src: string) => { width: number; height: number };
+      }
+    ).openImage(imagePath);
+    const maxWidth = contentWidth(doc, indent);
+    const maxHeight =
+      doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+    let width = image.width;
+    let height = image.height;
+    if (width > maxWidth) {
+      const scale = maxWidth / width;
+      width *= scale;
+      height *= scale;
+    }
+    if (height > maxHeight) {
+      const scale = maxHeight / height;
+      width *= scale;
+      height *= scale;
+    }
+
+    if (doc.y + height > doc.page.height - doc.page.margins.bottom) {
+      doc.addPage();
+    }
+    const x = left(doc, indent) + Math.max(0, (maxWidth - width) / 2);
+    doc.image(imagePath, x, doc.y, { width, height });
+    doc.x = left(doc, indent);
+    doc.y += height + 8;
   } catch {
-    drawText(doc, `[Image: ${caption}]`, fonts, {
-      indent,
-      font: "italic",
-      size: 9.5,
-      color: "#4b5563",
-    });
-    doc.moveDown(0.45);
+    drawPlaceholder();
   }
 }
 
@@ -321,6 +757,7 @@ function renderList(
   indent: number,
 ): void {
   const start = typeof node.start === "number" ? node.start : 1;
+  const itemStyle: InlineStyle = { font: "body", size: 10.2, color: "#111827" };
 
   childrenOf(node).forEach((item, index) => {
     const marker = node.ordered ? `${start + index}.` : "-";
@@ -330,12 +767,14 @@ function renderList(
     );
     const firstParagraph =
       firstParagraphIndex >= 0 ? children[firstParagraphIndex] : null;
-    const label = firstParagraph
-      ? inlineText(firstParagraph)
-      : inlineText(item);
 
     ensureSpace(doc, 28);
-    drawText(doc, `${marker} ${label}`, fonts, { indent, size: 10.2 });
+    const runs: InlineRun[] = [
+      { kind: "text", text: `${marker} `, ...itemStyle },
+    ];
+    if (firstParagraph) buildInlineChildren(firstParagraph, itemStyle, runs);
+    else buildInline(item, itemStyle, runs);
+    renderInline(doc, runs, fonts, { indent });
 
     children.forEach((child, childIndex) => {
       if (childIndex !== firstParagraphIndex) {
@@ -353,25 +792,86 @@ function renderTable(
   fonts: PdfFonts,
   indent: number,
 ): void {
-  const rows = childrenOf(node)
-    .map((row) =>
-      childrenOf(row)
-        .map((cell) => inlineText(cell).trim())
-        .join(" | "),
-    )
-    .filter(Boolean);
-
+  const rows = childrenOf(node).map((row) =>
+    childrenOf(row).map((cell) => inlineText(cell).replace(/\s+/g, " ").trim()),
+  );
   if (rows.length === 0) return;
-  ensureSpace(doc, 32);
-  rows.forEach((row, index) => {
-    drawText(doc, row, fonts, {
-      indent,
-      font: index === 0 ? "bold" : "body",
-      size: 9.2,
-      color: "#111827",
-    });
+
+  const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  if (columnCount === 0) return;
+
+  const align = Array.isArray(node.align) ? node.align : [];
+  const cellAlign = (col: number): "left" | "center" | "right" => {
+    const value = align[col];
+    if (value === "right") return "right";
+    if (value === "center") return "center";
+    return "left";
+  };
+
+  const tableWidth = contentWidth(doc, indent);
+  const columnWidth = tableWidth / columnCount;
+  const padX = 5;
+  const padY = 4;
+  const fontSize = 9;
+  const x0 = left(doc, indent);
+  const cellTextWidth = columnWidth - padX * 2;
+  const pageBottom = () => doc.page.height - doc.page.margins.bottom;
+
+  const measureRowHeight = (cells: string[], fontKey: keyof PdfFonts): number => {
+    doc.font(fonts[fontKey]).fontSize(fontSize);
+    let max = 0;
+    for (let col = 0; col < columnCount; col += 1) {
+      const text = cells[col] || " ";
+      const height = doc.heightOfString(text, {
+        width: cellTextWidth,
+        lineGap: 1,
+      });
+      if (height > max) max = height;
+    }
+    return max + padY * 2;
+  };
+
+  rows.forEach((cells, rowIndex) => {
+    const isHeader = rowIndex === 0;
+    const fontKey: keyof PdfFonts = isHeader ? "bold" : "body";
+    const rowHeight = measureRowHeight(cells, fontKey);
+
+    if (doc.y + rowHeight > pageBottom()) doc.addPage();
+    const y = doc.y;
+
+    if (isHeader) {
+      doc.save().rect(x0, y, tableWidth, rowHeight).fill("#f3f4f6").restore();
+    }
+
+    doc
+      .font(fonts[fontKey])
+      .fontSize(fontSize)
+      .fillColor(isHeader ? "#111827" : "#374151");
+    for (let col = 0; col < columnCount; col += 1) {
+      const text = cells[col] ?? "";
+      if (!text) continue;
+      doc.text(text, x0 + col * columnWidth + padX, y + padY, {
+        width: cellTextWidth,
+        align: cellAlign(col),
+        lineGap: 1,
+      });
+    }
+
+    doc.save().lineWidth(0.5).strokeColor("#d1d5db");
+    doc.rect(x0, y, tableWidth, rowHeight).stroke();
+    for (let col = 1; col < columnCount; col += 1) {
+      doc
+        .moveTo(x0 + col * columnWidth, y)
+        .lineTo(x0 + col * columnWidth, y + rowHeight)
+        .stroke();
+    }
+    doc.restore();
+
+    doc.x = x0;
+    doc.y = y + rowHeight;
   });
-  doc.moveDown(0.55);
+
+  doc.moveDown(0.6);
 }
 
 function renderCode(
@@ -395,6 +895,36 @@ function renderCode(
   doc.moveDown(0.8);
 }
 
+// Renders a display ($$...$$) equation centered on its own line, scaling down
+// to fit the content width. Falls back to the raw LaTeX as a code block.
+function renderBlockMath(
+  doc: PDFKit.PDFDocument,
+  latex: string,
+  fonts: PdfFonts,
+  indent: number,
+): void {
+  const math = renderMathRun(latex, true, BLOCK_MATH_SIZE);
+  if (!math) {
+    renderCode(doc, { type: "math", value: latex }, fonts, indent);
+    return;
+  }
+
+  let { width, height } = math;
+  const maxWidth = contentWidth(doc, indent);
+  if (width > maxWidth) {
+    const scale = maxWidth / width;
+    width *= scale;
+    height *= scale;
+  }
+
+  ensureSpace(doc, height + 18);
+  const x = left(doc, indent) + Math.max(0, (maxWidth - width) / 2);
+  const y = doc.y + 6;
+  drawMathSvg(doc, fonts, math.svg, math.latex, x, y, width, height, BLOCK_MATH_SIZE);
+  doc.x = left(doc, indent);
+  doc.y = y + height + 8;
+}
+
 function renderNode(
   doc: PDFKit.PDFDocument,
   node: MarkdownNode,
@@ -414,13 +944,13 @@ function renderNode(
       ensureSpace(doc, depth <= 2 ? 58 : 38);
       if (doc.y > doc.page.margins.top + 4)
         doc.moveDown(depth <= 2 ? 0.8 : 0.45);
-      drawText(doc, inlineText(node), fonts, {
-        indent,
-        font: "bold",
-        size: sizeByDepth[depth],
-        color: "#0f172a",
-        lineGap: 2,
-      });
+      const runs: InlineRun[] = [];
+      buildInlineChildren(
+        node,
+        { font: "bold", size: sizeByDepth[depth], color: "#0f172a" },
+        runs,
+      );
+      renderInline(doc, runs, fonts, { indent, lineGap: 2 });
       doc.moveDown(depth <= 2 ? 0.45 : 0.25);
       break;
     }
@@ -428,31 +958,35 @@ function renderNode(
       const children = childrenOf(node);
       const hasImage = children.some((c) => c.type === "image");
       if (hasImage) {
-        let textParts: string[] = [];
-        const flushText = () => {
-          const text = textParts.join("").trim();
-          if (text) {
-            drawText(doc, text, fonts, { indent });
-            doc.moveDown(0.3);
+        let buffer: MarkdownNode[] = [];
+        const flushBuffer = () => {
+          if (buffer.length) {
+            const runs: InlineRun[] = [];
+            buffer.forEach((child) => buildInline(child, BODY_STYLE, runs));
+            if (runs.length) {
+              renderInline(doc, runs, fonts, { indent });
+              doc.moveDown(0.3);
+            }
+            buffer = [];
           }
-          textParts = [];
         };
         for (const child of children) {
           if (child.type === "image") {
-            flushText();
+            flushBuffer();
             renderImage(doc, child, fonts, clusterSlug, indent);
           } else {
-            textParts.push(inlineText(child));
+            buffer.push(child);
           }
         }
-        flushText();
+        flushBuffer();
       } else {
-        const text = inlineText(node);
-        const annotMatch = text.match(ANNOTATION_RE);
+        const annotMatch = inlineText(node).match(ANNOTATION_RE);
         if (annotMatch) {
           renderAnnotation(doc, annotMatch[1], annotMatch[2], fonts, indent);
         } else {
-          drawText(doc, text, fonts, { indent });
+          const runs: InlineRun[] = [];
+          buildInlineChildren(node, BODY_STYLE, runs);
+          renderInline(doc, runs, fonts, { indent });
           doc.moveDown(0.55);
         }
       }
@@ -461,17 +995,31 @@ function renderNode(
     case "list":
       renderList(doc, node, fonts, clusterSlug, indent);
       break;
-    case "blockquote":
-      drawText(doc, childrenOf(node).map(inlineText).join("\n"), fonts, {
-        indent: indent + 14,
+    case "blockquote": {
+      const quoteIndent = indent + 14;
+      const quoteStyle: InlineStyle = {
         font: "italic",
+        size: 10.5,
         color: "#4b5563",
+      };
+      childrenOf(node).forEach((child) => {
+        if (child.type === "paragraph") {
+          const runs: InlineRun[] = [];
+          buildInlineChildren(child, quoteStyle, runs);
+          renderInline(doc, runs, fonts, { indent: quoteIndent });
+          doc.moveDown(0.3);
+        } else {
+          renderNode(doc, child, fonts, clusterSlug, quoteIndent);
+        }
       });
       doc.moveDown(0.6);
       break;
+    }
     case "code":
-    case "math":
       renderCode(doc, node, fonts, indent);
+      break;
+    case "math":
+      renderBlockMath(doc, node.value ?? "", fonts, indent);
       break;
     case "image":
       renderImage(doc, node, fonts, clusterSlug, indent);
@@ -504,8 +1052,13 @@ function renderNode(
   }
 }
 
+type PdfMarkdownDocument = {
+  content: string;
+  title: string;
+};
+
 async function markdownToPdf(
-  content: string,
+  documents: PdfMarkdownDocument[],
   title: string,
   clusterSlug: string,
 ): Promise<Buffer> {
@@ -532,17 +1085,24 @@ async function markdownToPdf(
     doc.on("error", reject);
   });
 
-  const tree = unified()
-    .use(remarkParse)
-    .use(remarkGfm)
-    .use(remarkMath)
-    .parse(content) as MarkdownNode;
-
-  renderNode(doc, tree, fonts, clusterSlug);
+  documents.forEach((document, index) => {
+    if (index > 0) doc.addPage();
+    const tree = unified()
+      .use(remarkParse)
+      .use(remarkGfm)
+      .use(remarkMath)
+      .parse(document.content) as MarkdownNode;
+    renderNode(doc, tree, fonts, clusterSlug);
+  });
 
   const range = doc.bufferedPageRange();
   for (let index = range.start; index < range.start + range.count; index += 1) {
     doc.switchToPage(index);
+    // The footer is drawn below the bottom margin. PDFKit treats writing into
+    // the bottom margin as content overflow and appends a blank page, so drop
+    // the bottom margin for the duration of the footer draw.
+    const savedBottomMargin = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
     doc
       .font(fonts.body)
       .fontSize(8)
@@ -554,8 +1114,10 @@ async function markdownToPdf(
         {
           width: contentWidth(doc),
           align: "right",
+          lineBreak: false,
         },
       );
+    doc.page.margins.bottom = savedBottomMargin;
   }
 
   doc.end();
@@ -570,16 +1132,66 @@ export async function POST(request: Request): Promise<Response> {
 
   const body = await request.json().catch(() => ({}));
   const rawContent = typeof body.content === "string" ? body.content : "";
-  if (!rawContent.trim()) {
-    return Response.json({ error: "content is required" }, { status: 400 });
+  const rawDocuments: unknown[] = Array.isArray(body.documents)
+    ? body.documents
+    : [];
+  if (rawDocuments.length > 500) {
+    return Response.json(
+      { error: "A folder PDF can contain at most 500 Markdown notes" },
+      { status: 400 },
+    );
   }
 
-  const { body: markdownBody, title: frontmatterTitle } =
-    parseFrontmatter(rawContent);
+  const documents: PdfMarkdownDocument[] = rawDocuments
+    .filter(
+      (document: unknown): document is { content: string; title?: string } =>
+        Boolean(
+          document &&
+            typeof document === "object" &&
+            typeof (document as { content?: unknown }).content === "string",
+        ),
+    )
+    .map((document) => {
+      const parsed = parseFrontmatter(document.content);
+      return {
+        content: parsed.body,
+        title:
+          typeof document.title === "string" && document.title.trim()
+            ? document.title.trim()
+            : parsed.title || "Markdown note",
+      };
+    });
+
+  if (documents.length === 0 && rawContent.trim()) {
+    const parsed = parseFrontmatter(rawContent);
+    documents.push({
+      content: parsed.body,
+      title: parsed.title || "Markdown note",
+    });
+  }
+
+  if (documents.length === 0) {
+    return Response.json(
+      { error: "content or documents is required" },
+      { status: 400 },
+    );
+  }
+
+  const totalContentLength = documents.reduce(
+    (total, document) => total + document.content.length,
+    0,
+  );
+  if (totalContentLength > 10_000_000) {
+    return Response.json(
+      { error: "The selected Markdown notes are too large for one PDF" },
+      { status: 413 },
+    );
+  }
+
   const title =
     typeof body.title === "string" && body.title.trim()
       ? body.title.trim()
-      : frontmatterTitle || "Markdown note";
+      : documents[0].title;
   const clusterSlug =
     typeof body.clusterSlug === "string" ? body.clusterSlug.trim() : "";
   const requestedName =
@@ -587,7 +1199,7 @@ export async function POST(request: Request): Promise<Response> {
       ? body.fileName.replace(/\.md$/i, "")
       : title;
   const fileName = sanitizeFileName(requestedName || title);
-  const pdf = await markdownToPdf(markdownBody, title, clusterSlug);
+  const pdf = await markdownToPdf(documents, title, clusterSlug);
   const responseBody = pdf.buffer.slice(
     pdf.byteOffset,
     pdf.byteOffset + pdf.byteLength,
