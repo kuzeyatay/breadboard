@@ -763,7 +763,7 @@ export default function GardenAssistant({
       <div className="border-b border-gray-800 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-white">Assistant</p>
+            <p className="truncate text-sm font-medium text-white">Assistant</p>
             <p className="truncate text-xs text-gray-400">
               {hasActiveCluster ? `${clusterLabel} knowledge map` : 'Open a garden or note to ask its map'}
             </p>
@@ -787,7 +787,7 @@ export default function GardenAssistant({
             { label: 'Links', value: stats.links },
           ].map((item) => (
             <div key={item.label} className="rounded-md border border-gray-800 bg-gray-950/60 px-2 py-1.5">
-              <div className="font-semibold text-gray-100">{formatNumber(item.value)}</div>
+              <div className="font-medium text-gray-100">{formatNumber(item.value)}</div>
               <div>{item.label}</div>
             </div>
           ))}
@@ -873,7 +873,7 @@ export default function GardenAssistant({
                 key={`${message.role}-${index}`}
                 className={message.role === 'user' ? 'ml-6' : 'mr-2'}
               >
-                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-gray-500">
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
                   {message.role === 'user' ? 'You' : 'Assistant'}
                 </div>
                 <div
@@ -985,7 +985,7 @@ export default function GardenAssistant({
             <button
               type="submit"
               disabled={!input.trim() || isStreaming || !hasActiveCluster}
-              className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-semibold text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
+              className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
             >
               {isStreaming ? 'Thinking' : 'Send'}
             </button>
@@ -997,7 +997,7 @@ export default function GardenAssistant({
         <>
           <div className="fixed inset-0 z-10" onClick={() => setShowUsage(false)} />
           <div className="absolute bottom-16 right-3 z-20 w-72 rounded-md border border-gray-700 bg-gray-900 p-4 text-xs shadow-2xl">
-            <p className="mb-3 font-semibold text-gray-300">Usage Limits</p>
+            <p className="mb-3 font-medium text-gray-300">Usage Limits</p>
             {usageLoading ? (
               <p className="text-gray-500">Loading...</p>
             ) : !usageData || !usageData.available ? (
@@ -1054,7 +1054,7 @@ export default function GardenAssistant({
               type="button"
               onClick={() => void startNewChat()}
               disabled={isStreaming || !activeClusterSlug}
-              className="rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-gray-950 disabled:opacity-50"
+              className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 disabled:opacity-50"
             >
               New chat
             </button>
@@ -1134,7 +1134,7 @@ export default function GardenAssistant({
             <button
               type="button"
               onClick={openNewPrompt}
-              className="rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-gray-950"
+              className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950"
             >
               New prompt
             </button>
@@ -1203,7 +1203,7 @@ export default function GardenAssistant({
                     <button
                       type="button"
                       onClick={() => applyPrompt(prompt)}
-                      className="rounded-md bg-white px-3 py-1 text-xs font-semibold text-gray-950"
+                      className="rounded-md bg-white px-3 py-1 text-xs font-medium text-gray-950"
                     >
                       Use
                     </button>
@@ -1289,7 +1289,7 @@ export default function GardenAssistant({
           <button
             type="submit"
             disabled={!editingPrompt.title.trim() || !editingPrompt.content.trim()}
-            className="flex-1 rounded-md bg-white py-2 text-sm font-semibold text-gray-950 disabled:opacity-50"
+            className="flex-1 rounded-md bg-white py-2 text-sm font-medium text-gray-950 disabled:opacity-50"
           >
             Save prompt
           </button>
@@ -1323,7 +1323,7 @@ export default function GardenAssistant({
       <button
         type="button"
         onClick={() => setChatOpen(true)}
-        className="fixed bottom-5 right-5 z-[70] rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-semibold text-gray-100 shadow-xl transition hover:border-gray-500 hover:bg-gray-900"
+        className="fixed bottom-5 right-5 z-[70] rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 shadow-xl transition hover:border-gray-500 hover:bg-gray-900"
       >
         Ask map
       </button>

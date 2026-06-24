@@ -106,6 +106,7 @@ button.desktop-explorer {
 
   & h2 {
     font-size: 1rem;
+    font-weight: $mediumWeight;
     display: inline-block;
     margin: 0;
   }
@@ -148,6 +149,7 @@ button.desktop-explorer {
       &.active {
         opacity: 1;
         color: var(--tertiary);
+        font-weight: $semiBoldWeight;
       }
     }
 
@@ -175,11 +177,12 @@ button.desktop-explorer {
         & > a {
           color: var(--dark);
           opacity: 1;
-          font-weight: $semiBoldWeight;
+          font-weight: $mediumWeight;
         }
 
         & > a.active {
           color: var(--tertiary);
+          font-weight: $semiBoldWeight;
         }
       }
 
@@ -192,11 +195,12 @@ button.desktop-explorer {
         & > a {
           color: var(--dark);
           opacity: 1;
-          font-weight: $semiBoldWeight;
+          font-weight: $mediumWeight;
         }
 
         & > a.active {
           color: var(--secondary);
+          font-weight: $semiBoldWeight;
         }
       }
     }
@@ -320,7 +324,7 @@ button.desktop-explorer {
     color: var(--secondary);
     font-family: var(--headerFont);
     font-size: 0.95rem;
-    font-weight: $semiBoldWeight;
+    font-weight: $mediumWeight;
     line-height: 1.5rem;
     display: inline-block;
   }
@@ -345,7 +349,7 @@ button.desktop-explorer {
       font-size: 0.95rem;
       display: inline-block;
       color: var(--secondary);
-      font-weight: $semiBoldWeight;
+      font-weight: $mediumWeight;
       margin: 0;
       line-height: 1.5rem;
       pointer-events: none;

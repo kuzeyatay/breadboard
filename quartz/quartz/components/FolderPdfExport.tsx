@@ -147,6 +147,7 @@ FolderPdfExport.css = `
   cursor: pointer;
   font: inherit;
   font-size: 0.84rem;
+  font-weight: 500;
   line-height: 1;
   padding: 0.48rem 0.68rem;
 }
@@ -220,6 +221,7 @@ FolderPdfExport.css = `
   margin: 0.2rem 0;
   color: var(--dark);
   font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .folder-pdf-select-actions,
@@ -301,6 +303,7 @@ FolderPdfExport.css = `
 .folder-pdf-note strong {
   color: var(--dark);
   font-size: 0.9rem;
+  font-weight: 600;
 }
 
 .folder-pdf-note small {

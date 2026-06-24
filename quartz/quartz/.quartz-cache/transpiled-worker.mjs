@@ -12493,6 +12493,8 @@ var ArticleTitle = /* @__PURE__ */ __name(({ fileData, displayClass }) => {
 }, "ArticleTitle");
 ArticleTitle.css = `
 .article-title {
+  color: var(--dark);
+  font-weight: 600;
   margin: 2rem 0 0 0;
 }
 `;
@@ -12851,7 +12853,7 @@ var defaultImage = /* @__PURE__ */ __name(({
                   margin: 0,
                   fontSize: useSmallerFont ? 64 : 72,
                   fontFamily: headerFont,
-                  fontWeight: 700,
+                  fontWeight: 600,
                   color: cfg.theme.colors[colorScheme].dark,
                   lineHeight: 1.2,
                   display: "-webkit-box",
@@ -13288,12 +13290,16 @@ var PageTitle = /* @__PURE__ */ __name(({ cfg, displayClass }) => {
 }, "PageTitle");
 PageTitle.css = `
 .page-title {
+  color: var(--dark);
   font-size: 1.75rem;
+  font-weight: 600;
   margin: 0;
   font-family: var(--titleFont);
 }
 .page-title-link {
+  color: inherit;
   cursor: pointer;
+  font-weight: inherit;
 }
 `;
 PageTitle.afterDOMLoaded = `
@@ -14121,7 +14127,7 @@ var DashboardBackLink_default = /* @__PURE__ */ __name(((opts) => {
   margin-top: 0.75rem;
   color: var(--secondary);
   font-size: 0.95rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .dashboard-back-link::before {
@@ -14267,6 +14273,7 @@ MarkdownActions.css = `
   cursor: pointer;
   font: inherit;
   font-size: 0.85rem;
+  font-weight: 500;
   line-height: 1;
   padding: 0.45rem 0.65rem;
 }
@@ -14352,6 +14359,7 @@ MarkdownActions.css = `
   margin: 0;
   color: var(--dark);
   font-size: 1rem;
+  font-weight: 600;
 }
 
 .markdown-editor-textarea {
@@ -15033,6 +15041,7 @@ FolderPdfExport.css = `
   cursor: pointer;
   font: inherit;
   font-size: 0.84rem;
+  font-weight: 500;
   line-height: 1;
   padding: 0.48rem 0.68rem;
 }
@@ -15106,6 +15115,7 @@ FolderPdfExport.css = `
   margin: 0.2rem 0;
   color: var(--dark);
   font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .folder-pdf-select-actions,
@@ -15187,6 +15197,7 @@ FolderPdfExport.css = `
 .folder-pdf-note strong {
   color: var(--dark);
   font-size: 0.9rem;
+  font-weight: 600;
 }
 
 .folder-pdf-note small {
@@ -16582,27 +16593,30 @@ var config = {
         code: "IBM Plex Mono"
       },
       colors: {
+        // Reading-first light theme: pale green / warm paper, dark
+        // charcoal-green text, muted botanical accents. Both modes share the
+        // same palette so the published garden stays consistently light.
         lightMode: {
-          light: "#161618",
-          lightgray: "#393639",
-          gray: "#646464",
-          darkgray: "#d4d4d4",
-          dark: "#ebebec",
-          secondary: "#7b97aa",
+          light: "#e6f0e6",
+          lightgray: "#a6bdad",
+          gray: "#50615a",
+          darkgray: "#13201b",
+          dark: "#0f1a16",
+          secondary: "#4f6f68",
           tertiary: "#84a59d",
-          highlight: "rgba(143, 159, 169, 0.15)",
-          textHighlight: "#b3aa0288"
+          highlight: "rgba(132, 165, 157, 0.20)",
+          textHighlight: "#ffe27859"
         },
         darkMode: {
-          light: "#161618",
-          lightgray: "#393639",
-          gray: "#646464",
-          darkgray: "#d4d4d4",
-          dark: "#ebebec",
-          secondary: "#7b97aa",
+          light: "#e6f0e6",
+          lightgray: "#a6bdad",
+          gray: "#50615a",
+          darkgray: "#13201b",
+          dark: "#0f1a16",
+          secondary: "#4f6f68",
           tertiary: "#84a59d",
-          highlight: "rgba(143, 159, 169, 0.15)",
-          textHighlight: "#b3aa0288"
+          highlight: "rgba(132, 165, 157, 0.20)",
+          textHighlight: "#ffe27859"
         }
       }
     }
@@ -16615,8 +16629,8 @@ var config = {
       }),
       SyntaxHighlighting({
         theme: {
-          light: "github-dark",
-          dark: "github-dark"
+          light: "github-light",
+          dark: "github-light"
         },
         keepBackground: false
       }),

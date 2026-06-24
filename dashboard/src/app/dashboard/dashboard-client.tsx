@@ -35,7 +35,7 @@ interface Props {
 const ACCEPTED =
   ".pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.docx,.pptx,.xlsx,.zip";
 const HANDWRITING_FILE_RE = /\.(pdf|jpg|jpeg|png|webp)$/i;
-const DEFAULT_BORDER_COLOR = "#374151";
+const DEFAULT_BORDER_COLOR = "#a9c1b1";
 const CLUSTER_BORDER_COLORS = [
   DEFAULT_BORDER_COLOR,
   "#facc15",
@@ -1489,21 +1489,32 @@ export default function DashboardClient({
                         </button>
                       </>
                     )}
-                    <a
-                      data-card-action="true"
-                      href={
-                        clusterView === "mine"
-                          ? `/gardens/${cluster.slug}`
-                          : cluster.chat_accessible
-                            ? `/gardens/${cluster.slug}`
-                            : `/garden/${cluster.slug}`
-                      }
-                      className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
-                    >
-                      {clusterView === "mine" || cluster.chat_accessible
-                        ? "Open"
-                        : "View garden"}
-                    </a>
+                    {clusterView === "mine" || cluster.chat_accessible ? (
+                      <>
+                        <a
+                          data-card-action="true"
+                          href={`/garden/${cluster.slug}`}
+                          className="w-full text-center py-1.5 text-sm border border-gray-700 text-gray-300 font-medium rounded-lg hover:border-gray-500 hover:text-white hover:bg-gray-900 transition-colors block"
+                        >
+                          Open garden view
+                        </a>
+                        <a
+                          data-card-action="true"
+                          href={`/gardens/${cluster.slug}`}
+                          className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
+                        >
+                          Open garden chat
+                        </a>
+                      </>
+                    ) : (
+                      <a
+                        data-card-action="true"
+                        href={`/garden/${cluster.slug}`}
+                        className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
+                      >
+                        Open garden view
+                      </a>
+                    )}
                   </div>
 
                   {canManage && (
@@ -1962,7 +1973,7 @@ export default function DashboardClient({
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
 
-      <KnowledgeTerminal />
+      <KnowledgeTerminal scope={clusterView === "public" ? "public" : "mine"} />
     </div>
   );
 }

@@ -36,7 +36,7 @@ export interface Cluster {
 
 export type ClusterVisibility = "private" | "public";
 
-const DEFAULT_BORDER_COLOR = "#374151";
+const DEFAULT_BORDER_COLOR = "#a9c1b1";
 const DEFAULT_CARD_WIDTH = 392;
 const DEFAULT_CARD_HEIGHT = 244;
 const MIN_CARD_WIDTH = 280;

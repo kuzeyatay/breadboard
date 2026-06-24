@@ -4,6 +4,7 @@ import Link from "next/link";
 import { authOptions } from "@/lib/auth-options";
 import MarkdownToPdfButton from "@/app/components/markdown-to-pdf-button";
 import NewNoteButton from "@/app/components/new-note-button";
+import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { quartzUrl } from "@/lib/quartz-url";
 import {
   refreshPrivateQuartzIndex,
@@ -15,8 +16,8 @@ type QuartzView = "private" | "public";
 
 function switchClass(active: boolean): string {
   return active
-    ? "rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-gray-950 shadow-sm"
-    : "rounded-md px-3 py-1.5 text-xs font-semibold text-gray-400 transition hover:text-white";
+    ? "rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 shadow-sm"
+    : "rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:text-white";
 }
 
 export default async function GardenHomePage({
@@ -38,8 +39,9 @@ export default async function GardenHomePage({
 
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
-      <header className="flex items-center justify-between gap-4 px-6 py-3.5 border-b border-gray-800 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+      <header className="relative flex items-center justify-between gap-4 px-6 py-3.5 border-b border-gray-800 shrink-0">
+        <NavbarFlowerWind />
+        <div className="relative z-10 flex items-center gap-3 min-w-0">
           <Link
             href="/dashboard"
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5 shrink-0"
@@ -64,7 +66,7 @@ export default async function GardenHomePage({
             {view === "public" ? "Public garden" : "My garden"}
           </h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="relative z-10 flex items-center gap-2">
           {view === "private" && <NewNoteButton />}
           <MarkdownToPdfButton label="Save PDF" />
           <nav

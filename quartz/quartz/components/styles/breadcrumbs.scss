@@ -1,3 +1,5 @@
+@use "../../styles/variables.scss" as *;
+
 .breadcrumb-container {
   margin: 0;
   margin-top: 0.75rem;
@@ -9,10 +11,16 @@
 }
 
 .breadcrumb-element {
+  a {
+    font-weight: $mediumWeight;
+  }
+
   p {
     margin: 0;
     margin-left: 0.5rem;
     padding: 0;
+    color: var(--gray);
+    font-weight: $normalWeight;
     line-height: normal;
   }
   display: flex;
