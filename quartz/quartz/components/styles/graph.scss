@@ -3,6 +3,7 @@
 .graph {
   & > h3 {
     font-size: 1rem;
+    font-weight: $mediumWeight;
     margin: 0;
   }
 
@@ -16,8 +17,16 @@
     overflow: hidden;
     cursor: zoom-in;
     background:
-      radial-gradient(circle at 28% 24%, color-mix(in srgb, var(--secondary) 20%, transparent), transparent 30%),
-      radial-gradient(circle at 74% 68%, color-mix(in srgb, var(--tertiary) 18%, transparent), transparent 34%),
+      radial-gradient(
+        circle at 28% 24%,
+        color-mix(in srgb, var(--secondary) 20%, transparent),
+        transparent 30%
+      ),
+      radial-gradient(
+        circle at 74% 68%,
+        color-mix(in srgb, var(--tertiary) 18%, transparent),
+        transparent 34%
+      ),
       color-mix(in srgb, var(--light) 94%, var(--dark));
 
     & > .graph-container {
@@ -63,8 +72,16 @@
     height: 100vh;
     backdrop-filter: none;
     background:
-      radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--secondary) 16%, transparent), transparent 34%),
-      radial-gradient(circle at 84% 72%, color-mix(in srgb, var(--tertiary) 14%, transparent), transparent 38%),
+      radial-gradient(
+        circle at 18% 20%,
+        color-mix(in srgb, var(--secondary) 16%, transparent),
+        transparent 34%
+      ),
+      radial-gradient(
+        circle at 84% 72%,
+        color-mix(in srgb, var(--tertiary) 14%, transparent),
+        transparent 38%
+      ),
       var(--light);
     display: none;
     overflow: hidden;
@@ -76,8 +93,16 @@
     & > .global-graph-container {
       border: 0;
       background:
-        radial-gradient(circle at 22% 20%, color-mix(in srgb, var(--secondary) 13%, transparent), transparent 30%),
-        radial-gradient(circle at 78% 76%, color-mix(in srgb, var(--tertiary) 12%, transparent), transparent 34%),
+        radial-gradient(
+          circle at 22% 20%,
+          color-mix(in srgb, var(--secondary) 13%, transparent),
+          transparent 30%
+        ),
+        radial-gradient(
+          circle at 78% 76%,
+          color-mix(in srgb, var(--tertiary) 12%, transparent),
+          transparent 34%
+        ),
         var(--light);
       border-radius: 0;
       box-sizing: border-box;
@@ -206,6 +231,7 @@
 
   & > h3 {
     font-size: 1.15rem;
+    font-weight: $semiBoldWeight;
   }
 
   & > .graph-outer {

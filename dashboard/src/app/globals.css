@@ -1,25 +1,45 @@
 @import "tailwindcss";
 
 :root {
-  --quartz-light: #161618;
-  --quartz-lightgray: #393639;
-  --quartz-gray: #646464;
-  --quartz-darkgray: #d4d4d4;
-  --quartz-dark: #ebebec;
-  --quartz-secondary: #7b97aa;
-  --quartz-tertiary: #84a59d;
-  --quartz-highlight: rgba(143, 159, 169, 0.15);
-  --quartz-text-highlight: #b3aa0288;
-  --background: var(--quartz-light);
-  --foreground: var(--quartz-darkgray);
-  --surface: #1c1b1e;
-  --surface-strong: #242225;
-  --surface-raised: #2a272b;
-  --border: var(--quartz-lightgray);
-  --muted: var(--quartz-gray);
-  --accent: var(--quartz-secondary);
-  --accent-2: var(--quartz-tertiary);
-  color-scheme: dark;
+  /* Reading-first light theme: pale green / warm paper surfaces, dark
+     charcoal-green text, muted botanical accents. */
+  --paper-bg: #e6f0e6; /* app background (slightly deeper so cards lift) */
+  --paper-surface: #faf7ef; /* main surface / card (warm paper) */
+  --paper-raised: #fffefb; /* raised surface */
+  --paper-strong: #ece3d2; /* strong surface */
+  --ink: #13201b; /* primary text */
+  --ink-heading: #0f1a16; /* heading text */
+  --ink-muted: #50615a; /* muted text */
+  --line: #bccfc2; /* border (clear but subtle) */
+  --line-strong: #9cb7a7; /* strong border */
+  --botanical: #4f6f68; /* primary accent */
+  --botanical-hover: #3f5f58; /* accent hover */
+  --botanical-2: #7b97aa; /* secondary accent */
+  --botanical-3: #84a59d; /* tertiary accent */
+  --danger: #a45c5c; /* destructive / error */
+  --danger-hover: #8f4d4d; /* destructive hover */
+
+  /* Quartz-compatible aliases so existing var() references keep resolving. */
+  --quartz-light: var(--paper-bg);
+  --quartz-lightgray: var(--line);
+  --quartz-gray: var(--ink-muted);
+  --quartz-darkgray: var(--ink);
+  --quartz-dark: var(--ink-heading);
+  --quartz-secondary: var(--botanical-2);
+  --quartz-tertiary: var(--botanical-3);
+  --quartz-highlight: rgba(255, 226, 120, 0.35);
+  --quartz-text-highlight: #8a6f00;
+
+  --background: var(--paper-bg);
+  --foreground: var(--ink);
+  --surface: var(--paper-surface);
+  --surface-strong: var(--paper-strong);
+  --surface-raised: var(--paper-raised);
+  --border: var(--line);
+  --muted: var(--ink-muted);
+  --accent: var(--botanical);
+  --accent-2: var(--botanical-3);
+  color-scheme: light;
 }
 
 @theme inline {
@@ -28,39 +48,77 @@
   --font-sans: var(--font-source-sans);
   --font-mono: var(--font-ibm-plex-mono);
 
-  --color-white: var(--quartz-dark);
-  --color-black: #161618;
+  /* The UI was authored for a dark palette where high gray numbers = dark
+     surfaces and white = light text. The ramp is inverted here so the same
+     utility classes render the light theme: gray-950 = app background,
+     gray-900 = card surface, gray-700/800 = borders, low grays = dark text,
+     and `white` = primary ink (so `text-white` headings read dark while
+     `bg-white text-gray-950` buttons become dark charcoal-green with light
+     text). */
+  --color-white: #13201b; /* primary ink: text-white headings / dark primary button */
+  --color-black: #0f1a16; /* deepest ink; bg-black/xx scrims dim the page */
 
-  --color-gray-50: #faf8f8;
-  --color-gray-100: #ebebec;
-  --color-gray-200: #d4d4d4;
-  --color-gray-300: #c6c5c7;
-  --color-gray-400: #aaa7ab;
-  --color-gray-500: #858185;
-  --color-gray-600: #646464;
-  --color-gray-700: #4d494e;
-  --color-gray-800: #393639;
-  --color-gray-900: #242225;
-  --color-gray-950: #161618;
+  --color-gray-50: #0c1511; /* deepest heading ink */
+  --color-gray-100: #0f1a16; /* strong text / primary-button hover */
+  --color-gray-200: #18271f; /* strong text */
+  --color-gray-300: #283831; /* progress fills / strong text */
+  --color-gray-400: #3b4c44; /* secondary text */
+  --color-gray-500: #4c5a52; /* muted text */
+  --color-gray-600: #5d6c64; /* faint text / placeholders */
+  --color-gray-700: #9cb7a7; /* strong border / disabled fill */
+  --color-gray-800: #bccfc2; /* border / selected + raised fill */
+  --color-gray-900: #faf7ef; /* surface / cards */
+  --color-gray-950: #e6f0e6; /* app background */
 
-  --color-cyan-100: #d8e2e8;
-  --color-cyan-400: var(--quartz-secondary);
-  --color-cyan-800: #405868;
-  --color-cyan-950: #1c2830;
+  /* Secondary accent (slate-blue). cyan-/blue-100..300 hold readable dark
+     text used for active states; -950 are faint tint backgrounds. */
+  --color-cyan-100: #3f5566;
+  --color-cyan-400: #7b97aa;
+  --color-cyan-600: #5e7a8c;
+  --color-cyan-800: #5e7a8c;
+  --color-cyan-900: #9fb6c4;
+  --color-cyan-950: #dce6ec;
 
-  --color-blue-400: var(--quartz-secondary);
-  --color-blue-800: #405868;
-  --color-blue-950: #1c2830;
+  --color-blue-300: #3f5566;
+  --color-blue-400: #7b97aa;
+  --color-blue-700: #9fb6c4;
+  --color-blue-800: #5e7a8c;
+  --color-blue-950: #dce6ec;
 
-  --color-green-400: var(--quartz-tertiary);
+  /* Primary/tertiary botanical greens. */
+  --color-green-400: #4f6f68;
+  --color-green-500: #6e8f87;
+  --color-green-600: #4f6f68;
   --color-green-800: #4f6f68;
-  --color-green-950: #1f2b29;
+  --color-green-950: #e1ece6;
+  --color-emerald-300: #6e8f87;
 
-  --color-red-400: #d99898;
-  --color-red-500: #c87979;
-  --color-red-800: #724444;
-  --color-red-900: #5f3838;
-  --color-red-950: #2d1c1c;
+  /* "Think" accent: muted violet, distinguishable but calm. */
+  --color-purple-300: #6f6090;
+  --color-purple-400: #7e6f94;
+  --color-purple-700: #b3a6c6;
+  --color-purple-800: #8a7ba0;
+  --color-purple-950: #e8e2f0;
+
+  /* Muted ochre for folder/flag icons and text highlight. */
+  --color-amber-300: #9a7b2e;
+  --color-amber-400: #8a6f00;
+  --color-amber-800: #c9a86a;
+  --color-amber-950: #f0e8d4;
+  --color-yellow-300: #8a6f00;
+  --color-yellow-500: #c9a94a;
+  --color-orange-400: #b5743a;
+  --color-orange-950: #f0e2d4;
+
+  /* Destructive / error: warm muted red, kept distinct from accents. */
+  --color-red-200: #b96a6a;
+  --color-red-300: #a45c5c;
+  --color-red-400: #a45c5c;
+  --color-red-500: #8f4d4d;
+  --color-red-600: #c49595;
+  --color-red-800: #c9a3a3;
+  --color-red-900: #c49595;
+  --color-red-950: #f2e2e2;
 }
 
 body {
@@ -75,7 +133,14 @@ h3,
 h4 {
   color: var(--quartz-dark);
   font-family: var(--font-schibsted), var(--font-source-sans), Arial, Helvetica, sans-serif;
+  font-weight: 600;
   letter-spacing: 0;
+}
+
+strong,
+b {
+  color: var(--quartz-dark);
+  font-weight: 600;
 }
 
 .chat-markdown {
@@ -124,7 +189,7 @@ h4 {
 
 .chat-markdown code {
   border-radius: 4px;
-  background: color-mix(in srgb, var(--surface-raised) 84%, transparent);
+  background: color-mix(in srgb, var(--surface-strong) 70%, transparent);
   padding: 0.08rem 0.25rem;
   font-family: var(--font-ibm-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.92em;

@@ -78,11 +78,12 @@ article {
 }
 
 strong {
+  color: var(--dark);
   font-weight: $semiBoldWeight;
 }
 
 a {
-  font-weight: $semiBoldWeight;
+  font-weight: $mediumWeight;
   text-decoration: none;
   transition: color 0.2s ease;
   color: var(--secondary);
@@ -362,7 +363,7 @@ h6,
 thead {
   font-family: var(--headerFont);
   color: var(--dark);
-  font-weight: revert;
+  font-weight: $semiBoldWeight;
   margin-bottom: 0;
 
   article > & > a[role="anchor"] {

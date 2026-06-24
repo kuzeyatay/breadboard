@@ -1,0 +1,163 @@
+.wind {
+  --grass-dark: #4f7a5a;
+  --grass-mid: #6faf73;
+  --grass-light: #8fd694;
+  --stem: #557c5a;
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 0;
+  height: 32px;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.58;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 3%,
+    #000 97%,
+    transparent 100%
+  );
+}
+
+.grassBed {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 10px;
+  background:
+    linear-gradient(
+        90deg,
+        transparent 0 5px,
+        var(--grass-mid) 5px 7px,
+        transparent 7px 13px
+      )
+      0 2px / 18px 8px repeat-x,
+    linear-gradient(
+        90deg,
+        transparent 0 2px,
+        var(--grass-dark) 2px 4px,
+        transparent 4px 10px,
+        var(--grass-light) 10px 12px,
+        transparent 12px 18px
+      )
+      0 4px / 22px 7px repeat-x,
+    linear-gradient(
+        90deg,
+        var(--grass-dark) 0 4px,
+        var(--grass-mid) 4px 10px,
+        var(--grass-dark) 10px 14px
+      )
+      0 8px / 28px 2px repeat-x;
+  opacity: 0.72;
+}
+
+.plant {
+  position: absolute;
+  left: var(--plant-left);
+  bottom: var(--plant-bottom);
+  width: 24px;
+  height: 30px;
+  transform-origin: 50% 100%;
+  animation: flowerWind var(--plant-duration) ease-in-out var(--plant-delay)
+    infinite;
+  will-change: transform;
+}
+
+.plant:nth-of-type(3n) {
+  animation-name: flowerWindSoft;
+}
+
+.plant:nth-of-type(4n) {
+  animation-name: flowerWindLift;
+}
+
+.plantSprite {
+  display: block;
+  width: 24px;
+  height: 30px;
+  transform: scale(var(--plant-scale));
+  transform-origin: 50% 100%;
+}
+
+.sprite {
+  display: block;
+  width: 24px;
+  height: 30px;
+  image-rendering: pixelated;
+}
+
+.grassDark {
+  fill: var(--grass-dark);
+}
+
+.grassMid {
+  fill: var(--grass-mid);
+}
+
+.grassLight {
+  fill: var(--grass-light);
+}
+
+.stem {
+  fill: var(--stem);
+}
+
+.flowerHead {
+  fill: var(--flower-head);
+}
+
+.flowerCenter {
+  fill: var(--flower-center);
+}
+
+@keyframes flowerWind {
+  0%,
+  100% {
+    transform: translateX(var(--plant-sway-left))
+      rotate(var(--plant-rotate-left));
+  }
+
+  50% {
+    transform: translateX(var(--plant-sway-right))
+      rotate(var(--plant-rotate-right));
+  }
+}
+
+@keyframes flowerWindSoft {
+  0%,
+  100% {
+    transform: translateX(var(--plant-sway-left))
+      rotate(var(--plant-rotate-left));
+  }
+
+  45% {
+    transform: translateX(var(--plant-sway-soft))
+      rotate(var(--plant-rotate-soft));
+  }
+
+  72% {
+    transform: translateX(var(--plant-sway-rest))
+      rotate(var(--plant-rotate-rest));
+  }
+}
+
+@keyframes flowerWindLift {
+  0%,
+  100% {
+    transform: translateX(var(--plant-sway-left))
+      rotate(var(--plant-rotate-left));
+  }
+
+  52% {
+    transform: translateX(var(--plant-sway-right))
+      rotate(var(--plant-rotate-right));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plant {
+    animation: none;
+    transform: translateX(0) rotate(0);
+  }
+}

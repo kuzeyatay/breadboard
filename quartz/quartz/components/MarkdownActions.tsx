@@ -45,7 +45,9 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
           />
           <div class="markdown-editor-footer">
             <div class="markdown-editor-insert-tools">
-              <button class="markdown-editor-image" type="button">Add images</button>
+              <button class="markdown-editor-image" type="button">
+                Add images
+              </button>
               <label class="markdown-editor-placement-label">
                 Place
                 <select class="markdown-editor-placement">
@@ -92,6 +94,7 @@ MarkdownActions.css = `
   cursor: pointer;
   font: inherit;
   font-size: 0.85rem;
+  font-weight: 500;
   line-height: 1;
   padding: 0.45rem 0.65rem;
 }
@@ -177,6 +180,7 @@ MarkdownActions.css = `
   margin: 0;
   color: var(--dark);
   font-size: 1rem;
+  font-weight: 600;
 }
 
 .markdown-editor-textarea {

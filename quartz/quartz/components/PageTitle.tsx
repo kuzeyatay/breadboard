@@ -26,12 +26,16 @@ const PageTitle: QuartzComponent = ({ cfg, displayClass }: QuartzComponentProps)
 
 PageTitle.css = `
 .page-title {
+  color: var(--dark);
   font-size: 1.75rem;
+  font-weight: 600;
   margin: 0;
   font-family: var(--titleFont);
 }
 .page-title-link {
+  color: inherit;
   cursor: pointer;
+  font-weight: inherit;
 }
 `
 

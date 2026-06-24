@@ -40,16 +40,32 @@ const MAX_SESSIONS = 40;
 const COLLAPSED_HEIGHT = 48;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
 
-const SUGGESTED_PROMPTS = [
-  'What topics span more than one of my gardens?',
-  'Summarize everything I know about a concept across all gardens.',
-  'Which gardens should I review before an exam?',
-  'Find connections between ideas in different gardens.',
-];
+const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
+  mine: [
+    'What topics span more than one of my gardens?',
+    'Summarize everything I know about a concept across all gardens.',
+    'Which gardens should I review before an exam?',
+    'Find connections between ideas in different gardens.',
+  ],
+  public: [
+    'What topics show up across multiple public gardens?',
+    'Summarize what the public gardens cover about a concept.',
+    'Which public gardens are the best starting point for a subject?',
+    'Find connections between ideas in different public gardens.',
+  ],
+};
+
+// Bottom edge of the breadboard navbar, so a fully opened terminal stops right
+// below the main header instead of covering it.
+function navOffset(): number {
+  if (typeof document === 'undefined') return 64;
+  const nav = document.querySelector('nav');
+  return nav ? Math.ceil(nav.getBoundingClientRect().bottom) : 64;
+}
 
 function maxHeight(): number {
   if (typeof window === 'undefined') return 720;
-  return Math.max(MIN_HEIGHT, Math.round(window.innerHeight * 0.85));
+  return Math.max(MIN_HEIGHT, Math.round(window.innerHeight - navOffset()));
 }
 
 function clampHeight(height: number): number {
@@ -131,10 +147,16 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [showModelPicker, setShowModelPicker] = useState(false);
 
   const activeSession = sessions.find((session) => session.id === activeId) ?? null;
+  const isPublic = scope === 'public';
+  const scopeTagline = isPublic ? 'chat across all public gardens' : 'chat across every garden you own';
 
   useEffect(() => {
     const savedHeight = Number(window.localStorage.getItem(HEIGHT_KEY));
     if (Number.isFinite(savedHeight) && savedHeight > 0) setHeight(clampHeight(savedHeight));
+
+    const onResize = () => setHeight((current) => clampHeight(current));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   // Switching the dashboard between My/Public gardens re-points the terminal at
@@ -384,12 +406,35 @@ export default function KnowledgeTerminal({ scope }: Props) {
     document.body.style.userSelect = '';
   }
 
+  const depthGradientStyle: CSSProperties = {
+    bottom: height,
+    background:
+      'linear-gradient(to top, rgba(74, 91, 70, 0.16) 0%, rgba(74, 91, 70, 0.08) 48%, transparent 100%)',
+  };
+
+  const terminalStyle: CSSProperties = {
+    height,
+    background: isOpen ? '#f7f3e8' : '#EFE8D6',
+    borderTopColor: 'rgba(169, 193, 177, 0.7)',
+    boxShadow:
+      '0 -16px 42px rgba(74, 91, 70, 0.14), 0 -2px 10px rgba(74, 91, 70, 0.08)',
+  };
+
+  const depthGradientClassName = 'pointer-events-none fixed inset-x-0 z-40 h-24';
+  const terminalClassName =
+    'fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t text-gray-100';
+
   return (
-    <section
-      style={{ height } as CSSProperties}
-      className="fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t border-gray-800 bg-gray-950 text-gray-100 shadow-[0_-12px_40px_rgba(0,0,0,0.45)]"
-    >
-      {/* Drag the top edge to open, resize, or collapse — like resizing a garden card. */}
+    <>
+      <div
+        aria-hidden="true"
+        className={depthGradientClassName}
+        style={depthGradientStyle}
+      />
+      <section
+        style={terminalStyle}
+        className={terminalClassName}
+      >
       <div
         onPointerDown={handleResizeStart}
         onPointerMove={handleResizeMove}
@@ -398,21 +443,24 @@ export default function KnowledgeTerminal({ scope }: Props) {
         className="group absolute inset-x-0 -top-1.5 z-10 flex h-3 cursor-row-resize items-center justify-center"
       >
         <span
-          className={`h-1 w-12 rounded-full transition-colors ${
-            isResizing ? 'bg-gray-400' : 'bg-gray-700 group-hover:bg-gray-500'
+          className={`h-1.5 w-14 rounded-full border border-[rgba(169,193,177,0.7)] shadow-[0_1px_4px_rgba(74,91,70,0.10)] transition-colors ${
+            isResizing ? 'bg-[#8faf9a]' : 'bg-[#A9C1B1] group-hover:bg-[#8faf9a]'
           }`}
         />
       </div>
-
+      {/* Drag the top edge to open, resize, or collapse — like resizing a garden card. */}
       {/* Header — also a drag handle so you can pull the terminal open from the bar. */}
       <header
         onPointerDown={handleResizeStart}
         onPointerMove={handleResizeMove}
         onPointerUp={handleResizeEnd}
         onPointerCancel={handleResizeEnd}
-        className="flex shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-gray-800 px-4 py-2.5"
+        className={`flex shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 ${
+          isOpen ? 'py-2.5' : 'h-full justify-center py-0'
+        }`}
       >
         {isOpen ? (
+          <>
           <button
             type="button"
             onPointerDown={(event) => event.stopPropagation()}
@@ -425,27 +473,20 @@ export default function KnowledgeTerminal({ scope }: Props) {
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
             </svg>
           </button>
+          <span className="font-mono text-sm font-medium text-[#5f7f8e]">{'>_'}</span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-[#172A22]">
+              {isPublic ? 'Public knowledge hub' : 'Knowledge base terminal'}
+            </p>
+            <p className="truncate text-[11px] text-[#5F6F68]">
+              {`${scopeTagline.charAt(0).toUpperCase()}${scopeTagline.slice(1)}`}
+            </p>
+          </div>
+          </>
         ) : null}
-        <span className="font-mono text-sm font-semibold text-[#7b97aa]">{'>_'}</span>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-white">Knowledge base terminal</p>
-          <p className="truncate text-[11px] text-gray-500">
-            {isOpen ? 'Chat across every garden you own' : 'Drag up to chat across every garden you own'}
-          </p>
-        </div>
-        {isOpen ? null : (
-          <svg
-            className="ml-auto h-4 w-4 text-gray-500"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
-          </svg>
-        )}
       </header>
 
+      {isOpen ? (
       <div className="flex min-h-0 flex-1">
         {/* History sidebar */}
         {sidebarOpen ? (
@@ -463,7 +504,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 New chat
               </button>
             </div>
-            <div className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-600">
+            <div className="px-3 pb-1 pt-1 text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">
               Recents
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -549,13 +590,17 @@ export default function KnowledgeTerminal({ scope }: Props) {
               {messages.length === 0 ? (
                 <div className="flex flex-col items-center gap-5 py-8 text-center">
                   <div>
-                    <p className="text-lg font-semibold text-white">Ask your whole knowledge base</p>
+                    <p className="text-lg font-medium text-white">
+                      {isPublic ? 'Ask the public knowledge hub' : 'Ask your whole knowledge base'}
+                    </p>
                     <p className="mt-1.5 text-sm text-gray-500">
-                      Answers are grounded in the notes across every garden you own.
+                      {isPublic
+                        ? 'Answers are grounded in the notes across every public garden on Breadboard.'
+                        : 'Answers are grounded in the notes across every garden you own.'}
                     </p>
                   </div>
                   <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
-                    {SUGGESTED_PROMPTS.map((prompt) => (
+                    {SUGGESTED_PROMPTS[scope].map((prompt) => (
                       <button
                         type="button"
                         key={prompt}
@@ -626,7 +671,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={handleInputKeyDown}
-                placeholder="Ask anything across your gardens..."
+                placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything across your gardens...'}
                 rows={1}
                 className="block max-h-40 min-h-[24px] w-full resize-none bg-transparent text-sm leading-6 text-gray-100 outline-none placeholder:text-gray-600"
               />
@@ -709,6 +754,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
           </div>
         </div>
       </div>
-    </section>
+      ) : null}
+      </section>
+    </>
   );
 }

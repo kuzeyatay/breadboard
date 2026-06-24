@@ -5,6 +5,8 @@ import {
   useEffect,
   useMemo,
   useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 
@@ -93,13 +95,70 @@ function quartzMapPreviewUrl(clusterSlug: string, refreshKey: string): string {
   return `/api/quartz-graph-preview?${params.toString()}`;
 }
 
+const MAP_PANEL_DEFAULT = 384;
+const MAP_PANEL_MIN = 300;
+const MAP_PANEL_MAX = 600;
+const MAP_PANEL_THRESHOLD = 180; // below this the panel collapses to a rail
+const MAP_PANEL_RAIL = 48;
+
 function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
   const [data, setData] = useState<GraphResponse | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Panel width is the single source of truth so it can be dragged open/closed
+  // by its inner edge (no toggle button); below the threshold it shows a rail.
+  const [panelWidth, setPanelWidth] = useState(MAP_PANEL_DEFAULT);
+  const [resizing, setResizing] = useState(false);
+  const sidebarOpen = panelWidth >= MAP_PANEL_THRESHOLD;
   const [treeExpanded, setTreeExpanded] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
   const graph = data ?? emptyResponse;
   const loading = data === null;
+
+  // Window listeners (not pointer capture) so the drag survives the panel
+  // swapping between its open and rail render at the collapse threshold.
+  function handlePanelResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarOpen ? panelWidth : MAP_PANEL_RAIL;
+    setResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handleMove = (e: PointerEvent) => {
+      // The panel sits on the right, so dragging left widens it.
+      const next = startWidth + (startX - e.clientX);
+      setPanelWidth(Math.min(MAP_PANEL_MAX, Math.max(MAP_PANEL_RAIL, Math.round(next))));
+    };
+    const handleEnd = () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleEnd);
+      window.removeEventListener('pointercancel', handleEnd);
+      setResizing(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      setPanelWidth((width) =>
+        width < MAP_PANEL_THRESHOLD
+          ? MAP_PANEL_RAIL
+          : Math.min(MAP_PANEL_MAX, Math.max(MAP_PANEL_MIN, width)),
+      );
+    };
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleEnd);
+    window.addEventListener('pointercancel', handleEnd);
+  }
+
+  const resizeHandle = (
+    <div
+      onPointerDown={handlePanelResizeStart}
+      title="Drag to resize or collapse"
+      className="group absolute inset-y-0 left-0 z-20 flex w-2 -translate-x-1/2 cursor-col-resize items-center justify-center"
+    >
+      <span
+        className={`h-10 w-0.5 rounded-full transition-colors ${
+          resizing ? 'bg-gray-400' : 'bg-gray-700 group-hover:bg-gray-500'
+        }`}
+      />
+    </div>
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -133,12 +192,16 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
   return (
     <>
       {sidebarOpen ? (
-      <aside className="hidden xl:flex w-96 shrink-0 border-l border-gray-800 flex-col bg-gray-950">
+      <aside
+        style={{ width: panelWidth } as CSSProperties}
+        className="relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col bg-gray-950"
+      >
+        {resizeHandle}
         {/* Header */}
         <div className="px-4 py-3 border-b border-gray-800 shrink-0">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+              <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
                 Knowledge map
               </h2>
               <p className="text-xs text-gray-600 mt-0.5">
@@ -152,15 +215,6 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
               >
                 Open
               </a>
-              <button
-                onClick={() => setSidebarOpen(false)}
-                title="Close map panel"
-                className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25h16.5M3.75 12h16.5M3.75 18.75h16.5M15.75 8.25 19.5 12l-3.75 3.75" />
-                </svg>
-              </button>
             </div>
           </div>
         </div>
@@ -226,7 +280,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
           <div>
             <button
               onClick={() => setTreeExpanded((v) => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+              className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
             >
               <div className="flex items-center gap-2">
                 <svg
@@ -320,17 +374,21 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
         </div>
       </aside>
       ) : (
-        <aside className="hidden xl:flex w-12 shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            title="Open map panel"
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-800 text-gray-500 hover:border-gray-700 hover:bg-gray-900 hover:text-white transition-colors"
-            aria-label="Open map panel"
+        <aside
+          style={{ width: panelWidth } as CSSProperties}
+          className="relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3"
+        >
+          {resizeHandle}
+          <svg
+            className="h-4 w-4 text-gray-700"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            aria-hidden="true"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25h16.5M3.75 12h16.5M3.75 18.75h16.5M15.75 8.25 19.5 12l-3.75 3.75" />
-            </svg>
-          </button>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25h16.5M3.75 12h16.5M3.75 18.75h16.5M8.25 8.25 4.5 12l3.75 3.75" />
+          </svg>
         </aside>
       )}
     </>

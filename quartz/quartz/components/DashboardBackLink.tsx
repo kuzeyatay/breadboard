@@ -19,7 +19,9 @@ export default ((opts?: Options) => {
       ""
     ).replace(/\/+$/, "")
     const slug = clusterSlug(fileData.slug)
-    const href = slug ? `${dashboardBaseUrl || ""}/clusters/${encodeURIComponent(slug)}` : `${dashboardBaseUrl || ""}/dashboard`
+    const href = slug
+      ? `${dashboardBaseUrl || ""}/clusters/${encodeURIComponent(slug)}`
+      : `${dashboardBaseUrl || ""}/dashboard`
     const label = slug ? "Back to cluster" : "Back to dashboard"
 
     return (
@@ -44,7 +46,7 @@ export default ((opts?: Options) => {
   margin-top: 0.75rem;
   color: var(--secondary);
   font-size: 0.95rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .dashboard-back-link::before {

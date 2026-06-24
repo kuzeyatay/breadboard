@@ -254,7 +254,7 @@ export const defaultImage: SocialImageOptions["imageStructure"] = ({
             margin: 0,
             fontSize: useSmallerFont ? 64 : 72,
             fontFamily: headerFont,
-            fontWeight: 700,
+            fontWeight: 600,
             color: cfg.theme.colors[colorScheme].dark,
             lineHeight: 1.2,
             display: "-webkit-box",

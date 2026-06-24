@@ -6,6 +6,36 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
+    <title>Canvas Quizzes</title>
+    <link>https://localhost:8081/communication-1/canvas-quizzes/</link>
+    <guid>https://localhost:8081/communication-1/canvas-quizzes/</guid>
+    <description><![CDATA[  ]]></description>
+    <pubDate>Wed, 24 Jun 2026 08:48:30 GMT</pubDate>
+  </item><item>
+    <title>10 Amplitude Frequency And Phase Modulation</title>
+    <link>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/</link>
+    <guid>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/</guid>
+    <description><![CDATA[  ]]></description>
+    <pubDate>Wed, 24 Jun 2026 08:48:30 GMT</pubDate>
+  </item><item>
+    <title>Notes</title>
+    <link>https://localhost:8081/communication-1/notes/</link>
+    <guid>https://localhost:8081/communication-1/notes/</guid>
+    <description><![CDATA[  ]]></description>
+    <pubDate>Wed, 24 Jun 2026 08:48:30 GMT</pubDate>
+  </item><item>
+    <title>week-1-lec-1-notes-take-2-1777371638402</title>
+    <link>https://localhost:8081/communication-1/week-1-lec-1-notes-take-2-1777371638402</link>
+    <guid>https://localhost:8081/communication-1/week-1-lec-1-notes-take-2-1777371638402</guid>
+    <description><![CDATA[ From Analog Experience to Digital Communication: Frequency, Decibels, and Sampling The central problem: how can a changing physical signal become a reliable digital message? Communication begins with a deceptively simple situation. ]]></description>
+    <pubDate>Wed, 24 Jun 2026 08:48:30 GMT</pubDate>
+  </item><item>
+    <title>Notes</title>
+    <link>https://localhost:8081/math-2/notes/</link>
+    <guid>https://localhost:8081/math-2/notes/</guid>
+    <description><![CDATA[  ]]></description>
+    <pubDate>Wed, 24 Jun 2026 08:48:30 GMT</pubDate>
+  </item><item>
     <title>Physics for EE</title>
     <link>https://localhost:8081/physics-for-ee/</link>
     <guid>https://localhost:8081/physics-for-ee/</guid>
@@ -35,36 +65,6 @@
     <guid>https://localhost:8081/math-2/notes/mathematics-2-final-exam-formula-concept-checklist-1782061436099</guid>
     <description><![CDATA[ MATHEMATICS 2 — FINAL EXAM FORMULA + CONCEPT CHECKLIST 1. BASIC 3D GEOMETRY Points, vectors, length A point in 3D is P=(x,y,z). ]]></description>
     <pubDate>Sun, 21 Jun 2026 17:03:56 GMT</pubDate>
-  </item><item>
-    <title>16.5 Surfaces and Surface Integrals</title>
-    <link>https://localhost:8081/math-2/notes/16-5-surfaces-and-surface-integrals-1782042092919</link>
-    <guid>https://localhost:8081/math-2/notes/16-5-surfaces-and-surface-integrals-1782042092919</guid>
-    <description><![CDATA[ 16.5 Surfaces and Surface Integrals In the previous parts of the course, integration was extended step by step from intervals to larger geometric objects. ]]></description>
-    <pubDate>Sun, 21 Jun 2026 11:41:32 GMT</pubDate>
-  </item><item>
-    <title>16.4: Line Integrals of Vector Fields</title>
-    <link>https://localhost:8081/math-2/notes/adams-16-4-line-integrals-of-vector-fields-1782028842377</link>
-    <guid>https://localhost:8081/math-2/notes/adams-16-4-line-integrals-of-vector-fields-1782028842377</guid>
-    <description><![CDATA[ Adams 16.4: Line Integrals of Vector Fields In the previous section, a line integral was used to add a scalar quantity along a curve. ]]></description>
-    <pubDate>Sun, 21 Jun 2026 08:00:42 GMT</pubDate>
-  </item><item>
-    <title>Math 2</title>
-    <link>https://localhost:8081/math-2/</link>
-    <guid>https://localhost:8081/math-2/</guid>
-    <description><![CDATA[ Quartz garden generated from 24 source documents, with 0 knowledge topics and 99 graph links. ]]></description>
-    <pubDate>Sat, 20 Jun 2026 22:00:00 GMT</pubDate>
-  </item><item>
-    <title>Frequency and Phase Modulation</title>
-    <link>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/frequency-and-phase-modulation-1781971492074</link>
-    <guid>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/frequency-and-phase-modulation-1781971492074</guid>
-    <description><![CDATA[ Frequency and Phase Modulation: Modulation Index, Frequency Deviation, Carson’s Rule, and the FM Spectrum Table After amplitude modulation, the natural next question is whether the information must always be carried by the amplitude of a carrier wave. ]]></description>
-    <pubDate>Sat, 20 Jun 2026 16:04:52 GMT</pubDate>
-  </item><item>
-    <title>Amplitude Modulation</title>
-    <link>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/amplitude-modulation-1781959396325</link>
-    <guid>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/amplitude-modulation-1781959396325</guid>
-    <description><![CDATA[ Amplitude Modulation: Signal Formula, Modulation Percentage, Efficiency, Spectrum, and Detection Amplitude modulation appears at this point in the course because we have already learned how to describe signals in time and frequency, and we have already seen that information signals often start as ba... ]]></description>
-    <pubDate>Sat, 20 Jun 2026 12:43:16 GMT</pubDate>
   </item>
     </channel>
   </rss>

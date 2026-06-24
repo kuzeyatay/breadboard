@@ -7,12 +7,14 @@ import {
   useEffect,
   useCallback,
   type RefObject,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
+import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
 
 interface Message {
@@ -289,7 +291,7 @@ const ChatTranscript = memo(function ChatTranscript({
   messagesEndRef,
 }: ChatTranscriptProps) {
   return (
-    <div className="max-w-2xl mx-auto flex flex-col gap-6">
+    <div className="max-w-5xl mx-auto flex flex-col gap-6">
       {loadingChats ? (
         <div className="flex items-center justify-center py-28 text-gray-700">
           <Spinner className="w-5 h-5" />
@@ -557,7 +559,65 @@ export default function WorkspaceClient({
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
   const [sourceDocSearch, setSourceDocSearch] = useState("");
-  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
+  // Left chat sidebar: width is the single source of truth so it can be
+  // dragged open/closed by its edge (no toggle button). Below the threshold it
+  // renders as a thin rail; releasing snaps to a clean rail or open width.
+  const LEFT_SIDEBAR_DEFAULT = 256;
+  const LEFT_SIDEBAR_MIN = 200;
+  const LEFT_SIDEBAR_MAX = 440;
+  const LEFT_SIDEBAR_THRESHOLD = 170;
+  const LEFT_SIDEBAR_RAIL = 48;
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT);
+  const [leftSidebarResizing, setLeftSidebarResizing] = useState(false);
+  const leftSidebarOpen = leftSidebarWidth >= LEFT_SIDEBAR_THRESHOLD;
+
+  // Window listeners (not pointer capture) so the drag survives the sidebar
+  // swapping between its open and rail render at the collapse threshold.
+  function handleLeftSidebarResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = leftSidebarOpen ? leftSidebarWidth : LEFT_SIDEBAR_RAIL;
+    setLeftSidebarResizing(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handleMove = (e: PointerEvent) => {
+      const next = startWidth + (e.clientX - startX);
+      setLeftSidebarWidth(
+        Math.min(LEFT_SIDEBAR_MAX, Math.max(LEFT_SIDEBAR_RAIL, Math.round(next))),
+      );
+    };
+    const handleEnd = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleEnd);
+      window.removeEventListener("pointercancel", handleEnd);
+      setLeftSidebarResizing(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setLeftSidebarWidth((width) =>
+        width < LEFT_SIDEBAR_THRESHOLD
+          ? LEFT_SIDEBAR_RAIL
+          : Math.min(LEFT_SIDEBAR_MAX, Math.max(LEFT_SIDEBAR_MIN, width)),
+      );
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleEnd);
+    window.addEventListener("pointercancel", handleEnd);
+  }
+
+  const leftSidebarResizeHandle = (
+    <div
+      onPointerDown={handleLeftSidebarResizeStart}
+      title="Drag to resize or collapse"
+      className="group absolute inset-y-0 right-0 z-20 flex w-2 translate-x-1/2 cursor-col-resize items-center justify-center"
+    >
+      <span
+        className={`h-10 w-0.5 rounded-full transition-colors ${
+          leftSidebarResizing ? "bg-gray-400" : "bg-gray-700 group-hover:bg-gray-500"
+        }`}
+      />
+    </div>
+  );
   const [savingFlagSlug, setSavingFlagSlug] = useState<string | null>(null);
   const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
     [],
@@ -2293,7 +2353,7 @@ export default function WorkspaceClient({
       <div className="border-t border-gray-800 shrink-0">
         <button
           onClick={() => setSourceDocsExpanded((v) => !v)}
-          className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
         >
           <div className="flex items-center gap-2">
             <svg
@@ -2447,7 +2507,7 @@ export default function WorkspaceClient({
       <div className="border-t border-gray-800 shrink-0">
         <button
           onClick={() => setDocsExpanded((v) => !v)}
-          className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
         >
           <div className="flex items-center gap-2">
             <svg
@@ -2562,8 +2622,9 @@ export default function WorkspaceClient({
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
-        <div className="flex items-center gap-3">
+      <header className="relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
+        <NavbarFlowerWind />
+        <div className="relative z-10 flex items-center gap-3">
           <Link
             href="/dashboard"
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5"
@@ -2597,7 +2658,7 @@ export default function WorkspaceClient({
           </Link>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="relative z-10 flex items-center gap-2">
           {canForkCluster && (
             <button
               type="button"
@@ -2686,7 +2747,11 @@ export default function WorkspaceClient({
       <div className="flex flex-1 min-h-0">
         {/* Left sidebar: chat sessions */}
         {leftSidebarOpen ? (
-          <aside className="w-64 shrink-0 border-r border-gray-800 flex flex-col bg-gray-950">
+          <aside
+            style={{ width: leftSidebarWidth }}
+            className="relative shrink-0 border-r border-gray-800 flex flex-col bg-gray-950"
+          >
+            {leftSidebarResizeHandle}
             {/* New chat */}
             <div className="px-3 pt-3 pb-2 shrink-0 flex items-center gap-2">
               <button
@@ -2708,26 +2773,6 @@ export default function WorkspaceClient({
                   />
                 </svg>
                 New chat
-              </button>
-              <button
-                onClick={() => setLeftSidebarOpen(false)}
-                title="Close sidebar"
-                className="shrink-0 h-10 w-10 flex items-center justify-center rounded-lg border border-gray-800 text-gray-500 hover:bg-gray-900 hover:text-white hover:border-gray-700 transition-colors"
-                aria-label="Close sidebar"
-              >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M20.25 5.25H3.75M20.25 12H3.75M20.25 18.75H3.75M8.25 8.25 4.5 12l3.75 3.75"
-                  />
-                </svg>
               </button>
             </div>
 
@@ -2974,7 +3019,7 @@ export default function WorkspaceClient({
             <div className="hidden">
               <button
                 onClick={() => setSourceDocsExpanded((v) => !v)}
-                className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
               >
                 <div className="flex items-center gap-2">
                   <svg
@@ -3128,7 +3173,7 @@ export default function WorkspaceClient({
             <div className="hidden">
               <button
                 onClick={() => setDocsExpanded((v) => !v)}
-                className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
               >
                 <div className="flex items-center gap-2">
                   <svg
@@ -3239,32 +3284,16 @@ export default function WorkspaceClient({
             </div>
           </aside>
         ) : (
-          <aside className="w-12 shrink-0 border-r border-gray-800 flex flex-col items-center bg-gray-950 py-3">
-            <button
-              onClick={() => setLeftSidebarOpen(true)}
-              title="Open sidebar"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-800 text-gray-500 hover:border-gray-700 hover:bg-gray-900 hover:text-white transition-colors"
-              aria-label="Open sidebar"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M20.25 5.25H3.75M20.25 12H3.75M20.25 18.75H3.75M8.25 8.25 4.5 12l3.75 3.75"
-                />
-              </svg>
-            </button>
+          <aside
+            style={{ width: leftSidebarWidth }}
+            className="relative shrink-0 border-r border-gray-800 flex flex-col items-center bg-gray-950 py-3"
+          >
+            {leftSidebarResizeHandle}
             <button
               onClick={handleNewChat}
               disabled={isStreaming || loadingChats}
               title="New chat"
-              className="mt-3 flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-900 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-900 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               aria-label="New chat"
             >
               <svg
@@ -3300,7 +3329,7 @@ export default function WorkspaceClient({
           <div className="shrink-0 border-t border-gray-800 px-4 py-4">
             {/* Chat attachment preview strip */}
             {selectedChatDocuments.length > 0 && (
-              <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-1.5">
+              <div className="mx-auto mb-2 flex max-w-5xl flex-wrap items-center gap-1.5">
                 <span className="text-[10px] uppercase tracking-wider text-gray-600">
                   Chat focus
                 </span>
@@ -3336,7 +3365,7 @@ export default function WorkspaceClient({
             )}
 
             {chatAttachments.length > 0 && (
-              <div className="max-w-2xl mx-auto mb-2 flex flex-wrap gap-1.5">
+              <div className="max-w-5xl mx-auto mb-2 flex flex-wrap gap-1.5">
                 {chatAttachments.map((a, i) => (
                   <div
                     key={i}
@@ -3405,7 +3434,7 @@ export default function WorkspaceClient({
               className="hidden"
             />
 
-            <div className="max-w-2xl mx-auto flex items-end gap-2">
+            <div className="max-w-5xl mx-auto flex items-end gap-2">
               {/* Prompts button */}
               <button
                 onClick={() => {
@@ -3529,7 +3558,7 @@ export default function WorkspaceClient({
             </div>
 
             {/* Toolbar */}
-            <div className="max-w-2xl mx-auto mt-2 flex items-center justify-between">
+            <div className="max-w-5xl mx-auto mt-2 flex items-center justify-between">
               <p className="text-xs text-gray-700">
                 Enter to send · Shift+Enter for new line
               </p>
@@ -3564,7 +3593,7 @@ export default function WorkspaceClient({
                     <>
                       <div className="fixed inset-0 z-10" onClick={() => setShowUsage(false)} />
                       <div className="absolute bottom-full right-0 mb-1.5 z-20 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 text-xs">
-                        <p className="text-gray-400 font-semibold mb-3">Usage Limits</p>
+                        <p className="text-gray-400 font-medium mb-3">Usage Limits</p>
                         {usageLoading ? (
                           <p className="text-gray-500">Loading…</p>
                         ) : !usageData || !usageData.available ? (

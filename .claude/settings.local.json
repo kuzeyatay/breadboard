@@ -14,7 +14,11 @@
       "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; npx tsc --noEmit 2>&1 | Select-Object -First 40; \"EXIT=$LASTEXITCODE\")",
       "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; Remove-Item -Recurse -Force \".next\\\\types\",\".next\\\\dev\\\\types\" -ErrorAction SilentlyContinue; npx tsc --noEmit 2>&1 | Select-Object -First 40; \"EXIT=$LASTEXITCODE\")",
       "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; Remove-Item -Recurse -Force \".next\\\\types\",\".next\\\\dev\\\\types\" -ErrorAction SilentlyContinue; npx tsc --noEmit 2>&1 | Select-Object -First 20; \"EXIT=$LASTEXITCODE\")",
-      "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; Remove-Item -Recurse -Force \".next\\\\types\",\".next\\\\dev\\\\types\" -ErrorAction SilentlyContinue; npx tsc --noEmit 2>&1 | Select-Object -First 30; \"EXIT=$LASTEXITCODE\")"
+      "PowerShell(cd \"c:\\\\Users\\\\20252082\\\\OneDrive - TU Eindhoven\\\\Desktop\\\\breadboard\\\\dashboard\"; Remove-Item -Recurse -Force \".next\\\\types\",\".next\\\\dev\\\\types\" -ErrorAction SilentlyContinue; npx tsc --noEmit 2>&1 | Select-Object -First 30; \"EXIT=$LASTEXITCODE\")",
+      "Bash(find quartz *)",
+      "Bash(grep -nE \"#[0-9a-fA-F]{3,6}|rgba?\\\\\\(\" custom.scss)",
+      "Bash(grep -nE \"#[0-9a-fA-F]{3,6}\" base.scss)",
+      "Bash(npm run *)"
     ]
   }
 }

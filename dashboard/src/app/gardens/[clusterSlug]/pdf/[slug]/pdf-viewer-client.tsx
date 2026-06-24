@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import {
   useCallback,
   useEffect,
@@ -965,8 +966,9 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         }
       `}</style>
 
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 bg-gray-950 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-3">
+      <header className="relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 bg-gray-950 px-4 py-3">
+        <NavbarFlowerWind />
+        <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button
             type="button"
             onClick={goBack}
@@ -1077,7 +1079,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
             )}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="relative z-10 flex flex-wrap items-center gap-2">
           <span
             aria-live="polite"
             className={`px-1 text-xs ${
@@ -1303,7 +1305,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         {outlineOpen && (
         <aside
           id="pdf-document-outline"
-          className="hidden w-64 shrink-0 border-r border-gray-800 bg-[#3f3e4d] text-gray-100 shadow-inner md:flex md:min-h-0 md:flex-col"
+          className="hidden w-64 shrink-0 border-r border-gray-800 bg-[#ece6d8] text-gray-100 shadow-inner md:flex md:min-h-0 md:flex-col"
         >
           <div className="flex h-11 shrink-0 items-center gap-2 border-b border-gray-700/60 px-4">
             <svg
@@ -1364,7 +1366,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
           <div
             id="viewerContainer"
             ref={containerRef}
-            className="absolute inset-0 overflow-auto bg-gray-900 [--page-border:1px_solid_#393639] [--page-margin:12px_auto_4px] [--pdfViewer-padding-bottom:24px]"
+            className="absolute inset-0 overflow-auto bg-gray-900 [--page-border:1px_solid_#c7d8cc] [--page-margin:12px_auto_4px] [--pdfViewer-padding-bottom:24px]"
           >
             <div ref={viewerRef} className="pdfViewer" />
           </div>

@@ -1,3 +1,5 @@
+@use "../../styles/variables.scss" as *;
+
 .home-overview {
   margin: 1.25rem 0 2rem;
 }
@@ -10,7 +12,7 @@
   & > .eyebrow {
     color: var(--secondary);
     font-size: 0.78rem;
-    font-weight: 700;
+    font-weight: $mediumWeight;
     letter-spacing: 0;
     margin: 0;
     text-transform: uppercase;
@@ -65,7 +67,7 @@
 
 .cluster-title {
   font-size: 1rem;
-  font-weight: 700;
+  font-weight: $semiBoldWeight;
 }
 
 .cluster-description {

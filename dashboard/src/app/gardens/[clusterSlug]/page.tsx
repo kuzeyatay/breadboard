@@ -44,7 +44,7 @@ export default async function WorkspacePage({
         slug: clusterSlug,
         description: (fullRow.description as string | null) ?? null,
         visibility: "public",
-        border_color: (fullRow.border_color as string) ?? "#374151",
+        border_color: (fullRow.border_color as string) ?? "#a9c1b1",
         card_width: Number(fullRow.card_width) || 392,
         card_height: Number(fullRow.card_height) || 244,
         chat_accessible: true,
