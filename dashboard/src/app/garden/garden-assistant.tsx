@@ -985,9 +985,20 @@ export default function GardenAssistant({
             <button
               type="submit"
               disabled={!input.trim() || isStreaming || !hasActiveCluster}
-              className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
+              aria-label="Send"
+              title="Send"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
             >
-              {isStreaming ? 'Thinking' : 'Send'}
+              {isStreaming ? (
+                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12h15m0 0-6-6m6 6-6 6" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
