@@ -464,6 +464,13 @@ function createFolderNode(
   return li
 }
 
+// The build transpiles Explorer.tsx with esbuild's keepNames, which wraps inner
+// functions in a __name(...) helper. That helper leaks into the serialized fn
+// source, so provide a no-op shim when reviving.
+function reviveDataFn(source: string | undefined) {
+  return new Function("__name", "return " + (source || "undefined"))(<T>(fn: T) => fn)
+}
+
 async function setupExplorer(currentSlug: FullSlug) {
   ensureDndStyles()
   const allExplorers = document.querySelectorAll("div.explorer") as NodeListOf<HTMLElement>
@@ -475,9 +482,9 @@ async function setupExplorer(currentSlug: FullSlug) {
       folderDefaultState: (explorer.dataset.collapsed || "collapsed") as "collapsed" | "open",
       useSavedState: explorer.dataset.savestate === "true",
       order: dataFns.order || ["filter", "map", "sort"],
-      sortFn: new Function("return " + (dataFns.sortFn || "undefined"))(),
-      filterFn: new Function("return " + (dataFns.filterFn || "undefined"))(),
-      mapFn: new Function("return " + (dataFns.mapFn || "undefined"))(),
+      sortFn: reviveDataFn(dataFns.sortFn),
+      filterFn: reviveDataFn(dataFns.filterFn),
+      mapFn: reviveDataFn(dataFns.mapFn),
     }
 
     // Get folder state from local storage
