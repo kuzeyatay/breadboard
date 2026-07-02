@@ -53,6 +53,14 @@ interface DocInfo {
   date: string;
 }
 
+interface SavedLinkInfo {
+  id: string;
+  title: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 function normalizedSearchText(value: string): string {
   return value
     .toLowerCase()
@@ -83,6 +91,63 @@ interface GeneratedNoteResult {
   title: string;
   action?: "created" | "merged";
   reason?: string;
+}
+
+type LearnStatus =
+  | "idle"
+  | "planning"
+  | "awaiting_confirmation"
+  | "generating_textbook"
+  | "generating_visuals"
+  | "writing_quartz"
+  | "building_navigation"
+  | "complete"
+  | "failed"
+  | "cancelled";
+
+interface LearnJobInfo {
+  id: string;
+  status: LearnStatus;
+  currentStep?: string;
+  progressPercent?: number;
+  currentSectionTitle?: string;
+  currentPageTitle?: string;
+  error?: string;
+}
+
+interface LearnSubsectionInfo {
+  title: string;
+  purpose?: string;
+  sourceAnchors?: string[];
+  visualOpportunities?: string[];
+}
+
+interface LearnSectionInfo {
+  title: string;
+  purpose?: string;
+  sourceAnchors?: string[];
+  subsections: LearnSubsectionInfo[];
+}
+
+interface LearnMapInfo {
+  title: string;
+  summary?: string;
+  sections: LearnSectionInfo[];
+  warnings?: string[];
+}
+
+interface LearnStatusResponse {
+  success?: boolean;
+  job?: LearnJobInfo | null;
+  proposedLearningMap?: LearnMapInfo | null;
+  confirmedLearningMapId?: string;
+  latestTextbookVersionId?: string;
+  hasSources?: boolean;
+  sourceCount?: number;
+  hasTextbook?: boolean;
+  sourceSetChanged?: boolean;
+  buttonLabel?: string;
+  error?: string;
 }
 
 interface MarkdownTagUpdateResult {
@@ -289,6 +354,16 @@ function formatElapsed(ms: number): string {
   return minutes > 0
     ? `${minutes}:${String(seconds).padStart(2, "0")}`
     : `${seconds}.${tenths}s`;
+}
+
+function isLearnActive(status?: LearnStatus): boolean {
+  return (
+    status === "planning" ||
+    status === "generating_textbook" ||
+    status === "generating_visuals" ||
+    status === "writing_quartz" ||
+    status === "building_navigation"
+  );
 }
 
 interface ChatTranscriptProps {
@@ -574,6 +649,13 @@ export default function WorkspaceClient({
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
+  const [linksExpanded, setLinksExpanded] = useState(true);
+  const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
+  const [linksLoading, setLinksLoading] = useState(true);
+  const [newLinkTitle, setNewLinkTitle] = useState("");
+  const [newLinkUrl, setNewLinkUrl] = useState("");
+  const [savingLink, setSavingLink] = useState(false);
+  const [deletingLinkId, setDeletingLinkId] = useState<string | null>(null);
   const [sourceDocSearch, setSourceDocSearch] = useState("");
   // Left chat sidebar: width is the single source of truth so it can be
   // dragged open/closed by its edge (no toggle button). Below the threshold it
@@ -638,7 +720,7 @@ export default function WorkspaceClient({
   const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
     [],
   );
-  const [showInternalConceptGraph, setShowInternalConceptGraph] = useState(false);
+  const showInternalConceptGraph = false;
   const [openFlagPaletteSlug, setOpenFlagPaletteSlug] = useState<string | null>(
     null,
   );
@@ -693,6 +775,13 @@ export default function WorkspaceClient({
 
   // Garden note generation
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // Learn pipeline
+  const [learnState, setLearnState] = useState<LearnStatusResponse | null>(null);
+  const [learnBusy, setLearnBusy] = useState(false);
+  const [learnPanelOpen, setLearnPanelOpen] = useState(true);
+  const [learnSourceOnly, setLearnSourceOnly] = useState(true);
+  const [learnIncludeSnapshots, setLearnIncludeSnapshots] = useState(false);
 
   // Thinking mode
   const [thinkingMode, setThinkingMode] = useState(false);
@@ -774,6 +863,52 @@ export default function WorkspaceClient({
   useEffect(() => {
     fetchDocuments();
   }, [fetchDocuments]);
+
+  const fetchSavedLinks = useCallback(async () => {
+    setLinksLoading(true);
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/links`,
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        links?: SavedLinkInfo[];
+      };
+      if (res.ok) setSavedLinks(Array.isArray(data.links) ? data.links : []);
+    } catch {
+      // Keep the workspace usable if link metadata cannot be read.
+    } finally {
+      setLinksLoading(false);
+    }
+  }, [clusterSlug]);
+
+  useEffect(() => {
+    void fetchSavedLinks();
+  }, [fetchSavedLinks]);
+
+  const fetchLearnStatus = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/status`,
+      );
+      const data = (await res.json().catch(() => ({}))) as LearnStatusResponse;
+      if (res.ok) setLearnState(data);
+    } catch {
+      // Status polling should never interrupt the workspace.
+    }
+  }, [clusterSlug]);
+
+  useEffect(() => {
+    void fetchLearnStatus();
+  }, [fetchLearnStatus]);
+
+  useEffect(() => {
+    const active = isLearnActive(learnState?.job?.status) || learnBusy;
+    if (!active) return;
+    const id = window.setInterval(() => {
+      void fetchLearnStatus();
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [fetchLearnStatus, learnBusy, learnState?.job?.status]);
 
   const fetchChatSessions = useCallback(async () => {
     try {
@@ -867,6 +1002,80 @@ export default function WorkspaceClient({
   }
 
   // ── Upload modal ────────────────────────────────────────────────────────────
+
+  async function handleSaveLink(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newLinkUrl.trim() || savingLink) return;
+    setSavingLink(true);
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/links`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: newLinkTitle.trim(),
+            url: newLinkUrl.trim(),
+          }),
+        },
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        links?: SavedLinkInfo[];
+      };
+      if (!res.ok) {
+        addToast(data.error ?? "Failed to save link");
+        return;
+      }
+      setSavedLinks(Array.isArray(data.links) ? data.links : []);
+      setNewLinkTitle("");
+      setNewLinkUrl("");
+      setLinksExpanded(true);
+      addToast("Link saved", "success");
+    } catch {
+      addToast("Failed to save link");
+    } finally {
+      setSavingLink(false);
+    }
+  }
+
+  async function handleDeleteLink(linkId: string) {
+    if (deletingLinkId) return;
+    setDeletingLinkId(linkId);
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/links`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: linkId }),
+        },
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        links?: SavedLinkInfo[];
+      };
+      if (!res.ok) {
+        addToast(data.error ?? "Failed to delete link");
+        return;
+      }
+      setSavedLinks(Array.isArray(data.links) ? data.links : []);
+      addToast("Link deleted", "success");
+    } catch {
+      addToast("Failed to delete link");
+    } finally {
+      setDeletingLinkId(null);
+    }
+  }
+
+  async function handleCopyLink(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      addToast("Link copied", "success");
+    } catch {
+      addToast("Could not copy link");
+    }
+  }
 
   function openUploadModal() {
     uploadCanceledRef.current = false;
@@ -1079,11 +1288,13 @@ export default function WorkspaceClient({
       );
       for (const warning of screenshotWarnings) addToast(warning);
       fetchDocuments();
+      void fetchLearnStatus();
       setSourceDocsExpanded(true);
       setGraphRefreshVersion((v) => v + 1);
     } else if (canceled) {
       if (successCount > 0) {
         fetchDocuments();
+        void fetchLearnStatus();
         setSourceDocsExpanded(true);
         setGraphRefreshVersion((v) => v + 1);
         addToast(
@@ -1569,6 +1780,82 @@ export default function WorkspaceClient({
 
   // ── Chat submit ─────────────────────────────────────────────────────────────
 
+  async function postLearnAction(
+    endpoint: "plan" | "confirm" | "generate" | "regenerate" | "cancel",
+    body: Record<string, unknown> = {},
+  ) {
+    setLearnBusy(true);
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/${endpoint}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            sourceOnly: learnSourceOnly,
+            includeSourceSnapshots: learnIncludeSnapshots,
+            ...body,
+          }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        throw new Error(data.error ?? "Learn action failed");
+      }
+
+      await fetchLearnStatus();
+      await fetchDocuments();
+      setGraphRefreshVersion((value) => value + 1);
+
+      if (endpoint === "plan") {
+        addToast("Learning map ready to review", "success");
+      } else if (endpoint === "confirm" || endpoint === "generate" || endpoint === "regenerate") {
+        addToast("Textbook generated", "success");
+      } else if (endpoint === "cancel") {
+        addToast("Learn job cancelled");
+      }
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : "Learn action failed");
+      await fetchLearnStatus();
+    } finally {
+      setLearnBusy(false);
+    }
+  }
+
+  async function handleLearnPrimary() {
+    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnState?.job?.status === "awaiting_confirmation") {
+      setLearnPanelOpen(true);
+      return;
+    }
+    if (learnState?.confirmedLearningMapId) {
+      await postLearnAction(
+        learnState.latestTextbookVersionId || learnState.hasTextbook
+          ? "regenerate"
+          : "generate",
+        { confirmedLearningMapId: learnState.confirmedLearningMapId },
+      );
+      return;
+    }
+    await postLearnAction("plan");
+  }
+
+  async function handleConfirmAndGenerate() {
+    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    await postLearnAction("confirm", { generate: true });
+  }
+
+  async function handleRegenerateLearningMap() {
+    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    await postLearnAction("plan");
+  }
+
+  async function handleCancelLearn() {
+    if (learnBusy) return;
+    await postLearnAction("cancel");
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -1884,6 +2171,211 @@ export default function WorkspaceClient({
   const graphRefreshKey = `${graphRefreshVersion}:${documents
     .map((d) => `${d.slug}:${d.linkCount}:${d.wordCount}`)
     .join("|")}`;
+
+  function renderLearnPanel() {
+    const job = learnState?.job ?? null;
+    const status = job?.status ?? "idle";
+    const active = isLearnActive(status);
+    const proposedMap = learnState?.proposedLearningMap ?? null;
+    const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
+    const canStart = Boolean(learnState?.hasSources) && !learnBusy && !active;
+
+    if (!isOwner || (!learnState?.hasSources && status !== "failed")) return null;
+
+    return (
+      <section className="mx-auto mb-4 max-w-5xl rounded-lg border border-gray-800 bg-gray-950/70 p-3 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold text-white">Learn</p>
+              {learnState?.sourceSetChanged && (
+                <span className="rounded-md border border-amber-700/50 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                  New sources
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              {active
+                ? job?.currentStep || "Working"
+                : status === "awaiting_confirmation"
+                  ? "Confirm the section order to generate the textbook."
+                  : learnState?.hasTextbook
+                    ? "Refresh the generated textbook from the current sources."
+                    : "Generate a structured e-textbook from your sources."}
+            </p>
+            {job?.currentSectionTitle || job?.currentPageTitle ? (
+              <p className="mt-1 truncate text-xs text-gray-600">
+                {[job.currentSectionTitle, job.currentPageTitle].filter(Boolean).join(" / ")}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-gray-500">
+              <input
+                type="checkbox"
+                checked={learnSourceOnly}
+                onChange={(event) => setLearnSourceOnly(event.target.checked)}
+                disabled={learnBusy || active}
+                className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+              />
+              Source-only
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-gray-500">
+              <input
+                type="checkbox"
+                checked={learnIncludeSnapshots}
+                onChange={(event) => setLearnIncludeSnapshots(event.target.checked)}
+                disabled={learnBusy || active}
+                className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+              />
+              Snapshots
+            </label>
+            <button
+              type="button"
+              onClick={handleLearnPrimary}
+              disabled={!canStart && status !== "awaiting_confirmation"}
+              className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {learnBusy || active ? <Spinner className="h-3.5 w-3.5" /> : null}
+              {learnState?.buttonLabel ?? "Learn"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setLearnPanelOpen((value) => !value)}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
+              aria-label={learnPanelOpen ? "Collapse Learn panel" : "Expand Learn panel"}
+              title={learnPanelOpen ? "Collapse" : "Expand"}
+            >
+              <svg
+                className={`h-3.5 w-3.5 transition-transform ${learnPanelOpen ? "" : "rotate-180"}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        {(active || status === "complete" || status === "failed") && (
+          <div className="mt-3">
+            <div className="h-1.5 overflow-hidden rounded-full bg-gray-800">
+              <div
+                className={[
+                  "h-full rounded-full transition-all",
+                  status === "failed" ? "bg-red-500" : "bg-cyan-300",
+                ].join(" ")}
+                style={{ width: `${status === "failed" ? 100 : progress}%` }}
+              />
+            </div>
+            {status === "failed" && job?.error ? (
+              <p className="mt-2 text-xs text-red-300">{job.error}</p>
+            ) : null}
+          </div>
+        )}
+
+        {learnPanelOpen && proposedMap && status === "awaiting_confirmation" && (
+          <div className="mt-4 border-t border-gray-800 pt-3">
+            <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-100">{proposedMap.title}</p>
+                {proposedMap.summary ? (
+                  <p className="mt-0.5 text-xs text-gray-500">{proposedMap.summary}</p>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleConfirmAndGenerate}
+                  disabled={learnBusy}
+                  className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
+                  Confirm and Generate Textbook
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRegenerateLearningMap}
+                  disabled={learnBusy}
+                  className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Regenerate Learning Map
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelLearn}
+                  disabled={learnBusy}
+                  className="rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            <ol className="max-h-72 space-y-2 overflow-y-auto pr-1">
+              {proposedMap.sections.map((section, sectionIndex) => (
+                <li key={`${section.title}-${sectionIndex}`} className="rounded-lg border border-gray-800 bg-gray-900/50 p-3">
+                  <div className="flex items-start gap-2">
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gray-800 text-[11px] font-medium text-gray-300">
+                      {sectionIndex + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-gray-100">{section.title}</p>
+                      {section.purpose ? (
+                        <p className="mt-1 text-xs leading-5 text-gray-500">{section.purpose}</p>
+                      ) : null}
+                      <ul className="mt-2 space-y-1">
+                        {section.subsections.map((subsection, subsectionIndex) => (
+                          <li key={`${subsection.title}-${subsectionIndex}`} className="text-xs text-gray-400">
+                            <span className="text-gray-600">
+                              {sectionIndex + 1}.{subsectionIndex + 1}
+                            </span>{" "}
+                            {subsection.title}
+                            {subsection.visualOpportunities && subsection.visualOpportunities.length > 0 ? (
+                              <span className="ml-2 text-cyan-500">
+                                {subsection.visualOpportunities.length} visual
+                                {subsection.visualOpportunities.length === 1 ? "" : "s"}
+                              </span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {proposedMap.warnings && proposedMap.warnings.length > 0 ? (
+              <div className="mt-3 rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2">
+                {proposedMap.warnings.map((warning, index) => (
+                  <p key={`${warning}-${index}`} className="text-xs text-amber-200">
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {learnPanelOpen && status === "complete" && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-800 pt-3">
+            <Link
+              href={`/garden/${clusterSlug}`}
+              className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white"
+            >
+              Open textbook
+            </Link>
+            <span className="text-xs text-gray-600">
+              {learnState?.latestTextbookVersionId ?? job?.id}
+            </span>
+          </div>
+        )}
+      </section>
+    );
+  }
 
   function renderMarkdownRows(items: DocInfo[]) {
     return (
@@ -2677,7 +3169,7 @@ export default function WorkspaceClient({
 
       <div className="border-t border-gray-800 shrink-0">
         <button
-          onClick={() => setDocsExpanded((v) => !v)}
+          onClick={() => setLinksExpanded((v) => !v)}
           className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
         >
           <div className="flex items-center gap-2">
@@ -2686,70 +3178,20 @@ export default function WorkspaceClient({
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
-              strokeWidth={1.5}
+              strokeWidth={1.6}
             >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+                d="M13.19 8.688a4.5 4.5 0 0 1 6.364 6.364l-2.121 2.121a4.5 4.5 0 0 1-6.364 0m-.258-1.809a4.5 4.5 0 0 1-6.364-6.364l2.121-2.121a4.5 4.5 0 0 1 6.364 0"
               />
             </svg>
-            Textbook
-            {markdownDocuments.length > 0
-              ? ` (${markdownDocuments.length})`
-              : ""}
+            Links
+            {savedLinks.length > 0 ? ` (${savedLinks.length})` : ""}
           </div>
           <div className="flex items-center gap-1.5">
-            <span
-              role="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!creatingFolder) handleCreateFolder("");
-              }}
-              className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-              aria-label="New folder"
-              title="New folder"
-            >
-              <svg
-                className="w-3.5 h-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.6}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
-                />
-              </svg>
-            </span>
-            <span
-              role="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                openNewNoteModal();
-              }}
-              className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-              aria-label="New page"
-              title="New page"
-            >
-              <svg
-                className="w-3.5 h-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
-                />
-              </svg>
-            </span>
             <svg
-              className={`w-3.5 h-3.5 transition-transform duration-200 ${docsExpanded ? "" : "rotate-180"}`}
+              className={`w-3.5 h-3.5 transition-transform duration-200 ${linksExpanded ? "" : "rotate-180"}`}
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -2763,36 +3205,139 @@ export default function WorkspaceClient({
             </svg>
           </div>
         </button>
-        {docsExpanded && (
-          <div className="max-h-56 overflow-y-auto border-t border-gray-800">
-            <label className="flex items-center gap-2 border-b border-gray-800 px-4 py-2 text-xs text-gray-500">
-              <input
-                type="checkbox"
-                checked={showInternalConceptGraph}
-                onChange={(event) => setShowInternalConceptGraph(event.target.checked)}
-                className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white"
-              />
-              <span>Show internal concept graph</span>
-            </label>
-            {loadingDocs ? (
-              <div className="flex justify-center py-6">
-                <Spinner className="w-4 h-4 text-gray-700" />
-              </div>
-            ) : markdownDocuments.length === 0 && folders.length === 0 ? (
-              <div className="flex flex-col items-center py-6 px-4 text-center">
-                <p className="text-xs text-gray-600 mb-2">
-                  No textbook pages yet
-                </p>
-                <button
-                  onClick={openUploadModal}
-                  className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
-                >
-                  Upload your first
-                </button>
-              </div>
-            ) : (
-              renderMarkdownTreeRoot()
+        {linksExpanded && (
+          <div className="border-t border-gray-800">
+            {isOwner && (
+              <form
+                onSubmit={handleSaveLink}
+                className="space-y-2 border-b border-gray-800 px-3 py-3"
+              >
+                <input
+                  type="text"
+                  value={newLinkTitle}
+                  onChange={(e) => setNewLinkTitle(e.target.value)}
+                  placeholder="Link name"
+                  className="h-8 w-full rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                  aria-label="Link name"
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newLinkUrl}
+                    onChange={(e) => setNewLinkUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="h-8 min-w-0 flex-1 rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                    aria-label="Link URL"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newLinkUrl.trim() || savingLink}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Save link"
+                    title="Save link"
+                  >
+                    {savingLink ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : (
+                      <svg
+                        className="h-3.5 w-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 4.5v15m7.5-7.5h-15"
+                        />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </form>
             )}
+            <div className="max-h-56 overflow-y-auto">
+              {linksLoading ? (
+                <div className="flex justify-center py-6">
+                  <Spinner className="w-4 h-4 text-gray-700" />
+                </div>
+              ) : savedLinks.length === 0 ? (
+                <div className="px-4 py-6 text-center">
+                  <p className="text-xs text-gray-600">No saved links yet.</p>
+                </div>
+              ) : (
+                <ul className="divide-y divide-gray-800/70">
+                  {savedLinks.map((link) => (
+                    <li key={link.id} className="group flex items-center gap-2 px-3 py-2">
+                      <a
+                        href={link.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="min-w-0 flex-1 text-left"
+                        title={link.url}
+                      >
+                        <span className="block truncate text-xs font-medium text-gray-300 transition-colors group-hover:text-white">
+                          {link.title}
+                        </span>
+                        <span className="block truncate text-[11px] text-gray-600">
+                          {link.url}
+                        </span>
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyLink(link.url)}
+                        className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+                        aria-label="Copy link"
+                        title="Copy link"
+                      >
+                        <svg
+                          className="h-3.5 w-3.5"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={1.8}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125v-9.75c0-.621.504-1.125 1.125-1.125H8.25m2.25-6.75h8.625c.621 0 1.125.504 1.125 1.125v8.625c0 .621-.504 1.125-1.125 1.125H10.5a1.125 1.125 0 0 1-1.125-1.125V4.125c0-.621.504-1.125 1.125-1.125Z"
+                          />
+                        </svg>
+                      </button>
+                      {isOwner && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteLink(link.id)}
+                          disabled={deletingLinkId === link.id}
+                          className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-red-950/30 hover:text-red-400 disabled:opacity-40"
+                          aria-label="Delete link"
+                          title="Delete link"
+                        >
+                          {deletingLinkId === link.id ? (
+                            <Spinner className="h-3.5 w-3.5" />
+                          ) : (
+                            <svg
+                              className="h-3.5 w-3.5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={2}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M6 18 18 6M6 6l12 12"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -2890,6 +3435,42 @@ export default function WorkspaceClient({
             </svg>
             View garden
           </Link>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={handleLearnPrimary}
+              disabled={
+                learnBusy ||
+                isLearnActive(learnState?.job?.status) ||
+                !learnState?.hasSources
+              }
+              title={
+                learnState?.hasSources
+                  ? learnState?.buttonLabel ?? "Learn"
+                  : "Upload sources before learning"
+              }
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {learnBusy || isLearnActive(learnState?.job?.status) ? (
+                <Spinner className="w-3.5 h-3.5" />
+              ) : (
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                  />
+                </svg>
+              )}
+              {learnState?.buttonLabel ?? "Learn"}
+            </button>
+          )}
           <button
             onClick={handleGenerateNotes}
             disabled={messages.length === 0 || isGenerating}
@@ -3496,6 +4077,7 @@ export default function WorkspaceClient({
         {/* Chat area — warm paper surface so the green sidebars read as a frame */}
         <div className="flex-1 flex flex-col min-h-0 bg-gray-900">
           <main className="flex-1 overflow-y-auto px-4 py-6">
+            {renderLearnPanel()}
             <ChatTranscript
               clusterName={clusterName}
               isStreaming={isStreaming}
@@ -3942,6 +4524,7 @@ export default function WorkspaceClient({
           refreshKey={graphRefreshKey}
           sourceLibrary={renderDocumentLibrary()}
           showInternalConceptGraph={showInternalConceptGraph}
+          savedLinkCount={savedLinks.length}
         />
       </div>
 
