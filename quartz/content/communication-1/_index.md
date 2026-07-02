@@ -1,18 +1,18 @@
 ---
 title: "Communication 1"
-date: "2026-06-22"
-description: "Quartz garden generated from 6 source documents, with 128 knowledge topics and 2263 graph links."
+date: "2026-06-24"
+description: "Quartz garden generated from 6 source documents, with 128 knowledge topics and 1895 graph links."
 knowledge_type: "cluster-index"
 tags: ["communication-1", "communication"]
 ---
 
 ## Garden overview
 
-This Quartz garden is generated from 6 source documents and rebuilt into a linked knowledge map. It currently contains 128 knowledge topics, 13 generated chat notes, 2263 graph links, and 474513 indexed words.
+This Quartz garden is generated from 6 source documents and rebuilt into a linked knowledge map. It currently contains 128 knowledge topics, 13 generated chat notes, 1895 graph links, and 474513 indexed words.
 
 Whenever a new document is uploaded and markdown content is generated, this cluster index is updated so the map, counts, and source tree stay aligned with the current material.
 
-Last updated: 2026-06-22.
+Last updated: 2026-06-24.
 
 ## Full source notes
 
@@ -28,7 +28,7 @@ Last updated: 2026-06-22.
 - Source documents: 6
 - Knowledge topics: 128
 - Generated chat notes: 13
-- Graph links: 2263
+- Graph links: 1895
 
 ## Source tree
 

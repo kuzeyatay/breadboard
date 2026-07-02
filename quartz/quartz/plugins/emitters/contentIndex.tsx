@@ -16,6 +16,7 @@ export type ContentDetails = {
   links: SimpleSlug[]
   tags: string[]
   knowledgeType?: string
+  breadboardType?: string
   generatedNoteType?: string
   sourceType?: string
   sourceFile?: string
@@ -125,6 +126,12 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
             links: file.data.links ?? [],
             tags: file.data.frontmatter?.tags ?? [],
             knowledgeType: typeof fm?.knowledge_type === "string" ? fm.knowledge_type : undefined,
+            breadboardType:
+              typeof fm?.breadboardType === "string"
+                ? fm.breadboardType
+                : typeof fm?.breadboard_type === "string"
+                  ? fm.breadboard_type
+                  : undefined,
             generatedNoteType:
               typeof fm?.generated_note_type === "string" ? fm.generated_note_type : undefined,
             sourceType: typeof fm?.source_type === "string" ? fm.source_type : undefined,

@@ -1,18 +1,18 @@
 ---
 title: "Signals and systems"
-date: "2026-05-23"
-description: "Quartz garden generated from 2 source documents, with 70 knowledge topics and 810 graph links."
+date: "2026-06-24"
+description: "Quartz garden generated from 2 source documents, with 70 knowledge topics and 769 graph links."
 knowledge_type: "cluster-index"
 tags: ["signals-and-systems", "signals-systems", "systems-signals", "signals", "systems"]
 ---
 
 ## Garden overview
 
-This Quartz garden is generated from 2 source documents and rebuilt into a linked knowledge map. It currently contains 70 knowledge topics, 0 generated chat notes, 810 graph links, and 296320 indexed words.
+This Quartz garden is generated from 2 source documents and rebuilt into a linked knowledge map. It currently contains 70 knowledge topics, 0 generated chat notes, 769 graph links, and 296320 indexed words.
 
 Whenever a new document is uploaded and markdown content is generated, this cluster index is updated so the map, counts, and source tree stay aligned with the current material.
 
-Last updated: 2026-05-23.
+Last updated: 2026-06-24.
 
 ## Full source notes
 
@@ -24,7 +24,7 @@ Last updated: 2026-05-23.
 - Source documents: 2
 - Knowledge topics: 70
 - Generated chat notes: 0
-- Graph links: 810
+- Graph links: 769
 
 ## Source tree
 

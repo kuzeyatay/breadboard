@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 import { normalizeTopicTags, refreshClusterIndex, resolveClusterNoteFile } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { withCouncil } from '@/lib/council';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -148,7 +149,7 @@ function parseEditResponse(rawContent: string): { content: string; summary: stri
   } catch {
     // Fall through and accept raw markdown only when it looks like a complete note.
   }
-  return stripped ? { content: stripped, summary: 'Updated the open markdown note.' } : null;
+  return stripped ? { content: stripped, summary: 'Updated the open page.' } : null;
 }
 
 function parseChatMessages(value: unknown): ChatMessage[] {
@@ -202,7 +203,7 @@ export async function POST(request: Request) {
       apiKey: process.env.OPENAI_API_KEY || 'local',
     });
 
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(withCouncil({
       model: selectedModel,
       messages: [
         {
@@ -212,7 +213,7 @@ export async function POST(request: Request) {
             'The "content" value must be the complete updated Markdown file, including YAML frontmatter if present. ' +
             'Preserve all useful existing content unless the user explicitly asks to remove or rewrite it. ' +
             'If the user asks to use "this version", "the version above", "your previous version", or similar, use the recent chat context as the replacement source. ' +
-            'When adding tags, update the YAML frontmatter tags field. ' +
+            'When adding tags, update the YAML frontmatter tags field. Tags are Zettelkasten-style atomic idea labels (short phrases or sentences, 2-9 words, e.g. "restoring force points toward equilibrium"), not broad categories or bare nouns like physics, formula, or wave. ' +
             'When fixing math or LaTeX, use $...$ for inline math and $$...$$ for display math, and avoid corrupting prose.',
         },
         {
@@ -233,7 +234,7 @@ export async function POST(request: Request) {
           ].filter(Boolean).join('\n\n'),
         },
       ],
-    });
+    }, { taskType: 'small_revision', gardenId: cluster.slug, pageId: slug }));
 
     const parsed = parseEditResponse(response.choices[0]?.message?.content ?? '');
     if (!parsed) {
@@ -255,7 +256,7 @@ export async function POST(request: Request) {
       success: true,
       slug,
       title: frontmatterTitle(nextContent, slug),
-      summary: parsed.summary || 'Updated the open markdown note.',
+      summary: parsed.summary || 'Updated the open page.',
       content: nextContent,
       tags: normalizedTags,
     });

@@ -227,8 +227,14 @@ function isMarkdownTagCommand(text: string, messages: Message[] = []): boolean {
 }
 
 function markdownTypeLabel(doc: DocInfo): string {
-  if (doc.type === "generated-note") return "chat note";
-  if (doc.type === "knowledge-topic") return "topic";
+  if (doc.type === "textbook-page") return "textbook page";
+  if (doc.type === "internal-concept") return "ConceptNode";
+  if (doc.type === "generated-note") return "saved chat page";
+  if (doc.type === "knowledge-topic") return "legacy topic";
+  if (doc.type === "learning-map") return "learning map";
+  if (doc.type === "source-map") return "source map";
+  if (doc.type === "scope-contract") return "scope contract";
+  if (doc.type === "topic-overview") return "topic overview";
   if (doc.type === "source-document") return doc.sourceType || "source";
   return doc.type || "note";
 }
@@ -275,6 +281,16 @@ function fileKey(f: File) {
   return `${f.name}-${f.size}`;
 }
 
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const tenths = Math.floor((ms % 1000) / 100);
+  return minutes > 0
+    ? `${minutes}:${String(seconds).padStart(2, "0")}`
+    : `${seconds}.${tenths}s`;
+}
+
 interface ChatTranscriptProps {
   clusterName: string;
   isStreaming: boolean;
@@ -317,8 +333,8 @@ const ChatTranscript = memo(function ChatTranscript({
             </p>
             <p className="text-xs mt-1.5 text-gray-700 max-w-xs">
               After the conversation, hit{" "}
-              <span className="text-gray-500">Generate notes</span> to save
-              insights to your garden
+              <span className="text-gray-500">Save page</span> to keep the
+              answer in your textbook
             </p>
           </div>
         )
@@ -622,6 +638,7 @@ export default function WorkspaceClient({
   const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
     [],
   );
+  const [showInternalConceptGraph, setShowInternalConceptGraph] = useState(false);
   const [openFlagPaletteSlug, setOpenFlagPaletteSlug] = useState<string | null>(
     null,
   );
@@ -655,11 +672,13 @@ export default function WorkspaceClient({
     Record<string, FileStatus>
   >({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+  const [uploadSteps, setUploadSteps] = useState<Record<string, string>>({});
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadElapsedMs, setUploadElapsedMs] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const uploadCanceledRef = useRef(false);
@@ -688,6 +707,7 @@ export default function WorkspaceClient({
   // New markdown note modal
   const [showNewNote, setShowNewNote] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState("");
+  const [newNoteTags, setNewNoteTags] = useState("");
   const [newNoteContent, setNewNoteContent] = useState("");
   const [newNoteFolder, setNewNoteFolder] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
@@ -736,9 +756,9 @@ export default function WorkspaceClient({
 
   const fetchDocuments = useCallback(async () => {
     try {
-      const res = await fetch(
-        `/api/documents?clusterSlug=${encodeURIComponent(clusterSlug)}`,
-      );
+      const params = new URLSearchParams({ clusterSlug });
+      if (showInternalConceptGraph) params.set("includeInternalConcepts", "1");
+      const res = await fetch(`/api/documents?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents ?? []);
@@ -749,7 +769,7 @@ export default function WorkspaceClient({
     } finally {
       setLoadingDocs(false);
     }
-  }, [clusterSlug]);
+  }, [clusterSlug, showInternalConceptGraph]);
 
   useEffect(() => {
     fetchDocuments();
@@ -791,10 +811,22 @@ export default function WorkspaceClient({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Tick an elapsed-time counter while an upload is in progress.
+  useEffect(() => {
+    if (!isUploading) return;
+    const startedAt = Date.now();
+    setUploadElapsedMs(0);
+    const id = setInterval(() => {
+      setUploadElapsedMs(Date.now() - startedAt);
+    }, 100);
+    return () => clearInterval(id);
+  }, [isUploading]);
+
   // ── New markdown note ────────────────────────────────────────────────────────
 
   function openNewNoteModal(defaultFolder = "") {
     setNewNoteTitle("");
+    setNewNoteTags("");
     setNewNoteContent("");
     setNewNoteFolder(defaultFolder);
     setShowNewNote(true);
@@ -813,6 +845,10 @@ export default function WorkspaceClient({
           title: newNoteTitle.trim(),
           content: newNoteContent,
           folder: newNoteFolder,
+          tags: newNoteTags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
         }),
       });
       if (!res.ok) {
@@ -838,6 +874,8 @@ export default function WorkspaceClient({
     setUploadFiles([]);
     setUploadStatuses({});
     setUploadErrors({});
+    setUploadSteps({});
+    setUploadElapsedMs(0);
     setUploadLabel("");
     setIsHandwriting(false);
     setGenerateMap(true);
@@ -881,6 +919,11 @@ export default function WorkspaceClient({
           delete next[key];
           return next;
         });
+        setUploadSteps((steps) => {
+          const next = { ...steps };
+          delete next[key];
+          return next;
+        });
       }
       return prev.filter((_, i) => i !== index);
     });
@@ -900,6 +943,7 @@ export default function WorkspaceClient({
     });
     setUploadStatuses(initial);
     setUploadErrors({});
+    setUploadSteps({});
 
     let successCount = 0;
     let snapshotCount = 0;
@@ -910,6 +954,7 @@ export default function WorkspaceClient({
 
       const key = fileKey(file);
       setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
+      setUploadSteps((prev) => ({ ...prev, [key]: "Starting…" }));
 
       const usesHandwriting =
         isHandwriting && HANDWRITING_FILE_RE.test(file.name);
@@ -927,13 +972,74 @@ export default function WorkspaceClient({
           body: formData,
           signal: abortController.signal,
         });
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          const message = typeof data.error === "string" ? data.error : "Upload failed";
+
+        // The route streams Server-Sent Events ("data: {…}\n\n"): { type:
+        // "progress", step } updates while the pipeline runs, then a final
+        // { type: "result" } or { type: "error" }. A non-streaming body (e.g.
+        // a 400/401/500 JSON error) is handled in the !res.body branch below.
+        if (!res.ok || !res.body) {
+          let message = "Upload failed";
+          try {
+            const data = await res.json();
+            if (typeof data?.error === "string" && data.error.trim()) {
+              message = data.error.trim();
+            }
+          } catch {
+            // Fall back to the generic message.
+          }
           setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
           setUploadErrors((prev) => ({ ...prev, [key]: message }));
           addToast(`${file.name}: ${message}`);
-        } else {
+          continue;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let result: Record<string, unknown> | null = null;
+        let streamError = "";
+        let canceledEvent = false;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6);
+            if (payload === "[DONE]") continue;
+
+            try {
+              const event = JSON.parse(payload) as
+                | { type: "progress"; step: string }
+                | ({ type: "result" } & Record<string, unknown>)
+                | { type: "error"; error?: string; canceled?: boolean };
+
+              if (event.type === "progress") {
+                setUploadSteps((prev) => ({ ...prev, [key]: event.step }));
+              } else if (event.type === "result") {
+                result = event;
+              } else if (event.type === "error") {
+                if (event.canceled) canceledEvent = true;
+                streamError =
+                  typeof event.error === "string" ? event.error : "Upload failed";
+              }
+            } catch {
+              // malformed event — skip
+            }
+          }
+        }
+
+        if (canceledEvent) {
+          uploadCanceledRef.current = true;
+          break;
+        }
+
+        if (result?.success) {
           setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
           setUploadErrors((prev) => {
             const next = { ...prev };
@@ -942,10 +1048,15 @@ export default function WorkspaceClient({
           });
           successCount++;
           snapshotCount +=
-            typeof data.imageCount === "number" ? data.imageCount : 0;
-          if (typeof data.screenshotWarning === "string") {
-            screenshotWarnings.push(`${file.name}: ${data.screenshotWarning}`);
+            typeof result.imageCount === "number" ? result.imageCount : 0;
+          if (typeof result.screenshotWarning === "string") {
+            screenshotWarnings.push(`${file.name}: ${result.screenshotWarning}`);
           }
+        } else {
+          const message = streamError || "Upload failed";
+          setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
+          setUploadErrors((prev) => ({ ...prev, [key]: message }));
+          addToast(`${file.name}: ${message}`);
         }
       } catch (error) {
         const aborted =
@@ -983,6 +1094,7 @@ export default function WorkspaceClient({
       }
       setUploadStatuses({});
       setUploadErrors({});
+      setUploadSteps({});
       setUploadFiles([]);
       setUploadLabel("");
       setIsHandwriting(false);
@@ -1163,7 +1275,7 @@ export default function WorkspaceClient({
   async function handleDocumentDelete(doc: DocInfo) {
     const isSource = doc.type === "source-document";
     const prompt = isSource
-      ? `Delete "${doc.title ?? doc.name}" and all generated notes from this source?`
+      ? `Delete "${doc.title ?? doc.name}" and all textbook pages from this source?`
       : `Delete "${doc.title ?? doc.name}"?`;
     if (!window.confirm(prompt)) return;
 
@@ -1379,7 +1491,7 @@ export default function WorkspaceClient({
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
-      throw new Error(data.error ?? "Failed to generate notes");
+      throw new Error(data.error ?? "Failed to save textbook page");
     }
     return (data.notes ?? []) as GeneratedNoteResult[];
   }
@@ -1427,7 +1539,7 @@ export default function WorkspaceClient({
         (message) => message.role === "assistant" && message.content.trim(),
       );
       if (!hasAssistantResponse) {
-        addToast("No assistant response to save as markdown yet");
+        addToast("No assistant response to save as a textbook page yet");
         setDocsExpanded(true);
         return;
       }
@@ -1438,9 +1550,9 @@ export default function WorkspaceClient({
       addToast(
         count > 0
           ? mergedCount > 0
-            ? `Updated existing markdown note: ${notes.map((note) => note.title).join(", ")}`
-            : `Created markdown note: ${notes.map((note) => note.title).join(", ")}`
-          : "No assistant response could be saved as markdown",
+            ? `Updated existing textbook page: ${notes.map((note) => note.title).join(", ")}`
+            : `Created textbook page: ${notes.map((note) => note.title).join(", ")}`
+          : "No assistant response could be saved as a textbook page",
         count > 0 ? "success" : "error",
       );
       setDocsExpanded(true);
@@ -1449,7 +1561,7 @@ export default function WorkspaceClient({
         setGraphRefreshVersion((v) => v + 1);
       }
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to generate notes");
+      addToast(err instanceof Error ? err.message : "Failed to save textbook page");
     } finally {
       setIsGenerating(false);
     }
@@ -1924,12 +2036,12 @@ export default function WorkspaceClient({
                 ].join(" ")}
                 title={
                   isSource
-                    ? "Delete source PDF and generated notes"
+                    ? "Delete source PDF and textbook pages"
                     : "Delete document"
                 }
                 aria-label={
                   isSource
-                    ? "Delete source PDF and generated notes"
+                    ? "Delete source PDF and textbook pages"
                     : "Delete document"
                 }
               >
@@ -2022,6 +2134,47 @@ export default function WorkspaceClient({
       addToast("Failed to move note");
     } finally {
       setMovingSlug(null);
+    }
+  };
+
+  const handleRenameFolder = async (folderPath: string) => {
+    const currentName = folderPath.split("/").pop() ?? folderPath;
+    const input = window.prompt(`Rename folder "${currentName}"`, currentName);
+    if (input === null) return;
+    const name = input.trim();
+    if (!name || name === currentName) return;
+    setCreatingFolder(true);
+    try {
+      const res = await fetch("/api/folders", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clusterSlug, folder: folderPath, name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        addToast(data.error ?? "Failed to rename folder");
+        return;
+      }
+      const newFolder =
+        typeof data.newFolder === "string" ? data.newFolder : folderPath;
+      // Remap any expanded folder paths under the renamed folder to the new path.
+      setExpandedFolders((prev) => {
+        const next = new Set<string>();
+        for (const p of prev) {
+          if (p === folderPath) next.add(newFolder);
+          else if (p.startsWith(`${folderPath}/`))
+            next.add(`${newFolder}${p.slice(folderPath.length)}`);
+          else next.add(p);
+        }
+        next.add(newFolder);
+        return next;
+      });
+      await fetchDocuments();
+      addToast("Folder renamed", "success");
+    } catch {
+      addToast("Failed to rename folder");
+    } finally {
+      setCreatingFolder(false);
     }
   };
 
@@ -2291,6 +2444,24 @@ export default function WorkspaceClient({
             role="button"
             onClick={(e) => {
               e.stopPropagation();
+              handleRenameFolder(node.path);
+            }}
+            className="p-0.5 rounded text-gray-700 opacity-0 transition hover:bg-gray-800 hover:text-white group-hover:opacity-100"
+            aria-label={`Rename folder ${node.name}`}
+            title="Rename folder"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125"
+              />
+            </svg>
+          </span>
+          <span
+            role="button"
+            onClick={(e) => {
+              e.stopPropagation();
               handleDeleteFolder(node.path);
             }}
             className="p-0.5 rounded text-gray-700 opacity-0 transition hover:bg-red-950/40 hover:text-red-300 group-hover:opacity-100"
@@ -2523,7 +2694,7 @@ export default function WorkspaceClient({
                 d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
               />
             </svg>
-            Markdown
+            Textbook
             {markdownDocuments.length > 0
               ? ` (${markdownDocuments.length})`
               : ""}
@@ -2560,8 +2731,8 @@ export default function WorkspaceClient({
                 openNewNoteModal();
               }}
               className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-              aria-label="New markdown note"
-              title="New note"
+              aria-label="New page"
+              title="New page"
             >
               <svg
                 className="w-3.5 h-3.5"
@@ -2594,6 +2765,15 @@ export default function WorkspaceClient({
         </button>
         {docsExpanded && (
           <div className="max-h-56 overflow-y-auto border-t border-gray-800">
+            <label className="flex items-center gap-2 border-b border-gray-800 px-4 py-2 text-xs text-gray-500">
+              <input
+                type="checkbox"
+                checked={showInternalConceptGraph}
+                onChange={(event) => setShowInternalConceptGraph(event.target.checked)}
+                className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white"
+              />
+              <span>Show internal concept graph</span>
+            </label>
             {loadingDocs ? (
               <div className="flex justify-center py-6">
                 <Spinner className="w-4 h-4 text-gray-700" />
@@ -2601,7 +2781,7 @@ export default function WorkspaceClient({
             ) : markdownDocuments.length === 0 && folders.length === 0 ? (
               <div className="flex flex-col items-center py-6 px-4 text-center">
                 <p className="text-xs text-gray-600 mb-2">
-                  No markdown notes yet
+                  No textbook pages yet
                 </p>
                 <button
                   onClick={openUploadModal}
@@ -2713,13 +2893,13 @@ export default function WorkspaceClient({
           <button
             onClick={handleGenerateNotes}
             disabled={messages.length === 0 || isGenerating}
-            title="Save the latest assistant response as a markdown note"
+            title="Save the latest assistant response as a textbook page"
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isGenerating ? (
               <>
                 <Spinner className="w-3.5 h-3.5" />
-                Generating…
+                Saving...
               </>
             ) : (
               <>
@@ -2736,7 +2916,7 @@ export default function WorkspaceClient({
                     d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09Z"
                   />
                 </svg>
-                Save markdown
+                Save page
               </>
             )}
           </button>
@@ -3189,7 +3369,7 @@ export default function WorkspaceClient({
                       d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
                     />
                   </svg>
-                  Markdown
+                  Textbook
                   {markdownDocuments.length > 0
                     ? ` (${markdownDocuments.length})`
                     : ""}
@@ -3226,8 +3406,8 @@ export default function WorkspaceClient({
                       openNewNoteModal();
                     }}
                     className="p-1 rounded hover:bg-gray-800 text-gray-600 hover:text-white transition-colors"
-                    aria-label="New markdown note"
-                    title="New note"
+                    aria-label="New page"
+                    title="New page"
                   >
                     <svg
                       className="w-3.5 h-3.5"
@@ -3267,7 +3447,7 @@ export default function WorkspaceClient({
                   ) : markdownDocuments.length === 0 && folders.length === 0 ? (
                     <div className="flex flex-col items-center py-6 px-4 text-center">
                       <p className="text-xs text-gray-600 mb-2">
-                        No markdown notes yet
+                        No textbook pages yet
                       </p>
                       <button
                         onClick={openUploadModal}
@@ -3761,6 +3941,7 @@ export default function WorkspaceClient({
           clusterSlug={clusterSlug}
           refreshKey={graphRefreshKey}
           sourceLibrary={renderDocumentLibrary()}
+          showInternalConceptGraph={showInternalConceptGraph}
         />
       </div>
 
@@ -3778,12 +3959,15 @@ export default function WorkspaceClient({
           />
           <form
             onSubmit={handleSaveNewNote}
-            className="relative w-full max-w-2xl bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden"
+            className="relative w-full max-w-4xl h-[85vh] bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
           >
-            <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
-              <h2 className="text-sm font-semibold text-white">
-                New markdown note
-              </h2>
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800 shrink-0">
+              <div>
+                <p className="text-[11px] uppercase tracking-wider text-gray-500">
+                  Textbook
+                </p>
+                <h2 className="text-base font-semibold text-white">New page</h2>
+              </div>
               <button
                 type="button"
                 onClick={() => setShowNewNote(false)}
@@ -3804,13 +3988,40 @@ export default function WorkspaceClient({
                 </svg>
               </button>
             </div>
-            <div className="flex flex-col gap-3 px-4 py-4 overflow-y-auto flex-1">
-              <label className="flex items-center gap-2 text-xs text-gray-500">
-                <span className="shrink-0">Folder</span>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 px-5 py-4 border-b border-gray-800 shrink-0">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                  Title
+                </span>
+                <input
+                  type="text"
+                  value={newNoteTitle}
+                  onChange={(e) => setNewNoteTitle(e.target.value)}
+                  placeholder="Note title"
+                  autoFocus
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600 transition-colors"
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                  Tags
+                </span>
+                <input
+                  type="text"
+                  value={newNoteTags}
+                  onChange={(e) => setNewNoteTags(e.target.value)}
+                  placeholder="comma, separated, tags"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600 transition-colors"
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 sm:min-w-40">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+                  Folder
+                </span>
                 <select
                   value={newNoteFolder}
                   onChange={(e) => setNewNoteFolder(e.target.value)}
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600 transition-colors"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600 transition-colors"
                 >
                   <option value="">Garden root</option>
                   {folders.map((folder) => (
@@ -3820,23 +4031,16 @@ export default function WorkspaceClient({
                   ))}
                 </select>
               </label>
-              <input
-                type="text"
-                value={newNoteTitle}
-                onChange={(e) => setNewNoteTitle(e.target.value)}
-                placeholder="Note title"
-                autoFocus
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600 transition-colors"
-              />
+            </div>
+            <div className="flex-1 min-h-0 px-5 py-4">
               <textarea
                 value={newNoteContent}
                 onChange={(e) => setNewNoteContent(e.target.value)}
                 placeholder="Write your markdown here…"
-                rows={16}
-                className="w-full flex-1 resize-none bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600 transition-colors font-mono"
+                className="w-full h-full resize-none bg-gray-950/60 border border-gray-800 rounded-lg px-4 py-3 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-gray-700 transition-colors font-mono leading-relaxed"
               />
             </div>
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-gray-800 shrink-0">
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-800 shrink-0">
               <button
                 type="button"
                 onClick={() => setShowNewNote(false)}
@@ -4261,6 +4465,7 @@ export default function WorkspaceClient({
                       const key = fileKey(f);
                       const status = uploadStatuses[key];
                       const error = uploadErrors[key];
+                      const step = uploadSteps[key];
                       return (
                         <div
                           key={key}
@@ -4329,6 +4534,11 @@ export default function WorkspaceClient({
                               </button>
                             )}
                           </div>
+                          {status === "uploading" && step && (
+                            <p className="mt-1.5 pl-6 text-[11px] leading-4 text-gray-400 truncate">
+                              {step}
+                            </p>
+                          )}
                           {status === "error" && error && (
                             <p className="mt-1.5 pl-6 text-[11px] leading-4 text-red-300">
                               {error}
@@ -4369,7 +4579,7 @@ export default function WorkspaceClient({
                     </span>
                     <span className="block text-[11px] text-gray-600 mt-0.5">
                       Uses vision OCR on each PDF page or image before
-                      generating the map.
+                      generating the Learning Map.
                     </span>
                   </span>
                 </label>
@@ -4387,12 +4597,12 @@ export default function WorkspaceClient({
                   />
                   <div>
                     <span className="text-sm text-gray-400">
-                      Generate knowledge map
+                      Generate Learning Map
                     </span>
                     <p className="text-[11px] text-gray-600 mt-0.5">
                       {handwritingUploadEnabled
                         ? "Required for handwritten uploads so the map is built from OCR text."
-                        : "Extract topics and links for the graph - slower but richer"}
+                        : "Build the Learning Spine, Source Map, and Scope Contract - slower but richer"}
                     </p>
                   </div>
                 </label>
@@ -4413,6 +4623,28 @@ export default function WorkspaceClient({
                     disabled={isUploading}
                     className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors disabled:opacity-50"
                   />
+                </div>
+              )}
+
+              {/* Elapsed timer */}
+              {(isUploading || (allDoneOrError && uploadElapsedMs > 0)) && (
+                <div className="flex items-center justify-center gap-1.5 text-xs text-gray-400 tabular-nums">
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                    />
+                  </svg>
+                  <span>
+                    {isUploading ? "Elapsed" : "Done in"} {formatElapsed(uploadElapsedMs)}
+                  </span>
                 </div>
               )}
 

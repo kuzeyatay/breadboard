@@ -8,6 +8,7 @@ import type {
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { withCouncil } from '@/lib/council';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -379,20 +380,20 @@ export async function POST(request: Request) {
         : '';
 
     const activeMarkdownPromptContext = activeMarkdownContext
-      ? `\n\nThe user currently has this specific markdown note open in Quartz. When the user says "this note", "this markdown", "the current file", "what I have open", or asks anything that could refer to the visible markdown, treat this as the primary context before broader garden context. Do not ask the user to paste the markdown when this context is present. The surrounding application can edit the open markdown file; do not claim you lack filesystem or Quartz vault write access. If an edit request reaches you as normal chat, provide the intended edit or explain what you would change rather than saying it is impossible.\n\n# ${activeMarkdownContext.title || activeMarkdownContext.slug}\nSlug: ${activeMarkdownContext.slug}\n\n${truncate(activeMarkdownContext.content, 16000)}`
+      ? `\n\nThe user currently has this specific page open in Quartz. When the user says "this page", "this markdown", "the current file", "what I have open", or asks anything that could refer to the visible page, treat this as the primary context before broader garden context. Do not ask the user to paste the page when this context is present. The surrounding application can edit the open markdown file; do not claim you lack filesystem or Quartz vault write access. If an edit request reaches you as normal chat, provide the intended edit or explain what you would change rather than saying it is impossible.\n\n# ${activeMarkdownContext.title || activeMarkdownContext.slug}\nSlug: ${activeMarkdownContext.slug}\n\n${truncate(activeMarkdownContext.content, 16000)}`
       : '';
 
     let systemPrompt =
       `You are a helpful assistant for the user's second brain garden '${cluster.name}'. ` +
-      'Use the graph relationships and markdown notes as grounded context. ' +
-      'You can answer questions about the knowledge map itself, including source documents, extracted topics, locations, page references, tags, and relationships. ' +
+      'Use the learning relationships and markdown pages as grounded context. ' +
+      'You can answer questions about the Learning Map itself, including source documents, textbook pages, locations, page references, tags, and relationships. ' +
       'When the user asks where something appears, cite the note title and the Locations value from the context. ' +
-      'When a question depends on uploaded material, mention the relevant source or topic names naturally. ' +
+      'When a question depends on uploaded material, mention the relevant source or textbook page names naturally. ' +
       'Always format mathematical expressions using LaTeX delimiters: ' +
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
-      `${graphContext}${selectedDocumentContext}${activeMarkdownPromptContext}\n\nCluster inventory:\n\n${clusterInventory}\n\nRelevant markdown notes:\n\n${notesContext}`;
+      `${graphContext}${selectedDocumentContext}${activeMarkdownPromptContext}\n\nCluster inventory:\n\n${clusterInventory}\n\nRelevant textbook pages:\n\n${notesContext}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
     if (urlLinkContext.context) {
@@ -452,7 +453,28 @@ export async function POST(request: Request) {
         : {}),
     } satisfies ResponseCreateParamsStreaming;
 
-    const stream = await client.responses.create(responsesRequest);
+    // Council routing: ChatMock reads and strips these fields. Requests that
+    // carry tools (image generation) or image attachments bypass the council
+    // inside ChatMock automatically.
+    const councilSourceContext =
+      selectedNodes.length > 0 || activeMarkdownContext
+        ? {
+            sourceTitles: selectedNodes
+              .map((node) => node.fileName)
+              .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+              .slice(0, 20),
+            ...(activeMarkdownContext?.slug ? { activeMarkdownSlug: activeMarkdownContext.slug } : {}),
+          }
+        : undefined;
+
+    const stream = await client.responses.create(
+      withCouncil(responsesRequest, {
+        taskType: 'page_assistant_answer',
+        gardenId: clusterSlug,
+        ...(activeMarkdownContext?.slug ? { pageId: activeMarkdownContext.slug } : {}),
+        sourceContext: councilSourceContext,
+      }),
+    );
 
     const sourceNames = Array.from(
       new Set(

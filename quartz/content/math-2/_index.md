@@ -1,18 +1,18 @@
 ---
 title: "Math 2"
-date: "2026-06-21"
-description: "Quartz garden generated from 24 source documents, with 0 knowledge topics and 99 graph links."
+date: "2026-06-24"
+description: "Quartz garden generated from 24 source documents, with 0 knowledge topics and 80 graph links."
 knowledge_type: "cluster-index"
-tags: ["math-2", "math"]
+tags: ["math-2"]
 ---
 
 ## Garden overview
 
-This Quartz garden is generated from 24 source documents and rebuilt into a linked knowledge map. It currently contains 0 knowledge topics, 1 generated chat note, 99 graph links, and 876687 indexed words.
+This Quartz garden is generated from 24 source documents and rebuilt into a linked knowledge map. It currently contains 0 knowledge topics, 1 generated chat note, 80 graph links, and 876687 indexed words.
 
 Whenever a new document is uploaded and markdown content is generated, this cluster index is updated so the map, counts, and source tree stay aligned with the current material.
 
-Last updated: 2026-06-21.
+Last updated: 2026-06-24.
 
 ## Full source notes
 
@@ -46,7 +46,7 @@ Last updated: 2026-06-21.
 - Source documents: 24
 - Knowledge topics: 0
 - Generated chat notes: 1
-- Graph links: 99
+- Graph links: 80
 
 ## Source tree
 

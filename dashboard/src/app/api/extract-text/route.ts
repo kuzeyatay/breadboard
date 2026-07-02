@@ -4,6 +4,7 @@ import AdmZip from 'adm-zip';
 import { PDFParse } from 'pdf-parse';
 import type OpenAI from 'openai';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { withCouncil } from '@/lib/council';
 import { DEFAULT_MODEL, createChatmockClient } from '@/lib/knowledge';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
 
@@ -189,7 +190,7 @@ async function transcribeImage(
   dataUrl: string,
   label: string,
 ): Promise<string> {
-  const response = await client.chat.completions.create({
+  const response = await client.chat.completions.create(withCouncil({
     model: DEFAULT_MODEL,
     messages: [{
       role: 'user',
@@ -204,7 +205,7 @@ async function transcribeImage(
         },
       ],
     }],
-  });
+  }, { taskType: 'ocr' }));
   return response.choices[0]?.message?.content?.trim() ?? '';
 }
 

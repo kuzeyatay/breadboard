@@ -73,7 +73,16 @@ function readClusterStats(
   } catch {
     return {
       row,
-      stats: { documents: 0, topics: 0, generatedNotes: 0, links: 0, words: 0 },
+      stats: {
+        documents: 0,
+        topics: 0,
+        textbookPages: 0,
+        conceptNodes: 0,
+        learningPages: 0,
+        generatedNotes: 0,
+        links: 0,
+        words: 0,
+      },
     };
   }
 }
@@ -104,12 +113,12 @@ function writeGardenIndex({
     (sum, cluster) => sum + cluster.stats.documents,
     0,
   );
-  const totalTopics = clusters.reduce(
-    (sum, cluster) => sum + cluster.stats.topics,
+  const totalTextbookPages = clusters.reduce(
+    (sum, cluster) => sum + cluster.stats.textbookPages,
     0,
   );
-  const totalNotes = clusters.reduce(
-    (sum, cluster) => sum + cluster.stats.generatedNotes,
+  const totalConceptNodes = clusters.reduce(
+    (sum, cluster) => sum + cluster.stats.conceptNodes,
     0,
   );
   const totalLinks = clusters.reduce(
@@ -133,7 +142,7 @@ function writeGardenIndex({
       scope === "public"
         ? `, ${countLabel(Number(row.view_count) || 0, "view")}`
         : "";
-    return `${index + 1}. ${quartzLink(row.slug, row.name)}${owner} - ${countLabel(stats.documents, "source document")}, ${countLabel(stats.topics, "topic")}, ${countLabel(stats.links, "link")}${popularity}`;
+    return `${index + 1}. ${quartzLink(row.slug, row.name)}${owner} - ${countLabel(stats.documents, "source document")}, ${countLabel(stats.textbookPages, "textbook page")}, ${countLabel(stats.links, "link")}${popularity}`;
   };
 
   // Private gardens group clusters under their virtual folder; public stays flat.
@@ -184,8 +193,8 @@ function writeGardenIndex({
     `${description}\n\n` +
     `- Gardens: ${clusters.length}\n` +
     `- Source documents: ${totalSources}\n` +
-    `- Knowledge topics: ${totalTopics}\n` +
-    `- Generated chat notes: ${totalNotes}\n` +
+    `- Textbook pages: ${totalTextbookPages}\n` +
+    `- Internal ConceptNodes: ${totalConceptNodes}\n` +
     `- Graph links: ${totalLinks}\n` +
     `- Indexed words: ${totalWords}\n\n` +
     `## Gardens\n\n` +

@@ -87,6 +87,15 @@ function fileKey(f: File) {
   return `${f.name}-${f.size}`;
 }
 
+// "0:05" / "1:23" style elapsed-time marker; falls back to seconds under a minute.
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)));
 }
@@ -160,6 +169,15 @@ export default function DashboardClient({
     Record<string, FileStatus>
   >({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
+  const [uploadProgress, setUploadProgress] = useState<Record<string, string>>(
+    {},
+  );
+  // Final elapsed time per finished file (ms), shown next to its status.
+  const [uploadDurations, setUploadDurations] = useState<
+    Record<string, number>
+  >({});
+  // Ticks while uploading so the live elapsed-time markers re-render each second.
+  const [nowTick, setNowTick] = useState(0);
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
@@ -173,11 +191,20 @@ export default function DashboardClient({
   const bgFileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const resizeSessionRef = useRef<ResizeSession | null>(null);
+  // Per-file upload start timestamps (ms) for the live duration markers.
+  const uploadStartedAtRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     const stored = localStorage.getItem("dashboard:bg-image");
     if (stored) setBgImage(stored);
   }, []);
+
+  // Re-render once a second while uploading so elapsed-time markers tick up.
+  useEffect(() => {
+    if (!isUploading) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isUploading]);
 
   function handleBgFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -829,6 +856,9 @@ export default function DashboardClient({
     setUploadFiles([]);
     setUploadStatuses({});
     setUploadErrors({});
+    setUploadProgress({});
+    setUploadDurations({});
+    uploadStartedAtRef.current = {};
     setUploadLabel("");
     setIsHandwriting(false);
     setGenerateMap(true);
@@ -873,6 +903,17 @@ export default function DashboardClient({
           delete next[key];
           return next;
         });
+        setUploadProgress((progress) => {
+          const next = { ...progress };
+          delete next[key];
+          return next;
+        });
+        setUploadDurations((durations) => {
+          const next = { ...durations };
+          delete next[key];
+          return next;
+        });
+        delete uploadStartedAtRef.current[key];
       }
       return prev.filter((_, i) => i !== index);
     });
@@ -884,6 +925,7 @@ export default function DashboardClient({
 
     const controller = new AbortController();
     uploadAbortRef.current = controller;
+    const sessionStartedAt = Date.now();
     setIsUploading(true);
     const initial: Record<string, FileStatus> = {};
     uploadFiles.forEach((f) => {
@@ -891,6 +933,9 @@ export default function DashboardClient({
     });
     setUploadStatuses(initial);
     setUploadErrors({});
+    setUploadProgress({});
+    setUploadDurations({});
+    uploadStartedAtRef.current = {};
 
     let successCount = 0;
     let snapshotCount = 0;
@@ -899,6 +944,7 @@ export default function DashboardClient({
     for (const file of uploadFiles) {
       if (controller.signal.aborted) break;
       const key = fileKey(file);
+      uploadStartedAtRef.current[key] = Date.now();
       setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
 
       const usesHandwriting =
@@ -911,45 +957,141 @@ export default function DashboardClient({
       formData.append("isHandwriting", String(usesHandwriting));
       formData.append("generateMap", String(usesHandwriting || generateMap));
 
+      const clearProgress = () =>
+        setUploadProgress((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+
       try {
+        setUploadProgress((prev) => ({ ...prev, [key]: "Uploading file…" }));
         const res = await fetch("/api/ingest", {
           method: "POST",
           body: formData,
           signal: controller.signal,
         });
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          const message = typeof data.error === "string" ? data.error : "Upload failed";
+
+        // Validation/auth failures come back as a normal JSON error response.
+        if (!res.ok || !res.body) {
+          const data = await res.json().catch(() => ({}));
+          const message =
+            typeof data.error === "string" ? data.error : "Upload failed";
           setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
           setUploadErrors((prev) => ({ ...prev, [key]: message }));
+          clearProgress();
           addToast(`${file.name}: ${message}`);
-        } else {
+          continue;
+        }
+
+        // Otherwise the route streams Server-Sent Events ("data: {json}\n\n"):
+        // a series of { type: "progress", step } events, then a final result or
+        // error, then a "[DONE]" sentinel.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let result: {
+          imageCount?: number;
+          screenshotWarning?: string;
+          durationMs?: number;
+        } | null = null;
+        let streamError: string | null = null;
+
+        const handleEvent = (block: string) => {
+          const payload = block
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.replace(/^data:\s?/, ""))
+            .join("\n")
+            .trim();
+          if (!payload || payload === "[DONE]") return;
+          let event: {
+            type?: string;
+            step?: string;
+            error?: string;
+            imageCount?: number;
+            screenshotWarning?: string;
+            durationMs?: number;
+          };
+          try {
+            event = JSON.parse(payload);
+          } catch {
+            return;
+          }
+          if (event.type === "progress" && typeof event.step === "string") {
+            const step = event.step;
+            setUploadProgress((prev) => ({ ...prev, [key]: step }));
+          } else if (event.type === "result") {
+            result = event;
+          } else if (event.type === "error") {
+            streamError =
+              typeof event.error === "string" ? event.error : "Upload failed";
+          }
+        };
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) handleEvent(block);
+        }
+        if (buffer.trim()) handleEvent(buffer);
+        clearProgress();
+
+        const finishedAt = Date.now();
+        const elapsed = finishedAt - (uploadStartedAtRef.current[key] ?? finishedAt);
+        setUploadDurations((prev) => ({ ...prev, [key]: elapsed }));
+
+        if (streamError) {
+          if (controller.signal.aborted) break;
+          setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
+          setUploadErrors((prev) => ({ ...prev, [key]: streamError! }));
+          addToast(`${file.name}: ${streamError}`);
+        } else if (result) {
+          const data = result as {
+            imageCount?: number;
+            screenshotWarning?: string;
+            durationMs?: number;
+          };
           setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
           setUploadErrors((prev) => {
             const next = { ...prev };
             delete next[key];
             return next;
           });
+          if (typeof data.durationMs === "number") {
+            setUploadDurations((prev) => ({ ...prev, [key]: data.durationMs! }));
+          }
           successCount++;
           snapshotCount +=
             typeof data.imageCount === "number" ? data.imageCount : 0;
           if (typeof data.screenshotWarning === "string") {
             screenshotWarnings.push(`${file.name}: ${data.screenshotWarning}`);
           }
+        } else {
+          if (controller.signal.aborted) break;
+          const message = "Upload ended unexpectedly";
+          setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
+          setUploadErrors((prev) => ({ ...prev, [key]: message }));
+          addToast(`${file.name}: ${message}`);
         }
       } catch (err) {
         if ((err as Error).name === "AbortError") break;
         const message = err instanceof Error ? err.message : "Network error";
         setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
         setUploadErrors((prev) => ({ ...prev, [key]: message }));
+        clearProgress();
         addToast(`${file.name}: ${message}`);
       }
     }
 
     if (!controller.signal.aborted) {
       if (successCount > 0) {
+        const totalDuration = formatDuration(Date.now() - sessionStartedAt);
         addToast(
-          `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${isHandwriting && hasHandwritingCompatibleFile ? " with handwriting OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
+          `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${isHandwriting && hasHandwritingCompatibleFile ? " with handwriting OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""} in ${totalDuration}`,
         );
         for (const warning of screenshotWarnings) addToast(warning);
         router.refresh();
@@ -1753,6 +1895,17 @@ export default function DashboardClient({
                       const key = fileKey(f);
                       const status = uploadStatuses[key];
                       const error = uploadErrors[key];
+                      const progress = uploadProgress[key];
+                      const startedAt = uploadStartedAtRef.current[key];
+                      const finalDuration = uploadDurations[key];
+                      // `nowTick` (updated each second) keeps the live marker fresh.
+                      const liveNow = nowTick || Date.now();
+                      const durationLabel =
+                        status === "uploading" && startedAt
+                          ? formatDuration(liveNow - startedAt)
+                          : typeof finalDuration === "number"
+                            ? formatDuration(finalDuration)
+                            : null;
                       return (
                         <div
                           key={key}
@@ -1775,6 +1928,11 @@ export default function DashboardClient({
                             <span className="flex-1 text-xs text-gray-300 truncate">
                               {f.name}
                             </span>
+                            {durationLabel && (
+                              <span className="shrink-0 text-[11px] tabular-nums text-gray-500">
+                                {durationLabel}
+                              </span>
+                            )}
                             {status === "uploading" && (
                               <Spinner className="w-3.5 h-3.5 text-gray-400 shrink-0" />
                             )}
@@ -1821,6 +1979,11 @@ export default function DashboardClient({
                               </button>
                             )}
                           </div>
+                          {status === "uploading" && progress && (
+                            <p className="mt-1.5 pl-6 text-[11px] leading-4 text-gray-400 animate-pulse">
+                              {progress}
+                            </p>
+                          )}
                           {status === "error" && error && (
                             <p className="mt-1.5 pl-6 text-[11px] leading-4 text-red-300">
                               {error}
@@ -1862,7 +2025,7 @@ export default function DashboardClient({
                       </span>
                       <span className="block text-[11px] text-gray-600 mt-0.5">
                         Uses vision OCR on each PDF page or image before
-                        generating the map.
+                        generating the Learning Map.
                       </span>
                     </span>
                   </label>
@@ -1879,12 +2042,12 @@ export default function DashboardClient({
                   />
                   <div>
                     <span className="text-sm text-gray-400">
-                      Generate knowledge map
+                        Generate Learning Map
                     </span>
                     <p className="text-[11px] text-gray-600 mt-0.5">
                       {handwritingUploadEnabled
                         ? "Required for handwritten uploads so the map is built from OCR text."
-                        : "Extract topics and links for the graph - slower but richer"}
+                        : "Build the Learning Spine, Source Map, and Scope Contract - slower but richer"}
                     </p>
                   </div>
                 </label>

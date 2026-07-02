@@ -5,6 +5,7 @@ import AdmZip from "adm-zip";
 import { PDFParse } from "pdf-parse";
 import type OpenAI from "openai";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
+import { withCouncil } from "@/lib/council";
 import {
   DEFAULT_MODEL,
   createChatmockClient,
@@ -552,11 +553,13 @@ async function formatPdfPagesAsMarkdown({
   title,
   pages,
   signal,
+  onProgress,
 }: {
   client: OpenAI;
   title: string;
   pages: DocumentPage[];
   signal?: AbortSignal;
+  onProgress?: (step: string) => void;
 }): Promise<{ markdownText: string; warning: string }> {
   const outline = detectPdfOutline(title, pages);
   const outlineContext = renderPdfOutlineContext(title, pages.length, outline);
@@ -565,12 +568,16 @@ async function formatPdfPagesAsMarkdown({
   const markdownChunks: string[] = [];
   const warnings: string[] = [];
 
-  for (const chunk of chunks) {
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+    const chunk = chunks[chunkIndex];
     throwIfRequestAborted(signal);
     const label = chunkLabel(chunk);
+    onProgress?.(
+      `Formatting ${label} as Markdown (${chunkIndex + 1}/${chunks.length})…`,
+    );
 
     try {
-      const response = await client.chat.completions.create({
+      const response = await client.chat.completions.create(withCouncil({
         model: DEFAULT_MODEL,
         messages: [
           {
@@ -592,7 +599,7 @@ async function formatPdfPagesAsMarkdown({
               `Convert this PDF chunk to Markdown:\n\n${pagePlainText(chunk.pages)}`,
           },
         ],
-      });
+      }, { taskType: "ocr" }));
 
       markdownChunks.push(
         response.choices[0]?.message?.content?.trim() ||
@@ -800,7 +807,7 @@ function scannedPdfMarkdown(
     : "";
   return (
     `## ${title}\n\n` +
-    `This PDF appears to be scanned or image-based, so there was not enough embedded text to build a knowledge map automatically.${sourceLink}\n\n` +
+    `This PDF appears to be scanned or image-based, so there was not enough embedded text to build a Learning Map automatically.${sourceLink}\n\n` +
     `Upload it again with handwriting OCR enabled to transcribe the pages.`
   );
 }
@@ -817,7 +824,7 @@ function ocrUnavailableMarkdown(
     `## ${title}\n\n` +
     `Handwriting OCR could not run right now because the AI usage limit was reached.\n\n` +
     `Reason: ${reason}${sourceLink}\n\n` +
-    `No generated OCR text or knowledge topics were created from this failed run. Try again after the usage limit resets.`
+    `No OCR text or textbook pages were created from this failed run. Try again after the usage limit resets.`
   );
 }
 
@@ -832,7 +839,7 @@ async function transcribePageImage({
   label: string;
   isHandwriting: boolean;
 }): Promise<string> {
-  const response = await client.chat.completions.create({
+  const response = await client.chat.completions.create(withCouncil({
     model: DEFAULT_MODEL,
     messages: [
       {
@@ -848,7 +855,7 @@ async function transcribePageImage({
         ],
       },
     ],
-  });
+  }, { taskType: "ocr" }));
 
   return response.choices[0]?.message?.content?.trim() ?? "";
 }
@@ -962,11 +969,13 @@ async function transcribePdfPages(
   client: OpenAI,
   screenshots: PdfScreenshotPage[],
   signal?: AbortSignal,
+  onProgress?: (step: string) => void,
 ): Promise<{ pages: DocumentPage[]; warning: string; usageLimitReason?: string }> {
   const pages = new Array<DocumentPage>(screenshots.length);
   const warnings: string[] = [];
   let usageLimitReason = "";
   let nextIndex = 0;
+  let completed = 0;
 
   async function worker() {
     while (nextIndex < screenshots.length && !usageLimitReason) {
@@ -985,6 +994,10 @@ async function transcribePdfPages(
             isHandwriting: true,
           }),
         };
+        completed += 1;
+        onProgress?.(
+          `Reading handwriting with OCR (${completed}/${screenshots.length} pages)…`,
+        );
       } catch (error) {
         const reason = errorMessage(error, "vision OCR failed");
         if (isUsageLimitError(error)) {
@@ -1122,360 +1135,493 @@ function extractZipText(buffer: Buffer): string {
   return parts.join("\n\n") || "(No readable text files found in archive)";
 }
 
-export async function POST(request: Request) {
-  const createdFilePaths: string[] = [];
-  const createdMarkdownPaths: string[] = [];
-  try {
-    const { baseURL } = resolveChatmockBaseUrl(request);
-    const formData = await request.formData();
+// Runs the full ingest pipeline, reporting each phase through `emit` so the
+// route can stream progress. Returns the success payload, or throws on failure
+// (the caller handles abort/cleanup and surfaces the error to the client).
+async function runIngest({
+  request,
+  client,
+  contentPath,
+  file,
+  normalizedClusterSlug,
+  filename,
+  ext,
+  nameWithoutExt,
+  source,
+  isHandwriting,
+  generateMap,
+  createdFilePaths,
+  createdMarkdownPaths,
+  emit,
+}: {
+  request: Request;
+  client?: OpenAI;
+  contentPath: string;
+  file: File;
+  normalizedClusterSlug: string;
+  filename: string;
+  ext: string;
+  nameWithoutExt: string;
+  source: string;
+  isHandwriting: boolean;
+  generateMap: boolean;
+  createdFilePaths: string[];
+  createdMarkdownPaths: string[];
+  emit: (step: string) => void;
+}): Promise<Record<string, unknown>> {
+  // ── Text extraction ──────────────────────────────────────────────────────
+
+  emit("Reading the uploaded file…");
+  let markdownText: string;
+  let plainText: string;
+  let pages: DocumentPage[] = [];
+  let screenshotWarning = "";
+  let sourcePdfPath: string | undefined;
+  let skipKnowledgeExtraction = false;
+
+  if (isImageExt(ext)) {
     throwIfRequestAborted(request.signal);
+    const arrayBuffer = await file.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString("base64");
+    const dataUrl = `${mimeToBase64Prefix(file.type, ext)}${base64}`;
 
-    const file = formData.get("file");
-    const clusterSlug = formData.get("clusterSlug");
-    const sourceLabel = formData.get("sourceLabel");
-    const isHandwriting = formData.get("isHandwriting") === "true";
-    const generateMap = formData.get("generateMap") !== "false"; // default true
-
-    if (!(file instanceof File)) {
-      return NextResponse.json({ error: "file is required" }, { status: 400 });
-    }
-    if (typeof clusterSlug !== "string" || !clusterSlug.trim()) {
-      return NextResponse.json(
-        { error: "clusterSlug is required" },
-        { status: 400 },
-      );
-    }
-
-    const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
-    throwIfRequestAborted(request.signal);
-
-    const contentPath = process.env.QUARTZ_CONTENT_PATH;
-    if (!contentPath) {
-      return NextResponse.json(
-        { error: "QUARTZ_CONTENT_PATH is not configured" },
-        { status: 500 },
-      );
-    }
-    const normalizedClusterSlug = cluster.slug;
-    const filename = file.name;
-    const ext = path.extname(filename).toLowerCase().replace(".", "");
-    const nameWithoutExt = path.basename(filename, path.extname(filename));
-    const source =
-      typeof sourceLabel === "string" && sourceLabel.trim()
-        ? sourceLabel.trim()
-        : "upload";
-
-    const client = generateMap ? createChatmockClient(baseURL) : undefined;
-
-    // ── Text extraction ──────────────────────────────────────────────────────
-
-    let markdownText: string;
-    let plainText: string;
-    let pages: DocumentPage[] = [];
-    let screenshotWarning = "";
-    let sourcePdfPath: string | undefined;
-    let skipKnowledgeExtraction = false;
-
-    if (isImageExt(ext)) {
-      throwIfRequestAborted(request.signal);
-      const arrayBuffer = await file.arrayBuffer();
-      const base64 = Buffer.from(arrayBuffer).toString("base64");
-      const dataUrl = `${mimeToBase64Prefix(file.type, ext)}${base64}`;
-
-      plainText = generateMap
-        ? await transcribePageImage({
-            client: client!,
-            dataUrl,
-            label: "Image",
-            isHandwriting,
-          })
-        : "";
-      throwIfRequestAborted(request.signal);
-      const imageAsset = saveDataUrlAsset({
-        contentPath,
-        clusterSlug: normalizedClusterSlug,
-        baseName: nameWithoutExt,
-        label: "image",
-        dataUrl,
-        createdFilePaths,
-      });
-      pages = [
-        {
+    if (generateMap) emit("Transcribing the image with vision…");
+    plainText = generateMap
+      ? await transcribePageImage({
+          client: client!,
+          dataUrl,
           label: "Image",
-          text: plainText,
-          imagePath: imageAsset.relativePath,
-          imageAlt: nameWithoutExt,
-        },
-      ];
-      markdownText = pageMarkdown(pages);
-    } else if (ext === "pdf") {
-      throwIfRequestAborted(request.signal);
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      sourcePdfPath = saveUploadedPdfAsset({
-        contentPath,
-        clusterSlug: normalizedClusterSlug,
-        baseName: nameWithoutExt,
-        buffer,
-        createdFilePaths,
-      }).relativePath;
-      try {
-        if (!generateMap) {
-          const extractedPdf = await getPdfTextPages(buffer);
-          plainText = extractedPdf.text;
-          pages = extractedPdf.pages;
-          screenshotWarning = extractedPdf.warning;
-          markdownText = pageMarkdown(pages, { includeImages: false });
-        } else if (isHandwriting) {
-          let screenshots: PdfScreenshotPage[] = [];
-          try {
-            screenshots = await getPdfScreenshotPages(buffer, {
-              desiredWidth: 900,
-            });
-          } catch (error) {
-            screenshotWarning =
-              error instanceof Error
-                ? `PDF screenshot capture failed: ${error.message}`
-                : "PDF screenshot capture failed.";
-          }
+          isHandwriting,
+        })
+      : "";
+    throwIfRequestAborted(request.signal);
+    const imageAsset = saveDataUrlAsset({
+      contentPath,
+      clusterSlug: normalizedClusterSlug,
+      baseName: nameWithoutExt,
+      label: "image",
+      dataUrl,
+      createdFilePaths,
+    });
+    pages = [
+      {
+        label: "Image",
+        text: plainText,
+        imagePath: imageAsset.relativePath,
+        imageAlt: nameWithoutExt,
+      },
+    ];
+    markdownText = pageMarkdown(pages);
+  } else if (ext === "pdf") {
+    throwIfRequestAborted(request.signal);
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    sourcePdfPath = saveUploadedPdfAsset({
+      contentPath,
+      clusterSlug: normalizedClusterSlug,
+      baseName: nameWithoutExt,
+      buffer,
+      createdFilePaths,
+    }).relativePath;
+    try {
+      if (!generateMap) {
+        emit("Extracting text from the PDF…");
+        const extractedPdf = await getPdfTextPages(buffer);
+        plainText = extractedPdf.text;
+        pages = extractedPdf.pages;
+        screenshotWarning = extractedPdf.warning;
+        markdownText = pageMarkdown(pages, { includeImages: false });
+      } else if (isHandwriting) {
+        emit("Rendering PDF pages to images for OCR…");
+        let screenshots: PdfScreenshotPage[] = [];
+        try {
+          screenshots = await getPdfScreenshotPages(buffer, {
+            desiredWidth: 900,
+          });
+        } catch (error) {
+          screenshotWarning =
+            error instanceof Error
+              ? `PDF screenshot capture failed: ${error.message}`
+              : "PDF screenshot capture failed.";
+        }
 
-          if (screenshots.length > 0) {
-            const transcription = await transcribePdfPages(
-              client!,
-              screenshots,
-              request.signal,
+        if (screenshots.length > 0) {
+          emit(`Reading handwriting with OCR (0/${screenshots.length} pages)…`);
+          const transcription = await transcribePdfPages(
+            client!,
+            screenshots,
+            request.signal,
+            emit,
+          );
+          if (transcription.usageLimitReason) {
+            skipKnowledgeExtraction = true;
+            screenshotWarning = transcription.warning;
+            pages = [
+              {
+                label: "Handwriting OCR unavailable",
+                text: `OCR was not run because the AI usage limit was reached: ${transcription.usageLimitReason}`,
+              },
+            ];
+            plainText = pagePlainText(pages);
+            markdownText = ocrUnavailableMarkdown(
+              nameWithoutExt,
+              sourcePdfPath,
+              transcription.usageLimitReason,
             );
-            if (transcription.usageLimitReason) {
-              skipKnowledgeExtraction = true;
-              screenshotWarning = transcription.warning;
-              pages = [
-                {
-                  label: "Handwriting OCR unavailable",
-                  text: `OCR was not run because the AI usage limit was reached: ${transcription.usageLimitReason}`,
-                },
-              ];
-              plainText = pagePlainText(pages);
-              markdownText = ocrUnavailableMarkdown(
-                nameWithoutExt,
-                sourcePdfPath,
-                transcription.usageLimitReason,
-              );
-            } else {
-              pages = transcription.pages;
-              if (transcription.warning) {
-                screenshotWarning = screenshotWarning
-                  ? `${screenshotWarning} ${transcription.warning}`
-                  : transcription.warning;
-              }
-              throwIfRequestAborted(request.signal);
-              const snapshotPages = screenshots.slice(
-                0,
-                PDF_SOURCE_SNAPSHOT_LIMIT,
-              );
-              pages = attachPdfScreenshotAssets({
-                pages,
-                screenshots: snapshotPages,
-                contentPath,
-                clusterSlug: normalizedClusterSlug,
-                sourceTitle: nameWithoutExt,
-                createdFilePaths,
-              });
-              if (screenshots.length > snapshotPages.length) {
-                const limitWarning = `Saved source snapshots for the first ${snapshotPages.length} page${snapshotPages.length === 1 ? "" : "s"} to keep the upload stable. OCR still processed ${screenshots.length} pages.`;
-                screenshotWarning = screenshotWarning
-                  ? `${screenshotWarning} ${limitWarning}`
-                  : limitWarning;
-              }
-            }
           } else {
-            const extractedPdf = await getPdfTextPages(buffer);
-            pages = extractedPdf.pages;
-            if (extractedPdf.warning) {
+            pages = transcription.pages;
+            if (transcription.warning) {
               screenshotWarning = screenshotWarning
-                ? `${screenshotWarning} ${extractedPdf.warning}`
-                : extractedPdf.warning;
+                ? `${screenshotWarning} ${transcription.warning}`
+                : transcription.warning;
+            }
+            throwIfRequestAborted(request.signal);
+            const snapshotPages = screenshots.slice(
+              0,
+              PDF_SOURCE_SNAPSHOT_LIMIT,
+            );
+            pages = attachPdfScreenshotAssets({
+              pages,
+              screenshots: snapshotPages,
+              contentPath,
+              clusterSlug: normalizedClusterSlug,
+              sourceTitle: nameWithoutExt,
+              createdFilePaths,
+            });
+            if (screenshots.length > snapshotPages.length) {
+              const limitWarning = `Saved source snapshots for the first ${snapshotPages.length} page${snapshotPages.length === 1 ? "" : "s"} to keep the upload stable. OCR still processed ${screenshots.length} pages.`;
+              screenshotWarning = screenshotWarning
+                ? `${screenshotWarning} ${limitWarning}`
+                : limitWarning;
             }
           }
-          plainText = pagePlainText(pages);
-          markdownText = pageMarkdown(pages);
         } else {
+          emit("No page images found — extracting embedded text…");
           const extractedPdf = await getPdfTextPages(buffer);
-          plainText = extractedPdf.text;
           pages = extractedPdf.pages;
           if (extractedPdf.warning) {
             screenshotWarning = screenshotWarning
               ? `${screenshotWarning} ${extractedPdf.warning}`
               : extractedPdf.warning;
           }
+        }
+        plainText = pagePlainText(pages);
+        markdownText = pageMarkdown(pages);
+      } else {
+        emit("Extracting text from the PDF…");
+        const extractedPdf = await getPdfTextPages(buffer);
+        plainText = extractedPdf.text;
+        pages = extractedPdf.pages;
+        if (extractedPdf.warning) {
+          screenshotWarning = screenshotWarning
+            ? `${screenshotWarning} ${extractedPdf.warning}`
+            : extractedPdf.warning;
+        }
 
-          const wordCount = plainText.trim().split(/\s+/).filter(Boolean).length;
-          if (wordCount < 30) {
-            skipKnowledgeExtraction = true;
+        const wordCount = plainText.trim().split(/\s+/).filter(Boolean).length;
+        if (wordCount < 30) {
+          skipKnowledgeExtraction = true;
+          screenshotWarning = screenshotWarning
+            ? `${screenshotWarning} This PDF appears to be scanned/image-based, so no embedded text was available for map generation.`
+            : "This PDF appears to be scanned/image-based, so no embedded text was available for map generation.";
+          pages = [
+            {
+              label: "Scanned PDF",
+              text: "No embedded text was found. Re-upload with handwriting OCR enabled to transcribe the pages.",
+            },
+          ];
+          plainText = pagePlainText(pages);
+          markdownText = scannedPdfMarkdown(nameWithoutExt, sourcePdfPath);
+        } else {
+          emit("Capturing page snapshots…");
+          let screenshots: PdfScreenshotPage[] = [];
+          try {
+            screenshots = await getPdfScreenshotPages(buffer, {
+              maxPages: PDF_SOURCE_SNAPSHOT_LIMIT,
+              desiredWidth: 900,
+            });
+          } catch (error) {
+            const reason =
+              error instanceof Error
+                ? error.message
+                : "PDF screenshot capture failed.";
             screenshotWarning = screenshotWarning
-              ? `${screenshotWarning} This PDF appears to be scanned/image-based, so no embedded text was available for map generation.`
-              : "This PDF appears to be scanned/image-based, so no embedded text was available for map generation.";
-            pages = [
-              {
-                label: "Scanned PDF",
-                text: "No embedded text was found. Re-upload with handwriting OCR enabled to transcribe the pages.",
-              },
-            ];
-            plainText = pagePlainText(pages);
-            markdownText = scannedPdfMarkdown(nameWithoutExt, sourcePdfPath);
-          } else {
-            let screenshots: PdfScreenshotPage[] = [];
-            try {
-              screenshots = await getPdfScreenshotPages(buffer, {
-                maxPages: PDF_SOURCE_SNAPSHOT_LIMIT,
-                desiredWidth: 900,
-              });
-            } catch (error) {
-              const reason =
-                error instanceof Error
-                  ? error.message
-                  : "PDF screenshot capture failed.";
-              screenshotWarning = screenshotWarning
-                ? `${screenshotWarning} PDF screenshot capture failed: ${reason}`
-                : `PDF screenshot capture failed: ${reason}`;
-            }
-            throwIfRequestAborted(request.signal);
-            pages = attachPdfScreenshotAssets({
-              pages,
-              screenshots,
-              contentPath,
-              clusterSlug: normalizedClusterSlug,
-              sourceTitle: nameWithoutExt,
-              createdFilePaths,
-            });
-            const formattedPdf = await formatPdfPagesAsMarkdown({
-              client: client!,
-              title: nameWithoutExt,
-              pages,
-              signal: request.signal,
-            });
-
-            if (formattedPdf.warning) {
-              screenshotWarning = screenshotWarning
-                ? `${screenshotWarning} ${formattedPdf.warning}`
-                : formattedPdf.warning;
-            }
-
-            markdownText = appendSnapshots(formattedPdf.markdownText, pages);
+              ? `${screenshotWarning} PDF screenshot capture failed: ${reason}`
+              : `PDF screenshot capture failed: ${reason}`;
           }
+          throwIfRequestAborted(request.signal);
+          pages = attachPdfScreenshotAssets({
+            pages,
+            screenshots,
+            contentPath,
+            clusterSlug: normalizedClusterSlug,
+            sourceTitle: nameWithoutExt,
+            createdFilePaths,
+          });
+          const formattedPdf = await formatPdfPagesAsMarkdown({
+            client: client!,
+            title: nameWithoutExt,
+            pages,
+            signal: request.signal,
+            onProgress: emit,
+          });
+
+          if (formattedPdf.warning) {
+            screenshotWarning = screenshotWarning
+              ? `${screenshotWarning} ${formattedPdf.warning}`
+              : formattedPdf.warning;
+          }
+
+          markdownText = appendSnapshots(formattedPdf.markdownText, pages);
         }
-      } catch (error) {
-        if (
-          error instanceof UploadAbortedError ||
-          (error instanceof Error && error.name === "AbortError")
-        ) {
-          throw error;
-        }
-        const reason =
-          error instanceof Error ? error.message : "PDF extraction failed.";
-        skipKnowledgeExtraction = true;
-        screenshotWarning = `Rich PDF extraction failed: ${reason}. Saved the original PDF as a source note instead.`;
-        plainText = `PDF upload fallback for ${filename}. ${reason}`;
-        pages = [{ label: "PDF", text: plainText }];
-        markdownText = pdfFallbackMarkdown(nameWithoutExt, sourcePdfPath, reason);
       }
-    } else if (ext === "csv") {
-      plainText = await file.text();
-      markdownText = "```csv\n" + plainText + "\n```";
-      pages = [{ label: "CSV Data", text: plainText }];
-    } else if (ext === "docx") {
-      const buffer = Buffer.from(await file.arrayBuffer());
-      plainText = extractDocxText(buffer);
-      markdownText = plainText;
-      pages = [{ label: "Word Document", text: plainText }];
-    } else if (ext === "pptx") {
-      const buffer = Buffer.from(await file.arrayBuffer());
-      plainText = extractPptxText(buffer);
-      markdownText = plainText;
-      pages = plainText
-        .split("\n\n---\n\n")
-        .map((t, i) => ({ label: `Slide ${i + 1}`, text: t }));
-    } else if (ext === "xlsx") {
-      const buffer = Buffer.from(await file.arrayBuffer());
-      plainText = extractXlsxText(buffer);
-      markdownText = "```\n" + plainText + "\n```";
-      pages = [{ label: "Excel Data", text: plainText }];
-    } else if (ext === "zip") {
-      const buffer = Buffer.from(await file.arrayBuffer());
-      plainText = extractZipText(buffer);
-      markdownText = plainText;
-      pages = [{ label: "Archive Contents", text: plainText }];
-    } else {
-      plainText = await file.text();
-      markdownText = plainText;
-      pages = [{ label: ext === "md" ? "Markdown" : "Text", text: plainText }];
+    } catch (error) {
+      if (
+        error instanceof UploadAbortedError ||
+        (error instanceof Error && error.name === "AbortError")
+      ) {
+        throw error;
+      }
+      const reason =
+        error instanceof Error ? error.message : "PDF extraction failed.";
+      skipKnowledgeExtraction = true;
+      screenshotWarning = `Rich PDF extraction failed: ${reason}. Saved the original PDF as a source note instead.`;
+      plainText = `PDF upload fallback for ${filename}. ${reason}`;
+      pages = [{ label: "PDF", text: plainText }];
+      markdownText = pdfFallbackMarkdown(nameWithoutExt, sourcePdfPath, reason);
     }
+  } else if (ext === "csv") {
+    plainText = await file.text();
+    markdownText = "```csv\n" + plainText + "\n```";
+    pages = [{ label: "CSV Data", text: plainText }];
+  } else if (ext === "docx") {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    plainText = extractDocxText(buffer);
+    markdownText = plainText;
+    pages = [{ label: "Word Document", text: plainText }];
+  } else if (ext === "pptx") {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    plainText = extractPptxText(buffer);
+    markdownText = plainText;
+    pages = plainText
+      .split("\n\n---\n\n")
+      .map((t, i) => ({ label: `Slide ${i + 1}`, text: t }));
+  } else if (ext === "xlsx") {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    plainText = extractXlsxText(buffer);
+    markdownText = "```\n" + plainText + "\n```";
+    pages = [{ label: "Excel Data", text: plainText }];
+  } else if (ext === "zip") {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    plainText = extractZipText(buffer);
+    markdownText = plainText;
+    pages = [{ label: "Archive Contents", text: plainText }];
+  } else {
+    plainText = await file.text();
+    markdownText = plainText;
+    pages = [{ label: ext === "md" ? "Markdown" : "Text", text: plainText }];
+  }
 
-    // ── Knowledge extraction (optional) ──────────────────────────────────────
+  // ── Knowledge extraction (optional) ──────────────────────────────────────
 
-    let extraction: KnowledgeExtraction;
-    throwIfRequestAborted(request.signal);
-    if (generateMap && !skipKnowledgeExtraction) {
-      extraction = await extractDocumentKnowledge({
-        client: client!,
-        title: nameWithoutExt,
-        sourceType: ext || "text",
-        sourceLabel: source,
-        isHandwriting,
-        pages,
-        text: plainText,
-      });
-    } else {
-      const summary = plainText.trim()
-        ? plainText.trim().slice(0, 300)
-        : `Uploaded ${filename} without map generation.`;
-      extraction = {
-        documentTitle: nameWithoutExt,
-        summary,
-        topics: [],
-        relationships: [],
-        suggestedTags: [],
-      };
-    }
-
-    throwIfRequestAborted(request.signal);
-    const saved = await writeDocumentKnowledge({
-      client,
-      contentPath,
-      clusterSlug: normalizedClusterSlug,
-      sourceTitle: nameWithoutExt,
-      sourceFileName: filename,
+  let extraction: KnowledgeExtraction;
+  throwIfRequestAborted(request.signal);
+  if (generateMap && !skipKnowledgeExtraction) {
+    extraction = await extractDocumentKnowledge({
+      client: client!,
+      title: nameWithoutExt,
       sourceType: ext || "text",
       sourceLabel: source,
-      sourcePdfPath,
       isHandwriting,
-      markdownText,
-      plainText,
       pages,
-      extraction,
-      abortSignal: request.signal,
-      createdFilePaths: createdMarkdownPaths,
+      text: plainText,
+      onProgress: emit,
     });
-    const imageCount = pages.filter((page) => page.imagePath).length;
+  } else {
+    const summary = plainText.trim()
+      ? plainText.trim().slice(0, 300)
+      : `Uploaded ${filename} without map generation.`;
+    extraction = {
+      documentTitle: nameWithoutExt,
+      summary,
+      topics: [],
+      relationships: [],
+      suggestedTags: [],
+    };
+  }
 
-    return NextResponse.json({
-      success: true,
-      filename,
-      slug: saved.sourceSlug,
-      wordCount: saved.wordCount,
-      topicCount: saved.topics.length,
-      imageCount,
-      screenshotWarning: screenshotWarning || undefined,
-      topics: saved.topics,
-    });
+  throwIfRequestAborted(request.signal);
+  emit("Saving notes to your garden…");
+  const saved = await writeDocumentKnowledge({
+    client,
+    contentPath,
+    clusterSlug: normalizedClusterSlug,
+    sourceTitle: nameWithoutExt,
+    sourceFileName: filename,
+    sourceType: ext || "text",
+    sourceLabel: source,
+    sourcePdfPath,
+    isHandwriting,
+    markdownText,
+    plainText,
+    pages,
+    extraction,
+    abortSignal: request.signal,
+    createdFilePaths: createdMarkdownPaths,
+    onProgress: emit,
+  });
+  const imageCount = pages.filter((page) => page.imagePath).length;
+
+  emit("Finishing up…");
+  return {
+    success: true,
+    filename,
+    slug: saved.sourceSlug,
+    wordCount: saved.wordCount,
+    topicCount: saved.topics.length,
+    imageCount,
+    screenshotWarning: screenshotWarning || undefined,
+    topics: saved.topics,
+  };
+}
+
+export async function POST(request: Request) {
+  // Validation and auth run before streaming so genuine HTTP error codes
+  // (400/401/500) still reach the client as a normal JSON response.
+  let baseURL: string;
+  let formData: FormData;
+  try {
+    ({ baseURL } = resolveChatmockBaseUrl(request));
+    formData = await request.formData();
   } catch (err) {
-    if (err instanceof UploadAbortedError || (err instanceof Error && err.name === "AbortError")) {
-      cleanupCreatedFiles(createdMarkdownPaths);
-      cleanupCreatedFiles(createdFilePaths);
+    if (
+      err instanceof UploadAbortedError ||
+      (err instanceof Error && err.name === "AbortError")
+    ) {
       return NextResponse.json({ error: "Upload canceled" }, { status: 499 });
-    }
-    if (createdMarkdownPaths.length === 0) {
-      cleanupCreatedFiles(createdFilePaths);
     }
     return routeErrorResponse(err);
   }
+
+  const file = formData.get("file");
+  const clusterSlug = formData.get("clusterSlug");
+  const sourceLabel = formData.get("sourceLabel");
+  const isHandwriting = formData.get("isHandwriting") === "true";
+  const generateMap = formData.get("generateMap") !== "false"; // default true
+
+  if (!(file instanceof File)) {
+    return NextResponse.json({ error: "file is required" }, { status: 400 });
+  }
+  if (typeof clusterSlug !== "string" || !clusterSlug.trim()) {
+    return NextResponse.json(
+      { error: "clusterSlug is required" },
+      { status: 400 },
+    );
+  }
+
+  let cluster;
+  try {
+    ({ cluster } = await requireOwnedClusterFromSlug(clusterSlug));
+  } catch (err) {
+    return routeErrorResponse(err);
+  }
+
+  const contentPath = process.env.QUARTZ_CONTENT_PATH;
+  if (!contentPath) {
+    return NextResponse.json(
+      { error: "QUARTZ_CONTENT_PATH is not configured" },
+      { status: 500 },
+    );
+  }
+
+  const normalizedClusterSlug = cluster.slug;
+  const filename = file.name;
+  const ext = path.extname(filename).toLowerCase().replace(".", "");
+  const nameWithoutExt = path.basename(filename, path.extname(filename));
+  const source =
+    typeof sourceLabel === "string" && sourceLabel.trim()
+      ? sourceLabel.trim()
+      : "upload";
+  const client = generateMap ? createChatmockClient(baseURL) : undefined;
+
+  // Stream newline-delimited JSON: { type: "progress", step } events while the
+  // pipeline runs, then a final { type: "result" } or { type: "error" }.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const startedAt = Date.now();
+      const createdFilePaths: string[] = [];
+      const createdMarkdownPaths: string[] = [];
+      let closed = false;
+      // Server-Sent Events framing ("data: …\n\n"): this streams to the client
+      // chunk-by-chunk, whereas a plain JSON body gets buffered until the end.
+      const send = (event: Record<string, unknown>) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          // The client disconnected and the stream is already closed; stop
+          // trying to write so the pipeline can unwind quietly.
+          closed = true;
+        }
+      };
+      const emit = (step: string) =>
+        send({ type: "progress", step, elapsedMs: Date.now() - startedAt });
+
+      try {
+        const result = await runIngest({
+          request,
+          client,
+          contentPath,
+          file,
+          normalizedClusterSlug,
+          filename,
+          ext,
+          nameWithoutExt,
+          source,
+          isHandwriting,
+          generateMap,
+          createdFilePaths,
+          createdMarkdownPaths,
+          emit,
+        });
+        send({ type: "result", ...result, durationMs: Date.now() - startedAt });
+      } catch (err) {
+        if (
+          err instanceof UploadAbortedError ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          cleanupCreatedFiles(createdMarkdownPaths);
+          cleanupCreatedFiles(createdFilePaths);
+          send({ type: "error", error: "Upload canceled", canceled: true });
+        } else {
+          if (createdMarkdownPaths.length === 0) {
+            cleanupCreatedFiles(createdFilePaths);
+          }
+          send({
+            type: "error",
+            error: errorMessage(err, "Upload failed"),
+            durationMs: Date.now() - startedAt,
+          });
+        }
+      } finally {
+        closed = true;
+        try {
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        } catch {
+          // Already closed (e.g. client disconnected) — nothing to do.
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 
 const API_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, PATCH, DELETE, OPTIONS',
+  'Access-Control-Allow-Methods': 'POST, PUT, PATCH, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
@@ -181,6 +181,66 @@ export async function PATCH(request: Request): Promise<NextResponse> {
     `move document ${context.clusterSlug}/${wantSlug} -> ${folder || 'root'}`,
   );
   return json({ success: true, slug: wantSlug, folder, relPath });
+}
+
+// Rename a folder (keeping its parent). Notes keep their basename slug, so links
+// still resolve; only the folder segment on disk and its `_index.md` title change.
+export async function PUT(request: Request): Promise<NextResponse> {
+  const body = await request.json().catch(() => ({}));
+  const context = await getContext(body.clusterSlug);
+  if ('error' in context) return context.error;
+
+  const folder = sanitizeFolder(body.folder);
+  if (!folder) return json({ error: 'folder is required' }, { status: 400 });
+
+  const newName = sanitizeFolder(body.name);
+  if (!newName) return json({ error: 'name is required' }, { status: 400 });
+  if (newName.includes('/')) {
+    return json({ error: 'Folder name cannot contain slashes' }, { status: 400 });
+  }
+
+  const parent = folder.split('/').slice(0, -1).join('/');
+  const newFolder = parent ? `${parent}/${newName}` : newName;
+  if (newFolder === folder) {
+    return json({ success: true, folder, newFolder });
+  }
+
+  const oldDir = resolveFolderDir(context.clusterDir, folder);
+  const newDir = resolveFolderDir(context.clusterDir, newFolder);
+  if (!oldDir || oldDir === context.clusterDir || !newDir || newDir === context.clusterDir) {
+    return json({ error: 'Invalid folder path' }, { status: 400 });
+  }
+  if (!fs.existsSync(oldDir)) {
+    return json({ error: 'Folder not found' }, { status: 404 });
+  }
+  if (fs.existsSync(newDir)) {
+    return json({ error: 'A folder with that name already exists' }, { status: 409 });
+  }
+
+  fs.mkdirSync(path.dirname(newDir), { recursive: true });
+  fs.renameSync(oldDir, newDir);
+
+  // Keep the Quartz folder title in sync with the new name.
+  const indexPath = path.join(newDir, '_index.md');
+  const newTitle = JSON.stringify(folderTitle(newFolder));
+  if (fs.existsSync(indexPath)) {
+    const raw = fs.readFileSync(indexPath, 'utf-8');
+    const updated = /^title:.*$/m.test(raw)
+      ? raw.replace(/^title:.*$/m, `title: ${newTitle}`)
+      : raw.replace(/^---\r?\n/, (match) => `${match}title: ${newTitle}\n`);
+    fs.writeFileSync(indexPath, updated, 'utf-8');
+  } else {
+    fs.writeFileSync(indexPath, `---\ntitle: ${newTitle}\n---\n\n`, 'utf-8');
+  }
+
+  // The old folder path (and every note inside it) has stale Quartz output.
+  removePublicArtifacts(context.contentPath, context.clusterSlug, folder);
+
+  refreshClusterIndex(context.contentPath, context.clusterSlug);
+  await publishQuartzAfterMutation(
+    `rename folder ${context.clusterSlug}/${folder} -> ${newFolder}`,
+  );
+  return json({ success: true, folder, newFolder });
 }
 
 // Delete a folder and every note inside it (and their generated Quartz output).

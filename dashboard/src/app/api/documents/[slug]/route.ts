@@ -128,6 +128,13 @@ function parseYamlValue(value: string): string | string[] {
   return trimmed.replace(/^["']|["']$/g, '');
 }
 
+/** Split a note into its frontmatter block (without trailing newlines) and body. */
+function splitFrontmatter(content: string): { frontmatter: string; body: string } {
+  const match = content.match(/^(---\r?\n[\s\S]*?\r?\n---)\r?\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: '', body: content };
+  return { frontmatter: match[1] ?? '', body: (match[2] ?? '').replace(/^\r?\n/, '') };
+}
+
 function parseFrontmatter(content: string): Frontmatter {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return {};
@@ -424,6 +431,15 @@ export async function PATCH(
       return json({ error: 'content must be a string' }, { status: 400 });
     }
     content = body.content;
+  } else if (Object.prototype.hasOwnProperty.call(body, 'body')) {
+    // Replace only the note body, preserving hidden frontmatter (date,
+    // knowledge_type, etc.). Title/tags below still edit the frontmatter.
+    if (typeof body.body !== 'string') {
+      return json({ error: 'body must be a string' }, { status: 400 });
+    }
+    const { frontmatter } = splitFrontmatter(content);
+    const nextBody = body.body.replace(/^\s+/, '');
+    content = frontmatter ? `${frontmatter}\n\n${nextBody}` : nextBody;
   }
 
   let title = frontmatterTitle(content);
@@ -475,11 +491,15 @@ export async function GET(
   if ('error' in context) return context.error;
 
   const content = fs.readFileSync(context.filePath, 'utf-8');
+  const { body } = splitFrontmatter(content);
   return json({
     success: true,
     slug: context.slug,
     fileName: path.basename(context.filePath),
     content,
+    title: frontmatterTitle(content),
+    tags: frontmatterArrayValue(parseFrontmatter(content), 'tags'),
+    body,
   });
 }
 

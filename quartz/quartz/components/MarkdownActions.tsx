@@ -35,6 +35,22 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
               Close
             </button>
           </div>
+          <div class="markdown-editor-fields">
+            <label class="markdown-editor-field">
+              <span>Title</span>
+              <input class="markdown-editor-title" type="text" placeholder="Note title" />
+            </label>
+            <label class="markdown-editor-field">
+              <span>Tags</span>
+              <div class="markdown-editor-tags-box">
+                <input
+                  class="markdown-editor-tags"
+                  type="text"
+                  placeholder="#hashtag #separated #tags"
+                />
+              </div>
+            </label>
+          </div>
           <textarea class="markdown-editor-textarea" spellcheck={false} />
           <input
             class="markdown-editor-image-input"
@@ -183,6 +199,111 @@ MarkdownActions.css = `
   font-weight: 600;
 }
 
+.markdown-editor-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--lightgray);
+}
+
+.markdown-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.markdown-editor-field > span {
+  color: var(--secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.markdown-editor-title {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  color: var(--dark);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.markdown-editor-title:focus {
+  outline: none;
+  border-color: var(--secondary);
+}
+
+.markdown-editor-tags-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  padding: 0.3rem 0.5rem;
+  cursor: text;
+}
+
+.markdown-editor-tags-box:focus-within {
+  border-color: var(--secondary);
+}
+
+.markdown-editor-tags {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+  border: 0;
+  background: transparent;
+  color: var(--dark);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.25rem 0.15rem;
+}
+
+.markdown-editor-tags:focus {
+  outline: none;
+}
+
+.markdown-editor-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--secondary) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--secondary) 12%, transparent);
+  color: var(--secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  white-space: nowrap;
+}
+
+.markdown-editor-tag button {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.6;
+}
+
+.markdown-editor-tag button:hover {
+  opacity: 1;
+}
+
 .markdown-editor-textarea {
   flex: 1;
   min-height: 0;
@@ -249,11 +370,100 @@ var SB_EDITOR_DRAFT_KEY = "second-brain:md-editor-draft"
 function sbReadEditorDraft() {
   try { return JSON.parse(sessionStorage.getItem(SB_EDITOR_DRAFT_KEY) || "null") } catch (e) { return null }
 }
-function sbWriteEditorDraft(draftSlug, content) {
-  try { sessionStorage.setItem(SB_EDITOR_DRAFT_KEY, JSON.stringify({ slug: draftSlug, content: content })) } catch (e) {}
+function sbWriteEditorDraft(draftSlug, draft) {
+  var value = draft && typeof draft === "object" ? draft : { body: draft }
+  try {
+    sessionStorage.setItem(SB_EDITOR_DRAFT_KEY, JSON.stringify({
+      slug: draftSlug,
+      title: value.title || "",
+      tags: value.tags || "",
+      body: value.body || "",
+    }))
+  } catch (e) {}
 }
 function sbClearEditorDraft() {
   try { sessionStorage.removeItem(SB_EDITOR_DRAFT_KEY) } catch (e) {}
+}
+function sbParseTags(value) {
+  return String(value || "").split(/[#,]/).map(function (tag) { return tag.trim() }).filter(Boolean)
+}
+function sbFormatTags(tags) {
+  return (Array.isArray(tags) ? tags : []).map(function (tag) { return "#" + tag }).join(" ")
+}
+// Chip-style tag input: finished tags (space/comma/Enter) render as bubbles
+// ahead of the text input; Backspace on an empty input removes the last one.
+function sbCreateTagField(box, input) {
+  var tags = []
+  var notifyInput = function () {
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+  var render = function () {
+    box.querySelectorAll(".markdown-editor-tag").forEach(function (chip) { chip.remove() })
+    tags.forEach(function (tag) {
+      var chip = document.createElement("span")
+      chip.className = "markdown-editor-tag"
+      chip.appendChild(document.createTextNode("#" + tag))
+      var remove = document.createElement("button")
+      remove.type = "button"
+      remove.setAttribute("aria-label", "Remove tag " + tag)
+      remove.textContent = "\\u00d7"
+      remove.addEventListener("click", function (event) {
+        event.preventDefault()
+        tags = tags.filter(function (t) { return t !== tag })
+        render()
+        notifyInput()
+      })
+      chip.appendChild(remove)
+      box.insertBefore(chip, input)
+    })
+  }
+  var commit = function () {
+    var pieces = sbParseTags(input.value)
+    pieces.forEach(function (tag) {
+      if (tags.indexOf(tag) === -1) tags.push(tag)
+    })
+    input.value = ""
+    render()
+  }
+  input.addEventListener("keydown", function (event) {
+    if (event.key === " " || event.key === "," || event.key === "Enter") {
+      event.preventDefault()
+      if (input.value.trim()) {
+        commit()
+        notifyInput()
+      }
+    } else if (event.key === "Backspace" && input.value === "" && tags.length > 0) {
+      event.preventDefault()
+      tags.pop()
+      render()
+      notifyInput()
+    }
+  })
+  input.addEventListener("blur", function () {
+    if (input.value.trim()) {
+      commit()
+      notifyInput()
+    }
+  })
+  box.addEventListener("click", function (event) {
+    if (event.target === box) input.focus()
+  })
+  var field = {
+    getTags: function () { return tags.concat(sbParseTags(input.value)) },
+    getValue: function () { return sbFormatTags(field.getTags()) },
+    setValue: function (value) {
+      tags = []
+      var pieces = Array.isArray(value) ? value : sbParseTags(value)
+      pieces.forEach(function (tag) {
+        tag = String(tag).trim()
+        if (tag && tags.indexOf(tag) === -1) tags.push(tag)
+      })
+      input.value = ""
+      render()
+    },
+  }
+  input._sbTagField = field
+  return field
 }
 document.addEventListener("nav", () => {
   for (const actions of document.querySelectorAll(".markdown-actions")) {
@@ -266,6 +476,10 @@ document.addEventListener("nav", () => {
     const status = actions.querySelector(".markdown-action-status")
     const modal = actions.querySelector(".markdown-editor-modal")
     const textarea = actions.querySelector(".markdown-editor-textarea")
+    const titleInput = actions.querySelector(".markdown-editor-title")
+    const tagsInput = actions.querySelector(".markdown-editor-tags")
+    const tagsBox = actions.querySelector(".markdown-editor-tags-box")
+    const tagField = tagsInput && tagsBox ? sbCreateTagField(tagsBox, tagsInput) : null
     const imageInput = actions.querySelector(".markdown-editor-image-input")
     const addImage = actions.querySelector(".markdown-editor-image")
     const close = actions.querySelector(".markdown-editor-close")
@@ -275,6 +489,12 @@ document.addEventListener("nav", () => {
     const setStatus = (message) => {
       if (status) status.textContent = message
     }
+    const editorDraft = () => ({
+      title: titleInput ? titleInput.value : "",
+      tags: tagField ? tagField.getValue() : tagsInput ? tagsInput.value : "",
+      body: textarea ? textarea.value : "",
+    })
+    const saveDraft = () => sbWriteEditorDraft(slug, editorDraft())
     const resolveDashboardBaseUrl = (fallback) => {
       const trimmed = (fallback || "").replace(/\\/+$/, "")
       if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
@@ -350,12 +570,16 @@ document.addEventListener("nav", () => {
       return body
     }
 
-    const showModal = (content) => {
+    const showModal = (draft) => {
       if (!modal || !textarea) return
-      textarea.value = content || ""
+      const value = draft || {}
+      if (titleInput) titleInput.value = value.title || ""
+      if (tagField) tagField.setValue(value.tags || "")
+      else if (tagsInput) tagsInput.value = value.tags || ""
+      textarea.value = value.body || ""
       modal.hidden = false
       textarea.focus()
-      sbWriteEditorDraft(slug, textarea.value)
+      saveDraft()
     }
 
     const hideModal = () => {
@@ -367,14 +591,17 @@ document.addEventListener("nav", () => {
     }
 
     // Track edits so a live-reload or navigation never loses in-progress work.
-    if (textarea) {
-      textarea.addEventListener("input", () => sbWriteEditorDraft(slug, textarea.value))
-    }
+    if (textarea) textarea.addEventListener("input", saveDraft)
+    if (titleInput) titleInput.addEventListener("input", saveDraft)
+    if (tagsInput) tagsInput.addEventListener("input", saveDraft)
 
     // Reopen the editor with the saved draft after a reload / when returning here.
     const restoredDraft = sbReadEditorDraft()
     if (restoredDraft && restoredDraft.slug === slug && modal && textarea) {
-      textarea.value = restoredDraft.content
+      if (titleInput) titleInput.value = restoredDraft.title || ""
+      if (tagField) tagField.setValue(restoredDraft.tags || "")
+      else if (tagsInput) tagsInput.value = restoredDraft.tags || ""
+      textarea.value = restoredDraft.body || ""
       modal.hidden = false
     }
 
@@ -412,11 +639,18 @@ document.addEventListener("nav", () => {
     save?.addEventListener("click", () => {
       if (requireDashboardFrame()) return
       if (!textarea) return
+      if (titleInput && !titleInput.value.trim()) {
+        setStatus("Title cannot be empty")
+        titleInput.focus()
+        return
+      }
       setStatus("Saving...")
       window.parent?.postMessage({
         type: "second-brain:save-markdown",
         slug,
-        content: textarea.value,
+        title: titleInput ? titleInput.value : "",
+        tags: tagField ? tagField.getTags() : tagsInput ? sbParseTags(tagsInput.value) : [],
+        body: textarea.value,
       }, "*")
     })
 
@@ -529,8 +763,16 @@ window.addEventListener("message", (event) => {
   const status = actions.querySelector(".markdown-action-status")
   const modal = actions.querySelector(".markdown-editor-modal")
   const textarea = actions.querySelector(".markdown-editor-textarea")
+  const titleInput = actions.querySelector(".markdown-editor-title")
+  const tagsInput = actions.querySelector(".markdown-editor-tags")
+  const tagField = tagsInput ? tagsInput._sbTagField : null
   const placement = actions.querySelector(".markdown-editor-placement")
   const addImage = actions.querySelector(".markdown-editor-image")
+  const currentDraft = () => ({
+    title: titleInput ? titleInput.value : "",
+    tags: tagField ? tagField.getValue() : tagsInput ? tagsInput.value : "",
+    body: textarea ? textarea.value : "",
+  })
   const setStatus = (message) => {
     if (status) status.textContent = message
   }
@@ -565,11 +807,18 @@ window.addEventListener("message", (event) => {
   }
 
   if (data.type === "second-brain:markdown-content-result") {
-    if (data.ok && typeof data.content === "string") {
-      if (textarea) textarea.value = data.content
+    if (data.ok && (typeof data.body === "string" || typeof data.content === "string")) {
+      const nextBody = typeof data.body === "string" ? data.body : data.content
+      if (titleInput) titleInput.value = typeof data.title === "string" ? data.title : ""
+      const nextTags = Array.isArray(data.tags)
+        ? data.tags
+        : typeof data.tags === "string" ? data.tags : ""
+      if (tagField) tagField.setValue(nextTags)
+      else if (tagsInput) tagsInput.value = sbFormatTags(sbParseTags(nextTags))
+      if (textarea) textarea.value = nextBody
       if (modal) modal.hidden = false
       textarea?.focus()
-      sbWriteEditorDraft(data.slug, data.content)
+      sbWriteEditorDraft(data.slug, currentDraft())
       setStatus("")
     } else {
       setStatus(data.error || "Could not open")
@@ -590,7 +839,7 @@ window.addEventListener("message", (event) => {
     if (data.ok && typeof data.markdown === "string" && data.markdown) {
       const snippetCount = typeof data.count === "number" ? data.count : 1
       insertSnippet(data.markdown)
-      if (textarea) sbWriteEditorDraft(data.slug, textarea.value)
+      if (textarea) sbWriteEditorDraft(data.slug, currentDraft())
       setStatus(snippetCount === 1 ? "Image inserted in editor. Click Save to publish." : "Images inserted in editor. Click Save to publish.")
     } else {
       setStatus(data.error || "Could not add image")

@@ -48,7 +48,7 @@ const config: QuartzConfig = {
     },
     locale: "en-US",
     baseUrl: quartzBaseUrl,
-    ignorePatterns: ["private", "templates", ".obsidian"],
+    ignorePatterns: ["private", "templates", ".obsidian", ".breadboard"],
     defaultDateType: "modified",
     theme: {
       fontOrigin: "googleFonts",
@@ -101,13 +101,18 @@ const config: QuartzConfig = {
         keepBackground: false,
       }),
       Plugin.ObsidianFlavoredMarkdown({ enableInHtmlEmbed: false }),
+      Plugin.BreadboardVisuals(),
       Plugin.GitHubFlavoredMarkdown(),
       Plugin.TableOfContents(),
       Plugin.CrawlLinks({ markdownLinkResolution: "shortest" }),
       Plugin.Description(),
       Plugin.Latex({ renderEngine: "katex" }),
     ],
-    filters: [Plugin.RemoveDrafts()],
+    filters: [
+      Plugin.RemoveDrafts({
+        showLegacySubtopicPages: process.env.SHOW_LEGACY_SUBTOPIC_PAGES === "true",
+      }),
+    ],
     emitters: [
       Plugin.AliasRedirects(),
       Plugin.ComponentResources(),

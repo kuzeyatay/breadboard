@@ -39,6 +39,9 @@ interface GraphResponse {
   stats: {
     documents: number;
     topics: number;
+    textbookPages: number;
+    conceptNodes: number;
+    learningPages: number;
     generatedNotes: number;
     links: number;
     words: number;
@@ -49,6 +52,7 @@ interface Props {
   clusterSlug: string;
   refreshKey: string;
   sourceLibrary?: ReactNode;
+  showInternalConceptGraph?: boolean;
 }
 
 const emptyResponse: GraphResponse = {
@@ -56,13 +60,24 @@ const emptyResponse: GraphResponse = {
   edges: [],
   tree: [],
   orphanTopics: [],
-  stats: { documents: 0, topics: 0, generatedNotes: 0, links: 0, words: 0 },
+  stats: {
+    documents: 0,
+    topics: 0,
+    textbookPages: 0,
+    conceptNodes: 0,
+    learningPages: 0,
+    generatedNotes: 0,
+    links: 0,
+    words: 0,
+  },
 };
 
 function labelForType(type: string): string {
   if (type === 'source-document') return 'Source';
-  if (type === 'knowledge-topic') return 'Topic';
-  if (type === 'generated-note') return 'Chat note';
+  if (type === 'textbook-page') return 'Textbook page';
+  if (type === 'internal-concept') return 'ConceptNode';
+  if (type === 'knowledge-topic') return 'Legacy topic';
+  if (type === 'generated-note') return 'Saved chat page';
   return 'Note';
 }
 
@@ -101,7 +116,7 @@ const MAP_PANEL_MAX = 600;
 const MAP_PANEL_THRESHOLD = 180; // below this the panel collapses to a rail
 const MAP_PANEL_RAIL = 48;
 
-function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
+function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary, showInternalConceptGraph = false }: Props) {
   const [data, setData] = useState<GraphResponse | null>(null);
   // Panel width is the single source of truth so it can be dragged open/closed
   // by its inner edge (no toggle button); below the threshold it shows a rail.
@@ -162,12 +177,14 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/knowledge-graph?clusterSlug=${encodeURIComponent(clusterSlug)}`)
+    const params = new URLSearchParams({ clusterSlug });
+    if (showInternalConceptGraph) params.set('includeInternalConcepts', '1');
+    fetch(`/api/knowledge-graph?${params.toString()}`)
       .then((r) => (r.ok ? r.json() : emptyResponse))
       .then((g: GraphResponse) => { if (!cancelled) setData(g); })
       .catch(() => { if (!cancelled) setData(emptyResponse); });
     return () => { cancelled = true; };
-  }, [clusterSlug, refreshKey]);
+  }, [clusterSlug, refreshKey, showInternalConceptGraph]);
 
   const quartzPreviewUrl = useMemo(
     () => quartzMapPreviewUrl(clusterSlug, refreshKey),
@@ -202,7 +219,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
-                Knowledge map
+                Learning map
               </h2>
               <p className="text-xs text-gray-600 mt-0.5">
                 {formatNumber(graph.stats.words)} words across this cluster
@@ -224,8 +241,8 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
           <div className="grid grid-cols-4 gap-2 mb-3">
             {[
               { value: graph.stats.documents, label: 'Sources' },
-              { value: graph.stats.topics, label: 'Topics' },
-              { value: graph.stats.generatedNotes, label: 'Notes' },
+              { value: graph.stats.textbookPages ?? graph.stats.topics, label: 'Pages' },
+              { value: graph.stats.conceptNodes ?? 0, label: 'Concepts' },
               { value: graph.stats.links, label: 'Links' },
             ].map(({ value, label }) => (
               <div key={label}>
@@ -251,7 +268,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
               <>
                 <iframe
                   src={quartzPreviewUrl}
-                  title="Quartz knowledge map preview"
+                  title="Quartz Learning Map preview"
                   className="pointer-events-none h-full w-full border-0 bg-gray-950"
                   loading="lazy"
                   tabIndex={-1}
@@ -260,7 +277,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
                 <a
                   href={graphHref(clusterSlug)}
                   className="absolute inset-0 bg-gray-950/10 transition-colors group-hover:bg-gray-950/0"
-                  aria-label="Open Quartz knowledge map"
+                  aria-label="Open Quartz Learning Map"
                 >
                   <span className="absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-2 py-1 text-[11px] font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
                     Open Quartz
@@ -296,7 +313,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
                     d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
                   />
                 </svg>
-                Source tree
+                 Textbook path
                 {graph.tree.length > 0 ? ` (${graph.tree.length})` : ''}
               </div>
               <div className="flex items-center gap-1.5">
@@ -318,7 +335,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
             {treeExpanded && (
               <div className="px-4 pb-3">
                 {graph.tree.length === 0 && graph.orphanTopics.length === 0 ? (
-                  <p className="text-xs text-gray-600">No extracted topics yet.</p>
+                   <p className="text-xs text-gray-600">No textbook pages yet.</p>
                 ) : (
                   <div className="space-y-4">
                     {graph.tree.map(({ source, topics }, sourceIndex) => (
@@ -351,7 +368,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary }: Props) {
                     ))}
                     {graph.orphanTopics.length > 0 && (
                       <div>
-                        <p className="text-xs font-medium text-gray-500 mb-2">Standalone notes</p>
+                        <p className="text-xs font-medium text-gray-500 mb-2">Other textbook pages</p>
                         <div className="space-y-1.5">
                           {graph.orphanTopics.map((topic, topicIndex) => (
                             <a

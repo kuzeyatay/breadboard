@@ -1,0 +1,415 @@
+// Breadboard visualization service: generates VisualSpec JSON through
+// ChatMock/Council, stores specs per garden, migrates legacy bracket
+// placeholders into real breadboard-visual blocks, and records ledger events.
+//
+// The LLM only ever produces JSON specs (validated by ./visual-spec); the
+// interactive rendering happens inside Quartz via trusted components.
+
+import fs from 'fs';
+import path from 'path';
+import type OpenAI from 'openai';
+import { withCouncil } from './council';
+import {
+  buildVisualBlock,
+  findVisualPlaceholders,
+  replacePlaceholderWithBlock,
+  validateVisualSpec,
+  IMPLEMENTED_VISUAL_TYPES,
+  VISUAL_TYPES,
+  type SourceFigure,
+  type VisualPlaceholder,
+  type VisualSpec,
+} from './visual-spec';
+
+export type { VisualSpec, SourceFigure };
+
+// ---------------------------------------------------------------------------
+// Storage: quartz/content/<garden>/.breadboard/{visuals/*.json, visual-index.json, events.jsonl}
+// ---------------------------------------------------------------------------
+
+export function gardenBreadboardDir(contentPath: string, gardenSlug: string): string {
+  return path.join(contentPath, gardenSlug, '.breadboard');
+}
+
+function visualsDir(contentPath: string, gardenSlug: string): string {
+  return path.join(gardenBreadboardDir(contentPath, gardenSlug), 'visuals');
+}
+
+interface VisualIndexEntry {
+  id: string;
+  pageSlug?: string;
+  type: string;
+  title: string;
+  version: number;
+  updatedAt: string;
+}
+
+export function saveVisualSpec(
+  contentPath: string,
+  gardenSlug: string,
+  spec: VisualSpec,
+  pageSlug?: string,
+): void {
+  try {
+    const dir = visualsDir(contentPath, gardenSlug);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${spec.id}.json`), JSON.stringify(spec, null, 2), 'utf-8');
+
+    const indexPath = path.join(gardenBreadboardDir(contentPath, gardenSlug), 'visual-index.json');
+    let index: Record<string, VisualIndexEntry> = {};
+    try {
+      index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+    } catch {
+      index = {};
+    }
+    index[spec.id] = {
+      id: spec.id,
+      pageSlug: pageSlug ?? spec.pageId,
+      type: spec.type,
+      title: spec.title,
+      version: spec.version,
+      updatedAt: spec.updatedAt ?? spec.createdAt,
+    };
+    fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf-8');
+  } catch (error) {
+    console.warn(`[visuals] could not persist spec ${spec.id}:`, error);
+  }
+}
+
+export function loadVisualSpec(
+  contentPath: string,
+  gardenSlug: string,
+  visualId: string,
+): VisualSpec | null {
+  try {
+    const raw = fs.readFileSync(path.join(visualsDir(contentPath, gardenSlug), `${visualId}.json`), 'utf-8');
+    const { spec } = validateVisualSpec(raw);
+    return spec;
+  } catch {
+    return null;
+  }
+}
+
+/** Garden event ledger (JSONL). Ledger failures never block the caller. */
+export function appendGardenEvent(
+  contentPath: string,
+  gardenSlug: string,
+  type: string,
+  data: Record<string, unknown>,
+): void {
+  try {
+    const dir = gardenBreadboardDir(contentPath, gardenSlug);
+    fs.mkdirSync(dir, { recursive: true });
+    const entry = JSON.stringify({ type, at: new Date().toISOString(), ...data });
+    fs.appendFileSync(path.join(dir, 'events.jsonl'), entry + '\n', 'utf-8');
+  } catch (error) {
+    console.warn(`[visuals] could not record event ${type}:`, error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generation
+// ---------------------------------------------------------------------------
+
+const IMPLEMENTED_PROPS_GUIDE = `Prop contracts for the interactive types (prefer these types when they fit):
+- function_plot: { "family": "sine"|"cosine"|"damped_sine"|"exp_decay"|"exponential"|"gaussian"|"polynomial"|"linear"|"abs"|"reciprocal", "parameters": {"a":1,"b":1,"c":0,"d":0} or {"coefficients":[c0,c1,...]}, "xMin": -5, "xMax": 5, "expressionLatex": "f(x)=..." }
+- linked_time_plots: { "amplitude": 1, "angularFrequency": 1, "phase": 0, "duration": 12, "showPosition": true, "showVelocity": true, "showAcceleration": true }
+- mass_spring: { "amplitude": 1, "angularFrequency": 1, "phase": 0, "showForceVector": true, "showVelocityVector": false }
+- energy_exchange: { "amplitude": 1, "springConstant": 1, "mass": 1, "phase": 0 }
+- resonance_curve: { "naturalFrequency": 1, "damping": 0.2, "driveFrequency": 1 }
+Controls bind by "name" to a prop key (e.g. a slider named "amplitude" drives props.amplitude).`;
+
+const VISUAL_SPEC_SYSTEM_PROMPT =
+  `You design ONE interactive visualization spec for a Breadboard learning page. ` +
+  `Return ONLY a single JSON object — no markdown fence, no commentary.\n\n` +
+  `Required fields: id (short slug like "vis_shm_energy_001"), type, title, sourceAnchors (array, may be empty; ` +
+  `each anchor: {sourceId?, sourceTitle?, page?, figureId?, description}), conceptTargets (string array), ` +
+  `pedagogicalPurpose (why this visual belongs exactly here), props (object), controls (array of ` +
+  `{name, label, type: "slider"|"toggle"|"select", min?, max?, step?, options?, defaultValue?}), ` +
+  `caption, regenerationPrompt (how to improve it next time). Optional: subtitle, misconceptionTargets, ` +
+  `formulaRefs ({latex, explanation, symbols}), annotations ({label, target?, explanation}).\n\n` +
+  `Allowed types: ${VISUAL_TYPES.join(', ')}.\n` +
+  `Interactive today: ${IMPLEMENTED_VISUAL_TYPES.join(', ')} (other types render as a static explainer card).\n\n` +
+  IMPLEMENTED_PROPS_GUIDE +
+  `\n\nHard rules:\n` +
+  `- The visual must clarify the specific concept at this point in the page, intuition before memorization.\n` +
+  `- Controls must teach something (each control should change what the learner sees meaningfully).\n` +
+  `- Include sourceAnchors whenever source figures/pages are given; never invent source-specific claims and never exceed the source scope.\n` +
+  `- Strings only contain plain text and LaTeX. Never produce code, scripts, HTML tags, URLs to executables, or event handlers.\n` +
+  `- Numbers must be finite; keep props physically sensible.`;
+
+export interface VisualGenerationContext {
+  gardenId?: string;
+  pageId?: string;
+  sectionTitle?: string;
+  subsectionTitle?: string;
+  pageMarkdown?: string;
+  sourceContext?: unknown;
+  sourceFigures?: SourceFigure[];
+  learningSpine?: unknown;
+  topicMap?: unknown;
+  userInstructions?: string;
+  visualOpportunity?: string;
+  /** Existing spec, when regenerating. */
+  existingSpec?: VisualSpec | null;
+  councilModeOverride?: 'direct_council' | 'lite_council' | 'full_council';
+}
+
+function truncateText(value: string | undefined, maxLength: number): string | undefined {
+  if (!value) return undefined;
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}\n[...truncated...]`;
+}
+
+function stripJsonFence(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : trimmed;
+}
+
+function newVisualId(): string {
+  return `vis_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export interface GeneratedVisual {
+  spec: VisualSpec | null;
+  errors: string[];
+}
+
+/** VisualizationGenerator: one ChatMock/Council call -> one validated VisualSpec. */
+export async function generateVisualSpec(
+  client: OpenAI,
+  model: string,
+  context: VisualGenerationContext,
+): Promise<GeneratedVisual> {
+  const userPayload = {
+    visualOpportunity: context.visualOpportunity,
+    sectionTitle: context.sectionTitle,
+    subsectionTitle: context.subsectionTitle,
+    userInstructions: truncateText(context.userInstructions, 2000),
+    surroundingPageMarkdown: truncateText(context.pageMarkdown, 9000),
+    sourceFigures: context.sourceFigures?.slice(0, 12),
+    learningSpine: context.learningSpine,
+    topicMap: context.topicMap,
+    existingSpec: context.existingSpec ?? undefined,
+  };
+
+  // Council-mediated: many source figures (or an explicit override) escalate.
+  const manySourceFigures = (context.sourceFigures?.length ?? 0) >= 3;
+  const councilSourceContext = {
+    pageMarkdown: truncateText(context.pageMarkdown, 6000),
+    sourceFigures: context.sourceFigures?.slice(0, 12),
+    visualOpportunity: context.visualOpportunity,
+    currentSubsection: context.subsectionTitle,
+    ...(typeof context.sourceContext === 'object' && context.sourceContext !== null
+      ? (context.sourceContext as Record<string, unknown>)
+      : {}),
+  };
+
+  let raw = '';
+  try {
+    const response = await client.chat.completions.create(withCouncil({
+      model,
+      messages: [
+        { role: 'system', content: VISUAL_SPEC_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content:
+            'Design the visualization spec for this context. Return only the JSON object.\n\n' +
+            JSON.stringify(userPayload, null, 2),
+        },
+      ],
+    }, {
+      taskType: 'visualization_generation',
+      gardenId: context.gardenId,
+      pageId: context.pageId,
+      sourceContext: councilSourceContext,
+      councilModeOverride:
+        context.councilModeOverride ?? (manySourceFigures ? 'full_council' : undefined),
+    }));
+    raw = response.choices[0]?.message?.content ?? '';
+  } catch (error) {
+    return { spec: null, errors: [error instanceof Error ? error.message : 'model call failed'] };
+  }
+
+  const candidate = stripJsonFence(raw);
+  const { spec, errors } = validateVisualSpec(candidate);
+  if (!spec) {
+    // One repair attempt: fill in mechanical fields the model may have omitted.
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object') {
+        const patched = {
+          id: newVisualId(),
+          regenerationPrompt:
+            context.visualOpportunity ?? 'Regenerate this visualization with better pedagogy.',
+          pedagogicalPurpose: context.visualOpportunity ?? '',
+          ...parsed,
+        };
+        const retry = validateVisualSpec(patched);
+        if (retry.spec) return finalizeSpec(retry.spec, context);
+      }
+    } catch {
+      // fall through
+    }
+    return { spec: null, errors };
+  }
+  return finalizeSpec(spec, context);
+}
+
+function finalizeSpec(spec: VisualSpec, context: VisualGenerationContext): GeneratedVisual {
+  if (context.gardenId) spec.gardenId = context.gardenId;
+  if (context.pageId) spec.pageId = context.pageId;
+  if (context.existingSpec) {
+    spec.id = context.existingSpec.id;
+    spec.version = (context.existingSpec.version ?? 1) + 1;
+    spec.createdAt = context.existingSpec.createdAt;
+    spec.updatedAt = new Date().toISOString();
+    if (spec.sourceAnchors.length === 0 && context.existingSpec.sourceAnchors.length > 0) {
+      spec.sourceAnchors = context.existingSpec.sourceAnchors;
+    }
+  }
+  return { spec, errors: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy placeholder migration
+// ---------------------------------------------------------------------------
+
+export interface MigrationFailure {
+  placeholder: string;
+  errors: string[];
+}
+
+export interface MigrationResult {
+  markdownWithVisualBlocks: string;
+  generatedVisualSpecs: VisualSpec[];
+  failures: MigrationFailure[];
+}
+
+/** Converts legacy "[Interactive visual: ...]" placeholders into real
+ * breadboard-visual blocks. Failed conversions keep their placeholder. */
+export async function migrateVisualPlaceholders(
+  client: OpenAI,
+  model: string,
+  pageMarkdown: string,
+  context: VisualGenerationContext,
+): Promise<MigrationResult> {
+  const placeholders = findVisualPlaceholders(pageMarkdown);
+  const generatedVisualSpecs: VisualSpec[] = [];
+  const failures: MigrationFailure[] = [];
+  const replacements: Array<{ placeholder: VisualPlaceholder; spec: VisualSpec }> = [];
+
+  for (const placeholder of placeholders) {
+    const nearby = pageMarkdown.slice(
+      Math.max(0, placeholder.index - 2500),
+      placeholder.index + placeholder.fullMatch.length + 1200,
+    );
+    const { spec, errors } = await generateVisualSpec(client, model, {
+      ...context,
+      pageMarkdown: nearby,
+      visualOpportunity: placeholder.body,
+    });
+    if (spec) {
+      replacements.push({ placeholder, spec });
+      generatedVisualSpecs.push(spec);
+    } else {
+      failures.push({ placeholder: placeholder.fullMatch, errors });
+    }
+  }
+
+  // Replace from the last placeholder to the first so indices stay valid.
+  let markdown = pageMarkdown;
+  for (const { placeholder, spec } of [...replacements].sort(
+    (a, b) => b.placeholder.index - a.placeholder.index,
+  )) {
+    markdown = replacePlaceholderWithBlock(markdown, placeholder, spec);
+  }
+
+  return { markdownWithVisualBlocks: markdown, generatedVisualSpecs, failures };
+}
+
+// ---------------------------------------------------------------------------
+// Markdown block helpers used by the API routes
+// ---------------------------------------------------------------------------
+
+const VISUAL_BLOCK_PATTERN = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
+
+export function findVisualBlockById(
+  markdown: string,
+  visualId: string,
+): { fullMatch: string; json: string; index: number } | null {
+  const pattern = new RegExp(VISUAL_BLOCK_PATTERN.source, VISUAL_BLOCK_PATTERN.flags);
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(markdown)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed && parsed.id === visualId) {
+        return { fullMatch: match[0], json: match[1], index: match.index };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+export function replaceVisualBlock(
+  markdown: string,
+  block: { fullMatch: string; index: number },
+  spec: VisualSpec,
+): string {
+  return (
+    markdown.slice(0, block.index) +
+    buildVisualBlock(spec) +
+    markdown.slice(block.index + block.fullMatch.length)
+  );
+}
+
+/** Recursively list markdown files of a garden (skipping .breadboard). */
+export function listGardenMarkdownFiles(contentPath: string, gardenSlug: string): string[] {
+  const root = path.join(contentPath, gardenSlug);
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(fullPath);
+      else if (entry.isFile() && entry.name.endsWith('.md')) files.push(fullPath);
+    }
+  };
+  walk(root);
+  return files;
+}
+
+/** Record ledger events for a freshly created visual (incl. figure links). */
+export function recordVisualCreated(
+  contentPath: string,
+  gardenSlug: string,
+  spec: VisualSpec,
+  pageSlug: string | undefined,
+): void {
+  appendGardenEvent(contentPath, gardenSlug, 'visualization_created', {
+    visualId: spec.id,
+    pageId: pageSlug ?? spec.pageId,
+    type: spec.type,
+    title: spec.title,
+    sourceAnchors: spec.sourceAnchors,
+    conceptTargets: spec.conceptTargets,
+  });
+  for (const anchor of spec.sourceAnchors) {
+    if (anchor.figureId) {
+      appendGardenEvent(contentPath, gardenSlug, 'source_figure_linked', {
+        figureId: anchor.figureId,
+        pageId: pageSlug ?? spec.pageId,
+        visualId: spec.id,
+        sourceId: anchor.sourceId,
+      });
+    }
+  }
+}

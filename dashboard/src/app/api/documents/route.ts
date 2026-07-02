@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
-import { listClusterFolders, refreshClusterIndex, scanClusterKnowledge, slugify } from '@/lib/knowledge';
+import { listClusterFolders, normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge, slugify } from '@/lib/knowledge';
+import { INTERNAL_CONCEPT_TYPE, isLegacySubtopicRelPath, readingOrderRank } from '@/lib/learning-garden';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
@@ -11,6 +12,9 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const clusterSlug = searchParams.get('clusterSlug');
+    const includeInternalConcepts =
+      searchParams.get('includeInternalConcepts') === 'true' ||
+      searchParams.get('includeInternalConcepts') === '1';
 
     if (!clusterSlug) {
       return NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 });
@@ -37,6 +41,11 @@ export async function GET(request: Request) {
     }
 
     const documents = knowledge.nodes
+      .filter(
+        (node) =>
+          includeInternalConcepts ||
+          (node.type !== INTERNAL_CONCEPT_TYPE && !isLegacySubtopicRelPath(node.relPath)),
+      )
       .map((node) => ({
         id: node.id,
         slug: node.slug,
@@ -59,14 +68,22 @@ export async function GET(request: Request) {
         linkCount: linkCountBySlug.get(node.slug) ?? 0,
       }))
       .sort((a, b) => {
-        const typeRank = (type: string) => (type === 'source-document' ? 0 : type === 'knowledge-topic' ? 1 : 2);
+        const typeRank = (type: string) =>
+          type === 'source-document' ? 0 : type === 'topic-overview' || type === 'learning-map' || type === 'source-map' || type === 'scope-contract' ? 1 : type === 'textbook-page' ? 2 : type === INTERNAL_CONCEPT_TYPE ? 9 : 5;
         const typeDiff = typeRank(a.type) - typeRank(b.type);
         if (typeDiff !== 0) return typeDiff;
+        const readingDiff = readingOrderRank(a.relPath, a.type) - readingOrderRank(b.relPath, b.type);
+        if (readingDiff !== 0) return readingDiff;
         const dateDiff = Date.parse(b.date) - Date.parse(a.date);
         return dateDiff || a.title.localeCompare(b.title);
       });
 
-    const folders = listClusterFolders(path.join(contentPath, cluster.slug));
+    const folders = listClusterFolders(path.join(contentPath, cluster.slug)).filter(
+      (folder) =>
+        includeInternalConcepts ||
+        (!folder.toLowerCase().startsWith('internal/') &&
+          !isLegacySubtopicRelPath(`${folder}/placeholder.md`)),
+    );
 
     return NextResponse.json({ documents, folders, stats: knowledge.stats });
   } catch (error) {
@@ -77,7 +94,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { clusterSlug, title, content, folder } = body;
+    const { clusterSlug, title, content, folder, tags } = body;
 
     if (typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
       return NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 });
@@ -87,6 +104,12 @@ export async function POST(request: Request) {
     }
     if (typeof content !== 'string') {
       return NextResponse.json({ error: 'content is required' }, { status: 400 });
+    }
+    if (
+      tags !== undefined &&
+      (!Array.isArray(tags) || tags.some((tag: unknown) => typeof tag !== 'string'))
+    ) {
+      return NextResponse.json({ error: 'tags must be an array of strings' }, { status: 400 });
     }
 
     const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
@@ -121,14 +144,26 @@ export async function POST(request: Request) {
     const slug = `${baseSlug}-${timestamp}`;
     const date = new Date().toISOString();
 
-    const frontmatter = `---\ntitle: ${JSON.stringify(title.trim())}\ndate: ${JSON.stringify(date)}\nsource: "user-note"\nknowledge_type: "user-note"\n---\n\n`;
     const body_ = content.trim() ? content : `## ${title.trim()}\n\n`;
+    const normalizedTags = Array.isArray(tags)
+      ? normalizeTopicTags(
+          tags.map((tag: string) => tag.trim()).filter(Boolean),
+          body_,
+          8,
+          `${title.trim()}\n${body_}`,
+        )
+      : [];
+    const tagsLine =
+      normalizedTags.length > 0
+        ? `tags: [${normalizedTags.map((tag) => JSON.stringify(tag)).join(', ')}]\n`
+        : '';
+    const frontmatter = `---\ntitle: ${JSON.stringify(title.trim())}\ndate: ${JSON.stringify(date)}\nsource: "user-note"\nknowledge_type: "user-note"\n${tagsLine}---\n\n`;
     fs.writeFileSync(path.join(targetDir, `${slug}.md`), frontmatter + body_, 'utf-8');
 
     refreshClusterIndex(contentPath, cluster.slug);
     await publishQuartzAfterMutation(`create document ${cluster.slug}/${slug}`);
 
-    return NextResponse.json({ success: true, slug });
+    return NextResponse.json({ success: true, slug, tags: normalizedTags });
   } catch (err) {
     return routeErrorResponse(err);
   }

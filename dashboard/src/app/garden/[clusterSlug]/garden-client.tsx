@@ -28,6 +28,8 @@ interface QuartzMessage {
   type?: string;
   slug?: string;
   title?: string;
+  body?: string;
+  tags?: unknown[];
   path?: string;
   flagColor?: string;
   content?: string;
@@ -304,6 +306,9 @@ export default function GardenClient({
               slug: data.slug,
               ok: response.ok && body.success,
               content: typeof body.content === 'string' ? body.content : '',
+              title: typeof body.title === 'string' ? body.title : '',
+              tags: Array.isArray(body.tags) ? body.tags : [],
+              body: typeof body.body === 'string' ? body.body : '',
               error: body.error,
             });
           })
@@ -318,12 +323,24 @@ export default function GardenClient({
       }
 
       if (data.type === 'second-brain:save-markdown') {
-        const content = typeof data.content === 'string' ? data.content : '';
+        // The Quartz editor now sends title/tags/body separately so hidden
+        // frontmatter (date, knowledge_type, …) is preserved. Fall back to the
+        // legacy full-content payload if an older editor build sends it.
+        const patch: Record<string, unknown> =
+          typeof data.body === 'string' || typeof data.title === 'string' || Array.isArray(data.tags)
+            ? {
+                ...(typeof data.title === 'string' ? { title: data.title } : {}),
+                ...(Array.isArray(data.tags)
+                  ? { tags: data.tags.filter((tag: unknown) => typeof tag === 'string') }
+                  : {}),
+                ...(typeof data.body === 'string' ? { body: data.body } : {}),
+              }
+            : { content: typeof data.content === 'string' ? data.content : '' };
 
         fetch(`/api/documents/${encodeURIComponent(slug)}?clusterSlug=${encodeURIComponent(effectiveCluster)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify(patch),
         })
           .then(async (response) => {
             const body = await response.json().catch(() => ({}));
