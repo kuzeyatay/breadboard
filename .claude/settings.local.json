@@ -9,7 +9,8 @@
       "MultiEdit(*)",
       "Glob(*)",
       "Grep(*)",
-      "LS(*)"
+      "LS(*)",
+      "PowerShell(*)"
     ]
   }
 }

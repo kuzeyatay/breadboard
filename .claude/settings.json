@@ -1,8 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm ls *)",
-      "Bash(npm install *)"
+      "Bash(*)",
+      "PowerShell(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "MultiEdit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "LS(*)"
     ]
   }
 }

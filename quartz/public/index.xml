@@ -36,16 +36,22 @@
     <description><![CDATA[ Topic Overview This garden is a source-only introduction to Spiking Neural Networks: The Future of Brain-Inspired Computing, and it should be read as one continuous argument rather than as a stack of separate notes. ]]></description>
     <pubDate>Thu, 02 Jul 2026 19:31:11 GMT</pubDate>
   </item><item>
+    <title>1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview</title>
+    <link>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/1.1-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs-Overview</link>
+    <guid>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/1.1-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs-Overview</guid>
+    <description><![CDATA[ Why the Source Turns from Conventional Neural Networks to SNNs Overview The paper opens by motivating a shift in computational style, not by arguing that conventional neural networks are useless. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
+  </item><item>
     <title>1. Why the Source Turns from Conventional Neural Networks to SNNs</title>
     <link>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/</link>
     <guid>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/</guid>
     <description><![CDATA[ 1. ]]></description>
     <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item><item>
-    <title>1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview</title>
-    <link>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/1.1-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs-Overview</link>
-    <guid>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/1.1-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs-Overview</guid>
-    <description><![CDATA[ Why the Source Turns from Conventional Neural Networks to SNNs Overview The paper opens by motivating a shift in computational style, not by arguing that conventional neural networks are useless. ]]></description>
+    <title>2.1 What Spiking Neural Networks Are in This Paper Overview</title>
+    <link>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/2.1-What-Spiking-Neural-Networks-Are-in-This-Paper-Overview</link>
+    <guid>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/2.1-What-Spiking-Neural-Networks-Are-in-This-Paper-Overview</guid>
+    <description><![CDATA[ What Spiking Neural Networks Are in This Paper Overview This paper introduces spiking neural networks by changing the basic unit of neural computation. ]]></description>
     <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item><item>
     <title>2. What Spiking Neural Networks Are in This Paper</title>
@@ -54,16 +60,10 @@
     <description><![CDATA[ 2. ]]></description>
     <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item><item>
-    <title>3. The Named Neuron Model: LIF as Source-Central Evidence</title>
-    <link>https://localhost:8081/test-2/3.-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence/</link>
-    <guid>https://localhost:8081/test-2/3.-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence/</guid>
-    <description><![CDATA[ 3. ]]></description>
-    <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
-  </item><item>
-    <title>2.1 What Spiking Neural Networks Are in This Paper Overview</title>
-    <link>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/2.1-What-Spiking-Neural-Networks-Are-in-This-Paper-Overview</link>
-    <guid>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/2.1-What-Spiking-Neural-Networks-Are-in-This-Paper-Overview</guid>
-    <description><![CDATA[ What Spiking Neural Networks Are in This Paper Overview This paper introduces spiking neural networks by changing the basic unit of neural computation. ]]></description>
+    <title>3.1 The Named Neuron Model: LIF as Source-Central Evidence Overview</title>
+    <link>https://localhost:8081/test-2/3.-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence/3.1-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence-Overview</link>
+    <guid>https://localhost:8081/test-2/3.-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence/3.1-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence-Overview</guid>
+    <description><![CDATA[ To see why the paper treats spiking neural networks as a genuinely different style of computation, it helps to move from the level of whole networks down to the level of a single neuron. ]]></description>
     <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item>
     </channel>
