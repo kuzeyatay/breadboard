@@ -1,0 +1,145 @@
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+
+export interface GardenLink {
+  id: string;
+  title: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const LINKS_FILE = "links.json";
+
+function metadataDir(contentPath: string, gardenSlug: string): string {
+  const root = path.resolve(contentPath);
+  const clusterDir = path.resolve(root, gardenSlug.trim());
+  if (clusterDir !== root && !clusterDir.startsWith(root + path.sep)) {
+    throw new Error("Invalid garden path");
+  }
+  const dir = path.join(clusterDir, ".breadboard");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function linksFilePath(contentPath: string, gardenSlug: string): string {
+  return path.join(metadataDir(contentPath, gardenSlug), LINKS_FILE);
+}
+
+function normalizeTitle(value: unknown, url: string): string {
+  const title = typeof value === "string" ? value.trim() : "";
+  if (title) return title.slice(0, 160);
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
+  }
+}
+
+function normalizeUrl(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("Link URL is required");
+  }
+  const raw = value.trim();
+  const candidate = /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error("Enter a valid link URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Only HTTP and HTTPS links are supported");
+  }
+  return parsed.toString();
+}
+
+function normalizeLink(value: unknown): GardenLink | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<GardenLink>;
+  if (typeof record.id !== "string" || !record.id.trim()) return null;
+  if (typeof record.url !== "string" || !record.url.trim()) return null;
+  const createdAt =
+    typeof record.createdAt === "string" && record.createdAt
+      ? record.createdAt
+      : new Date().toISOString();
+  const updatedAt =
+    typeof record.updatedAt === "string" && record.updatedAt
+      ? record.updatedAt
+      : createdAt;
+  return {
+    id: record.id,
+    title: normalizeTitle(record.title, record.url),
+    url: record.url,
+    createdAt,
+    updatedAt,
+  };
+}
+
+export function readGardenLinks(contentPath: string, gardenSlug: string): GardenLink[] {
+  const filePath = linksFilePath(contentPath, gardenSlug);
+  if (!fs.existsSync(filePath)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    const rawLinks: unknown[] =
+      parsed && typeof parsed === "object" && Array.isArray((parsed as { links?: unknown }).links)
+        ? (parsed as { links: unknown[] }).links
+        : [];
+    return rawLinks
+      .map(normalizeLink)
+      .filter((link): link is GardenLink => Boolean(link))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  } catch {
+    return [];
+  }
+}
+
+function writeGardenLinks(
+  contentPath: string,
+  gardenSlug: string,
+  links: GardenLink[],
+): void {
+  const filePath = linksFilePath(contentPath, gardenSlug);
+  const payload = {
+    version: 1,
+    links: links
+      .slice()
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
+  };
+  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+}
+
+export function addGardenLink(
+  contentPath: string,
+  gardenSlug: string,
+  input: { title?: unknown; url?: unknown },
+): GardenLink {
+  const url = normalizeUrl(input.url);
+  const now = new Date().toISOString();
+  const link: GardenLink = {
+    id: crypto.randomUUID(),
+    title: normalizeTitle(input.title, url),
+    url,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const links = readGardenLinks(contentPath, gardenSlug);
+  writeGardenLinks(contentPath, gardenSlug, [link, ...links]);
+  return link;
+}
+
+export function deleteGardenLink(
+  contentPath: string,
+  gardenSlug: string,
+  linkId: unknown,
+): boolean {
+  if (typeof linkId !== "string" || !linkId.trim()) {
+    throw new Error("Link id is required");
+  }
+  const links = readGardenLinks(contentPath, gardenSlug);
+  const next = links.filter((link) => link.id !== linkId);
+  if (next.length === links.length) return false;
+  writeGardenLinks(contentPath, gardenSlug, next);
+  return true;
+}

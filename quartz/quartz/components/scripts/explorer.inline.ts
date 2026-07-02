@@ -264,10 +264,17 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const a = li.querySelector("a") as HTMLAnchorElement
   const flagColor = validFlagColor(node.data?.flagColor)
   const isSourceDocument = node.data?.knowledgeType === "source-document"
+  const isTextbookPage =
+    node.data?.knowledgeType === "textbook-page" || node.data?.breadboardType === "textbook_page"
+  const isInternalConcept =
+    node.data?.knowledgeType === "internal-concept" ||
+    node.data?.breadboardType === "internal_concept"
   const isChatNodeNote =
     node.data?.knowledgeType === "generated-note" && node.data?.generatedNoteType === "chat-node"
   li.classList.add("explorer-file")
   if (isSourceDocument) li.classList.add("source-document")
+  if (isTextbookPage) li.classList.add("textbook-page")
+  if (isInternalConcept) li.classList.add("internal-concept")
   if (isChatNodeNote) li.classList.add("chat-node-note")
   a.href = resolveRelative(currentSlug, node.slug)
   a.dataset.for = node.slug

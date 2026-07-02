@@ -179,8 +179,8 @@ export default function MarkdownToPdfButton({
         disabled={!activeNote || downloading}
         title={
           activeNote
-            ? "Download current markdown note as PDF"
-            : "Open a markdown note to download as PDF"
+            ? "Download current page as PDF"
+            : "Open a page to download as PDF"
         }
         className="flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-gray-700 disabled:hover:text-gray-300"
       >

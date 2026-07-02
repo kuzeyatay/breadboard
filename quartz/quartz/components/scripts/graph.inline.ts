@@ -34,6 +34,7 @@ type NodeData = {
   text: string
   tags: string[]
   knowledgeType?: string
+  breadboardType?: string
   sourceFile?: string
   locations?: string[]
 } & SimulationNodeDatum
@@ -201,6 +202,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
       text,
       tags: details?.tags ?? [],
       knowledgeType: details?.knowledgeType,
+      breadboardType: details?.breadboardType,
       sourceFile: details?.sourceFile,
       locations: details?.locations,
     }
@@ -257,7 +259,10 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
         return width * (stableUnit(`tag-x:${node.id}`) - 0.5) * 0.86
       }
       if (node.knowledgeType === "source-document") return -width * 0.32
-      if (node.knowledgeType === "generated-note") return width * 0.32
+      if (node.knowledgeType === "textbook-page" || node.breadboardType === "textbook_page") {
+        return width * 0.24
+      }
+      if (node.knowledgeType === "generated-note") return width * 0.34
       if (node.id === slug) return 0
       return width * (stableUnit(node.sourceFile || node.id) - 0.5) * 0.32
     }
@@ -298,8 +303,10 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
   const graphColors = {
     current: "#93c5fd",
     source: "#67e8f9",
-    topic: "#86efac",
-    generated: "#f9a8d4",
+    textbook: "#86efac",
+    legacyTopic: "#bbf7d0",
+    savedChat: "#f9a8d4",
+    internal: "#94a3b8",
     tag: "#facc15",
     neutral: computedStyleMap["--gray"],
     edge: "#334155",
@@ -314,14 +321,18 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
       return graphColors.current
     } else if (d.knowledgeType === "source-document") {
       return graphColors.source
+    } else if (d.knowledgeType === "textbook-page" || d.breadboardType === "textbook_page") {
+      return graphColors.textbook
+    } else if (d.knowledgeType === "internal-concept" || d.breadboardType === "internal_concept") {
+      return graphColors.internal
     } else if (d.knowledgeType === "knowledge-topic") {
-      return graphColors.topic
+      return graphColors.legacyTopic
     } else if (d.knowledgeType === "generated-note") {
-      return graphColors.generated
+      return graphColors.savedChat
     } else if (d.id.startsWith("tags/")) {
       return graphColors.tag
     } else if (visited.has(d.id) || d.id.startsWith("tags/")) {
-      return graphColors.topic
+      return graphColors.textbook
     } else {
       return graphColors.neutral
     }
@@ -331,7 +342,15 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
     const numLinks = graphData.links.filter(
       (l) => l.source.id === d.id || l.target.id === d.id,
     ).length
-    const base = d.id.startsWith("tags/") ? 1.4 : d.knowledgeType === "source-document" ? 4.4 : 2.2
+    const base = d.id.startsWith("tags/")
+      ? 1.4
+      : d.knowledgeType === "source-document"
+        ? 4.4
+        : d.knowledgeType === "textbook-page" || d.breadboardType === "textbook_page"
+          ? 3.2
+          : d.knowledgeType === "internal-concept" || d.breadboardType === "internal_concept"
+            ? 1.8
+            : 2.2
     return base + Math.sqrt(numLinks)
   }
 

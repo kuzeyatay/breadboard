@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>My garden</title>
-    <link>https://localhost:8081/private-library/user-1/</link>
-    <guid>https://localhost:8081/private-library/user-1/</guid>
-    <description><![CDATA[ All the gardens attached to your account. ]]></description>
-    <pubDate>Wed, 01 Jul 2026 21:00:00 GMT</pubDate>
+    <title>Source Coverage</title>
+    <link>https://localhost:8081/test-2/Learning/Source-Coverage</link>
+    <guid>https://localhost:8081/test-2/Learning/Source-Coverage</guid>
+    <description><![CDATA[ Source Coverage Sources Used 2510.27379v1 (2510-27379v1) Generated Pages By Source Anchor 1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview: S1.P1.Abstract; S1.P1.Intro.ANNLimits; S1.P1.Intro.ModelSurvey; S1.P1.Intro.SyncVsAsync 2.1 What Spiking Neural Networks Are in This ... ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:57:40 GMT</pubDate>
   </item><item>
-    <title>test</title>
-    <link>https://localhost:8081/test-2/</link>
-    <guid>https://localhost:8081/test-2/</guid>
-    <description><![CDATA[ Quartz garden generated from 0 source documents, with 0 knowledge topics and 0 graph links. ]]></description>
-    <pubDate>Wed, 01 Jul 2026 21:00:00 GMT</pubDate>
+    <title>Scope Contract</title>
+    <link>https://localhost:8081/test-2/Learning/Scope-Contract</link>
+    <guid>https://localhost:8081/test-2/Learning/Scope-Contract</guid>
+    <description><![CDATA[ Scope Contract { &quot;included&quot;: [ { &quot;topic&quot;: &quot;What the source claims SNNs are&quot;, &quot;scope&quot;: &quot;Cover Spiking Neural Networks as the source presents them: brain-inspired neural computation using discrete spike events rather than continuous-valued activations, with... ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:31:11 GMT</pubDate>
   </item><item>
-    <title>13) Entanglement</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/13-entanglement-1782674317732</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/13-entanglement-1782674317732</guid>
-    <description><![CDATA[ Entanglement Up to this point, the wave function has mostly been used to describe one quantum object at a time. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 19:18:37 GMT</pubDate>
+    <title>Source Map</title>
+    <link>https://localhost:8081/test-2/Learning/Source-Map</link>
+    <guid>https://localhost:8081/test-2/Learning/Source-Map</guid>
+    <description><![CDATA[ Source Map Relevant Sources Found 2510.27379v1 - pdf, 11108 words Source Figures, Graphs, Tables, And Formula Displays S1.P4.F1: Fig. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:31:11 GMT</pubDate>
   </item><item>
-    <title>13) Entanglement</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/13-entanglement-1782674275732</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/13-entanglement-1782674275732</guid>
-    <description><![CDATA[ Entanglement Up to this point, the wave function has mostly been used to describe one quantum object at a time. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 19:17:55 GMT</pubDate>
+    <title>Learning Map</title>
+    <link>https://localhost:8081/test-2/Learning/Learning-Map</link>
+    <guid>https://localhost:8081/test-2/Learning/Learning-Map</guid>
+    <description><![CDATA[ Learning Map Section Order Why the Source Turns from Conventional Neural Networks to SNNs 1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview What Spiking Neural Networks Are in This Paper 2.1 What Spiking Neural Networks Are in This Paper Overview The Named Neuron Model: LIF... ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:31:11 GMT</pubDate>
   </item><item>
-    <title>12) The quantum harmonic oscillator and a brief 3D glimpse</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/12-the-quantum-harmonic-oscillator-and-a-brief-3d-glimpse-1782674018399</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/12-the-quantum-harmonic-oscillator-and-a-brief-3d-glimpse-1782674018399</guid>
-    <description><![CDATA[ The quantum harmonic oscillator and a brief 3D glimpse The particle in a box, the finite well, and tunneling barriers all showed the same basic rule: the potential energy function U(x) shapes the allowed wave functions. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 19:13:38 GMT</pubDate>
+    <title>Topic Overview</title>
+    <link>https://localhost:8081/test-2/Learning/Topic-Overview</link>
+    <guid>https://localhost:8081/test-2/Learning/Topic-Overview</guid>
+    <description><![CDATA[ Topic Overview This garden is a source-only introduction to Spiking Neural Networks: The Future of Brain-Inspired Computing, and it should be read as one continuous argument rather than as a stack of separate notes. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:31:11 GMT</pubDate>
   </item><item>
-    <title>11) Finite wells and tunneling</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/11-finite-wells-and-tunneling-1782673814448</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/11-finite-wells-and-tunneling-1782673814448</guid>
-    <description><![CDATA[ Finite wells and tunneling The infinite square well gave the cleanest example of quantum confinement. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 19:10:14 GMT</pubDate>
+    <title>1. Why the Source Turns from Conventional Neural Networks to SNNs</title>
+    <link>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/</link>
+    <guid>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/</guid>
+    <description><![CDATA[ 1. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item><item>
-    <title>10) The time-independent Schrödinger equation and the particle in a box</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/10-the-time-independent-schr-dinger-equation-and-the-particle-in-a-box-1782673445430</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/10-the-time-independent-schr-dinger-equation-and-the-particle-in-a-box-1782673445430</guid>
-    <description><![CDATA[ The time-independent Schrödinger equation and the particle in a box The previous subsection gave the wave function a physical interpretation. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 19:04:05 GMT</pubDate>
+    <title>1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview</title>
+    <link>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/1.1-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs-Overview</link>
+    <guid>https://localhost:8081/test-2/1.-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs/1.1-Why-the-Source-Turns-from-Conventional-Neural-Networks-to-SNNs-Overview</guid>
+    <description><![CDATA[ Why the Source Turns from Conventional Neural Networks to SNNs Overview The paper opens by motivating a shift in computational style, not by arguing that conventional neural networks are useless. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item><item>
-    <title>9) Interpreting wave functions and wave packets</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/9-interpreting-wave-functions-and-wave-packets-1782673089005</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/9-interpreting-wave-functions-and-wave-packets-1782673089005</guid>
-    <description><![CDATA[ Interpreting wave functions and wave packets The free-particle Schrödinger equation gave us a rule for how a matter wave evolves: i\hbar\frac{\partial \Psi}{\partial t} = -\frac{\hbar^2}{2m} \frac{\partial^2\Psi}{\partial x^2}. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 18:58:09 GMT</pubDate>
+    <title>2. What Spiking Neural Networks Are in This Paper</title>
+    <link>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/</link>
+    <guid>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/</guid>
+    <description><![CDATA[ 2. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item><item>
-    <title>8) From matter waves to the free-particle Schrödinger equation</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/8-from-matter-waves-to-the-free-particle-schr-dinger-equation-1782672669918</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/8-from-matter-waves-to-the-free-particle-schr-dinger-equation-1782672669918</guid>
-    <description><![CDATA[ From matter waves to the free-particle Schrödinger equation The De Broglie relation gave matter a wavelength: \lambda=\frac{h}{p}. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 18:51:09 GMT</pubDate>
+    <title>3. The Named Neuron Model: LIF as Source-Central Evidence</title>
+    <link>https://localhost:8081/test-2/3.-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence/</link>
+    <guid>https://localhost:8081/test-2/3.-The-Named-Neuron-Model-LIF-as-Source-Central-Evidence/</guid>
+    <description><![CDATA[ 3. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item><item>
-    <title>7) Lasers and blackbody radiation as quantization applications</title>
-    <link>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/7-lasers-and-blackbody-radiation-as-quantization-applications-1782672382982</link>
-    <guid>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/7-lasers-and-blackbody-radiation-as-quantization-applications-1782672382982</guid>
-    <description><![CDATA[ Lasers and blackbody radiation as quantization applications The Bohr model showed that atoms do not exchange arbitrary amounts of energy with light. ]]></description>
-    <pubDate>Sun, 28 Jun 2026 18:46:22 GMT</pubDate>
+    <title>2.1 What Spiking Neural Networks Are in This Paper Overview</title>
+    <link>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/2.1-What-Spiking-Neural-Networks-Are-in-This-Paper-Overview</link>
+    <guid>https://localhost:8081/test-2/2.-What-Spiking-Neural-Networks-Are-in-This-Paper/2.1-What-Spiking-Neural-Networks-Are-in-This-Paper-Overview</guid>
+    <description><![CDATA[ What Spiking Neural Networks Are in This Paper Overview This paper introduces spiking neural networks by changing the basic unit of neural computation. ]]></description>
+    <pubDate>Thu, 02 Jul 2026 19:28:53 GMT</pubDate>
   </item>
     </channel>
   </rss>

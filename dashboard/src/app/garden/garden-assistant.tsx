@@ -39,6 +39,29 @@ interface GraphStats {
   words: number;
 }
 
+type LearnStatus =
+  | 'idle'
+  | 'planning'
+  | 'awaiting_confirmation'
+  | 'generating_textbook'
+  | 'generating_visuals'
+  | 'writing_quartz'
+  | 'building_navigation'
+  | 'complete'
+  | 'failed'
+  | 'cancelled';
+
+interface AssistantLearnState {
+  job?: {
+    status: LearnStatus;
+    currentStep?: string;
+  } | null;
+  confirmedLearningMapId?: string;
+  hasSources?: boolean;
+  hasTextbook?: boolean;
+  buttonLabel?: string;
+}
+
 interface SavedPrompt {
   id: string;
   title: string;
@@ -71,6 +94,16 @@ const EMPTY_STATS: GraphStats = {
   links: 0,
   words: 0,
 };
+
+function isAssistantLearnActive(status?: LearnStatus): boolean {
+  return (
+    status === 'planning' ||
+    status === 'generating_textbook' ||
+    status === 'generating_visuals' ||
+    status === 'writing_quartz' ||
+    status === 'building_navigation'
+  );
+}
 
 const SUGGESTED_PROMPTS = [
   'What are the main topics in this garden?',
@@ -291,6 +324,8 @@ export default function GardenAssistant({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [learnState, setLearnState] = useState<AssistantLearnState | null>(null);
+  const [learnBusy, setLearnBusy] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   const [usageData, setUsageData] = useState<Record<string, unknown> | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
@@ -353,6 +388,36 @@ export default function GardenAssistant({
       setModelsLoading(false);
     }
   }, [modelsLoaded, modelsLoading]);
+
+  const fetchLearnStatus = useCallback(async () => {
+    if (!activeClusterSlug) {
+      setLearnState(null);
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/gardens/${encodeURIComponent(activeClusterSlug)}/learn/status`,
+      );
+      if (!response.ok) return;
+      const data = (await response.json().catch(() => ({}))) as AssistantLearnState;
+      setLearnState(data);
+    } catch {
+      // Learn status is best-effort in the assistant panel.
+    }
+  }, [activeClusterSlug]);
+
+  useEffect(() => {
+    void fetchLearnStatus();
+  }, [fetchLearnStatus]);
+
+  useEffect(() => {
+    const active = isAssistantLearnActive(learnState?.job?.status) || learnBusy;
+    if (!active) return;
+    const id = window.setInterval(() => {
+      void fetchLearnStatus();
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [fetchLearnStatus, learnBusy, learnState?.job?.status]);
 
   const activeMarkdownContext =
     activeMarkdown?.content
@@ -740,6 +805,60 @@ export default function GardenAssistant({
     persistPrompts(updated);
   }
 
+  async function appendAssistantNotice(content: string) {
+    let session = activeChat;
+    if (!session && activeClusterSlug) {
+      session = await createChatSession('Learn');
+    }
+    if (!session) {
+      setMessages((previous) => [...previous, { role: 'assistant', content }]);
+      return;
+    }
+    const nextMessages = [...session.messages, { role: 'assistant' as const, content }];
+    updateSessionMessages(session.id, nextMessages);
+    setMessages(nextMessages);
+  }
+
+  async function handleAssistantLearn() {
+    if (!activeClusterSlug || learnBusy || isAssistantLearnActive(learnState?.job?.status)) return;
+    if (!learnState?.hasSources) {
+      await appendAssistantNotice('Upload source documents before running Learn.');
+      return;
+    }
+    if (learnState?.job?.status === 'awaiting_confirmation') {
+      await appendAssistantNotice(
+        `A learning map is ready for confirmation. Open the garden dashboard to review the section order: [${clusterLabel}](/gardens/${activeClusterSlug}).`,
+      );
+      return;
+    }
+
+    setLearnBusy(true);
+    try {
+      const endpoint = learnState?.confirmedLearningMapId ? 'regenerate' : 'plan';
+      const response = await fetch(`/api/gardens/${encodeURIComponent(activeClusterSlug)}/learn/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          sourceOnly: true,
+          includeSourceSnapshots: false,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) throw new Error(data.error ?? 'Learn action failed');
+      await fetchLearnStatus();
+      await appendAssistantNotice(
+        endpoint === 'plan'
+          ? `Learning map drafted. Open the garden dashboard to confirm the textbook order: [${clusterLabel}](/gardens/${activeClusterSlug}).`
+          : `Textbook generation finished for [${clusterLabel}](/garden/${activeClusterSlug}).`,
+      );
+    } catch (error) {
+      await appendAssistantNotice(error instanceof Error ? error.message : 'Learn action failed.');
+    } finally {
+      setLearnBusy(false);
+    }
+  }
+
   function loadUsage() {
     if (showUsage) {
       setShowUsage(false);
@@ -775,6 +894,21 @@ export default function GardenAssistant({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={handleAssistantLearn}
+              disabled={
+                !hasActiveCluster ||
+                learnBusy ||
+                isAssistantLearnActive(learnState?.job?.status)
+              }
+              className="rounded-md border border-gray-700 bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:border-gray-800 disabled:bg-gray-800 disabled:text-gray-500"
+              title={learnState?.buttonLabel ?? 'Learn'}
+            >
+              {learnBusy || isAssistantLearnActive(learnState?.job?.status)
+                ? 'Learning...'
+                : 'Learn'}
+            </button>
             <button
               type="button"
               onClick={() => setChatOpen(false)}

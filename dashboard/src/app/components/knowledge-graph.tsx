@@ -53,6 +53,7 @@ interface Props {
   refreshKey: string;
   sourceLibrary?: ReactNode;
   showInternalConceptGraph?: boolean;
+  savedLinkCount?: number;
 }
 
 const emptyResponse: GraphResponse = {
@@ -72,21 +73,8 @@ const emptyResponse: GraphResponse = {
   },
 };
 
-function labelForType(type: string): string {
-  if (type === 'source-document') return 'Source';
-  if (type === 'textbook-page') return 'Textbook page';
-  if (type === 'internal-concept') return 'ConceptNode';
-  if (type === 'knowledge-topic') return 'Legacy topic';
-  if (type === 'generated-note') return 'Saved chat page';
-  return 'Note';
-}
-
 function formatNumber(value: number): string {
   return new Intl.NumberFormat('en-US').format(value);
-}
-
-function noteHref(clusterSlug: string, slug: string): string {
-  return `/garden/${clusterSlug}?note=${encodeURIComponent(slug)}`;
 }
 
 function graphHref(clusterSlug: string): string {
@@ -116,14 +104,19 @@ const MAP_PANEL_MAX = 600;
 const MAP_PANEL_THRESHOLD = 180; // below this the panel collapses to a rail
 const MAP_PANEL_RAIL = 48;
 
-function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary, showInternalConceptGraph = false }: Props) {
+function KnowledgeGraph({
+  clusterSlug,
+  refreshKey,
+  sourceLibrary,
+  showInternalConceptGraph = false,
+  savedLinkCount,
+}: Props) {
   const [data, setData] = useState<GraphResponse | null>(null);
   // Panel width is the single source of truth so it can be dragged open/closed
   // by its inner edge (no toggle button); below the threshold it shows a rail.
   const [panelWidth, setPanelWidth] = useState(MAP_PANEL_DEFAULT);
   const [resizing, setResizing] = useState(false);
   const sidebarOpen = panelWidth >= MAP_PANEL_THRESHOLD;
-  const [treeExpanded, setTreeExpanded] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
   const graph = data ?? emptyResponse;
   const loading = data === null;
@@ -243,7 +236,7 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary, showInternalCo
               { value: graph.stats.documents, label: 'Sources' },
               { value: graph.stats.textbookPages ?? graph.stats.topics, label: 'Pages' },
               { value: graph.stats.conceptNodes ?? 0, label: 'Concepts' },
-              { value: graph.stats.links, label: 'Links' },
+              { value: savedLinkCount ?? graph.stats.links, label: 'Links' },
             ].map(({ value, label }) => (
               <div key={label}>
                 <p className="text-lg font-semibold text-white tabular-nums">{value}</p>
@@ -294,99 +287,6 @@ function KnowledgeGraph({ clusterSlug, refreshKey, sourceLibrary, showInternalCo
 
         {/* Source tree */}
         <div className="flex-1 overflow-y-auto">
-          <div>
-            <button
-              onClick={() => setTreeExpanded((v) => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-                  />
-                </svg>
-                 Textbook path
-                {graph.tree.length > 0 ? ` (${graph.tree.length})` : ''}
-              </div>
-              <div className="flex items-center gap-1.5">
-                <svg
-                  className={`w-3.5 h-3.5 transition-transform duration-200 ${treeExpanded ? '' : 'rotate-180'}`}
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="m4.5 15.75 7.5-7.5 7.5 7.5"
-                  />
-                </svg>
-              </div>
-            </button>
-            {treeExpanded && (
-              <div className="px-4 pb-3">
-                {graph.tree.length === 0 && graph.orphanTopics.length === 0 ? (
-                   <p className="text-xs text-gray-600">No textbook pages yet.</p>
-                ) : (
-                  <div className="space-y-4">
-                    {graph.tree.map(({ source, topics }, sourceIndex) => (
-                      <div key={`${source.slug}-${sourceIndex}`}>
-                        <a
-                          href={noteHref(clusterSlug, source.slug)}
-                          className="block text-sm font-medium text-gray-200 hover:text-white truncate"
-                          title={source.title}
-                        >
-                          {source.title}
-                        </a>
-                        <p className="text-[11px] text-gray-600 mt-0.5">
-                          {source.sourceFile || labelForType(source.type)}
-                        </p>
-                        <div className="mt-2 space-y-1.5">
-                          {topics.map((topic, topicIndex) => (
-                            <a
-                              key={`${topic.slug}-${topicIndex}`}
-                              href={noteHref(clusterSlug, topic.slug)}
-                              className="block border-l border-gray-800 pl-3 py-1 hover:border-gray-600 transition-colors"
-                            >
-                              <span className="block text-xs text-gray-300 truncate">{topic.title}</span>
-                              <span className="block text-[11px] text-gray-600 truncate">
-                                {topic.locations.join(', ') || `${topic.wordCount} words`}
-                              </span>
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                    {graph.orphanTopics.length > 0 && (
-                      <div>
-                        <p className="text-xs font-medium text-gray-500 mb-2">Other textbook pages</p>
-                        <div className="space-y-1.5">
-                          {graph.orphanTopics.map((topic, topicIndex) => (
-                            <a
-                              key={`${topic.slug}-${topicIndex}`}
-                              href={noteHref(clusterSlug, topic.slug)}
-                              className="block text-xs text-gray-300 hover:text-white truncate transition-colors"
-                            >
-                              {topic.title}
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
           {sourceLibrary}
         </div>
       </aside>
