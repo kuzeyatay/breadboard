@@ -32,6 +32,8 @@ interface ChatSession {
 interface GraphStats {
   documents: number;
   topics: number;
+  textbookPages: number;
+  conceptNodes: number;
   generatedNotes: number;
   links: number;
   words: number;
@@ -63,6 +65,8 @@ interface Props {
 const EMPTY_STATS: GraphStats = {
   documents: 0,
   topics: 0,
+  textbookPages: 0,
+  conceptNodes: 0,
   generatedNotes: 0,
   links: 0,
   words: 0,
@@ -389,6 +393,8 @@ export default function GardenAssistant({
           setStats({
             documents: Number(nextStats.documents) || 0,
             topics: Number(nextStats.topics) || 0,
+            textbookPages: Number(nextStats.textbookPages) || Number(nextStats.topics) || 0,
+            conceptNodes: Number(nextStats.conceptNodes) || 0,
             generatedNotes: Number(nextStats.generatedNotes) || 0,
             links: Number(nextStats.links) || 0,
             words: Number(nextStats.words) || 0,
@@ -539,7 +545,7 @@ export default function GardenAssistant({
         const summary =
           typeof body.summary === 'string' && body.summary.trim()
             ? body.summary.trim()
-            : 'Updated the open markdown note.';
+            : 'Updated the open page.';
         const tags = Array.isArray(body.tags)
           ? body.tags.filter((tag: unknown): tag is string => typeof tag === 'string')
           : [];
@@ -757,7 +763,7 @@ export default function GardenAssistant({
 
   const chatPanel = (
     <aside
-      className="fixed inset-x-3 bottom-3 top-20 z-40 flex flex-col overflow-hidden rounded-md border border-gray-800 bg-gray-950 text-gray-100 shadow-2xl lg:absolute lg:inset-y-0 lg:left-auto lg:right-0 lg:h-full lg:w-[var(--assistant-panel-width)] lg:rounded-none lg:border-y-0 lg:border-l lg:border-r-0"
+      className="fixed inset-x-3 bottom-3 top-20 z-40 flex flex-col overflow-hidden rounded-md border border-gray-800 bg-gray-900 text-gray-100 shadow-2xl lg:absolute lg:inset-y-0 lg:left-auto lg:right-0 lg:h-full lg:w-[var(--assistant-panel-width)] lg:rounded-none lg:border-y-0 lg:border-l lg:border-r-0"
       style={chatPanelStyle}
     >
       <div className="border-b border-gray-800 px-4 py-3">
@@ -765,7 +771,7 @@ export default function GardenAssistant({
           <div className="min-w-0">
             <p className="truncate text-sm font-medium text-white">Assistant</p>
             <p className="truncate text-xs text-gray-400">
-              {hasActiveCluster ? `${clusterLabel} knowledge map` : 'Open a garden or note to ask its map'}
+              {hasActiveCluster ? `${clusterLabel} Learning Map` : 'Open a garden or page to ask its map'}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -782,8 +788,8 @@ export default function GardenAssistant({
         <div className="mt-3 grid grid-cols-4 gap-2 text-center text-[11px] text-gray-400">
           {[
             { label: 'Sources', value: stats.documents },
-            { label: 'Topics', value: stats.topics },
-            { label: 'Notes', value: stats.generatedNotes },
+            { label: 'Pages', value: stats.textbookPages },
+            { label: 'Concepts', value: stats.conceptNodes },
             { label: 'Links', value: stats.links },
           ].map((item) => (
             <div key={item.label} className="rounded-md border border-gray-800 bg-gray-950/60 px-2 py-1.5">
@@ -816,7 +822,7 @@ export default function GardenAssistant({
             title={
               activeMarkdown && activeMarkdown.cluster === activeClusterSlug
                 ? `Current markdown: ${activeMarkdown.slug}`
-                : 'No markdown note is currently open'
+                : 'No page is currently open'
             }
           >
             <svg className="h-3.5 w-3.5 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
@@ -887,7 +893,7 @@ export default function GardenAssistant({
                     message.content ? (
                       <ChatMarkdown content={message.content} compact />
                     ) : (
-                      <span className="text-gray-500">Reading the knowledge map...</span>
+                      <span className="text-gray-500">Reading the Learning Map...</span>
                     )
                   ) : (
                     <p className="whitespace-pre-wrap">{message.content}</p>

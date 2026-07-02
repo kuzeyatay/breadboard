@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
@@ -51,6 +52,11 @@ class FakeUpstream:
 class RouteTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_session_state()
+        # These tests exercise the legacy upstream passthrough, which is still
+        # used for tool-calling and council-bypassed requests. Council-mediated
+        # behavior is covered by tests/test_council.py.
+        os.environ["ENABLE_COUNCIL"] = "false"
+        self.addCleanup(lambda: os.environ.pop("ENABLE_COUNCIL", None))
         self.app = create_app()
         self.client = self.app.test_client()
 

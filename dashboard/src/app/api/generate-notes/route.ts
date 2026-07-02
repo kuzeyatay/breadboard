@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { withCouncil } from '@/lib/council';
 import { normalizeTopicTags, refreshClusterIndex, resolveClusterNoteFile, scanClusterKnowledge, semanticTagsFromText, slugify } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
@@ -22,22 +23,22 @@ interface ChatMessage {
   content: string;
 }
 
-const EXTRACTION_SYSTEM_PROMPT = `You are a knowledge extraction assistant for a digital garden (Zettelkasten-style note-taking system).
+const EXTRACTION_SYSTEM_PROMPT = `You are a textbook page extraction assistant for a Breadboard learning garden.
 
-Analyze the conversation and extract durable knowledge into atomic notes. Each note covers ONE distinct concept, insight, method, definition, or reusable fact.
+Analyze the conversation and extract durable knowledge into concise textbook pages. Each page should read like a useful subsection in a learner-facing textbook, not a disconnected generated topic card.
 
 Return ONLY a valid JSON array, with no markdown fences and no extra text. Format:
 [
   {
     "title": "Concept Title",
     "slug": "concept-title",
-    "tags": ["specific-subject-term"],
+    "tags": ["restoring force points toward equilibrium", "amplitude is not total distance"],
     "related": ["Related Concept Title"],
     "content": "## Concept Title\\n\\nMarkdown content here..."
   }
 ]
 
-Requirements for each note:
+Requirements for each page:
 - title: Clear, specific noun-phrase (e.g. "Retrieval-Augmented Generation", "Spaced Repetition")
 - slug: lowercase, hyphenated, URL-safe version of title
 - content: Well-structured markdown starting with ## Title, then:
@@ -47,13 +48,13 @@ Requirements for each note:
   * [[wikilinks]] to connect related concepts mentioned in this conversation
   * LaTeX for formulas, symbols, or derivations when it improves clarity: inline math with $...$ and display equations with $$...$$
   * 100-300 words
-- tags: 3-8 specific subject terms, formulas, methods, named concepts, or domain terms
-- related: titles of notes/concepts that should be strongly connected to this note
-- Never use generic tags like knowledge, generated, note, topic, source, document, chat, answer, response, general, or misc
+- tags: 3-8 precise idea tags. Pages that share a tag become linked in the graph, so each tag must name the exact idea that would make two pages worth connecting. Write each as a short phrase or short sentence (2-9 words) expressing ONE reusable idea grounded in the conversation, preferring a relation or mechanism (what causes/measures/equals/contrasts what) over a bare noun. Good: "restoring force points toward equilibrium", "angular frequency is phase rate", "gradient points toward steepest increase"; specific named concepts like "simple harmonic motion" are also fine. Bad: physics, math, formula, important, learning, wave, calculus, force, frequency (broad categories or bare nouns that would connect unrelated pages).
+- related: titles of pages/concepts that should be strongly connected to this page
+- Never use generic, document-type, or learning tags like knowledge, generated, note, topic, source, document, chat, answer, response, general, misc, important, learning, study, formula, definition, or example, and never reference a page/slide/figure in a tag
 
-Create 2-6 notes based on depth.
+Create 2-6 pages based on depth.
 Return [] if the conversation has no durable, reusable knowledge.
-Do not create notes from greetings, logistics, UI chatter, one-off requests, upload progress, or answers that only say something failed.`;
+Do not create pages from greetings, logistics, UI chatter, one-off requests, upload progress, or answers that only say something failed.`;
 
 interface RelatedNote {
   slug: string;
@@ -258,15 +259,15 @@ async function decideChatNotePlacement({
   content: string;
   tags: string[];
 }): Promise<PlacementDecision> {
-  if (candidates.length === 0) return { action: 'create', reason: 'No candidate notes exist.' };
+  if (candidates.length === 0) return { action: 'create', reason: 'No candidate pages exist.' };
 
-  const response = await client.chat.completions.create({
+  const response = await client.chat.completions.create(withCouncil({
     model,
     messages: [
       {
         role: 'system',
         content:
-          'You decide whether a newly saved chat markdown belongs inside an existing digital-garden markdown note or should become a new note. Return ONLY JSON. Merge only when the new content is the same topic, a direct expansion of the same note, or substantially duplicate material. Create a new note when it is broader, narrower, adjacent, only related, or would make the target note incoherent.',
+          'You decide whether a newly saved chat page belongs inside an existing textbook page or should become a new page. Return ONLY JSON. Merge only when the new content is the same concept, a direct expansion of the same page, or substantially duplicate material. Create a new page when it is broader, narrower, adjacent, only related, or would make the target page incoherent.',
       },
       {
         role: 'user',
@@ -296,7 +297,7 @@ async function decideChatNotePlacement({
         }),
       },
     ],
-  });
+  }, { taskType: 'classification' }));
 
   const raw = stripMarkdownFence(response.choices[0]?.message?.content ?? '{}');
   try {
@@ -317,22 +318,24 @@ async function generateChatNoteTags(
   content: string,
 ): Promise<string[]> {
   try {
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(withCouncil({
       model,
       messages: [
         {
           role: 'system',
           content:
-            'Return a JSON array of 4–8 lowercase hyphenated subject tags for the given content. ' +
-            'Use precise domain terms, named concepts, methods, formulas, or named entities from the material. ' +
-            'Never include generic words, common verbs, articles, or modal words (e.g. note, content, use, can, may, not, how, all, any).',
+            'Return a JSON array of 4–8 Zettelkasten-style atomic idea tags for the given content. ' +
+            'Notes that share a tag become linked in a knowledge graph, so each tag must name the exact idea that would make two notes worth connecting. ' +
+            'Write each tag as a short phrase or short sentence (2-9 words) expressing ONE reusable idea grounded in the material, preferring a relation or mechanism over a bare noun ' +
+            '(e.g. "restoring force points toward equilibrium", "angular frequency is phase rate", "gradient points toward steepest increase"; specific named concepts like "simple harmonic motion" are fine). ' +
+            'Never use broad categories, document types, generic learning words, or bare nouns (e.g. physics, math, formula, important, learning, source, document, wave, calculus, force, frequency), and never reference a page/slide/figure.',
         },
         {
           role: 'user',
           content: `Title: ${title}\n\n${content.slice(0, 4000)}`,
         },
       ],
-    });
+    }, { taskType: 'tagging' }));
     const raw = stripMarkdownFence(response.choices[0]?.message?.content ?? '[]');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -381,24 +384,24 @@ async function harmonizeChatNote({
   let mergedBody = '';
 
   try {
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(withCouncil({
       model,
       messages: [
         {
           role: 'system',
           content:
-            'Merge two markdown notes on the same topic into one coherent note. ' +
+            'Merge two textbook pages on the same concept into one coherent page. ' +
             'Integrate the new content naturally into the existing structure, expanding or refining sections with new details. ' +
             'Eliminate redundancy while preserving unique facts from both. ' +
             'Keep a clean heading hierarchy with no duplicate headings. ' +
-            'Return ONLY the merged markdown body — no frontmatter, no code fences.',
+            'Return ONLY the merged markdown body - no frontmatter, no code fences.',
         },
         {
           role: 'user',
-          content: `### Existing note\n\n${existingBody}\n\n### New content to integrate\n\n${newContent}`,
+          content: `### Existing page\n\n${existingBody}\n\n### New content to integrate\n\n${newContent}`,
         },
       ],
-    });
+    }, { taskType: 'small_revision' }));
     mergedBody = response.choices[0]?.message?.content?.trim() ?? '';
   } catch {
     mergedBody = '';
@@ -506,7 +509,7 @@ export async function POST(request: Request) {
           });
           fs.writeFileSync(targetPath, harmonized, 'utf-8');
           refreshClusterIndex(contentPath, normalizedClusterSlug);
-          await publishQuartzAfterMutation(`harmonize chat note into ${placementDecision.targetSlug}`);
+          await publishQuartzAfterMutation(`harmonize chat page into ${placementDecision.targetSlug}`);
 
           return NextResponse.json({
             success: true,
@@ -536,9 +539,10 @@ export async function POST(request: Request) {
         frontmatter({
           title,
           date,
-          source: 'generated-chat',
-          knowledge_type: 'generated-note',
-          generated_note_type: 'chat-node',
+          source: 'chat',
+          knowledge_type: 'textbook-page',
+          breadboardType: 'textbook_page',
+          saved_from: 'chat',
           generated_by: 'chatmock',
           related: related.map((note) => note.slug),
           tags,
@@ -546,7 +550,7 @@ export async function POST(request: Request) {
         'utf-8',
       );
       refreshClusterIndex(contentPath, normalizedClusterSlug);
-      await publishQuartzAfterMutation(`generate chat note in ${normalizedClusterSlug}`);
+      await publishQuartzAfterMutation(`save chat page in ${normalizedClusterSlug}`);
 
       return NextResponse.json({ success: true, notes: [{ slug: finalSlug, title, action: 'created' }] });
     }
@@ -560,16 +564,16 @@ export async function POST(request: Request) {
       .map((message: { role: string; content: string }) => `${message.role.toUpperCase()}: ${message.content}`)
       .join('\n\n');
 
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(withCouncil({
       model: selectedModel,
       messages: [
         { role: 'system', content: EXTRACTION_SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `Extract knowledge notes from this conversation:\n\n${conversationText}`,
+          content: `Extract textbook pages from this conversation:\n\n${conversationText}`,
         },
       ],
-    });
+    }, { taskType: 'subsection_generation', gardenId: normalizedClusterSlug }));
 
     const rawContent = response.choices[0]?.message?.content ?? '[]';
     const jsonStr = stripMarkdownFence(rawContent);
@@ -579,7 +583,7 @@ export async function POST(request: Request) {
       const parsed = JSON.parse(jsonStr);
       notes = Array.isArray(parsed) ? parsed : [];
     } catch {
-      return NextResponse.json({ error: 'Could not parse notes from model response' }, { status: 500 });
+      return NextResponse.json({ error: 'Could not parse textbook pages from model response' }, { status: 500 });
     }
 
     const savedNotes: { slug: string; title: string }[] = [];
@@ -644,8 +648,10 @@ export async function POST(request: Request) {
         frontmatter({
           title: note.title,
           date,
-          source: 'generated-chat',
-          knowledge_type: 'generated-note',
+          source: 'chat',
+          knowledge_type: 'textbook-page',
+          breadboardType: 'textbook_page',
+          saved_from: 'chat',
           generated_by: 'chatmock',
           related: related.map((relatedNote) => relatedNote.slug),
           tags,
@@ -657,7 +663,7 @@ export async function POST(request: Request) {
     }
 
     refreshClusterIndex(contentPath, normalizedClusterSlug);
-    await publishQuartzAfterMutation(`generate notes in ${normalizedClusterSlug}`);
+    await publishQuartzAfterMutation(`save textbook pages in ${normalizedClusterSlug}`);
 
     return NextResponse.json({ success: true, notes: savedNotes });
   } catch (err) {

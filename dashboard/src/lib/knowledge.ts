@@ -1,7 +1,28 @@
 import fs from "fs";
 import path from "path";
 import OpenAI from "openai";
+import { withCouncil } from "./council";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
+import {
+  slugify,
+  STOP_WORDS,
+  semanticTagsFromText,
+  normalizeTopicTags,
+} from "./tags";
+import {
+  INTERNAL_CONCEPT_FOLDER,
+  INTERNAL_CONCEPT_TYPE,
+  LEARNING_FOLDER,
+  LEARNING_PAGE_ORDER,
+  LEGACY_GENERATED_TOPIC_FOLDER,
+  TEXTBOOK_PAGE_TYPE,
+  isInternalConceptMetadata,
+  isLegacySubtopicRelPath,
+  readingOrderRank,
+} from "./learning-garden";
+
+// Re-exported so existing `@/lib/knowledge` importers keep working unchanged.
+export { slugify, semanticTagsFromText, normalizeTopicTags };
 
 export const DEFAULT_MODEL = "gpt-5.5";
 
@@ -51,7 +72,10 @@ export interface SavedKnowledge {
 
 interface ExistingTopicNote {
   slug: string;
+  relPath: string;
   title: string;
+  type: string;
+  breadboardType: string;
   tags: string[];
   body: string;
   content: string;
@@ -78,6 +102,9 @@ export interface KnowledgeNode {
   sourceFile: string;
   sourcePdf: string;
   sourceDocument: string;
+  textbookPage: string;
+  breadboardType: string;
+  draft: string;
   flagColor: string;
   locations: string[];
   tags: string[];
@@ -107,6 +134,9 @@ export interface ClusterKnowledge {
   stats: {
     documents: number;
     topics: number;
+    textbookPages: number;
+    conceptNodes: number;
+    learningPages: number;
     generatedNotes: number;
     links: number;
     words: number;
@@ -122,9 +152,19 @@ type Frontmatter = Record<string, string | string[]>;
 
 const clusterKnowledgeCache = new Map<string, ClusterKnowledgeCacheEntry>();
 
-const KNOWLEDGE_SYSTEM_PROMPT = `You are a precise knowledge extraction engine for a second-brain system.
+const KNOWLEDGE_SYSTEM_PROMPT = `You are a precise concept extraction engine for Breadboard's living textbook system.
 
-Turn uploaded material into a graph-ready knowledge tree. Extract durable knowledge only: concepts, methods, named entities, formulas, claims, examples, definitions, tasks that teach a reusable procedure, and relationships between them.
+Turn uploaded material into a graph-ready Learning Spine. Extract durable knowledge only: concepts, methods, named entities, formulas, claims, examples, definitions, tasks that teach a reusable procedure, and relationships between them.
+
+Important product rule:
+- Extracted topics/concepts are planning scaffolding, not final pages.
+- Treat every extracted item as an internal ConceptNode / Learning Spine node.
+- The user-facing output must become ordered textbook sections/subsections, not a pile of generated topic cards or disconnected notes.
+- Use source anchors to decide where each concept belongs in the Learning Spine.
+- Assign every source-central formula, figure, graph, table, and question to the concept/page where it belongs.
+- If a source figure is relevant, capture it as sourceEvidence or a visual opportunity so it can become a visual block or source-figure explainer later.
+- Do not over-segment into many tiny generated topic pages, and do not create disconnected pages for every concept.
+- Repeats between major sections are acceptable; excessive repetition between adjacent subsections should be avoided.
 
 Return ONLY valid JSON. Do not wrap the JSON in markdown fences.
 
@@ -132,31 +172,31 @@ Schema:
 {
   "documentTitle": "Clean title",
   "summary": "4-8 sentence factual summary of the material",
-  "suggestedTags": ["tag-one", "tag-two"],
+  "suggestedTags": ["restoring force points toward equilibrium", "amplitude is not total distance"],
   "topics": [
     {
-      "title": "Atomic Topic Title",
-      "slug": "atomic-topic-title",
+      "title": "ConceptNode Title",
+      "slug": "concept-node-title",
       "explanation": "A detailed explanation grounded in the uploaded material.",
       "keyPoints": ["Specific fact or step", "Specific fact or step"],
       "sourceEvidence": ["Exact source-grounded detail, equation, example, diagram meaning, or procedure step"],
       "locations": ["Page 2", "Section: Introduction"],
-      "relatedTopics": ["Another extracted topic title"],
-      "tags": ["tag-one"]
+      "relatedTopics": ["Another ConceptNode title"],
+      "tags": ["angular frequency is phase rate"]
     }
   ],
   "relationships": [
     {
-      "source": "Atomic Topic Title",
-      "target": "Another extracted topic title",
+      "source": "ConceptNode Title",
+      "target": "Another ConceptNode title",
       "relation": "depends-on | contrasts-with | example-of | part-of | applies-to | related"
     }
   ]
 }
 
 Rules:
-- Make 6-18 topics depending on the material. Use fewer only if the source is genuinely short.
-- Every topic must be useful as its own markdown note, with enough detail to study from without reopening the source.
+- Make 6-18 ConceptNodes depending on the material. Use fewer only if the source is genuinely short.
+- Every ConceptNode must be useful for Learning Spine planning, with enough detail to place it into the correct textbook subsection without reopening the source.
 - For handwritten or scanned material, treat OCR as page-grounded lecture notes. Preserve equations, worked examples, labels, diagrams, definitions, and procedures instead of making a shallow overview.
 - When formulas, symbols, units, or derivations appear, preserve them as LaTeX-ready Markdown: inline math with $...$ and display equations with $$...$$.
 - Do not create one broad document topic and then weak derivative topics. Split the material into durable concepts and procedures that cover the full source.
@@ -168,10 +208,14 @@ Rules:
 - Use only facts supported by the source text.
 - Never copy broken encoding artifacts such as "â€¢", "â†’", "Ã—", "Â³", or replacement characters. Convert them into clean readable Markdown such as "-", "->", "x", "^3", "_10", or a natural-language equivalent.
 - If OCR text is messy, infer the intended clean notation from context instead of preserving corrupted characters.
-- Tags must be specific subject terms from the material, such as named concepts, methods, formulas, people, systems, or domain terms.
-- Every tag must be an exact source term or a close spelling/inflection of a source term. Do not invent broad category tags that are absent from the uploaded material.
-- Never use app or navigation tags such as graph, links, graph-links, quartz-graph, map, dashboard, index, garden, knowledge, generated, note, topic, source, document, pdf, file, chat, answer, response, general, or misc.
-- Prefer 3-8 meaningful tags per topic and 4-10 suggestedTags for the whole document.
+- Tags are Zettelkasten-style atomic idea labels, not category labels. Notes that share a tag become linked in the graph, so each tag must name the exact idea that would make two notes worth connecting.
+- Write each tag as a short phrase or short sentence that expresses ONE reusable idea, grounded in the source. Prefer a relation or mechanism (what causes/measures/equals/contrasts what) over a bare noun.
+- Good tags: "restoring force points toward equilibrium", "amplitude is not total distance", "angular frequency is phase rate", "standing wave boundaries set wavelength", "wave motion is not particle motion", "jacobian measures local area scaling", "gradient points toward steepest increase". Specific named concepts are also fine: "simple harmonic motion", "small angle approximation".
+- Bad tags: physics, math, formula, important, learning, document, source, general, wave, calculus, force, frequency, oscillation. These are broad categories, document types, generic learning words, or bare nouns that would connect unrelated notes.
+- Each tag should be reusable across multiple notes — specific enough to be meaningful, but not so narrow it describes only one paragraph, slide, or figure. Never reference a page/slide/figure location in a tag.
+- Never use app or navigation tags such as graph, links, quartz-graph, map, index, garden, knowledge, generated, note, topic, source, document, pdf, file, chat, answer, response, general, or misc.
+- Keep tags separate from the knowledge graph itself: relationships and relatedTopics carry structural links; tags are lightweight conceptual connectors.
+- Use 2-9 words per tag (4-8 words is typical for an idea tag). Aim for 3-6 idea tags per topic and 5-10 suggestedTags for the whole document.
 - Link topics aggressively through relatedTopics and relationships whenever the relationship is grounded in the source.
 - Each topic should have at least one relatedTopic when more than one topic is extracted.
 - Create 2-5 strong relationships per topic when possible. Prefer precise relation labels: depends-on, contrasts-with, example-of, part-of, causes, enables, applies-to, derives-from, measured-by, limits, or related.
@@ -185,248 +229,8 @@ export function createChatmockClient(baseURL?: string): OpenAI {
   });
 }
 
-export function slugify(value: string): string {
-  const slug = value
-    .toLowerCase()
-    .trim()
-    .replace(/['"]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return slug || "note";
-}
-
-const STOP_WORDS = new Set([
-  "and",
-  "are",
-  "but",
-  "for",
-  "from",
-  "into",
-  "the",
-  "then",
-  "this",
-  "that",
-  "with",
-  "about",
-  "between",
-  "through",
-]);
-
-const GENERIC_TAGS = new Set([
-  "answer",
-  "answers",
-  "chat",
-  "chat-note",
-  "cluster",
-  "concept",
-  "concepts",
-  "content",
-  "data",
-  "doc",
-  "docs",
-  "document",
-  "documents",
-  "file",
-  "files",
-  "garden",
-  "garden-home",
-  "generated",
-  "general",
-  "graph",
-  "graphs",
-  "graph-link",
-  "graph-links",
-  "index",
-  "information",
-  "knowledge",
-  "knowledge-graph",
-  "knowledge-map",
-  "link",
-  "links",
-  "map",
-  "maps",
-  "markdown",
-  "misc",
-  "node",
-  "nodes",
-  "note",
-  "notes",
-  "other",
-  "pdf",
-  "quartz",
-  "quartz-garden",
-  "quartz-graph",
-  "response",
-  "responses",
-  "source",
-  "sources",
-  "text",
-  "topic",
-  "topics",
-  "upload",
-  "uploaded",
-]);
-
-const TAG_STOP_WORDS = new Set([
-  ...STOP_WORDS,
-  "all",
-  "also",
-  "any",
-  "are",
-  "based",
-  "because",
-  "before",
-  "being",
-  "can",
-  "could",
-  "does",
-  "during",
-  "each",
-  "had",
-  "has",
-  "have",
-  "how",
-  "its",
-  "into",
-  "let",
-  "may",
-  "might",
-  "must",
-  "not",
-  "now",
-  "only",
-  "our",
-  "out",
-  "over",
-  "own",
-  "per",
-  "same",
-  "set",
-  "shall",
-  "should",
-  "since",
-  "some",
-  "such",
-  "than",
-  "their",
-  "them",
-  "then",
-  "these",
-  "those",
-  "thus",
-  "use",
-  "used",
-  "uses",
-  "using",
-  "via",
-  "was",
-  "were",
-  "when",
-  "where",
-  "which",
-  "while",
-  "will",
-  "within",
-  "without",
-  "would",
-]);
-
-function isUsefulTagSlug(tag: string): boolean {
-  if (!tag || GENERIC_TAGS.has(tag) || TAG_STOP_WORDS.has(tag)) return false;
-  if (/^\d+$/.test(tag)) return false;
-  return tag.length >= 3 || tag === "ai" || tag === "ml";
-}
-
-function searchableTagText(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/['’]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function tagPartVariants(part: string): string[] {
-  const variants = new Set([part]);
-  if (part.length > 3 && part.endsWith("ies")) variants.add(`${part.slice(0, -3)}y`);
-  if (part.length > 3 && part.endsWith("es")) variants.add(part.slice(0, -2));
-  if (part.length > 3 && part.endsWith("s")) variants.add(part.slice(0, -1));
-  if (part.length > 2) variants.add(`${part}s`);
-  return [...variants];
-}
-
-function isGroundedTagSlug(tag: string, groundingText: string): boolean {
-  const grounded = searchableTagText(groundingText);
-  if (!grounded) return true;
-
-  const phrase = tag.split("-").filter(Boolean).join(" ");
-  if (phrase && new RegExp(`(^|\\s)${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`).test(grounded)) {
-    return true;
-  }
-
-  const groundedWords = new Set(grounded.split(/\s+/).filter(Boolean));
-  const parts = tag.split("-").filter((part) => part && !TAG_STOP_WORDS.has(part));
-  if (parts.length === 0) return false;
-
-  return parts.every((part) =>
-    tagPartVariants(part).some((variant) => groundedWords.has(variant)),
-  );
-}
-
-export function semanticTagsFromText(
-  value: string,
-  maxTags = 8,
-  groundingText = value,
-): string[] {
-  const words = value
-    .toLowerCase()
-    .slice(0, 9000)
-    .split(/[^a-z0-9]+/g)
-    .map((word) => word.trim())
-    .filter((word) => isUsefulTagSlug(slugify(word)));
-
-  const scores = new Map<string, number>();
-  const addScore = (tag: string, amount: number) => {
-    const slug = slugify(tag);
-    if (!isUsefulTagSlug(slug)) return;
-    if (!isGroundedTagSlug(slug, groundingText)) return;
-    scores.set(slug, (scores.get(slug) ?? 0) + amount);
-  };
-
-  for (const word of words) addScore(word, 1);
-  for (let index = 0; index < words.length - 1; index++) {
-    const first = words[index];
-    const second = words[index + 1];
-    if (first === second) continue;
-    addScore(`${first}-${second}`, 2.5);
-  }
-
-  return [...scores.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([tag]) => tag)
-    .slice(0, maxTags);
-}
-
-export function normalizeTopicTags(
-  values: string[],
-  fallbackText = "",
-  maxTags = 8,
-  groundingText = fallbackText,
-): string[] {
-  const groundedText = groundingText.trim() ? groundingText : fallbackText;
-  const tags = values
-    .map(slugify)
-    .filter((tag) => isUsefulTagSlug(tag) && isGroundedTagSlug(tag, groundedText));
-  const deduped = [...new Set(tags)].slice(0, maxTags);
-  if (deduped.length >= Math.min(3, maxTags) || !fallbackText.trim())
-    return deduped;
-  return [
-    ...new Set([...deduped, ...semanticTagsFromText(fallbackText, maxTags, groundedText)]),
-  ].slice(0, maxTags);
-}
+// Tag slugifying, normalization, and idea-tag scoring live in ./tags.
+// They are re-exported below so existing "@/lib/knowledge" imports keep working.
 
 function yamlQuote(value: string): string {
   return JSON.stringify(value.replace(/\r/g, ""));
@@ -765,12 +569,42 @@ export function walkClusterMarkdown(clusterDir: string): ClusterMarkdownEntry[] 
 
 /**
  * Folder (relative to the cluster directory) that ingested source documents are
- * written into, and the one that AI-generated topic notes are written into.
- * Notes are still identified by their basename slug, so links resolve across
- * folders (Quartz uses shortest-path link resolution).
+ * written into. Extracted concepts are now internal ConceptNodes, while public
+ * study output is written as ordered textbook pages under numbered sections.
+ * Notes are still identified by basename slug so links resolve across folders
+ * (Quartz uses shortest-path link resolution).
  */
 export const SOURCE_NOTE_FOLDER = "sources";
-export const GENERATED_NOTE_FOLDER = "generated";
+export const GENERATED_NOTE_FOLDER = LEGACY_GENERATED_TOPIC_FOLDER;
+export const TEXTBOOK_FOLDER = LEARNING_FOLDER;
+export const CONCEPT_NODE_FOLDER = INTERNAL_CONCEPT_FOLDER;
+
+function ensureDirectory(root: string, relPath: string): string {
+  const dir = path.join(root, ...relPath.split("/"));
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function cleanFileSegment(value: string): string {
+  return slugify(value).replace(/^-+|-+$/g, "") || "section";
+}
+
+function sourceSectionNumber(clusterDir: string): number {
+  if (!fs.existsSync(clusterDir)) return 1;
+  const existing = fs
+    .readdirSync(clusterDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name.match(/^(\d+)\./)?.[1])
+    .filter((value): value is string => Boolean(value))
+    .map((value) => Number.parseInt(value, 10))
+    .filter(Number.isFinite);
+  return existing.length > 0 ? Math.max(...existing) + 1 : 1;
+}
+
+function wikilinkForRelPath(relPath: string, label: string): string {
+  const withoutExtension = relPath.replace(/\.md$/i, "");
+  return wikilink(withoutExtension, label);
+}
 
 /**
  * Locate a note file by its basename slug anywhere inside the cluster
@@ -1171,7 +1005,7 @@ async function requestKnowledgeExtraction({
   pages: DocumentPage[];
   chunkLabel?: string;
 }): Promise<KnowledgeExtraction> {
-  const response = await client.chat.completions.create({
+  const response = await client.chat.completions.create(withCouncil({
     model,
     messages: [
       { role: "system", content: KNOWLEDGE_SYSTEM_PROMPT },
@@ -1187,7 +1021,7 @@ async function requestKnowledgeExtraction({
           `If this is one chunk of a longer document, extract all durable concepts from this chunk and use exact page locations:\n\n${locatedText}`,
       },
     ],
-  });
+  }, { taskType: "concept_extraction" }));
 
   const rawContent = response.choices[0]?.message?.content ?? "{}";
   return normalizeExtraction(parseJsonObject(rawContent), title, text, pages);
@@ -1202,6 +1036,7 @@ export async function extractDocumentKnowledge({
   isHandwriting,
   pages,
   text,
+  onProgress,
 }: {
   client: OpenAI;
   model?: string;
@@ -1211,6 +1046,7 @@ export async function extractDocumentKnowledge({
   isHandwriting?: boolean;
   pages: DocumentPage[];
   text: string;
+  onProgress?: (step: string) => void;
 }): Promise<KnowledgeExtraction> {
   const selectedModel = model?.trim() || DEFAULT_MODEL;
   const cleanPages = cleanDocumentPages(pages);
@@ -1219,6 +1055,7 @@ export async function extractDocumentKnowledge({
 
   try {
     if (chunks.length <= 1) {
+      onProgress?.("Analyzing the document for key concepts…");
       return await requestKnowledgeExtraction({
         client,
         model: selectedModel,
@@ -1234,6 +1071,9 @@ export async function extractDocumentKnowledge({
 
     const extractions: KnowledgeExtraction[] = [];
     for (let index = 0; index < chunks.length; index += 1) {
+      onProgress?.(
+        `Extracting concepts from section ${index + 1} of ${chunks.length}…`,
+      );
       try {
         extractions.push(
           await requestKnowledgeExtraction({
@@ -1573,12 +1413,16 @@ function inferKnowledgeType(data: Frontmatter): string {
 
 function readExistingTopicNotes(clusterDir: string): ExistingTopicNote[] {
   return walkClusterMarkdown(clusterDir)
-    .map(({ entry, filePath }) => {
+    .map(({ entry, filePath, relPath }) => {
       const content = fs.readFileSync(filePath, "utf-8");
       const { data, body } = parseMarkdownFile(content);
-      const type = inferKnowledgeType(data);
+      const type = isInternalConceptMetadata(data, relPath)
+        ? INTERNAL_CONCEPT_TYPE
+        : inferKnowledgeType(data);
       if (
         type !== "knowledge-topic" &&
+        type !== TEXTBOOK_PAGE_TYPE &&
+        type !== INTERNAL_CONCEPT_TYPE &&
         type !== "generated-note" &&
         type !== "user-note" &&
         type !== "note"
@@ -1589,7 +1433,10 @@ function readExistingTopicNotes(clusterDir: string): ExistingTopicNote[] {
       const slug = entry.replace(/\.md$/, "");
       return {
         slug,
+        relPath,
         title: frontmatterString(data, "title") || slug,
+        type,
+        breadboardType: frontmatterString(data, "breadboardType"),
         tags: normalizeTopicTags(frontmatterArray(data, "tags"), body, 8, body),
         body,
         content,
@@ -1670,6 +1517,7 @@ async function decideTopicWritePlans({
 
   for (const topic of topics) {
     const candidates = existingNotes
+      .filter((note) => note.type === TEXTBOOK_PAGE_TYPE)
       .map((note) => ({ note, score: candidateScore(topic, note) }))
       .filter((candidate) => candidate.score >= 0.16)
       .sort((a, b) => b.score - a.score)
@@ -1688,22 +1536,22 @@ async function decideTopicWritePlans({
   }
 
   try {
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(withCouncil({
       model: model?.trim() || DEFAULT_MODEL,
       messages: [
         {
           role: "system",
           content:
-            "You decide whether newly extracted knowledge should update an existing markdown note or become a new note. " +
-            "Merge only when the new topic is the same concept, a direct continuation, or a more specific treatment of the existing note. " +
-            "Create a new note when the topic is merely related, adjacent, or only shares broad keywords. Return only valid JSON.",
+            "You decide whether newly extracted concepts should update an existing textbook page or become a new textbook page. " +
+            "Merge only when the new concept is the same idea, a direct continuation, or a more specific treatment of the existing page. " +
+            "Create a new page when the concept is merely related, adjacent, or only shares broad keywords. Return only valid JSON.",
         },
         {
           role: "user",
           content: JSON.stringify({
             schema: [
               {
-                topicTitle: "new topic title",
+                topicTitle: "new concept title",
                 action: "merge or create",
                 targetSlug:
                   "existing slug when action is merge, otherwise null",
@@ -1729,7 +1577,7 @@ async function decideTopicWritePlans({
           }),
         },
       ],
-    });
+    }, { taskType: "classification" }));
 
     const parsed = parseJsonObject(
       response.choices[0]?.message?.content ?? "[]",
@@ -1815,13 +1663,13 @@ async function harmonizeTopicNote({
   let mergedBody = "";
   if (client) {
     try {
-      const response = await client.chat.completions.create({
+      const response = await client.chat.completions.create(withCouncil({
         model: model?.trim() || DEFAULT_MODEL,
         messages: [
           {
             role: "system",
             content:
-              "Merge two markdown notes on the same topic into one coherent note. " +
+            "Merge two textbook pages on the same concept into one coherent page. " +
               "Integrate the new content naturally into the existing structure, expanding or refining sections with new details. " +
               "Eliminate redundancy while preserving unique facts from both. " +
               "Keep a clean heading hierarchy with no duplicate headings. " +
@@ -1832,7 +1680,7 @@ async function harmonizeTopicNote({
             content: `### Existing note\n\n${target.body}\n\n### New content to integrate\n\n${newContentParts}`,
           },
         ],
-      });
+      }, { taskType: "small_revision" }));
       mergedBody = response.choices[0]?.message?.content?.trim() ?? "";
     } catch {
       mergedBody = "";
@@ -1873,6 +1721,261 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
+interface TextbookArtifact {
+  topic: ExtractedTopic;
+  slug: string;
+  title: string;
+  relPath: string;
+  conceptSlug: string;
+  conceptRelPath: string;
+  locations: string[];
+  action: "created" | "merged";
+}
+
+function writeTextbookSectionIndex({
+  sectionDir,
+  sectionNumber,
+  sectionTitle,
+  sourceSlug,
+  sourceTitle,
+  date,
+}: {
+  sectionDir: string;
+  sectionNumber: number;
+  sectionTitle: string;
+  sourceSlug: string;
+  sourceTitle: string;
+  date: string;
+}): void {
+  const content =
+    frontmatter({
+      title: `${sectionNumber}. ${sectionTitle}`,
+      date,
+      knowledge_type: "textbook-section",
+      breadboardType: "textbook_section",
+      source_document: sourceSlug,
+    }) +
+    `# ${sectionNumber}. ${sectionTitle}\n\n` +
+    `This section is part of the ordered Breadboard textbook generated from ${wikilink(sourceSlug, sourceTitle)}.\n`;
+
+  fs.writeFileSync(path.join(sectionDir, "_index.md"), content, "utf-8");
+}
+
+function textbookPageBody({
+  sectionNumber,
+  subsectionNumber,
+  topic,
+  sourceSlug,
+  sourceTitle,
+  locations,
+  snapshotMarkdown,
+  pageGroundedDetails,
+  relatedLinks,
+  relationLines,
+}: {
+  sectionNumber: number;
+  subsectionNumber: number;
+  topic: ExtractedTopic;
+  sourceSlug: string;
+  sourceTitle: string;
+  locations: string[];
+  snapshotMarkdown: string;
+  pageGroundedDetails: string;
+  relatedLinks: string[];
+  relationLines: string[];
+}): string {
+  const pageTitle = `${sectionNumber}.${subsectionNumber} ${topic.title}`;
+  const sourceEvidence =
+    topic.sourceEvidence.length > 0
+      ? `## Source Anchors\n\n${formatBullets(topic.sourceEvidence)}\n\n`
+      : "";
+
+  return (
+    `# ${pageTitle}\n\n` +
+    `Source: ${wikilink(sourceSlug, sourceTitle)}\n\n` +
+    `Locations: ${locations.join(", ")}\n\n` +
+    `${topic.explanation}\n\n` +
+    (snapshotMarkdown ? `## Source Figures and Snapshots\n\n${snapshotMarkdown}\n\n` : "") +
+    (pageGroundedDetails ? `## Page-Grounded Details\n\n${pageGroundedDetails}\n\n` : "") +
+    `## Core Ideas\n\n${formatBullets(topic.keyPoints)}\n\n` +
+    sourceEvidence +
+    `## Related Pages\n\n${relatedLinks.length > 0 ? relatedLinks.join("\n") : "- No direct related textbook pages yet."}\n\n` +
+    (relationLines.length > 0 ? `## Concept Dependencies\n\n${relationLines.join("\n")}\n` : "")
+  );
+}
+
+function writeInternalConceptNode({
+  conceptDir,
+  conceptSlug,
+  topic,
+  date,
+  sourceSlug,
+  sourceTitle,
+  sourceLabel,
+  sourceFileName,
+  locations,
+  textbookSlug,
+  textbookTitle,
+  relatedSlugs,
+  tags,
+}: {
+  conceptDir: string;
+  conceptSlug: string;
+  topic: ExtractedTopic;
+  date: string;
+  sourceSlug: string;
+  sourceTitle: string;
+  sourceLabel: string;
+  sourceFileName: string;
+  locations: string[];
+  textbookSlug: string;
+  textbookTitle: string;
+  relatedSlugs: string[];
+  tags: string[];
+}): string {
+  const conceptContent =
+    frontmatter({
+      title: topic.title,
+      date,
+      source: sourceLabel,
+      knowledge_type: INTERNAL_CONCEPT_TYPE,
+      breadboardType: "internal_concept",
+      draft: "true",
+      source_document: sourceSlug,
+      source_file: sourceFileName,
+      textbook_page: textbookSlug,
+      locations,
+      related: relatedSlugs,
+      tags,
+    }) +
+    `## ConceptNode: ${topic.title}\n\n` +
+    `Planning node for ${wikilink(textbookSlug, textbookTitle)}.\n\n` +
+    `Source: ${wikilink(sourceSlug, sourceTitle)}\n\n` +
+    `Locations: ${locations.join(", ")}\n\n` +
+    `${topic.explanation}\n\n` +
+    `### Key planning details\n\n${formatBullets(topic.keyPoints)}\n\n` +
+    `### Source coverage\n\n${formatBullets(topic.sourceEvidence)}\n`;
+
+  fs.writeFileSync(path.join(conceptDir, `${conceptSlug}.md`), conceptContent, "utf-8");
+  return `${CONCEPT_NODE_FOLDER}/${conceptSlug}.md`;
+}
+
+function writeLearningReferencePages({
+  clusterDir,
+  metaTitle,
+  sectionNumber,
+  sectionTitle,
+  sourceSlug,
+  sourceTitle,
+  sourceFileName,
+  sourceType,
+  sourceLabel,
+  extraction,
+  artifacts,
+  date,
+}: {
+  clusterDir: string;
+  metaTitle: string;
+  sectionNumber: number;
+  sectionTitle: string;
+  sourceSlug: string;
+  sourceTitle: string;
+  sourceFileName: string;
+  sourceType: string;
+  sourceLabel: string;
+  extraction: KnowledgeExtraction;
+  artifacts: TextbookArtifact[];
+  date: string;
+}): void {
+  const learningDir = ensureDirectory(clusterDir, LEARNING_FOLDER);
+  const pageLinks = artifacts.map(
+    (artifact) => `- ${wikilinkForRelPath(artifact.relPath, artifact.title)} - ${artifact.locations.join(", ")}`,
+  );
+  const sourceEvidenceLines = artifacts.flatMap((artifact) =>
+    artifact.topic.sourceEvidence.map(
+      (evidence) => `- ${artifact.title}: ${cleanGeneratedText(evidence)}`,
+    ),
+  );
+  const conceptLines = artifacts.map(
+    (artifact) =>
+      `- ${artifact.topic.title} -> ${wikilinkForRelPath(artifact.relPath, artifact.title)}`,
+  );
+
+  const learningPages: Array<{ fileName: string; title: string; type: string; body: string }> = [
+    {
+      fileName: "Topic Overview.md",
+      title: "Topic Overview",
+      type: "topic-overview",
+      body:
+        `# Topic Overview\n\n` +
+        `${metaTitle} is organized as a source-aware textbook. The latest source integrated into the learning path is ${wikilink(sourceSlug, sourceTitle)}.\n\n` +
+        `## Current Textbook Section\n\n` +
+        `- ${sectionNumber}. ${sectionTitle}\n\n` +
+        `## Source Summary\n\n${extraction.summary}\n\n` +
+        `## Primary Destinations\n\n` +
+        `- [[Learning/Learning Map|Learning Map]]\n` +
+        `- [[Learning/Source Map|Source Map]]\n` +
+        `- [[Learning/Scope Contract|Scope Contract]]\n`,
+    },
+    {
+      fileName: "Learning Map.md",
+      title: "Learning Map",
+      type: "learning-map",
+      body:
+        `# Learning Map\n\n` +
+        `## Ordered Reading Path\n\n` +
+        `${pageLinks.length > 0 ? pageLinks.join("\n") : "- No textbook pages have been generated yet."}\n\n` +
+        `## Internal Concept Graph\n\n` +
+        `${conceptLines.length > 0 ? conceptLines.join("\n") : "- No ConceptNodes were extracted for this source."}\n\n` +
+        `## Confirmation Status\n\n` +
+        `TODO: add an explicit section-order confirmation step before generating a full multi-section textbook. Until that UI exists, Breadboard writes the automatic order above and keeps ConceptNodes internal.\n`,
+    },
+    {
+      fileName: "Source Map.md",
+      title: "Source Map",
+      type: "source-map",
+      body:
+        `# Source Map\n\n` +
+        `## Source\n\n` +
+        `- Title: ${wikilink(sourceSlug, sourceTitle)}\n` +
+        `- File: ${sourceFileName}\n` +
+        `- Type: ${sourceType || "text"}\n` +
+        `- Label: ${sourceLabel}\n\n` +
+        `## Coverage Anchors\n\n` +
+        `${sourceEvidenceLines.length > 0 ? sourceEvidenceLines.join("\n") : "- No source anchors were extracted."}\n`,
+    },
+    {
+      fileName: "Scope Contract.md",
+      title: "Scope Contract",
+      type: "scope-contract",
+      body:
+        `# Scope Contract\n\n` +
+        `## Include\n\n` +
+        `${artifacts.length > 0 ? artifacts.map((artifact) => `- ${artifact.topic.title}`).join("\n") : "- Source summary and source document."}\n\n` +
+        `## Exclude\n\n` +
+        `- Claims not grounded in the uploaded source material.\n` +
+        `- Disconnected generated topic pages as the primary reading path.\n\n` +
+        `## Background\n\n` +
+        `- Internal ConceptNodes remain available for graph relationships, source coverage, tags, regeneration, and assistant context.\n\n` +
+        `## Deferred\n\n` +
+        `- User confirmation of section order before long-form textbook expansion.\n`,
+    },
+  ];
+
+  for (const page of learningPages) {
+    const content =
+      frontmatter({
+        title: page.title,
+        date,
+        knowledge_type: page.type,
+        breadboardType: page.type.replace(/-/g, "_"),
+        source_document: sourceSlug,
+        tags: normalizeTopicTags([page.title, "learning map"], page.body, 5, page.body),
+      }) + page.body;
+    fs.writeFileSync(path.join(learningDir, page.fileName), content, "utf-8");
+  }
+}
+
 export async function writeDocumentKnowledge({
   client,
   model,
@@ -1890,6 +1993,7 @@ export async function writeDocumentKnowledge({
   extraction,
   abortSignal,
   createdFilePaths = [],
+  onProgress,
 }: {
   client?: OpenAI;
   model?: string;
@@ -1907,23 +2011,39 @@ export async function writeDocumentKnowledge({
   extraction: KnowledgeExtraction;
   abortSignal?: AbortSignal;
   createdFilePaths?: string[];
+  onProgress?: (step: string) => void;
 }): Promise<SavedKnowledge> {
   throwIfAborted(abortSignal);
   const clusterDir = path.join(contentPath, clusterSlug.trim());
   fs.mkdirSync(clusterDir, { recursive: true });
-  // Ingested source markdown lives in sources/, AI-generated topic notes in
-  // generated/. Notes stay identified by basename slug so links keep resolving.
   const sourcesDir = path.join(clusterDir, SOURCE_NOTE_FOLDER);
-  const generatedDir = path.join(clusterDir, GENERATED_NOTE_FOLDER);
+  const sectionNumber = sourceSectionNumber(clusterDir);
+  const sectionTitle = extraction.documentTitle || sourceTitle;
+  const sectionFolder = `${sectionNumber}. ${cleanFileSegment(sectionTitle)}`;
+  const sectionDir = ensureDirectory(clusterDir, sectionFolder);
+  const conceptDir = ensureDirectory(clusterDir, CONCEPT_NODE_FOLDER);
   fs.mkdirSync(sourcesDir, { recursive: true });
-  fs.mkdirSync(generatedDir, { recursive: true });
   const cleanPages = cleanDocumentPages(pages);
   const outputMarkdownText = cleanGeneratedText(markdownText);
   const outputPlainText = cleanGeneratedText(plainText);
 
   const usedSlugs = extractExistingSlugs(clusterDir);
   const sourceSlug = uniqueSlug(slugify(sourceTitle), usedSlugs);
+  const date = new Date().toISOString();
+  writeTextbookSectionIndex({
+    sectionDir,
+    sectionNumber,
+    sectionTitle,
+    sourceSlug,
+    sourceTitle: extraction.documentTitle || sourceTitle,
+    date,
+  });
   const existingNotes = readExistingTopicNotes(clusterDir);
+  onProgress?.(
+    extraction.topics.length > 0
+      ? `Planning how to organize ${extraction.topics.length} concept${extraction.topics.length === 1 ? "" : "s"} into textbook pages...`
+      : "Planning the textbook structure...",
+  );
   const topicPlans = await decideTopicWritePlans({
     client,
     model,
@@ -1946,7 +2066,6 @@ export async function writeDocumentKnowledge({
     relationshipLookup.set(sourceKey, existing);
   }
 
-  const date = new Date().toISOString();
   const sourceTags = normalizeTopicTags(
     [
       ...extraction.suggestedTags,
@@ -1982,9 +2101,11 @@ export async function writeDocumentKnowledge({
     date,
     source: sourceLabel,
     knowledge_type: "source-document",
+    breadboardType: "source_document",
     source_type: sourceType,
     source_file: sourceFileName,
     generated_by: "chatmock",
+    textbook_pages: topicPlans.map((plan) => plan.finalSlug),
     topics: topicPlans.map((plan) => plan.finalSlug),
     tags: sourceTags,
   };
@@ -1998,7 +2119,8 @@ export async function writeDocumentKnowledge({
   const sourceContent =
     frontmatter(sourceFrontmatter) +
     `## Summary\n\n${extraction.summary}\n\n` +
-    `## Knowledge tree\n\n${sourceLinks.length > 0 ? sourceLinks.join("\n") : "- No knowledge topics were extracted."}\n\n` +
+    `## Textbook coverage\n\n${sourceLinks.length > 0 ? sourceLinks.join("\n") : "- No textbook pages were generated for this source."}\n\n` +
+    `## Internal planning\n\nExtracted concepts are retained as internal ConceptNodes for the Learning Spine, graph relationships, source coverage, and assistant context.\n\n` +
     `## Source material\n\n${outputMarkdownText.trim() || outputPlainText.trim()}\n`;
 
   throwIfAborted(abortSignal);
@@ -2006,9 +2128,16 @@ export async function writeDocumentKnowledge({
   fs.writeFileSync(sourceFilePath, sourceContent, "utf-8");
   createdFilePaths.push(sourceFilePath);
 
+  const textbookArtifacts: TextbookArtifact[] = [];
+  let writtenCount = 0;
   for (const plan of topicPlans) {
     throwIfAborted(abortSignal);
+    writtenCount += 1;
+    onProgress?.(
+      `${plan.action === "merged" ? "Merging" : "Writing"} textbook page "${plan.topic.title}" (${writtenCount}/${topicPlans.length})...`,
+    );
     const topic = plan.topic;
+    const subsectionNumber = writtenCount;
     const relatedTitles = [
       ...new Set([
         ...topic.relatedTopics,
@@ -2052,7 +2181,21 @@ export async function writeDocumentKnowledge({
       [topic.title, outputPlainText].join("\n"),
     );
 
-    if (plan.action === "merged" && plan.target) {
+    const canMergeIntoTextbook =
+      plan.action === "merged" && plan.target?.type === TEXTBOOK_PAGE_TYPE;
+    const textbookSlug =
+      canMergeIntoTextbook && plan.target ? plan.target.slug : plan.finalSlug;
+    const textbookTitle = `${sectionNumber}.${subsectionNumber} ${topic.title}`;
+    const textbookRelPath =
+      canMergeIntoTextbook && plan.target
+        ? plan.target.relPath
+        : `${sectionFolder}/${textbookSlug}.md`;
+    const relatedSlugs = relatedTitles.map(
+      (relatedTitle) =>
+        topicSlugByTitle.get(relatedTitle.toLowerCase()) ?? slugify(relatedTitle),
+    );
+
+    if (canMergeIntoTextbook && plan.target) {
       await harmonizeTopicNote({
         client,
         model,
@@ -2064,64 +2207,102 @@ export async function writeDocumentKnowledge({
         imagePages,
         outputPlainText,
       });
-      continue;
+    } else {
+      const topicFrontmatter: Record<string, string | string[]> = {
+        title: textbookTitle,
+        date,
+        source: sourceLabel,
+        knowledge_type: TEXTBOOK_PAGE_TYPE,
+        breadboardType: "textbook_page",
+        source_document: sourceSlug,
+        source_file: sourceFileName,
+        locations,
+        related: relatedSlugs,
+        tags,
+      };
+      const topicImages = imagePages
+        .map((page) => page.imagePath ?? "")
+        .filter(Boolean);
+      if (topicImages.length > 0) topicFrontmatter.source_images = topicImages;
+
+      const topicContent =
+        frontmatter(topicFrontmatter) +
+        textbookPageBody({
+          sectionNumber,
+          subsectionNumber,
+          topic,
+          sourceSlug,
+          sourceTitle: extraction.documentTitle || sourceTitle,
+          locations,
+          snapshotMarkdown,
+          pageGroundedDetails,
+          relatedLinks,
+          relationLines,
+        });
+
+      const topicFilePath = path.join(sectionDir, `${textbookSlug}.md`);
+      fs.writeFileSync(topicFilePath, topicContent, "utf-8");
+      createdFilePaths.push(topicFilePath);
     }
 
-    const topicFrontmatter: Record<string, string | string[]> = {
-      title: topic.title,
+    const conceptSlug = uniqueSlug(`concept-${textbookSlug}`, usedSlugs);
+    const conceptRelPath = writeInternalConceptNode({
+      conceptDir,
+      conceptSlug,
+      topic,
       date,
-      source: sourceLabel,
-      knowledge_type: "knowledge-topic",
-      source_document: sourceSlug,
-      source_file: sourceFileName,
+      sourceSlug,
+      sourceTitle: extraction.documentTitle || sourceTitle,
+      sourceLabel,
+      sourceFileName,
       locations,
-      related: relatedTitles.map(
-        (relatedTitle) =>
-          topicSlugByTitle.get(relatedTitle.toLowerCase()) ??
-          slugify(relatedTitle),
-      ),
+      textbookSlug,
+      textbookTitle,
+      relatedSlugs,
       tags,
-    };
-    const topicImages = imagePages
-      .map((page) => page.imagePath ?? "")
-      .filter(Boolean);
-    if (topicImages.length > 0) topicFrontmatter.source_images = topicImages;
-
-    const topicContent =
-      frontmatter(topicFrontmatter) +
-      `## ${topic.title}\n\n` +
-      `Source: ${wikilink(sourceSlug, extraction.documentTitle || sourceTitle)}\n\n` +
-      `Locations: ${locations.join(", ")}\n\n` +
-      `${topic.explanation || extraction.summary}\n\n` +
-      (snapshotMarkdown
-        ? `### Source snapshots\n\n${snapshotMarkdown}\n\n`
-        : "") +
-      (pageGroundedDetails
-        ? `### Page-grounded details\n\n${pageGroundedDetails}\n\n`
-        : "") +
-      `### Key points\n\n${formatBullets(topic.keyPoints)}\n\n` +
-      `### Related topics\n\n${relatedLinks.length > 0 ? relatedLinks.join("\n") : "- No direct related topics extracted."}\n\n` +
-      (relationLines.length > 0
-        ? `### Relationships\n\n${relationLines.join("\n")}\n`
-        : "");
-
-    const topicFilePath = path.join(generatedDir, `${plan.finalSlug}.md`);
-    fs.writeFileSync(topicFilePath, topicContent, "utf-8");
-    createdFilePaths.push(topicFilePath);
+    });
+    createdFilePaths.push(path.join(conceptDir, `${conceptSlug}.md`));
+    textbookArtifacts.push({
+      topic,
+      slug: textbookSlug,
+      title: textbookTitle,
+      relPath: textbookRelPath,
+      conceptSlug,
+      conceptRelPath,
+      locations,
+      action: canMergeIntoTextbook ? "merged" : "created",
+    });
   }
 
+  writeLearningReferencePages({
+    clusterDir,
+    metaTitle: extraction.documentTitle || sourceTitle,
+    sectionNumber,
+    sectionTitle,
+    sourceSlug,
+    sourceTitle: extraction.documentTitle || sourceTitle,
+    sourceFileName,
+    sourceType,
+    sourceLabel,
+    extraction,
+    artifacts: textbookArtifacts,
+    date,
+  });
+
   throwIfAborted(abortSignal);
+  onProgress?.("Refreshing the Learning Map...");
   refreshClusterIndex(contentPath, clusterSlug);
+  onProgress?.("Publishing to your garden…");
   await publishQuartzAfterMutation(`ingest knowledge into ${clusterSlug}`);
 
   return {
     sourceSlug,
     sourceTitle: extraction.documentTitle || sourceTitle,
-    topics: topicPlans.map((plan) => ({
-      slug: plan.finalSlug,
-      title: plan.topic.title,
-      locations: plan.topic.locations,
-      action: plan.action,
+    topics: textbookArtifacts.map((artifact) => ({
+      slug: artifact.slug,
+      title: artifact.title,
+      locations: artifact.locations,
+      action: artifact.action,
     })),
     wordCount: outputPlainText.trim().split(/\s+/).filter(Boolean).length,
   };
@@ -2212,7 +2393,16 @@ export function scanClusterKnowledge(
       edges: [],
       tree: [],
       orphanTopics: [],
-      stats: { documents: 0, topics: 0, generatedNotes: 0, links: 0, words: 0 },
+      stats: {
+        documents: 0,
+        topics: 0,
+        textbookPages: 0,
+        conceptNodes: 0,
+        learningPages: 0,
+        generatedNotes: 0,
+        links: 0,
+        words: 0,
+      },
     };
   }
 
@@ -2240,6 +2430,9 @@ export function scanClusterKnowledge(
     const sourceFile = frontmatterString(data, "source_file");
     const sourcePdf = frontmatterString(data, "source_pdf");
     const sourceDocument = frontmatterString(data, "source_document");
+    const textbookPage = frontmatterString(data, "textbook_page");
+    const nodeBreadboardType = frontmatterString(data, "breadboardType");
+    const draft = frontmatterString(data, "draft");
     const flagColor = frontmatterString(data, "flag_color");
     const locations = frontmatterArray(data, "locations");
     const tags = normalizeTopicTags(
@@ -2249,7 +2442,9 @@ export function scanClusterKnowledge(
       [title, body].join("\n"),
     );
     const related = frontmatterArray(data, "related");
-    const type = inferKnowledgeType(data);
+    const type = isInternalConceptMetadata(data, relPath)
+      ? INTERNAL_CONCEPT_TYPE
+      : inferKnowledgeType(data);
     const date = frontmatterString(data, "date") || modifiedAt;
     const wordCount = body.trim().split(/\s+/).filter(Boolean).length;
 
@@ -2265,6 +2460,9 @@ export function scanClusterKnowledge(
       sourceFile,
       sourcePdf,
       sourceDocument,
+      textbookPage,
+      breadboardType: nodeBreadboardType,
+      draft,
       flagColor,
       locations,
       tags,
@@ -2326,7 +2524,17 @@ export function scanClusterKnowledge(
   }
 
   const sourceNodes = nodes.filter((node) => node.type === "source-document");
-  const topicNodes = nodes.filter((node) => node.type === "knowledge-topic");
+  const textbookNodes = nodes.filter((node) => node.type === TEXTBOOK_PAGE_TYPE);
+  const legacyPublicTopics = nodes.filter(
+    (node) => node.type === "knowledge-topic" && !isLegacySubtopicRelPath(node.relPath),
+  );
+  const topicNodes = [...textbookNodes, ...legacyPublicTopics].sort(
+    (a, b) =>
+      readingOrderRank(a.relPath, a.type) - readingOrderRank(b.relPath, b.type) ||
+      a.title.localeCompare(b.title),
+  );
+  const conceptNodes = nodes.filter((node) => node.type === INTERNAL_CONCEPT_TYPE);
+  const learningNodes = nodes.filter((node) => node.relPath.startsWith(`${LEARNING_FOLDER}/`));
   const generatedNotes = nodes.filter((node) => node.type === "generated-note");
   const usedTopicSlugs = new Set<string>();
 
@@ -2345,7 +2553,7 @@ export function scanClusterKnowledge(
     return { source, topics };
   });
 
-  const orphanTopics = [...topicNodes, ...generatedNotes].filter(
+  const orphanTopics = topicNodes.filter(
     (node) => !usedTopicSlugs.has(node.slug),
   );
 
@@ -2357,6 +2565,9 @@ export function scanClusterKnowledge(
     stats: {
       documents: sourceNodes.length,
       topics: topicNodes.length,
+      textbookPages: textbookNodes.length,
+      conceptNodes: conceptNodes.length,
+      learningPages: learningNodes.length,
       generatedNotes: generatedNotes.length,
       links: edges.length,
       words: nodes.reduce((sum, node) => sum + node.wordCount, 0),
@@ -2396,21 +2607,21 @@ function clusterIndexDescription(knowledge: ClusterKnowledge): string {
     knowledge.stats.documents,
     "source document",
   )}, with ${countLabel(
-    knowledge.stats.topics,
-    "knowledge topic",
+    knowledge.stats.textbookPages,
+    "textbook page",
   )} and ${countLabel(knowledge.stats.links, "graph link")}.`;
 }
 
 function clusterOverviewText(knowledge: ClusterKnowledge, date: string): string {
   const sourceText = countLabel(knowledge.stats.documents, "source document");
-  const topicText = countLabel(knowledge.stats.topics, "knowledge topic");
-  const noteText = countLabel(knowledge.stats.generatedNotes, "generated chat note");
+  const textbookText = countLabel(knowledge.stats.textbookPages, "textbook page");
+  const conceptText = countLabel(knowledge.stats.conceptNodes, "internal ConceptNode");
   const linkText = countLabel(knowledge.stats.links, "graph link");
   const wordText = countLabel(knowledge.stats.words, "indexed word");
 
   return [
-    `This Quartz garden is generated from ${sourceText} and rebuilt into a linked knowledge map. It currently contains ${topicText}, ${noteText}, ${linkText}, and ${wordText}.`,
-    `Whenever a new document is uploaded and markdown content is generated, this cluster index is updated so the map, counts, and source tree stay aligned with the current material.`,
+    `This Quartz garden is generated from ${sourceText} and organized as a linked learning textbook. It currently contains ${textbookText}, ${conceptText}, ${linkText}, and ${wordText}.`,
+    `Start with the Learning folder, then follow the numbered textbook sections. Internal ConceptNodes are retained for planning, graph relationships, source coverage, and page-assistant context.`,
     `Last updated: ${date}.`,
   ].join("\n\n");
 }
@@ -2433,11 +2644,17 @@ export function refreshClusterIndex(
   const sourceSections = [...knowledge.tree]
     .sort((a, b) => byNewest(a.source, b.source))
     .map(({ source, topics }) => {
-      const topicLines = [...topics].sort(byNewest).map((topic) => {
-        const locations =
-          topic.locations.length > 0 ? ` - ${topic.locations.join(", ")}` : "";
-        return `  - ${wikilink(topic.slug, topic.title)}${locations}`;
-      });
+      const topicLines = [...topics]
+        .sort(
+          (a, b) =>
+            readingOrderRank(a.relPath, a.type) - readingOrderRank(b.relPath, b.type) ||
+            byNewest(a, b),
+        )
+        .map((topic) => {
+          const locations =
+            topic.locations.length > 0 ? ` - ${topic.locations.join(", ")}` : "";
+          return `  - ${wikilink(topic.slug, topic.title)}${locations}`;
+        });
       return [`- ${wikilink(source.slug, source.title)}`, ...topicLines].join(
         "\n",
       );
@@ -2447,7 +2664,7 @@ export function refreshClusterIndex(
     .sort(byNewest)
     .map(
       (source) =>
-        `- ${wikilink(source.slug, source.title)} - full source-generated markdown, ${source.wordCount} words`,
+        `- ${wikilink(source.slug, source.title)} - full source markdown, ${source.wordCount} words`,
     );
 
   const orphanLines = [...knowledge.orphanTopics]
@@ -2469,15 +2686,74 @@ export function refreshClusterIndex(
     }) +
     `## Garden overview\n\n` +
     `${clusterOverviewText(knowledge, date)}\n\n` +
-    `## Full source notes\n\n` +
+    `## Learning\n\n` +
+    LEARNING_PAGE_ORDER.map((page) =>
+      `- ${wikilinkForRelPath(page, page.replace(/^Learning\//, "").replace(/\.md$/, ""))}`,
+    ).join("\n") +
+    `\n\n## Sources\n\n` +
     `${sourceDocumentLines.length > 0 ? sourceDocumentLines.join("\n") : "- No source documents yet."}\n\n` +
-    `## Cluster map\n\n` +
+    `## Source Coverage\n\n` +
     `- Source documents: ${knowledge.stats.documents}\n` +
-    `- Knowledge topics: ${knowledge.stats.topics}\n` +
-    `- Generated chat notes: ${knowledge.stats.generatedNotes}\n` +
+    `- Textbook pages: ${knowledge.stats.textbookPages}\n` +
+    `- Learning pages: ${knowledge.stats.learningPages}\n` +
+    `- Internal ConceptNodes: ${knowledge.stats.conceptNodes}\n` +
     `- Graph links: ${knowledge.stats.links}\n\n` +
-    `## Source tree\n\n${sourceSections.length > 0 ? sourceSections.join("\n") : "- No source documents yet."}\n\n` +
-    `## Other knowledge notes\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone knowledge notes yet."}\n`;
+    `## Textbook Path By Source\n\n${sourceSections.length > 0 ? sourceSections.join("\n") : "- No source documents yet."}\n\n` +
+    `## Other Textbook Pages\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone textbook pages yet."}\n`;
 
   fs.writeFileSync(path.join(clusterDir, "_index.md"), content, "utf-8");
+}
+
+export interface LegacySubtopicMigrationResult {
+  gardenId: string;
+  detected: number;
+  markedInternal: number;
+  preserved: string[];
+}
+
+export function migrateLegacySubtopics(
+  contentPath: string,
+  gardenId: string,
+  options: { apply?: boolean } = {},
+): LegacySubtopicMigrationResult {
+  const clusterDir = path.join(contentPath, gardenId.trim());
+  const result: LegacySubtopicMigrationResult = {
+    gardenId,
+    detected: 0,
+    markedInternal: 0,
+    preserved: [],
+  };
+  if (!fs.existsSync(clusterDir)) return result;
+
+  for (const item of walkClusterMarkdown(clusterDir)) {
+    if (!isLegacySubtopicRelPath(item.relPath)) continue;
+    const content = fs.readFileSync(item.filePath, "utf-8");
+    const { data, body } = parseMarkdownFile(content);
+    const type = inferKnowledgeType(data);
+    if (type !== "knowledge-topic" && type !== INTERNAL_CONCEPT_TYPE) continue;
+
+    result.detected += 1;
+    result.preserved.push(item.relPath);
+
+    if (!options.apply || type === INTERNAL_CONCEPT_TYPE) continue;
+
+    const updated =
+      frontmatter({
+        ...data,
+        knowledge_type: INTERNAL_CONCEPT_TYPE,
+        breadboardType: "internal_concept",
+        draft: "true",
+        legacy_subtopic_page: "true",
+      }) + `${body}\n`;
+    fs.writeFileSync(item.filePath, updated, "utf-8");
+    result.markedInternal += 1;
+  }
+
+  if (result.detected > 0) {
+    console.info(
+      `[breadboard] preserved ${result.detected} legacy generated subtopic page(s) in ${gardenId}; marked ${result.markedInternal} as internal.`,
+    );
+  }
+
+  return result;
 }

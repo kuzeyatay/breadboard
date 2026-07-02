@@ -11677,11 +11677,333 @@ var blockquoteRegex = new RegExp(/(\[\[>\]\])\s*(.*)/, "g");
 var roamHighlightRegex = new RegExp(/\^\^(.+)\^\^/, "g");
 var roamItalicRegex = new RegExp(/__(.+)__/, "g");
 
+// quartz/plugins/transformers/breadboardVisual.ts
+import { visit as visit6 } from "unist-util-visit";
+
+// quartz/util/visualSpec.ts
+var VISUAL_TYPES = [
+  "function_plot",
+  "linked_time_plots",
+  "phase_space",
+  "mass_spring",
+  "pendulum",
+  "energy_exchange",
+  "damping_envelope",
+  "resonance_curve",
+  "travelling_wave",
+  "standing_wave",
+  "ray_diagram",
+  "source_figure_explainer",
+  "formula_derivation",
+  "concept_diagram",
+  "comparison_table"
+];
+var MAX_SPEC_CHARS = 4e4;
+var ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
+var CONTROL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
+var CONTROL_TYPES = /* @__PURE__ */ new Set(["slider", "toggle", "select"]);
+var FORBIDDEN_PATTERN = /<\s*script|<\s*iframe|<\s*object|<\s*embed|javascript\s*:|vbscript\s*:|data\s*:\s*text\/html|srcdoc\s*=|\bon[a-z]+\s*=|\beval\s*\(|new\s+Function|import\s*\(|document\s*\.\s*(write|cookie)|window\s*\[/i;
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+__name(isPlainObject, "isPlainObject");
+function safeString(value, field, errors, maxLen = 4e3) {
+  if (typeof value !== "string") return void 0;
+  if (value.length > maxLen) {
+    errors.push(`${field} is too long`);
+    return void 0;
+  }
+  if (FORBIDDEN_PATTERN.test(value)) {
+    errors.push(`${field} contains forbidden content`);
+    return void 0;
+  }
+  return value;
+}
+__name(safeString, "safeString");
+function safeStringArray(value, field, errors) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value.slice(0, 40)) {
+    const str = safeString(item, field, errors, 500);
+    if (str !== void 0 && str.trim()) out.push(str);
+  }
+  return out;
+}
+__name(safeStringArray, "safeStringArray");
+function finiteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
+__name(finiteNumber, "finiteNumber");
+function sanitizeValue(value, field, errors, depth) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : void 0;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return safeString(value, field, errors, 2e3);
+  if (Array.isArray(value)) {
+    if (depth <= 0) return void 0;
+    const out = value.slice(0, 200).map((item) => sanitizeValue(item, field, errors, depth - 1)).filter((item) => item !== void 0);
+    return out;
+  }
+  if (isPlainObject(value)) {
+    if (depth <= 0) return void 0;
+    const out = {};
+    for (const [key, item] of Object.entries(value).slice(0, 60)) {
+      if (!CONTROL_NAME_PATTERN.test(key) && !/^[A-Za-z0-9_ .-]{1,60}$/.test(key)) continue;
+      const sanitized = sanitizeValue(item, `${field}.${key}`, errors, depth - 1);
+      if (sanitized !== void 0) out[key] = sanitized;
+    }
+    return out;
+  }
+  return void 0;
+}
+__name(sanitizeValue, "sanitizeValue");
+function sanitizeSourceAnchors(value, errors) {
+  if (!Array.isArray(value)) return [];
+  const anchors = [];
+  for (const raw of value.slice(0, 20)) {
+    if (!isPlainObject(raw)) continue;
+    const description = safeString(raw.description, "sourceAnchors.description", errors, 1e3);
+    if (!description || !description.trim()) continue;
+    const anchor = { description };
+    const sourceId = safeString(raw.sourceId, "sourceAnchors.sourceId", errors, 200);
+    const sourceTitle = safeString(raw.sourceTitle, "sourceAnchors.sourceTitle", errors, 300);
+    const figureId = safeString(raw.figureId, "sourceAnchors.figureId", errors, 80);
+    const tableId = safeString(raw.tableId, "sourceAnchors.tableId", errors, 80);
+    const equationId = safeString(raw.equationId, "sourceAnchors.equationId", errors, 80);
+    const questionId = safeString(raw.questionId, "sourceAnchors.questionId", errors, 80);
+    const page = finiteNumber(raw.page);
+    if (sourceId) anchor.sourceId = sourceId;
+    if (sourceTitle) anchor.sourceTitle = sourceTitle;
+    if (figureId) anchor.figureId = figureId;
+    if (tableId) anchor.tableId = tableId;
+    if (equationId) anchor.equationId = equationId;
+    if (questionId) anchor.questionId = questionId;
+    if (page !== void 0) anchor.page = page;
+    anchors.push(anchor);
+  }
+  return anchors;
+}
+__name(sanitizeSourceAnchors, "sanitizeSourceAnchors");
+function sanitizeControls(value, errors) {
+  if (!Array.isArray(value)) return [];
+  const controls = [];
+  for (const raw of value.slice(0, 12)) {
+    if (!isPlainObject(raw)) continue;
+    const name = typeof raw.name === "string" && CONTROL_NAME_PATTERN.test(raw.name) ? raw.name : null;
+    const label = safeString(raw.label, "controls.label", errors, 200);
+    const type = typeof raw.type === "string" && CONTROL_TYPES.has(raw.type) ? raw.type : null;
+    if (!name || !label || !type) {
+      errors.push("control entries need a valid name, label, and type");
+      continue;
+    }
+    const control = { name, label, type };
+    const min = finiteNumber(raw.min);
+    const max = finiteNumber(raw.max);
+    const step = finiteNumber(raw.step);
+    if (min !== void 0) control.min = min;
+    if (max !== void 0) control.max = max;
+    if (step !== void 0) control.step = step;
+    if (Array.isArray(raw.options)) control.options = safeStringArray(raw.options, "controls.options", errors);
+    const defaultValue = sanitizeValue(raw.defaultValue, "controls.defaultValue", errors, 1);
+    if (defaultValue !== void 0) control.defaultValue = defaultValue;
+    controls.push(control);
+  }
+  return controls;
+}
+__name(sanitizeControls, "sanitizeControls");
+function sanitizeFormulaRefs(value, errors) {
+  if (!Array.isArray(value)) return void 0;
+  const refs = [];
+  for (const raw of value.slice(0, 12)) {
+    if (!isPlainObject(raw)) continue;
+    const latex = safeString(raw.latex, "formulaRefs.latex", errors, 1e3);
+    const explanation = safeString(raw.explanation, "formulaRefs.explanation", errors, 2e3);
+    if (!latex || !explanation) continue;
+    const symbols = {};
+    if (isPlainObject(raw.symbols)) {
+      for (const [key, item] of Object.entries(raw.symbols).slice(0, 30)) {
+        const symbolKey = safeString(key, "formulaRefs.symbols", errors, 80);
+        const symbolValue = safeString(item, "formulaRefs.symbols", errors, 400);
+        if (symbolKey && symbolValue) symbols[symbolKey] = symbolValue;
+      }
+    }
+    refs.push({ latex, explanation, symbols });
+  }
+  return refs.length > 0 ? refs : void 0;
+}
+__name(sanitizeFormulaRefs, "sanitizeFormulaRefs");
+function sanitizeAnnotations(value, errors) {
+  if (!Array.isArray(value)) return void 0;
+  const annotations = [];
+  for (const raw of value.slice(0, 20)) {
+    if (!isPlainObject(raw)) continue;
+    const label = safeString(raw.label, "annotations.label", errors, 200);
+    const explanation = safeString(raw.explanation, "annotations.explanation", errors, 1500);
+    if (!label || !explanation) continue;
+    const annotation = { label, explanation };
+    const target = safeString(raw.target, "annotations.target", errors, 200);
+    if (target) annotation.target = target;
+    annotations.push(annotation);
+  }
+  return annotations.length > 0 ? annotations : void 0;
+}
+__name(sanitizeAnnotations, "sanitizeAnnotations");
+function validateVisualSpec(input) {
+  const errors = [];
+  let candidate = input;
+  if (typeof input === "string") {
+    if (input.length > MAX_SPEC_CHARS) return { spec: null, errors: ["spec JSON is too large"] };
+    try {
+      candidate = JSON.parse(input);
+    } catch {
+      return { spec: null, errors: ["spec is not valid JSON"] };
+    }
+  }
+  if (!isPlainObject(candidate)) return { spec: null, errors: ["spec must be a JSON object"] };
+  try {
+    if (JSON.stringify(candidate).length > MAX_SPEC_CHARS) {
+      return { spec: null, errors: ["spec JSON is too large"] };
+    }
+  } catch {
+    return { spec: null, errors: ["spec is not serializable"] };
+  }
+  const id = typeof candidate.id === "string" && ID_PATTERN.test(candidate.id) ? candidate.id : null;
+  if (!id) errors.push("id is required and must match [A-Za-z0-9_-]{1,80}");
+  const type = typeof candidate.type === "string" && VISUAL_TYPES.includes(candidate.type) ? candidate.type : null;
+  if (!type) errors.push(`type must be one of: ${VISUAL_TYPES.join(", ")}`);
+  const title = safeString(candidate.title, "title", errors, 300);
+  if (!title || !title.trim()) errors.push("title is required");
+  const pedagogicalPurpose = safeString(candidate.pedagogicalPurpose, "pedagogicalPurpose", errors, 2e3);
+  if (!pedagogicalPurpose || !pedagogicalPurpose.trim()) errors.push("pedagogicalPurpose is required");
+  const regenerationPrompt = safeString(candidate.regenerationPrompt, "regenerationPrompt", errors, 2e3);
+  if (!regenerationPrompt || !regenerationPrompt.trim()) errors.push("regenerationPrompt is required");
+  const props = isPlainObject(candidate.props) ? sanitizeValue(candidate.props, "props", errors, 3) : {};
+  if (errors.length > 0) return { spec: null, errors };
+  const spec = {
+    id,
+    type,
+    title,
+    sourceAnchors: sanitizeSourceAnchors(candidate.sourceAnchors, errors),
+    conceptTargets: safeStringArray(candidate.conceptTargets, "conceptTargets", errors),
+    pedagogicalPurpose,
+    props: props ?? {},
+    regenerationPrompt,
+    createdAt: safeString(candidate.createdAt, "createdAt", errors, 60) || (/* @__PURE__ */ new Date()).toISOString(),
+    version: typeof candidate.version === "number" && Number.isInteger(candidate.version) && candidate.version > 0 ? candidate.version : 1
+  };
+  const subtitle = safeString(candidate.subtitle, "subtitle", errors, 500);
+  if (subtitle) spec.subtitle = subtitle;
+  const caption = safeString(candidate.caption, "caption", errors, 1500);
+  if (caption) spec.caption = caption;
+  const gardenId = safeString(candidate.gardenId, "gardenId", errors, 200);
+  if (gardenId) spec.gardenId = gardenId;
+  const pageId = safeString(candidate.pageId, "pageId", errors, 300);
+  if (pageId) spec.pageId = pageId;
+  const updatedAt = safeString(candidate.updatedAt, "updatedAt", errors, 60);
+  if (updatedAt) spec.updatedAt = updatedAt;
+  const misconceptions = safeStringArray(candidate.misconceptionTargets, "misconceptionTargets", errors);
+  if (misconceptions.length > 0) spec.misconceptionTargets = misconceptions;
+  const controls = sanitizeControls(candidate.controls, errors);
+  if (controls.length > 0) spec.controls = controls;
+  const formulaRefs = sanitizeFormulaRefs(candidate.formulaRefs, errors);
+  if (formulaRefs) spec.formulaRefs = formulaRefs;
+  const annotations = sanitizeAnnotations(candidate.annotations, errors);
+  if (annotations) spec.annotations = annotations;
+  if (errors.some((message) => message.includes("forbidden content"))) {
+    return { spec: null, errors };
+  }
+  return { spec, errors };
+}
+__name(validateVisualSpec, "validateVisualSpec");
+var VISUAL_BLOCK_LANG = "breadboard-visual";
+function tagVisualCodeNode(node) {
+  const { spec, errors } = validateVisualSpec(node.value);
+  if (spec) {
+    node.data = {
+      hProperties: {
+        className: ["breadboard-visual-block"],
+        "data-visual-spec": JSON.stringify(spec)
+      }
+    };
+    node.value = `Interactive visual: ${spec.title}${spec.caption ? ` \u2014 ${spec.caption}` : ""}`;
+    return true;
+  }
+  node.data = {
+    hProperties: {
+      className: ["breadboard-visual-block", "breadboard-visual-invalid"],
+      "data-visual-error": errors.slice(0, 3).join("; ") || "invalid visual spec"
+    }
+  };
+  node.value = "This interactive visual could not be loaded.";
+  return false;
+}
+__name(tagVisualCodeNode, "tagVisualCodeNode");
+
+// quartz/components/scripts/breadboardVisual.inline.ts
+var breadboardVisual_inline_default = "";
+
+// quartz/components/styles/breadboardVisual.inline.scss
+var breadboardVisual_inline_default2 = "";
+
+// quartz/plugins/transformers/breadboardVisual.ts
+var BreadboardVisuals = /* @__PURE__ */ __name(() => {
+  return {
+    name: "BreadboardVisuals",
+    markdownPlugins() {
+      return [
+        () => {
+          return (tree) => {
+            visit6(tree, "code", (node) => {
+              if (node.lang !== VISUAL_BLOCK_LANG) return;
+              tagVisualCodeNode(node);
+            });
+          };
+        }
+      ];
+    },
+    externalResources() {
+      const js = [
+        {
+          script: breadboardVisual_inline_default,
+          loadTime: "afterDOMReady",
+          contentType: "inline"
+        }
+      ];
+      const css = [
+        {
+          content: breadboardVisual_inline_default2,
+          inline: true
+        }
+      ];
+      return { js, css };
+    }
+  };
+}, "BreadboardVisuals");
+
 // quartz/plugins/filters/draft.ts
-var RemoveDrafts = /* @__PURE__ */ __name(() => ({
+function frontmatterString(fm, key) {
+  const value = fm?.[key];
+  return typeof value === "string" ? value : "";
+}
+__name(frontmatterString, "frontmatterString");
+function isLegacySubtopicPath(relativePath = "") {
+  const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase().split("/");
+  return parts.some(
+    (part, index) => part === "generated" || part === "generated subtopics" || part === "subtopics" || part === "ai topics" || part === "topic cards" || part === "legacy" && parts[index + 1] === "generated subtopics"
+  );
+}
+__name(isLegacySubtopicPath, "isLegacySubtopicPath");
+var RemoveDrafts = /* @__PURE__ */ __name((opts = {}) => ({
   name: "RemoveDrafts",
   shouldPublish(_ctx, [_tree, vfile]) {
-    const draftFlag = vfile.data?.frontmatter?.draft === true || vfile.data?.frontmatter?.draft === "true";
+    const fm = vfile.data?.frontmatter;
+    const relativePath = String(vfile.data?.relativePath ?? "");
+    const knowledgeType2 = frontmatterString(fm, "knowledge_type");
+    const breadboardType2 = frontmatterString(fm, "breadboardType") || frontmatterString(fm, "breadboard_type");
+    const legacySubtopic = frontmatterString(fm, "legacy_subtopic_page") === "true" || isLegacySubtopicPath(relativePath);
+    if (legacySubtopic) return opts.showLegacySubtopicPages === true;
+    const draftFlag = fm?.draft === true || fm?.draft === "true";
+    const internalConcept = breadboardType2 === "internal_concept" || knowledgeType2 === "internal-concept";
+    if (internalConcept) return false;
     return !draftFlag;
   }
 }), "RemoveDrafts");
@@ -11774,7 +12096,7 @@ function concatenateResources(...resources) {
 __name(concatenateResources, "concatenateResources");
 
 // quartz/components/renderPage.tsx
-import { visit as visit6 } from "unist-util-visit";
+import { visit as visit7 } from "unist-util-visit";
 import { styleText as styleText2 } from "util";
 import { jsx as jsx4, jsxs } from "preact/jsx-runtime";
 var headerRegex = new RegExp(/h[1-6]/);
@@ -11815,7 +12137,7 @@ function pageResources(baseDir, staticResources) {
 }
 __name(pageResources, "pageResources");
 function renderTranscludes(root, cfg, slug, componentData, visited) {
-  visit6(root, "element", (node, _index, _parent) => {
+  visit7(root, "element", (node, _index, _parent) => {
     if (node.tagName === "blockquote") {
       const classNames2 = node.properties?.className ?? [];
       if (classNames2.includes("transclude")) {
@@ -12085,27 +12407,48 @@ function knowledgeType(file) {
   return typeof frontmatter?.knowledge_type === "string" ? frontmatter.knowledge_type : "";
 }
 __name(knowledgeType, "knowledgeType");
+function breadboardType(file) {
+  const frontmatter = file.frontmatter;
+  if (typeof frontmatter?.breadboardType === "string") return frontmatter.breadboardType;
+  return typeof frontmatter?.breadboard_type === "string" ? frontmatter.breadboard_type : "";
+}
+__name(breadboardType, "breadboardType");
 function generatedNoteType(file) {
   const frontmatter = file.frontmatter;
   return typeof frontmatter?.generated_note_type === "string" ? frontmatter.generated_note_type : "";
 }
 __name(generatedNoteType, "generatedNoteType");
-function sourceDocumentSort(f1, f2) {
-  const f1IsSource = knowledgeType(f1) === "source-document";
-  const f2IsSource = knowledgeType(f2) === "source-document";
-  if (f1IsSource && !f2IsSource) return -1;
-  if (!f1IsSource && f2IsSource) return 1;
-  return 0;
+function isInternalConcept(file) {
+  return knowledgeType(file) === "internal-concept" || breadboardType(file) === "internal_concept";
 }
-__name(sourceDocumentSort, "sourceDocumentSort");
+__name(isInternalConcept, "isInternalConcept");
+function readingOrderRank(file) {
+  const type = knowledgeType(file);
+  const slug = String(file.slug ?? "").toLowerCase();
+  const filePath = String(file.filePath ?? "").replace(/\\/g, "/").toLowerCase();
+  if (slug.includes("/learning/") || filePath.includes("/learning/")) return 0;
+  if (type === "topic-overview" || type === "learning-map" || type === "source-map" || type === "scope-contract") {
+    return 1;
+  }
+  if (/\/\d+\.\s*[^/]+\//.test(filePath) || type === "textbook-section") return 2;
+  if (type === "textbook-page" || breadboardType(file) === "textbook_page") return 3;
+  if (type === "source-document" || filePath.includes("/sources/")) return 4;
+  if (isInternalConcept(file)) return 9;
+  return 5;
+}
+__name(readingOrderRank, "readingOrderRank");
+function readingOrderSort(f1, f2) {
+  return readingOrderRank(f1) - readingOrderRank(f2);
+}
+__name(readingOrderSort, "readingOrderSort");
 function byDateAndAlphabeticalFolderFirst(cfg) {
   return (f1, f2) => {
     const f1IsFolder = isFolderPath(f1.slug ?? "");
     const f2IsFolder = isFolderPath(f2.slug ?? "");
     if (f1IsFolder && !f2IsFolder) return -1;
     if (!f1IsFolder && f2IsFolder) return 1;
-    const sourceSort = sourceDocumentSort(f1, f2);
-    if (sourceSort !== 0) return sourceSort;
+    const orderSort = readingOrderSort(f1, f2);
+    if (orderSort !== 0) return orderSort;
     if (f1.dates && f2.dates) {
       return getDate(cfg, f2).getTime() - getDate(cfg, f1).getTime();
     } else if (f1.dates && !f2.dates) {
@@ -12121,7 +12464,7 @@ function byDateAndAlphabeticalFolderFirst(cfg) {
 __name(byDateAndAlphabeticalFolderFirst, "byDateAndAlphabeticalFolderFirst");
 var PageList = /* @__PURE__ */ __name(({ cfg, fileData, allFiles, limit, sort }) => {
   const sorter = sort ?? byDateAndAlphabeticalFolderFirst(cfg);
-  let list = allFiles.sort(sorter);
+  let list = allFiles.filter((page) => !isInternalConcept(page)).sort(sorter);
   if (limit) {
     list = list.slice(0, limit);
   }
@@ -12129,11 +12472,12 @@ var PageList = /* @__PURE__ */ __name(({ cfg, fileData, allFiles, limit, sort })
     const title = page.frontmatter?.title;
     const tags = page.frontmatter?.tags ?? [];
     const isSourceDocument = knowledgeType(page) === "source-document";
+    const isTextbookPage = knowledgeType(page) === "textbook-page";
     const isChatNodeNote = knowledgeType(page) === "generated-note" && generatedNoteType(page) === "chat-node";
     return /* @__PURE__ */ jsx9(
       "li",
       {
-        class: `section-li${isSourceDocument ? " source-document-entry" : ""}${isChatNodeNote ? " chat-node-note-entry" : ""}`,
+        class: `section-li${isSourceDocument ? " source-document-entry" : ""}${isTextbookPage ? " textbook-page-entry" : ""}${isChatNodeNote ? " chat-node-note-entry" : ""}`,
         children: /* @__PURE__ */ jsxs3("div", { class: "section", children: [
           /* @__PURE__ */ jsx9("p", { class: "meta", children: page.dates && /* @__PURE__ */ jsx9(Date2, { date: getDate(cfg, page), locale: cfg.locale }) }),
           /* @__PURE__ */ jsx9("div", { class: "desc", children: /* @__PURE__ */ jsx9("h3", { children: /* @__PURE__ */ jsx9("a", { href: resolveRelative(fileData.slug, page.slug), class: "internal", children: title }) }) }),
@@ -13541,11 +13885,25 @@ var defaultOptions14 = {
     return node;
   }, "mapFn"),
   sortFn: /* @__PURE__ */ __name((a, b) => {
-    const aIsSource = a.data?.knowledgeType === "source-document";
-    const bIsSource = b.data?.knowledgeType === "source-document";
+    const rank = /* @__PURE__ */ __name((node) => {
+      const segment = node.slugSegment.toLowerCase();
+      const slug = String(node.slug ?? "").toLowerCase();
+      const knowledgeType2 = node.data?.knowledgeType ?? "";
+      const breadboardType2 = node.data?.breadboardType ?? "";
+      if (segment === "learning" || slug.endsWith("/learning/index")) return 0;
+      if (knowledgeType2 === "topic-overview" || knowledgeType2 === "learning-map" || knowledgeType2 === "source-map" || knowledgeType2 === "scope-contract") {
+        return 1;
+      }
+      if (/^\d+\b/.test(segment) || knowledgeType2 === "textbook-section") return 2;
+      if (knowledgeType2 === "textbook-page" || breadboardType2 === "textbook_page") return 3;
+      if (segment === "sources" || knowledgeType2 === "source-document") return 4;
+      if (segment === "legacy") return 8;
+      if (knowledgeType2 === "internal-concept" || breadboardType2 === "internal_concept") return 9;
+      return 5;
+    }, "rank");
+    const rankDiff = rank(a) - rank(b);
+    if (rankDiff !== 0) return rankDiff;
     if (!a.isFolder && !b.isFolder || a.isFolder && b.isFolder) {
-      if (aIsSource && !bIsSource) return -1;
-      if (!aIsSource && bIsSource) return 1;
       return a.displayName.localeCompare(b.displayName, void 0, {
         numeric: true,
         sensitivity: "base"
@@ -13557,7 +13915,11 @@ var defaultOptions14 = {
       return -1;
     }
   }, "sortFn"),
-  filterFn: /* @__PURE__ */ __name((node) => node.slugSegment !== "tags", "filterFn"),
+  filterFn: /* @__PURE__ */ __name((node) => {
+    const knowledgeType2 = node.data?.knowledgeType ?? "";
+    const breadboardType2 = node.data?.breadboardType ?? "";
+    return node.slugSegment !== "tags" && knowledgeType2 !== "internal-concept" && breadboardType2 !== "internal_concept";
+  }, "filterFn"),
   order: ["filter", "map", "sort"]
 };
 var numExplorers = 0;
@@ -14218,6 +14580,23 @@ var MarkdownActions = /* @__PURE__ */ __name(({ fileData, displayClass }) => {
             ] }),
             /* @__PURE__ */ jsx38("button", { class: "markdown-editor-close", type: "button", "aria-label": "Close editor", children: "Close" })
           ] }),
+          /* @__PURE__ */ jsxs21("div", { class: "markdown-editor-fields", children: [
+            /* @__PURE__ */ jsxs21("label", { class: "markdown-editor-field", children: [
+              /* @__PURE__ */ jsx38("span", { children: "Title" }),
+              /* @__PURE__ */ jsx38("input", { class: "markdown-editor-title", type: "text", placeholder: "Note title" })
+            ] }),
+            /* @__PURE__ */ jsxs21("label", { class: "markdown-editor-field", children: [
+              /* @__PURE__ */ jsx38("span", { children: "Tags" }),
+              /* @__PURE__ */ jsx38("div", { class: "markdown-editor-tags-box", children: /* @__PURE__ */ jsx38(
+                "input",
+                {
+                  class: "markdown-editor-tags",
+                  type: "text",
+                  placeholder: "#hashtag #separated #tags"
+                }
+              ) })
+            ] })
+          ] }),
           /* @__PURE__ */ jsx38("textarea", { class: "markdown-editor-textarea", spellcheck: false }),
           /* @__PURE__ */ jsx38(
             "input",
@@ -14362,6 +14741,111 @@ MarkdownActions.css = `
   font-weight: 600;
 }
 
+.markdown-editor-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--lightgray);
+}
+
+.markdown-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.markdown-editor-field > span {
+  color: var(--secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.markdown-editor-title {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  color: var(--dark);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.markdown-editor-title:focus {
+  outline: none;
+  border-color: var(--secondary);
+}
+
+.markdown-editor-tags-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  padding: 0.3rem 0.5rem;
+  cursor: text;
+}
+
+.markdown-editor-tags-box:focus-within {
+  border-color: var(--secondary);
+}
+
+.markdown-editor-tags {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+  border: 0;
+  background: transparent;
+  color: var(--dark);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.25rem 0.15rem;
+}
+
+.markdown-editor-tags:focus {
+  outline: none;
+}
+
+.markdown-editor-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--secondary) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--secondary) 12%, transparent);
+  color: var(--secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  white-space: nowrap;
+}
+
+.markdown-editor-tag button {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.6;
+}
+
+.markdown-editor-tag button:hover {
+  opacity: 1;
+}
+
 .markdown-editor-textarea {
   flex: 1;
   min-height: 0;
@@ -14427,11 +14911,100 @@ var SB_EDITOR_DRAFT_KEY = "second-brain:md-editor-draft"
 function sbReadEditorDraft() {
   try { return JSON.parse(sessionStorage.getItem(SB_EDITOR_DRAFT_KEY) || "null") } catch (e) { return null }
 }
-function sbWriteEditorDraft(draftSlug, content) {
-  try { sessionStorage.setItem(SB_EDITOR_DRAFT_KEY, JSON.stringify({ slug: draftSlug, content: content })) } catch (e) {}
+function sbWriteEditorDraft(draftSlug, draft) {
+  var value = draft && typeof draft === "object" ? draft : { body: draft }
+  try {
+    sessionStorage.setItem(SB_EDITOR_DRAFT_KEY, JSON.stringify({
+      slug: draftSlug,
+      title: value.title || "",
+      tags: value.tags || "",
+      body: value.body || "",
+    }))
+  } catch (e) {}
 }
 function sbClearEditorDraft() {
   try { sessionStorage.removeItem(SB_EDITOR_DRAFT_KEY) } catch (e) {}
+}
+function sbParseTags(value) {
+  return String(value || "").split(/[#,]/).map(function (tag) { return tag.trim() }).filter(Boolean)
+}
+function sbFormatTags(tags) {
+  return (Array.isArray(tags) ? tags : []).map(function (tag) { return "#" + tag }).join(" ")
+}
+// Chip-style tag input: finished tags (space/comma/Enter) render as bubbles
+// ahead of the text input; Backspace on an empty input removes the last one.
+function sbCreateTagField(box, input) {
+  var tags = []
+  var notifyInput = function () {
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+  }
+  var render = function () {
+    box.querySelectorAll(".markdown-editor-tag").forEach(function (chip) { chip.remove() })
+    tags.forEach(function (tag) {
+      var chip = document.createElement("span")
+      chip.className = "markdown-editor-tag"
+      chip.appendChild(document.createTextNode("#" + tag))
+      var remove = document.createElement("button")
+      remove.type = "button"
+      remove.setAttribute("aria-label", "Remove tag " + tag)
+      remove.textContent = "\\u00d7"
+      remove.addEventListener("click", function (event) {
+        event.preventDefault()
+        tags = tags.filter(function (t) { return t !== tag })
+        render()
+        notifyInput()
+      })
+      chip.appendChild(remove)
+      box.insertBefore(chip, input)
+    })
+  }
+  var commit = function () {
+    var pieces = sbParseTags(input.value)
+    pieces.forEach(function (tag) {
+      if (tags.indexOf(tag) === -1) tags.push(tag)
+    })
+    input.value = ""
+    render()
+  }
+  input.addEventListener("keydown", function (event) {
+    if (event.key === " " || event.key === "," || event.key === "Enter") {
+      event.preventDefault()
+      if (input.value.trim()) {
+        commit()
+        notifyInput()
+      }
+    } else if (event.key === "Backspace" && input.value === "" && tags.length > 0) {
+      event.preventDefault()
+      tags.pop()
+      render()
+      notifyInput()
+    }
+  })
+  input.addEventListener("blur", function () {
+    if (input.value.trim()) {
+      commit()
+      notifyInput()
+    }
+  })
+  box.addEventListener("click", function (event) {
+    if (event.target === box) input.focus()
+  })
+  var field = {
+    getTags: function () { return tags.concat(sbParseTags(input.value)) },
+    getValue: function () { return sbFormatTags(field.getTags()) },
+    setValue: function (value) {
+      tags = []
+      var pieces = Array.isArray(value) ? value : sbParseTags(value)
+      pieces.forEach(function (tag) {
+        tag = String(tag).trim()
+        if (tag && tags.indexOf(tag) === -1) tags.push(tag)
+      })
+      input.value = ""
+      render()
+    },
+  }
+  input._sbTagField = field
+  return field
 }
 document.addEventListener("nav", () => {
   for (const actions of document.querySelectorAll(".markdown-actions")) {
@@ -14444,6 +15017,10 @@ document.addEventListener("nav", () => {
     const status = actions.querySelector(".markdown-action-status")
     const modal = actions.querySelector(".markdown-editor-modal")
     const textarea = actions.querySelector(".markdown-editor-textarea")
+    const titleInput = actions.querySelector(".markdown-editor-title")
+    const tagsInput = actions.querySelector(".markdown-editor-tags")
+    const tagsBox = actions.querySelector(".markdown-editor-tags-box")
+    const tagField = tagsInput && tagsBox ? sbCreateTagField(tagsBox, tagsInput) : null
     const imageInput = actions.querySelector(".markdown-editor-image-input")
     const addImage = actions.querySelector(".markdown-editor-image")
     const close = actions.querySelector(".markdown-editor-close")
@@ -14453,6 +15030,12 @@ document.addEventListener("nav", () => {
     const setStatus = (message) => {
       if (status) status.textContent = message
     }
+    const editorDraft = () => ({
+      title: titleInput ? titleInput.value : "",
+      tags: tagField ? tagField.getValue() : tagsInput ? tagsInput.value : "",
+      body: textarea ? textarea.value : "",
+    })
+    const saveDraft = () => sbWriteEditorDraft(slug, editorDraft())
     const resolveDashboardBaseUrl = (fallback) => {
       const trimmed = (fallback || "").replace(/\\/+$/, "")
       if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
@@ -14528,12 +15111,16 @@ document.addEventListener("nav", () => {
       return body
     }
 
-    const showModal = (content) => {
+    const showModal = (draft) => {
       if (!modal || !textarea) return
-      textarea.value = content || ""
+      const value = draft || {}
+      if (titleInput) titleInput.value = value.title || ""
+      if (tagField) tagField.setValue(value.tags || "")
+      else if (tagsInput) tagsInput.value = value.tags || ""
+      textarea.value = value.body || ""
       modal.hidden = false
       textarea.focus()
-      sbWriteEditorDraft(slug, textarea.value)
+      saveDraft()
     }
 
     const hideModal = () => {
@@ -14545,14 +15132,17 @@ document.addEventListener("nav", () => {
     }
 
     // Track edits so a live-reload or navigation never loses in-progress work.
-    if (textarea) {
-      textarea.addEventListener("input", () => sbWriteEditorDraft(slug, textarea.value))
-    }
+    if (textarea) textarea.addEventListener("input", saveDraft)
+    if (titleInput) titleInput.addEventListener("input", saveDraft)
+    if (tagsInput) tagsInput.addEventListener("input", saveDraft)
 
     // Reopen the editor with the saved draft after a reload / when returning here.
     const restoredDraft = sbReadEditorDraft()
     if (restoredDraft && restoredDraft.slug === slug && modal && textarea) {
-      textarea.value = restoredDraft.content
+      if (titleInput) titleInput.value = restoredDraft.title || ""
+      if (tagField) tagField.setValue(restoredDraft.tags || "")
+      else if (tagsInput) tagsInput.value = restoredDraft.tags || ""
+      textarea.value = restoredDraft.body || ""
       modal.hidden = false
     }
 
@@ -14590,11 +15180,18 @@ document.addEventListener("nav", () => {
     save?.addEventListener("click", () => {
       if (requireDashboardFrame()) return
       if (!textarea) return
+      if (titleInput && !titleInput.value.trim()) {
+        setStatus("Title cannot be empty")
+        titleInput.focus()
+        return
+      }
       setStatus("Saving...")
       window.parent?.postMessage({
         type: "second-brain:save-markdown",
         slug,
-        content: textarea.value,
+        title: titleInput ? titleInput.value : "",
+        tags: tagField ? tagField.getTags() : tagsInput ? sbParseTags(tagsInput.value) : [],
+        body: textarea.value,
       }, "*")
     })
 
@@ -14707,8 +15304,16 @@ window.addEventListener("message", (event) => {
   const status = actions.querySelector(".markdown-action-status")
   const modal = actions.querySelector(".markdown-editor-modal")
   const textarea = actions.querySelector(".markdown-editor-textarea")
+  const titleInput = actions.querySelector(".markdown-editor-title")
+  const tagsInput = actions.querySelector(".markdown-editor-tags")
+  const tagField = tagsInput ? tagsInput._sbTagField : null
   const placement = actions.querySelector(".markdown-editor-placement")
   const addImage = actions.querySelector(".markdown-editor-image")
+  const currentDraft = () => ({
+    title: titleInput ? titleInput.value : "",
+    tags: tagField ? tagField.getValue() : tagsInput ? tagsInput.value : "",
+    body: textarea ? textarea.value : "",
+  })
   const setStatus = (message) => {
     if (status) status.textContent = message
   }
@@ -14743,11 +15348,18 @@ window.addEventListener("message", (event) => {
   }
 
   if (data.type === "second-brain:markdown-content-result") {
-    if (data.ok && typeof data.content === "string") {
-      if (textarea) textarea.value = data.content
+    if (data.ok && (typeof data.body === "string" || typeof data.content === "string")) {
+      const nextBody = typeof data.body === "string" ? data.body : data.content
+      if (titleInput) titleInput.value = typeof data.title === "string" ? data.title : ""
+      const nextTags = Array.isArray(data.tags)
+        ? data.tags
+        : typeof data.tags === "string" ? data.tags : ""
+      if (tagField) tagField.setValue(nextTags)
+      else if (tagsInput) tagsInput.value = sbFormatTags(sbParseTags(nextTags))
+      if (textarea) textarea.value = nextBody
       if (modal) modal.hidden = false
       textarea?.focus()
-      sbWriteEditorDraft(data.slug, data.content)
+      sbWriteEditorDraft(data.slug, currentDraft())
       setStatus("")
     } else {
       setStatus(data.error || "Could not open")
@@ -14768,7 +15380,7 @@ window.addEventListener("message", (event) => {
     if (data.ok && typeof data.markdown === "string" && data.markdown) {
       const snippetCount = typeof data.count === "number" ? data.count : 1
       insertSnippet(data.markdown)
-      if (textarea) sbWriteEditorDraft(data.slug, textarea.value)
+      if (textarea) sbWriteEditorDraft(data.slug, currentDraft())
       setStatus(snippetCount === 1 ? "Image inserted in editor. Click Save to publish." : "Images inserted in editor. Click Save to publish.")
     } else {
       setStatus(data.error || "Could not add image")
@@ -14792,11 +15404,11 @@ var homeOverview_default = "";
 
 // quartz/components/HomeOverview.tsx
 import { jsx as jsx39, jsxs as jsxs22 } from "preact/jsx-runtime";
-function frontmatterString(fm, key) {
+function frontmatterString2(fm, key) {
   const value = fm?.[key];
   return typeof value === "string" ? value : "";
 }
-__name(frontmatterString, "frontmatterString");
+__name(frontmatterString2, "frontmatterString");
 function frontmatterArray(fm, key) {
   const value = fm?.[key];
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
@@ -14822,11 +15434,11 @@ function clusterCards(allFiles, allowedClusters = [], clusterOrder = []) {
     const clusterSlug2 = String(file.slug ?? "").replace(/\/index$/, "");
     const stats = {
       sources: statFromText(file.text, "Source documents"),
-      topics: statFromText(file.text, "Knowledge topics"),
-      notes: statFromText(file.text, "Generated chat notes"),
+      pages: statFromText(file.text, "Textbook pages"),
+      concepts: statFromText(file.text, "Internal ConceptNodes"),
       links: statFromText(file.text, "Graph links")
     };
-    const fallbackDescription = `${stats.sources ?? "0"} source documents, ${stats.topics ?? "0"} topics, and ${stats.links ?? "0"} links.`;
+    const fallbackDescription = `${stats.sources ?? "0"} source documents, ${stats.pages ?? "0"} textbook pages, and ${stats.links ?? "0"} links.`;
     return {
       slug: fullSlug,
       clusterSlug: clusterSlug2,
@@ -14847,8 +15459,8 @@ function clusterCards(allFiles, allowedClusters = [], clusterOrder = []) {
 __name(clusterCards, "clusterCards");
 var HomeOverview = /* @__PURE__ */ __name((props) => {
   const fm = props.fileData.frontmatter;
-  const scope = frontmatterString(fm, "garden_scope");
-  const isGardenOverview2 = props.fileData.slug === "index" || frontmatterString(fm, "knowledge_type") === "garden-overview";
+  const scope = frontmatterString2(fm, "garden_scope");
+  const isGardenOverview2 = props.fileData.slug === "index" || frontmatterString2(fm, "knowledge_type") === "garden-overview";
   if (!isGardenOverview2) return null;
   const clusters = clusterCards(
     props.allFiles,
@@ -14859,10 +15471,13 @@ var HomeOverview = /* @__PURE__ */ __name((props) => {
     (sum, cluster) => sum + Number(cluster.stats.sources ?? 0),
     0
   );
-  const totalTopics = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.topics ?? 0), 0);
-  const totalNotes = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.notes ?? 0), 0);
+  const totalPages = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.pages ?? 0), 0);
+  const totalConcepts = clusters.reduce(
+    (sum, cluster) => sum + Number(cluster.stats.concepts ?? 0),
+    0
+  );
   const totalLinks = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.links ?? 0), 0);
-  const headerText = scope === "public" ? "Shared clusters live here, ranked by popularity." : scope === "private" ? "Your account's clusters live here. Open a cluster to work inside its scoped map." : "A full map of every cluster lives here. Open a cluster to work inside its own scoped map.";
+  const headerText = scope === "public" ? "Shared clusters live here, ranked by popularity." : scope === "private" ? "Your account's clusters live here. Open a cluster to work inside its scoped Learning Map." : "A full map of every cluster lives here. Open a cluster to work inside its own Learning Map.";
   return /* @__PURE__ */ jsxs22("section", { class: "home-overview", children: [
     /* @__PURE__ */ jsxs22("div", { class: "home-overview-header", children: [
       /* @__PURE__ */ jsx39("p", { class: "eyebrow", children: scope === "public" ? "Public garden" : scope === "private" ? "My garden" : "Digital Garden" }),
@@ -14878,12 +15493,12 @@ var HomeOverview = /* @__PURE__ */ __name((props) => {
         " sources"
       ] }),
       /* @__PURE__ */ jsxs22("span", { children: [
-        totalTopics,
-        " topics"
+        totalPages,
+        " pages"
       ] }),
       /* @__PURE__ */ jsxs22("span", { children: [
-        totalNotes,
-        " chat notes"
+        totalConcepts,
+        " concepts"
       ] }),
       /* @__PURE__ */ jsxs22("span", { children: [
         totalLinks,
@@ -14904,8 +15519,8 @@ var HomeOverview = /* @__PURE__ */ __name((props) => {
               " sources"
             ] }),
             /* @__PURE__ */ jsxs22("span", { children: [
-              cluster.stats.topics ?? "0",
-              " topics"
+              cluster.stats.pages ?? "0",
+              " pages"
             ] }),
             /* @__PURE__ */ jsxs22("span", { children: [
               cluster.stats.links ?? "0",
@@ -15381,12 +15996,12 @@ window.addEventListener("message", (event) => {
 var FolderPdfExport_default = /* @__PURE__ */ __name((() => FolderPdfExport), "default");
 
 // quartz.layout.ts
-var frontmatterString2 = /* @__PURE__ */ __name((page, key) => {
+var frontmatterString3 = /* @__PURE__ */ __name((page, key) => {
   const value = page.fileData.frontmatter?.[key];
   return typeof value === "string" ? value : "";
 }, "frontmatterString");
 var isHomePage = /* @__PURE__ */ __name((page) => page.fileData.slug === "index", "isHomePage");
-var isGardenOverview = /* @__PURE__ */ __name((page) => isHomePage(page) || frontmatterString2(page, "knowledge_type") === "garden-overview", "isGardenOverview");
+var isGardenOverview = /* @__PURE__ */ __name((page) => isHomePage(page) || frontmatterString3(page, "knowledge_type") === "garden-overview", "isGardenOverview");
 var isClusterIndex = /* @__PURE__ */ __name((page) => !isGardenOverview(page) && String(page.fileData.slug ?? "").endsWith("/index"), "isClusterIndex");
 var sharedPageComponents = {
   head: Head_default(),
@@ -15946,6 +16561,7 @@ var ContentIndex = /* @__PURE__ */ __name((opts) => {
             links: file.data.links ?? [],
             tags: file.data.frontmatter?.tags ?? [],
             knowledgeType: typeof fm?.knowledge_type === "string" ? fm.knowledge_type : void 0,
+            breadboardType: typeof fm?.breadboardType === "string" ? fm.breadboardType : typeof fm?.breadboard_type === "string" ? fm.breadboard_type : void 0,
             generatedNoteType: typeof fm?.generated_note_type === "string" ? fm.generated_note_type : void 0,
             sourceType: typeof fm?.source_type === "string" ? fm.source_type : void 0,
             sourceFile: typeof fm?.source_file === "string" ? fm.source_file : void 0,
@@ -16582,7 +17198,7 @@ var config = {
     },
     locale: "en-US",
     baseUrl: quartzBaseUrl,
-    ignorePatterns: ["private", "templates", ".obsidian"],
+    ignorePatterns: ["private", "templates", ".obsidian", ".breadboard"],
     defaultDateType: "modified",
     theme: {
       fontOrigin: "googleFonts",
@@ -16635,13 +17251,18 @@ var config = {
         keepBackground: false
       }),
       ObsidianFlavoredMarkdown({ enableInHtmlEmbed: false }),
+      BreadboardVisuals(),
       GitHubFlavoredMarkdown(),
       TableOfContents(),
       CrawlLinks({ markdownLinkResolution: "shortest" }),
       Description(),
       Latex({ renderEngine: "katex" })
     ],
-    filters: [RemoveDrafts()],
+    filters: [
+      RemoveDrafts({
+        showLegacySubtopicPages: process.env.SHOW_LEGACY_SUBTOPIC_PAGES === "true"
+      })
+    ],
     emitters: [
       AliasRedirects(),
       ComponentResources(),

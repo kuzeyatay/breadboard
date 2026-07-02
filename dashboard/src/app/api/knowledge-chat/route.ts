@@ -8,6 +8,7 @@ import type {
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { withCouncil } from '@/lib/council';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
 import db from '@/lib/db';
 
@@ -234,14 +235,14 @@ export async function POST(request: Request) {
     let systemPrompt =
       (publicScope
         ? 'You are the assistant for the Breadboard public knowledge hub, which spans every public garden shared on the platform. ' +
-          'Answer using the aggregated graph relationships and markdown notes from across all public gardens as grounded context. ' +
+          'Answer using the aggregated graph relationships and textbook pages from across all public gardens as grounded context. ' +
           'You can answer questions about any public garden, compare and connect ideas across them, and point to where knowledge lives. ' +
           'When you use a note, mention which public garden it comes from naturally (e.g. "in the Physics for EE garden"). '
         : "You are the assistant for the user's entire second-brain knowledge base, which spans every garden they own. " +
-          'Answer using the aggregated graph relationships and markdown notes from across all their gardens as grounded context. ' +
+          'Answer using the aggregated graph relationships and textbook pages from across all their gardens as grounded context. ' +
           'You can answer questions about any garden, compare and connect ideas across gardens, and point to where knowledge lives. ' +
           'When you use a note, mention which garden it comes from naturally (e.g. "in your Physics for EE garden"). ') +
-      'When the user asks where something appears, cite the note title, garden, and the Locations value from the context. ' +
+      'When the user asks where something appears, cite the page title, garden, and the Locations value from the context. ' +
       'Always format mathematical expressions using LaTeX delimiters: ' +
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
@@ -286,7 +287,20 @@ export async function POST(request: Request) {
         : {}),
     } satisfies ResponseCreateParamsStreaming;
 
-    const stream = await client.responses.create(responsesRequest);
+    // Council routing: ChatMock reads and strips these fields.
+    const stream = await client.responses.create(
+      withCouncil(responsesRequest, {
+        taskType: 'page_assistant_answer',
+        sourceContext:
+          selectedNodes.length > 0
+            ? {
+                sourceTitles: selectedNodes
+                  .map((scoped) => `${scoped.node.fileName} (${scoped.clusterName})`)
+                  .slice(0, 20),
+              }
+            : undefined,
+      }),
+    );
 
     const sourceNames = Array.from(
       new Set(

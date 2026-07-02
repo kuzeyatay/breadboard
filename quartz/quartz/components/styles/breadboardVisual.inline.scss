@@ -1,0 +1,227 @@
+.breadboard-visual-card {
+  margin: 1.4rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--light) 90%, transparent);
+  padding: 1rem 1.1rem 0.9rem 1.1rem;
+
+  &.bv-error {
+    border-style: dashed;
+  }
+
+  .bv-kicker {
+    margin: 0 0 0.1rem 0;
+    color: var(--secondary);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .bv-title {
+    margin: 0 0 0.2rem 0;
+    font-size: 1.05rem;
+    color: var(--dark);
+  }
+
+  .bv-subtitle {
+    margin: 0 0 0.4rem 0;
+    color: var(--gray);
+    font-size: 0.88rem;
+  }
+
+  .bv-figure {
+    margin: 0.5rem 0;
+
+    .bv-svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+  }
+
+  .bv-axis {
+    stroke: var(--gray);
+    stroke-width: 1;
+    opacity: 0.65;
+  }
+
+  .bv-frame {
+    stroke: var(--lightgray);
+    stroke-width: 1;
+  }
+
+  .bv-marker {
+    stroke: var(--tertiary);
+    stroke-width: 1.5;
+    stroke-dasharray: 5 4;
+  }
+
+  .bv-tick {
+    fill: var(--gray);
+    font-size: 12px;
+  }
+
+  .bv-solid {
+    fill: var(--gray);
+  }
+
+  .bv-mass {
+    fill: color-mix(in srgb, var(--secondary) 24%, var(--light));
+    stroke: var(--secondary);
+    stroke-width: 2;
+  }
+
+  .bv-mass-label {
+    fill: var(--dark);
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .bv-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    margin-top: 0.35rem;
+    font-size: 0.8rem;
+    color: var(--gray);
+
+    .bv-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .bv-swatch {
+      display: inline-block;
+      width: 14px;
+      height: 4px;
+      border-radius: 2px;
+    }
+  }
+
+  .bv-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.4rem;
+    margin: 0.55rem 0 0.2rem 0;
+    padding-top: 0.55rem;
+    border-top: 1px dashed var(--lightgray);
+  }
+
+  .bv-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.84rem;
+    color: var(--darkgray);
+
+    input[type="range"] {
+      width: 130px;
+      accent-color: var(--secondary);
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--secondary);
+    }
+
+    select {
+      font: inherit;
+      font-size: 0.84rem;
+      border: 1px solid var(--lightgray);
+      border-radius: 6px;
+      background: var(--light);
+      color: var(--dark);
+      padding: 0.15rem 0.3rem;
+    }
+
+    .bv-control-value {
+      min-width: 2.6rem;
+      color: var(--secondary);
+      font-variant-numeric: tabular-nums;
+    }
+  }
+
+  .bv-caption {
+    margin: 0.5rem 0 0 0;
+    font-size: 0.88rem;
+    color: var(--darkgray);
+    font-style: italic;
+  }
+
+  .bv-source {
+    margin: 0.3rem 0 0 0;
+    font-size: 0.8rem;
+    color: var(--gray);
+  }
+
+  .bv-readout {
+    margin: 0.3rem 0 0 0;
+    font-size: 0.82rem;
+    color: var(--gray);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bv-why {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--darkgray);
+
+    summary {
+      cursor: pointer;
+      color: var(--secondary);
+      font-weight: 500;
+    }
+
+    p {
+      margin: 0.35rem 0 0 0;
+    }
+
+    .bv-annotation {
+      color: var(--gray);
+    }
+  }
+
+  .bv-unsupported {
+    margin: 0.3rem 0;
+    color: var(--gray);
+    font-size: 0.9rem;
+  }
+
+  .bv-footer {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin-top: 0.7rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--lightgray);
+  }
+
+  .bv-regenerate {
+    border: 1px solid var(--lightgray);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--light) 88%, transparent);
+    color: var(--secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 500;
+    line-height: 1;
+    padding: 0.42rem 0.6rem;
+
+    &:hover {
+      color: var(--tertiary);
+      border-color: var(--secondary);
+    }
+
+    &:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+  }
+
+  .bv-status {
+    font-size: 0.8rem;
+    color: var(--gray);
+  }
+}

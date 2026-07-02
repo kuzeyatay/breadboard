@@ -247,3 +247,288 @@ b {
 .chat-markdown .katex-display {
   color: inherit;
 }
+
+/* Terminal header "boot-up" reveal: header items print in left-to-right with a
+   slight slide + de-blur, echoing a CLI prompt filling in when the terminal
+   opens. Stagger is applied per-item via inline animation-delay. */
+@keyframes terminal-boot-reveal {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+    filter: blur(0);
+  }
+}
+
+.terminal-boot-reveal {
+  opacity: 0;
+  animation: terminal-boot-reveal 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Reverse of the reveal: header items retract to the left, blurring out, as the
+   terminal collapses. */
+@keyframes terminal-boot-conceal {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-6px);
+    filter: blur(3px);
+  }
+}
+
+.terminal-boot-conceal {
+  animation: terminal-boot-conceal 0.32s cubic-bezier(0.55, 0, 0.68, 0.4) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-boot-reveal,
+  .terminal-boot-conceal {
+    animation-duration: 0.01ms;
+    animation-delay: 0ms !important;
+  }
+}
+
+/* New note modal — copied from quartz MarkdownActions so both editors look
+   identical. Colors are quartz's theme values (quartz.config.ts), not the
+   dashboard palette, since the quartz iframe renders with its own theme. */
+.markdown-editor-modal {
+  --light: #e6f0e6;
+  --lightgray: #a6bdad;
+  --gray: #50615a;
+  --dark: #0f1a16;
+  --secondary: #4f6f68;
+  --tertiary: #84a59d;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(4px);
+}
+
+.markdown-editor-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(58rem, calc(100vw - 2rem));
+  height: min(42rem, calc(100vh - 2rem));
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: var(--light);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.markdown-editor-header,
+.markdown-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--lightgray);
+}
+
+.markdown-editor-footer {
+  border-top: 1px solid var(--lightgray);
+  border-bottom: 0;
+}
+
+.markdown-editor-kicker {
+  margin: 0 0 0.15rem 0;
+  color: var(--secondary);
+  font-size: 0.78rem;
+}
+
+.markdown-editor-header h2 {
+  margin: 0;
+  color: var(--dark);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.markdown-editor-close,
+.markdown-editor-cancel,
+.markdown-editor-save {
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  color: var(--secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0.45rem 0.65rem;
+}
+
+.markdown-editor-close:hover,
+.markdown-editor-cancel:hover {
+  color: var(--tertiary);
+  border-color: var(--secondary);
+}
+
+.markdown-editor-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--lightgray);
+}
+
+.markdown-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.markdown-editor-field > span {
+  color: var(--secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.markdown-editor-field input,
+.markdown-editor-field select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  color: var(--dark);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.markdown-editor-field input:focus,
+.markdown-editor-field select:focus {
+  outline: none;
+  border-color: var(--secondary);
+}
+
+.markdown-editor-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--light) 72%, var(--lightgray));
+  color: var(--dark);
+  font-family: var(--font-ibm-plex-mono), monospace;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.markdown-editor-textarea::placeholder,
+.markdown-editor-field input::placeholder {
+  color: var(--gray);
+}
+
+.markdown-editor-tags-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  padding: 0.3rem 0.5rem;
+  cursor: text;
+}
+
+.markdown-editor-tags-box:focus-within {
+  border-color: var(--secondary);
+}
+
+.markdown-editor-field .markdown-editor-tags-box input {
+  flex: 1 1 8rem;
+  width: auto;
+  min-width: 6rem;
+  border: 0;
+  background: transparent;
+  padding: 0.25rem 0.15rem;
+}
+
+.markdown-editor-field .markdown-editor-tags-box input:focus {
+  border: 0;
+  outline: none;
+}
+
+.markdown-editor-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--secondary) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--secondary) 12%, transparent);
+  color: var(--secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  white-space: nowrap;
+}
+
+.markdown-editor-tag button {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.6;
+}
+
+.markdown-editor-tag button:hover {
+  opacity: 1;
+}
+
+.markdown-editor-save {
+  background: var(--dark);
+  border-color: var(--dark);
+  color: var(--light);
+}
+
+.markdown-editor-save:hover {
+  opacity: 0.86;
+}
+
+.markdown-editor-save:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.markdown-editor-error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 0.82rem;
+}
+
+.markdown-editor-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

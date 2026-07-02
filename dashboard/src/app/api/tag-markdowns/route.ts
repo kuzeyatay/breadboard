@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 import { normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
+import { withCouncil } from '@/lib/council';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -27,7 +28,7 @@ interface TaggingPlan {
   updates?: TaggingPlanUpdate[];
 }
 
-const TAG_MARKDOWNS_SYSTEM_PROMPT = `You update tags for existing markdown notes in a second-brain cluster.
+const TAG_MARKDOWNS_SYSTEM_PROMPT = `You update tags for existing textbook pages in a second-brain cluster.
 
 Return ONLY valid JSON with this shape:
 {
@@ -35,8 +36,8 @@ Return ONLY valid JSON with this shape:
   "summary": "Short summary",
   "updates": [
     {
-      "slug": "existing-note-slug",
-      "tags": ["tag-one", "tag-two"],
+      "slug": "existing-page-slug",
+      "tags": ["restoring force points toward equilibrium", "angular frequency is phase rate"],
       "reason": "Why this note should get these tags"
     }
   ]
@@ -45,9 +46,10 @@ Return ONLY valid JSON with this shape:
 Rules:
 - Only use note slugs that already exist in the provided inventory.
 - Only update notes that clearly match the user's request.
-- Prefer specific topical tags, schedule tags, week tags, unit tags, module tags, or course tags when the request implies them.
-- Tags must be concise, lowercase-friendly, and useful for retrieval.
-- Avoid generic tags like note, markdown, chat, garden, document, source, topic, schedule, weekly-schedule, misc, or general unless the user explicitly wants them.
+- Tags are Zettelkasten-style atomic idea labels: notes that share a tag become linked in the graph, so each tag must name the exact idea that would make two notes worth connecting.
+- Write each tag as a short phrase or short sentence (2-9 words) expressing ONE reusable idea, preferring a relation or mechanism over a bare noun. Good: "restoring force points toward equilibrium", "angular frequency is phase rate"; specific named concepts like "simple harmonic motion" are fine. Bad: physics, math, formula, important, wave, calculus, force (broad categories or bare nouns).
+- If the user explicitly asks for organizational tags (schedule, week, unit, module, or course tags), you may use those exact tags even though they are not idea tags.
+- Avoid generic, document-type, or learning tags like note, markdown, chat, garden, document, source, topic, misc, general, important, learning, study, formula, or example unless the user explicitly wants them, and never reference a page/slide/figure in a tag.
 - Use "merge" unless the user explicitly asks to replace, overwrite, reset, or clear existing tags.
 - If no notes should change, return {"mode":"merge","summary":"No clear matches","updates":[]}.
 - Never invent notes that are not in the inventory.`;
@@ -291,7 +293,7 @@ export async function POST(request: Request) {
     const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
     const editableNodes = knowledge.nodes.filter((node) => node.type !== 'cluster-index');
     if (editableNodes.length === 0) {
-      return NextResponse.json({ success: true, summary: 'No markdown notes found.', updated: [] });
+      return NextResponse.json({ success: true, summary: 'No textbook pages found.', updated: [] });
     }
 
     const conversationContext = compactConversation(messages);
@@ -339,13 +341,13 @@ export async function POST(request: Request) {
       apiKey: process.env.OPENAI_API_KEY || 'local',
     });
 
-    const response = await client.chat.completions.create({
+    const response = await client.chat.completions.create(withCouncil({
       model: selectedModel,
       messages: [
         { role: 'system', content: TAG_MARKDOWNS_SYSTEM_PROMPT },
         { role: 'user', content: promptSections.join('\n\n') },
       ],
-    });
+    }, { taskType: 'tagging', gardenId: cluster.slug }));
 
     const rawContent = response.choices[0]?.message?.content ?? '';
     let plan: TaggingPlan = {};
@@ -421,8 +423,8 @@ export async function POST(request: Request) {
         typeof plan.summary === 'string' && plan.summary.trim()
           ? plan.summary.trim()
           : appliedUpdates.length > 0
-            ? `Updated tags on ${appliedUpdates.length} markdown note${appliedUpdates.length === 1 ? '' : 's'}.`
-            : 'No markdown notes matched that tagging request clearly enough to update.',
+            ? `Updated tags on ${appliedUpdates.length} textbook page${appliedUpdates.length === 1 ? '' : 's'}.`
+            : 'No textbook pages matched that tagging request clearly enough to update.',
       updated: appliedUpdates,
     });
   } catch (error) {

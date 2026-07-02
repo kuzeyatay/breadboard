@@ -11,23 +11,51 @@ function knowledgeType(file: QuartzPluginData): string {
   return typeof frontmatter?.knowledge_type === "string" ? frontmatter.knowledge_type : ""
 }
 
+function breadboardType(file: QuartzPluginData): string {
+  const frontmatter = file.frontmatter as Record<string, unknown> | undefined
+  if (typeof frontmatter?.breadboardType === "string") return frontmatter.breadboardType
+  return typeof frontmatter?.breadboard_type === "string" ? frontmatter.breadboard_type : ""
+}
+
 function generatedNoteType(file: QuartzPluginData): string {
   const frontmatter = file.frontmatter as Record<string, unknown> | undefined
   return typeof frontmatter?.generated_note_type === "string" ? frontmatter.generated_note_type : ""
 }
 
-function sourceDocumentSort(f1: QuartzPluginData, f2: QuartzPluginData): number {
-  const f1IsSource = knowledgeType(f1) === "source-document"
-  const f2IsSource = knowledgeType(f2) === "source-document"
-  if (f1IsSource && !f2IsSource) return -1
-  if (!f1IsSource && f2IsSource) return 1
-  return 0
+function isInternalConcept(file: QuartzPluginData): boolean {
+  return knowledgeType(file) === "internal-concept" || breadboardType(file) === "internal_concept"
+}
+
+function readingOrderRank(file: QuartzPluginData): number {
+  const type = knowledgeType(file)
+  const slug = String(file.slug ?? "").toLowerCase()
+  const filePath = String(file.filePath ?? "")
+    .replace(/\\/g, "/")
+    .toLowerCase()
+  if (slug.includes("/learning/") || filePath.includes("/learning/")) return 0
+  if (
+    type === "topic-overview" ||
+    type === "learning-map" ||
+    type === "source-map" ||
+    type === "scope-contract"
+  ) {
+    return 1
+  }
+  if (/\/\d+\.\s*[^/]+\//.test(filePath) || type === "textbook-section") return 2
+  if (type === "textbook-page" || breadboardType(file) === "textbook_page") return 3
+  if (type === "source-document" || filePath.includes("/sources/")) return 4
+  if (isInternalConcept(file)) return 9
+  return 5
+}
+
+function readingOrderSort(f1: QuartzPluginData, f2: QuartzPluginData): number {
+  return readingOrderRank(f1) - readingOrderRank(f2)
 }
 
 export function byDateAndAlphabetical(cfg: GlobalConfiguration): SortFn {
   return (f1, f2) => {
-    const sourceSort = sourceDocumentSort(f1, f2)
-    if (sourceSort !== 0) return sourceSort
+    const orderSort = readingOrderSort(f1, f2)
+    if (orderSort !== 0) return orderSort
 
     // Sort by date/alphabetical
     if (f1.dates && f2.dates) {
@@ -55,8 +83,8 @@ export function byDateAndAlphabeticalFolderFirst(cfg: GlobalConfiguration): Sort
     if (f1IsFolder && !f2IsFolder) return -1
     if (!f1IsFolder && f2IsFolder) return 1
 
-    const sourceSort = sourceDocumentSort(f1, f2)
-    if (sourceSort !== 0) return sourceSort
+    const orderSort = readingOrderSort(f1, f2)
+    if (orderSort !== 0) return orderSort
 
     // If both are folders or both are files, sort by date/alphabetical
     if (f1.dates && f2.dates) {
@@ -83,7 +111,7 @@ type Props = {
 
 export const PageList: QuartzComponent = ({ cfg, fileData, allFiles, limit, sort }: Props) => {
   const sorter = sort ?? byDateAndAlphabeticalFolderFirst(cfg)
-  let list = allFiles.sort(sorter)
+  let list = allFiles.filter((page) => !isInternalConcept(page)).sort(sorter)
   if (limit) {
     list = list.slice(0, limit)
   }
@@ -94,14 +122,15 @@ export const PageList: QuartzComponent = ({ cfg, fileData, allFiles, limit, sort
         const title = page.frontmatter?.title
         const tags = page.frontmatter?.tags ?? []
         const isSourceDocument = knowledgeType(page) === "source-document"
+        const isTextbookPage = knowledgeType(page) === "textbook-page"
         const isChatNodeNote =
           knowledgeType(page) === "generated-note" && generatedNoteType(page) === "chat-node"
 
         return (
           <li
             class={`section-li${isSourceDocument ? " source-document-entry" : ""}${
-              isChatNodeNote ? " chat-node-note-entry" : ""
-            }`}
+              isTextbookPage ? " textbook-page-entry" : ""
+            }${isChatNodeNote ? " chat-node-note-entry" : ""}`}
           >
             <div class="section">
               <p class="meta">

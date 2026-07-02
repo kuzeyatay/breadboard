@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from flask import Blueprint, Response, current_app, jsonify, make_response, request
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
+from .council.gateway import maybe_handle_responses_with_council, maybe_handle_with_council
 from .fast_mode import resolve_service_tier
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
@@ -141,6 +142,19 @@ def chat_completions() -> Response:
         if verbose:
             _log_json("OUT POST /v1/chat/completions", err)
         return jsonify(err), 400
+
+    # Breadboard Council kernel: every normal chat request is council-mediated
+    # (chatmock_ask -> CouncilRuntime). Tool-calling requests and explicit
+    # opt-outs fall through to the legacy passthrough below.
+    council_response = maybe_handle_with_council(
+        payload,
+        messages,
+        requested_model=requested_model,
+        model=model,
+        verbose=verbose,
+    )
+    if council_response is not None:
+        return council_response
 
     if isinstance(messages, list):
         sys_idx = next((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "system"), None)
@@ -594,6 +608,14 @@ def responses_create() -> Response:
         if verbose:
             _log_json("OUT POST /v1/responses", err)
         return jsonify(err), 400
+
+    # Breadboard Council kernel: text-only requests are council-mediated.
+    # Tool/image/multimodal/session-bound requests keep the raw passthrough.
+    # This call also strips council routing fields (taskType, gardenId, ...)
+    # from the payload so the legacy path never forwards them upstream.
+    council_response = maybe_handle_responses_with_council(payload, verbose=verbose)
+    if council_response is not None:
+        return council_response
 
     try:
         normalized = normalize_responses_payload(

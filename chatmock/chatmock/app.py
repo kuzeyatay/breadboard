@@ -4,6 +4,7 @@ from flask import Flask, jsonify
 from flask_sock import Sock
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
+from .council.debug_routes import council_debug_bp
 from .http import build_cors_headers
 from .routes_openai import openai_bp
 from .routes_ollama import ollama_bp
@@ -50,6 +51,7 @@ def create_app(
 
     app.register_blueprint(openai_bp)
     app.register_blueprint(ollama_bp)
+    app.register_blueprint(council_debug_bp)
     sock = Sock(app)
     register_websocket_routes(sock)
 

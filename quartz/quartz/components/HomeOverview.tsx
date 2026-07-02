@@ -9,8 +9,8 @@ type ClusterCard = {
   description: string
   stats: {
     sources?: string
-    topics?: string
-    notes?: string
+    pages?: string
+    concepts?: string
     links?: string
   }
 }
@@ -58,11 +58,11 @@ function clusterCards(
       const clusterSlug = String(file.slug ?? "").replace(/\/index$/, "")
       const stats = {
         sources: statFromText(file.text, "Source documents"),
-        topics: statFromText(file.text, "Knowledge topics"),
-        notes: statFromText(file.text, "Generated chat notes"),
+        pages: statFromText(file.text, "Textbook pages"),
+        concepts: statFromText(file.text, "Internal ConceptNodes"),
         links: statFromText(file.text, "Graph links"),
       }
-      const fallbackDescription = `${stats.sources ?? "0"} source documents, ${stats.topics ?? "0"} topics, and ${stats.links ?? "0"} links.`
+      const fallbackDescription = `${stats.sources ?? "0"} source documents, ${stats.pages ?? "0"} textbook pages, and ${stats.links ?? "0"} links.`
       return {
         slug: fullSlug,
         clusterSlug,
@@ -100,15 +100,18 @@ const HomeOverview: QuartzComponent = (props: QuartzComponentProps) => {
     (sum, cluster) => sum + Number(cluster.stats.sources ?? 0),
     0,
   )
-  const totalTopics = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.topics ?? 0), 0)
-  const totalNotes = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.notes ?? 0), 0)
+  const totalPages = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.pages ?? 0), 0)
+  const totalConcepts = clusters.reduce(
+    (sum, cluster) => sum + Number(cluster.stats.concepts ?? 0),
+    0,
+  )
   const totalLinks = clusters.reduce((sum, cluster) => sum + Number(cluster.stats.links ?? 0), 0)
   const headerText =
     scope === "public"
       ? "Shared clusters live here, ranked by popularity."
       : scope === "private"
-        ? "Your account's clusters live here. Open a cluster to work inside its scoped map."
-        : "A full map of every cluster lives here. Open a cluster to work inside its own scoped map."
+        ? "Your account's clusters live here. Open a cluster to work inside its scoped Learning Map."
+        : "A full map of every cluster lives here. Open a cluster to work inside its own Learning Map."
 
   return (
     <section class="home-overview">
@@ -125,8 +128,8 @@ const HomeOverview: QuartzComponent = (props: QuartzComponentProps) => {
       <div class="home-overview-stats" aria-label="Garden totals">
         <span>{clusters.length} clusters</span>
         <span>{totalSources} sources</span>
-        <span>{totalTopics} topics</span>
-        <span>{totalNotes} chat notes</span>
+        <span>{totalPages} pages</span>
+        <span>{totalConcepts} concepts</span>
         <span>{totalLinks} links</span>
       </div>
       <div class="cluster-grid">
@@ -141,7 +144,7 @@ const HomeOverview: QuartzComponent = (props: QuartzComponentProps) => {
               <span class="cluster-description">{cluster.description}</span>
               <span class="cluster-meta">
                 <span>{cluster.stats.sources ?? "0"} sources</span>
-                <span>{cluster.stats.topics ?? "0"} topics</span>
+                <span>{cluster.stats.pages ?? "0"} pages</span>
                 <span>{cluster.stats.links ?? "0"} links</span>
               </span>
             </a>

@@ -30,14 +30,32 @@ const defaultOptions: Options = {
     return node
   },
   sortFn: (a, b) => {
-    const aIsSource = a.data?.knowledgeType === "source-document"
-    const bIsSource = b.data?.knowledgeType === "source-document"
+    const rank = (node: FileTrieNode) => {
+      const segment = node.slugSegment.toLowerCase()
+      const slug = String(node.slug ?? "").toLowerCase()
+      const knowledgeType = node.data?.knowledgeType ?? ""
+      const breadboardType = node.data?.breadboardType ?? ""
+      if (segment === "learning" || slug.endsWith("/learning/index")) return 0
+      if (
+        knowledgeType === "topic-overview" ||
+        knowledgeType === "learning-map" ||
+        knowledgeType === "source-map" ||
+        knowledgeType === "scope-contract"
+      ) {
+        return 1
+      }
+      if (/^\d+\b/.test(segment) || knowledgeType === "textbook-section") return 2
+      if (knowledgeType === "textbook-page" || breadboardType === "textbook_page") return 3
+      if (segment === "sources" || knowledgeType === "source-document") return 4
+      if (segment === "legacy") return 8
+      if (knowledgeType === "internal-concept" || breadboardType === "internal_concept") return 9
+      return 5
+    }
+    const rankDiff = rank(a) - rank(b)
+    if (rankDiff !== 0) return rankDiff
 
-    // Sort order: folders first, then files. Sort folders and files alphabeticall
+    // Sort order: folders first, then files. Sort folders and files alphabetically
     if ((!a.isFolder && !b.isFolder) || (a.isFolder && b.isFolder)) {
-      if (aIsSource && !bIsSource) return -1
-      if (!aIsSource && bIsSource) return 1
-
       // numeric: true: Whether numeric collation should be used, such that "1" < "2" < "10"
       // sensitivity: "base": Only strings that differ in base letters compare as unequal. Examples: a ≠ b, a = á, a = A
       return a.displayName.localeCompare(b.displayName, undefined, {
@@ -52,7 +70,15 @@ const defaultOptions: Options = {
       return -1
     }
   },
-  filterFn: (node) => node.slugSegment !== "tags",
+  filterFn: (node) => {
+    const knowledgeType = node.data?.knowledgeType ?? ""
+    const breadboardType = node.data?.breadboardType ?? ""
+    return (
+      node.slugSegment !== "tags" &&
+      knowledgeType !== "internal-concept" &&
+      breadboardType !== "internal_concept"
+    )
+  },
   order: ["filter", "map", "sort"],
 }
 

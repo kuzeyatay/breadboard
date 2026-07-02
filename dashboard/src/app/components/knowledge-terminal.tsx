@@ -132,6 +132,43 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   const isOpen = height > COLLAPSED_HEIGHT + 8;
 
+  // Keep the header items mounted through their exit animation so they can
+  // retract (not just vanish) when the terminal collapses. `headerMounted`
+  // drives DOM presence; `headerClosing` swaps the reveal for the conceal.
+  const [headerMounted, setHeaderMounted] = useState(false);
+  const [headerClosing, setHeaderClosing] = useState(false);
+  const headerMountedRef = useRef(false);
+  const headerCloseTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (headerCloseTimer.current !== null) {
+        window.clearTimeout(headerCloseTimer.current);
+        headerCloseTimer.current = null;
+      }
+      headerMountedRef.current = true;
+      setHeaderClosing(false);
+      setHeaderMounted(true);
+    } else if (headerMountedRef.current) {
+      setHeaderClosing(true);
+      headerCloseTimer.current = window.setTimeout(() => {
+        headerMountedRef.current = false;
+        setHeaderMounted(false);
+        setHeaderClosing(false);
+        headerCloseTimer.current = null;
+      }, 660);
+    }
+  }, [isOpen]);
+
+  useEffect(
+    () => () => {
+      if (headerCloseTimer.current !== null) {
+        window.clearTimeout(headerCloseTimer.current);
+      }
+    },
+    [],
+  );
+
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -406,31 +443,21 @@ export default function KnowledgeTerminal({ scope }: Props) {
     document.body.style.userSelect = '';
   }
 
-  const depthGradientStyle: CSSProperties = {
-    bottom: height,
-    background:
-      'linear-gradient(to top, rgba(74, 91, 70, 0.16) 0%, rgba(74, 91, 70, 0.08) 48%, transparent 100%)',
-  };
-
   const terminalStyle: CSSProperties = {
     height,
     background: isOpen ? '#f7f3e8' : '#EFE8D6',
     borderTopColor: 'rgba(169, 193, 177, 0.7)',
-    boxShadow:
-      '0 -16px 42px rgba(74, 91, 70, 0.14), 0 -2px 10px rgba(74, 91, 70, 0.08)',
   };
 
-  const depthGradientClassName = 'pointer-events-none fixed inset-x-0 z-40 h-24';
+  const headerItemAnim = headerClosing
+    ? 'terminal-boot-conceal'
+    : 'terminal-boot-reveal';
+
   const terminalClassName =
     'fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t text-gray-100';
 
   return (
     <>
-      <div
-        aria-hidden="true"
-        className={depthGradientClassName}
-        style={depthGradientStyle}
-      />
       <section
         style={terminalStyle}
         className={terminalClassName}
@@ -455,17 +482,19 @@ export default function KnowledgeTerminal({ scope }: Props) {
         onPointerMove={handleResizeMove}
         onPointerUp={handleResizeEnd}
         onPointerCancel={handleResizeEnd}
+        style={{ background: '#EFE8D6' }}
         className={`flex shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 ${
-          isOpen ? 'py-2.5' : 'h-full justify-center py-0'
+          headerMounted ? 'py-2.5' : 'h-full justify-center py-0'
         }`}
       >
-        {isOpen ? (
+        {headerMounted ? (
           <>
           <button
             type="button"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => setSidebarOpen((value) => !value)}
-            className="flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white"
+            style={{ animationDelay: '40ms' }}
+            className={`${headerItemAnim} flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white`}
             title={sidebarOpen ? 'Hide history' : 'Show history'}
             aria-label="Toggle history"
           >
@@ -473,12 +502,23 @@ export default function KnowledgeTerminal({ scope }: Props) {
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
             </svg>
           </button>
-          <span className="font-mono text-sm font-medium text-[#5f7f8e]">{'>_'}</span>
+          <span
+            style={{ animationDelay: '130ms' }}
+            className={`${headerItemAnim} font-mono text-sm font-medium text-[#5f7f8e]`}
+          >
+            {'>_'}
+          </span>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-[#172A22]">
+            <p
+              style={{ animationDelay: '210ms' }}
+              className={`${headerItemAnim} truncate text-sm font-semibold text-[#172A22]`}
+            >
               {isPublic ? 'Public knowledge hub' : 'Knowledge base terminal'}
             </p>
-            <p className="truncate text-[11px] text-[#5F6F68]">
+            <p
+              style={{ animationDelay: '300ms' }}
+              className={`${headerItemAnim} truncate text-[11px] text-[#5F6F68]`}
+            >
               {`${scopeTagline.charAt(0).toUpperCase()}${scopeTagline.slice(1)}`}
             </p>
           </div>

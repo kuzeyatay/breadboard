@@ -11,6 +11,8 @@ interface Props {
 export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagDraft, setTagDraft] = useState('');
   const [content, setContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -49,10 +51,34 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
 
   function openModal() {
     setTitle('');
+    setTags([]);
+    setTagDraft('');
     setContent('');
     setSelectedFolder('');
     setError('');
     setOpen(true);
+  }
+
+  function parseTagDraft(draft: string): string[] {
+    return draft.split(/[#,\s]+/).map((t) => t.trim()).filter(Boolean);
+  }
+
+  function commitTagDraft() {
+    const pieces = parseTagDraft(tagDraft);
+    if (pieces.length > 0) {
+      setTags((prev) => [...prev, ...pieces.filter((p) => !prev.includes(p))]);
+    }
+    setTagDraft('');
+  }
+
+  function handleTagKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === ' ' || e.key === ',' || e.key === 'Enter') {
+      e.preventDefault();
+      commitTagDraft();
+    } else if (e.key === 'Backspace' && tagDraft === '' && tags.length > 0) {
+      e.preventDefault();
+      setTags((prev) => prev.slice(0, -1));
+    }
   }
 
   // Load the target cluster's folders so the note can be created inside one.
@@ -105,6 +131,7 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
           title: title.trim(),
           content,
           folder: selectedFolder,
+          tags: [...tags, ...parseTagDraft(tagDraft).filter((t) => !tags.includes(t))],
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -133,75 +160,93 @@ export default function NewNoteButton({ clusterSlug: fixedSlug }: Props) {
 
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="markdown-editor-modal"
           onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
         >
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpen(false)} />
-          <form
-            onSubmit={handleSubmit}
-            className="relative w-full max-w-2xl bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden"
-          >
-            <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
-              <h2 className="text-sm font-semibold text-white">New markdown note</h2>
-              <button type="button" onClick={() => setOpen(false)} className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                </svg>
+          <form onSubmit={handleSubmit} className="markdown-editor-panel">
+            <div className="markdown-editor-header">
+              <div>
+                <p className="markdown-editor-kicker">Markdown</p>
+                <h2>New note</h2>
+              </div>
+              <button type="button" onClick={() => setOpen(false)} className="markdown-editor-close" aria-label="Close editor">
+                Close
               </button>
             </div>
-            <div className="flex flex-col gap-3 px-4 py-4 overflow-y-auto flex-1">
+            <div className="markdown-editor-fields">
               {needsPicker && clusters.length > 0 && (
-                <select
-                  value={selectedSlug}
-                  onChange={(e) => setSelectedSlug(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600 transition-colors"
-                >
-                  {clusters.map((c) => (
-                    <option key={c.slug} value={c.slug}>{c.name}</option>
-                  ))}
-                </select>
+                <label className="markdown-editor-field">
+                  <span>Garden</span>
+                  <select value={selectedSlug} onChange={(e) => setSelectedSlug(e.target.value)}>
+                    {clusters.map((c) => (
+                      <option key={c.slug} value={c.slug}>{c.name}</option>
+                    ))}
+                  </select>
+                </label>
               )}
-              <label className="flex items-center gap-2 text-xs text-gray-500">
-                <span className="shrink-0">Folder</span>
-                <select
-                  value={selectedFolder}
-                  onChange={(e) => setSelectedFolder(e.target.value)}
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600 transition-colors"
-                >
+              <label className="markdown-editor-field">
+                <span>Folder</span>
+                <select value={selectedFolder} onChange={(e) => setSelectedFolder(e.target.value)}>
                   <option value="">Garden root</option>
                   {folders.map((folder) => (
                     <option key={folder} value={folder}>{folder}</option>
                   ))}
                 </select>
               </label>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Note title"
-                autoFocus
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600 transition-colors"
-              />
-              <textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Write your markdown here…"
-                rows={14}
-                className="w-full resize-none bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600 transition-colors font-mono"
-              />
-              {error && <p className="text-xs text-red-400">{error}</p>}
+              <label className="markdown-editor-field">
+                <span>Title</span>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Note title"
+                  autoFocus
+                />
+              </label>
+              <label className="markdown-editor-field">
+                <span>Tags</span>
+                <div className="markdown-editor-tags-box">
+                  {tags.map((tag) => (
+                    <span key={tag} className="markdown-editor-tag">
+                      #{tag}
+                      <button
+                        type="button"
+                        aria-label={`Remove tag ${tag}`}
+                        onClick={() => setTags((prev) => prev.filter((t) => t !== tag))}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    type="text"
+                    className="markdown-editor-tags"
+                    value={tagDraft}
+                    onChange={(e) => setTagDraft(e.target.value)}
+                    onKeyDown={handleTagKeyDown}
+                    onBlur={commitTagDraft}
+                    placeholder={tags.length === 0 ? '#hashtag #separated #tags' : ''}
+                  />
+                </div>
+              </label>
             </div>
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-gray-800 shrink-0">
-              <button type="button" onClick={() => setOpen(false)} className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors">
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={!canSubmit}
-                className="px-4 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {saving ? 'Saving…' : 'Save note'}
-              </button>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Write your markdown here…"
+              spellCheck={false}
+              className="markdown-editor-textarea"
+            />
+            <div className="markdown-editor-footer">
+              <p className="markdown-editor-error">{error}</p>
+              <div className="markdown-editor-footer-actions">
+                <button type="button" onClick={() => setOpen(false)} className="markdown-editor-cancel">
+                  Cancel
+                </button>
+                <button type="submit" disabled={!canSubmit} className="markdown-editor-save">
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
             </div>
           </form>
         </div>
