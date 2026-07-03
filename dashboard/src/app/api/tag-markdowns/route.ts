@@ -37,7 +37,7 @@ Return ONLY valid JSON with this shape:
   "updates": [
     {
       "slug": "existing-page-slug",
-      "tags": ["restoring force points toward equilibrium", "angular frequency is phase rate"],
+      "tags": ["restoring-force", "angular-frequency", "simple-harmonic-motion"],
       "reason": "Why this note should get these tags"
     }
   ]
@@ -46,8 +46,8 @@ Return ONLY valid JSON with this shape:
 Rules:
 - Only use note slugs that already exist in the provided inventory.
 - Only update notes that clearly match the user's request.
-- Tags are Zettelkasten-style atomic idea labels: notes that share a tag become linked in the graph, so each tag must name the exact idea that would make two notes worth connecting.
-- Write each tag as a short phrase or short sentence (2-9 words) expressing ONE reusable idea, preferring a relation or mechanism over a bare noun. Good: "restoring force points toward equilibrium", "angular frequency is phase rate"; specific named concepts like "simple harmonic motion" are fine. Bad: physics, math, formula, important, wave, calculus, force (broad categories or bare nouns).
+- Tags are Zettelkasten-style concept handles: notes that share a tag become linked in the graph, so each tag must name the reusable concept that would make two notes worth connecting.
+- Return only normalized lower-case kebab-case tags. Good: "restoring-force", "stable-equilibrium", "angular-frequency", "simple-harmonic-motion". Bad: physics, math, formula, important, wave, calculus, force, understanding-the-basics, title slugs, source filenames.
 - If the user explicitly asks for organizational tags (schedule, week, unit, module, or course tags), you may use those exact tags even though they are not idea tags.
 - Avoid generic, document-type, or learning tags like note, markdown, chat, garden, document, source, topic, misc, general, important, learning, study, formula, or example unless the user explicitly wants them, and never reference a page/slide/figure in a tag.
 - Use "merge" unless the user explicitly asks to replace, overwrite, reset, or clear existing tags.

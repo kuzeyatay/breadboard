@@ -32,7 +32,7 @@ Return ONLY a valid JSON array, with no markdown fences and no extra text. Forma
   {
     "title": "Concept Title",
     "slug": "concept-title",
-    "tags": ["restoring force points toward equilibrium", "amplitude is not total distance"],
+    "tags": ["restoring-force", "angular-frequency", "simple-harmonic-motion"],
     "related": ["Related Concept Title"],
     "content": "## Concept Title\\n\\nMarkdown content here..."
   }
@@ -48,7 +48,7 @@ Requirements for each page:
   * [[wikilinks]] to connect related concepts mentioned in this conversation
   * LaTeX for formulas, symbols, or derivations when it improves clarity: inline math with $...$ and display equations with $$...$$
   * 100-300 words
-- tags: 3-8 precise idea tags. Pages that share a tag become linked in the graph, so each tag must name the exact idea that would make two pages worth connecting. Write each as a short phrase or short sentence (2-9 words) expressing ONE reusable idea grounded in the conversation, preferring a relation or mechanism (what causes/measures/equals/contrasts what) over a bare noun. Good: "restoring force points toward equilibrium", "angular frequency is phase rate", "gradient points toward steepest increase"; specific named concepts like "simple harmonic motion" are also fine. Bad: physics, math, formula, important, learning, wave, calculus, force, frequency (broad categories or bare nouns that would connect unrelated pages).
+- tags: 4-8 reusable Zettelkasten concept handles. Return only normalized lower-case kebab-case tags. Tags are graph vocabulary, not SEO keywords, folder names, title summaries, or broad topic labels. Good: "restoring-force", "stable-equilibrium", "angular-frequency", "simple-harmonic-motion", "zero-isi-condition". Bad: physics, math, formula, important, learning, overview, understanding-the-basics, force, frequency.
 - related: titles of pages/concepts that should be strongly connected to this page
 - Never use generic, document-type, or learning tags like knowledge, generated, note, topic, source, document, chat, answer, response, general, misc, important, learning, study, formula, definition, or example, and never reference a page/slide/figure in a tag
 
@@ -324,11 +324,10 @@ async function generateChatNoteTags(
         {
           role: 'system',
           content:
-            'Return a JSON array of 4–8 Zettelkasten-style atomic idea tags for the given content. ' +
-            'Notes that share a tag become linked in a knowledge graph, so each tag must name the exact idea that would make two notes worth connecting. ' +
-            'Write each tag as a short phrase or short sentence (2-9 words) expressing ONE reusable idea grounded in the material, preferring a relation or mechanism over a bare noun ' +
-            '(e.g. "restoring force points toward equilibrium", "angular frequency is phase rate", "gradient points toward steepest increase"; specific named concepts like "simple harmonic motion" are fine). ' +
-            'Never use broad categories, document types, generic learning words, or bare nouns (e.g. physics, math, formula, important, learning, source, document, wave, calculus, force, frequency), and never reference a page/slide/figure.',
+            'Return a JSON array of 4-8 Zettelkasten-style concept tags for the given content. ' +
+            'Generate tags as reusable conceptual retrieval handles, not SEO keywords, folder names, title summaries, or broad topic labels. ' +
+            'Return only normalized lower-case kebab-case tags, e.g. "restoring-force", "angular-frequency", "simple-harmonic-motion". ' +
+            'Never use broad categories, document types, generic learning words, title slugs, source filenames, or page/slide/figure references.',
         },
         {
           role: 'user',

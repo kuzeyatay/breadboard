@@ -242,7 +242,7 @@ Return ONLY JSON with this shape:
           "interactiveVisualsToCreate": [
             { "concept": "membrane-potential-threshold-reset", "reason": "why interaction is genuinely needed" }
           ],
-          "conceptTags": ["snn/lif-neuron", "computational-neuroscience/membrane-potential"]
+          "conceptTags": ["lif-neuron", "membrane-potential", "spike-threshold"]
         }
       ]
     }
@@ -253,7 +253,7 @@ ${TITLE_RULES}
 Planning rules:
 - Every extracted source visual (given as sourceVisuals) must either appear in exactly one subsection's sourceVisualsToEmbed, or be omitted deliberately because it is not central.
 - interactiveVisualsToCreate is OPTIONAL and selective: only for genuinely hard concepts that need interaction (dynamic processes, tradeoffs, timing effects). Most subsections should have none. Never add one to introductions, conclusions, lists, or pages where a static source figure is enough.
-- conceptTags are 3-6 hierarchical zettelkasten tags in "domain/concept" form, e.g. "snn/stdp", "learning-rules/synaptic-plasticity". Never generic words like paper, source, overview, model, test, coverage.
+- conceptTags are reusable Zettelkasten concept handles, not SEO keywords, folder names, title summaries, or broad topic labels. Prefer ontology/concept tags over broad topic tags. Use 4-8 tags. Return only normalized lower-case kebab-case tags, e.g. "lif-neuron", "membrane-potential", "event-driven-processing", "energy-efficiency". Never generic words like paper, source, overview, model, test, coverage, learning, concept, introduction, section, or subsection.
 - First job: section names and order. Do not generate final prose yet.`;
 
 const OVERVIEW_PROMPT = `Write the Topic Overview page: the first page a learner reads in this Breadboard learning garden.
@@ -2508,10 +2508,10 @@ export async function runTextbookGeneration({
         });
         pageBody = visualized.markdown;
 
-        // Stage 7: 3-5 hierarchical zettel tags on learner pages only. Tags are
-        // grounded in the FINAL accepted body (never fallback/debug text) and
-        // gated by page relevance, so LIF/STDP/latency tags cannot land on a
-        // page that does not actually teach them.
+        // Stage 7: 4-8 Zettelkasten concept-handle tags on learner pages only.
+        // Tags are grounded in the FINAL accepted body (never fallback/debug
+        // text) and gated by page relevance, so LIF/STDP/latency tags cannot
+        // land on a page that does not actually teach them.
         const zettelTags = normalizeZettelTags(
           [...subsection.conceptTags, ...extractTagSeeds(pageBody)],
           subsectionTitle,

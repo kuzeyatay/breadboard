@@ -213,7 +213,7 @@ export async function POST(request: Request) {
             'The "content" value must be the complete updated Markdown file, including YAML frontmatter if present. ' +
             'Preserve all useful existing content unless the user explicitly asks to remove or rewrite it. ' +
             'If the user asks to use "this version", "the version above", "your previous version", or similar, use the recent chat context as the replacement source. ' +
-            'When adding tags, update the YAML frontmatter tags field. Tags are Zettelkasten-style atomic idea labels (short phrases or sentences, 2-9 words, e.g. "restoring force points toward equilibrium"), not broad categories or bare nouns like physics, formula, or wave. ' +
+            'When adding tags, update the YAML frontmatter tags field. Tags are Zettelkasten-style concept handles: normalized lower-case kebab-case graph vocabulary such as "restoring-force", "angular-frequency", or "simple-harmonic-motion", not SEO keywords, title summaries, broad categories, source filenames, or bare nouns like physics, formula, or wave. ' +
             'When fixing math or LaTeX, use $...$ for inline math and $$...$$ for display math, and avoid corrupting prose.',
         },
         {

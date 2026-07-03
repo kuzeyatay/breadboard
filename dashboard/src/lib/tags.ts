@@ -1,20 +1,21 @@
 // Tag normalization for the knowledge graph.
 //
-// Tags in this app are *connectors*: notes that share a tag become linked in the
-// Quartz garden/graph. So a good tag is a Zettelkasten-style atomic idea — a
-// reusable proposition or a specific named concept — not a broad category label.
-// A tag should answer "what exact idea would make two notes worth connecting?",
-// never "what broad topic is this note about?".
+// Tags are Zettelkasten-style conceptual retrieval handles. They are not SEO
+// keywords, summaries, folder names, source filenames, or page decoration. A
+// good tag is a durable graph-vocabulary term that can connect future notes.
 //
-// This module is intentionally dependency-free (no fs / OpenAI / Quartz imports)
-// so the scoring can be unit-verified in isolation.
+// This module is dependency-free so the tag vocabulary can be tested in
+// isolation and reused by ingestion, Learn generation, manual edits, dashboard
+// display, and Quartz publishing.
 
 /** Kebab-case slug used for tags, note filenames, and Quartz tag URLs. */
 export function slugify(value: string): string {
   const slug = value
     .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
     .trim()
-    .replace(/['"]/g, "")
+    .replace(/[''"]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
@@ -22,223 +23,36 @@ export function slugify(value: string): string {
 }
 
 export const STOP_WORDS = new Set([
+  "a",
+  "an",
   "and",
   "are",
+  "as",
+  "at",
+  "be",
+  "by",
   "but",
   "for",
   "from",
+  "how",
+  "in",
   "into",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
   "the",
   "then",
   "this",
   "that",
+  "to",
   "with",
   "about",
   "between",
   "through",
-]);
-
-// App, document-type, and learning-activity words that describe the container or
-// the act of studying rather than an idea. Banned outright when they make up a
-// whole tag, and penalized as a part of a longer tag.
-const GENERIC_TAGS = new Set([
-  "answer",
-  "answers",
-  "chat",
-  "chat-note",
-  "cluster",
-  "concept",
-  "concepts",
-  "content",
-  "data",
-  "definition",
-  "definitions",
-  "doc",
-  "docs",
-  "document",
-  "documents",
-  "example",
-  "examples",
-  "exercise",
-  "exercises",
-  "file",
-  "files",
-  "garden",
-  "garden-home",
-  "general",
-  "generated",
-  "graph",
-  "graphs",
-  "graph-link",
-  "graph-links",
-  "homework",
-  "important",
-  "index",
-  "information",
-  "intro",
-  "introduction",
-  "knowledge",
-  "knowledge-graph",
-  "knowledge-map",
-  "learning",
-  "lecture",
-  "lectures",
-  "lesson",
-  "lessons",
-  "link",
-  "links",
-  "map",
-  "maps",
-  "markdown",
-  "misc",
-  "node",
-  "nodes",
-  "note",
-  "notes",
-  "other",
-  "overview",
-  "pdf",
-  "quartz",
-  "quartz-garden",
-  "quartz-graph",
-  "reading",
-  "readings",
-  "response",
-  "responses",
-  "revision",
-  "source",
-  "sources",
-  "study",
-  "studies",
-  "studying",
-  "summary",
-  "text",
-  "topic",
-  "topics",
-  "upload",
-  "uploaded",
-]);
-
-// Broad subject / category words. A precise idea tag should replace these
-// (e.g. `calculus` -> `jacobian-measures-local-area-scaling`). Like the generic
-// set, these are rejected when they make up a whole tag and penalized otherwise,
-// but they never disqualify a longer tag that also carries specific words.
-const BROAD_DOMAIN = new Set([
-  "algebra",
-  "biology",
-  "boundary",
-  "calculus",
-  "chemistry",
-  "computing",
-  "economics",
-  "engineering",
-  "equation",
-  "equations",
-  "force",
-  "forces",
-  "formula",
-  "formulas",
-  "frequency",
-  "geometry",
-  "history",
-  "math",
-  "mathematics",
-  "maths",
-  "oscillation",
-  "oscillations",
-  "philosophy",
-  "physics",
-  "programming",
-  "psychology",
-  "science",
-  "sciences",
-  "scientific",
-  "statistics",
-  "theory",
-  "theories",
-  "trigonometry",
-  "wave",
-  "waves",
-]);
-
-// Layout / deixis words that pin a tag to one spot in one document, so it could
-// never connect two notes. Any tag containing one of these is rejected.
-const NON_REUSABLE_WORDS = new Set([
-  "fig",
-  "figure",
-  "figures",
-  "page",
-  "pages",
-  "screenshot",
-  "sketch",
-  "slide",
-  "slides",
-  "slideshow",
-  "thumbnail",
-]);
-
-// Relation / verb / comparison words that signal a tag is a proposition ("X is
-// Y", "X creates Y", "X measures Y") rather than a bare noun. These are the most
-// valuable connectors, so their presence is rewarded heavily.
-const RELATION_WORDS = new Set([
-  "accumulates",
-  "affects",
-  "are",
-  "balances",
-  "causes",
-  "conserves",
-  "constrains",
-  "controls",
-  "converts",
-  "counts",
-  "create",
-  "creates",
-  "decreases",
-  "defines",
-  "depends",
-  "derives",
-  "describes",
-  "determines",
-  "differ",
-  "differs",
-  "drives",
-  "enables",
-  "equals",
-  "explains",
-  "fails",
-  "follows",
-  "forms",
-  "generates",
-  "governs",
-  "implies",
-  "increases",
-  "is",
-  "limits",
-  "maps",
-  "maximizes",
-  "measures",
-  "minimizes",
-  "models",
-  "not",
-  "opposes",
-  "oscillates",
-  "point",
-  "points",
-  "predicts",
-  "prevents",
-  "produces",
-  "propagates",
-  "relates",
-  "represents",
-  "requires",
-  "restores",
-  "scales",
-  "sets",
-  "transforms",
-  "varies",
-  "versus",
-  "vs",
-  "yields",
+  "toward",
+  "towards",
 ]);
 
 const TAG_STOP_WORDS = new Set([
@@ -246,7 +60,6 @@ const TAG_STOP_WORDS = new Set([
   "all",
   "also",
   "any",
-  "are",
   "based",
   "because",
   "before",
@@ -256,38 +69,23 @@ const TAG_STOP_WORDS = new Set([
   "does",
   "during",
   "each",
-  "had",
   "has",
   "have",
-  "how",
   "its",
-  "into",
-  "let",
   "may",
   "might",
   "must",
   "not",
-  "now",
   "only",
-  "our",
-  "out",
   "over",
-  "own",
   "per",
   "same",
-  "set",
-  "shall",
   "should",
-  "since",
-  "some",
   "such",
   "than",
   "their",
-  "them",
-  "then",
   "these",
   "those",
-  "thus",
   "use",
   "used",
   "uses",
@@ -301,246 +99,644 @@ const TAG_STOP_WORDS = new Set([
   "while",
   "will",
   "within",
-  "without",
   "would",
 ]);
 
-// Idea tags may be short propositions, so we allow several words — but cap the
-// length so a tag stays an atomic idea instead of becoming a whole sentence.
-export const IDEA_TAG_MIN_WORDS = 2;
-export const IDEA_TAG_MAX_WORDS = 9;
-export const IDEA_TAG_MAX_CHARS = 80;
+const BLOCKED_TAGS = new Set([
+  "answer",
+  "answers",
+  "basics",
+  "beginner",
+  "chapter",
+  "chat",
+  "cluster",
+  "concept",
+  "concepts",
+  "content",
+  "definition",
+  "definitions",
+  "doc",
+  "docs",
+  "document",
+  "documents",
+  "example",
+  "examples",
+  "exercise",
+  "exercises",
+  "file",
+  "files",
+  "garden",
+  "general",
+  "generated",
+  "important",
+  "important-concept",
+  "index",
+  "intro",
+  "introduction",
+  "key-idea",
+  "knowledge",
+  "learning",
+  "lesson",
+  "lessons",
+  "link",
+  "links",
+  "map",
+  "markdown",
+  "misc",
+  "note",
+  "notes",
+  "overview",
+  "page",
+  "pages",
+  "paper",
+  "pdf",
+  "reading",
+  "response",
+  "section",
+  "sections",
+  "source",
+  "sources",
+  "student-friendly",
+  "study",
+  "summary",
+  "text",
+  "textbook",
+  "topic",
+  "topics",
+  "understanding",
+  "understanding-the-basics",
+  "upload",
+  "uploaded",
+]);
+
+const BLOCKED_WORDS = new Set([
+  ...BLOCKED_TAGS,
+  "advanced",
+  "article",
+  "author",
+  "authors",
+  "course",
+  "data",
+  "detail",
+  "details",
+  "exam",
+  "figure",
+  "figures",
+  "graph",
+  "graphs",
+  "material",
+  "materials",
+  "prep",
+  "question",
+  "questions",
+  "quiz",
+  "slides",
+  "subsection",
+  "subsections",
+  "table",
+  "tables",
+  "test",
+  "tests",
+  "thing",
+  "things",
+  "unit",
+  "week",
+]);
+
+// Broad words are rejected as standalone tags, but they can appear inside a
+// concrete concept handle such as "angular-frequency" or "restoring-force".
+const BROAD_STANDALONE_TAGS = new Set([
+  "activation",
+  "analysis",
+  "application",
+  "applications",
+  "approach",
+  "approaches",
+  "calculus",
+  "comparison",
+  "computing",
+  "data",
+  "energy",
+  "equation",
+  "equations",
+  "field",
+  "force",
+  "forces",
+  "formula",
+  "formulas",
+  "frequency",
+  "hardware",
+  "math",
+  "model",
+  "models",
+  "network",
+  "networks",
+  "physics",
+  "process",
+  "result",
+  "results",
+  "science",
+  "system",
+  "systems",
+  "theory",
+  "value",
+  "values",
+  "wave",
+  "waves",
+]);
+
+const SHORT_TAG_ALLOWLIST = new Set(["ai", "ml", "rl", "ui", "ux", "3d"]);
+
+const CANONICAL_ALIASES: Record<string, string> = {
+  "ann-to-snn": "ann-to-snn-conversion",
+  "ann-snn-conversion": "ann-to-snn-conversion",
+  "angular-frequency-omega": "angular-frequency",
+  "back-propagation": "backpropagation",
+  "continuous-activations": "continuous-activation",
+  "dense-networks": "dense-computation",
+  "event-driven-computation": "event-driven-processing",
+  "force-restoring": "restoring-force",
+  "hamming-7-4": "hamming-code",
+  "lif": "lif-neuron",
+  "lif-model": "lif-neuron",
+  "lif-neurons": "lif-neuron",
+  "leaky-integrate-and-fire": "lif-neuron",
+  "leaky-integrate-fire": "lif-neuron",
+  "membrane-potentials": "membrane-potential",
+  "nyquist-condition": "nyquist-criterion",
+  "nyquist-zero-isi": "zero-isi-condition",
+  "phase-rate": "angular-frequency",
+  "restoring-forces": "restoring-force",
+  "simple-harmonic-oscillator": "simple-harmonic-motion",
+  "simple-harmonic-oscillators": "simple-harmonic-motion",
+  "shm": "simple-harmonic-motion",
+  "spike-timing-dependent-plasticity": "stdp",
+  "spiking-neural-network": "spiking-neural-networks",
+  "synchronous-networks": "synchronous-computation",
+  "threshold-firing": "spike-threshold",
+};
+
+const CANONICAL_GROUPS = [
+  ["nyquist-criterion", "nyquist-condition"],
+  ["simple-harmonic-motion", "simple-harmonic-oscillator", "shm"],
+  ["restoring-force", "restoring-forces"],
+  ["angular-frequency", "angular-frequency-omega", "phase-rate"],
+  ["event-driven-processing", "event-driven-computation"],
+  ["lif-neuron", "lif-model", "leaky-integrate-and-fire"],
+  ["zero-isi-condition", "zero-isi-criterion"],
+];
+
+const SOURCE_FILE_RE =
+  /(?:^|[-_./])(?:doi|isbn|issn|arxiv|crossref)(?:$|[-_./])|(?:^|[-_./])\d{4,5}[-_.]\d{3,}(?:v\d+)?(?:$|[-_.])|(?:pdf|docx?|pptx?|xlsx?|csv|zip|md)$/i;
+
+const NUMERIC_CONCEPT_RE =
+  /(?:^|-)hamming-code(?:-|$)|(?:^|-)\d+-psk(?:-|$)|(?:^|-)\d+-qam(?:-|$)|(?:^|-)l\d(?:-|$)|(?:^|-)ipv\d(?:-|$)|(?:^|-)fft(?:-|$)|(?:^|-)iir(?:-|$)|(?:^|-)fir(?:-|$)|(?:^|-)zero-isi(?:-|$)/i;
+
+const CONCEPT_LEXICON: Array<[RegExp, string]> = [
+  [/\bsimple harmonic motion\b|\bSHM\b/i, "simple-harmonic-motion"],
+  [/\brestoring force\b|\bforce (?:that )?points? (?:back )?toward equilibrium\b/i, "restoring-force"],
+  [/\bstable equilibrium\b/i, "stable-equilibrium"],
+  [/\bangular frequency\b|\bomega\b/i, "angular-frequency"],
+  [/\bphase constant\b|\bphase angle\b/i, "phase-constant"],
+  [/\benergy exchange\b|\bkinetic energy\b.*\bpotential energy\b|\bpotential energy\b.*\bkinetic energy\b/i, "energy-exchange"],
+  [/\boscillation mechanism\b|\bperiodic motion\b|\boscillat(?:es|ion)\b/i, "oscillation-mechanism"],
+  [/\bseparation of variables\b/i, "separation-of-variables"],
+  [/\bphasor addition\b|\bphasors?\b/i, "phasor-addition"],
+  [/\bnormalization integral\b|\bnormalize the wavefunction\b/i, "normalization-integral"],
+  [/\baliasing\b/i, "aliasing"],
+  [/\bzero[- ]isi\b|\bzero intersymbol interference\b|\bno intersymbol interference\b/i, "zero-isi-condition"],
+  [/\bnyquist (?:criterion|condition|rate)\b/i, "nyquist-criterion"],
+  [/\bhamming(?:\s*\(?(?:7,?\s*4|7-4)\)?)?\b/i, "hamming-code"],
+  [/\b8[- ]psk\b/i, "8-psk"],
+  [/\braised[- ]cosine\b/i, "raised-cosine-filter"],
+  [/\bpulse[- ]code modulation\b|\bpcm\b/i, "pulse-code-modulation"],
+  [/\bfourier transform\b/i, "fourier-transform"],
+  [/\bleaky integrate[- ]and[- ]fire\b|\blif neuron\b|\blif model\b|\bLIF\b/i, "lif-neuron"],
+  [/\bmembrane potential\b/i, "membrane-potential"],
+  [/\bthreshold crossing\b|\bfiring threshold\b|\bspike threshold\b/i, "spike-threshold"],
+  [/\brefractory period\b|\brefractory\b/i, "refractory-period"],
+  [/\breset (?:potential|behavior|dynamics)\b/i, "reset-dynamics"],
+  [/\bspike[- ]timing[- ]dependent plasticity\b|\bSTDP\b/i, "stdp"],
+  [/\bsynaptic plasticity\b|\bsynaptic weight\b/i, "synaptic-plasticity"],
+  [/\bspike timing\b/i, "spike-timing"],
+  [/\bsurrogate gradient\b/i, "surrogate-gradient"],
+  [/\bnon[- ]differentiable spikes?\b|\bnon[- ]differentiab\w+\b/i, "non-differentiable-spikes"],
+  [/\bbackpropagation\b|\bbackprop\b/i, "backpropagation"],
+  [/\bann[- ]to[- ]snn\b|\bann to snn\b|\bconversion\b/i, "ann-to-snn-conversion"],
+  [/\brate coding\b/i, "rate-coding"],
+  [/\btemporal coding\b/i, "temporal-coding"],
+  [/\bspike (?:coding|encoding)\b|\bencoding information as spikes\b/i, "spike-coding"],
+  [/\bevent[- ]driven\b|\bevent driven\b/i, "event-driven-processing"],
+  [/\bneuromorphic\b|\bloihi\b|\btruenorth\b/i, "neuromorphic-computing"],
+  [/\benergy (?:efficiency|efficient|per inference|consumption)\b/i, "energy-efficiency"],
+  [/\blatency\b|\bresponse time\b/i, "latency"],
+  [/\bspike count\b/i, "spike-count"],
+  [/\bconvergence\b/i, "convergence"],
+  [/\bspiking neural networks?\b|\bSNNs?\b/i, "spiking-neural-networks"],
+  [/\bsynchronous (?:computation|network|networks|updates?)\b/i, "synchronous-computation"],
+  [/\bcontinuous activations?\b|\bactivation values?\b/i, "continuous-activation"],
+  [/\bdense (?:computation|networks?|layers?)\b|\brecomputing whole arrays\b/i, "dense-computation"],
+  [/\bhardware (?:pressure|constraints?|costs?)\b/i, "hardware-constraints"],
+];
+
 export const DEFAULT_MAX_TAGS = 8;
 
-/** A broad category / generic word that should not stand on its own as a tag. */
-function isBroadWord(word: string): boolean {
-  return GENERIC_TAGS.has(word) || BROAD_DOMAIN.has(word);
+export interface ZettelkastenTagOptions {
+  title?: string;
+  content?: string;
+  existingTags?: string[];
+  sourceFilenames?: string[];
+  sourceTopics?: string[];
+  maxTags?: number;
 }
 
-function isUsefulTagSlug(tag: string): boolean {
-  if (!tag || isBroadWord(tag) || TAG_STOP_WORDS.has(tag)) return false;
-  if (/^\d+$/.test(tag)) return false;
-  return tag.length >= 3 || tag === "ai" || tag === "ml";
+export interface FallbackTagInput {
+  title?: string;
+  content?: string;
+  learningSpine?: unknown;
+  sectionMap?: unknown;
+  sourceTopics?: string[];
+  maxTags?: number;
+  existingTags?: string[];
 }
 
-function searchableTagText(value: string): string {
+function stripLeadingNumber(value: string): string {
+  return value.replace(/^\s*\d+(?:\.\d+)*\.?\s+/, "").trim();
+}
+
+function normalizeTagSegment(value: string): string {
   return value
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/['’]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[''"]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function simplifyRawTag(raw: string): string {
+  const text = raw.toLowerCase();
+  for (const [pattern, tag] of CONCEPT_LEXICON) {
+    if (pattern.test(text)) return tag;
+  }
+  return raw;
+}
+
+export function normalizeTag(raw: string): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().replace(/^#+/, "");
+  if (!trimmed) return null;
+  if (SOURCE_FILE_RE.test(trimmed)) return null;
+
+  const simplified = simplifyRawTag(trimmed);
+  const segments = simplified
+    .split("/")
+    .map((segment) => normalizeTagSegment(segment))
+    .filter(Boolean)
+    .slice(0, 2);
+  if (segments.length === 0) return null;
+
+  const tag = segments.join("/");
+  return CANONICAL_ALIASES[tag] ?? tag;
+}
+
+function leafTag(tag: string): string {
+  return tag.split("/").filter(Boolean).at(-1) ?? tag;
+}
+
+function singularizeWord(word: string): string {
+  if (word.length > 4 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
+  if (word.length > 4 && word.endsWith("ves")) return `${word.slice(0, -3)}f`;
+  if (word.length > 4 && word.endsWith("ses")) return word.slice(0, -2);
+  if (
+    word.length > 3 &&
+    word.endsWith("s") &&
+    !word.endsWith("ss") &&
+    !word.endsWith("us") &&
+    !word.endsWith("ous")
+  ) {
+    return word.slice(0, -1);
+  }
+  return word;
+}
+
+function singularizeTag(tag: string): string {
+  return tag
+    .split("/")
+    .map((segment) => segment.split("-").map(singularizeWord).join("-"))
+    .join("/");
+}
+
+function compactTagKey(tag: string): string {
+  return singularizeTag(leafTag(tag));
+}
+
+function aliasFor(tag: string): string {
+  const leaf = leafTag(tag);
+  const alias = CANONICAL_ALIASES[tag] ?? CANONICAL_ALIASES[leaf] ?? singularizeTag(tag);
+  return alias;
+}
+
+export function canonicalizeTag(
+  tag: string,
+  existingTags: string[] = [],
+): string | null {
+  const normalized = normalizeTag(tag);
+  if (!normalized) return null;
+  const existing = existingTags
+    .map((item) => normalizeTag(item))
+    .filter((item): item is string => Boolean(item));
+  const aliased = aliasFor(normalized);
+  const candidates = new Set([normalized, aliased, leafTag(aliased), singularizeTag(aliased)]);
+
+  for (const group of CANONICAL_GROUPS) {
+    if (!group.some((item) => candidates.has(item))) continue;
+    const existingMatch = existing.find((item) => group.includes(item) || group.includes(leafTag(item)));
+    return existingMatch ?? group[0];
+  }
+
+  const compact = compactTagKey(aliased);
+  const existingMatch = existing.find((item) => compactTagKey(item) === compact);
+  if (existingMatch) return existingMatch;
+  return aliased;
+}
+
+function tagWords(tag: string): string[] {
+  return tag
+    .replace(/\//g, "-")
+    .split("-")
+    .map((word) => word.trim())
+    .filter(Boolean);
+}
+
+function meaningfulWords(tag: string): string[] {
+  return tagWords(tag).filter((word) => !TAG_STOP_WORDS.has(word));
+}
+
+function isSourceFilenameTag(tag: string, sourceFilenames: string[] = []): boolean {
+  if (SOURCE_FILE_RE.test(tag)) return true;
+  const leaf = leafTag(tag);
+  if (/^\d{3,}[-\d]*(?:v\d+)?$/.test(leaf)) return true;
+  const sourceBases = sourceFilenames
+    .map((file) => file.replace(/\.(pdf|docx?|pptx?|xlsx?|txt|md|csv|zip)$/i, ""))
+    .map((file) => normalizeTagSegment(file))
+    .filter(Boolean);
+  return sourceBases.includes(leaf) || sourceBases.includes(tag);
+}
+
+function titleSlugs(title?: string): Set<string> {
+  if (!title) return new Set();
+  const clean = stripLeadingNumber(title);
+  const titleSlug = normalizeTagSegment(clean);
+  const meaningfulTitleSlug = clean
+    .split(/[^a-zA-Z0-9]+/g)
+    .map((word) => normalizeTagSegment(word))
+    .filter((word) => word && !TAG_STOP_WORDS.has(word) && !BLOCKED_WORDS.has(word))
+    .join("-");
+  return new Set([titleSlug, meaningfulTitleSlug].filter(Boolean));
+}
+
+function hasBadShape(tag: string): boolean {
+  if (tag.length > 40) return true;
+  if (tag.includes("//")) return true;
+  if (!/^[a-z0-9][a-z0-9/-]*[a-z0-9]$/.test(tag)) return true;
+  if (/^\d+$/.test(tag)) return true;
+  if (/\d/.test(tag) && !NUMERIC_CONCEPT_RE.test(tag)) return true;
+  return false;
+}
+
+function isBlockedTag(tag: string): boolean {
+  const leaf = leafTag(tag);
+  if (BLOCKED_TAGS.has(tag) || BLOCKED_TAGS.has(leaf)) return true;
+  const words = meaningfulWords(tag);
+  if (words.length === 0) return true;
+  if (words.length === 1) {
+    const only = words[0];
+    if (only.length < 3 && !SHORT_TAG_ALLOWLIST.has(only)) return true;
+    if (BLOCKED_WORDS.has(only) || BROAD_STANDALONE_TAGS.has(only)) return true;
+  }
+  if (words.every((word) => BLOCKED_WORDS.has(word) || BROAD_STANDALONE_TAGS.has(word))) {
+    return true;
+  }
+  if (words.some((word) => BLOCKED_WORDS.has(word)) && words.length <= 2) return true;
+  return false;
+}
+
+function searchableText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[''"]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function tagPartVariants(part: string): string[] {
-  const variants = new Set([part]);
-  if (part.length > 3 && part.endsWith("ies"))
-    variants.add(`${part.slice(0, -3)}y`);
-  if (part.length > 3 && part.endsWith("es")) variants.add(part.slice(0, -2));
-  if (part.length > 3 && part.endsWith("s")) variants.add(part.slice(0, -1));
-  if (part.length > 2) variants.add(`${part}s`);
+function wordVariants(word: string): string[] {
+  const variants = new Set([word, singularizeWord(word)]);
+  if (word.length > 2) variants.add(`${word}s`);
   return [...variants];
 }
 
-/** Strict grounding: every meaningful word of the tag must appear in the source. */
-function isGroundedTagSlug(tag: string, groundingText: string): boolean {
-  const grounded = searchableTagText(groundingText);
+function isGroundedTag(tag: string, groundingText: string): boolean {
+  const grounded = searchableText(groundingText);
   if (!grounded) return true;
 
-  const phrase = tag.split("-").filter(Boolean).join(" ");
+  const tagLeaf = leafTag(tag);
+  for (const [pattern, conceptTag] of CONCEPT_LEXICON) {
+    const canonicalConcept = aliasFor(conceptTag);
+    if ((canonicalConcept === tag || canonicalConcept === tagLeaf) && pattern.test(groundingText)) {
+      return true;
+    }
+  }
+
+  const phrase = leafTag(tag).replace(/-/g, " ");
   if (
     phrase &&
-    new RegExp(
-      `(^|\\s)${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`,
-    ).test(grounded)
+    new RegExp(`(^|\\s)${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`).test(
+      grounded,
+    )
   ) {
     return true;
   }
 
+  const words = meaningfulWords(tag).filter((word) => !BROAD_STANDALONE_TAGS.has(word));
+  if (words.length === 0) return true;
   const groundedWords = new Set(grounded.split(/\s+/).filter(Boolean));
-  const parts = tag
-    .split("-")
-    .filter((part) => part && !TAG_STOP_WORDS.has(part));
-  if (parts.length === 0) return false;
-
-  return parts.every((part) =>
-    tagPartVariants(part).some((variant) => groundedWords.has(variant)),
-  );
-}
-
-/**
- * Relaxed grounding for multi-word idea tags. The exact phrase, or a high enough
- * share of the tag's meaningful words, must appear in the source. Short tags
- * still require every word so they stay honest; longer propositions tolerate one
- * rephrased connective word.
- */
-function isGroundedIdeaTag(tag: string, groundingText: string): boolean {
-  const grounded = searchableTagText(groundingText);
-  if (!grounded) return true;
-
-  const phrase = tag.split("-").filter(Boolean).join(" ");
-  if (
-    phrase &&
-    new RegExp(
-      `(^|\\s)${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|$)`,
-    ).test(grounded)
-  ) {
-    return true;
-  }
-
-  const groundedWords = new Set(grounded.split(/\s+/).filter(Boolean));
-  const parts = tag
-    .split("-")
-    .filter((part) => part && !TAG_STOP_WORDS.has(part));
-  if (parts.length === 0) return false;
-
-  const present = parts.filter((part) =>
-    tagPartVariants(part).some((variant) => groundedWords.has(variant)),
+  const present = words.filter((word) =>
+    wordVariants(word).some((variant) => groundedWords.has(variant)),
   ).length;
-
-  if (parts.length <= 2) return present === parts.length;
-  return present / parts.length >= 0.6;
+  if (words.length <= 2) return present === words.length;
+  return present / words.length >= 0.6;
 }
 
-/** Hard filters: keep only tags that could plausibly be a reusable idea link. */
-function acceptIdeaTag(slug: string, groundingText: string): boolean {
-  if (!slug) return false;
-  const rawParts = slug.split("-").filter(Boolean);
-  const words = rawParts.length;
-  if (words < IDEA_TAG_MIN_WORDS || words > IDEA_TAG_MAX_WORDS) return false;
-  if (slug.length > IDEA_TAG_MAX_CHARS) return false;
-  if (/^\d+$/.test(slug)) return false;
-  if (rawParts.some((part) => NON_REUSABLE_WORDS.has(part))) return false;
+export function validateZettelkastenTags(
+  tags: string[],
+  options: ZettelkastenTagOptions = {},
+): string[] {
+  const maxTags = Math.max(0, Math.min(options.maxTags ?? DEFAULT_MAX_TAGS, DEFAULT_MAX_TAGS));
+  const titleSet = titleSlugs(options.title);
+  const grounding = [options.title ?? "", options.content ?? "", ...(options.sourceTopics ?? [])].join("\n");
+  const output: string[] = [];
+  const seen = new Set<string>();
 
-  const meaningful = rawParts.filter((part) => !TAG_STOP_WORDS.has(part));
-  if (meaningful.length === 0) return false;
-  // Reject tags whose meaningful words are *all* broad/generic categories.
-  if (meaningful.every((part) => isBroadWord(part))) return false;
+  for (const raw of tags) {
+    if (output.length >= maxTags) break;
+    const canonical = canonicalizeTag(raw, [...(options.existingTags ?? []), ...output]);
+    if (!canonical) continue;
+    if (seen.has(canonical)) continue;
+    if (hasBadShape(canonical)) continue;
+    if (isBlockedTag(canonical)) continue;
+    if (titleSet.has(canonical) || titleSet.has(leafTag(canonical))) continue;
+    if (isSourceFilenameTag(canonical, options.sourceFilenames)) continue;
+    if (!isGroundedTag(canonical, grounding)) continue;
+    seen.add(canonical);
+    output.push(canonical);
+  }
 
-  return isGroundedIdeaTag(slug, groundingText);
+  return output;
 }
 
-/**
- * Score an accepted idea tag. Higher is better. The ranking prefers tags that
- * are proposition-like, specific, source-grounded, and a single atomic idea, and
- * penalizes broad nouns, sentence-length fragments, and over-long tags.
- */
-function ideaTagScore(slug: string, groundingText: string): number {
-  const rawParts = slug.split("-").filter(Boolean);
-  const meaningful = rawParts.filter((part) => !TAG_STOP_WORDS.has(part));
-  const words = rawParts.length;
-  let score = 0;
-
-  // A relation/verb word means the tag states an idea ("X is Y", "X creates Y").
-  if (rawParts.some((part) => RELATION_WORDS.has(part))) score += 3;
-  else if (words >= 3) score += 1; // specific multi-word noun phrase
-
-  // Sweet spot is one atomic idea, not a single noun pair or a long sentence.
-  if (words >= 3 && words <= 7) score += 1;
-  else if (words === 2) score += 0.25;
-  if (words >= 8) score -= 1;
-
-  // Broad words drag a tag toward "category label"; specific words make it a
-  // real connector.
-  const broad = meaningful.filter((part) => isBroadWord(part)).length;
-  const specific = meaningful.filter((part) => !isBroadWord(part)).length;
-  score -= broad * 1.5;
-  score += Math.min(specific, 4) * 0.5;
-
-  // Grounded tags reflect the actual source material.
-  if (isGroundedIdeaTag(slug, groundingText)) score += 1;
-
-  // Discourage tags that have grown into full sentences.
-  if (slug.length > 60) score -= 1;
-
-  return score;
+export function dedupeTags(tags: string[]): string[] {
+  const output: string[] = [];
+  for (const tag of tags) {
+    const canonical = canonicalizeTag(tag, output);
+    if (canonical && !output.includes(canonical)) output.push(canonical);
+  }
+  return output;
 }
 
-/**
- * Frequency-based keyword fallback. Used only when an upstream caller could not
- * supply enough real idea tags; produces specific noun / noun-pair tags drawn
- * straight from the text. Broad and generic words are filtered out.
- */
+function plainTextFromUnknown(value: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(plainTextFromUnknown).join("\n");
+  if (typeof value === "object") return Object.values(value).map(plainTextFromUnknown).join("\n");
+  return String(value);
+}
+
+function addCandidate(
+  scores: Map<string, number>,
+  raw: string,
+  score: number,
+): void {
+  const normalized = normalizeTag(raw);
+  if (!normalized) return;
+  scores.set(normalized, Math.max(scores.get(normalized) ?? 0, score));
+}
+
+function keywordPhraseCandidates(text: string): string[] {
+  const words = searchableText(text)
+    .split(/\s+/)
+    .filter((word) => word.length >= 3)
+    .filter((word) => !TAG_STOP_WORDS.has(word))
+    .filter((word) => !BLOCKED_WORDS.has(word));
+  const candidates: string[] = [];
+  for (let size = 3; size >= 2; size -= 1) {
+    for (let index = 0; index <= words.length - size; index += 1) {
+      const phrase = words.slice(index, index + size);
+      if (phrase.every((word) => BROAD_STANDALONE_TAGS.has(word))) continue;
+      if (new Set(phrase).size !== phrase.length) continue;
+      candidates.push(phrase.join("-"));
+    }
+  }
+  return candidates;
+}
+
+export function generateFallbackTags(input: FallbackTagInput): string[] {
+  const maxTags = Math.max(0, Math.min(input.maxTags ?? DEFAULT_MAX_TAGS, DEFAULT_MAX_TAGS));
+  const content = [
+    input.title ?? "",
+    input.content ?? "",
+    plainTextFromUnknown(input.learningSpine),
+    plainTextFromUnknown(input.sectionMap),
+    ...(input.sourceTopics ?? []),
+  ].join("\n");
+
+  const scores = new Map<string, number>();
+  for (const [pattern, tag] of CONCEPT_LEXICON) {
+    if (pattern.test(content)) addCandidate(scores, tag, 20);
+  }
+  for (const topic of input.sourceTopics ?? []) addCandidate(scores, topic, 12);
+
+  const rankedStrong = [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([tag]) => tag);
+  const strongTags = validateZettelkastenTags(rankedStrong, {
+    title: input.title,
+    content,
+    existingTags: input.existingTags,
+    sourceTopics: input.sourceTopics,
+    maxTags,
+  });
+  if (strongTags.length >= Math.min(4, maxTags)) return strongTags;
+
+  for (const phrase of keywordPhraseCandidates(input.content ?? "")) addCandidate(scores, phrase, 3);
+  for (const phrase of keywordPhraseCandidates(input.title ?? "")) addCandidate(scores, phrase, 1);
+
+  const ranked = [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([tag]) => tag);
+
+  return validateZettelkastenTags(ranked, {
+    title: input.title,
+    content,
+    existingTags: input.existingTags,
+    sourceTopics: input.sourceTopics,
+    maxTags,
+  });
+}
+
 export function semanticTagsFromText(
   value: string,
   maxTags = DEFAULT_MAX_TAGS,
   groundingText = value,
 ): string[] {
-  const words = value
-    .toLowerCase()
-    .slice(0, 9000)
-    .split(/[^a-z0-9]+/g)
-    .map((word) => word.trim())
-    .filter((word) => isUsefulTagSlug(slugify(word)));
-
-  const scores = new Map<string, number>();
-  const addScore = (tag: string, amount: number) => {
-    const slug = slugify(tag);
-    if (!isUsefulTagSlug(slug)) return;
-    if (!isGroundedTagSlug(slug, groundingText)) return;
-    scores.set(slug, (scores.get(slug) ?? 0) + amount);
-  };
-
-  for (const word of words) addScore(word, 1);
-  for (let index = 0; index < words.length - 1; index++) {
-    const first = words[index];
-    const second = words[index + 1];
-    if (first === second) continue;
-    // Two-word phrases are more connector-like than bare nouns, so weight them.
-    addScore(`${first}-${second}`, 2.5);
-  }
-
-  return [...scores.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([tag]) => tag)
-    .slice(0, maxTags);
+  return generateFallbackTags({
+    title: "",
+    content: groundingText || value,
+    sourceTopics: [],
+    maxTags,
+  });
 }
 
-/**
- * Normalize raw tag candidates (usually from the model) into ranked, deduped,
- * Quartz-compatible kebab-case idea tags.
- *
- * - lowercases, trims, collapses whitespace, and kebab-cases (via `slugify`);
- * - strips punctuation noise and empty tags;
- * - drops single words, sentence-length tags, and layout/deixis tags;
- * - bans whole-tag generic categories and document/learning labels;
- * - prefers proposition-like, specific, source-grounded tags;
- * - deduplicates and caps the count.
- *
- * If too few real idea tags survive, it tops up from `fallbackText` keywords so
- * a note is never left untagged.
- */
 export function normalizeTopicTags(
   values: string[],
   fallbackText = "",
   maxTags = DEFAULT_MAX_TAGS,
   groundingText = fallbackText,
+  options: ZettelkastenTagOptions = {},
 ): string[] {
-  const grounded = groundingText.trim() ? groundingText : fallbackText;
+  const max = Math.max(0, Math.min(maxTags, DEFAULT_MAX_TAGS));
+  const existingTags = options.existingTags ?? [];
+  const grounding = groundingText.trim() ? groundingText : fallbackText;
+  const firstPass = validateZettelkastenTags(values, {
+    ...options,
+    content: grounding,
+    existingTags,
+    maxTags: max,
+  });
 
-  const scored = new Map<string, number>();
-  for (const value of values) {
-    const slug = slugify(value);
-    if (!acceptIdeaTag(slug, grounded)) continue;
-    const score = ideaTagScore(slug, grounded);
-    scored.set(slug, Math.max(scored.get(slug) ?? Number.NEGATIVE_INFINITY, score));
+  const minUsefulTags = Math.min(4, max);
+  if (firstPass.length >= minUsefulTags || !fallbackText.trim()) {
+    return firstPass.slice(0, max);
   }
 
-  const ordered = [...scored.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([tag]) => tag);
-  const deduped = ordered.slice(0, maxTags);
+  const fallback = generateFallbackTags({
+    title: options.title,
+    content: fallbackText,
+    learningSpine: options.content,
+    sourceTopics: options.sourceTopics,
+    existingTags: [...existingTags, ...firstPass],
+    maxTags: max,
+  });
 
-  if (deduped.length >= Math.min(3, maxTags) || !fallbackText.trim()) {
-    return deduped;
-  }
-
-  return [
-    ...new Set([
-      ...deduped,
-      ...semanticTagsFromText(fallbackText, maxTags, grounded),
-    ]),
-  ].slice(0, maxTags);
+  return validateZettelkastenTags([...firstPass, ...fallback], {
+    ...options,
+    content: [grounding, fallbackText].join("\n"),
+    existingTags,
+    maxTags: max,
+  });
 }

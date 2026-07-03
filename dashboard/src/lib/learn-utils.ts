@@ -1,4 +1,8 @@
 import { createHash } from "crypto";
+import {
+  normalizeTopicTags as normalizeConceptTags,
+  semanticTagsFromText as semanticConceptTagsFromText,
+} from "./tags.ts";
 
 export const LEARN_STATUSES = [
   "idle",
@@ -489,14 +493,9 @@ const CONCEPT_TAG_LEXICON: Array<[RegExp, string]> = [
   [/\bspiking neural network\b|\bsnns?\b/i, "snn/spiking-neural-networks"],
 ];
 
-/** Pull already-clean hierarchical tag seeds from a lesson body by matching the
- * concept lexicon. Returns [] when nothing durable is mentioned. */
+/** Pull clean concept-handle tag seeds from the final lesson body. */
 export function extractTagSeeds(body: string): string[] {
-  const seeds: string[] = [];
-  for (const [pattern, tag] of CONCEPT_TAG_LEXICON) {
-    if (pattern.test(body) && !seeds.includes(tag)) seeds.push(tag);
-  }
-  return seeds;
+  return semanticConceptTagsFromText(body, 8, body);
 }
 
 /** Rewrites a planned section/subsection title that frames itself as paper
@@ -651,11 +650,10 @@ export function tagIsRelevantToPage(tag: string, context: TagRelevanceContext): 
 }
 
 /**
- * Normalizes learner-page tags into 3-5 stable, hierarchical, concept tags
- * ("snn/lif-neuron" style). Flat tags get namespaced under a short domain
- * acronym; typo roots are repaired; debris/generic segments are dropped;
- * tags the page does not actually support are rejected (when a relevance
- * context is given); too-few results are topped up from the subsection title.
+ * Normalizes learner-page tags into 4-8 stable Zettelkasten concept handles.
+ * Tags are graph vocabulary, not page decoration: compact kebab-case concepts
+ * that future notes can reuse. They are grounded in the final page body, not
+ * the title alone, and unsupported concept tags are rejected.
  */
 export function normalizeZettelTags(
   rawTags: string[],
@@ -663,48 +661,43 @@ export function normalizeZettelTags(
   domainHint: string,
   relevance?: TagRelevanceContext,
 ): string[] {
-  const domain = domainNamespace(domainHint);
-  const seen = new Set<string>();
-  const output: string[] = [];
+  const grounding = [
+    topicHint,
+    domainHint,
+    relevance?.title ?? "",
+    relevance?.sectionTitle ?? "",
+    relevance?.body ?? "",
+    ...(relevance?.assignedVisualCaptions ?? []),
+  ].join("\n");
+  const normalized = normalizeConceptTags(
+    rawTags,
+    grounding,
+    8,
+    grounding,
+    {
+      title: relevance?.title ?? topicHint,
+      content: grounding,
+      sourceTopics: [domainHint],
+    },
+  );
+  const relevant = relevance
+    ? normalized.filter((tag) => tagIsRelevantToPage(tag, relevance))
+    : normalized;
+  if (relevant.length >= 4) return relevant.slice(0, 8);
 
-  const push = (candidate: string) => {
-    if (output.length >= 5) return;
-    const segments = candidate
-      .split("/")
-      .map((segment) => zettelSegmentSlug(segment))
-      .filter(Boolean);
-    if (segments.length === 0) return;
-    // Repair typo/abbrev roots in the namespace segment.
-    if (segments.length > 1 && TAG_ROOT_FIXES[segments[0]]) {
-      segments[0] = TAG_ROOT_FIXES[segments[0]];
-    }
-    const namespaced = segments.length === 1 ? [domain, segments[0]] : segments.slice(0, 3);
-    // Every segment must be a real concept word, not debris or a bare number.
-    if (namespaced.some((segment) => ZETTEL_TAG_BANLIST.has(segment))) return;
-    if (namespaced.some((segment) => segment.length < 2 || /^\d+$/.test(segment))) return;
-    // The leaf (last) segment must not be a lone generic word.
-    const leaf = namespaced[namespaced.length - 1];
-    if (leaf.split("-").every((word) => TAG_STOPWORDS.has(word) || ZETTEL_TAG_BANLIST.has(word))) {
-      return;
-    }
-    const tag = namespaced.join("/");
-    if (tag.length > 60 || seen.has(tag)) return;
-    if (relevance && !tagIsRelevantToPage(tag, relevance)) return;
-    seen.add(tag);
-    output.push(tag);
-  };
-
-  for (const raw of rawTags) {
-    if (output.length >= 5) break;
-    if (typeof raw === "string" && raw.trim()) push(raw);
-  }
-
-  if (output.length < 3) {
-    const topicSlug = zettelSegmentSlug(topicHint);
-    if (topicSlug) push(`${domain}/${topicSlug}`);
-  }
-
-  return output.slice(0, 5);
+  const fallback = normalizeConceptTags(
+    [...relevant, ...semanticConceptTagsFromText(grounding, 8, grounding)],
+    grounding,
+    8,
+    grounding,
+    {
+      title: relevance?.title ?? topicHint,
+      content: grounding,
+      existingTags: relevant,
+      sourceTopics: [domainHint],
+    },
+  );
+  return (relevance ? fallback.filter((tag) => tagIsRelevantToPage(tag, relevance)) : fallback).slice(0, 8);
 }
 
 /** Stored full-page snapshot assets look like "...-page-003.png". */
@@ -812,7 +805,7 @@ export function buildLearningPageFrontmatter({
   subsectionNumber: number;
   title: string;
   sourceAnchors: string[];
-  /** Hierarchical zettel tags shown to learners (3-5, "snn/lif-neuron" style).
+  /** Zettelkasten concept-handle tags shown to learners (4-8, kebab-case).
    * This is the only tag field written to learner pages. */
   tags?: string[];
   visualIds: string[];
