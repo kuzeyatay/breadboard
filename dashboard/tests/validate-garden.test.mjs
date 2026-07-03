@@ -114,7 +114,7 @@ function buildGoodGarden(root) {
     {
       rel: "Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
       title: "2.1 The Leaky Integrate-and-Fire Neuron",
-      tags: ["snn/lif-neuron", "computational-neuroscience/membrane-potential", "snn/threshold-firing"],
+      tags: ["lif-neuron", "membrane-potential", "spike-threshold", "reset-dynamics"],
       body: LONG_PARAGRAPH("The leaky integrate-and-fire neuron and its membrane potential threshold"),
       spec: specs.lif,
       imageUrl,
@@ -123,21 +123,21 @@ function buildGoodGarden(root) {
     {
       rel: "Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md",
       title: "2.2 Encoding Information as Spike Trains",
-      tags: ["snn/rate-coding", "snn/temporal-coding", "computational-neuroscience/spike-timing"],
+      tags: ["rate-coding", "temporal-coding", "spike-timing", "spike-coding"],
       body: LONG_PARAGRAPH("Rate coding and temporal coding of spike trains and spike timing"),
       spec: specs.coding,
     },
     {
       rel: "Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md",
       title: "3.4 Spike-Timing Dependent Plasticity",
-      tags: ["snn/stdp", "learning-rules/synaptic-plasticity", "computational-neuroscience/spike-timing"],
+      tags: ["stdp", "synaptic-plasticity", "spike-timing", "temporal-credit-assignment"],
       body: LONG_PARAGRAPH("Spike-timing dependent plasticity (STDP) and synaptic plasticity across the timing window"),
       spec: specs.stdp,
     },
     {
       rel: "Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md",
       title: "4.1 Accuracy, Latency, and Energy",
-      tags: ["model-evaluation/latency", "edge-ai/energy-efficiency", "model-evaluation/spike-count"],
+      tags: ["latency", "energy-efficiency", "spike-count", "model-tradeoffs"],
       body:
         LONG_PARAGRAPH("Accuracy, latency, energy and spike count as a tradeoff") +
         " latency latency spike count spike count energy energy trade-off across model families.",

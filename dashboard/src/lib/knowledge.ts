@@ -176,7 +176,7 @@ Schema:
 {
   "documentTitle": "Clean title",
   "summary": "4-8 sentence factual summary of the material",
-  "suggestedTags": ["restoring force points toward equilibrium", "amplitude is not total distance"],
+  "suggestedTags": ["restoring-force", "angular-frequency", "simple-harmonic-motion"],
   "topics": [
     {
       "title": "ConceptNode Title",
@@ -186,7 +186,7 @@ Schema:
       "sourceEvidence": ["Exact source-grounded detail, equation, example, diagram meaning, or procedure step"],
       "locations": ["Page 2", "Section: Introduction"],
       "relatedTopics": ["Another ConceptNode title"],
-      "tags": ["angular frequency is phase rate"]
+      "tags": ["angular-frequency"]
     }
   ],
   "relationships": [
@@ -212,14 +212,14 @@ Rules:
 - Use only facts supported by the source text.
 - Never copy broken encoding artifacts such as "â€¢", "â†’", "Ã—", "Â³", or replacement characters. Convert them into clean readable Markdown such as "-", "->", "x", "^3", "_10", or a natural-language equivalent.
 - If OCR text is messy, infer the intended clean notation from context instead of preserving corrupted characters.
-- Tags are Zettelkasten-style atomic idea labels, not category labels. Notes that share a tag become linked in the graph, so each tag must name the exact idea that would make two notes worth connecting.
-- Write each tag as a short phrase or short sentence that expresses ONE reusable idea, grounded in the source. Prefer a relation or mechanism (what causes/measures/equals/contrasts what) over a bare noun.
-- Good tags: "restoring force points toward equilibrium", "amplitude is not total distance", "angular frequency is phase rate", "standing wave boundaries set wavelength", "wave motion is not particle motion", "jacobian measures local area scaling", "gradient points toward steepest increase". Specific named concepts are also fine: "simple harmonic motion", "small angle approximation".
-- Bad tags: physics, math, formula, important, learning, document, source, general, wave, calculus, force, frequency, oscillation. These are broad categories, document types, generic learning words, or bare nouns that would connect unrelated notes.
-- Each tag should be reusable across multiple notes — specific enough to be meaningful, but not so narrow it describes only one paragraph, slide, or figure. Never reference a page/slide/figure location in a tag.
+- Tags are Zettelkasten-style concept handles, not category labels. Notes that share a tag become linked in the graph, so each tag must name a reusable concept that would make two notes worth connecting.
+- Return only normalized lower-case kebab-case tags. Prefer ontology/concept tags, mechanisms, methods, and formulas over broad topic tags.
+- Good tags: "restoring-force", "stable-equilibrium", "angular-frequency", "simple-harmonic-motion", "zero-isi-condition", "jacobian-determinant", "gradient-direction".
+- Bad tags: physics, math, formula, important, learning, document, source, general, overview, understanding-the-basics, wave, calculus, force, frequency, oscillation. These are broad categories, document types, generic learning words, or bare nouns that would connect unrelated notes.
+- Each tag should be reusable across multiple notes, specific enough to be meaningful, and broad enough to appear again. Never reference a page/slide/figure location, source filename, author name, or title slug in a tag.
 - Never use app or navigation tags such as graph, links, quartz-graph, map, index, garden, knowledge, generated, note, topic, source, document, pdf, file, chat, answer, response, general, or misc.
 - Keep tags separate from the knowledge graph itself: relationships and relatedTopics carry structural links; tags are lightweight conceptual connectors.
-- Use 2-9 words per tag (4-8 words is typical for an idea tag). Aim for 3-6 idea tags per topic and 5-10 suggestedTags for the whole document.
+- Use 4-8 concept-handle tags per topic when the source supports them, and 5-10 suggestedTags for the whole document.
 - Link topics aggressively through relatedTopics and relationships whenever the relationship is grounded in the source.
 - Each topic should have at least one relatedTopic when more than one topic is extracted.
 - Create 2-5 strong relationships per topic when possible. Prefer precise relation labels: depends-on, contrasts-with, example-of, part-of, causes, enables, applies-to, derives-from, measured-by, limits, or related.

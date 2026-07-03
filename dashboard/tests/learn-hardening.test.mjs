@@ -103,20 +103,20 @@ describe("page-relevant tag gating", () => {
   };
 
   test("LIF/STDP tags require their own evidence", () => {
-    assert.equal(tagIsRelevantToPage("snn/lif-neuron", lifContext), true);
-    assert.equal(tagIsRelevantToPage("snn/lif-neuron", convContext), false);
-    assert.equal(tagIsRelevantToPage("snn/stdp", lifContext), false);
+    assert.equal(tagIsRelevantToPage("lif-neuron", lifContext), true);
+    assert.equal(tagIsRelevantToPage("lif-neuron", convContext), false);
+    assert.equal(tagIsRelevantToPage("stdp", lifContext), false);
   });
 
   test("normalizeZettelTags drops tags the page does not support", () => {
     const tags = normalizeZettelTags(
-      ["snn/lif-neuron", "snn/stdp", "computational-neuroscience/membrane-potential"],
+      ["lif-neuron", "stdp", "membrane-potential", "spike-threshold"],
       "The Leaky Integrate-and-Fire Neuron",
       "Spiking Neural Networks",
       lifContext,
     );
-    assert.ok(tags.includes("snn/lif-neuron"));
-    assert.ok(!tags.includes("snn/stdp"), "STDP is unrelated to a LIF page");
+    assert.ok(tags.includes("lif-neuron"));
+    assert.ok(!tags.includes("stdp"), "STDP is unrelated to a LIF page");
   });
 });
 

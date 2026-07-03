@@ -37,7 +37,7 @@ describe("learn utilities", () => {
           sourceDocument: "lecture-1",
           excerpt: "Force points toward equilibrium.",
           locations: ["Page 2"],
-          tags: ["restoring force points toward equilibrium"],
+          tags: ["restoring-force"],
         },
       ],
     });
@@ -86,7 +86,7 @@ describe("learn utilities", () => {
       subsectionNumber: 2,
       title: "1.2 Wave Speed",
       sourceAnchors: ["Lecture 2"],
-      tags: ["waves/wave-speed"],
+      tags: ["wave-speed", "propagation-speed", "string-tension", "medium-density"],
       visualIds: ["vis_wave_speed"],
       learningVersionId: "learn_1",
       sourceSetHash: "hash",
@@ -103,17 +103,24 @@ describe("learn utilities", () => {
     assert.ok(!/textbook/i.test(fm));
   });
 
-  test("normalizeZettelTags produces clean hierarchical tags", () => {
+  test("normalizeZettelTags produces clean concept-handle tags", () => {
     const tags = normalizeZettelTags(
-      ["motivation", "sn/lif-neuron", "energy", "snn/threshold-firing", "computational-neuroscience/membrane-potential"],
+      ["motivation", "LIF Neuron", "energy", "threshold firing", "Membrane Potential", "reset dynamics"],
       "The Leaky Integrate-and-Fire Neuron",
       "Spiking Neural Networks",
+      {
+        title: "The Leaky Integrate-and-Fire Neuron",
+        sectionTitle: "Spiking Neurons",
+        body: "The LIF neuron tracks membrane potential until it reaches a firing threshold, then it spikes and resets. Reset dynamics returns the membrane potential to a lower value after the spike. The membrane potential and threshold define the core mechanism.",
+        assignedVisualCaptions: [],
+      },
     );
-    assert.ok(tags.length >= 3 && tags.length <= 5, `got ${tags.length} tags`);
-    assert.ok(!tags.includes("snn/motivation"), "drops generic 'motivation'");
-    assert.ok(!tags.some((t) => t.split("/").includes("energy")), "drops debris 'energy'");
-    assert.ok(tags.includes("snn/lif-neuron"), "repairs sn/ typo root to snn/");
-    assert.ok(tags.every((t) => t.includes("/")), "every tag is hierarchical");
+    assert.ok(tags.length >= 4 && tags.length <= 8, `got ${tags.length} tags`);
+    assert.ok(!tags.includes("motivation"), "drops generic 'motivation'");
+    assert.ok(!tags.includes("energy"), "drops broad debris 'energy'");
+    assert.ok(tags.includes("lif-neuron"));
+    assert.ok(tags.includes("membrane-potential"));
+    assert.ok(tags.every((tag) => /^[a-z0-9][a-z0-9/-]*[a-z0-9]$/.test(tag)));
   });
 
   test("quality helpers flag placeholder + AI-ism prose", () => {

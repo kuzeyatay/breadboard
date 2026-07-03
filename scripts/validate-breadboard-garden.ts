@@ -100,7 +100,7 @@ const TAG_RELEVANCE_RULES: Array<{ appliesTo: RegExp; evidence: RegExp; minBody?
   { appliesTo: /stdp/i, evidence: /\bstdp\b|spike[- ]?timing|synaptic plasticity/i },
   { appliesTo: /surrogate/i, evidence: /surrogate gradient/i },
   { appliesTo: /ann-to-snn-conversion/i, evidence: /\bann[- ]to[- ]snn\b|conversion|firing[- ]rate approximation/i },
-  { appliesTo: /\/latency/i, evidence: /\blatency\b|\bresponse time\b/i, minBody: 2 },
+  { appliesTo: /(?:^|[/-])latency(?:$|[/-])/i, evidence: /\blatency\b|\bresponse time\b/i, minBody: 2 },
   { appliesTo: /convergence/i, evidence: /\bconverg\w*\b|\btraining loss\b|\bepochs?\b/i, minBody: 2 },
 ];
 
@@ -444,7 +444,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(7, "visible tree is only _index.md, Learning/, assets/", [...new Set(problems)]);
   }
 
-  // 8. Learner lesson pages carry 3-5 hierarchical, page-relevant tags; no conceptTags.
+  // 8. Learner lesson pages carry 4-8 page-relevant Zettelkasten concept handles; no conceptTags.
   {
     const problems: string[] = [];
     for (const page of lessonPages) {
@@ -452,18 +452,25 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${page.relPath}: has conceptTags (banned on learner pages)`);
       }
       const tags = fmArray(page.frontmatter, "tags");
-      if (tags.length < 3 || tags.length > 5) {
-        problems.push(`${page.relPath}: ${tags.length} tags (need 3-5)`);
+      if (tags.length < 4 || tags.length > 8) {
+        problems.push(`${page.relPath}: ${tags.length} tags (need 4-8)`);
         continue;
       }
       const haystack = `${fmString(page.frontmatter, "title")}\n${teachingProse(page.body)}`.toLowerCase();
+      const titleSlug = slugifyLoose(fmString(page.frontmatter, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, ""));
       for (const tag of tags) {
-        const segments = tag.split("/").filter(Boolean);
-        if (segments.length < 2) {
-          problems.push(`${page.relPath}: tag "${tag}" is not hierarchical (domain/concept)`);
+        if (!/^[a-z0-9][a-z0-9/-]{1,38}[a-z0-9]$/.test(tag)) {
+          problems.push(`${page.relPath}: tag "${tag}" is not lower-case kebab-case`);
           continue;
         }
-        if (segments.some((segment) => BANNED_TAG_SEGMENTS.has(segment.toLowerCase()))) {
+        if (tag === titleSlug || tag.split("/").pop() === titleSlug) {
+          problems.push(`${page.relPath}: tag "${tag}" copies the page title slug`);
+        }
+        if (/\.(pdf|docx?|pptx?|xlsx?|txt|md|csv|zip)$/i.test(tag) || /\d{4,5}-\d{3,}/.test(tag)) {
+          problems.push(`${page.relPath}: tag "${tag}" looks like a source filename/id`);
+        }
+        const words = tag.split(/[/-]/).filter(Boolean);
+        if (BANNED_TAG_SEGMENTS.has(tag.toLowerCase()) || words.every((word) => BANNED_TAG_SEGMENTS.has(word.toLowerCase()))) {
           problems.push(`${page.relPath}: tag "${tag}" contains a banned generic segment`);
         }
         if (/^sn\//.test(tag)) problems.push(`${page.relPath}: tag "${tag}" uses typo root "sn/"`);
@@ -477,7 +484,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         }
       }
     }
-    check(8, "learner pages have 3-5 relevant hierarchical zettel tags", problems, lessonPages.length === 0);
+    check(8, "learner pages have 4-8 relevant zettel concept tags", problems, lessonPages.length === 0);
   }
 
   // 9. Internal/source/planning pages carry no public tags.
