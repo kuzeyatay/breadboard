@@ -11698,6 +11698,13 @@ var VISUAL_TYPES = [
   "concept_diagram",
   "comparison_table"
 ];
+var IMPLEMENTED_VISUAL_TYPES = [
+  "function_plot",
+  "linked_time_plots",
+  "mass_spring",
+  "energy_exchange",
+  "resonance_curve"
+];
 var MAX_SPEC_CHARS = 4e4;
 var ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 var CONTROL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
@@ -11917,7 +11924,7 @@ __name(validateVisualSpec, "validateVisualSpec");
 var VISUAL_BLOCK_LANG = "breadboard-visual";
 function tagVisualCodeNode(node) {
   const { spec, errors } = validateVisualSpec(node.value);
-  if (spec) {
+  if (spec && IMPLEMENTED_VISUAL_TYPES.includes(spec.type)) {
     node.data = {
       hProperties: {
         className: ["breadboard-visual-block"],
@@ -11927,13 +11934,23 @@ function tagVisualCodeNode(node) {
     node.value = `Interactive visual: ${spec.title}${spec.caption ? ` \u2014 ${spec.caption}` : ""}`;
     return true;
   }
+  if (spec) {
+    node.data = {
+      hProperties: {
+        className: ["breadboard-visual-block", "breadboard-visual-noninteractive"],
+        "data-visual-error": `type "${spec.type}" has no interactive renderer`
+      }
+    };
+    node.value = "";
+    return false;
+  }
   node.data = {
     hProperties: {
       className: ["breadboard-visual-block", "breadboard-visual-invalid"],
       "data-visual-error": errors.slice(0, 3).join("; ") || "invalid visual spec"
     }
   };
-  node.value = "This interactive visual could not be loaded.";
+  node.value = "";
   return false;
 }
 __name(tagVisualCodeNode, "tagVisualCodeNode");
@@ -11992,6 +12009,44 @@ function isLegacySubtopicPath(relativePath = "") {
   );
 }
 __name(isLegacySubtopicPath, "isLegacySubtopicPath");
+var INTERNAL_KNOWLEDGE_TYPES = /* @__PURE__ */ new Set([
+  "internal-concept",
+  "source-document",
+  "source-map",
+  "scope-contract",
+  "source-coverage",
+  "learning-map"
+]);
+var INTERNAL_BREADBOARD_TYPES = /* @__PURE__ */ new Set([
+  "internal_concept",
+  "source_document",
+  "source_map",
+  "scope_contract",
+  "source_coverage",
+  "learning_map"
+]);
+function isInternalPath(relativePath = "") {
+  const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/");
+  return parts.some((part) => {
+    const lower = part.toLowerCase();
+    return lower === "sources" || lower === "internal" || lower === ".breadboard";
+  });
+}
+__name(isInternalPath, "isInternalPath");
+function slugifyLoose(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+__name(slugifyLoose, "slugifyLoose");
+function isRawFileArtifactPage(fm) {
+  const title = frontmatterString(fm, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+  const sourceFile = frontmatterString(fm, "source_file").replace(
+    /\.(pdf|docx?|pptx?|xlsx?|txt|md|csv|zip|png|jpe?g|webp)$/i,
+    ""
+  );
+  if (!title || !sourceFile) return false;
+  return slugifyLoose(title) === slugifyLoose(sourceFile);
+}
+__name(isRawFileArtifactPage, "isRawFileArtifactPage");
 var RemoveDrafts = /* @__PURE__ */ __name((opts = {}) => ({
   name: "RemoveDrafts",
   shouldPublish(_ctx, [_tree, vfile]) {
@@ -12002,8 +12057,9 @@ var RemoveDrafts = /* @__PURE__ */ __name((opts = {}) => ({
     const legacySubtopic = frontmatterString(fm, "legacy_subtopic_page") === "true" || isLegacySubtopicPath(relativePath);
     if (legacySubtopic) return opts.showLegacySubtopicPages === true;
     const draftFlag = fm?.draft === true || fm?.draft === "true";
-    const internalConcept = breadboardType2 === "internal_concept" || knowledgeType2 === "internal-concept";
-    if (internalConcept) return false;
+    if (INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType2) || INTERNAL_BREADBOARD_TYPES.has(breadboardType2) || frontmatterString(fm, "internal") === "true" || isInternalPath(relativePath) || isRawFileArtifactPage(fm)) {
+      return false;
+    }
     return !draftFlag;
   }
 }), "RemoveDrafts");

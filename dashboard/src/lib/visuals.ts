@@ -15,7 +15,6 @@ import {
   replacePlaceholderWithBlock,
   validateVisualSpec,
   IMPLEMENTED_VISUAL_TYPES,
-  VISUAL_TYPES,
   type SourceFigure,
   type VisualPlaceholder,
   type VisualSpec,
@@ -111,7 +110,7 @@ export function appendGardenEvent(
 // Generation
 // ---------------------------------------------------------------------------
 
-const IMPLEMENTED_PROPS_GUIDE = `Prop contracts for the interactive types (prefer these types when they fit):
+const IMPLEMENTED_PROPS_GUIDE = `Prop contracts for the interactive types (these are the ONLY allowed types):
 - function_plot: { "family": "sine"|"cosine"|"damped_sine"|"exp_decay"|"exponential"|"gaussian"|"polynomial"|"linear"|"abs"|"reciprocal", "parameters": {"a":1,"b":1,"c":0,"d":0} or {"coefficients":[c0,c1,...]}, "xMin": -5, "xMax": 5, "expressionLatex": "f(x)=..." }
 - linked_time_plots: { "amplitude": 1, "angularFrequency": 1, "phase": 0, "duration": 12, "showPosition": true, "showVelocity": true, "showAcceleration": true }
 - mass_spring: { "amplitude": 1, "angularFrequency": 1, "phase": 0, "showForceVector": true, "showVelocityVector": false }
@@ -128,8 +127,10 @@ const VISUAL_SPEC_SYSTEM_PROMPT =
   `{name, label, type: "slider"|"toggle"|"select", min?, max?, step?, options?, defaultValue?}), ` +
   `caption, regenerationPrompt (how to improve it next time). Optional: subtitle, misconceptionTargets, ` +
   `formulaRefs ({latex, explanation, symbols}), annotations ({label, target?, explanation}).\n\n` +
-  `Allowed types: ${VISUAL_TYPES.join(', ')}.\n` +
-  `Interactive today: ${IMPLEMENTED_VISUAL_TYPES.join(', ')} (other types render as a static explainer card).\n\n` +
+  `Allowed types: ${IMPLEMENTED_VISUAL_TYPES.join(', ')}. Every visual you design MUST be genuinely interactive — ` +
+  `there is no static fallback, so any other type is rejected and nothing is shown.\n` +
+  `If none of the allowed interactive types genuinely fits this concept, return exactly {"skip": true, "reason": "why no interactive visual fits"} ` +
+  `instead of forcing a spec. A page with no visual is always better than a non-interactive one.\n\n` +
   IMPLEMENTED_PROPS_GUIDE +
   `\n\nHard rules:\n` +
   `- The visual must clarify the specific concept at this point in the page, intuition before memorization.\n` +
@@ -232,6 +233,19 @@ export async function generateVisualSpec(
   }
 
   const candidate = stripJsonFence(raw);
+
+  // The model may honestly decline when no interactive type fits the concept.
+  // A declined visual is not an error: the page simply gets no visual.
+  try {
+    const declined = JSON.parse(candidate);
+    if (declined && typeof declined === 'object' && (declined as Record<string, unknown>).skip === true) {
+      const reason = String((declined as Record<string, unknown>).reason ?? 'no interactive type fits');
+      return { spec: null, errors: [`declined: ${reason}`] };
+    }
+  } catch {
+    // not a skip payload — validate as a spec below
+  }
+
   const { spec, errors } = validateVisualSpec(candidate);
   if (!spec) {
     // One repair attempt: fill in mechanical fields the model may have omitted.
@@ -257,6 +271,14 @@ export async function generateVisualSpec(
 }
 
 function finalizeSpec(spec: VisualSpec, context: VisualGenerationContext): GeneratedVisual {
+  // Interactive or nothing: there is no static-card fallback in the renderer,
+  // so a schema-valid spec with a non-interactive type must never ship.
+  if (!(IMPLEMENTED_VISUAL_TYPES as readonly string[]).includes(spec.type)) {
+    return {
+      spec: null,
+      errors: [`type "${spec.type}" is not interactive; only ${IMPLEMENTED_VISUAL_TYPES.join(', ')} are allowed`],
+    };
+  }
   if (context.gardenId) spec.gardenId = context.gardenId;
   if (context.pageId) spec.pageId = context.pageId;
   if (context.existingSpec) {

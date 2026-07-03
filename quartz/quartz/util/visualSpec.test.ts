@@ -179,7 +179,7 @@ describe("visual code block tagging (transformer core)", () => {
     assert.ok(codeNode.value.startsWith("Interactive visual:"))
   })
 
-  test("tags invalid blocks with an error and no spec payload", () => {
+  test("tags invalid blocks for removal with no spec payload and no fallback text", () => {
     const codeNode = {
       lang: VISUAL_BLOCK_LANG,
       value: '{"id": "x", "type": "not_a_type"}',
@@ -194,6 +194,24 @@ describe("visual code block tagging (transformer core)", () => {
     ])
     assert.strictEqual(data.hProperties["data-visual-spec"], undefined)
     assert.ok(typeof data.hProperties["data-visual-error"] === "string")
-    assert.strictEqual(codeNode.value, "This interactive visual could not be loaded.")
+    assert.strictEqual(codeNode.value, "")
+  })
+
+  test("tags schema-valid but non-interactive blocks for removal (no static card)", () => {
+    const codeNode = {
+      lang: VISUAL_BLOCK_LANG,
+      value: JSON.stringify({ ...validSpec, type: "concept_diagram" }),
+      data: undefined as unknown,
+    }
+    const ok = tagVisualCodeNode(codeNode)
+    assert.strictEqual(ok, false)
+    const data = codeNode.data as { hProperties: Record<string, unknown> }
+    assert.deepStrictEqual(data.hProperties.className, [
+      "breadboard-visual-block",
+      "breadboard-visual-noninteractive",
+    ])
+    assert.strictEqual(data.hProperties["data-visual-spec"], undefined)
+    assert.ok(String(data.hProperties["data-visual-error"]).includes("concept_diagram"))
+    assert.strictEqual(codeNode.value, "")
   })
 })

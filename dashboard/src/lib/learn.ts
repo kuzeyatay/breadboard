@@ -17,22 +17,33 @@ import {
   saveVisualSpec,
 } from "@/lib/visuals";
 import {
-  assignSourceFigureIds,
+  IMPLEMENTED_VISUAL_TYPES,
   buildVisualBlock,
   validateVisualSpec,
-  type SourceAnchor,
   type SourceFigure,
   type VisualSpec,
 } from "@/lib/visual-spec";
+import {
+  extractSourceVisuals,
+  isFullPageSnapshotUrl,
+  loadSourceVisuals,
+  recordSourceVisualAssignments,
+  sourceVisualEmbedUrl,
+  sourceVisualMarkdown,
+  type SourceVisual,
+} from "@/lib/source-visuals";
 import {
   buildTextbookPageFrontmatter,
   containsRawVisualPlaceholder,
   ensureQuestionBlock,
   fallbackLearningMapFromSources,
   normalizeLearningMapCandidate,
+  normalizeZettelTags,
   parseJsonCandidate,
   removeRawVisualPlaceholders,
   safeLearnFileSegment,
+  sanitizeLearnerTitle,
+  scrubLearnerProse,
   sourceSetHashForSources,
   stripMarkdownFence,
   stripMarkdownFrontmatter,
@@ -176,7 +187,23 @@ interface GeneratedPageRecord {
   sourceFigureIds: string[];
 }
 
-const SOURCE_MAP_PROMPT = `You create the Source Map for a Breadboard learning garden.
+// Voice rules shared by every prose-producing prompt. The generated garden is a
+// standalone lesson on the topic; the uploaded source grounds it silently.
+const LEARNER_VOICE_RULES = `Voice rules (hard requirements):
+- Write a direct lesson on the topic itself, never a commentary on the uploaded document.
+- The learner must feel they are reading a lesson on the topic, not a review of a PDF.
+- NEVER use the word "textbook" anywhere.
+- NEVER frame content as "the paper says", "the source frames", "in this paper", "the source material explains", "source-derived", "source-central", "according to the source". The source grounds the content silently.
+- Teaching sentences take the concept as their subject ("A spiking neuron carries information in discrete events"), never the document ("The paper introduces spiking neurons").
+- Stay within what the source material supports; grounding is silent, not narrated.`;
+
+const TITLE_RULES = `Title rules (hard requirements):
+- Titles name the concept the learner will understand, standalone.
+- Bad: "Why the Source Turns from Conventional Neural Networks to SNNs", "What Spiking Neural Networks Are in This Paper", "Source-Derived Comparative Results", "The Named Neuron Model LIF as Source-Central Evidence".
+- Good: "Why Spiking Neural Networks Exist", "Spikes, Timing, and Event-Driven Computation", "The Leaky Integrate-and-Fire Neuron", "How SNNs Learn", "Accuracy, Latency, Energy, and Spike Count", "Choosing an SNN Training Strategy".
+- Never contain "paper", "source", "textbook", or "overview" in a title.`;
+
+const SOURCE_MAP_PROMPT = `You create the internal Source Map for a Breadboard learning garden. This document is internal planning data; learners never see it.
 Return ONLY JSON. Include:
 - sources: each source title, role, source id/slug, central concepts, formulas, examples, questions, and caveats
 - figures: figures/graphs/tables/formula displays with labels when provided
@@ -184,15 +211,15 @@ Return ONLY JSON. Include:
 - missingOrUnclear: unclear or missing source material
 Stay source-aware. If source-only mode is true, do not add outside facts.`;
 
-const SCOPE_CONTRACT_PROMPT = `You create the Scope Contract for a Breadboard e-textbook.
+const SCOPE_CONTRACT_PROMPT = `You create the internal Scope Contract for a Breadboard learning garden. This document is internal planning data; learners never see it.
 Return ONLY JSON with included, excluded, background, deferred, sourceEmphasis, and caveats.
 The contract must protect source scope: no unsupported expansion, no disconnected topic cards, and no final Generated Subtopics pages.`;
 
-const TOPIC_MAP_PROMPT = `You create the Learning Spine / Topic Map for a Breadboard e-textbook.
+const TOPIC_MAP_PROMPT = `You create the Learning Spine / Topic Map for a Breadboard learning garden: a standalone sequence of lessons on the topic, grounded silently in the uploaded sources.
 Return ONLY JSON with this shape:
 {
-  "title": "Textbook title",
-  "summary": "short description",
+  "title": "Topic title (the subject itself, e.g. 'Spiking Neural Networks')",
+  "summary": "short description of what the learner will be able to do",
   "sections": [
     {
       "title": "Section title",
@@ -203,42 +230,52 @@ Return ONLY JSON with this shape:
           "title": "Subsection title",
           "purpose": "what the learner does here",
           "sourceAnchors": ["..."],
-          "visualOpportunities": ["..."],
-          "conceptTags": ["..."]
+          "sourceVisualsToEmbed": ["S1.P4.F1"],
+          "interactiveVisualsToCreate": [
+            { "concept": "membrane-potential-threshold-reset", "reason": "why interaction is genuinely needed" }
+          ],
+          "conceptTags": ["snn/lif-neuron", "computational-neuroscience/membrane-potential"]
         }
       ]
     }
   ],
   "warnings": ["..."]
 }
-First job: section names and order. Do not generate final textbook prose yet. Do not publish generated subtopics.`;
+${TITLE_RULES}
+Planning rules:
+- Every extracted source visual (given as sourceVisuals) must either appear in exactly one subsection's sourceVisualsToEmbed, or be omitted deliberately because it is not central.
+- interactiveVisualsToCreate is OPTIONAL and selective: only for genuinely hard concepts that need interaction (dynamic processes, tradeoffs, timing effects). Most subsections should have none. Never add one to introductions, conclusions, lists, or pages where a static source figure is enough.
+- conceptTags are 3-6 hierarchical zettelkasten tags in "domain/concept" form, e.g. "snn/stdp", "learning-rules/synaptic-plasticity". Never generic words like paper, source, overview, model, test, coverage.
+- First job: section names and order. Do not generate final prose yet.`;
 
-const OVERVIEW_PROMPT = `Write Learning/Topic Overview.md as the first page of a Breadboard e-textbook.
-Return Markdown body only, no frontmatter. Include what the garden is about, how to learn it, recommended reading order,
-links to sections/subsections using wikilink-style labels when useful, high-level concept tags, and source scope caveats.
+const OVERVIEW_PROMPT = `Write the Topic Overview page: the first page a learner reads in this Breadboard learning garden.
+Return Markdown body only, no frontmatter.
+${LEARNER_VOICE_RULES}
+Include what the topic is about, how to learn it, the recommended reading order with wikilink-style labels for sections/subsections, and honest scope notes (what this garden does and does not cover) phrased around the topic, not around the uploaded files.
 Do not create disconnected notes and do not include raw visual placeholders.`;
 
-const SUBSECTION_PROMPT = `Write one flowing Breadboard textbook subsection from the uploaded sources.
+const SUBSECTION_PROMPT = `Write one flowing lesson subsection for a Breadboard learning garden.
 Return Markdown body only, no frontmatter, no code fence around the whole page.
-Rules:
-- Start with a high-level introduction to the subsection.
-- Write as one flowing textbook section, not disconnected mini-sections.
-- Avoid over-segmentation and excessive headings.
-- Build intuition before notation; introduce terms only when needed.
-- Derive formulas step by step and define every symbol.
-- Explain each object and give examples immediately after concepts.
-- Use source-central formulas, figures, graphs, tables, examples, and questions when relevant.
+${LEARNER_VOICE_RULES}
+Structure rules:
+- Start with intuition: why this idea exists and what problem it solves.
+- Write as one flowing lesson, not disconnected mini-sections; avoid over-segmentation and excessive headings.
+- Introduce mechanisms only after the intuition is clear; introduce formulas only after motivating why they are needed; define every symbol.
+- Give examples immediately after concepts.
+- If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose, using its provided markdown snippet (image + caption). Put explanatory prose directly before or after each image saying why it matters. Never dump images at the end.
+- Do NOT write any \`\`\`breadboard-visual code block yourself — interactive visuals are attached by the pipeline afterwards.
+- Never leave [Interactive visual: ...] or any bracketed visual placeholder.
 - Include 1-2 questions using exactly:
   **Question.** ...
   **Answer.** ...
 - End by synthesizing the chain of reasoning.
-- Never leave [Interactive visual: ...] or any bracketed visual placeholder.
 - Do not generate arbitrary executable JavaScript.`;
 
-const REVISION_PROMPT = `Revise the textbook page for flow, correctness, source coverage, and readability.
+const REVISION_PROMPT = `Revise this lesson page for flow, correctness, coverage, and readability.
 Return Markdown body only, no frontmatter.
-Keep it a flowing textbook subsection. Remove raw visual placeholders. Keep or add 1-2 **Question.** / **Answer.** pairs.
-If source-only mode is true, do not add unsupported facts; say when source material is missing.`;
+${LEARNER_VOICE_RULES}
+Keep it one flowing lesson. Keep every embedded image exactly where it is (or move it closer to the prose it supports). Keep any \`\`\`breadboard-visual block byte-for-byte unchanged. Remove raw visual placeholders. Keep or add 1-2 **Question.** / **Answer.** pairs.
+If source-only mode is true, do not add unsupported facts; say plainly when material is missing.`;
 
 function ensureLearnTables(): void {
   db.exec(`
@@ -636,60 +673,37 @@ function stripLocalFrontmatter(value: string): string {
   return stripMarkdownFrontmatter(value).trim();
 }
 
-function pageNumberBefore(markdown: string, index: number): number | undefined {
-  const prefix = markdown.slice(0, index);
-  const matches = [...prefix.matchAll(/^#{1,4}\s+(?:page|p\.?)\s*([0-9]+)\b/gim)];
-  const last = matches[matches.length - 1];
-  if (!last) return undefined;
-  const parsed = Number.parseInt(last[1] ?? "", 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
+/** Page snapshot URLs stored in a source note's frontmatter (source_images). */
+function sourcePageImageUrls(rawContent: string): string[] {
+  const match = rawContent.match(/^source_images:\s*\[([^\]]*)\]/m);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((item) => item.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
 }
 
-function inferFigureKind(caption: string, url = ""): SourceFigure["kind"] {
-  const text = `${caption} ${url}`.toLowerCase();
-  if (/\b(table|tabular|matrix)\b/.test(text)) return "table";
-  if (/\b(graph|plot|curve|axis|axes)\b/.test(text)) return "graph";
-  if (/\b(photo|image|snapshot)\b/.test(text)) return "photo";
-  if (/\b(formula|equation|derivation)\b/.test(text)) return "formula";
-  return "diagram";
-}
-
-function extractSourceFiguresFromMarkdown(
-  source: LearnSourceSummary,
-  sourceIndex: number,
-): SourceFigure[] {
-  const body = source.body ?? "";
-  const rawFigures: Array<Partial<SourceFigure> & { page?: number }> = [];
-
-  for (const match of body.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)) {
-    const caption = cleanGeneratedText((match[1] || match[2] || "Source figure").trim());
-    rawFigures.push({
-      sourceId: source.slug,
-      page: pageNumberBefore(body, match.index ?? 0),
-      kind: inferFigureKind(caption, match[2]),
-      caption,
-      suggestedVisualUse: "Create a source_figure_explainer or matching safe visual block.",
-      relevanceNotes: `Source image in ${source.title}`,
-    });
-  }
-
-  const lines = body.split(/\r?\n/);
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    if (/^\s*\|.+\|\s*$/.test(lines[index]) && /^\s*\|?\s*:?-{3,}/.test(lines[index + 1])) {
-      rawFigures.push({
-        sourceId: source.slug,
-        kind: "table",
-        caption: `Table near line ${index + 1} in ${source.title}`,
-        ocrText: lines.slice(index, Math.min(index + 6, lines.length)).join("\n"),
-        suggestedVisualUse: "Use as a comparison_table or source_figure_explainer.",
-      });
-    }
-  }
-
-  return assignSourceFigureIds(sourceIndex, rawFigures).map((figure) => ({
-    ...figure,
-    sourceId: figure.sourceId ?? source.slug,
-  }));
+/** SourceFigure view of the extracted SourceVisual ledger, for the visual-spec
+ * anchor plumbing. Full-page fallbacks are excluded — they are not figures. */
+function sourceFiguresFromVisuals(visuals: SourceVisual[]): SourceFigure[] {
+  return visuals
+    .filter((visual) => visual.type !== "full_page_fallback")
+    .map((visual) => ({
+      figureId: visual.sourceVisualId,
+      sourceId: visual.sourceId,
+      page: visual.pageNumber || undefined,
+      kind:
+        visual.type === "table"
+          ? ("table" as const)
+          : visual.type === "graph"
+            ? ("graph" as const)
+            : visual.type === "equation"
+              ? ("formula" as const)
+              : ("diagram" as const),
+      caption: visual.caption,
+      relevanceNotes: `Extracted from page ${visual.pageNumber}`,
+      suggestedVisualUse: "Embed the cropped source visual near the prose it supports.",
+    }));
 }
 
 export function collectLearnSourceContext(
@@ -712,6 +726,7 @@ export function collectLearnSourceContext(
       excerpt: node.excerpt,
       body: stripLocalFrontmatter(node.content),
       tags: node.tags,
+      sourceImages: sourcePageImageUrls(node.content),
     }));
   const conceptNodes: LearnConceptSummary[] = knowledge.nodes
     .filter((node) => node.type === "internal-concept")
@@ -735,8 +750,11 @@ export function collectLearnSourceContext(
       body: stripLocalFrontmatter(node.content),
       tags: node.tags,
     }));
-  const sourceFigures = sources.flatMap((source, index) =>
-    extractSourceFiguresFromMarkdown(source, index + 1),
+  // Figures come from the Stage-2 SourceVisual ledger (cropped, captioned).
+  // Before extraction has run the list is simply empty — full-page snapshots
+  // are never presented as figures.
+  const sourceFigures = sourceFiguresFromVisuals(
+    loadSourceVisuals(contentPath, gardenId),
   );
 
   return {
@@ -749,6 +767,51 @@ export function collectLearnSourceContext(
     sourceFigures,
     sourceSetHash: sourceSetHashForSources(sources),
   };
+}
+
+/**
+ * Stage 2: make sure every source's meaningful visuals are extracted into the
+ * SourceVisual ledger (idempotent per source, best-effort per page). Returns
+ * the full ledger for the garden.
+ */
+async function ensureSourceVisualsExtracted({
+  client,
+  model,
+  contentPath,
+  gardenId,
+  context,
+  onProgress,
+}: {
+  client: OpenAI;
+  model: string;
+  contentPath: string;
+  gardenId: string;
+  context: LearnSourceContext;
+  onProgress?: (step: string) => void;
+}): Promise<SourceVisual[]> {
+  for (let index = 0; index < context.sources.length; index += 1) {
+    const source = context.sources[index];
+    const pageImageUrls = (source.sourceImages ?? []).filter(isFullPageSnapshotUrl);
+    if (pageImageUrls.length === 0) continue;
+    try {
+      await extractSourceVisuals({
+        client,
+        model,
+        contentPath,
+        gardenSlug: gardenId,
+        sourceId: source.slug,
+        sourceIndex: index + 1,
+        pageImageUrls,
+        onProgress,
+      });
+    } catch {
+      // Extraction is best-effort: a garden without extracted visuals still
+      // generates, it just embeds no source figures.
+    }
+  }
+  const visuals = loadSourceVisuals(contentPath, gardenId);
+  context.sourceFigures = sourceFiguresFromVisuals(visuals);
+  return visuals;
 }
 
 function truncate(value: string | undefined, maxLength: number): string {
@@ -773,6 +836,14 @@ function promptSources(context: LearnSourceContext): unknown {
     })),
     conceptNodes: context.conceptNodes.slice(0, 80),
     sourceFigures: context.sourceFigures.slice(0, 40),
+    // Stage-2 extracted visuals, in the shape the planner assigns from.
+    sourceVisuals: context.sourceFigures.slice(0, 40).map((figure) => ({
+      sourceVisualId: figure.figureId,
+      sourceId: figure.sourceId,
+      page: figure.page,
+      kind: figure.kind,
+      caption: figure.caption,
+    })),
   };
 }
 
@@ -951,6 +1022,22 @@ export async function runLearnPlanning({
   const context = collectLearnSourceContext(contentPath, gardenId);
 
   try {
+    updateLearnJob(job.id, {
+      status: "planning",
+      currentStep: "Extracting source visuals",
+      progressPercent: 2,
+      sourceSetHash: context.sourceSetHash,
+    });
+    // Stage 2 before planning: the planner assigns real extracted visuals.
+    await ensureSourceVisualsExtracted({
+      client,
+      model,
+      contentPath,
+      gardenId,
+      context,
+      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+
     const promptSourceContext = promptSources(context);
     updateLearnJob(job.id, {
       status: "planning",
@@ -1114,6 +1201,8 @@ function renderObjectMarkdown(value: unknown): string {
   return `\`\`\`json\n${JSON.stringify(value ?? {}, null, 2)}\n\`\`\``;
 }
 
+// Internal planning pages (Learning Map, Source Map, Scope Contract, Source
+// Coverage) never carry public tags — tags are reserved for learner lessons.
 function learningPageFrontmatter(
   title: string,
   type: string,
@@ -1121,19 +1210,18 @@ function learningPageFrontmatter(
   textbookVersionId: string,
   sourceSetHash: string,
 ): string {
-  const bodyForTags = `${title} ${type} ${gardenId}`;
   return yamlFrontmatter({
     title,
     date: nowIso(),
     knowledge_type: type,
     breadboardType: type.replace(/-/g, "_"),
     gardenId,
+    internal: type === "topic-overview" ? undefined : "true",
     generatedBy: "learn_button",
     generated_by: "learn_button",
     textbookVersion: textbookVersionId,
     textbookVersionId,
     sourceSetHash,
-    tags: normalizeTopicTags([title, "learning map"], bodyForTags, 6, bodyForTags),
   });
 }
 
@@ -1181,11 +1269,11 @@ function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSou
   const lines = [
     "# Topic Overview",
     "",
-    `${context.gardenTitle} is organized as a source-aware textbook built from ${context.sources.length} uploaded source${context.sources.length === 1 ? "" : "s"}.`,
+    `${context.gardenTitle} is organized as a sequence of lessons you can read in order.`,
     "",
     "## How To Learn This Garden",
     "",
-    "Read the sections in order. Each subsection introduces the next idea only after the source-backed motivation is clear.",
+    "Read the sections in order. Each subsection introduces the next idea only after the motivation for it is clear.",
     "",
     "## Recommended Reading Order",
     "",
@@ -1211,9 +1299,9 @@ function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSou
     map.summary,
   );
   lines.push("", "## High-Level Concept Tags", "");
-  lines.push(...(tags.length > 0 ? tags.map((tag) => `- ${tag}`) : ["- Source-grounded learning path"]));
-  lines.push("", "## Source Scope Caveats", "");
-  lines.push(...(map.warnings.length > 0 ? map.warnings.map((warning) => `- ${warning}`) : ["- The textbook stays within the uploaded source scope unless explicitly updated."]));
+  lines.push(...(tags.length > 0 ? tags.map((tag) => `- ${tag}`) : ["- Guided learning path"]));
+  lines.push("", "## Scope Notes", "");
+  lines.push(...(map.warnings.length > 0 ? map.warnings.map((warning) => `- ${warning}`) : ["- This garden stays within the scope of its underlying material unless explicitly updated."]));
   return `${lines.join("\n")}\n`;
 }
 
@@ -1342,99 +1430,123 @@ function writeMarkdownWithBackup({
   return { filePath, backedUpTo };
 }
 
-function chooseSourceFiguresForSubsection(
-  context: LearnSourceContext,
-  subsection: LearningSubsectionPlan,
-  section: LearningSectionPlan,
-): SourceFigure[] {
-  const haystack = [
-    subsection.title,
-    subsection.purpose,
-    ...subsection.sourceAnchors,
-    ...section.sourceAnchors,
-  ]
-    .join(" ")
-    .toLowerCase();
-  const direct = context.sourceFigures.filter((figure) => {
-    const source = context.sources.find((item) => item.slug === figure.sourceId);
-    return (
-      (source && haystack.includes(source.title.toLowerCase())) ||
-      (figure.caption && haystack.includes(figure.caption.toLowerCase().slice(0, 40))) ||
-      (figure.sourceId && haystack.includes(figure.sourceId.toLowerCase()))
-    );
+function textTokens(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/g)
+      .filter((word) => word.length > 3),
+  );
+}
+
+function tokenOverlap(a: Set<string>, b: Set<string>): number {
+  let count = 0;
+  for (const item of a) if (b.has(item)) count += 1;
+  return count;
+}
+
+/** Index of the paragraph most related to `text` (for inserting a visual next
+ * to the prose it supports). Falls back to just after the intro. */
+function bestParagraphIndex(paragraphs: string[], text: string): number {
+  const target = textTokens(text);
+  let bestIndex = Math.min(1, paragraphs.length - 1);
+  let bestScore = 0;
+  paragraphs.forEach((paragraph, index) => {
+    if (paragraph.startsWith("```") || paragraph.startsWith("![")) return;
+    const score = tokenOverlap(target, textTokens(paragraph));
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
   });
-  return (direct.length > 0 ? direct : context.sourceFigures).slice(0, 2);
+  return bestIndex;
 }
 
-function sourceAnchorsForVisual(
-  anchors: string[],
-  sourceFigures: SourceFigure[],
-): SourceAnchor[] {
-  const fromFigures: SourceAnchor[] = sourceFigures.map((figure) => ({
-    sourceId: figure.sourceId,
-    page: figure.page,
-    figureId: figure.figureId,
-    description: figure.caption ?? figure.relevanceNotes ?? figure.kind,
-  }));
-  const fromAnchors: SourceAnchor[] = anchors.slice(0, 4).map((description) => ({
-    description,
-  }));
-  return [...fromFigures, ...fromAnchors].slice(0, 8);
-}
-
-function fallbackVisualSpec({
-  gardenId,
-  pageId,
-  title,
-  anchors,
-  conceptTags,
-  sourceFigures,
+/**
+ * Stage 3 assignment for one page: the plan's sourceVisualsToEmbed wins; when
+ * the plan named none, fall back to caption/token overlap so central visuals
+ * still land on a relevant page. `claimed` keeps a visual on exactly one page.
+ */
+function assignSourceVisualsForSubsection({
+  visuals,
+  subsection,
+  section,
+  claimed,
 }: {
-  gardenId: string;
-  pageId: string;
-  title: string;
-  anchors: string[];
-  conceptTags: string[];
-  sourceFigures: SourceFigure[];
-}): VisualSpec {
-  const candidate = {
-    id: makeId("vis"),
-    gardenId,
-    pageId,
-    type: sourceFigures.length > 0 ? "source_figure_explainer" : "concept_diagram",
-    title,
-    sourceAnchors: sourceAnchorsForVisual(anchors, sourceFigures),
-    conceptTargets: conceptTags.length > 0 ? conceptTags.slice(0, 8) : [title],
-    pedagogicalPurpose:
-      "Provide a safe visual checkpoint that ties the prose to source anchors and core concepts.",
-    props: {
-      nodes: conceptTags.slice(0, 8),
-      sourceFigures: sourceFigures.map((figure) => figure.figureId),
-    },
-    caption:
-      sourceFigures.length > 0
-        ? "Source-anchored explainer for the figure or table used in this subsection."
-        : "Conceptual checkpoint for this subsection.",
-    regenerationPrompt: `Regenerate a clearer source-aware visual for ${title}.`,
-    createdAt: nowIso(),
-    version: 1,
-  };
-  const { spec } = validateVisualSpec(candidate);
-  if (!spec) {
-    throw new Error("Fallback visual spec failed validation");
+  visuals: SourceVisual[];
+  subsection: LearningSubsectionPlan;
+  section: LearningSectionPlan;
+  claimed: Set<string>;
+}): SourceVisual[] {
+  const available = visuals.filter(
+    (visual) => !claimed.has(visual.sourceVisualId) && sourceVisualEmbedUrl(visual),
+  );
+
+  const planned = (subsection.sourceVisualIds ?? [])
+    .map((id) => available.find((visual) => visual.sourceVisualId === id))
+    .filter((visual): visual is SourceVisual => Boolean(visual));
+
+  let chosen = planned;
+  if (chosen.length === 0) {
+    const pageText = [
+      subsection.title,
+      subsection.purpose,
+      ...(subsection.sourceAnchors ?? []),
+      ...(section.sourceAnchors ?? []),
+      ...(subsection.conceptTags ?? []),
+    ].join(" ");
+    const pageTokens = textTokens(pageText);
+    chosen = available
+      .filter((visual) => visual.type !== "full_page_fallback")
+      .map((visual) => ({ visual, score: tokenOverlap(pageTokens, textTokens(visual.caption)) }))
+      .filter((item) => item.score >= 2)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((item) => item.visual);
   }
-  return spec;
+
+  chosen = chosen.slice(0, 3);
+  for (const visual of chosen) claimed.add(visual.sourceVisualId);
+  return chosen;
 }
 
-function insertVisualAfterIntro(markdown: string, visualBlock: string): string {
-  if (markdown.includes("```breadboard-visual")) return markdown;
-  const parts = markdown.trim().split(/\n{2,}/);
-  if (parts.length <= 1) return `${markdown.trim()}\n\n${visualBlock}\n`;
-  const insertAt = parts[0].startsWith("# ") && parts.length > 2 ? 2 : 1;
-  return [...parts.slice(0, insertAt), visualBlock, ...parts.slice(insertAt)].join("\n\n");
+/** Stage 5: guarantee every assigned source visual appears in the body as a
+ * real Markdown image near its most relevant paragraph. The model is asked to
+ * weave them in; this is the deterministic backstop. */
+function embedAssignedSourceVisuals(markdown: string, visuals: SourceVisual[]): string {
+  let paragraphs = markdown.trim().split(/\n{2,}/);
+  for (const visual of visuals) {
+    const url = sourceVisualEmbedUrl(visual);
+    const snippet = sourceVisualMarkdown(visual);
+    if (!url || !snippet) continue;
+    if (paragraphs.some((paragraph) => paragraph.includes(url))) continue;
+    const index = bestParagraphIndex(paragraphs, visual.caption);
+    paragraphs = [
+      ...paragraphs.slice(0, index + 1),
+      snippet,
+      ...paragraphs.slice(index + 1),
+    ];
+  }
+  return paragraphs.join("\n\n");
 }
 
-async function ensureVisualBlocks({
+const EMBEDDED_VISUAL_BLOCK_RE = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
+
+/**
+ * Stage 6 reconciliation: one stable ID everywhere.
+ *
+ * - Model-authored ```breadboard-visual blocks are validated; valid ones are
+ *   persisted to .breadboard/visuals/ + visual-index.json so the embedded ID,
+ *   the spec file, and the index always agree. Invalid ones are removed —
+ *   a broken visual never reaches the page.
+ * - New interactive visuals are generated ONLY when the confirmed plan asked
+ *   for them (interactiveVisuals), and only while the page has none.
+ * - There is no generic fallback visual: a page that needs nothing gets nothing.
+ *
+ * Returns the final markdown and the IDs of the blocks actually embedded, which
+ * callers must use verbatim as the page's frontmatter visualIds.
+ */
+async function reconcileInteractiveVisuals({
   client,
   model,
   contentPath,
@@ -1462,114 +1574,113 @@ async function ensureVisualBlocks({
   subsection: LearningSubsectionPlan;
   sourceContext: unknown;
   sourceFigures: SourceFigure[];
-}): Promise<{ markdown: string; visualIds: string[]; sourceFigureIds: string[] }> {
-  let visual: VisualSpec | null = null;
-  const opportunity =
-    subsection.visualOpportunities[0] ??
-    sourceFigures[0]?.suggestedVisualUse ??
-    `Clarify ${subsection.title} with a source-aware visual.`;
+}): Promise<{ markdown: string; visualIds: string[] }> {
+  const pageSlug = pageRelPath.replace(/\.md$/i, "");
+  const keptIds: string[] = [];
 
-  try {
-    const generated = await generateVisualSpec(client, model, {
-      gardenId,
-      pageId,
-      sectionTitle,
-      subsectionTitle: subsection.title,
-      pageMarkdown: markdown,
-      sourceContext,
-      sourceFigures,
-      visualOpportunity: opportunity,
-      councilModeOverride: sourceFigures.length > 0 ? "full_council" : "lite_council",
-    });
-    visual = generated.spec;
-  } catch {
-    visual = null;
-  }
-
-  if (!visual) {
-    visual = fallbackVisualSpec({
-      gardenId,
-      pageId,
-      title: `${subsection.title} visual`,
-      anchors: subsection.sourceAnchors,
-      conceptTags: subsection.conceptTags,
-      sourceFigures,
-    });
-  }
-
-  saveVisualSpec(contentPath, gardenId, visual, pageRelPath.replace(/\.md$/i, ""));
-  appendLearnEvent(contentPath, gardenId, "learn_visual_created", {
-    jobId,
-    textbookVersionId,
-    pageId,
-    visualId: visual.id,
-    councilRunId: visual.id,
-    sourceIds: [...new Set(visual.sourceAnchors.map((anchor) => anchor.sourceId).filter(Boolean))],
-  });
-  for (const anchor of visual.sourceAnchors) {
-    if (!anchor.figureId) continue;
-    appendLearnEvent(contentPath, gardenId, "learn_source_figure_linked", {
+  const recordVisual = (spec: VisualSpec) => {
+    saveVisualSpec(contentPath, gardenId, spec, pageSlug);
+    keptIds.push(spec.id);
+    appendLearnEvent(contentPath, gardenId, "learn_visual_created", {
       jobId,
       textbookVersionId,
       pageId,
-      visualId: visual.id,
-      figureId: anchor.figureId,
-      sourceId: anchor.sourceId,
+      visualId: spec.id,
+      sourceIds: [...new Set(spec.sourceAnchors.map((anchor) => anchor.sourceId).filter(Boolean))],
     });
+    for (const anchor of spec.sourceAnchors) {
+      if (!anchor.figureId) continue;
+      appendLearnEvent(contentPath, gardenId, "learn_source_figure_linked", {
+        jobId,
+        textbookVersionId,
+        pageId,
+        visualId: spec.id,
+        figureId: anchor.figureId,
+        sourceId: anchor.sourceId,
+      });
+    }
+  };
+
+  // 1) Reconcile blocks the model wrote inline despite instructions. Only
+  //    genuinely interactive types survive — there is no static-card fallback
+  //    in the renderer, so anything else is removed rather than embedded.
+  let nextMarkdown = markdown.replace(EMBEDDED_VISUAL_BLOCK_RE, (fullMatch, json: string) => {
+    const { spec } = validateVisualSpec(json);
+    if (
+      spec &&
+      (IMPLEMENTED_VISUAL_TYPES as readonly string[]).includes(spec.type) &&
+      !keptIds.includes(spec.id)
+    ) {
+      spec.gardenId = gardenId;
+      spec.pageId = pageSlug;
+      recordVisual(spec);
+      return buildVisualBlock(spec);
+    }
+    return "";
+  });
+
+  // 2) Legacy bracket placeholders are removed, never replaced by filler.
+  if (containsRawVisualPlaceholder(nextMarkdown)) {
+    nextMarkdown = removeRawVisualPlaceholders(nextMarkdown, "");
   }
 
-  const block = buildVisualBlock(visual);
-  let nextMarkdown = containsRawVisualPlaceholder(markdown)
-    ? removeRawVisualPlaceholders(markdown, block)
-    : markdown;
-  nextMarkdown = insertVisualAfterIntro(nextMarkdown, block);
-  return {
-    markdown: nextMarkdown,
-    visualIds: [visual.id],
-    sourceFigureIds: visual.sourceAnchors
-      .map((anchor) => anchor.figureId)
-      .filter((figureId): figureId is string => Boolean(figureId)),
-  };
+  // 3) Create the interactive visuals the plan explicitly called for.
+  const requested = subsection.interactiveVisuals ?? [];
+  for (const plan of requested.slice(0, 2)) {
+    if (keptIds.length > 0) break; // page already has a working interactive
+    try {
+      const generated = await generateVisualSpec(client, model, {
+        gardenId,
+        pageId: pageSlug,
+        sectionTitle,
+        subsectionTitle: subsection.title,
+        pageMarkdown: nextMarkdown,
+        sourceContext,
+        sourceFigures,
+        visualOpportunity: `${plan.concept}${plan.reason ? ` — ${plan.reason}` : ""}`,
+        councilModeOverride: sourceFigures.length > 0 ? "full_council" : "lite_council",
+      });
+      const spec = generated.spec;
+      if (!spec) continue;
+      recordVisual(spec);
+      const paragraphs = nextMarkdown.trim().split(/\n{2,}/);
+      const index = bestParagraphIndex(paragraphs, `${plan.concept} ${plan.reason}`);
+      nextMarkdown = [
+        ...paragraphs.slice(0, index + 1),
+        buildVisualBlock(spec),
+        ...paragraphs.slice(index + 1),
+      ].join("\n\n");
+    } catch {
+      // No interactive visual is better than a broken or filler one.
+    }
+  }
+
+  return { markdown: nextMarkdown, visualIds: keptIds };
 }
 
+// Minimal learner-facing fallback used only when generation fails outright.
+// It teaches what it can (purpose + assigned visuals) without narrating the
+// upload; the assigned visuals are embedded by the deterministic backstop.
 function fallbackSubsectionMarkdown({
   sectionNumber,
   subsectionNumber,
   subsection,
-  anchors,
-  sourceFigures,
 }: {
   sectionNumber: number;
   subsectionNumber: number;
   subsection: LearningSubsectionPlan;
-  anchors: string[];
-  sourceFigures: SourceFigure[];
 }): string {
   const title = `${sectionNumber}.${subsectionNumber} ${subsection.title}`;
-  const figureLines =
-    sourceFigures.length > 0
-      ? sourceFigures.map((figure) => `- ${figure.figureId}: ${figure.caption ?? figure.kind}`).join("\n")
-      : "- No central source figures were assigned to this subsection.";
   return [
     `# ${title}`,
     "",
-    `${subsection.purpose || `This subsection introduces ${subsection.title} through the uploaded source material.`}`,
+    `${subsection.purpose || `This page introduces ${subsection.title}.`}`,
     "",
-    "The safest way to read this part is to begin with the source anchors, identify the objects being discussed, and then connect each definition or formula to the example that motivated it.",
+    "Start with the idea itself: what problem does it solve, and what would break without it? Then connect each definition or formula on this page to the example that motivated it.",
     "",
-    "## Source Anchors",
+    `**Question.** What is the main idea to take away from ${subsection.title}?`,
     "",
-    ...(anchors.length > 0 ? anchors.map((anchor) => `- ${anchor}`) : ["- General uploaded source context."]),
-    "",
-    "## Source Figures",
-    "",
-    figureLines,
-    "",
-    "**Question.** What should you verify before using this subsection in a problem?",
-    "",
-    "**Answer.** Verify which source anchor supports the claim, what each symbol or object refers to, and whether the subsection is using a figure, formula, or example from the uploaded material.",
-    "",
-    "The chain of reasoning in this subsection is therefore source first: locate the anchor, name the objects, connect the formula or example, and then use the visual checkpoint to test the idea.",
+    "**Answer.** Name the starting idea, explain why the next idea is needed, and check the conclusion against the examples and figures on this page.",
   ].join("\n");
 }
 
@@ -1639,6 +1750,9 @@ export async function runTextbookGeneration({
   const generatedAt = nowIso();
   const generatedPages: GeneratedPageRecord[] = [];
   const unusedFigureReasons = new Map<string, string>();
+  // Stage 3 bookkeeping: which SourceVisual landed on which page.
+  const visualAssignments = new Map<string, { pageId: string; sectionId?: string }>();
+  const claimedVisualIds = new Set<string>();
 
   try {
     appendLearnEvent(contentPath, gardenId, "learn_textbook_generation_started", {
@@ -1649,11 +1763,26 @@ export async function runTextbookGeneration({
     });
     updateLearnJob(job.id, {
       status: "generating_textbook",
-      currentStep: "Writing overview pages",
-      progressPercent: 3,
+      currentStep: "Extracting source visuals",
+      progressPercent: 2,
       confirmedLearningMapId: map.id,
       latestTextbookVersionId: textbookVersionId,
       sourceSetHash: context.sourceSetHash,
+    });
+    // Stage 2 (idempotent): sources uploaded after planning still get their
+    // visuals extracted before any page is written.
+    const ledgerVisuals = await ensureSourceVisualsExtracted({
+      client,
+      model,
+      contentPath,
+      gardenId,
+      context,
+      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+    updateLearnJob(job.id, {
+      status: "generating_textbook",
+      currentStep: "Writing overview pages",
+      progressPercent: 3,
     });
 
     let overviewBody = "";
@@ -1738,7 +1867,9 @@ export async function runTextbookGeneration({
     for (let sectionIndex = 0; sectionIndex < map.learningMap.sections.length; sectionIndex += 1) {
       const section = map.learningMap.sections[sectionIndex];
       const sectionNumber = sectionIndex + 1;
-      const sectionFolder = textbookSectionFolder(sectionNumber, section.title);
+      // Older stored maps may predate title sanitation — enforce it at render.
+      const sectionTitle = sanitizeLearnerTitle(section.title);
+      const sectionFolder = textbookSectionFolder(sectionNumber, sectionTitle);
       const sectionIndexRelPath = `${sectionFolder}/_index.md`;
       writeMarkdownWithBackup({
         clusterDir,
@@ -1746,7 +1877,7 @@ export async function runTextbookGeneration({
         textbookVersionId,
         content:
           yamlFrontmatter({
-            title: `${sectionNumber}. ${section.title}`,
+            title: `${sectionNumber}. ${sectionTitle}`,
             date: generatedAt,
             knowledge_type: "textbook-section",
             breadboardType: "textbook_section",
@@ -1755,14 +1886,15 @@ export async function runTextbookGeneration({
             textbookVersion: textbookVersionId,
             sourceSetHash: context.sourceSetHash,
           }) +
-          `# ${sectionNumber}. ${section.title}\n\n${section.purpose || "This section is part of the confirmed Breadboard learning map."}\n`,
+          `# ${sectionNumber}. ${sectionTitle}\n\n${scrubLearnerProse(section.purpose || "This section is part of the confirmed Breadboard learning map.")}\n`,
       });
 
       for (let subsectionIndex = 0; subsectionIndex < section.subsections.length; subsectionIndex += 1) {
         const subsection = section.subsections[subsectionIndex];
         const subsectionNumber = subsectionIndex + 1;
-        const pageTitle = `${sectionNumber}.${subsectionNumber} ${subsection.title}`;
-        const pageFileName = textbookPageFileName(sectionNumber, subsectionNumber, subsection.title);
+        const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+        const pageTitle = `${sectionNumber}.${subsectionNumber} ${subsectionTitle}`;
+        const pageFileName = textbookPageFileName(sectionNumber, subsectionNumber, subsectionTitle);
         const pageRelPath = `${sectionFolder}/${pageFileName}`;
         const pageId = pageRelPath.replace(/\.md$/i, "");
         const anchors =
@@ -1771,7 +1903,14 @@ export async function runTextbookGeneration({
             : section.sourceAnchors.length > 0
               ? section.sourceAnchors
               : context.sources.map((source) => source.title);
-        const sourceFigures = chooseSourceFiguresForSubsection(context, subsection, section);
+        // Stage 3: which extracted source visuals belong on this page.
+        const assignedVisuals = assignSourceVisualsForSubsection({
+          visuals: ledgerVisuals,
+          subsection,
+          section,
+          claimed: claimedVisualIds,
+        });
+        const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
         const pageSourceContext = {
           sourceMap: map.sourceMap,
           scopeContract: map.scopeContract,
@@ -1779,6 +1918,13 @@ export async function runTextbookGeneration({
           subsectionPlan: subsection,
           sourceAnchors: anchors,
           sourceFigures,
+          assignedSourceVisuals: assignedVisuals.map((visual) => ({
+            sourceVisualId: visual.sourceVisualId,
+            caption: visual.caption,
+            page: visual.pageNumber,
+            type: visual.type,
+            markdown: sourceVisualMarkdown(visual),
+          })),
           sourceOnly,
         };
 
@@ -1790,9 +1936,9 @@ export async function runTextbookGeneration({
         });
         updateLearnJob(job.id, {
           status: "generating_textbook",
-          currentStep: "Writing textbook subsection",
+          currentStep: "Writing lesson subsection",
           progressPercent: 10 + Math.floor((completed / Math.max(1, totalSubsections)) * 70),
-          currentSectionTitle: section.title,
+          currentSectionTitle: sectionTitle,
           currentPageTitle: pageTitle,
         });
 
@@ -1809,8 +1955,6 @@ export async function runTextbookGeneration({
           sectionNumber,
           subsectionNumber,
           subsection,
-          anchors,
-          sourceFigures,
         });
         let pageBody = fallback;
         let subsectionRunId: string | undefined;
@@ -1860,15 +2004,21 @@ export async function runTextbookGeneration({
           // Keep the generated or fallback page body.
         }
 
-        pageBody = ensureQuestionBlock(pageBody, subsection.title);
+        // Stage 4 hygiene: safe deterministic scrubs behind the prompt rules.
+        pageBody = scrubLearnerProse(pageBody);
+        pageBody = ensureQuestionBlock(pageBody, subsectionTitle);
+
+        // Stage 5: every assigned source visual must appear in the body.
+        pageBody = embedAssignedSourceVisuals(pageBody, assignedVisuals);
 
         updateLearnJob(job.id, {
           status: "generating_visuals",
-          currentStep: "Creating visual block",
-          currentSectionTitle: section.title,
+          currentStep: "Reconciling interactive visuals",
+          currentSectionTitle: sectionTitle,
           currentPageTitle: pageTitle,
         });
-        const visualized = await ensureVisualBlocks({
+        // Stage 6: validated, ID-consistent, plan-selected interactives only.
+        const visualized = await reconcileInteractiveVisuals({
           client,
           model,
           contentPath,
@@ -1878,34 +2028,26 @@ export async function runTextbookGeneration({
           pageId,
           pageRelPath,
           markdown: pageBody,
-          sectionTitle: section.title,
+          sectionTitle,
           subsection,
           sourceContext: pageSourceContext,
           sourceFigures,
         });
         pageBody = visualized.markdown;
-        if (containsRawVisualPlaceholder(pageBody)) {
-          pageBody = removeRawVisualPlaceholders(
-            pageBody,
-            buildVisualBlock(
-              fallbackVisualSpec({
-                gardenId,
-                pageId,
-                title: `${subsection.title} visual`,
-                anchors,
-                conceptTags: subsection.conceptTags,
-                sourceFigures,
-              }),
-            ),
-          );
-        }
 
+        // Stage 7: 3-6 hierarchical zettel tags on learner pages only.
+        const zettelTags = normalizeZettelTags(
+          subsection.conceptTags,
+          subsectionTitle,
+          map.learningMap.title || context.gardenTitle,
+        );
         const conceptTags = normalizeTopicTags(
           subsection.conceptTags,
           pageBody,
           10,
-          `${subsection.title}\n${pageBody}`,
+          `${subsectionTitle}\n${pageBody}`,
         );
+        const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const finalContent =
           buildTextbookPageFrontmatter({
             gardenId,
@@ -1914,7 +2056,9 @@ export async function runTextbookGeneration({
             title: pageTitle,
             sourceAnchors: anchors,
             conceptTags,
+            tags: zettelTags,
             visualIds: visualized.visualIds,
+            sourceVisualIds: assignedVisualIds,
             textbookVersionId,
             sourceSetHash: context.sourceSetHash,
             generatedAt,
@@ -1923,7 +2067,7 @@ export async function runTextbookGeneration({
         updateLearnJob(job.id, {
           status: "writing_quartz",
           currentStep: "Writing Quartz Markdown",
-          currentSectionTitle: section.title,
+          currentSectionTitle: sectionTitle,
           currentPageTitle: pageTitle,
         });
         writeMarkdownWithBackup({
@@ -1932,12 +2076,18 @@ export async function runTextbookGeneration({
           content: finalContent,
           textbookVersionId,
         });
+        for (const visual of assignedVisuals) {
+          visualAssignments.set(visual.sourceVisualId, {
+            pageId,
+            sectionId: sectionFolder,
+          });
+        }
         generatedPages.push({
           title: pageTitle,
           relPath: pageRelPath,
           sourceAnchors: anchors,
           visualIds: visualized.visualIds,
-          sourceFigureIds: visualized.sourceFigureIds,
+          sourceFigureIds: assignedVisualIds,
         });
         appendLearnEvent(contentPath, gardenId, "learn_textbook_page_written", {
           jobId: job.id,
@@ -1950,9 +2100,17 @@ export async function runTextbookGeneration({
       }
     }
 
-    for (const figure of context.sourceFigures) {
-      if (!generatedPages.some((page) => page.sourceFigureIds.includes(figure.figureId))) {
-        unusedFigureReasons.set(figure.figureId, "Not selected as central for the confirmed subsection order.");
+    // Stage 3 closeout: every extracted visual is either assigned to the page
+    // that embedded it, or intentionally skipped with a recorded reason.
+    const finalLedger = recordSourceVisualAssignments(
+      contentPath,
+      gardenId,
+      visualAssignments,
+      () => "Not central to any confirmed subsection of this learning map.",
+    );
+    for (const visual of finalLedger) {
+      if (visual.usageStatus === "intentionally_skipped" && visual.skipReason) {
+        unusedFigureReasons.set(visual.sourceVisualId, visual.skipReason);
       }
     }
 

@@ -39,6 +39,53 @@ describe("RemoveDrafts", () => {
     )
   })
 
+  test("hides raw source archives and planning documents", () => {
+    assert.equal(
+      shouldPublish({ knowledge_type: "source-document" }, "course/sources/reader.md"),
+      false,
+    )
+    // Path rule alone hides anything under sources/, even without frontmatter.
+    assert.equal(shouldPublish({}, "course/sources/reader.md"), false)
+    for (const knowledgeType of ["source-map", "scope-contract", "source-coverage", "learning-map"]) {
+      assert.equal(
+        shouldPublish({ knowledge_type: knowledgeType }, "course/Learning/page.md"),
+        false,
+        knowledgeType,
+      )
+    }
+    assert.equal(
+      shouldPublish({ knowledge_type: "topic-overview" }, "course/Learning/Topic Overview.md"),
+      true,
+    )
+    assert.equal(shouldPublish({ internal: "true" }, "course/Learning/page.md"), false)
+  })
+
+  test("hides ingest stub pages titled after the raw upload", () => {
+    assert.equal(
+      shouldPublish(
+        {
+          knowledge_type: "textbook-page",
+          title: "1.1 2510.27379v1",
+          source_file: "2510.27379v1.pdf",
+        },
+        "course/1. 2510-27379v1/2510-27379v1-123.md",
+      ),
+      false,
+    )
+    // A real lesson page citing the same source stays published.
+    assert.equal(
+      shouldPublish(
+        {
+          knowledge_type: "textbook-page",
+          title: "1.1 The Leaky Integrate-and-Fire Neuron",
+          source_file: "2510.27379v1.pdf",
+        },
+        "course/1. Spiking Neural Networks/1.1 The Leaky Integrate-and-Fire Neuron.md",
+      ),
+      true,
+    )
+  })
+
   test("can publish legacy generated subtopic folders when explicitly enabled", () => {
     assert.equal(
       shouldPublish(

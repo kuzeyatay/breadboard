@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test --experimental-strip-types tests/*.test.mjs"
+    "test": "node --test --experimental-strip-types tests/*.test.mjs",
+    "validate:garden": "node --experimental-strip-types ../scripts/validate-breadboard-garden.ts"
   },
   "dependencies": {
     "adm-zip": "^0.5.17",
