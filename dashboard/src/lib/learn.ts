@@ -13,6 +13,7 @@ import {
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
   appendGardenEvent,
+  buildDeterministicVisual,
   generateVisualSpec,
   saveVisualSpec,
 } from "@/lib/visuals";
@@ -42,16 +43,20 @@ import {
   normalizeLearningMapCandidate,
   normalizeZettelTags,
   parseJsonCandidate,
+  publicLearningVersionId,
   scrubAiisms,
   removeRawVisualPlaceholders,
   safeLearnFileSegment,
   sanitizeLearnerTitle,
+  scrubSourceCommentaryProse,
   scrubLearnerProse,
+  sourceAppearsVisualRich,
   sourceSetHashForSources,
   stripMarkdownFence,
   stripMarkdownFrontmatter,
   textbookPageFileName,
   textbookSectionFolder,
+  validateLearningMapDepth,
   wikilinkForRelPath,
   yamlFrontmatter,
   type LearnConceptSummary,
@@ -298,6 +303,16 @@ ${DEPTH_RULES}
 ${ANTI_AIISM_RULES}
 Keep it one flowing lesson. Keep every embedded image where it is (or move it nearer the prose it supports) and make sure each image is interpreted, not just captioned. Keep any \`\`\`breadboard-visual block byte-for-byte unchanged. Remove any placeholder or self-instruction text. Keep or add 1-2 **Question.** / **Answer.** pairs.
 If source-only mode is true, do not add unsupported facts; say plainly when material is missing.`;
+
+const COMMENTARY_REPAIR_PROMPT = `Repair one lesson page that leaked document-commentary wording.
+Return Markdown body only, no frontmatter.
+${LEARNER_VOICE_RULES}
+Task:
+- Preserve the lesson's substance, examples, formulas, questions, and structure.
+- Rewrite only the sentences that talk about "the paper", "the source", "source-derived", "source-central", or similar document framing.
+- The repaired page must teach the concept directly. The uploaded material should ground the lesson silently.
+- Keep image markdown and \`\`\`breadboard-visual blocks byte-for-byte unchanged.
+- Do not shorten the lesson and do not remove the Question./Answer. section.`;
 
 function ensureLearnTables(): void {
   db.exec(`
@@ -793,8 +808,10 @@ export function collectLearnSourceContext(
 
 /**
  * Stage 2: make sure every source's meaningful visuals are extracted into the
- * SourceVisual ledger (idempotent per source, best-effort per page). Returns
- * the full ledger for the garden.
+ * SourceVisual ledger (idempotent per source). For a visual-rich PDF this is
+ * mandatory: if extraction yields zero real figures/tables (only full-page
+ * fallbacks, or nothing), the whole job fails rather than silently producing
+ * learner pages with no source figures.
  */
 async function ensureSourceVisualsExtracted({
   client,
@@ -811,6 +828,11 @@ async function ensureSourceVisualsExtracted({
   context: LearnSourceContext;
   onProgress?: (step: string) => void;
 }): Promise<SourceVisual[]> {
+  const visualRichSlugs = new Set(
+    context.sources.filter(sourceAppearsVisualRich).map((source) => source.slug),
+  );
+  const extractionErrors: string[] = [];
+
   for (let index = 0; index < context.sources.length; index += 1) {
     const source = context.sources[index];
     const pageImageUrls = (source.sourceImages ?? []).filter(isFullPageSnapshotUrl);
@@ -826,13 +848,27 @@ async function ensureSourceVisualsExtracted({
         pageImageUrls,
         onProgress,
       });
-    } catch {
-      // Extraction is best-effort: a garden without extracted visuals still
-      // generates, it just embeds no source figures.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      extractionErrors.push(`${source.slug}: ${message}`);
     }
   }
+
   const visuals = loadSourceVisuals(contentPath, gardenId);
   context.sourceFigures = sourceFiguresFromVisuals(visuals);
+
+  if (visualRichSlugs.size > 0) {
+    const realFigures = visuals.filter(
+      (visual) => visual.type !== "full_page_fallback" && visualRichSlugs.has(visual.sourceId),
+    );
+    if (realFigures.length === 0) {
+      const detail = extractionErrors.length > 0 ? ` (${extractionErrors.join("; ")})` : "";
+      throw new Error(
+        `Source visual extraction failed: ${visualRichSlugs.size} visual-rich source(s) produced zero extracted figures/tables${detail}. Refusing to write learner pages with no source figures.`,
+      );
+    }
+  }
+
   return visuals;
 }
 
@@ -1119,13 +1155,8 @@ export async function runLearnPlanning({
       progressPercent: 65,
     });
 
-    const topicMapCall = await callCouncilJson({
-      client,
-      model,
-      taskType: "topic_map",
-      gardenId,
-      system: TOPIC_MAP_PROMPT,
-      user: JSON.stringify(
+    const topicMapUser = (deepenNote: string) =>
+      JSON.stringify(
         {
           sourceOnly,
           sourceMap,
@@ -1135,14 +1166,60 @@ export async function runLearnPlanning({
         },
         null,
         2,
-      ),
+      ) + deepenNote;
+
+    let topicMapCall = await callCouncilJson({
+      client,
+      model,
+      taskType: "topic_map",
+      gardenId,
+      system: TOPIC_MAP_PROMPT,
+      user: topicMapUser(""),
       sourceContext: { sourceMap, scopeContract, sources: promptSourceContext },
       councilModeOverride: "full_council",
     });
-    const learningMap = normalizeLearningMapCandidate(topicMapCall.parsed, context, {
+    let learningMap = normalizeLearningMapCandidate(topicMapCall.parsed, context, {
       sourceOnly,
       createdAt: nowIso(),
     });
+
+    // The map must be a real learning spine (multiple subsections per section,
+    // standalone lesson titles), not the source's table of contents. Retry once
+    // with an explicit deepening instruction if the first draft is shallow.
+    let depthProblems = validateLearningMapDepth(learningMap, context);
+    if (depthProblems.length > 0) {
+      const deepenNote =
+        `\n\nThe previous learning map was too shallow or source-shaped (${depthProblems.join("; ")}). ` +
+        `Redesign it as a genuine learning spine: 4-6 sections, each with 3-4 subsections that teach one idea at a time in a motivated order. ` +
+        `Titles name the concept the learner will understand — never "source", "paper", "evidence", or a source's table of contents.`;
+      const retryCall = await callCouncilJson({
+        client,
+        model,
+        taskType: "topic_map",
+        gardenId,
+        system: TOPIC_MAP_PROMPT,
+        user: topicMapUser(deepenNote),
+        sourceContext: { sourceMap, scopeContract, sources: promptSourceContext },
+        councilModeOverride: "full_council",
+      });
+      const retryMap = normalizeLearningMapCandidate(retryCall.parsed, context, {
+        sourceOnly,
+        createdAt: nowIso(),
+      });
+      const retryProblems = validateLearningMapDepth(retryMap, context);
+      // Keep whichever draft is structurally better.
+      if (retryProblems.length < depthProblems.length) {
+        topicMapCall = retryCall;
+        learningMap = retryMap;
+        depthProblems = retryProblems;
+      }
+      if (depthProblems.length > 0) {
+        learningMap.warnings = [
+          ...learningMap.warnings,
+          `Learning map depth warning: ${depthProblems.join("; ")}`,
+        ];
+      }
+    }
     const coveragePlan = sourceCoveragePlan(context, learningMap);
     const storedMap = insertLearnMap({
       gardenId,
@@ -1240,6 +1317,7 @@ function learningPageFrontmatter(
   learningVersionId: string,
   sourceSetHash: string,
 ): string {
+  const visibleVersionId = publicLearningVersionId(learningVersionId);
   return yamlFrontmatter({
     title,
     date: nowIso(),
@@ -1249,8 +1327,8 @@ function learningPageFrontmatter(
     internal: VISIBLE_PLANNING_TYPES.has(type) ? undefined : "true",
     generatedBy: "learn_button",
     generated_by: "learn_button",
-    learningVersion: learningVersionId,
-    learningVersionId,
+    learningVersion: visibleVersionId,
+    learningVersionId: visibleVersionId,
     sourceSetHash,
   });
 }
@@ -1741,10 +1819,8 @@ async function reconcileInteractiveVisuals({
 
   // 3) Decide which interactive visuals this page should get. The plan's
   //    explicit requests come first; if the plan named none but the page
-  //    teaches a hard dynamic concept (LIF, coding, STDP, tradeoff), we still
-  //    attempt the matching interactive visual so those concepts are never left
-  //    without one. The model may decline (skip) — a page with no visual beats
-  //    a broken or non-interactive one.
+  //    teaches a hard dynamic concept (LIF, coding, STDP, tradeoff), we add
+  //    that concept as an opportunity so it is never left without a visual.
   const hardConcept = detectHardConcept(subsection, nextMarkdown);
   const opportunities: Array<{ concept: string; reason: string; preferredType?: string }> = [
     ...(subsection.interactiveVisuals ?? []).map((plan) => ({
@@ -1753,7 +1829,7 @@ async function reconcileInteractiveVisuals({
       preferredType: HARD_CONCEPTS.find((c) => c.test.test(`${plan.concept} ${plan.reason}`))?.visualType,
     })),
   ];
-  if (opportunities.length === 0 && hardConcept) {
+  if (hardConcept && !opportunities.some((o) => o.preferredType === hardConcept.visualType)) {
     opportunities.push({
       concept: hardConcept.concept,
       reason: hardConcept.reason,
@@ -1761,8 +1837,30 @@ async function reconcileInteractiveVisuals({
     });
   }
 
+  const embedSpec = (spec: VisualSpec, near: string) => {
+    recordVisual(spec);
+    const paragraphs = nextMarkdown.trim().split(/\n{2,}/);
+    const index = bestParagraphIndex(paragraphs, near);
+    nextMarkdown = [
+      ...paragraphs.slice(0, index + 1),
+      buildVisualBlock(spec),
+      ...paragraphs.slice(index + 1),
+    ].join("\n\n");
+  };
+
   for (const opportunity of opportunities.slice(0, 2)) {
     if (keptIds.length > 0) break; // page already has a working interactive
+
+    // Deterministic builder first for hard dynamic concepts: guaranteed valid,
+    // never declines. Only fall back to the model when no builder matches.
+    if (opportunity.preferredType) {
+      const built = buildDeterministicVisual(opportunity.preferredType, { gardenId, pageSlug });
+      if (built) {
+        embedSpec(built, `${opportunity.concept} ${opportunity.reason}`);
+        continue;
+      }
+    }
+
     const typeHint = opportunity.preferredType
       ? ` Use the interactive visual type "${opportunity.preferredType}".`
       : "";
@@ -1780,26 +1878,36 @@ async function reconcileInteractiveVisuals({
       });
       const spec = generated.spec;
       if (!spec) continue;
-      recordVisual(spec);
-      const paragraphs = nextMarkdown.trim().split(/\n{2,}/);
-      const index = bestParagraphIndex(paragraphs, `${opportunity.concept} ${opportunity.reason}`);
-      nextMarkdown = [
-        ...paragraphs.slice(0, index + 1),
-        buildVisualBlock(spec),
-        ...paragraphs.slice(index + 1),
-      ].join("\n\n");
+      embedSpec(spec, `${opportunity.concept} ${opportunity.reason}`);
     } catch {
-      // No interactive visual is better than a broken or filler one.
+      // Model visual failed; a hard concept still gets its deterministic builder
+      // below, other opportunities may simply produce no visual.
+    }
+  }
+
+  // 4) A page that teaches a hard dynamic concept must ship an interactive
+  //    visual. If nothing landed above, build the deterministic one; only if
+  //    even that fails do we hard-fail the page/job.
+  if (hardConcept && keptIds.length === 0) {
+    const built = buildDeterministicVisual(hardConcept.visualType, { gardenId, pageSlug });
+    if (built) {
+      embedSpec(built, `${hardConcept.concept} ${hardConcept.reason}`);
+    } else {
+      throw new Error(
+        `Interactive visual required for hard concept "${hardConcept.concept}" on ${pageSlug}, but none could be built.`,
+      );
     }
   }
 
   return { markdown: nextMarkdown, visualIds: keptIds };
 }
 
-// Minimal learner-facing fallback used only when generation fails outright.
-// It teaches what it can (purpose + assigned visuals) without narrating the
-// upload; the assigned visuals are embedded by the deterministic backstop.
-function fallbackSubsectionMarkdown({
+// Debug-only draft. This is NEVER learner-facing: it is written to
+// .breadboard/debug/failed-pages/ when every generation attempt fails quality
+// gates, so a human can inspect what the model produced. It intentionally
+// carries fallback fingerprints ("The durable concept", "Relevant details:")
+// precisely so the quality critic and validator reject it if it ever leaks.
+function debugFailedSubsectionDraft({
   sectionNumber,
   subsectionNumber,
   subsection,
@@ -1973,7 +2081,7 @@ export async function runTextbookGeneration({
     (confirmedLearningMapId ? getLearnMapById(confirmedLearningMapId) : null) ??
     getLatestConfirmedLearnMap(gardenId);
   if (!map || map.status !== "confirmed") {
-    throw new Error("Confirm a learning map before generating the textbook");
+    throw new Error("Confirm a learning map before generating lessons");
   }
 
   const context = collectLearnSourceContext(contentPath, gardenId);
@@ -1986,7 +2094,9 @@ export async function runTextbookGeneration({
   });
   const clusterDir = clusterPath(contentPath, gardenId);
   fs.mkdirSync(clusterDir, { recursive: true });
-  const textbookVersionId = makeId("textbook");
+  // Version ids are learning_* so nothing named "textbook" can leak into a
+  // visible file name, event, or frontmatter value.
+  const textbookVersionId = makeId("learning");
   const backupDir = `.breadboard/backups/${textbookVersionId}`;
   const generatedAt = nowIso();
   const generatedPages: GeneratedPageRecord[] = [];
@@ -2003,7 +2113,7 @@ export async function runTextbookGeneration({
       sourceIds: context.sources.map((source) => source.slug),
     });
     updateLearnJob(job.id, {
-      status: "generating_textbook",
+      status: "generating_learning_pages",
       currentStep: "Extracting source visuals",
       progressPercent: 2,
       confirmedLearningMapId: map.id,
@@ -2021,7 +2131,7 @@ export async function runTextbookGeneration({
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
     updateLearnJob(job.id, {
-      status: "generating_textbook",
+      status: "generating_learning_pages",
       currentStep: "Writing overview pages",
       progressPercent: 3,
     });
@@ -2151,10 +2261,10 @@ export async function runTextbookGeneration({
             gardenId,
             generatedBy: "learn_button",
             generated_by: "learn_button",
-            learningVersion: textbookVersionId,
+            learningVersion: publicLearningVersionId(textbookVersionId),
             sourceSetHash: context.sourceSetHash,
           }) +
-          `# ${sectionNumber}. ${sectionTitle}\n\n${scrubLearnerProse(section.purpose || "This section is part of the confirmed Breadboard learning map.")}\n`,
+          `# ${sectionNumber}. ${sectionTitle}\n\n${scrubLearnerProse(section.purpose || `Work through the lessons in this section in order to build up ${sectionTitle}.`)}\n`,
       });
 
       for (let subsectionIndex = 0; subsectionIndex < section.subsections.length; subsectionIndex += 1) {
@@ -2203,7 +2313,7 @@ export async function runTextbookGeneration({
           sourceIds: context.sources.map((source) => source.slug),
         });
         updateLearnJob(job.id, {
-          status: "generating_textbook",
+          status: "generating_learning_pages",
           currentStep: "Writing lesson subsection",
           progressPercent: 10 + Math.floor((completed / Math.max(1, totalSubsections)) * 70),
           currentSectionTitle: sectionTitle,
@@ -2219,45 +2329,31 @@ export async function runTextbookGeneration({
           });
         }
 
-        const fallback = fallbackSubsectionMarkdown({
-          sectionNumber,
-          subsectionNumber,
-          subsection,
-          sectionTitle,
-          anchors,
-          sources: context.sources,
-          assignedVisuals,
-        });
         const assignedVisualUrls = assignedVisuals
           .map((visual) => sourceVisualEmbedUrl(visual))
           .filter((url): url is string => Boolean(url));
-        const preparedFallback = embedAssignedSourceVisuals(
-          ensureQuestionBlock(scrubAiisms(scrubLearnerProse(fallback)), subsectionTitle),
-          assignedVisuals,
-        );
 
         // Stage 4: generate → revise → scrub → embed, then run the local quality
-        // critic. Retry on a hard failure (placeholder text, no Q&A, empty prose,
-        // an assigned visual that never got embedded). The deterministic
-        // fallback is judged first so an unusable model draft cannot crash the
-        // job when a grounded emergency lesson is available.
-        let pageBody = preparedFallback;
+        // critic. Every quality problem is a HARD failure now: a page that trips
+        // any gate is never written as learner content. Retry a few times; if no
+        // attempt passes, the last draft is quarantined for debugging and the
+        // job fails. The deterministic emergency draft is never learner-facing.
+        let pageBody: string | null = null;
         let subsectionRunId: string | undefined;
         let revisionRunId: string | undefined;
-        let bestQuality: ReturnType<typeof assessLessonQuality> | null = assessLessonQuality(
-          preparedFallback,
-          { assignedVisualUrls },
-        );
+        let lastQuality: ReturnType<typeof assessLessonQuality> | null = null;
+        let lastAttemptBody = "";
         const MAX_PAGE_ATTEMPTS = 3;
 
         for (let attempt = 0; attempt < MAX_PAGE_ATTEMPTS; attempt += 1) {
-          let attemptBody = fallback;
           const strictnessNote =
             attempt === 0
               ? ""
-              : `\n\nThis is retry ${attempt}. The previous draft failed quality checks (${(bestQuality?.problems ?? [])
+              : `\n\nThis is retry ${attempt}. The previous draft failed quality checks (${(lastQuality?.problems ?? [])
                   .map((problem) => problem.code)
-                  .join(", ")}). Write a longer, deeper, fully-written lesson with a concrete example and a real Question./Answer.`;
+                  .join(", ")}). Write a longer, deeper, fully-written lesson (at least 700 words) with a concrete example and a real Question./Answer. Teach the concept directly — never comment on "the paper" or "the source".`;
+
+          let attemptBody: string | null = null;
           try {
             const generated = await callCouncilText({
               client,
@@ -2271,10 +2367,12 @@ export async function runTextbookGeneration({
               councilModeOverride: "full_council",
             });
             subsectionRunId = generated.councilRunId;
-            attemptBody = cleanCouncilMarkdown(generated.content, fallback);
+            attemptBody = cleanCouncilMarkdown(generated.content, "").trim() || null;
           } catch {
-            attemptBody = fallback;
+            attemptBody = null;
           }
+          // Generation failed outright: do not substitute fallback prose.
+          if (!attemptBody) continue;
 
           try {
             const revised = await callCouncilText({
@@ -2293,47 +2391,97 @@ export async function runTextbookGeneration({
               councilModeOverride: "full_council",
             });
             revisionRunId = revised.councilRunId;
+            // Revision failure keeps the generated body; never the fallback.
             attemptBody = cleanCouncilMarkdown(revised.content, attemptBody);
           } catch {
-            // Keep the generated or fallback attempt body.
+            // Keep the generated attempt body.
           }
 
           // Deterministic hygiene, Q&A safety net, and source-visual embedding
           // happen before the critic so it judges the final page.
-          attemptBody = scrubAiisms(scrubLearnerProse(attemptBody));
+          attemptBody = scrubSourceCommentaryProse(scrubAiisms(scrubLearnerProse(attemptBody)));
           attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
           attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
 
-          const quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
-          // Keep this attempt if it is the first, resolves a hard failure, or has
-          // fewer problems than the best so far.
-          if (
-            bestQuality === null ||
-            (bestQuality.hardFail && !quality.hardFail) ||
-            (bestQuality.hardFail === quality.hardFail &&
-              quality.problems.length < bestQuality.problems.length)
-          ) {
-            pageBody = attemptBody;
-            bestQuality = quality;
+          let quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
+          if (quality.problems.some((problem) => problem.code === "source-commentary")) {
+            attemptBody = scrubSourceCommentaryProse(attemptBody);
+            attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
+            attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
+            quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
           }
-          if (!quality.hardFail) break;
+          if (quality.problems.some((problem) => problem.code === "source-commentary")) {
+            try {
+              const repaired = await callCouncilText({
+                client,
+                model,
+                taskType: "full_page_revision",
+                gardenId,
+                pageId,
+                system: COMMENTARY_REPAIR_PROMPT,
+                user: JSON.stringify(
+                  {
+                    pageMarkdown: attemptBody,
+                    sourceOnly,
+                    failedProblems: quality.problems.map((problem) => problem.message),
+                    repairGoal:
+                      "Remove document-commentary phrases while preserving all teaching content, examples, images, and Q&A.",
+                  },
+                  null,
+                  2,
+                ),
+                sourceContext: pageSourceContext,
+                councilModeOverride: "full_council",
+              });
+              revisionRunId = repaired.councilRunId ?? revisionRunId;
+              attemptBody = cleanCouncilMarkdown(repaired.content, attemptBody);
+              attemptBody = scrubSourceCommentaryProse(scrubAiisms(scrubLearnerProse(attemptBody)));
+              attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
+              attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
+              quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
+            } catch {
+              // Keep the deterministic repair result and let the hard gate decide.
+            }
+          }
+          lastQuality = quality;
+          lastAttemptBody = attemptBody;
+          if (!quality.hardFail) {
+            pageBody = attemptBody;
+            break;
+          }
         }
 
-        if (bestQuality?.hardFail) {
+        if (pageBody === null) {
+          // Quarantine the last draft for a human to inspect, then fail the job.
+          // No fallback learner page is ever written.
+          try {
+            const debugRelPath = `.breadboard/debug/failed-pages/${safeLearnFileSegment(pageId, "page").replace(/\s+/g, "-")}.md`;
+            const debugContent =
+              lastAttemptBody ||
+              debugFailedSubsectionDraft({
+                sectionNumber,
+                subsectionNumber,
+                subsection,
+                sectionTitle,
+                anchors,
+                sources: context.sources,
+                assignedVisuals,
+              });
+            writeMarkdownWithBackup({
+              clusterDir,
+              relPath: debugRelPath,
+              textbookVersionId,
+              content: `<!-- FAILED QUALITY GATES — NOT A LEARNER PAGE -->\n\n${debugContent}\n`,
+            });
+          } catch {
+            // Debug quarantine is best-effort; failing the job is what matters.
+          }
           throw new Error(
-            `Lesson "${pageTitle}" could not be generated to a usable standard after ${MAX_PAGE_ATTEMPTS} attempts: ${bestQuality.problems
+            `Lesson "${pageTitle}" failed quality gates after ${MAX_PAGE_ATTEMPTS} attempts (${(lastQuality?.problems ?? [])
               .filter((problem) => problem.hard)
               .map((problem) => problem.message)
-              .join("; ")}`,
+              .join("; ") || "no usable draft produced"}). No fallback learner page was written.`,
           );
-        }
-        if (bestQuality && bestQuality.problems.length > 0) {
-          appendLearnEvent(contentPath, gardenId, "learn_page_quality_warning", {
-            jobId: job.id,
-            textbookVersionId,
-            pageId,
-            problems: bestQuality.problems.map((problem) => problem.code),
-          });
         }
 
         updateLearnJob(job.id, {
@@ -2360,13 +2508,20 @@ export async function runTextbookGeneration({
         });
         pageBody = visualized.markdown;
 
-        // Stage 7: 3-5 hierarchical zettel tags on learner pages only. The page
-        // body (real prose) grounds the tags, and the section/subsection titles
-        // seed the domain namespace.
+        // Stage 7: 3-5 hierarchical zettel tags on learner pages only. Tags are
+        // grounded in the FINAL accepted body (never fallback/debug text) and
+        // gated by page relevance, so LIF/STDP/latency tags cannot land on a
+        // page that does not actually teach them.
         const zettelTags = normalizeZettelTags(
           [...subsection.conceptTags, ...extractTagSeeds(pageBody)],
           subsectionTitle,
           map.learningMap.title || context.gardenTitle,
+          {
+            title: subsectionTitle,
+            sectionTitle,
+            body: pageBody,
+            assignedVisualCaptions: assignedVisuals.map((visual) => visual.caption).filter(Boolean),
+          },
         );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const finalContent =
@@ -2493,7 +2648,7 @@ export async function runTextbookGeneration({
       pageCount: generatedPages.length,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Textbook generation failed";
+    const message = error instanceof Error ? error.message : "Lesson generation failed";
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
       jobId: job.id,
       textbookVersionId,
@@ -2501,7 +2656,7 @@ export async function runTextbookGeneration({
     });
     updateLearnJob(job.id, {
       status: "failed",
-      currentStep: "Textbook generation failed",
+      currentStep: "Lesson generation failed",
       error: message,
     });
     throw error;
@@ -2575,6 +2730,7 @@ export function cancelLatestLearnJob({
 function activeStatus(status: LearnStatus): boolean {
   return [
     "planning",
+    "generating_learning_pages",
     "generating_textbook",
     "generating_visuals",
     "writing_quartz",
@@ -2597,9 +2753,9 @@ function buttonLabelForSnapshot({
 }): string {
   if (latestJob && activeStatus(latestJob.status)) return "Learning...";
   if (latestJob?.status === "awaiting_confirmation") return "Review Learning Map";
-  if (sourceSetChanged && (hasTextbook || latestVersion)) return "Update Textbook with New Sources";
-  if (confirmedMap && !latestVersion) return "Generate Textbook";
-  if (hasTextbook || latestVersion) return "Regenerate Textbook";
+  if (sourceSetChanged && (hasTextbook || latestVersion)) return "Learn";
+  if (confirmedMap && !latestVersion) return "Learn";
+  if (hasTextbook || latestVersion) return "Learn";
   return "Learn";
 }
 

@@ -297,6 +297,18 @@ function finalizeSpec(spec: VisualSpec, context: VisualGenerationContext): Gener
   return { spec, errors: [] };
 }
 
+// Deterministic interactive visual builders live in ./visual-spec (dependency-
+// free so they can be unit-tested and shared with the renderer). Re-exported
+// here for callers that already import from ./visuals.
+export {
+  buildLifThresholdResetVisual,
+  buildRateVsTemporalCodingVisual,
+  buildStdpTimingWindowVisual,
+  buildMetricTradeoffExplorerVisual,
+  buildDeterministicVisual,
+  type HardConceptKind,
+} from './visual-spec';
+
 // ---------------------------------------------------------------------------
 // Legacy placeholder migration
 // ---------------------------------------------------------------------------

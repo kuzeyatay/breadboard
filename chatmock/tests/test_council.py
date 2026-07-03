@@ -14,6 +14,7 @@ from chatmock.council.ledger import JsonlCouncilLedger
 from chatmock.council.policy import CouncilConfig, choose_council_mode
 from chatmock.council.runtime import CouncilRuntime
 from chatmock.council.types import CouncilInput, CouncilRun
+from chatmock.providers.chatgpt_upstream import ChatGptUpstreamProvider
 from chatmock.providers.types import ModelCall, ProviderError
 from chatmock.session import reset_session_state
 
@@ -49,15 +50,18 @@ def _prompt_text(call: ModelCall) -> str:
 class StubRouter:
     """Duck-typed ProviderRouter: deterministic answers, no network."""
 
-    def __init__(self, fail_models=None, fail_chair=False, fail_reviews=False) -> None:
+    def __init__(
+        self,
+        fail_models=None,
+        fail_chair=False,
+        fail_reviews=False,
+        fail_messages=None,
+    ) -> None:
         self.calls: list[ModelCall] = []
         self.fail_models = set(fail_models or [])
+        self.fail_messages = dict(fail_messages or {})
         self.fail_chair = fail_chair
         self.fail_reviews = fail_reviews
-
-    @property
-    def openrouter_available(self) -> bool:
-        return True
 
     def effective_model(self, model: str) -> str:
         return model
@@ -89,7 +93,7 @@ class StubRouter:
             )
 
         if call.model in self.fail_models:
-            raise ProviderError(f"stub failure for {call.model}")
+            raise ProviderError(self.fail_messages.get(call.model, f"stub failure for {call.model}"))
 
         if "improving a Breadboard artifact" in system:
             return f"IMPROVED ARTIFACT from {call.model}"
@@ -97,13 +101,35 @@ class StubRouter:
         return f"CANDIDATE ANSWER from {call.model}"
 
 
+class ChatGptUpstreamProviderTests(unittest.TestCase):
+    @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
+    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    def test_records_rate_limit_headers_for_council_calls(self, mock_start, mock_record) -> None:
+        upstream = FakeUpstream(
+            [
+                {"type": "response.output_text.delta", "delta": "hello"},
+                {"type": "response.completed", "response": {"id": "resp_1"}},
+            ]
+        )
+        upstream.headers = {"x-codex-primary-used-percent": "7.5"}
+        mock_start.return_value = (upstream, None)
+
+        provider = ChatGptUpstreamProvider(reasoning_effort="low", reasoning_summary="none")
+        text = provider.call_model(
+            ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
+        )
+
+        self.assertEqual(text, "hello")
+        mock_record.assert_called_once_with(upstream)
+
+
 class CouncilRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.config = CouncilConfig(
-            council_models=["stub/model-a", "stub/model-b", "stub/model-c"],
-            chairman_model="stub/chairman",
+            council_models=["gpt-test-a", "gpt-test-b", "gpt-test-c"],
+            chairman_model="gpt-test-chairman",
             evolution_candidates=2,
         )
 
@@ -159,8 +185,29 @@ class CouncilRuntimeTests(unittest.TestCase):
         anonymized = {c.anonymized_id for c in run.candidates}
         self.assertEqual(len(anonymized), 3)
 
+    def test_legacy_external_seats_use_requested_chatgpt_model(self) -> None:
+        router = StubRouter()
+        runtime = CouncilRuntime(
+            config=CouncilConfig(
+                council_models=["legacy/model-a", "legacy/model-b", "legacy/model-c"],
+                chairman_model="legacy/chairman",
+            ),
+            router=router,
+            ledger=JsonlCouncilLedger(self.tmp.name),
+        )
+        run = runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "build the topic map"}],
+                task_type="topic_map",
+                requested_model="gpt-5.5",
+            )
+        )
+        self.assertEqual(run.final_answer, "FINAL SYNTHESIZED ANSWER")
+        self.assertTrue(router.calls)
+        self.assertEqual({call.model for call in router.calls}, {"gpt-5.5"})
+
     def test_partial_candidate_failure_continues_with_the_rest(self) -> None:
-        runtime, _ = self._runtime(fail_models={"stub/model-b"})
+        runtime, _ = self._runtime(fail_models={"gpt-test-b"})
         run = runtime.run(
             CouncilInput(
                 messages=[{"role": "user", "content": "build the topic map"}],
@@ -173,7 +220,7 @@ class CouncilRuntimeTests(unittest.TestCase):
 
     def test_all_candidate_failures_yield_failed_run(self) -> None:
         runtime, _ = self._runtime(
-            fail_models={"stub/model-a", "stub/model-b", "stub/model-c"}
+            fail_models={"gpt-test-a", "gpt-test-b", "gpt-test-c"}
         )
         run = runtime.run(
             CouncilInput(
@@ -340,8 +387,8 @@ class CouncilRouteTests(unittest.TestCase):
         self.router = StubRouter()
         runtime = CouncilRuntime(
             config=CouncilConfig(
-                council_models=["stub/model-a", "stub/model-b", "stub/model-c"],
-                chairman_model="stub/chairman",
+                council_models=["gpt-test-a", "gpt-test-b", "gpt-test-c"],
+                chairman_model="gpt-test-chairman",
             ),
             router=self.router,
             ledger=JsonlCouncilLedger(self.tmp.name),
@@ -433,7 +480,7 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertEqual(body["choices"][0]["message"]["content"], "FINAL SYNTHESIZED ANSWER")
 
     def test_all_provider_failures_return_clean_error(self) -> None:
-        self.router.fail_models = {"stub/model-a", "stub/model-b", "stub/model-c", "gpt-5.4"}
+        self.router.fail_models = {"gpt-test-a", "gpt-test-b", "gpt-test-c", "gpt-5.4"}
         response = self.client.post(
             "/v1/chat/completions",
             json={"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
@@ -443,6 +490,21 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertIn("could not produce an answer", body["error"]["message"])
         self.assertNotIn("stub failure", body["error"]["message"])
         self.assertIn("councilRunId", body)
+
+    def test_upstream_429_returns_actionable_error(self) -> None:
+        self.router.fail_models = {"gpt-5.4"}
+        self.router.fail_messages = {
+            "gpt-5.4": "chatgpt upstream returned HTTP 429 for gpt-5.4",
+        }
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        body = response.get_json()
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("HTTP 429", body["error"]["message"])
+        self.assertIn("gpt-5.4", body["error"]["message"])
+        self.assertNotIn("chatgpt upstream returned", body["error"]["message"])
 
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_tool_requests_bypass_council(self, mock_start) -> None:
@@ -599,8 +661,8 @@ class CouncilResponsesRouteTests(unittest.TestCase):
         self.router = StubRouter()
         runtime = CouncilRuntime(
             config=CouncilConfig(
-                council_models=["stub/model-a", "stub/model-b", "stub/model-c"],
-                chairman_model="stub/chairman",
+                council_models=["gpt-test-a", "gpt-test-b", "gpt-test-c"],
+                chairman_model="gpt-test-chairman",
             ),
             router=self.router,
             ledger=JsonlCouncilLedger(self.tmp.name),

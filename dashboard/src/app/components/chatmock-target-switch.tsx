@@ -19,12 +19,12 @@ const OPTIONS: Array<{
   {
     label: 'Localhost',
     target: 'localhost',
-    title: 'Use the ChatMock endpoint configured as localhost for the dashboard server.',
+    title: 'Use the local assistant endpoint configured for the dashboard server.',
   },
   {
     label: 'Host',
     target: 'host',
-    title: 'Use the current dashboard host on the ChatMock host port.',
+    title: 'Use the assistant endpoint on the current dashboard host.',
   },
 ];
 
@@ -57,7 +57,7 @@ export default function ChatmockTargetSwitch({ initialTarget }: Props) {
         throw new Error(
           typeof body.error === 'string'
             ? body.error
-            : 'Could not update ChatMock target',
+            : 'Could not update assistant target',
         );
       }
 

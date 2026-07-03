@@ -49,11 +49,9 @@ EVOLUTION_COUNCIL_TASKS = frozenset(
 )
 
 DEFAULT_COUNCIL_MODELS = [
-    "anthropic/claude-sonnet-4.5",
-    "openai/gpt-5.1",
-    "google/gemini-3-pro",
+    "gpt-5.5",
 ]
-DEFAULT_CHAIRMAN_MODEL = "anthropic/claude-sonnet-4.5"
+DEFAULT_CHAIRMAN_MODEL = "gpt-5.5"
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -94,11 +92,8 @@ class CouncilConfig:
     council_models: List[str] = field(default_factory=lambda: list(DEFAULT_COUNCIL_MODELS))
     chairman_model: str = DEFAULT_CHAIRMAN_MODEL
     default_council_mode: str = "direct_council"
-    openrouter_api_key: Optional[str] = None
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    # Upstream (ChatGPT OAuth) model used when a configured provider-prefixed
-    # model cannot be reached, and for direct_council parity with legacy calls.
-    upstream_fallback_model: str = "gpt-5.4"
+    # ChatGPT OAuth model used for direct_council parity with legacy ChatMock calls.
+    upstream_fallback_model: str = "gpt-5.5"
     ledger_dir: Optional[str] = None
     # Heuristics for chooseCouncilMode
     short_prompt_chars: int = 1200
@@ -121,10 +116,6 @@ class CouncilConfig:
         default_mode = (os.environ.get("DEFAULT_COUNCIL_MODE") or "").strip()
         if default_mode in COUNCIL_MODES:
             cfg.default_council_mode = default_mode
-        cfg.openrouter_api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip() or None
-        base_url = (os.environ.get("OPENROUTER_BASE_URL") or "").strip()
-        if base_url:
-            cfg.openrouter_base_url = base_url.rstrip("/")
         fallback = (os.environ.get("COUNCIL_UPSTREAM_FALLBACK_MODEL") or "").strip()
         if fallback:
             cfg.upstream_fallback_model = fallback

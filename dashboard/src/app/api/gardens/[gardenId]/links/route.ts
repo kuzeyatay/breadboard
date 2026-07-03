@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
 import {
+  DEFAULT_MODEL,
+  createChatmockClient,
+  extractDocumentKnowledge,
+  slugify,
+  writeDocumentKnowledge,
+  type DocumentPage,
+  type KnowledgeExtraction,
+} from "@/lib/knowledge";
+import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
+import {
   addGardenLink,
   deleteGardenLink,
   readGardenLinks,
@@ -9,6 +19,8 @@ import {
   requireReadableClusterFromSlug,
   routeErrorResponse,
 } from "@/lib/server-auth";
+import { convertUrlToMarkdown } from "@/lib/url-to-markdown";
+import { findExistingUrlSource } from "@/lib/url-source-store";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +33,39 @@ function contentPathOrResponse(): string | NextResponse {
     );
   }
   return contentPath;
+}
+
+function titleFromInput(value: unknown, fallback: string): string {
+  const title = typeof value === "string" ? value.trim() : "";
+  return (title || fallback).slice(0, 180);
+}
+
+function fallbackTitleForUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const pathTitle = parsed.pathname
+      .split("/")
+      .filter(Boolean)
+      .pop()
+      ?.replace(/[-_]+/g, " ")
+      .trim();
+    return pathTitle || parsed.hostname || url;
+  } catch {
+    return url;
+  }
+}
+
+function fallbackExtraction(title: string, markdown: string): KnowledgeExtraction {
+  const summary = markdown.trim()
+    ? markdown.trim().replace(/\s+/g, " ").slice(0, 300)
+    : `Imported URL source ${title}.`;
+  return {
+    documentTitle: title,
+    summary,
+    topics: [],
+    relationships: [],
+    suggestedTags: [],
+  };
 }
 
 export async function GET(
@@ -51,15 +96,105 @@ export async function POST(
     const contentPath = contentPathOrResponse();
     if (contentPath instanceof NextResponse) return contentPath;
 
-    const body = await request.json().catch(() => ({}));
+    const rawBody = await request.json().catch(() => ({}));
+    const body =
+      rawBody && typeof rawBody === "object"
+        ? (rawBody as Record<string, unknown>)
+        : {};
+    const converted = await convertUrlToMarkdown({
+      url: typeof body.url === "string" ? body.url : "",
+    });
+    const sourceTitle = titleFromInput(
+      body.title,
+      converted.title || fallbackTitleForUrl(converted.originalUrl),
+    );
+    const existingSource = findExistingUrlSource({
+      contentPath,
+      clusterSlug: cluster.slug,
+      contentHash: converted.contentHash,
+      originalUrl: converted.originalUrl,
+    });
+
+    if (existingSource) {
+      const link = addGardenLink(contentPath, cluster.slug, {
+        title: sourceTitle,
+        url: converted.originalUrl,
+        sourceSlug: existingSource.sourceSlug,
+        sourceRelPath: existingSource.sourceRelPath,
+        contentHash: converted.contentHash,
+        importedAt: converted.fetchedAt,
+        provider: converted.provider,
+      });
+      return NextResponse.json({
+        success: true,
+        duplicate: true,
+        link,
+        source: existingSource,
+        links: readGardenLinks(contentPath, cluster.slug),
+      });
+    }
+
+    const { baseURL } = resolveChatmockBaseUrl(request);
+    const client = createChatmockClient(baseURL);
+    const pages: DocumentPage[] = [{ label: "URL", text: converted.markdown }];
+    let extraction: KnowledgeExtraction;
+    try {
+      extraction = await extractDocumentKnowledge({
+        client,
+        model: DEFAULT_MODEL,
+        title: sourceTitle,
+        sourceType: "url",
+        sourceLabel: converted.originalUrl,
+        pages,
+        text: converted.markdown,
+      });
+    } catch {
+      extraction = fallbackExtraction(sourceTitle, converted.markdown);
+    }
+
+    const sourceFileName = `${slugify(sourceTitle) || "url-source"}.url.md`;
+    const saved = await writeDocumentKnowledge({
+      client,
+      model: DEFAULT_MODEL,
+      contentPath,
+      clusterSlug: cluster.slug,
+      sourceTitle,
+      sourceFileName,
+      sourceType: "url",
+      sourceLabel: converted.originalUrl,
+      markdownText: converted.markdown,
+      plainText: converted.markdown,
+      pages,
+      extraction,
+      sourceMetadata: {
+        original_url: converted.originalUrl,
+        canonical_url: converted.canonicalUrl ?? "",
+        fetched_at: converted.fetchedAt,
+        converter: converted.provider,
+        content_hash: converted.contentHash,
+        reader_content_type: converted.contentType ?? "",
+      },
+    });
+
     const link = addGardenLink(contentPath, cluster.slug, {
-      title: body.title,
-      url: body.url,
+      title: sourceTitle,
+      url: converted.originalUrl,
+      sourceSlug: saved.sourceSlug,
+      sourceRelPath: saved.sourceRelPath,
+      contentHash: converted.contentHash,
+      importedAt: converted.fetchedAt,
+      provider: converted.provider,
     });
 
     return NextResponse.json({
       success: true,
       link,
+      source: {
+        sourceSlug: saved.sourceSlug,
+        sourceRelPath: saved.sourceRelPath,
+        sourceTitle: saved.sourceTitle,
+        wordCount: saved.wordCount,
+      },
       links: readGardenLinks(contentPath, cluster.slug),
     });
   } catch (error) {
@@ -70,6 +205,14 @@ export async function POST(
       message === "Only HTTP and HTTPS links are supported"
     ) {
       return NextResponse.json({ error: message }, { status: 400 });
+    }
+    if (
+      message.includes("Jina Reader") ||
+      message.includes("Reader returned") ||
+      message.includes("Reader timed out") ||
+      message.includes("Reader returned empty Markdown")
+    ) {
+      return NextResponse.json({ error: message }, { status: 502 });
     }
     return routeErrorResponse(error);
   }

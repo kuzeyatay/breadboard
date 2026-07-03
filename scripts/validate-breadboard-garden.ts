@@ -1,14 +1,16 @@
 // Breadboard learning-garden validator.
 //
-// Checks a generated garden under quartz/content/<garden> against the pipeline
-// acceptance rules (learner voice, hidden sources, source-visual coverage,
-// interactive-visual ID consistency, zettel tags). Zero dependencies; the type
-// annotations are erasable so it runs on Node >= 22 via:
+// Checks a generated garden against the pipeline acceptance rules (learner
+// voice, hidden sources/planning, source-visual coverage, interactive-visual
+// enforcement + ID consistency, page-specific zettel tags, lesson quality).
+// Zero dependencies; the type annotations are erasable so it runs on
+// Node >= 22 via:
 //
-//   node --experimental-strip-types scripts/validate-breadboard-garden.ts <garden> [more gardens...]
+//   node --experimental-strip-types scripts/validate-breadboard-garden.ts <garden> [more...]
 //   node --experimental-strip-types scripts/validate-breadboard-garden.ts --all
+//   node --experimental-strip-types scripts/validate-breadboard-garden.ts ../quartz/content/<garden>
 //
-// or from dashboard/: npm run validate:garden -- <garden>
+// or from dashboard/: npm run validate:garden -- <garden-or-path>
 //
 // Exit code 0 = all checks pass, 1 = at least one failure.
 
@@ -20,26 +22,35 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
 
 // ---------------------------------------------------------------------------
-// Shared rule mirrors (keep in sync with dashboard/src/lib/learn-utils.ts and
-// quartz/quartz/plugins/filters/draft.ts)
+// Shared rule mirrors (keep in sync with dashboard/src/lib/learn-utils.ts,
+// dashboard/src/lib/learning-garden.ts and quartz/quartz/plugins/filters/draft.ts)
 // ---------------------------------------------------------------------------
 
-const SOURCE_COMMENTARY_PHRASES = [
-  "the paper says",
-  "the paper argues",
-  "the paper opens",
-  "the paper frames",
-  "the source frames",
-  "the source argues",
-  "the source material explains",
-  "in this paper",
-  "in the paper",
-  "in the source's framing",
-  "source-derived",
-  "source-central",
-  "according to the paper",
-  "according to the source",
+const SOURCE_COMMENTARY_PATTERNS: RegExp[] = [
+  /\bthe paper\b/i,
+  /\bthis paper\b/i,
+  /\bthe source\b/i,
+  /\bthe uploaded source\b/i,
+  /\bsource-derived\b/i,
+  /\bsource-central\b/i,
+  /\baccording to the source\b/i,
+  /\bthe source material\b/i,
 ];
+
+const FALLBACK_FINGERPRINTS: RegExp[] = [
+  /The durable concept/i,
+  /Relevant details:/i,
+  /Read these details as a sequence/i,
+  /When no figure is attached/i,
+  /Minimal learner-facing fallback/i,
+  /Introduce .* from uploaded sources/i,
+  /This section is part of the confirmed Breadboard learning map/i,
+  /The confirmed learning map did not provide enough local detail/i,
+];
+
+const RAW_REFERENCE_DUMP_RE = /\[\d+\]\s+[A-Z][^"\n]+,\s*["“].+["”]/;
+
+const MIN_LESSON_WORDS = 700;
 
 const BANNED_TAG_SEGMENTS = new Set([
   "paper", "source", "sources", "what", "model", "models", "test", "tests",
@@ -49,23 +60,49 @@ const BANNED_TAG_SEGMENTS = new Set([
   "general", "document", "documents", "pdf", "file", "files", "upload",
   "uploads", "learning", "textbook", "introduction", "conclusion", "summary",
   "content", "material", "materials", "topic", "topics", "concept", "concepts",
+  "idea", "ideas", "motivation", "against-figures", "input", "inputs", "output",
+  "outputs", "potential", "energy", "accuracy", "continuous", "important",
+  "example", "examples", "detail", "details", "point", "points", "thing",
+  "things", "approach", "approaches", "method", "methods", "system", "systems",
+  "figure", "figures", "table", "tables", "data", "value", "values", "result",
+  "results", "comparison", "analysis", "study", "work", "field", "area",
 ]);
 
 const INTERNAL_KNOWLEDGE_TYPES = new Set([
   "internal-concept", "source-document", "source-map", "scope-contract",
-  "source-coverage", "learning-map",
+  "source-coverage",
 ]);
 
 const NO_TAG_KNOWLEDGE_TYPES = new Set([
-  ...INTERNAL_KNOWLEDGE_TYPES, "topic-overview", "cluster-index", "garden-overview",
+  ...INTERNAL_KNOWLEDGE_TYPES, "learning-map", "topic-overview", "cluster-index",
+  "garden-overview", "learning-section", "textbook-section",
 ]);
 
 // Interactive or nothing: only these types have a real interactive renderer.
-// Anything else embedded in a page would render as nothing, so it is a failure.
 const INTERACTIVE_VISUAL_TYPES = new Set([
   "function_plot", "linked_time_plots", "mass_spring", "energy_exchange",
-  "resonance_curve",
+  "resonance_curve", "lif_neuron", "neural_coding", "stdp_window",
+  "tradeoff_explorer",
 ]);
+
+// Hard dynamic concepts: a lesson that teaches one must ship an interactive
+// visual. Mirrors HARD_CONCEPTS in learn.ts.
+const HARD_CONCEPT_PATTERNS: Array<{ label: string; test: RegExp }> = [
+  { label: "LIF dynamics", test: /\bleaky integrate[- ]and[- ]fire\b|\blif neuron\b|\bmembrane potential\b|\bfiring threshold\b|\brefractory\b/i },
+  { label: "spike coding", test: /\brate coding\b|\btemporal coding\b|\bfirst[- ]spike latency\b/i },
+  { label: "STDP", test: /\bspike[- ]timing[- ]dependent plasticity\b|\bstdp\b/i },
+  { label: "metric tradeoff", test: /\btrade[- ]?off\b|\benergy per inference\b|\bspike count\b/i },
+];
+
+// Concept tag → the evidence a page must show to legitimately carry it.
+const TAG_RELEVANCE_RULES: Array<{ appliesTo: RegExp; evidence: RegExp; minBody?: number }> = [
+  { appliesTo: /lif-neuron|leaky/i, evidence: /\blif\b|leaky[- ]integrate|membrane potential|threshold/i },
+  { appliesTo: /stdp/i, evidence: /\bstdp\b|spike[- ]?timing|synaptic plasticity/i },
+  { appliesTo: /surrogate/i, evidence: /surrogate gradient/i },
+  { appliesTo: /ann-to-snn-conversion/i, evidence: /\bann[- ]to[- ]snn\b|conversion|firing[- ]rate approximation/i },
+  { appliesTo: /\/latency/i, evidence: /\blatency\b|\bresponse time\b/i, minBody: 2 },
+  { appliesTo: /convergence/i, evidence: /\bconverg\w*\b|\btraining loss\b|\bepochs?\b/i, minBody: 2 },
+];
 
 // ---------------------------------------------------------------------------
 // Tiny frontmatter + fs helpers
@@ -121,7 +158,7 @@ function slugifyLoose(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-// Mirror of quartz RemoveDrafts.shouldPublish.
+// Mirror of quartz RemoveDrafts.shouldPublish (draft.ts).
 function isPublished(relPath: string, fm: Record<string, string | string[]>): boolean {
   const parts = relPath.split("/");
   const lowerParts = parts.map((part) => part.toLowerCase());
@@ -130,8 +167,17 @@ function isPublished(relPath: string, fm: Record<string, string | string[]>): bo
       (part) =>
         part === "sources" || part === "internal" || part === ".breadboard" ||
         part === "generated" || part === "generated subtopics" || part === "subtopics" ||
-        part === "ai topics" || part === "topic cards",
+        part === "ai topics" || part === "topic cards" ||
+        /^\d+\.\s*source-snapshots$/.test(part),
     )
+  ) {
+    return false;
+  }
+  const lowerRel = relPath.toLowerCase();
+  if (
+    lowerRel.endsWith("learning/source map.md") ||
+    lowerRel.endsWith("learning/scope contract.md") ||
+    lowerRel.endsWith("learning/source coverage.md")
   ) {
     return false;
   }
@@ -142,6 +188,15 @@ function isPublished(relPath: string, fm: Record<string, string | string[]>): bo
   const breadboardType = fmString(fm, "breadboardType") || fmString(fm, "breadboard_type");
   if (INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType)) return false;
   if (INTERNAL_KNOWLEDGE_TYPES.has(breadboardType.replace(/_/g, "-"))) return false;
+
+  // Ingest lesson sections/pages not authored by the Learn pipeline are internal.
+  const lessonType =
+    /^(learning|textbook)-(page|section)$/.test(knowledgeType) ||
+    /^(learning|textbook)_(page|section)$/.test(breadboardType);
+  const learnAuthored =
+    fmString(fm, "generated_by") === "learn_button" ||
+    fmString(fm, "generatedBy") === "learn_button";
+  if (lessonType && !learnAuthored) return false;
 
   const title = fmString(fm, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, "");
   const sourceFile = fmString(fm, "source_file").replace(
@@ -181,6 +236,25 @@ function walkMarkdown(dir: string, relDir: string, output: PageFile[]): void {
   }
 }
 
+/** Prose with code fences, image embeds, and compact provenance captions
+ * removed — used so figure captions are not judged as teaching voice. */
+function teachingProse(body: string): string {
+  return body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/^\s*\*[^*\n]+\*(?:\s*\*\([^)\n]*\)\*)?\s*$/gm, " ");
+}
+
+function proseWordCount(body: string): number {
+  const text = teachingProse(body).replace(/[#>*_`|-]+/g, " ");
+  return text.split(/\s+/).filter((word) => /[a-z0-9]/i.test(word)).length;
+}
+
+function countPattern(text: string, pattern: RegExp): number {
+  const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+  return (text.match(global) ?? []).length;
+}
+
 // ---------------------------------------------------------------------------
 // Check machinery
 // ---------------------------------------------------------------------------
@@ -192,8 +266,7 @@ interface CheckResult {
   problems: string[];
 }
 
-function runChecks(gardenSlug: string): CheckResult[] {
-  const gardenDir = path.join(CONTENT_ROOT, gardenSlug);
+export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] {
   if (!fs.existsSync(gardenDir)) {
     return [{ id: 0, name: "garden exists", status: "FAIL", problems: [`No such garden: ${gardenDir}`] }];
   }
@@ -201,12 +274,17 @@ function runChecks(gardenSlug: string): CheckResult[] {
   const pages: PageFile[] = [];
   walkMarkdown(gardenDir, "", pages);
   const published = pages.filter((page) => page.published);
-  const lessonPages = published.filter(
-    (page) =>
-      fmString(page.frontmatter, "knowledge_type") === "textbook-page" &&
-      (fmString(page.frontmatter, "generated_by") === "learn_button" ||
-        fmString(page.frontmatter, "generatedBy") === "learn_button"),
-  );
+  const lessonPages = published.filter((page) => {
+    const kt = fmString(page.frontmatter, "knowledge_type");
+    const bt = fmString(page.frontmatter, "breadboardType");
+    const isLesson =
+      kt === "learning-page" || kt === "textbook-page" ||
+      bt === "learning_page" || bt === "textbook_page";
+    const learnAuthored =
+      fmString(page.frontmatter, "generated_by") === "learn_button" ||
+      fmString(page.frontmatter, "generatedBy") === "learn_button";
+    return isLesson && learnAuthored;
+  });
 
   const results: CheckResult[] = [];
   const check = (id: number, name: string, problems: string[], skip = false) => {
@@ -218,6 +296,39 @@ function runChecks(gardenSlug: string): CheckResult[] {
     });
   };
 
+  // Ledger.
+  const ledgerPath = path.join(gardenDir, ".breadboard", "source-visuals.json");
+  let ledger: Array<Record<string, unknown>> = [];
+  let ledgerExists = false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+    if (Array.isArray(parsed)) {
+      ledger = parsed;
+      ledgerExists = true;
+    }
+  } catch {
+    ledgerExists = false;
+  }
+  const realFigures = ledger.filter((v) => String(v.type ?? "") !== "full_page_fallback");
+
+  // Is this a visual-rich garden? A source note carries page snapshots and
+  // references figures/tables.
+  const sourceNotes = pages.filter(
+    (page) => fmString(page.frontmatter, "knowledge_type") === "source-document",
+  );
+  const visualRich = sourceNotes.some((note) => {
+    const hasImages = fmArray(note.frontmatter, "source_images").length > 0;
+    const mentions = /\b(?:Fig\.|Figure|Table)\s*\d+/i.test(note.body) ||
+      /\b(?:graph|chart|diagram|architecture|curve|comparison)\b/i.test(note.body);
+    return hasImages && mentions;
+  });
+
+  // Is this an SNN garden? (enables SNN-specific thresholds)
+  const gardenText = [gardenSlug, ...lessonPages.map((p) => `${fmString(p.frontmatter, "title")} ${p.body}`)]
+    .join("\n")
+    .toLowerCase();
+  const isSnnGarden = /\bspiking neural network|\bsnn\b|leaky integrate/.test(gardenText);
+
   // 1. No "textbook" anywhere learner-facing.
   {
     const problems: string[] = [];
@@ -225,6 +336,7 @@ function runChecks(gardenSlug: string): CheckResult[] {
       const surfaces: Array<[string, string]> = [
         ["path", page.relPath],
         ["title", fmString(page.frontmatter, "title")],
+        ["version", fmString(page.frontmatter, "learningVersion") + " " + fmString(page.frontmatter, "learningVersionId")],
         ["tags", fmArray(page.frontmatter, "tags").join(" ")],
         ["body", page.body],
       ];
@@ -238,111 +350,176 @@ function runChecks(gardenSlug: string): CheckResult[] {
     check(1, 'no "textbook" in visible output', problems);
   }
 
-  // 2. Near-zero source-commentary phrasing in learner prose + clean titles.
+  // 2. Learner prose teaches directly — no source-commentary phrasing, clean titles.
   {
     const problems: string[] = [];
-    let total = 0;
-    for (const page of published) {
-      const text = page.body.toLowerCase();
+    for (const page of lessonPages) {
+      const prose = teachingProse(page.body);
       let count = 0;
-      for (const phrase of SOURCE_COMMENTARY_PHRASES) {
-        count += text.split(phrase).length - 1;
-      }
-      total += count;
-      if (count > 2) problems.push(`${page.relPath}: ${count} commentary phrases`);
+      for (const pattern of SOURCE_COMMENTARY_PATTERNS) count += countPattern(prose, pattern);
+      if (count > 0) problems.push(`${page.relPath}: ${count} source-commentary phrase(s) in teaching prose`);
       const title = fmString(page.frontmatter, "title");
-      if (/\b(paper|source|textbook)\b/i.test(title)) {
+      if (/\b(paper|source|textbook|evidence)\b/i.test(title)) {
         problems.push(`${page.relPath}: title reads as source commentary ("${title}")`);
       }
     }
-    if (total > 5) problems.push(`garden total: ${total} commentary phrases (max 5)`);
-    check(2, "learner prose teaches directly (no paper commentary)", problems);
+    check(2, "learner prose teaches directly (no source commentary)", problems, lessonPages.length === 0);
   }
 
-  // 3. No visible sources/ folder.
+  // 3. No fallback-template prose in learner pages.
   {
-    const problems = pages
-      .filter((page) => /(^|\/)sources\//i.test(`${page.relPath}`) && page.published)
+    const problems: string[] = [];
+    for (const page of lessonPages) {
+      const hit = FALLBACK_FINGERPRINTS.find((pattern) => pattern.test(page.body));
+      if (hit) problems.push(`${page.relPath}: matches ${hit}`);
+    }
+    check(3, "no fallback-template prose in learner pages", problems, lessonPages.length === 0);
+  }
+
+  // 4. No bibliography/reference-list chunks used as teaching content.
+  {
+    const problems = lessonPages
+      .filter((page) => RAW_REFERENCE_DUMP_RE.test(page.body))
       .map((page) => page.relPath);
-    check(3, "raw sources are not learner-visible", problems);
+    check(4, "no raw reference-list dumps in learner pages", problems, lessonPages.length === 0);
   }
 
-  // 4. No visible numbered folder named after the uploaded file.
+  // 5. Every learner subsection is at least 700 words.
   {
+    const problems: string[] = [];
+    for (const page of lessonPages) {
+      const words = proseWordCount(page.body);
+      if (words < MIN_LESSON_WORDS) problems.push(`${page.relPath}: ${words} words (< ${MIN_LESSON_WORDS})`);
+    }
+    check(5, "learner subsections are fully written (>= 700 words)", problems, lessonPages.length === 0);
+  }
+
+  // 6. Every learner subsection has a concrete example and a Q&A pair.
+  {
+    const problems: string[] = [];
+    for (const page of lessonPages) {
+      if (!/\b(for example|for instance|imagine|consider|suppose|think of|picture)\b/i.test(page.body)) {
+        problems.push(`${page.relPath}: no concrete example / analogy cue`);
+      }
+      if (!(/\*\*Question\.\*\*/.test(page.body) && /\*\*Answer\.\*\*/.test(page.body))) {
+        problems.push(`${page.relPath}: missing **Question.** / **Answer.** pair`);
+      }
+    }
+    check(6, "learner subsections have an example and a Q&A pair", problems, lessonPages.length === 0);
+  }
+
+  // 7. No visible sources / Internal / snapshot / raw-upload folders or planning files.
+  {
+    const problems: string[] = [];
+    for (const page of published) {
+      const rel = page.relPath;
+      const lower = rel.toLowerCase();
+      if (/(^|\/)sources\//i.test(rel)) problems.push(`raw source visible: ${rel}`);
+      if (/(^|\/)internal\//i.test(rel)) problems.push(`internal folder visible: ${rel}`);
+      if (/(^|\/)\d+\.\s*source-snapshots\//i.test(rel)) problems.push(`snapshot folder visible: ${rel}`);
+      if (lower.endsWith("learning/source map.md") || lower.endsWith("learning/scope contract.md") ||
+          lower.endsWith("learning/source coverage.md")) {
+        problems.push(`planning artifact visible: ${rel}`);
+      }
+      // Top-level content outside _index.md, Learning/, assets/.
+      const top = rel.split("/")[0];
+      if (rel !== "_index.md" && top !== "Learning" && top !== "assets") {
+        problems.push(`top-level page outside Learning/: ${rel}`);
+      }
+    }
+    // Numbered folder named after the raw upload.
     const sourceFileBases = new Set(
       pages
         .map((page) => fmString(page.frontmatter, "source_file"))
         .filter(Boolean)
         .map((file) => slugifyLoose(file.replace(/\.(pdf|docx?|pptx?|xlsx?|txt|md|csv|zip)$/i, ""))),
     );
-    const problems: string[] = [];
     for (const page of published) {
       const top = page.relPath.split("/")[0];
       const numbered = top.match(/^\d+\.\s*(.+)$/);
-      if (!numbered) continue;
-      if (sourceFileBases.has(slugifyLoose(numbered[1]))) {
-        problems.push(`${top}/ (contains published ${page.relPath})`);
+      if (numbered && sourceFileBases.has(slugifyLoose(numbered[1]))) {
+        problems.push(`folder named after raw upload: ${top}/`);
       }
     }
-    check(4, "no visible folder named after the raw upload", [...new Set(problems)]);
+    check(7, "visible tree is only _index.md, Learning/, assets/", [...new Set(problems)]);
   }
 
-  // 5. Learner lesson pages carry 3-6 useful hierarchical tags.
+  // 8. Learner lesson pages carry 3-5 hierarchical, page-relevant tags; no conceptTags.
   {
     const problems: string[] = [];
     for (const page of lessonPages) {
+      if (fmArray(page.frontmatter, "conceptTags").length > 0 || "conceptTags" in page.frontmatter) {
+        problems.push(`${page.relPath}: has conceptTags (banned on learner pages)`);
+      }
       const tags = fmArray(page.frontmatter, "tags");
-      if (tags.length < 3 || tags.length > 6) {
-        problems.push(`${page.relPath}: ${tags.length} tags (need 3-6)`);
+      if (tags.length < 3 || tags.length > 5) {
+        problems.push(`${page.relPath}: ${tags.length} tags (need 3-5)`);
         continue;
       }
+      const haystack = `${fmString(page.frontmatter, "title")}\n${teachingProse(page.body)}`.toLowerCase();
       for (const tag of tags) {
         const segments = tag.split("/").filter(Boolean);
         if (segments.length < 2) {
           problems.push(`${page.relPath}: tag "${tag}" is not hierarchical (domain/concept)`);
-        } else if (segments.some((segment) => BANNED_TAG_SEGMENTS.has(segment.toLowerCase()))) {
+          continue;
+        }
+        if (segments.some((segment) => BANNED_TAG_SEGMENTS.has(segment.toLowerCase()))) {
           problems.push(`${page.relPath}: tag "${tag}" contains a banned generic segment`);
+        }
+        if (/^sn\//.test(tag)) problems.push(`${page.relPath}: tag "${tag}" uses typo root "sn/"`);
+        for (const rule of TAG_RELEVANCE_RULES) {
+          if (!rule.appliesTo.test(tag)) continue;
+          const bodyHits = countPattern(teachingProse(page.body), rule.evidence);
+          const titleHit = rule.evidence.test(fmString(page.frontmatter, "title"));
+          if (!titleHit && bodyHits < (rule.minBody ?? 1)) {
+            problems.push(`${page.relPath}: tag "${tag}" is not supported by the page content`);
+          }
         }
       }
     }
-    check(5, "lesson pages have 3-6 hierarchical zettel tags", problems, lessonPages.length === 0);
+    check(8, "learner pages have 3-5 relevant hierarchical zettel tags", problems, lessonPages.length === 0);
   }
 
-  // 6. Internal/source/planning pages carry no public tags.
+  // 9. Internal/source/planning pages carry no public tags.
   {
     const problems: string[] = [];
     for (const page of pages) {
       const knowledgeType = fmString(page.frontmatter, "knowledge_type");
       const internalByType = NO_TAG_KNOWLEDGE_TYPES.has(knowledgeType);
-      const internalByPath = /(^|\/)(sources|internal|learning)\//i.test(`${page.relPath}`) ||
-        /^(sources|internal|learning)\//i.test(page.relPath);
+      const internalByPath = /(^|\/)(sources|internal)\//i.test(page.relPath) ||
+        fmString(page.frontmatter, "internal") === "true";
       if (!internalByType && !internalByPath) continue;
       const tags = fmArray(page.frontmatter, "tags");
       if (tags.length > 0) problems.push(`${page.relPath}: has tags [${tags.join(", ")}]`);
     }
-    check(6, "internal/source/planning pages have no tags", problems);
+    check(9, "internal/source/planning pages have no public tags", problems);
   }
 
-  // Ledger-backed checks (7, 8, 12).
-  const ledgerPath = path.join(gardenDir, ".breadboard", "source-visuals.json");
-  let ledger: Array<Record<string, unknown>> = [];
-  let ledgerExists = false;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
-    if (Array.isArray(parsed)) {
-      ledger = parsed;
-      ledgerExists = true;
-    }
-  } catch {
-    ledgerExists = false;
-  }
-
-  // 7. Every extracted source visual is assigned or intentionally skipped.
+  // 10. Visual-rich source ⇒ non-empty ledger with real figures; learner pages embed them.
   {
     const problems: string[] = [];
-    if (!ledgerExists && lessonPages.length > 0) {
-      problems.push(".breadboard/source-visuals.json missing (Stage 2 never ran for this garden)");
+    if (visualRich) {
+      if (!ledgerExists || ledger.length === 0) {
+        problems.push(".breadboard/source-visuals.json is empty for a visual-rich garden");
+      } else if (realFigures.length === 0) {
+        problems.push("ledger has only full-page fallbacks — no figures/tables were extracted");
+      }
+      const anyImageEmbed = lessonPages.some((page) => /!\[[^\]]*\]\([^)]*source-visuals[^)]*\)/i.test(page.body));
+      if (lessonPages.length > 0 && !anyImageEmbed) {
+        problems.push("no learner page embeds any cropped source figure");
+      }
     }
+    check(10, "visual-rich source produces embedded figures", problems, !visualRich);
+  }
+
+  // 11. Every extracted source visual is assigned or intentionally skipped, and
+  //     assigned visuals really appear in their pages.
+  {
+    const problems: string[] = [];
+    if (!ledgerExists && lessonPages.length > 0 && visualRich) {
+      problems.push(".breadboard/source-visuals.json missing (Stage 2 never ran)");
+    }
+    const pageByRel = new Map(pages.map((page) => [page.relPath.replace(/\.md$/i, ""), page]));
     for (const visual of ledger) {
       const status = String(visual.usageStatus ?? "");
       if (status !== "assigned" && status !== "intentionally_skipped") {
@@ -351,45 +528,53 @@ function runChecks(gardenSlug: string): CheckResult[] {
       if (status === "intentionally_skipped" && !String(visual.skipReason ?? "").trim()) {
         problems.push(`${String(visual.sourceVisualId)}: skipped without a reason`);
       }
+      if (status === "assigned") {
+        const page = pageByRel.get(String(visual.assignedPageId ?? ""));
+        const url = String(visual.croppedImagePath ?? visual.pageImagePath ?? "");
+        if (!page) {
+          problems.push(`${String(visual.sourceVisualId)}: assigned page "${String(visual.assignedPageId)}" not found`);
+        } else if (!url || !page.body.includes(url)) {
+          problems.push(`${String(visual.sourceVisualId)}: image not embedded in its page`);
+        }
+      }
     }
-    check(7, "every source visual assigned or skipped with reason", problems, !ledgerExists && lessonPages.length === 0);
+    check(11, "source visuals assigned/skipped and embedded", problems, !ledgerExists);
   }
 
-  // 8. Every assigned visual really appears in its assigned page body.
+  // 12. Full-page screenshots are never counted as figures.
   {
     const problems: string[] = [];
-    const pageByRel = new Map(pages.map((page) => [page.relPath.replace(/\.md$/i, ""), page]));
+    const pageSnapshotRe = /-page-\d{2,}(?:-\d+)?\.(?:png|jpe?g|webp)$/i;
     for (const visual of ledger) {
-      if (String(visual.usageStatus) !== "assigned") continue;
-      const pageId = String(visual.assignedPageId ?? "");
-      const page = pageByRel.get(pageId);
-      if (!page) {
-        problems.push(`${String(visual.sourceVisualId)}: assigned page "${pageId}" not found`);
-        continue;
+      const type = String(visual.type ?? "");
+      const cropped = String(visual.croppedImagePath ?? "");
+      if (type === "full_page_fallback") continue;
+      if (cropped && pageSnapshotRe.test(cropped)) {
+        problems.push(`${String(visual.sourceVisualId)}: full-page snapshot used as ${type}`);
       }
-      const url = String(visual.croppedImagePath ?? visual.pageImagePath ?? "");
-      if (!url || !page.body.includes(url)) {
-        problems.push(`${String(visual.sourceVisualId)}: image not embedded in ${pageId}`);
+      if (!cropped && String(visual.usageStatus) === "assigned") {
+        problems.push(`${String(visual.sourceVisualId)}: assigned as ${type} but embeds the uncropped page`);
       }
     }
-    check(8, "assigned source visuals are embedded in their pages", problems, !ledgerExists);
+    check(12, "full-page snapshots only used as explicit fallbacks", problems, !ledgerExists);
   }
 
-  // 9 + 10 + 11. Interactive visual consistency and content.
+  // 13 + 14. Interactive visual consistency, content, and hard-concept coverage.
   {
     const idProblems: string[] = [];
     const contentProblems: string[] = [];
     const visualsDir = path.join(gardenDir, ".breadboard", "visuals");
     let index: Record<string, unknown> = {};
     try {
-      index = JSON.parse(
-        fs.readFileSync(path.join(gardenDir, ".breadboard", "visual-index.json"), "utf-8"),
-      );
+      index = JSON.parse(fs.readFileSync(path.join(gardenDir, ".breadboard", "visual-index.json"), "utf-8"));
     } catch {
       index = {};
     }
 
+    let interactiveCount = 0;
     const blockRe = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
+    const hardConceptProblems: string[] = [];
+
     for (const page of published) {
       const declared = fmArray(page.frontmatter, "visualIds");
       const embedded: string[] = [];
@@ -407,27 +592,21 @@ function runChecks(gardenSlug: string): CheckResult[] {
           continue;
         }
         embedded.push(spec.id);
+        interactiveCount += 1;
         const type = String(spec.type ?? "");
         if (!INTERACTIVE_VISUAL_TYPES.has(type)) {
-          contentProblems.push(
-            `${page.relPath}: visual ${spec.id} has non-interactive type "${type}" (would render as nothing)`,
-          );
+          contentProblems.push(`${page.relPath}: visual ${spec.id} has non-interactive type "${type}"`);
         }
         const props = spec.props;
         const propsEmpty =
           !props || typeof props !== "object" ||
+          Object.keys(props as Record<string, unknown>).length === 0 ||
           Object.entries(props as Record<string, unknown>).every(
             ([, value]) => Array.isArray(value) && value.length === 0,
           );
-        if (propsEmpty) {
-          contentProblems.push(`${page.relPath}: visual ${spec.id} has empty placeholder props`);
-        }
-        const caption = String(spec.caption ?? "");
-        if (/^source-anchored explainer/i.test(caption) || /^conceptual checkpoint/i.test(caption)) {
-          contentProblems.push(`${page.relPath}: visual ${spec.id} has a generic placeholder caption`);
-        }
+        if (propsEmpty) contentProblems.push(`${page.relPath}: visual ${spec.id} has empty props`);
         if (!String(spec.regenerationPrompt ?? "").trim()) {
-          contentProblems.push(`${page.relPath}: visual ${spec.id} lacks regenerationPrompt (regenerate button context)`);
+          contentProblems.push(`${page.relPath}: visual ${spec.id} lacks regenerationPrompt`);
         }
         if (!fs.existsSync(path.join(visualsDir, `${spec.id}.json`))) {
           idProblems.push(`${page.relPath}: visual ${spec.id} has no .breadboard/visuals/${spec.id}.json`);
@@ -447,14 +626,22 @@ function runChecks(gardenSlug: string): CheckResult[] {
       if (/\[(?:Interactive visual|Visual|Generated visual)\s*:/i.test(page.body)) {
         contentProblems.push(`${page.relPath}: raw visual placeholder left in body`);
       }
-    }
-    check(9, "interactive visual IDs consistent (frontmatter = block = spec file = index)", idProblems);
-    check(10, "no empty/placeholder interactive visuals", contentProblems);
 
-    // 11. Regenerate button: rendered by the Quartz component for every valid
-    // block. Verify the renderer still has the button and that no page embeds
-    // a block the renderer would reject (covered above), so every rendered
-    // visual gets the button.
+      // Hard-concept coverage: a lesson teaching a hard dynamic concept must
+      // ship an interactive visual (or record an explicit skip reason).
+      if (lessonPages.includes(page)) {
+        const hard = HARD_CONCEPT_PATTERNS.find((c) => c.test.test(`${fmString(page.frontmatter, "title")}\n${page.body}`));
+        const skipReason = fmString(page.frontmatter, "visualSkipReason");
+        if (hard && embedded.length === 0 && !skipReason) {
+          hardConceptProblems.push(`${page.relPath}: teaches ${hard.label} but has no interactive visual`);
+        }
+      }
+    }
+
+    check(13, "interactive visual IDs consistent (frontmatter = block = spec file = index)", idProblems);
+    check(14, "interactive visuals are valid + hard concepts covered", [...contentProblems, ...hardConceptProblems]);
+
+    // 15. Regenerate button rendered by the Quartz component for every block.
     const rendererPath = path.resolve(
       SCRIPT_DIR, "..", "quartz", "quartz", "components", "scripts", "breadboardVisual.inline.ts",
     );
@@ -467,37 +654,16 @@ function runChecks(gardenSlug: string): CheckResult[] {
     } catch {
       rendererProblems.push(`Cannot read renderer at ${rendererPath}`);
     }
-    check(11, "regenerate button rendered below every interactive visual", [
-      ...rendererProblems,
-      ...contentProblems.filter((problem) => problem.includes("not valid JSON")),
-    ]);
-  }
+    check(15, "regenerate button rendered below every interactive visual", rendererProblems);
 
-  // 12. Full-page screenshots are never counted as figures.
-  {
-    const problems: string[] = [];
-    const pageSnapshotRe = /-page-\d{3,}(?:-\d+)?\.(?:png|jpe?g|webp)$/i;
-    for (const visual of ledger) {
-      const type = String(visual.type ?? "");
-      const cropped = String(visual.croppedImagePath ?? "");
-      if (type === "full_page_fallback") continue;
-      if (cropped && pageSnapshotRe.test(cropped)) {
-        problems.push(`${String(visual.sourceVisualId)}: full-page snapshot used as ${type}`);
+    // 16. SNN gardens ship at least four interactive visuals.
+    {
+      const problems: string[] = [];
+      if (isSnnGarden && interactiveCount < 4) {
+        problems.push(`only ${interactiveCount} interactive visual(s); an SNN garden needs at least 4`);
       }
-      if (!cropped && String(visual.usageStatus) === "assigned") {
-        problems.push(
-          `${String(visual.sourceVisualId)}: assigned as ${type} but embeds the uncropped page (mark full_page_fallback)`,
-        );
-      }
+      check(16, "SNN garden has >= 4 interactive visuals", problems, !isSnnGarden);
     }
-    // Legacy figure ids that were page snapshots ("S1.P17.F1: ... Page 17").
-    for (const page of lessonPages) {
-      for (const id of fmArray(page.frontmatter, "sourceVisualIds")) {
-        const inLedger = ledger.some((visual) => String(visual.sourceVisualId) === id);
-        if (!inLedger) problems.push(`${page.relPath}: sourceVisualId ${id} not in ledger`);
-      }
-    }
-    check(12, "full-page snapshots only ever used as explicit fallbacks", problems, !ledgerExists);
   }
 
   return results;
@@ -514,30 +680,50 @@ function listGardens(): string[] {
     .map((entry) => entry.name);
 }
 
-const args = process.argv.slice(2).filter((arg) => arg !== "--");
-const gardens = args.includes("--all") ? listGardens() : args;
-
-if (gardens.length === 0) {
-  console.error("Usage: node --experimental-strip-types scripts/validate-breadboard-garden.ts <garden-slug> | --all");
-  console.error(`Available gardens: ${listGardens().join(", ")}`);
-  process.exit(1);
-}
-
-let anyFailure = false;
-for (const garden of gardens) {
-  console.log(`\n=== ${garden} ===`);
-  const results = runChecks(garden);
-  for (const result of results) {
-    const badge = result.status === "PASS" ? "PASS" : result.status === "SKIP" ? "SKIP" : "FAIL";
-    console.log(`[${badge}] ${result.id}. ${result.name}`);
-    for (const problem of result.problems.slice(0, 12)) {
-      console.log(`       - ${problem}`);
-    }
-    if (result.problems.length > 12) {
-      console.log(`       ... and ${result.problems.length - 12} more`);
-    }
-    if (result.status === "FAIL") anyFailure = true;
+/** Resolve an argument that is either a bare garden slug (under quartz/content)
+ * or a path to a garden directory. */
+function resolveGarden(arg: string): { dir: string; slug: string } {
+  if (arg.includes("/") || arg.includes("\\") || fs.existsSync(arg)) {
+    const dir = path.resolve(arg);
+    return { dir, slug: path.basename(dir) };
   }
+  return { dir: path.join(CONTENT_ROOT, arg), slug: arg };
 }
 
-process.exit(anyFailure ? 1 : 0);
+function main(): void {
+  const args = process.argv.slice(2).filter((arg) => arg !== "--");
+  const targets = args.includes("--all")
+    ? listGardens().map((slug) => ({ dir: path.join(CONTENT_ROOT, slug), slug }))
+    : args.map(resolveGarden);
+
+  if (targets.length === 0) {
+    console.error("Usage: node --experimental-strip-types scripts/validate-breadboard-garden.ts <garden-slug|path> | --all");
+    console.error(`Available gardens: ${listGardens().join(", ")}`);
+    process.exit(1);
+  }
+
+  let anyFailure = false;
+  for (const { dir, slug } of targets) {
+    console.log(`\n=== ${slug} ===`);
+    const results = runChecks(dir, slug);
+    for (const result of results) {
+      const badge = result.status === "PASS" ? "PASS" : result.status === "SKIP" ? "SKIP" : "FAIL";
+      console.log(`[${badge}] ${result.id}. ${result.name}`);
+      for (const problem of result.problems.slice(0, 12)) {
+        console.log(`       - ${problem}`);
+      }
+      if (result.problems.length > 12) {
+        console.log(`       ... and ${result.problems.length - 12} more`);
+      }
+      if (result.status === "FAIL") anyFailure = true;
+    }
+  }
+
+  process.exit(anyFailure ? 1 : 0);
+}
+
+// Run the CLI only when invoked directly, not when imported by a test.
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
+if (invokedPath === fileURLToPath(import.meta.url)) {
+  main();
+}

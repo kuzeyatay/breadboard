@@ -487,6 +487,178 @@ export interface SourceFigure {
   suggestedVisualUse?: string
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic interactive visual builders
+//
+// The hard dynamic concepts (LIF dynamics, spike coding, STDP, metric
+// tradeoffs) must never be left without a visual just because a model call
+// declined or failed. Each builder returns a valid VisualSpec for an
+// IMPLEMENTED renderer type with sensible, non-empty props and teaching
+// controls, so the pipeline can guarantee a working interactive visual without
+// depending on the LLM. IDs are derived from the page slug so they are stable
+// across regenerations and always match ID_PATTERN. Dependency-free so they can
+// be unit-tested in isolation.
+// ---------------------------------------------------------------------------
+
+export type HardConceptKind =
+  | "lif_neuron"
+  | "neural_coding"
+  | "stdp_window"
+  | "tradeoff_explorer"
+
+function deterministicVisualId(pageSlug: string | undefined, suffix: string): string {
+  const base =
+    (pageSlug ?? "page")
+      .replace(/\.md$/i, "")
+      .replace(/[^A-Za-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(-48) || "page"
+  return `vis-${base}-${suffix}`.slice(0, 80)
+}
+
+function baseSpec(id: string, type: VisualType, fields: Partial<VisualSpec>): VisualSpec {
+  return {
+    title: "Interactive visual",
+    sourceAnchors: [],
+    conceptTargets: [],
+    pedagogicalPurpose: "",
+    props: {},
+    regenerationPrompt: "Regenerate this interactive visual with clearer pedagogy.",
+    ...fields,
+    id,
+    type,
+    createdAt: new Date().toISOString(),
+    version: 1,
+  }
+}
+
+/** Leaky integrate-and-fire membrane simulator: accumulate, leak, cross
+ * threshold, spike, reset, refractory. */
+export function buildLifThresholdResetVisual(pageSlug?: string): VisualSpec {
+  return baseSpec(deterministicVisualId(pageSlug, "lif"), "lif_neuron", {
+    title: "Leaky integrate-and-fire membrane simulator",
+    conceptTargets: ["membrane potential", "firing threshold", "reset", "refractory period", "leak"],
+    pedagogicalPurpose:
+      "Let the learner drive input current and leak and watch the membrane potential accumulate, cross threshold, spike, reset, and stay refractory over time.",
+    props: {
+      restPotential: 0,
+      threshold: 1,
+      resetPotential: 0,
+      inputCurrent: 1.2,
+      leak: 0.15,
+      refractory: 2,
+      duration: 40,
+    },
+    controls: [
+      { name: "inputCurrent", label: "Input current", type: "slider", min: 0, max: 3, step: 0.05, defaultValue: 1.2 },
+      { name: "leak", label: "Leak rate", type: "slider", min: 0, max: 0.6, step: 0.01, defaultValue: 0.15 },
+      { name: "threshold", label: "Firing threshold", type: "slider", min: 0.4, max: 2, step: 0.05, defaultValue: 1 },
+      { name: "refractory", label: "Refractory steps", type: "slider", min: 0, max: 8, step: 1, defaultValue: 2 },
+    ],
+    caption:
+      "Raise the input current until the potential reaches threshold and fires; increase the leak to see firing slow or stop.",
+    regenerationPrompt:
+      "Improve the LIF simulator: clarify the leak-vs-input balance and label the threshold crossing and reset.",
+  })
+}
+
+/** Rate coding vs temporal coding for the same stimulus. */
+export function buildRateVsTemporalCodingVisual(pageSlug?: string): VisualSpec {
+  return baseSpec(deterministicVisualId(pageSlug, "coding"), "neural_coding", {
+    title: "Rate coding vs temporal coding",
+    conceptTargets: ["rate coding", "temporal coding", "spike timing", "spike count"],
+    pedagogicalPurpose:
+      "Let the learner change the stimulus strength and compare how a rate code (spike count) and a temporal code (spike timing) represent the same input.",
+    props: { strength: 0.6, mode: "both" },
+    controls: [
+      { name: "strength", label: "Stimulus strength", type: "slider", min: 0, max: 1, step: 0.02, defaultValue: 0.6 },
+      { name: "mode", label: "Coding scheme", type: "select", options: ["rate", "temporal", "both"], defaultValue: "both" },
+    ],
+    caption:
+      "Increase the stimulus and watch the rate code add spikes while the temporal code shifts the first-spike timing.",
+    regenerationPrompt:
+      "Improve the coding comparison: make the contrast between spike count and spike timing more legible.",
+  })
+}
+
+/** STDP Δw vs Δt timing window. */
+export function buildStdpTimingWindowVisual(pageSlug?: string): VisualSpec {
+  return baseSpec(deterministicVisualId(pageSlug, "stdp"), "stdp_window", {
+    title: "Spike-timing dependent plasticity window",
+    conceptTargets: ["STDP", "spike timing", "synaptic plasticity", "pre-before-post", "post-before-pre"],
+    pedagogicalPurpose:
+      "Let the learner drag the pre/post spike time difference and watch the synaptic weight change flip sign across the STDP window.",
+    props: { aPlus: 1, aMinus: 1, tauPlus: 20, tauMinus: 20, deltaT: 8 },
+    controls: [
+      { name: "deltaT", label: "Δt (pre − post, ms)", type: "slider", min: -60, max: 60, step: 1, defaultValue: 8 },
+      { name: "aPlus", label: "Potentiation amplitude", type: "slider", min: 0, max: 2, step: 0.05, defaultValue: 1 },
+      { name: "aMinus", label: "Depression amplitude", type: "slider", min: 0, max: 2, step: 0.05, defaultValue: 1 },
+    ],
+    caption: "Drag Δt through zero to see potentiation when the pre-spike leads and depression when it lags.",
+    regenerationPrompt:
+      "Improve the STDP window: emphasize the sign change at Δt = 0 and the exponential decay of each side.",
+  })
+}
+
+/** Accuracy / latency / energy / spike-count tradeoff across model families. */
+export function buildMetricTradeoffExplorerVisual(pageSlug?: string): VisualSpec {
+  return baseSpec(deterministicVisualId(pageSlug, "tradeoff"), "tradeoff_explorer", {
+    title: "Accuracy, latency, energy, and spike-count tradeoff explorer",
+    conceptTargets: ["accuracy", "latency", "energy", "spike count", "model comparison"],
+    pedagogicalPurpose:
+      "Let the learner change the deployment priority and see which model family wins across accuracy, latency, and energy.",
+    props: {
+      models: [
+        { label: "ANN", accuracy: 0.99, latency: 0.9, energy: 0.95 },
+        { label: "Converted SNN", accuracy: 0.95, latency: 0.6, energy: 0.45 },
+        { label: "Surrogate-gradient SNN", accuracy: 0.96, latency: 0.45, energy: 0.4 },
+        { label: "STDP SNN", accuracy: 0.86, latency: 0.35, energy: 0.2 },
+      ],
+      priority: "balanced",
+    },
+    controls: [
+      {
+        name: "priority",
+        label: "Deployment priority",
+        type: "select",
+        options: ["accuracy", "latency", "energy", "balanced"],
+        defaultValue: "balanced",
+      },
+    ],
+    caption:
+      "Switch the priority between accuracy, latency, and energy to see the recommended model family change.",
+    regenerationPrompt:
+      "Improve the tradeoff explorer: keep accuracy higher-better and latency/energy lower-better, and make the winner obvious per priority.",
+  })
+}
+
+const HARD_CONCEPT_BUILDERS: Record<HardConceptKind, (pageSlug?: string) => VisualSpec> = {
+  lif_neuron: buildLifThresholdResetVisual,
+  neural_coding: buildRateVsTemporalCodingVisual,
+  stdp_window: buildStdpTimingWindowVisual,
+  tradeoff_explorer: buildMetricTradeoffExplorerVisual,
+}
+
+/** Deterministic builder for a hard-concept renderer type, or null if the type
+ * has no builder. The returned spec is re-validated so callers always get a
+ * sanitized VisualSpec (or null if, impossibly, it failed validation). */
+export function buildDeterministicVisual(
+  visualType: string,
+  context: { gardenId?: string; pageSlug?: string },
+): VisualSpec | null {
+  const builder = HARD_CONCEPT_BUILDERS[visualType as HardConceptKind]
+  if (!builder) return null
+  const spec = builder(context.pageSlug)
+  if (context.gardenId) spec.gardenId = context.gardenId
+  if (context.pageSlug) spec.pageId = context.pageSlug
+  const { spec: validated } = validateVisualSpec(spec)
+  return validated
+}
+
+// ---------------------------------------------------------------------------
+// Source figure labeling: S{sourceIndex}.P{page}.{F|T|G}{n}  (helpers below)
+// ---------------------------------------------------------------------------
+
 const FIGURE_KIND_LETTER: Record<SourceFigureKind, string> = {
   graph: "G",
   diagram: "F",

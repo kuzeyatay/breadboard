@@ -6,6 +6,7 @@ import string
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..model_registry import normalize_model_name
 from ..providers.router import ProviderRouter
 from ..providers.types import ModelCall, ProviderError
 from . import ledger as ledger_events
@@ -84,6 +85,15 @@ class CouncilRuntime:
         self.router = router or ProviderRouter(self.config)
         self.ledger = ledger or JsonlCouncilLedger(self.config.ledger_dir)
 
+    def _model_for_call(self, model: str, council_input: CouncilInput) -> str:
+        call_model = model or self.config.upstream_fallback_model
+        if "/" not in call_model:
+            return call_model
+        requested = (council_input.requested_model or "").strip()
+        if requested and "/" not in requested:
+            return normalize_model_name(requested)
+        return self.config.upstream_fallback_model
+
     # ------------------------------------------------------------------ run
 
     def run(self, council_input: CouncilInput) -> CouncilRun:
@@ -131,9 +141,10 @@ class CouncilRuntime:
         messages: List[Dict[str, Any]],
         council_input: CouncilInput,
     ) -> str:
+        call_model = self._model_for_call(model, council_input)
         text = self.router.call_model(
             ModelCall(
-                model=model,
+                model=call_model,
                 messages=messages,
                 system=system,
                 temperature=council_input.temperature,
@@ -141,7 +152,7 @@ class CouncilRuntime:
             )
         )
         if not isinstance(text, str) or not text.strip():
-            raise ProviderError(f"model {model} returned an empty answer")
+            raise ProviderError(f"model {call_model} returned an empty answer")
         return text
 
     def _task_text(self, council_input: CouncilInput) -> str:
