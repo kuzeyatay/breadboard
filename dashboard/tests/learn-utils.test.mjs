@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  buildTextbookPageFrontmatter,
+  buildLearningPageFrontmatter,
   containsRawVisualPlaceholder,
   fallbackLearningMapFromSources,
   normalizeLearningMapCandidate,
+  normalizeZettelTags,
+  sanitizeLearnerTitle,
+  hasPlaceholderText,
+  countAiisms,
   removeRawVisualPlaceholders,
   sourceSetHashForSources,
   textbookPageFileName,
@@ -75,24 +79,59 @@ describe("learn utilities", () => {
     assert.ok(map.warnings.includes("Missing lab data"));
   });
 
-  test("writes textbook page frontmatter with learn metadata", () => {
-    const fm = buildTextbookPageFrontmatter({
+  test("writes learning page frontmatter with clean tags and no textbook terms", () => {
+    const fm = buildLearningPageFrontmatter({
       gardenId: "garden",
       sectionNumber: 1,
       subsectionNumber: 2,
       title: "1.2 Wave Speed",
       sourceAnchors: ["Lecture 2"],
-      conceptTags: ["wave speed relates wavelength and frequency"],
+      tags: ["waves/wave-speed"],
       visualIds: ["vis_wave_speed"],
-      textbookVersionId: "textbook_1",
+      learningVersionId: "learn_1",
       sourceSetHash: "hash",
       generatedAt: "2026-07-02T00:00:00.000Z",
     });
 
-    assert.match(fm, /breadboardType: "textbook_page"/);
+    assert.match(fm, /knowledge_type: "learning-page"/);
+    assert.match(fm, /breadboardType: "learning_page"/);
     assert.match(fm, /generatedBy: "learn_button"/);
     assert.match(fm, /sourceAnchors: \["Lecture 2"\]/);
     assert.match(fm, /visualIds: \["vis_wave_speed"\]/);
+    // No conceptTags and no "textbook" anywhere in visible frontmatter.
+    assert.ok(!/conceptTags/.test(fm));
+    assert.ok(!/textbook/i.test(fm));
+  });
+
+  test("normalizeZettelTags produces clean hierarchical tags", () => {
+    const tags = normalizeZettelTags(
+      ["motivation", "sn/lif-neuron", "energy", "snn/threshold-firing", "computational-neuroscience/membrane-potential"],
+      "The Leaky Integrate-and-Fire Neuron",
+      "Spiking Neural Networks",
+    );
+    assert.ok(tags.length >= 3 && tags.length <= 5, `got ${tags.length} tags`);
+    assert.ok(!tags.includes("snn/motivation"), "drops generic 'motivation'");
+    assert.ok(!tags.some((t) => t.split("/").includes("energy")), "drops debris 'energy'");
+    assert.ok(tags.includes("snn/lif-neuron"), "repairs sn/ typo root to snn/");
+    assert.ok(tags.every((t) => t.includes("/")), "every tag is hierarchical");
+  });
+
+  test("quality helpers flag placeholder + AI-ism prose", () => {
+    assert.equal(hasPlaceholderText("Use the page 10 and 11 materials to explain."), true);
+    assert.equal(hasPlaceholderText("A spiking neuron sends a discrete event."), false);
+    assert.ok(countAiisms("The second big idea is that X is not a side detail. The point is not Y.") >= 2);
+    assert.equal(countAiisms("A spike is a discrete event whose timing carries information."), 0);
+  });
+
+  test("sanitizes generated lesson titles", () => {
+    assert.equal(
+      sanitizeLearnerTitle("1.1 From Conventional Neural Networks to SNNs Overview"),
+      "1.1 From Conventional Neural Networks to SNNs",
+    );
+    assert.equal(
+      sanitizeLearnerTitle("Why the Source Turns from Conventional Neural Networks to SNNs"),
+      "From Conventional Neural Networks to SNNs",
+    );
   });
 
   test("removes raw visual placeholders from final markdown", () => {
@@ -158,5 +197,10 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /taskType: "topic_map"/);
     assert.match(learnSource, /taskType: "subsection_generation"/);
     assert.match(learnSource, /taskType: "full_page_revision"/);
+    assert.match(learnSource, /preparedFallback/);
+    assert.match(learnSource, /assessLessonQuality\(\s*preparedFallback/);
+    assert.doesNotMatch(learnSource, /Start with the idea itself/);
+    assert.doesNotMatch(learnSource, /Name the starting idea/);
+    assert.doesNotMatch(learnSource, /What is the main idea to take away from/);
   });
 });

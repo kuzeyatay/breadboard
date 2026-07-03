@@ -165,6 +165,137 @@ export const SOURCE_COMMENTARY_PHRASES = [
   "according to the source",
 ] as const;
 
+/** Meta-instruction / placeholder language that means a page was not actually
+ * written. Any of these in a learner page is a hard failure. Shared with the
+ * validation script. */
+export const PLACEHOLDER_PATTERNS: RegExp[] = [
+  /\buse the page\b/i,
+  /\bstart with the idea itself\b/i,
+  /\bname the starting idea\b/i,
+  /\bwhat is the main idea to take away from\b/i,
+  /\bto be written\b/i,
+  /\bplaceholder\b/i,
+  /\bTODO\b/,
+  /\blorem ipsum\b/i,
+  /\b(?:use|from) the page \d+ and \d+ materials?\b/i,
+  /\bthis (?:section|page) (?:will|should) (?:cover|explain|introduce)\b/i,
+];
+
+/** Annoying AI-style discourse patterns, especially teaching-by-negation.
+ * Shared with the validation script. Prose should teach directly instead. */
+export const AI_ISM_PATTERNS: RegExp[] = [
+  /\bthe (?:first|second|third|next|final|last|main|big|key) (?:big )?idea is\b/i,
+  /\bis not (?:a|just a|merely a|only a) (?:side |minor )?(?:detail|issue|point|feature)\b/i,
+  /\bis not just\b/i,
+  /\bthe point is not\b/i,
+  /\bthis is not only\b.*\bbut also\b/i,
+  /\bnot only\b.*\bbut also\b/i,
+  /\bit(?:'s| is) important to note that\b/i,
+  /\bit(?:'s| is) worth noting that\b/i,
+  /\bthe important question is not (?:just|only)\b/i,
+  /\bthis matters because\b/i,
+  /\bthis highlights\b/i,
+  /\bthis underscores\b/i,
+  /\bthe key takeaway is\b/i,
+  /\bin summary\b/i,
+  /\bin conclusion\b/i,
+  /\bat the end of the day\b/i,
+  /\bwhen it comes to\b/i,
+];
+
+/** True when the markdown contains meta-instruction / placeholder language. */
+export function hasPlaceholderText(markdown: string): boolean {
+  return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(markdown));
+}
+
+/** Count AI-style discourse patterns in prose. */
+export function countAiisms(markdown: string): number {
+  let count = 0;
+  for (const pattern of AI_ISM_PATTERNS) {
+    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    count += (markdown.match(global) ?? []).length;
+  }
+  return count;
+}
+
+/** Deterministically delete the always-safe AI-ism openers (never rewrites
+ * meaning — semantic negation framing is handled by the prompt + critic). */
+export function scrubAiisms(markdown: string): string {
+  return markdown
+    .replace(/\bIt(?:'s| is) important to note that\s+/g, "")
+    .replace(/\bIt(?:'s| is) worth noting that\s+/g, "")
+    .replace(/\bThe (?:first|second|third|next|final) big idea is that\s+/g, "")
+    .replace(/\bThe (?:first|second|third|next|final) idea is that\s+/g, "")
+    .replace(/^\s*In summary,\s+/gim, "")
+    .replace(/^\s*In conclusion,\s+/gim, "")
+    // Fix any capitalization we broke by removing a sentence opener.
+    .replace(/(^|[.!?]\s+)([a-z])/g, (_m, pre: string, ch: string) => pre + ch.toUpperCase());
+}
+
+/** Count words in prose (ignoring code fences, image lines, and frontmatter). */
+export function proseWordCount(markdown: string): number {
+  const text = stripMarkdownFrontmatter(markdown)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/[#>*_`|-]+/g, " ");
+  const words = text.split(/\s+/).filter((word) => /[a-z0-9]/i.test(word));
+  return words.length;
+}
+
+export interface QualityProblem {
+  code: string;
+  message: string;
+  hard: boolean;
+}
+
+/** Minimum words a learner subsection should contain. */
+export const MIN_LESSON_WORDS = 700;
+
+/**
+ * Local quality critic run before a lesson page is written. Hard problems
+ * (placeholder text, no question/answer, no real prose, an assigned visual that
+ * never got embedded) should block the write / trigger a retry. Soft problems
+ * (short, too many AI-isms, no obvious example) are advisory.
+ */
+export function assessLessonQuality(
+  body: string,
+  options: { assignedVisualUrls?: string[]; minWords?: number } = {},
+): { ok: boolean; hardFail: boolean; problems: QualityProblem[] } {
+  const problems: QualityProblem[] = [];
+  const words = proseWordCount(body);
+  const minWords = options.minWords ?? MIN_LESSON_WORDS;
+
+  if (hasPlaceholderText(body)) {
+    problems.push({ code: "placeholder", message: "contains placeholder / meta-instruction text", hard: true });
+  }
+  const hasQuestion = /\*\*Question\.\*\*/.test(body) && /\*\*Answer\.\*\*/.test(body);
+  if (!hasQuestion) {
+    problems.push({ code: "no-qa", message: "missing a Question./Answer. pair", hard: true });
+  }
+  if (words < 120) {
+    problems.push({ code: "empty", message: `only ${words} words of prose`, hard: true });
+  }
+  for (const url of options.assignedVisualUrls ?? []) {
+    if (!body.includes(url)) {
+      problems.push({ code: "missing-visual", message: `assigned source visual not embedded (${url})`, hard: true });
+    }
+  }
+  if (words < minWords) {
+    problems.push({ code: "short", message: `${words} words (< ${minWords})`, hard: false });
+  }
+  const aiisms = countAiisms(body);
+  if (aiisms > 2) {
+    problems.push({ code: "aiisms", message: `${aiisms} AI-style phrases`, hard: false });
+  }
+  const hasExample = /\b(for example|for instance|imagine|consider|suppose|think of|picture)\b/i.test(body);
+  if (!hasExample) {
+    problems.push({ code: "no-example", message: "no concrete example / analogy cue", hard: false });
+  }
+
+  const hardFail = problems.some((problem) => problem.hard);
+  return { ok: problems.length === 0, hardFail, problems };
+}
+
 /** Debris/generic tags that are banned from learner-facing pages. */
 export const ZETTEL_TAG_BANLIST = new Set([
   "paper", "source", "sources", "what", "model", "models", "test", "tests",
@@ -174,7 +305,66 @@ export const ZETTEL_TAG_BANLIST = new Set([
   "general", "document", "documents", "pdf", "file", "files", "upload",
   "uploads", "learning", "textbook", "introduction", "conclusion", "summary",
   "content", "material", "materials", "topic", "topics", "concept", "concepts",
+  // Additional single-word debris and generic framing words.
+  "idea", "ideas", "motivation", "against-figures", "input", "inputs", "output",
+  "outputs", "potential", "energy", "accuracy", "continuous", "important",
+  "example", "examples", "detail", "details", "point", "points", "thing",
+  "things", "approach", "approaches", "method", "methods", "system", "systems",
+  "figure", "figures", "table", "tables", "data", "value", "values", "result",
+  "results", "comparison", "analysis", "study", "work", "field", "area",
 ]);
+
+/** Known typo/abbreviation roots to repair in the domain namespace segment. */
+const TAG_ROOT_FIXES: Record<string, string> = {
+  sn: "snn",
+  dl: "deep-learning",
+  ml: "machine-learning",
+  nn: "neural-networks",
+  cnn: "cnn",
+};
+
+/**
+ * Concept → hierarchical tag lexicon. When a lesson body mentions one of these
+ * durable concepts, we emit the exact clean tag (already namespaced), which is
+ * far more reliable than namespacing whatever noisy words the planner produced.
+ * Ordered longest/most-specific first. General enough to be harmless on other
+ * domains (it only fires on literal keyword matches).
+ */
+const CONCEPT_TAG_LEXICON: Array<[RegExp, string]> = [
+  [/\bleaky integrate[- ]and[- ]fire\b|\blif neuron\b|\blif model\b/i, "snn/lif-neuron"],
+  [/\bmembrane potential\b/i, "computational-neuroscience/membrane-potential"],
+  [/\b(?:firing )?threshold\b|\bthreshold crossing\b/i, "snn/threshold-firing"],
+  [/\brefractory\b|\breset (?:potential|behavior)\b/i, "snn/reset-dynamics"],
+  [/\bspike[- ]timing[- ]dependent plasticity\b|\bstdp\b/i, "snn/stdp"],
+  [/\bsynaptic (?:plasticity|weight)\b/i, "learning-rules/synaptic-plasticity"],
+  [/\bspike timing\b/i, "computational-neuroscience/spike-timing"],
+  [/\bsurrogate gradient\b/i, "snn/surrogate-gradient-training"],
+  [/\bnon[- ]differentiab\w+\b/i, "optimization/non-differentiable-spikes"],
+  [/\bbackpropagation\b|\bbackprop\b/i, "deep-learning/backpropagation"],
+  [/\bann[- ]to[- ]snn\b|\bann to snn\b|\bconversion\b/i, "snn/ann-to-snn-conversion"],
+  [/\brate coding\b/i, "snn/rate-coding"],
+  [/\btemporal coding\b/i, "snn/temporal-coding"],
+  [/\bspike (?:coding|encoding)\b|\bencoding information as spikes\b/i, "snn/spike-coding"],
+  [/\bevent[- ]driven\b/i, "snn/event-driven-computation"],
+  [/\blateral inhibition\b/i, "computational-neuroscience/lateral-inhibition"],
+  [/\bneuromorphic\b|\bloihi\b|\btruenorth\b/i, "neuromorphic-computing/event-driven-hardware"],
+  [/\bedge (?:ai|device|computing)\b/i, "edge-ai/real-time-inference"],
+  [/\benergy (?:efficiency|per inference|consumption)\b/i, "edge-ai/energy-efficiency"],
+  [/\blatency\b|\bresponse time\b/i, "model-evaluation/latency"],
+  [/\bspike count\b/i, "model-evaluation/spike-count"],
+  [/\bconvergence\b/i, "model-evaluation/convergence"],
+  [/\bspiking neural network\b|\bsnns?\b/i, "snn/spiking-neural-networks"],
+];
+
+/** Pull already-clean hierarchical tag seeds from a lesson body by matching the
+ * concept lexicon. Returns [] when nothing durable is mentioned. */
+export function extractTagSeeds(body: string): string[] {
+  const seeds: string[] = [];
+  for (const [pattern, tag] of CONCEPT_TAG_LEXICON) {
+    if (pattern.test(body) && !seeds.includes(tag)) seeds.push(tag);
+  }
+  return seeds;
+}
 
 /** Rewrites a planned section/subsection title that frames itself as paper
  * commentary into a standalone lesson title. Deterministic backstop behind the
@@ -211,6 +401,7 @@ export function sanitizeLearnerTitle(rawTitle: string): string {
     .replace(/^the named\s+/i, "")
     .replace(/\bsource[- ](?:derived|central|anchored)\b\s*/gi, "")
     .replace(/\s*\b(?:in|from|of|per) (?:this|the) (?:paper|source)\b/gi, "")
+    .replace(/\s*[-:–—]?\s*overview$/i, "")
     .replace(/\be-?textbook\b/gi, "learning garden")
     .replace(/\btextbook\b/gi, "learning garden");
   title = compact(title.replace(/^[,:;\-\s]+|[,:;\-\s]+$/g, ""));
@@ -237,38 +428,66 @@ function zettelSegmentSlug(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+const TAG_STOPWORDS = new Set([
+  "the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with", "how",
+  "why", "what", "is", "are", "why", "over", "across", "into", "from", "this",
+]);
+
+/** Short, stable namespace for the domain (e.g. "Spiking Neural Networks" ->
+ * "snn"). Long multi-word domains become an acronym so tags stay compact. */
+function domainNamespace(domainHint: string): string {
+  const slug = zettelSegmentSlug(domainHint);
+  if (!slug) return "topic";
+  const words = slug.split("-").filter((word) => word.length > 1 && !TAG_STOPWORDS.has(word));
+  if (slug.length > 16 && words.length >= 2 && words.length <= 4) {
+    return words.map((word) => word[0]).join("");
+  }
+  return TAG_ROOT_FIXES[words[0] ?? slug] ?? words[0] ?? slug;
+}
+
 /**
- * Normalizes learner-page tags into 3-6 stable hierarchical concept tags
- * ("snn/lif-neuron" style). Flat tags get namespaced under the domain hint;
- * debris/generic segments are dropped; too-few results are topped up from the
- * subsection title so learner pages always carry useful tags.
+ * Normalizes learner-page tags into 3-5 stable, hierarchical, concept tags
+ * ("snn/lif-neuron" style). Flat tags get namespaced under a short domain
+ * acronym; typo roots are repaired; debris/generic segments are dropped;
+ * too-few results are topped up from the subsection title.
  */
 export function normalizeZettelTags(
   rawTags: string[],
   topicHint: string,
   domainHint: string,
 ): string[] {
-  const domain = zettelSegmentSlug(domainHint) || "topic";
+  const domain = domainNamespace(domainHint);
   const seen = new Set<string>();
   const output: string[] = [];
 
   const push = (candidate: string) => {
+    if (output.length >= 5) return;
     const segments = candidate
       .split("/")
       .map((segment) => zettelSegmentSlug(segment))
       .filter(Boolean);
     if (segments.length === 0) return;
+    // Repair typo/abbrev roots in the namespace segment.
+    if (segments.length > 1 && TAG_ROOT_FIXES[segments[0]]) {
+      segments[0] = TAG_ROOT_FIXES[segments[0]];
+    }
     const namespaced = segments.length === 1 ? [domain, segments[0]] : segments.slice(0, 3);
+    // Every segment must be a real concept word, not debris or a bare number.
     if (namespaced.some((segment) => ZETTEL_TAG_BANLIST.has(segment))) return;
     if (namespaced.some((segment) => segment.length < 2 || /^\d+$/.test(segment))) return;
+    // The leaf (last) segment must not be a lone generic word.
+    const leaf = namespaced[namespaced.length - 1];
+    if (leaf.split("-").every((word) => TAG_STOPWORDS.has(word) || ZETTEL_TAG_BANLIST.has(word))) {
+      return;
+    }
     const tag = namespaced.join("/");
-    if (tag.length > 80 || seen.has(tag)) return;
+    if (tag.length > 60 || seen.has(tag)) return;
     seen.add(tag);
     output.push(tag);
   };
 
   for (const raw of rawTags) {
-    if (output.length >= 6) break;
+    if (output.length >= 5) break;
     if (typeof raw === "string" && raw.trim()) push(raw);
   }
 
@@ -277,7 +496,7 @@ export function normalizeZettelTags(
     if (topicSlug) push(`${domain}/${topicSlug}`);
   }
 
-  return output.slice(0, 6);
+  return output.slice(0, 5);
 }
 
 export function sourceSetHashForSources(sources: LearnSourceSummary[]): string {
@@ -340,17 +559,16 @@ export function yamlFrontmatter(values: Record<string, FrontmatterValue>): strin
   return `---\n${lines.join("\n")}\n---\n\n`;
 }
 
-export function buildTextbookPageFrontmatter({
+export function buildLearningPageFrontmatter({
   gardenId,
   sectionNumber,
   subsectionNumber,
   title,
   sourceAnchors,
-  conceptTags,
   tags,
   visualIds,
   sourceVisualIds,
-  textbookVersionId,
+  learningVersionId,
   sourceSetHash,
   generatedAt,
 }: {
@@ -359,34 +577,35 @@ export function buildTextbookPageFrontmatter({
   subsectionNumber: number;
   title: string;
   sourceAnchors: string[];
-  conceptTags: string[];
-  /** Hierarchical zettel tags shown to learners (3-6, "snn/lif-neuron" style). */
+  /** Hierarchical zettel tags shown to learners (3-5, "snn/lif-neuron" style).
+   * This is the only tag field written to learner pages. */
   tags?: string[];
   visualIds: string[];
   /** Source visuals (S1.P4.F1 style) embedded in this page's body. */
   sourceVisualIds?: string[];
-  textbookVersionId: string;
+  learningVersionId: string;
   sourceSetHash?: string;
   generatedAt: string;
 }): string {
+  // No `conceptTags`, no `textbook*` keys: learner pages carry clean `tags:`
+  // and never contain the word "textbook" anywhere in their frontmatter.
   return yamlFrontmatter({
     title,
     date: generatedAt,
-    knowledge_type: "textbook-page",
-    breadboardType: "textbook_page",
+    knowledge_type: "learning-page",
+    breadboardType: "learning_page",
     gardenId,
     sectionNumber,
     subsectionNumber: `${sectionNumber}.${subsectionNumber}`,
     sourceAnchors,
-    conceptTags,
     tags: tags && tags.length > 0 ? tags : undefined,
     visualIds,
     sourceVisualIds:
       sourceVisualIds && sourceVisualIds.length > 0 ? sourceVisualIds : undefined,
     generatedBy: "learn_button",
     generated_by: "learn_button",
-    textbookVersion: textbookVersionId,
-    textbookVersionId,
+    learningVersion: learningVersionId,
+    learningVersionId,
     sourceSetHash,
   });
 }
@@ -634,5 +853,7 @@ export function ensureQuestionBlock(markdown: string, title: string): string {
   if (/\*\*Question\.\*\*/.test(markdown) && /\*\*Answer\.\*\*/.test(markdown)) {
     return markdown;
   }
-  return `${markdown.trim()}\n\n**Question.** What is the main idea to take away from ${title}?\n\n**Answer.** The main move is to connect the definitions, examples, and any formulas in this page into one chain of reasoning. A good answer names the starting idea, explains why the next idea is needed, and checks the conclusion against the examples given above.\n`;
+  // Safety net only — the critic prefers the model to write its own Q&A. This
+  // text is grounded in the concept and avoids placeholder phrasing.
+  return `${markdown.trim()}\n\n**Question.** How would you explain ${title} to someone who has never seen it before?\n\n**Answer.** Begin with the situation that makes it necessary, describe how it works one step at a time, and finish with a short example that shows the idea in action.\n`;
 }

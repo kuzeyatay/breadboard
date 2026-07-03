@@ -22,34 +22,23 @@ function isLegacySubtopicPath(relativePath = ""): boolean {
   )
 }
 
-/** Frontmatter types that are internal pipeline artifacts, never learner pages:
- * raw source archives and the planning documents the Learn pipeline writes. */
+/** Frontmatter types that are internal pipeline artifacts, never learner pages. */
 const INTERNAL_KNOWLEDGE_TYPES = new Set([
   "internal-concept",
-  "source-document",
-  "source-map",
-  "scope-contract",
-  "source-coverage",
-  "learning-map",
 ])
 
 const INTERNAL_BREADBOARD_TYPES = new Set([
   "internal_concept",
-  "source_document",
-  "source_map",
-  "scope_contract",
-  "source_coverage",
-  "learning_map",
 ])
 
-/** Raw source material lives under sources/ (and older Internal/ trees). */
+/** Internal Breadboard metadata lives under Internal/ and .breadboard/. */
 function isInternalPath(relativePath = ""): boolean {
   const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/")
   // parts[0] is the garden slug for nested content; check every segment so the
-  // rule holds for both "garden/sources/x.md" and "sources/x.md" layouts.
+  // rule holds for both "garden/Internal/x.md" and "Internal/x.md" layouts.
   return parts.some((part) => {
     const lower = part.toLowerCase()
-    return lower === "sources" || lower === "internal" || lower === ".breadboard"
+    return lower === "internal" || lower === ".breadboard"
   })
 }
 
@@ -72,6 +61,31 @@ function isRawFileArtifactPage(fm: Record<string, unknown> | undefined): boolean
   return slugifyLoose(title) === slugifyLoose(sourceFile)
 }
 
+// Lesson sections/pages. The Learn pipeline stamps generated_by: learn_button
+// and writes them under Learning/. Ingest-era sections/pages carry the same
+// knowledge_type but no learn_button stamp, so they are internal scaffolding.
+const LESSON_KNOWLEDGE_TYPES = new Set(["learning-page", "learning-section", "textbook-page", "textbook-section"])
+const LESSON_BREADBOARD_TYPES = new Set(["learning_page", "learning_section", "textbook_page", "textbook_section"])
+
+function isLearnAuthored(fm: Record<string, unknown> | undefined): boolean {
+  return (
+    frontmatterString(fm, "generated_by") === "learn_button" ||
+    frontmatterString(fm, "generatedBy") === "learn_button"
+  )
+}
+
+/** An ingest-produced lesson section/page (not authored by the Learn pipeline).
+ * These are internal scaffolding and never learner-facing. Legacy flat
+ * `knowledge-topic` gardens are a different type and stay visible. */
+function isIngestLessonArtifact(
+  fm: Record<string, unknown> | undefined,
+  knowledgeType: string,
+  breadboardType: string,
+): boolean {
+  const isLesson = LESSON_KNOWLEDGE_TYPES.has(knowledgeType) || LESSON_BREADBOARD_TYPES.has(breadboardType)
+  return isLesson && !isLearnAuthored(fm)
+}
+
 export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {}) => ({
   name: "RemoveDrafts",
   shouldPublish(_ctx, [_tree, vfile]) {
@@ -90,7 +104,8 @@ export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {})
       INTERNAL_BREADBOARD_TYPES.has(breadboardType) ||
       frontmatterString(fm, "internal") === "true" ||
       isInternalPath(relativePath) ||
-      isRawFileArtifactPage(fm)
+      isRawFileArtifactPage(fm) ||
+      isIngestLessonArtifact(fm, knowledgeType, breadboardType)
     ) {
       return false
     }

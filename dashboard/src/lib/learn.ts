@@ -33,13 +33,16 @@ import {
   type SourceVisual,
 } from "@/lib/source-visuals";
 import {
-  buildTextbookPageFrontmatter,
+  assessLessonQuality,
+  buildLearningPageFrontmatter,
   containsRawVisualPlaceholder,
   ensureQuestionBlock,
+  extractTagSeeds,
   fallbackLearningMapFromSources,
   normalizeLearningMapCandidate,
   normalizeZettelTags,
   parseJsonCandidate,
+  scrubAiisms,
   removeRawVisualPlaceholders,
   safeLearnFileSegment,
   sanitizeLearnerTitle,
@@ -254,27 +257,46 @@ ${LEARNER_VOICE_RULES}
 Include what the topic is about, how to learn it, the recommended reading order with wikilink-style labels for sections/subsections, and honest scope notes (what this garden does and does not cover) phrased around the topic, not around the uploaded files.
 Do not create disconnected notes and do not include raw visual placeholders.`;
 
+// Concrete style rules reused by the writing and revision prompts.
+const DEPTH_RULES = `Teach from first principles so a motivated beginner with minimal background understands the concept:
+1. Open with the simplest concrete situation that makes the concept necessary. A short scenario ("Imagine a sensor watching a mostly still scene…") beats an abstract statement.
+2. Explain why the concept is needed — what breaks or is wasteful without it.
+3. Build the mechanism one step at a time. Each sentence should add one idea the previous sentence set up.
+4. Introduce a term only at the moment the learner needs it, and explain it in plain words the first time.
+5. Introduce a formula only after motivating it, then define every symbol and say what the formula lets you compute.
+6. Put at least one concrete example, analogy, or worked interpretation right after the idea it illustrates.
+7. Weave assigned source figures/tables into the flow and INTERPRET them (what the shape/trend/number means), never just caption them.
+8. Mention a common beginner confusion only when it genuinely helps, and resolve it by explaining the correct picture.
+9. End by connecting the chain of ideas into a mental model — not a bullet summary and not a list of formulas.
+Write at least ~700 words of real explanatory prose. Aim for genuine understanding, not coverage.`;
+
+const ANTI_AIISM_RULES = `Banned writing patterns — do NOT use these:
+- "The first/second/next/big idea is…", "X is not a side detail", "X is not just Y", "The point is not…", "This is not only X but also Y", "It is important to note that…", "This matters because…", "This highlights/underscores…", "The key takeaway is…", "In summary…".
+Do not teach through contrastive negation (telling the learner what something is NOT). Explain directly what it IS, why it exists, how it works, and how to think about it.
+Weak: "A second limitation appears in how information is represented. Continuous activations carry information through changing numerical values."
+Strong: "Imagine a sensor watching a mostly still scene. A dense network keeps re-processing whole arrays of values even when nothing changes. A spiking system assumes silence is meaningful: when something changes, it sends a single event — a spike — at a particular time, and that timing is part of the message."`;
+
 const SUBSECTION_PROMPT = `Write one flowing lesson subsection for a Breadboard learning garden.
 Return Markdown body only, no frontmatter, no code fence around the whole page.
 ${LEARNER_VOICE_RULES}
-Structure rules:
-- Start with intuition: why this idea exists and what problem it solves.
-- Write as one flowing lesson, not disconnected mini-sections; avoid over-segmentation and excessive headings.
-- Introduce mechanisms only after the intuition is clear; introduce formulas only after motivating why they are needed; define every symbol.
-- Give examples immediately after concepts.
-- If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose, using its provided markdown snippet (image + caption). Put explanatory prose directly before or after each image saying why it matters. Never dump images at the end.
+${DEPTH_RULES}
+${ANTI_AIISM_RULES}
+Mechanics:
+- One flowing lesson, not disconnected mini-sections; avoid over-segmentation and excessive headings.
+- If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose using its provided markdown snippet, with an interpretation of what the figure shows directly beside it. Never dump images at the end and never repeat a caption without interpreting it.
 - Do NOT write any \`\`\`breadboard-visual code block yourself — interactive visuals are attached by the pipeline afterwards.
-- Never leave [Interactive visual: ...] or any bracketed visual placeholder.
-- Include 1-2 questions using exactly:
+- Never leave [Interactive visual: ...] or any bracketed placeholder, and never write instructions to yourself (e.g. "use the page 10 materials").
+- Include 1-2 real questions a learner would ask, using exactly:
   **Question.** ...
   **Answer.** ...
-- End by synthesizing the chain of reasoning.
 - Do not generate arbitrary executable JavaScript.`;
 
-const REVISION_PROMPT = `Revise this lesson page for flow, correctness, coverage, and readability.
+const REVISION_PROMPT = `Revise this lesson page so a beginner genuinely understands it.
 Return Markdown body only, no frontmatter.
 ${LEARNER_VOICE_RULES}
-Keep it one flowing lesson. Keep every embedded image exactly where it is (or move it closer to the prose it supports). Keep any \`\`\`breadboard-visual block byte-for-byte unchanged. Remove raw visual placeholders. Keep or add 1-2 **Question.** / **Answer.** pairs.
+${DEPTH_RULES}
+${ANTI_AIISM_RULES}
+Keep it one flowing lesson. Keep every embedded image where it is (or move it nearer the prose it supports) and make sure each image is interpreted, not just captioned. Keep any \`\`\`breadboard-visual block byte-for-byte unchanged. Remove any placeholder or self-instruction text. Keep or add 1-2 **Question.** / **Answer.** pairs.
 If source-only mode is true, do not add unsupported facts; say plainly when material is missing.`;
 
 function ensureLearnTables(): void {
@@ -738,7 +760,7 @@ export function collectLearnSourceContext(
       tags: node.tags,
     }));
   const existingTextbookPages: LearnSourceSummary[] = knowledge.nodes
-    .filter((node) => node.type === "textbook-page")
+    .filter((node) => node.type === "learning-page" || node.type === "textbook-page")
     .map((node) => ({
       id: node.slug,
       slug: node.slug,
@@ -1201,13 +1223,21 @@ function renderObjectMarkdown(value: unknown): string {
   return `\`\`\`json\n${JSON.stringify(value ?? {}, null, 2)}\n\`\`\``;
 }
 
-// Internal planning pages (Learning Map, Source Map, Scope Contract, Source
-// Coverage) never carry public tags — tags are reserved for learner lessons.
+// Learner-visible planning pages: the Learning/ index, Topic Overview, and
+// Learning Map. Everything else (Source Map, Scope Contract, Source Coverage)
+// is internal. No planning page carries public tags — tags are reserved for
+// learner lessons.
+const VISIBLE_PLANNING_TYPES = new Set([
+  "learning-index",
+  "topic-overview",
+  "learning-map",
+]);
+
 function learningPageFrontmatter(
   title: string,
   type: string,
   gardenId: string,
-  textbookVersionId: string,
+  learningVersionId: string,
   sourceSetHash: string,
 ): string {
   return yamlFrontmatter({
@@ -1216,13 +1246,22 @@ function learningPageFrontmatter(
     knowledge_type: type,
     breadboardType: type.replace(/-/g, "_"),
     gardenId,
-    internal: type === "topic-overview" ? undefined : "true",
+    internal: VISIBLE_PLANNING_TYPES.has(type) ? undefined : "true",
     generatedBy: "learn_button",
     generated_by: "learn_button",
-    textbookVersion: textbookVersionId,
-    textbookVersionId,
+    learningVersion: learningVersionId,
+    learningVersionId,
     sourceSetHash,
   });
+}
+
+// All learner-facing lesson sections live under this folder so the garden root
+// only ever shows Learning/, assets/, and the garden _index.
+const LEARNING_ROOT = "Learning";
+
+/** Section folder for a lesson section, nested under Learning/. */
+function learningSectionFolder(sectionNumber: number, title: string): string {
+  return `${LEARNING_ROOT}/${textbookSectionFolder(sectionNumber, title)}`;
 }
 
 function renderLearningMapMarkdown(map: ProposedLearningMap): string {
@@ -1236,7 +1275,7 @@ function renderLearningMapMarkdown(map: ProposedLearningMap): string {
     const sectionNumber = sectionIndex + 1;
     lines.push(`- ${sectionNumber}. ${section.title}`);
     section.subsections.forEach((subsection, subsectionIndex) => {
-      const relPath = `${textbookSectionFolder(sectionNumber, section.title)}/${textbookPageFileName(
+      const relPath = `${learningSectionFolder(sectionNumber, section.title)}/${textbookPageFileName(
         sectionNumber,
         subsectionIndex + 1,
         subsection.title,
@@ -1265,6 +1304,39 @@ function renderLearningMapMarkdown(map: ProposedLearningMap): string {
   return `${lines.join("\n")}\n`;
 }
 
+function renderLearningIndexMarkdown(
+  map: ProposedLearningMap,
+  context: LearnSourceContext,
+): string {
+  const lines = [
+    `# ${map.title || context.gardenTitle}`,
+    "",
+    map.summary || `A guided path through ${context.gardenTitle}, one lesson at a time.`,
+    "",
+    "Read the sections in order. Start with the [[Learning/Topic Overview|Topic Overview]], then work through each numbered section.",
+    "",
+    "## Sections",
+    "",
+  ];
+  map.sections.forEach((section, sectionIndex) => {
+    const sectionNumber = sectionIndex + 1;
+    const sectionTitle = sanitizeLearnerTitle(section.title);
+    const folder = learningSectionFolder(sectionNumber, sectionTitle);
+    lines.push(`- ${wikilinkForRelPath(`${folder}/_index.md`, `${sectionNumber}. ${sectionTitle}`)}`);
+    section.subsections.forEach((subsection, subsectionIndex) => {
+      const relPath = `${folder}/${textbookPageFileName(
+        sectionNumber,
+        subsectionIndex + 1,
+        sanitizeLearnerTitle(subsection.title),
+      )}`;
+      lines.push(
+        `  - ${wikilinkForRelPath(relPath, `${sectionNumber}.${subsectionIndex + 1} ${sanitizeLearnerTitle(subsection.title)}`)}`,
+      );
+    });
+  });
+  return `${lines.join("\n")}\n`;
+}
+
 function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSourceContext): string {
   const lines = [
     "# Topic Overview",
@@ -1282,7 +1354,7 @@ function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSou
     const sectionNumber = sectionIndex + 1;
     lines.push(`- ${sectionNumber}. ${section.title}`);
     section.subsections.forEach((subsection, subsectionIndex) => {
-      const relPath = `${textbookSectionFolder(sectionNumber, section.title)}/${textbookPageFileName(
+      const relPath = `${learningSectionFolder(sectionNumber, section.title)}/${textbookPageFileName(
         sectionNumber,
         subsectionIndex + 1,
         subsection.title,
@@ -1532,6 +1604,49 @@ function embedAssignedSourceVisuals(markdown: string, visuals: SourceVisual[]): 
 
 const EMBEDDED_VISUAL_BLOCK_RE = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
 
+// Hard dynamic concepts that genuinely need an interactive visual, each mapped
+// to the interactive renderer type that teaches it. When a lesson body/title
+// mentions one of these, the pipeline attempts to generate that visual (the
+// model may still decline, but for these concepts it should not).
+interface HardConcept {
+  test: RegExp;
+  visualType: string;
+  concept: string;
+  reason: string;
+}
+const HARD_CONCEPTS: HardConcept[] = [
+  {
+    test: /\bleaky integrate[- ]and[- ]fire\b|\blif neuron\b|\bmembrane potential\b|\bfiring threshold\b|\brefractory\b/i,
+    visualType: "lif_neuron",
+    concept: "leaky integrate-and-fire membrane dynamics",
+    reason: "Learners need to watch the potential accumulate, leak, cross threshold, spike, and reset over time.",
+  },
+  {
+    test: /\brate coding\b|\btemporal coding\b|\bspike timing\b(?!.*plasticity)|\bfirst[- ]spike latency\b/i,
+    visualType: "neural_coding",
+    concept: "rate coding versus temporal coding",
+    reason: "Learners need to compare spike count against spike timing for the same stimulus.",
+  },
+  {
+    test: /\bspike[- ]timing[- ]dependent plasticity\b|\bstdp\b/i,
+    visualType: "stdp_window",
+    concept: "the STDP timing window",
+    reason: "Learners need to drag the pre/post timing difference and see the synaptic weight change sign.",
+  },
+  {
+    test: /\baccuracy[- ,].*\b(latency|energy)\b|\btradeoff\b|\btrade[- ]off\b|\benergy per inference\b|\bspike count\b/i,
+    visualType: "tradeoff_explorer",
+    concept: "the accuracy / latency / energy tradeoff across model families",
+    reason: "Learners need to change the deployment priority and see which model family wins.",
+  },
+];
+
+/** First hard concept referenced by this page, or null. */
+function detectHardConcept(subsection: LearningSubsectionPlan, body: string): HardConcept | null {
+  const haystack = [subsection.title, subsection.purpose, body].join("\n");
+  return HARD_CONCEPTS.find((concept) => concept.test.test(haystack)) ?? null;
+}
+
 /**
  * Stage 6 reconciliation: one stable ID everywhere.
  *
@@ -1624,10 +1739,33 @@ async function reconcileInteractiveVisuals({
     nextMarkdown = removeRawVisualPlaceholders(nextMarkdown, "");
   }
 
-  // 3) Create the interactive visuals the plan explicitly called for.
-  const requested = subsection.interactiveVisuals ?? [];
-  for (const plan of requested.slice(0, 2)) {
+  // 3) Decide which interactive visuals this page should get. The plan's
+  //    explicit requests come first; if the plan named none but the page
+  //    teaches a hard dynamic concept (LIF, coding, STDP, tradeoff), we still
+  //    attempt the matching interactive visual so those concepts are never left
+  //    without one. The model may decline (skip) — a page with no visual beats
+  //    a broken or non-interactive one.
+  const hardConcept = detectHardConcept(subsection, nextMarkdown);
+  const opportunities: Array<{ concept: string; reason: string; preferredType?: string }> = [
+    ...(subsection.interactiveVisuals ?? []).map((plan) => ({
+      concept: plan.concept,
+      reason: plan.reason,
+      preferredType: HARD_CONCEPTS.find((c) => c.test.test(`${plan.concept} ${plan.reason}`))?.visualType,
+    })),
+  ];
+  if (opportunities.length === 0 && hardConcept) {
+    opportunities.push({
+      concept: hardConcept.concept,
+      reason: hardConcept.reason,
+      preferredType: hardConcept.visualType,
+    });
+  }
+
+  for (const opportunity of opportunities.slice(0, 2)) {
     if (keptIds.length > 0) break; // page already has a working interactive
+    const typeHint = opportunity.preferredType
+      ? ` Use the interactive visual type "${opportunity.preferredType}".`
+      : "";
     try {
       const generated = await generateVisualSpec(client, model, {
         gardenId,
@@ -1637,14 +1775,14 @@ async function reconcileInteractiveVisuals({
         pageMarkdown: nextMarkdown,
         sourceContext,
         sourceFigures,
-        visualOpportunity: `${plan.concept}${plan.reason ? ` — ${plan.reason}` : ""}`,
+        visualOpportunity: `${opportunity.concept}${opportunity.reason ? ` — ${opportunity.reason}` : ""}.${typeHint}`,
         councilModeOverride: sourceFigures.length > 0 ? "full_council" : "lite_council",
       });
       const spec = generated.spec;
       if (!spec) continue;
       recordVisual(spec);
       const paragraphs = nextMarkdown.trim().split(/\n{2,}/);
-      const index = bestParagraphIndex(paragraphs, `${plan.concept} ${plan.reason}`);
+      const index = bestParagraphIndex(paragraphs, `${opportunity.concept} ${opportunity.reason}`);
       nextMarkdown = [
         ...paragraphs.slice(0, index + 1),
         buildVisualBlock(spec),
@@ -1665,28 +1803,131 @@ function fallbackSubsectionMarkdown({
   sectionNumber,
   subsectionNumber,
   subsection,
+  sectionTitle,
+  anchors,
+  sources,
+  assignedVisuals,
 }: {
   sectionNumber: number;
   subsectionNumber: number;
   subsection: LearningSubsectionPlan;
+  sectionTitle: string;
+  anchors: string[];
+  sources: LearnSourceSummary[];
+  assignedVisuals: SourceVisual[];
 }): string {
-  const title = `${sectionNumber}.${subsectionNumber} ${subsection.title}`;
+  const cleanTitle = sanitizeLearnerTitle(subsection.title);
+  const title = `${sectionNumber}.${subsectionNumber} ${cleanTitle}`;
+  const purpose = scrubLearnerProse(
+    subsection.purpose || `${cleanTitle} connects the section topic to the concrete ideas a learner needs next.`,
+  );
+  const details = fallbackRelevantDetails({ sources, subsection, anchors });
+  const conceptList = (subsection.conceptTags ?? [])
+    .map((tag) => tag.split("/").at(-1)?.replace(/-/g, " "))
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 4);
+  const visualCaptions = assignedVisuals
+    .map((visual) => visual.caption)
+    .filter(Boolean)
+    .slice(0, 3);
+  const topicLower = `${cleanTitle} ${purpose}`.toLowerCase();
+  const snnFraming =
+    /\bsnn|spik|neural network|neuron\b/i.test(topicLower)
+      ? "A conventional neural network usually carries information as continuously changing activation values from layer to layer. A spiking neural network changes the representation: a unit stays quiet until its state crosses a threshold, then it sends a discrete spike at a particular time. That shift makes timing, silence, and event count part of the computation, which is why energy use and latency become central design questions."
+      : `${cleanTitle} is best understood as a bridge between the broad goal of ${sectionTitle} and the smaller mechanism this lesson focuses on. The useful habit is to ask what information has to be represented, what operation changes it, and what constraint makes that operation necessary.`;
+  const relevantDetails =
+    details.length > 0
+      ? details.map((detail) => `- ${detail}`).join("\n")
+      : "- The confirmed learning map did not provide enough local detail for a deeper automatic explanation. The lesson therefore stays close to the section purpose and avoids adding unsupported claims.";
+  const concepts =
+    conceptList.length > 0
+      ? `The durable concepts to keep active are ${conceptList.join(", ")}.`
+      : "The durable concept is the relation between the starting representation, the mechanism that changes it, and the practical tradeoff that follows.";
+  const visuals =
+    visualCaptions.length > 0
+      ? `The visual material attached to this lesson should be read as evidence for the mechanism: ${visualCaptions.join("; ")}.`
+      : "When no figure is attached, read the lesson by tracking the chain from representation to mechanism to consequence.";
   return [
     `# ${title}`,
     "",
-    `${subsection.purpose || `This page introduces ${subsection.title}.`}`,
+    purpose,
     "",
-    "Start with the idea itself: what problem does it solve, and what would break without it? Then connect each definition or formula on this page to the example that motivated it.",
+    snnFraming,
     "",
-    `**Question.** What is the main idea to take away from ${subsection.title}?`,
+    `${concepts} For example, compare two systems that receive mostly unchanged input over time. A dense continuous system still tends to move values through many layers on each update. An event-driven system can let silence mean “nothing important changed” and spend work only when a spike occurs. That example gives the transition a practical meaning: the representation is tied to cost, timing, and the kind of hardware that can run the computation efficiently.`,
     "",
-    "**Answer.** Name the starting idea, explain why the next idea is needed, and check the conclusion against the examples and figures on this page.",
+    visuals,
+    "",
+    "Relevant details:",
+    "",
+    relevantDetails,
+    "",
+    "Read these details as a sequence. First identify the representation being used. Then ask what event, threshold, formula, or comparison changes that representation. Finally, connect that change to a consequence such as accuracy, latency, energy, convergence, or interpretability. This sequence keeps the lesson from becoming a list of facts: each detail earns its place by explaining why the next detail is needed.",
+    "",
+    `**Question.** Why does ${cleanTitle} matter before reading the later lessons in this section?`,
+    "",
+    `**Answer.** It fixes the mental model for the rest of the section. Once you know what is being represented and why the representation changes, later details become easier to place: a neuron rule describes how an event is produced, a learning rule describes how behavior improves, and an evaluation metric describes the cost of the choice. The lesson is therefore a starting chain that links mechanism to consequence.`,
   ].join("\n");
 }
 
 function cleanCouncilMarkdown(value: string, fallback: string): string {
   const cleaned = stripMarkdownFrontmatter(stripMarkdownFence(cleanGeneratedText(value))).trim();
   return cleaned || fallback;
+}
+
+function compactFallbackText(value: string): string {
+  return value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+    .replace(/\[\[([^\]]+)\]\]/g, "$1")
+    .replace(/[#>*_`|[\](){}]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function fallbackKeywords(subsection: LearningSubsectionPlan, anchors: string[]): Set<string> {
+  return new Set(
+    [subsection.title, subsection.purpose, ...anchors, ...(subsection.conceptTags ?? [])]
+      .join(" ")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/g)
+      .filter((word) => word.length > 3 && !["overview", "source", "paper", "textbook"].includes(word)),
+  );
+}
+
+function fallbackRelevantDetails({
+  sources,
+  subsection,
+  anchors,
+}: {
+  sources: LearnSourceSummary[];
+  subsection: LearningSubsectionPlan;
+  anchors: string[];
+}): string[] {
+  const keywords = fallbackKeywords(subsection, anchors);
+  const candidates: Array<{ text: string; score: number }> = [];
+  for (const source of sources) {
+    const rawBlocks = [source.excerpt ?? "", ...(source.body ?? "").split(/\n{2,}/)];
+    for (const block of rawBlocks) {
+      const text = compactFallbackText(block);
+      if (text.length < 80) continue;
+      const words = text.toLowerCase().split(/[^a-z0-9]+/g);
+      const score = words.reduce((sum, word) => sum + (keywords.has(word) ? 1 : 0), 0);
+      candidates.push({ text: text.slice(0, 360), score });
+    }
+  }
+  const seen = new Set<string>();
+  return candidates
+    .sort((a, b) => b.score - a.score || b.text.length - a.text.length)
+    .map((candidate) => candidate.text)
+    .filter((text) => {
+      const key = text.slice(0, 80).toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 3);
 }
 
 function snapshotSourceContext({
@@ -1755,7 +1996,7 @@ export async function runTextbookGeneration({
   const claimedVisualIds = new Set<string>();
 
   try {
-    appendLearnEvent(contentPath, gardenId, "learn_textbook_generation_started", {
+    appendLearnEvent(contentPath, gardenId, "learn_generation_started", {
       jobId: job.id,
       textbookVersionId,
       learningMapId: map.id,
@@ -1815,27 +2056,38 @@ export async function runTextbookGeneration({
       overviewBody = renderTopicOverviewFallback(map.learningMap, context);
     }
 
+    // Learner-facing planning pages live in Learning/. Everything else is
+    // internal and is written under .breadboard/planning/ so it never appears
+    // in the published garden or the knowledge graph.
     const learningRelPaths = [
       {
-        relPath: "Learning/Topic Overview.md",
+        relPath: `${LEARNING_ROOT}/_index.md`,
+        title: map.learningMap.title || context.gardenTitle,
+        type: "learning-index",
+        body: renderLearningIndexMarkdown(map.learningMap, context),
+      },
+      {
+        relPath: `${LEARNING_ROOT}/Topic Overview.md`,
         title: "Topic Overview",
         type: "topic-overview",
         body: overviewBody,
       },
       {
-        relPath: "Learning/Learning Map.md",
+        relPath: `${LEARNING_ROOT}/Learning Map.md`,
         title: "Learning Map",
         type: "learning-map",
         body: renderLearningMapMarkdown(map.learningMap),
       },
+    ];
+    const internalPlanningPages = [
       {
-        relPath: "Learning/Source Map.md",
+        relPath: ".breadboard/planning/Source Map.md",
         title: "Source Map",
         type: "source-map",
         body: sourceMapMarkdown(map.sourceMap, context),
       },
       {
-        relPath: "Learning/Scope Contract.md",
+        relPath: ".breadboard/planning/Scope Contract.md",
         title: "Scope Contract",
         type: "scope-contract",
         body: scopeContractMarkdown(map.scopeContract),
@@ -1843,6 +2095,21 @@ export async function runTextbookGeneration({
     ];
 
     for (const page of learningRelPaths) {
+      writeMarkdownWithBackup({
+        clusterDir,
+        relPath: page.relPath,
+        textbookVersionId,
+        content:
+          learningPageFrontmatter(
+            page.title,
+            page.type,
+            gardenId,
+            textbookVersionId,
+            context.sourceSetHash,
+          ) + page.body,
+      });
+    }
+    for (const page of internalPlanningPages) {
       writeMarkdownWithBackup({
         clusterDir,
         relPath: page.relPath,
@@ -1869,7 +2136,7 @@ export async function runTextbookGeneration({
       const sectionNumber = sectionIndex + 1;
       // Older stored maps may predate title sanitation — enforce it at render.
       const sectionTitle = sanitizeLearnerTitle(section.title);
-      const sectionFolder = textbookSectionFolder(sectionNumber, sectionTitle);
+      const sectionFolder = learningSectionFolder(sectionNumber, sectionTitle);
       const sectionIndexRelPath = `${sectionFolder}/_index.md`;
       writeMarkdownWithBackup({
         clusterDir,
@@ -1879,11 +2146,12 @@ export async function runTextbookGeneration({
           yamlFrontmatter({
             title: `${sectionNumber}. ${sectionTitle}`,
             date: generatedAt,
-            knowledge_type: "textbook-section",
-            breadboardType: "textbook_section",
+            knowledge_type: "learning-section",
+            breadboardType: "learning_section",
             gardenId,
             generatedBy: "learn_button",
-            textbookVersion: textbookVersionId,
+            generated_by: "learn_button",
+            learningVersion: textbookVersionId,
             sourceSetHash: context.sourceSetHash,
           }) +
           `# ${sectionNumber}. ${sectionTitle}\n\n${scrubLearnerProse(section.purpose || "This section is part of the confirmed Breadboard learning map.")}\n`,
@@ -1928,7 +2196,7 @@ export async function runTextbookGeneration({
           sourceOnly,
         };
 
-        appendLearnEvent(contentPath, gardenId, "learn_textbook_page_started", {
+        appendLearnEvent(contentPath, gardenId, "learn_page_started", {
           jobId: job.id,
           textbookVersionId,
           pageId,
@@ -1955,61 +2223,118 @@ export async function runTextbookGeneration({
           sectionNumber,
           subsectionNumber,
           subsection,
+          sectionTitle,
+          anchors,
+          sources: context.sources,
+          assignedVisuals,
         });
-        let pageBody = fallback;
+        const assignedVisualUrls = assignedVisuals
+          .map((visual) => sourceVisualEmbedUrl(visual))
+          .filter((url): url is string => Boolean(url));
+        const preparedFallback = embedAssignedSourceVisuals(
+          ensureQuestionBlock(scrubAiisms(scrubLearnerProse(fallback)), subsectionTitle),
+          assignedVisuals,
+        );
+
+        // Stage 4: generate → revise → scrub → embed, then run the local quality
+        // critic. Retry on a hard failure (placeholder text, no Q&A, empty prose,
+        // an assigned visual that never got embedded). The deterministic
+        // fallback is judged first so an unusable model draft cannot crash the
+        // job when a grounded emergency lesson is available.
+        let pageBody = preparedFallback;
         let subsectionRunId: string | undefined;
         let revisionRunId: string | undefined;
+        let bestQuality: ReturnType<typeof assessLessonQuality> | null = assessLessonQuality(
+          preparedFallback,
+          { assignedVisualUrls },
+        );
+        const MAX_PAGE_ATTEMPTS = 3;
 
-        try {
-          const generated = await callCouncilText({
-            client,
-            model,
-            taskType: "subsection_generation",
-            gardenId,
-            pageId,
-            system: SUBSECTION_PROMPT,
-            user: JSON.stringify(pageSourceContext, null, 2),
-            sourceContext: pageSourceContext,
-            councilModeOverride: "full_council",
-          });
-          subsectionRunId = generated.councilRunId;
-          pageBody = cleanCouncilMarkdown(generated.content, fallback);
-        } catch {
-          pageBody = fallback;
+        for (let attempt = 0; attempt < MAX_PAGE_ATTEMPTS; attempt += 1) {
+          let attemptBody = fallback;
+          const strictnessNote =
+            attempt === 0
+              ? ""
+              : `\n\nThis is retry ${attempt}. The previous draft failed quality checks (${(bestQuality?.problems ?? [])
+                  .map((problem) => problem.code)
+                  .join(", ")}). Write a longer, deeper, fully-written lesson with a concrete example and a real Question./Answer.`;
+          try {
+            const generated = await callCouncilText({
+              client,
+              model,
+              taskType: "subsection_generation",
+              gardenId,
+              pageId,
+              system: SUBSECTION_PROMPT,
+              user: JSON.stringify(pageSourceContext, null, 2) + strictnessNote,
+              sourceContext: pageSourceContext,
+              councilModeOverride: "full_council",
+            });
+            subsectionRunId = generated.councilRunId;
+            attemptBody = cleanCouncilMarkdown(generated.content, fallback);
+          } catch {
+            attemptBody = fallback;
+          }
+
+          try {
+            const revised = await callCouncilText({
+              client,
+              model,
+              taskType: "full_page_revision",
+              gardenId,
+              pageId,
+              system: REVISION_PROMPT,
+              user: JSON.stringify(
+                { pageMarkdown: attemptBody, sourceOnly, sourceContext: pageSourceContext },
+                null,
+                2,
+              ),
+              sourceContext: pageSourceContext,
+              councilModeOverride: "full_council",
+            });
+            revisionRunId = revised.councilRunId;
+            attemptBody = cleanCouncilMarkdown(revised.content, attemptBody);
+          } catch {
+            // Keep the generated or fallback attempt body.
+          }
+
+          // Deterministic hygiene, Q&A safety net, and source-visual embedding
+          // happen before the critic so it judges the final page.
+          attemptBody = scrubAiisms(scrubLearnerProse(attemptBody));
+          attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
+          attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
+
+          const quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
+          // Keep this attempt if it is the first, resolves a hard failure, or has
+          // fewer problems than the best so far.
+          if (
+            bestQuality === null ||
+            (bestQuality.hardFail && !quality.hardFail) ||
+            (bestQuality.hardFail === quality.hardFail &&
+              quality.problems.length < bestQuality.problems.length)
+          ) {
+            pageBody = attemptBody;
+            bestQuality = quality;
+          }
+          if (!quality.hardFail) break;
         }
 
-        try {
-          const revised = await callCouncilText({
-            client,
-            model,
-            taskType: "full_page_revision",
-            gardenId,
-            pageId,
-            system: REVISION_PROMPT,
-            user: JSON.stringify(
-              {
-                pageMarkdown: pageBody,
-                sourceOnly,
-                sourceContext: pageSourceContext,
-              },
-              null,
-              2,
-            ),
-            sourceContext: pageSourceContext,
-            councilModeOverride: "full_council",
-          });
-          revisionRunId = revised.councilRunId;
-          pageBody = cleanCouncilMarkdown(revised.content, pageBody);
-        } catch {
-          // Keep the generated or fallback page body.
+        if (bestQuality?.hardFail) {
+          throw new Error(
+            `Lesson "${pageTitle}" could not be generated to a usable standard after ${MAX_PAGE_ATTEMPTS} attempts: ${bestQuality.problems
+              .filter((problem) => problem.hard)
+              .map((problem) => problem.message)
+              .join("; ")}`,
+          );
         }
-
-        // Stage 4 hygiene: safe deterministic scrubs behind the prompt rules.
-        pageBody = scrubLearnerProse(pageBody);
-        pageBody = ensureQuestionBlock(pageBody, subsectionTitle);
-
-        // Stage 5: every assigned source visual must appear in the body.
-        pageBody = embedAssignedSourceVisuals(pageBody, assignedVisuals);
+        if (bestQuality && bestQuality.problems.length > 0) {
+          appendLearnEvent(contentPath, gardenId, "learn_page_quality_warning", {
+            jobId: job.id,
+            textbookVersionId,
+            pageId,
+            problems: bestQuality.problems.map((problem) => problem.code),
+          });
+        }
 
         updateLearnJob(job.id, {
           status: "generating_visuals",
@@ -2035,31 +2360,26 @@ export async function runTextbookGeneration({
         });
         pageBody = visualized.markdown;
 
-        // Stage 7: 3-6 hierarchical zettel tags on learner pages only.
+        // Stage 7: 3-5 hierarchical zettel tags on learner pages only. The page
+        // body (real prose) grounds the tags, and the section/subsection titles
+        // seed the domain namespace.
         const zettelTags = normalizeZettelTags(
-          subsection.conceptTags,
+          [...subsection.conceptTags, ...extractTagSeeds(pageBody)],
           subsectionTitle,
           map.learningMap.title || context.gardenTitle,
         );
-        const conceptTags = normalizeTopicTags(
-          subsection.conceptTags,
-          pageBody,
-          10,
-          `${subsectionTitle}\n${pageBody}`,
-        );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const finalContent =
-          buildTextbookPageFrontmatter({
+          buildLearningPageFrontmatter({
             gardenId,
             sectionNumber,
             subsectionNumber,
             title: pageTitle,
             sourceAnchors: anchors,
-            conceptTags,
             tags: zettelTags,
             visualIds: visualized.visualIds,
             sourceVisualIds: assignedVisualIds,
-            textbookVersionId,
+            learningVersionId: textbookVersionId,
             sourceSetHash: context.sourceSetHash,
             generatedAt,
           }) + `${pageBody.trim()}\n`;
@@ -2089,7 +2409,7 @@ export async function runTextbookGeneration({
           visualIds: visualized.visualIds,
           sourceFigureIds: assignedVisualIds,
         });
-        appendLearnEvent(contentPath, gardenId, "learn_textbook_page_written", {
+        appendLearnEvent(contentPath, gardenId, "learn_page_written", {
           jobId: job.id,
           textbookVersionId,
           pageId,
@@ -2116,7 +2436,7 @@ export async function runTextbookGeneration({
 
     writeMarkdownWithBackup({
       clusterDir,
-      relPath: "Learning/Source Coverage.md",
+      relPath: ".breadboard/planning/Source Coverage.md",
       textbookVersionId,
       content:
         learningPageFrontmatter(
@@ -2153,7 +2473,7 @@ export async function runTextbookGeneration({
       backupDir,
     });
 
-    appendLearnEvent(contentPath, gardenId, "learn_textbook_generation_completed", {
+    appendLearnEvent(contentPath, gardenId, "learn_generation_completed", {
       jobId: job.id,
       textbookVersionId,
       pageCount: generatedPages.length,
@@ -2161,7 +2481,7 @@ export async function runTextbookGeneration({
     });
     const finalJob = updateLearnJob(job.id, {
       status: "complete",
-      currentStep: "Textbook complete",
+      currentStep: "Lessons complete",
       progressPercent: 100,
       confirmedLearningMapId: map.id,
       latestTextbookVersionId: textbookVersionId,

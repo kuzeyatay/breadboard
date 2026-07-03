@@ -265,7 +265,7 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const flagColor = validFlagColor(node.data?.flagColor)
   const isSourceDocument = node.data?.knowledgeType === "source-document"
   const isTextbookPage =
-    node.data?.knowledgeType === "textbook-page" || node.data?.breadboardType === "textbook_page"
+    node.data?.knowledgeType === "textbook-page" || node.data?.knowledgeType === "learning-page" || node.data?.breadboardType === "textbook_page" || node.data?.breadboardType === "learning_page"
   const isInternalConcept =
     node.data?.knowledgeType === "internal-concept" ||
     node.data?.breadboardType === "internal_concept"

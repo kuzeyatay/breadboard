@@ -1,5 +1,22 @@
 export const LEARNING_FOLDER = "Learning";
-export const TEXTBOOK_PAGE_TYPE = "textbook-page";
+// Learner-facing lesson pages/sections. The word "textbook" is never written to
+// visible markdown, so the current values are learning-* and the older
+// textbook-* values are still accepted when reading existing gardens.
+export const LEARNING_PAGE_TYPE = "learning-page";
+export const LEARNING_SECTION_TYPE = "learning-section";
+/** @deprecated legacy value, still read for back-compat. */
+export const TEXTBOOK_PAGE_TYPE = LEARNING_PAGE_TYPE;
+export const LEARNING_PAGE_TYPES = new Set([LEARNING_PAGE_TYPE, "textbook-page"]);
+export const LEARNING_PAGE_BREADBOARD_TYPES = new Set([
+  "learning_page",
+  "textbook_page",
+]);
+export const LEARNING_SECTION_TYPES = new Set([
+  LEARNING_SECTION_TYPE,
+  "textbook-section",
+  "learning_section",
+  "textbook_section",
+]);
 export const INTERNAL_CONCEPT_TYPE = "internal-concept";
 export const LEGACY_GENERATED_TOPIC_FOLDER = "generated";
 export const INTERNAL_CONCEPT_FOLDER = "Internal/Concept Graph";
@@ -9,6 +26,7 @@ export const LEARNING_PAGE_ORDER = [
   "Learning/Learning Map.md",
   "Learning/Source Map.md",
   "Learning/Scope Contract.md",
+  "Learning/Source Coverage.md",
 ] as const;
 
 export type BreadboardMetadata = Record<string, string | string[] | undefined>;
@@ -60,10 +78,18 @@ export function isInternalConceptMetadata(
   );
 }
 
-export function isTextbookPageMetadata(data: BreadboardMetadata | undefined): boolean {
-  const type = breadboardType(data);
-  return type === "textbook_page" || type === TEXTBOOK_PAGE_TYPE;
+export function isLearningPageMetadata(data: BreadboardMetadata | undefined): boolean {
+  const knowledgeType = metadataString(data, "knowledge_type");
+  const bbType = breadboardType(data);
+  return (
+    LEARNING_PAGE_TYPES.has(knowledgeType) ||
+    LEARNING_PAGE_TYPES.has(bbType) ||
+    LEARNING_PAGE_BREADBOARD_TYPES.has(bbType)
+  );
 }
+
+/** @deprecated use isLearningPageMetadata */
+export const isTextbookPageMetadata = isLearningPageMetadata;
 
 export function isLearningPageRelPath(relPath = ""): boolean {
   return normalizedRelPath(relPath).startsWith(`${LEARNING_FOLDER.toLowerCase()}/`);
@@ -93,7 +119,7 @@ export function readingOrderRank(relPath = "", type = ""): number {
   );
   if (exact >= 0) return exact;
   if (isLearningPageRelPath(normalized)) return 10;
-  if (type === TEXTBOOK_PAGE_TYPE || normalized.match(/^\d+\.\s*[^/]+\//)) return 20;
+  if (LEARNING_PAGE_TYPES.has(type) || normalized.match(/^\d+\.\s*[^/]+\//)) return 20;
   if (normalized.toLowerCase().startsWith("sources/")) return 30;
   if (normalized.toLowerCase().startsWith("legacy/")) return 90;
   if (isLegacySubtopicRelPath(normalized)) return 95;

@@ -259,7 +259,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
         return width * (stableUnit(`tag-x:${node.id}`) - 0.5) * 0.86
       }
       if (node.knowledgeType === "source-document") return -width * 0.32
-      if (node.knowledgeType === "textbook-page" || node.breadboardType === "textbook_page") {
+      if (node.knowledgeType === "textbook-page" || node.knowledgeType === "learning-page" || node.breadboardType === "textbook_page" || node.breadboardType === "learning_page") {
         return width * 0.24
       }
       if (node.knowledgeType === "generated-note") return width * 0.34
@@ -321,7 +321,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
       return graphColors.current
     } else if (d.knowledgeType === "source-document") {
       return graphColors.source
-    } else if (d.knowledgeType === "textbook-page" || d.breadboardType === "textbook_page") {
+    } else if (d.knowledgeType === "textbook-page" || d.knowledgeType === "learning-page" || d.breadboardType === "textbook_page" || d.breadboardType === "learning_page") {
       return graphColors.textbook
     } else if (d.knowledgeType === "internal-concept" || d.breadboardType === "internal_concept") {
       return graphColors.internal
@@ -346,7 +346,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
       ? 1.4
       : d.knowledgeType === "source-document"
         ? 4.4
-        : d.knowledgeType === "textbook-page" || d.breadboardType === "textbook_page"
+        : d.knowledgeType === "textbook-page" || d.knowledgeType === "learning-page" || d.breadboardType === "textbook_page" || d.breadboardType === "learning_page"
           ? 3.2
           : d.knowledgeType === "internal-concept" || d.breadboardType === "internal_concept"
             ? 1.8

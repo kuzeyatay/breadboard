@@ -464,12 +464,273 @@ const renderResonanceCurve: Renderer = (figure, state) => {
   figure.appendChild(note)
 }
 
+// ----------------------------------------------------- spiking-network visuals
+
+/** Nearest-sample lookup over a precomputed trace, for feeding drawPlot. */
+function traceLookup(trace: Array<[number, number]>): (x: number) => number {
+  return (x: number) => {
+    if (trace.length === 0) return NaN
+    if (x <= trace[0][0]) return trace[0][1]
+    if (x >= trace[trace.length - 1][0]) return trace[trace.length - 1][1]
+    let lo = 0
+    let hi = trace.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (trace[mid][0] < x) lo = mid + 1
+      else hi = mid
+    }
+    return trace[lo][1]
+  }
+}
+
+/** Leaky integrate-and-fire membrane potential simulator: input drives the
+ * potential up, leak pulls it toward rest, a threshold crossing emits a spike
+ * and resets, and a refractory period holds the neuron silent. */
+function renderLifNeuron(figure: HTMLElement, state: Dict): void {
+  const rest = num(state.restPotential, 0)
+  const threshold = num(state.threshold, 1)
+  const reset = num(state.resetPotential, rest)
+  const input = num(state.inputCurrent, 1.2)
+  const leak = Math.min(1, Math.max(0.01, num(state.leak, 0.15)))
+  const refractory = Math.max(0, num(state.refractory, 2))
+  const duration = Math.min(200, Math.max(10, num(state.duration, 40)))
+  const dt = 0.1
+
+  const trace: Array<[number, number]> = []
+  const spikes: number[] = []
+  let V = rest
+  let refractoryUntil = -1
+  for (let t = 0; t <= duration + 1e-9; t += dt) {
+    if (t < refractoryUntil) {
+      V = reset
+    } else {
+      V += dt * (-(V - rest) * leak + input)
+      if (V >= threshold) {
+        trace.push([t, threshold + 0.4]) // spike tip
+        spikes.push(t)
+        V = reset
+        refractoryUntil = t + refractory
+      }
+    }
+    trace.push([t, V])
+  }
+
+  drawPlot(figure, {
+    xMin: 0,
+    xMax: duration,
+    yMin: Math.min(reset, rest) - 0.25,
+    yMax: threshold + 0.7,
+    series: [
+      { fn: traceLookup(trace), color: COLORS.a, label: "membrane potential V(t)" },
+      { fn: () => threshold, color: COLORS.c, label: "firing threshold", dash: "5 4" },
+    ],
+    xLabel: "time (ms)",
+  })
+
+  const rate = spikes.length / (duration || 1)
+  figure.appendChild(
+    el(
+      "p",
+      "bv-readout",
+      `${spikes.length} spike${spikes.length === 1 ? "" : "s"} in ${duration.toFixed(0)} ms · ` +
+        `input ${input.toFixed(2)} · leak ${leak.toFixed(2)} · refractory ${refractory.toFixed(1)} ms · ` +
+        `firing rate ${(rate * 1000).toFixed(0)} Hz. ` +
+        (spikes.length === 0
+          ? "Input is too weak to reach threshold — leak cancels it out."
+          : "Each spike resets the potential; leak then pulls it back toward rest."),
+    ),
+  )
+}
+
+/** Rate coding vs temporal coding: the same stimulus strength produces either
+ * more spikes (rate) or an earlier first spike (temporal). */
+function renderNeuralCoding(figure: HTMLElement, state: Dict): void {
+  const strength = Math.min(1, Math.max(0, num(state.strength, 0.6)))
+  const mode = str(state.mode, "both")
+  const window = 400 // ms
+  const w = 640
+  const rowH = 54
+  const rows = mode === "both" ? 2 : 1
+  const h = 40 + rows * rowH
+  const svg = svgEl("svg", { viewBox: `0 0 ${w} ${h}`, class: "bv-svg", role: "img" }) as SVGSVGElement
+
+  const drawRow = (y: number, label: string, times: number[], color: string) => {
+    svg.appendChild(svgEl("line", { x1: 60, y1: y + rowH / 2, x2: w - 16, y2: y + rowH / 2, class: "bv-axis" }))
+    const caption = svgEl("text", { x: 60, y: y + 12, class: "bv-tick", "text-anchor": "start" })
+    caption.textContent = label
+    svg.appendChild(caption)
+    for (const t of times) {
+      const x = 60 + (t / window) * (w - 76)
+      svg.appendChild(
+        svgEl("line", { x1: x, y1: y + rowH / 2 - 14, x2: x, y2: y + rowH / 2 + 14, stroke: color, "stroke-width": 2.5 }),
+      )
+    }
+  }
+
+  let top = 28
+  const rateTimes: number[] = []
+  const spikeCount = Math.round(1 + strength * 11)
+  for (let i = 0; i < spikeCount; i++) rateTimes.push(((i + 0.5) / spikeCount) * window)
+  const latency = (1 - strength) * window * 0.85 + 10
+  const temporalTimes = [latency]
+
+  if (mode === "rate" || mode === "both") {
+    drawRow(top, "rate coding", rateTimes, COLORS.b)
+    top += rowH
+  }
+  if (mode === "temporal" || mode === "both") {
+    drawRow(top, "temporal coding", temporalTimes, COLORS.d)
+  }
+  figure.textContent = ""
+  figure.appendChild(svg)
+  figure.appendChild(
+    el(
+      "p",
+      "bv-readout",
+      `Stimulus strength ${(strength * 100).toFixed(0)}%. ` +
+        `Rate coding fires ${spikeCount} spikes across the window — count carries the signal. ` +
+        `Temporal coding fires once at ${latency.toFixed(0)} ms — a stronger stimulus spikes earlier, so timing carries the signal.`,
+    ),
+  )
+}
+
+/** STDP learning window: the synaptic weight change depends on the sign and
+ * size of the pre/post spike timing difference. */
+function renderStdpWindow(figure: HTMLElement, state: Dict): void {
+  const aPlus = Math.max(0, num(state.aPlus, 1))
+  const aMinus = Math.max(0, num(state.aMinus, 1))
+  const tauPlus = Math.max(1, num(state.tauPlus, 20))
+  const tauMinus = Math.max(1, num(state.tauMinus, 20))
+  const deltaT = num(state.deltaT, 8)
+  const win = Math.max(tauPlus, tauMinus) * 3
+  const dw = (dt: number) => (dt >= 0 ? aPlus * Math.exp(-dt / tauPlus) : -aMinus * Math.exp(dt / tauMinus))
+
+  drawPlot(figure, {
+    xMin: -win,
+    xMax: win,
+    series: [{ fn: dw, color: COLORS.b, label: "Δw (synaptic weight change)" }],
+    markerX: deltaT,
+    xLabel: "Δt = t(post) − t(pre), ms",
+  })
+
+  const regime =
+    deltaT > 0.5
+      ? "pre fires before post → the synapse strengthens (potentiation, LTP)"
+      : deltaT < -0.5
+        ? "post fires before pre → the synapse weakens (depression, LTD)"
+        : "near-simultaneous spikes → almost no change"
+  figure.appendChild(
+    el("p", "bv-readout", `Δt = ${deltaT.toFixed(1)} ms → Δw = ${dw(deltaT).toFixed(3)}. ${regime}.`),
+  )
+}
+
+interface TradeoffModel {
+  label: string
+  accuracy: number // 0..1, higher better
+  latency: number // 0..1, lower better
+  energy: number // 0..1, lower better
+}
+
+function tradeoffModels(state: Dict): TradeoffModel[] {
+  const raw = Array.isArray(state.models) ? (state.models as Dict[]) : []
+  const models = raw
+    .map((model) => ({
+      label: str(model.label, "model"),
+      accuracy: Math.min(1, Math.max(0, num(model.accuracy, 0.8))),
+      latency: Math.min(1, Math.max(0, num(model.latency, 0.5))),
+      energy: Math.min(1, Math.max(0, num(model.energy, 0.5))),
+    }))
+    .filter((model) => model.label !== "model")
+  if (models.length >= 2) return models
+  // Sensible SNN-family defaults so the visual is never empty.
+  return [
+    { label: "ANN", accuracy: 0.99, latency: 0.9, energy: 0.95 },
+    { label: "Converted SNN", accuracy: 0.95, latency: 0.6, energy: 0.45 },
+    { label: "Surrogate-gradient SNN", accuracy: 0.96, latency: 0.45, energy: 0.4 },
+    { label: "STDP SNN", accuracy: 0.86, latency: 0.35, energy: 0.2 },
+  ]
+}
+
+/** Accuracy / latency / energy tradeoff explorer: score each model family under
+ * the learner-chosen deployment priority and recommend the best fit. */
+function renderTradeoffExplorer(figure: HTMLElement, state: Dict): void {
+  const models = tradeoffModels(state)
+  const priority = str(state.priority, "balanced")
+  const weights =
+    priority === "accuracy"
+      ? { accuracy: 0.7, latency: 0.15, energy: 0.15 }
+      : priority === "latency"
+        ? { accuracy: 0.2, latency: 0.6, energy: 0.2 }
+        : priority === "energy"
+          ? { accuracy: 0.2, latency: 0.2, energy: 0.6 }
+          : { accuracy: 0.34, latency: 0.33, energy: 0.33 }
+
+  const score = (m: TradeoffModel) =>
+    weights.accuracy * m.accuracy + weights.latency * (1 - m.latency) + weights.energy * (1 - m.energy)
+
+  const w = 640
+  const h = 300
+  const padL = 150
+  const padR = 20
+  const padT = 16
+  const padB = 24
+  const barGap = 10
+  const rowH = (h - padT - padB) / models.length
+  const svg = svgEl("svg", { viewBox: `0 0 ${w} ${h}`, class: "bv-svg", role: "img" }) as SVGSVGElement
+  const best = models.reduce((a, b) => (score(b) > score(a) ? b : a), models[0])
+
+  models.forEach((model, index) => {
+    const y = padT + index * rowH
+    const s = score(model)
+    const barW = s * (w - padL - padR)
+    const label = svgEl("text", { x: padL - 8, y: y + rowH / 2, class: "bv-tick", "text-anchor": "end" })
+    label.textContent = model.label
+    svg.appendChild(label)
+    svg.appendChild(
+      svgEl("rect", {
+        x: padL,
+        y: y + barGap / 2,
+        width: Math.max(1, barW),
+        height: rowH - barGap,
+        fill: model.label === best.label ? COLORS.a : COLORS.b,
+        rx: 3,
+      }),
+    )
+    const value = svgEl("text", { x: padL + Math.max(1, barW) + 6, y: y + rowH / 2, class: "bv-tick", "text-anchor": "start" })
+    value.textContent = s.toFixed(2)
+    svg.appendChild(value)
+  })
+
+  figure.textContent = ""
+  figure.appendChild(svg)
+  const priorityLabel =
+    priority === "accuracy"
+      ? "highest accuracy"
+      : priority === "latency"
+        ? "lowest latency"
+        : priority === "energy"
+          ? "lowest energy"
+          : "a balance of all three"
+  figure.appendChild(
+    el(
+      "p",
+      "bv-readout",
+      `Prioritizing ${priorityLabel}, the best fit is ${best.label}. ` +
+        `Change the priority to see why deployment goals, not accuracy alone, drive the model choice.`,
+    ),
+  )
+}
+
 const RENDERERS: Record<string, Renderer> = {
   function_plot: renderFunctionPlot,
   linked_time_plots: renderLinkedTimePlots,
   mass_spring: renderMassSpring,
   energy_exchange: renderEnergyExchange,
   resonance_curve: renderResonanceCurve,
+  lif_neuron: renderLifNeuron,
+  neural_coding: renderNeuralCoding,
+  stdp_window: renderStdpWindow,
+  tradeoff_explorer: renderTradeoffExplorer,
 }
 
 // ------------------------------------------------------------------- card

@@ -566,7 +566,7 @@ async function formatPdfPagesAsMarkdown({
   const inputPages = pdfMarkdownInputPages(pages, title, outline);
   const chunks = chunkPdfMarkdownInputPages(inputPages);
   const markdownChunks: string[] = [];
-  const warnings: string[] = [];
+  let formattingFallbackCount = 0;
 
   for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
     const chunk = chunks[chunkIndex];
@@ -606,19 +606,24 @@ async function formatPdfPagesAsMarkdown({
           pageMarkdown(chunk.pages, { includeImages: false }),
       );
     } catch (error) {
-      const reason =
-        error instanceof Error ? error.message : "model formatting failed";
-      warnings.push(`${label}: ${reason}`);
+      formattingFallbackCount += 1;
+      const reason = errorMessage(error, "model formatting failed");
+      console.warn(
+        `[ingest] PDF chunk formatting failed for ${label}; saved extracted text fallback instead. ${reason}`,
+      );
       markdownChunks.push(pageMarkdown(chunk.pages, { includeImages: false }));
     }
   }
 
+  if (formattingFallbackCount > 0) {
+    console.warn(
+      `[ingest] PDF formatting fell back to extracted text for ${formattingFallbackCount}/${chunks.length} chunk${formattingFallbackCount === 1 ? "" : "s"} in ${title}.`,
+    );
+  }
+
   return {
     markdownText: markdownChunks.join("\n\n"),
-    warning:
-      warnings.length > 0
-        ? `Chunked PDF formatting fallback used for ${warnings.length} part${warnings.length === 1 ? "" : "s"}: ${warnings.join("; ")}`
-        : "",
+    warning: "",
   };
 }
 
@@ -1425,18 +1430,37 @@ async function runIngest({
   // ── Knowledge extraction (optional) ──────────────────────────────────────
 
   let extraction: KnowledgeExtraction;
+  let mapGenerationWarning = "";
   throwIfRequestAborted(request.signal);
   if (generateMap && !skipKnowledgeExtraction) {
-    extraction = await extractDocumentKnowledge({
-      client: client!,
-      title: nameWithoutExt,
-      sourceType: ext || "text",
-      sourceLabel: source,
-      isHandwriting,
-      pages,
-      text: plainText,
-      onProgress: emit,
-    });
+    try {
+      extraction = await extractDocumentKnowledge({
+        client: client!,
+        title: nameWithoutExt,
+        sourceType: ext || "text",
+        sourceLabel: source,
+        isHandwriting,
+        pages,
+        text: plainText,
+        onProgress: emit,
+      });
+    } catch (error) {
+      const reason = errorMessage(error, "map generation failed");
+      console.warn(
+        `[ingest] Map generation failed for ${filename}; saved source note without extracted lesson topics. ${reason}`,
+      );
+      mapGenerationWarning =
+        "Map generation failed, so the source was saved without extracted lesson topics. You can retry with Learn after upload.";
+      extraction = {
+        documentTitle: nameWithoutExt,
+        summary: plainText.trim()
+          ? plainText.trim().slice(0, 300)
+          : `Uploaded ${filename}; map generation failed.`,
+        topics: [],
+        relationships: [],
+        suggestedTags: [],
+      };
+    }
   } else {
     const summary = plainText.trim()
       ? plainText.trim().slice(0, 300)
@@ -1477,10 +1501,13 @@ async function runIngest({
     success: true,
     filename,
     slug: saved.sourceSlug,
+    sourceRelPath: saved.sourceRelPath,
     wordCount: saved.wordCount,
     topicCount: saved.topics.length,
     imageCount,
     screenshotWarning: screenshotWarning || undefined,
+    mapGenerationWarning: mapGenerationWarning || undefined,
+    mapGenerated: generateMap && !mapGenerationWarning && !skipKnowledgeExtraction,
     topics: saved.topics,
   };
 }

@@ -226,6 +226,24 @@ export interface TransformOptions {
   allSlugs: FullSlug[]
 }
 
+function scopedGardenTarget(
+  src: FullSlug,
+  targetCanonical: string,
+  allSlugs: FullSlug[],
+): FullSlug | null {
+  const gardenRoot = src.split("/").filter(Boolean)[0]
+  if (!gardenRoot || gardenRoot === "index") return null
+  if (targetCanonical === gardenRoot || targetCanonical.startsWith(`${gardenRoot}/`)) return null
+
+  const scoped = joinSegments(gardenRoot, targetCanonical) as FullSlug
+  if (allSlugs.includes(scoped)) return scoped
+
+  const scopedIndex = joinSegments(scoped, "index") as FullSlug
+  if (allSlugs.includes(scopedIndex)) return scopedIndex
+
+  return null
+}
+
 export function transformLink(src: FullSlug, target: string, opts: TransformOptions): RelativeURL {
   let targetSlug = transformInternalLink(target)
 
@@ -237,6 +255,14 @@ export function transformLink(src: FullSlug, target: string, opts: TransformOpti
     let [targetCanonical, targetAnchor] = splitAnchor(canonicalSlug)
 
     if (opts.strategy === "shortest") {
+      // Breadboard gardens are grouped under a top-level garden slug. A link
+      // like [[sources/foo]] from test/_index.md should resolve to
+      // test/sources/foo when that scoped page exists, not /sources/foo.
+      const scopedTarget = scopedGardenTarget(src, targetCanonical, opts.allSlugs)
+      if (scopedTarget) {
+        return (resolveRelative(src, scopedTarget) + targetAnchor) as RelativeURL
+      }
+
       // if the file name is unique, then it's just the filename
       const matchingFileNames = opts.allSlugs.filter((slug) => {
         const parts = slug.split("/")

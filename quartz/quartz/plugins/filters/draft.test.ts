@@ -14,11 +14,43 @@ function shouldPublish(
 }
 
 describe("RemoveDrafts", () => {
-  test("publishes normal textbook pages", () => {
+  test("publishes learn-authored lesson pages", () => {
     assert.equal(
-      shouldPublish({ knowledge_type: "textbook-page" }, "course/1. Intro/page.md"),
+      shouldPublish(
+        { knowledge_type: "learning-page", generated_by: "learn_button" },
+        "course/Learning/1. Intro/1.1 page.md",
+      ),
       true,
     )
+    // Legacy textbook-page value still publishes when learn-authored.
+    assert.equal(
+      shouldPublish(
+        { knowledge_type: "textbook-page", generated_by: "learn_button" },
+        "course/Learning/1. Intro/1.1 page.md",
+      ),
+      true,
+    )
+  })
+
+  test("hides ingest lesson sections/pages that the Learn pipeline did not author", () => {
+    // No generated_by: learn_button => internal ingest scaffolding.
+    assert.equal(
+      shouldPublish({ knowledge_type: "learning-section" }, "course/1. Source Title/_index.md"),
+      false,
+    )
+    assert.equal(
+      shouldPublish({ knowledge_type: "textbook-section" }, "course/1. Source Title/_index.md"),
+      false,
+    )
+    assert.equal(
+      shouldPublish(
+        { knowledge_type: "learning-page", breadboardType: "learning_page" },
+        "course/1. Source Title/1.1 topic.md",
+      ),
+      false,
+    )
+    // Legacy flat knowledge-topic gardens are a different type and stay visible.
+    assert.equal(shouldPublish({ knowledge_type: "knowledge-topic" }, "course/amplitude.md"), true)
   })
 
   test("hides draft and internal ConceptNode pages", () => {
@@ -39,17 +71,17 @@ describe("RemoveDrafts", () => {
     )
   })
 
-  test("hides raw source archives and planning documents", () => {
+  test("publishes source notes and learning reference pages", () => {
     assert.equal(
       shouldPublish({ knowledge_type: "source-document" }, "course/sources/reader.md"),
-      false,
+      true,
     )
-    // Path rule alone hides anything under sources/, even without frontmatter.
-    assert.equal(shouldPublish({}, "course/sources/reader.md"), false)
+    // Sources is a public learner reference folder, even without frontmatter.
+    assert.equal(shouldPublish({}, "course/sources/reader.md"), true)
     for (const knowledgeType of ["source-map", "scope-contract", "source-coverage", "learning-map"]) {
       assert.equal(
         shouldPublish({ knowledge_type: knowledgeType }, "course/Learning/page.md"),
-        false,
+        true,
         knowledgeType,
       )
     }
@@ -72,15 +104,16 @@ describe("RemoveDrafts", () => {
       ),
       false,
     )
-    // A real lesson page citing the same source stays published.
+    // A real learn-authored lesson citing the same source stays published.
     assert.equal(
       shouldPublish(
         {
-          knowledge_type: "textbook-page",
+          knowledge_type: "learning-page",
+          generated_by: "learn_button",
           title: "1.1 The Leaky Integrate-and-Fire Neuron",
           source_file: "2510.27379v1.pdf",
         },
-        "course/1. Spiking Neural Networks/1.1 The Leaky Integrate-and-Fire Neuron.md",
+        "course/Learning/2. Spikes, Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
       ),
       true,
     )
