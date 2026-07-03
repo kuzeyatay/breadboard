@@ -71,20 +71,38 @@ describe("RemoveDrafts", () => {
     )
   })
 
-  test("publishes source notes and learning reference pages", () => {
+  test("hides raw sources and internal planning artifacts", () => {
+    // Raw source notes are internal: they ground lessons but never publish.
     assert.equal(
       shouldPublish({ knowledge_type: "source-document" }, "course/sources/reader.md"),
-      true,
+      false,
     )
-    // Sources is a public learner reference folder, even without frontmatter.
-    assert.equal(shouldPublish({}, "course/sources/reader.md"), true)
-    for (const knowledgeType of ["source-map", "scope-contract", "source-coverage", "learning-map"]) {
+    // Anything under sources/ is internal, even without frontmatter.
+    assert.equal(shouldPublish({}, "course/sources/reader.md"), false)
+    // Planning artifacts are internal by knowledge type.
+    for (const knowledgeType of ["source-map", "scope-contract", "source-coverage"]) {
       assert.equal(
-        shouldPublish({ knowledge_type: knowledgeType }, "course/Learning/page.md"),
-        true,
+        shouldPublish({ knowledge_type: knowledgeType }, "course/.breadboard/planning/page.md"),
+        false,
         knowledgeType,
       )
     }
+    // A stale planning file physically under Learning/ is still hidden.
+    assert.equal(
+      shouldPublish({ knowledge_type: "source-map" }, "course/Learning/Source Map.md"),
+      false,
+    )
+    assert.equal(
+      shouldPublish({ knowledge_type: "scope-contract" }, "course/Learning/Scope Contract.md"),
+      false,
+    )
+    // Numbered source-snapshot folders are internal.
+    assert.equal(shouldPublish({}, "course/1. source-snapshots/page-003.md"), false)
+    // The learner-facing planning pages under Learning/ still publish.
+    assert.equal(
+      shouldPublish({ knowledge_type: "learning-map" }, "course/Learning/Learning Map.md"),
+      true,
+    )
     assert.equal(
       shouldPublish({ knowledge_type: "topic-overview" }, "course/Learning/Topic Overview.md"),
       true,

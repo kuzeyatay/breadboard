@@ -22,24 +22,52 @@ function isLegacySubtopicPath(relativePath = ""): boolean {
   )
 }
 
-/** Frontmatter types that are internal pipeline artifacts, never learner pages. */
+/** Frontmatter types that are internal pipeline artifacts, never learner pages.
+ * Raw source documents and planning artifacts (source map, scope contract,
+ * source coverage) are internal too — only their distilled lessons under
+ * Learning/ are learner-facing. */
 const INTERNAL_KNOWLEDGE_TYPES = new Set([
   "internal-concept",
+  "source-document",
+  "source-map",
+  "scope-contract",
+  "source-coverage",
 ])
 
 const INTERNAL_BREADBOARD_TYPES = new Set([
   "internal_concept",
+  "source_document",
+  "source_map",
+  "scope_contract",
+  "source_coverage",
 ])
 
-/** Internal Breadboard metadata lives under Internal/ and .breadboard/. */
+/** Internal Breadboard metadata lives under Internal/, .breadboard/, sources/,
+ * and numbered source-snapshot folders — none of which are learner-facing. */
 function isInternalPath(relativePath = ""): boolean {
   const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/")
   // parts[0] is the garden slug for nested content; check every segment so the
   // rule holds for both "garden/Internal/x.md" and "Internal/x.md" layouts.
   return parts.some((part) => {
     const lower = part.toLowerCase()
-    return lower === "internal" || lower === ".breadboard"
+    return (
+      lower === "internal" ||
+      lower === ".breadboard" ||
+      lower === "sources" ||
+      /^\d+\.\s*source-snapshots$/.test(lower)
+    )
   })
+}
+
+/** Internal planning artifacts that older ingest wrote directly under
+ * Learning/. They must never be published even if a stale copy lingers. */
+function isInternalLearningArtifact(relativePath = ""): boolean {
+  const lower = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase()
+  return (
+    lower.endsWith("learning/source map.md") ||
+    lower.endsWith("learning/scope contract.md") ||
+    lower.endsWith("learning/source coverage.md")
+  )
 }
 
 function slugifyLoose(value: string): string {
@@ -104,6 +132,7 @@ export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {})
       INTERNAL_BREADBOARD_TYPES.has(breadboardType) ||
       frontmatterString(fm, "internal") === "true" ||
       isInternalPath(relativePath) ||
+      isInternalLearningArtifact(relativePath) ||
       isRawFileArtifactPage(fm) ||
       isIngestLessonArtifact(fm, knowledgeType, breadboardType)
     ) {

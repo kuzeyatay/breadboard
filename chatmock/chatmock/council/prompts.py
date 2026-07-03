@@ -60,8 +60,8 @@ Produce your single best, complete, final-quality answer to the user's request.
 Do not hedge, do not describe what you would do, do not mention the council.
 If the request demands a specific output format, follow it exactly."""
 
-# Role flavors used when the council has to draw several candidates from the
-# same underlying model (e.g. no OpenRouter key configured).
+# Role flavors used when the council draws several candidates from the same
+# underlying ChatMock model.
 CANDIDATE_ROLE_VARIANTS: List[Dict[str, str]] = [
     {
         "role": "first_principles_writer",

@@ -4,6 +4,8 @@ export const LEARN_STATUSES = [
   "idle",
   "planning",
   "awaiting_confirmation",
+  "generating_learning_pages",
+  // Legacy name for generating_learning_pages; still read from old job rows.
   "generating_textbook",
   "generating_visuals",
   "writing_quartz",
@@ -203,6 +205,123 @@ export const AI_ISM_PATTERNS: RegExp[] = [
   /\bwhen it comes to\b/i,
 ];
 
+/** Fingerprints of the deterministic emergency draft. That draft exists only
+ * for debugging (.breadboard/debug/failed-pages/); any of these phrases in a
+ * learner page means fallback prose leaked and the page must be rejected.
+ * Shared with the validation script. */
+export const FALLBACK_FINGERPRINTS: RegExp[] = [
+  /The durable concept/i,
+  /Relevant details:/i,
+  /Read these details as a sequence/i,
+  /When no figure is attached/i,
+  /Minimal learner-facing fallback/i,
+  /Introduce .* from uploaded sources/i,
+  /This section is part of the confirmed Breadboard learning map/i,
+  /The confirmed learning map did not provide enough local detail/i,
+];
+
+/** Source-commentary phrasing that must never carry the teaching voice of a
+ * learner page. Tolerated only inside compact provenance captions (the italic
+ * line under an embedded source figure), which are stripped before matching. */
+export const SOURCE_COMMENTARY_PATTERNS: RegExp[] = [
+  /\bthe paper\b/i,
+  /\bthis paper\b/i,
+  /\bthe source\b(?!\s+of\b)/i,
+  /\bthe uploaded source\b/i,
+  /\bsource-derived\b/i,
+  /\bsource-central\b/i,
+  /\baccording to the source\b/i,
+  /\bthe source material\b/i,
+];
+
+/** Bibliography/reference-list chunks ("[12] A. Author, \"Title\", ...") pasted
+ * into a lesson as if they were teaching content. */
+export const RAW_REFERENCE_DUMP_RE = /\[\d+\]\s+[A-Z][^"\n]+,\s*["“].+["”]/;
+
+/** Learner prose with figure embeds and their compact provenance captions
+ * removed, so caption-only phrasing is not judged as teaching voice. */
+export function teachingProse(markdown: string): string {
+  return stripMarkdownFrontmatter(markdown)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    // Compact provenance caption lines: "*caption text* *(p. 7)*" or "*caption*".
+    .replace(/^\s*\*[^*\n]+\*(?:\s*\*\([^)\n]*\)\*)?\s*$/gm, " ");
+}
+
+/** True when the markdown contains fallback-draft fingerprints. */
+export function hasFallbackFingerprint(markdown: string): boolean {
+  return FALLBACK_FINGERPRINTS.some((pattern) => pattern.test(markdown));
+}
+
+/** Count source-commentary phrases in the teaching prose (captions excluded). */
+export function countSourceCommentary(markdown: string): number {
+  const prose = teachingProse(markdown);
+  let count = 0;
+  for (const pattern of SOURCE_COMMENTARY_PATTERNS) {
+    const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+    count += (prose.match(global) ?? []).length;
+  }
+  return count;
+}
+
+function scrubSourceCommentaryLine(line: string): string {
+  let next = line
+    .replace(
+      /\b(?:according to|based on)\s+(?:the|this|the uploaded)\s+(?:paper|source)(?:\s+material)?,?\s+/gi,
+      "",
+    )
+    .replace(
+      /\b(?:as|as shown|as described|as explained|as reported|as argued)\s+(?:in|by)\s+(?:the|this|the uploaded)\s+(?:paper|source)(?:\s+material)?,?\s*/gi,
+      "",
+    )
+    .replace(
+      /\bas\s+(?:the|this|the uploaded)\s+(?:paper|source)(?:\s+material)?\s+(?:explains|shows|argues|frames|notes|states|emphasizes|describes|presents|introduces|reports|compares),?\s+/gi,
+      "",
+    )
+    .replace(/\b(?:in|from)\s+(?:the|this)\s+paper,?\s+/gi, "")
+    .replace(/\b(?:in|from)\s+(?:the uploaded source|the source material),?\s+/gi, "")
+    .replace(
+      /\b(?:the|this)\s+(?:paper|source)(?:\s+material)?\s+(?:explains|shows|argues|frames|notes|states|emphasizes|describes|presents|introduces|reports|compares)\s+(?:that\s+)?/gi,
+      "",
+    )
+    .replace(/\b(?:the|this)\s+paper['’]s\s+/gi, "the ")
+    .replace(/\bthe source['’]s\s+/gi, "the ")
+    .replace(/\bsource[- ]derived\b\s*/gi, "")
+    .replace(/\bsource[- ]central\b\s*/gi, "central ")
+    .replace(/\bthe source material\b/gi, "the available material")
+    .replace(/\bthe uploaded source\b/gi, "the material")
+    .replace(/\bthe source\b(?!\s+of\b)/gi, "the material")
+    .replace(/\bthis paper\b/gi, "this topic")
+    .replace(/\bthe paper\b/gi, "the topic");
+
+  next = next.replace(/(^|[.!?]\s+|\n\s*)([a-z])/g, (_match, prefix: string, letter: string) =>
+    prefix + letter.toUpperCase(),
+  );
+  return next;
+}
+
+/**
+ * Repair document-commentary leaks in learner-facing prose without weakening
+ * the hard quality gate. Code blocks, image lines, and compact provenance
+ * captions are left alone; the final assessor still checks the resulting page.
+ */
+export function scrubSourceCommentaryProse(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  let inCodeFence = false;
+  return lines
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inCodeFence = !inCodeFence;
+        return line;
+      }
+      if (inCodeFence) return line;
+      if (/^\s*!\[[^\]]*\]\([^)]*\)\s*$/.test(line)) return line;
+      if (/^\s*\*[^*\n]+\*(?:\s*\*\([^)\n]*\)\*)?\s*$/.test(line)) return line;
+      return scrubSourceCommentaryLine(line);
+    })
+    .join("\n");
+}
+
 /** True when the markdown contains meta-instruction / placeholder language. */
 export function hasPlaceholderText(markdown: string): boolean {
   return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(markdown));
@@ -252,10 +371,10 @@ export interface QualityProblem {
 export const MIN_LESSON_WORDS = 700;
 
 /**
- * Local quality critic run before a lesson page is written. Hard problems
- * (placeholder text, no question/answer, no real prose, an assigned visual that
- * never got embedded) should block the write / trigger a retry. Soft problems
- * (short, too many AI-isms, no obvious example) are advisory.
+ * Local quality critic run before a lesson page is written. Every problem here
+ * is a hard failure: a page that trips any of them is never written as learner
+ * content — the pipeline retries and, if every attempt fails, fails the job
+ * (quarantining the last draft under .breadboard/debug/failed-pages/).
  */
 export function assessLessonQuality(
   body: string,
@@ -267,6 +386,20 @@ export function assessLessonQuality(
 
   if (hasPlaceholderText(body)) {
     problems.push({ code: "placeholder", message: "contains placeholder / meta-instruction text", hard: true });
+  }
+  if (hasFallbackFingerprint(body)) {
+    problems.push({ code: "fallback-fingerprint", message: "contains fallback-template prose", hard: true });
+  }
+  const commentary = countSourceCommentary(body);
+  if (commentary > 0) {
+    problems.push({
+      code: "source-commentary",
+      message: `${commentary} source-commentary phrase${commentary === 1 ? "" : "s"} in teaching prose`,
+      hard: true,
+    });
+  }
+  if (RAW_REFERENCE_DUMP_RE.test(body)) {
+    problems.push({ code: "raw-reference-dump", message: "contains a bibliography/reference-list chunk", hard: true });
   }
   const hasQuestion = /\*\*Question\.\*\*/.test(body) && /\*\*Answer\.\*\*/.test(body);
   if (!hasQuestion) {
@@ -280,16 +413,16 @@ export function assessLessonQuality(
       problems.push({ code: "missing-visual", message: `assigned source visual not embedded (${url})`, hard: true });
     }
   }
-  if (words < minWords) {
-    problems.push({ code: "short", message: `${words} words (< ${minWords})`, hard: false });
+  if (words >= 120 && words < minWords) {
+    problems.push({ code: "short", message: `${words} words (< ${minWords})`, hard: true });
   }
   const aiisms = countAiisms(body);
   if (aiisms > 2) {
-    problems.push({ code: "aiisms", message: `${aiisms} AI-style phrases`, hard: false });
+    problems.push({ code: "aiisms", message: `${aiisms} AI-style phrases`, hard: true });
   }
   const hasExample = /\b(for example|for instance|imagine|consider|suppose|think of|picture)\b/i.test(body);
   if (!hasExample) {
-    problems.push({ code: "no-example", message: "no concrete example / analogy cue", hard: false });
+    problems.push({ code: "no-example", message: "no concrete example / analogy cue", hard: true });
   }
 
   const hardFail = problems.some((problem) => problem.hard);
@@ -445,16 +578,90 @@ function domainNamespace(domainHint: string): string {
   return TAG_ROOT_FIXES[words[0] ?? slug] ?? words[0] ?? slug;
 }
 
+/** What a tag must be checked against before it lands on a page: the page's
+ * own title, section title, final accepted body, and the captions of the
+ * source visuals actually embedded there. */
+export interface TagRelevanceContext {
+  title: string;
+  sectionTitle?: string;
+  body: string;
+  assignedVisualCaptions?: string[];
+}
+
+interface TagRelevanceRule {
+  appliesTo: RegExp; // matched against the full tag
+  evidence: RegExp; // must appear in title/body/captions
+  /** Body-only matches must occur at least this many times ("taught, not
+   * mentioned"); a title or caption match always counts. */
+  minBodyMentions?: number;
+}
+
+/** Concept-specific gates: a tag naming one of these concepts may only appear
+ * on a page that actually teaches it. */
+const TAG_RELEVANCE_RULES: TagRelevanceRule[] = [
+  { appliesTo: /\blif\b|lif-neuron|leaky/i, evidence: /\blif\b|leaky[- ]integrate|membrane potential|(?:firing )?threshold/i },
+  { appliesTo: /stdp/i, evidence: /\bstdp\b|spike[- ]?timing|synaptic plasticity|pre[- ]before[- ]post|post[- ]before[- ]pre/i },
+  { appliesTo: /surrogate/i, evidence: /surrogate gradient/i },
+  { appliesTo: /conversion/i, evidence: /\bann[- ]to[- ]snn\b|\bann to snn\b|\bconversion\b|firing[- ]rate approximation/i },
+  { appliesTo: /\blatency\b/i, evidence: /\blatency\b|\bresponse time\b/i, minBodyMentions: 2 },
+  { appliesTo: /convergence/i, evidence: /\bconverg\w*\b|\btraining loss\b|\bepochs?\b/i, minBodyMentions: 2 },
+  { appliesTo: /spike-count/i, evidence: /\bspike count\b/i, minBodyMentions: 2 },
+  { appliesTo: /membrane-potential/i, evidence: /\bmembrane potential\b/i },
+  { appliesTo: /threshold/i, evidence: /\bthreshold\b/i },
+  { appliesTo: /backpropagation/i, evidence: /\bbackprop\w*\b/i },
+];
+
+function countMatches(text: string, pattern: RegExp): number {
+  const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+  return (text.match(global) ?? []).length;
+}
+
+/**
+ * Page-specific tag gate: true when the page's title, body, or embedded visual
+ * captions actually support the tag. Concept-specific rules (LIF, STDP,
+ * surrogate gradients, conversion, latency, convergence, ...) demand their own
+ * evidence; every other tag must have each meaningful leaf word present
+ * somewhere on the page. Tags must never be generated from generic scaffolding
+ * text — pass the final accepted body only.
+ */
+export function tagIsRelevantToPage(tag: string, context: TagRelevanceContext): boolean {
+  const titleText = [context.title, context.sectionTitle ?? ""].join("\n");
+  const captionText = (context.assignedVisualCaptions ?? []).join("\n");
+  const bodyText = teachingProse(context.body);
+  const haystack = [titleText, captionText, bodyText].join("\n").toLowerCase();
+
+  for (const rule of TAG_RELEVANCE_RULES) {
+    if (!rule.appliesTo.test(tag)) continue;
+    if (rule.evidence.test(titleText) || rule.evidence.test(captionText)) return true;
+    const mentions = countMatches(bodyText, rule.evidence);
+    return mentions >= (rule.minBodyMentions ?? 1);
+  }
+
+  // Generic gate: every meaningful word of the leaf segment must appear on the
+  // page (prefix match, so "computation" covers "computational").
+  const leaf = tag.split("/").at(-1) ?? tag;
+  const words = leaf
+    .split("-")
+    .filter((word) => word.length >= 4 && !TAG_STOPWORDS.has(word));
+  if (words.length === 0) return true;
+  return words.every((word) => {
+    const stem = word.slice(0, Math.max(4, word.length - 2));
+    return haystack.includes(stem);
+  });
+}
+
 /**
  * Normalizes learner-page tags into 3-5 stable, hierarchical, concept tags
  * ("snn/lif-neuron" style). Flat tags get namespaced under a short domain
  * acronym; typo roots are repaired; debris/generic segments are dropped;
- * too-few results are topped up from the subsection title.
+ * tags the page does not actually support are rejected (when a relevance
+ * context is given); too-few results are topped up from the subsection title.
  */
 export function normalizeZettelTags(
   rawTags: string[],
   topicHint: string,
   domainHint: string,
+  relevance?: TagRelevanceContext,
 ): string[] {
   const domain = domainNamespace(domainHint);
   const seen = new Set<string>();
@@ -482,6 +689,7 @@ export function normalizeZettelTags(
     }
     const tag = namespaced.join("/");
     if (tag.length > 60 || seen.has(tag)) return;
+    if (relevance && !tagIsRelevantToPage(tag, relevance)) return;
     seen.add(tag);
     output.push(tag);
   };
@@ -497,6 +705,27 @@ export function normalizeZettelTags(
   }
 
   return output.slice(0, 5);
+}
+
+/** Stored full-page snapshot assets look like "...-page-003.png". */
+const FULL_PAGE_SNAPSHOT_RE = /-page-\d{1,5}(?:-\d+)?\.(?:png|jpe?g|webp)$/i;
+
+/**
+ * A source is "visual-rich" when it has stored full-page snapshots AND its text
+ * references figures/tables/graphs. For such a source, an empty extraction is a
+ * pipeline failure, not an acceptable "no figures" outcome — the caller hard
+ * fails rather than writing learner pages with no source figures.
+ */
+export function sourceAppearsVisualRich(source: {
+  body?: string;
+  sourceImages?: string[];
+}): boolean {
+  const body = source.body ?? "";
+  const hasPageImages = (source.sourceImages ?? []).some((url) => FULL_PAGE_SNAPSHOT_RE.test(url));
+  const mentionsFigures =
+    /\b(?:Fig\.|Figure|Table)\s*\d+/i.test(body) ||
+    /\b(?:graph|chart|diagram|architecture|curve|comparison)\b/i.test(body);
+  return hasPageImages && mentionsFigures;
 }
 
 export function sourceSetHashForSources(sources: LearnSourceSummary[]): string {
@@ -559,6 +788,12 @@ export function yamlFrontmatter(values: Record<string, FrontmatterValue>): strin
   return `---\n${lines.join("\n")}\n---\n\n`;
 }
 
+/** Version ids are generated as learning_*; legacy textbook_* ids from older
+ * jobs/DB rows are sanitized before they can reach visible Markdown. */
+export function publicLearningVersionId(id: string): string {
+  return id.replace(/^textbook_/i, "learning_");
+}
+
 export function buildLearningPageFrontmatter({
   gardenId,
   sectionNumber,
@@ -587,8 +822,10 @@ export function buildLearningPageFrontmatter({
   sourceSetHash?: string;
   generatedAt: string;
 }): string {
-  // No `conceptTags`, no `textbook*` keys: learner pages carry clean `tags:`
-  // and never contain the word "textbook" anywhere in their frontmatter.
+  // No `conceptTags`, no `textbook*` keys or values: learner pages carry clean
+  // `tags:` and never contain the word "textbook" anywhere in their
+  // frontmatter — the version id is sanitized too.
+  const visibleVersionId = publicLearningVersionId(learningVersionId);
   return yamlFrontmatter({
     title,
     date: generatedAt,
@@ -604,8 +841,8 @@ export function buildLearningPageFrontmatter({
       sourceVisualIds && sourceVisualIds.length > 0 ? sourceVisualIds : undefined,
     generatedBy: "learn_button",
     generated_by: "learn_button",
-    learningVersion: learningVersionId,
-    learningVersionId,
+    learningVersion: visibleVersionId,
+    learningVersionId: visibleVersionId,
     sourceSetHash,
   });
 }
@@ -839,6 +1076,55 @@ export function normalizeLearningMapCandidate(
     sourceOnly: options.sourceOnly ?? fallback.sourceOnly,
     createdAt: options.createdAt ?? fallback.createdAt,
   };
+}
+
+const MAP_TITLE_BANNED_RE = /\b(?:source|paper|evidence|textbook)\b|source[- ](?:derived|central|anchored)/i;
+
+/**
+ * Structural gate for a proposed learning map: the map must be a real learning
+ * spine (multiple subsections per section, standalone lesson titles), not a
+ * restatement of the source's table of contents. Returns the reasons the map
+ * is unacceptable; an empty array means the map passes.
+ */
+export function validateLearningMapDepth(
+  map: ProposedLearningMap,
+  context?: LearnContextSummary,
+): string[] {
+  const problems: string[] = [];
+  const sections = map.sections ?? [];
+
+  if (sections.length < 2) {
+    problems.push(`only ${sections.length} section(s); a learning spine needs an ordered sequence`);
+  }
+  const shallowSections = sections.filter((section) => section.subsections.length <= 1);
+  if (sections.length >= 2 && shallowSections.length * 2 > sections.length) {
+    problems.push(
+      `${shallowSections.length} of ${sections.length} sections have at most one subsection — the map is a table of contents, not a learning sequence`,
+    );
+  }
+
+  for (const section of sections) {
+    if (MAP_TITLE_BANNED_RE.test(section.title)) {
+      problems.push(`section title reads as source commentary: "${section.title}"`);
+    }
+    for (const subsection of section.subsections) {
+      if (MAP_TITLE_BANNED_RE.test(subsection.title)) {
+        problems.push(`subsection title reads as source commentary: "${subsection.title}"`);
+      }
+    }
+  }
+
+  // A map whose sections are just the uploaded sources, one each, is
+  // source-shaped by construction.
+  if (context && context.sources.length > 0 && sections.length > 0) {
+    const sourceTitles = new Set(context.sources.map((source) => source.title.trim().toLowerCase()));
+    const sourceShaped = sections.every((section) => sourceTitles.has(section.title.trim().toLowerCase()));
+    if (sourceShaped) {
+      problems.push("every section is named after an uploaded source — the map mirrors the upload instead of teaching the topic");
+    }
+  }
+
+  return problems;
 }
 
 export function removeRawVisualPlaceholders(markdown: string, replacement: string): string {

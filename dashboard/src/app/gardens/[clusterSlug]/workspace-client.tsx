@@ -14,8 +14,16 @@ import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
+import LearnErrorDialog from "@/app/components/learn-error-dialog";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
+import UsageLimitsPopover from "@/app/components/usage-limits-popover";
+import {
+  forgetDismissedLearnErrorsForGarden,
+  learnErrorDismissalKey,
+  loadDismissedLearnErrorKeys,
+  rememberDismissedLearnErrorKey,
+} from "@/lib/learn-error-dismissal";
 
 interface Message {
   role: "user" | "assistant";
@@ -57,6 +65,11 @@ interface SavedLinkInfo {
   id: string;
   title: string;
   url: string;
+  sourceSlug?: string;
+  sourceRelPath?: string;
+  contentHash?: string;
+  importedAt?: string;
+  provider?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -97,6 +110,7 @@ type LearnStatus =
   | "idle"
   | "planning"
   | "awaiting_confirmation"
+  | "generating_learning_pages"
   | "generating_textbook"
   | "generating_visuals"
   | "writing_quartz"
@@ -292,7 +306,7 @@ function isMarkdownTagCommand(text: string, messages: Message[] = []): boolean {
 }
 
 function markdownTypeLabel(doc: DocInfo): string {
-  if (doc.type === "textbook-page") return "textbook page";
+  if (doc.type === "textbook-page") return "lesson page";
   if (doc.type === "internal-concept") return "ConceptNode";
   if (doc.type === "generated-note") return "saved chat page";
   if (doc.type === "knowledge-topic") return "legacy topic";
@@ -359,6 +373,7 @@ function formatElapsed(ms: number): string {
 function isLearnActive(status?: LearnStatus): boolean {
   return (
     status === "planning" ||
+    status === "generating_learning_pages" ||
     status === "generating_textbook" ||
     status === "generating_visuals" ||
     status === "writing_quartz" ||
@@ -409,7 +424,7 @@ const ChatTranscript = memo(function ChatTranscript({
             <p className="text-xs mt-1.5 text-gray-700 max-w-xs">
               After the conversation, hit{" "}
               <span className="text-gray-500">Save page</span> to keep the
-              answer in your textbook
+              answer in your lessons
             </p>
           </div>
         )
@@ -782,6 +797,9 @@ export default function WorkspaceClient({
   const [learnPanelOpen, setLearnPanelOpen] = useState(false);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnIncludeSnapshots, setLearnIncludeSnapshots] = useState(false);
+  const [dismissedLearnErrorKeys, setDismissedLearnErrorKeys] = useState<
+    string[]
+  >(() => loadDismissedLearnErrorKeys());
 
   // Thinking mode
   const [thinkingMode, setThinkingMode] = useState(false);
@@ -807,9 +825,6 @@ export default function WorkspaceClient({
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
-  const [showUsage, setShowUsage] = useState(false);
-  const [usageData, setUsageData] = useState<Record<string, unknown> | null>(null);
-  const [usageLoading, setUsageLoading] = useState(false);
   const canViewPublicChats =
     isOwner && clusterVisibility === "public" && chatAccessible;
   const canForkCluster =
@@ -1022,6 +1037,8 @@ export default function WorkspaceClient({
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;
         links?: SavedLinkInfo[];
+        duplicate?: boolean;
+        source?: { sourceTitle?: string; sourceRelPath?: string };
       };
       if (!res.ok) {
         addToast(data.error ?? "Failed to save link");
@@ -1031,7 +1048,15 @@ export default function WorkspaceClient({
       setNewLinkTitle("");
       setNewLinkUrl("");
       setLinksExpanded(true);
-      addToast("Link saved", "success");
+      setSourceDocsExpanded(true);
+      await fetchDocuments();
+      setGraphRefreshVersion((value) => value + 1);
+      addToast(
+        data.duplicate
+          ? "Link already exists as a source"
+          : "Link converted to a source",
+        "success",
+      );
     } catch {
       addToast("Failed to save link");
     } finally {
@@ -1504,7 +1529,7 @@ export default function WorkspaceClient({
   async function handleDocumentDelete(doc: DocInfo) {
     const isSource = doc.type === "source-document";
     const prompt = isSource
-      ? `Delete "${doc.title ?? doc.name}" and all textbook pages from this source?`
+      ? `Delete "${doc.title ?? doc.name}" and all lesson pages from this source?`
       : `Delete "${doc.title ?? doc.name}"?`;
     if (!window.confirm(prompt)) return;
 
@@ -1720,7 +1745,7 @@ export default function WorkspaceClient({
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
-      throw new Error(data.error ?? "Failed to save textbook page");
+      throw new Error(data.error ?? "Failed to save lesson page");
     }
     return (data.notes ?? []) as GeneratedNoteResult[];
   }
@@ -1768,7 +1793,7 @@ export default function WorkspaceClient({
         (message) => message.role === "assistant" && message.content.trim(),
       );
       if (!hasAssistantResponse) {
-        addToast("No assistant response to save as a textbook page yet");
+        addToast("No assistant response to save as a lesson page yet");
         setDocsExpanded(true);
         return;
       }
@@ -1779,9 +1804,9 @@ export default function WorkspaceClient({
       addToast(
         count > 0
           ? mergedCount > 0
-            ? `Updated existing textbook page: ${notes.map((note) => note.title).join(", ")}`
-            : `Created textbook page: ${notes.map((note) => note.title).join(", ")}`
-          : "No assistant response could be saved as a textbook page",
+            ? `Updated existing lesson page: ${notes.map((note) => note.title).join(", ")}`
+            : `Created lesson page: ${notes.map((note) => note.title).join(", ")}`
+          : "No assistant response could be saved as a lesson page",
         count > 0 ? "success" : "error",
       );
       setDocsExpanded(true);
@@ -1790,7 +1815,7 @@ export default function WorkspaceClient({
         setGraphRefreshVersion((v) => v + 1);
       }
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to save textbook page");
+      addToast(err instanceof Error ? err.message : "Failed to save lesson page");
     } finally {
       setIsGenerating(false);
     }
@@ -1802,7 +1827,10 @@ export default function WorkspaceClient({
     endpoint: "plan" | "confirm" | "generate" | "regenerate" | "cancel",
     body: Record<string, unknown> = {},
   ) {
-    if (endpoint !== "cancel") setLearnPanelOpen(true);
+    if (endpoint !== "cancel") {
+      setLearnPanelOpen(true);
+      setDismissedLearnErrorKeys(forgetDismissedLearnErrorsForGarden(clusterSlug));
+    }
     setLearnBusy(true);
     try {
       const res = await fetch(
@@ -1830,7 +1858,7 @@ export default function WorkspaceClient({
       if (endpoint === "plan") {
         addToast("Learning map ready to review", "success");
       } else if (endpoint === "confirm" || endpoint === "generate" || endpoint === "regenerate") {
-        addToast("Textbook generated", "success");
+        addToast("Lessons generated", "success");
       } else if (endpoint === "cancel") {
         setLearnPanelOpen(false);
         addToast("Learn job cancelled");
@@ -1874,6 +1902,11 @@ export default function WorkspaceClient({
   async function handleCancelLearn() {
     if (learnBusy) return;
     await postLearnAction("cancel");
+  }
+
+  function dismissLearnError(job: LearnJobInfo) {
+    const dismissalKey = learnErrorDismissalKey(clusterSlug, job);
+    setDismissedLearnErrorKeys(rememberDismissedLearnErrorKey(dismissalKey));
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -2191,6 +2224,17 @@ export default function WorkspaceClient({
   const graphRefreshKey = `${graphRefreshVersion}:${documents
     .map((d) => `${d.slug}:${d.linkCount}:${d.wordCount}`)
     .join("|")}`;
+  const currentLearnErrorKey =
+    learnState?.job?.status === "failed" && learnState.job.error
+      ? learnErrorDismissalKey(clusterSlug, learnState.job)
+      : null;
+  const learnErrorJob =
+    learnState?.job?.status === "failed" &&
+    learnState.job.error &&
+    currentLearnErrorKey &&
+    !dismissedLearnErrorKeys.includes(currentLearnErrorKey)
+      ? learnState.job
+      : null;
 
   function renderLearnPanel() {
     const job = learnState?.job ?? null;
@@ -2227,10 +2271,10 @@ export default function WorkspaceClient({
               {active
                 ? job?.currentStep || "Working"
                 : status === "awaiting_confirmation"
-                  ? "Confirm the section order to generate the textbook."
+                  ? "Confirm the section order to generate your lessons."
                   : learnState?.hasTextbook
-                    ? "Refresh the generated textbook from the current sources."
-                    : "Generate a structured e-textbook from your sources."}
+                    ? "Refresh the generated lessons from the current sources."
+                    : "Generate structured lessons from your sources."}
             </p>
             {job?.currentSectionTitle || job?.currentPageTitle ? (
               <p className="mt-1 truncate text-xs text-gray-600">
@@ -2347,7 +2391,7 @@ export default function WorkspaceClient({
                   className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                  Confirm and Generate Textbook
+                  Confirm and Learn
                 </button>
                 <button
                   type="button"
@@ -2419,7 +2463,7 @@ export default function WorkspaceClient({
               href={`/garden/${clusterSlug}`}
               className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white"
             >
-              Open textbook
+              Open lessons
             </Link>
             <span className="text-xs text-gray-600">
               {learnState?.latestTextbookVersionId ?? job?.id}
@@ -2581,12 +2625,12 @@ export default function WorkspaceClient({
                 ].join(" ")}
                 title={
                   isSource
-                    ? "Delete source PDF and textbook pages"
+                    ? "Delete source PDF and lesson pages"
                     : "Delete document"
                 }
                 aria-label={
                   isSource
-                    ? "Delete source PDF and textbook pages"
+                    ? "Delete source PDF and lesson pages"
                     : "Delete document"
                 }
               >
@@ -3308,6 +3352,11 @@ export default function WorkspaceClient({
                     )}
                   </button>
                 </div>
+                {savingLink ? (
+                  <p className="text-[11px] text-gray-600">
+                    Converting link to Markdown...
+                  </p>
+                ) : null}
               </form>
             )}
             <div className="max-h-56 overflow-y-auto">
@@ -3527,7 +3576,7 @@ export default function WorkspaceClient({
           <button
             onClick={handleGenerateNotes}
             disabled={messages.length === 0 || isGenerating}
-            title="Save the latest assistant response as a textbook page"
+            title="Save the latest assistant response as a lesson page"
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isGenerating ? (
@@ -4003,7 +4052,7 @@ export default function WorkspaceClient({
                       d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
                     />
                   </svg>
-                  Textbook
+                  Lessons
                   {markdownDocuments.length > 0
                     ? ` (${markdownDocuments.length})`
                     : ""}
@@ -4081,7 +4130,7 @@ export default function WorkspaceClient({
                   ) : markdownDocuments.length === 0 && folders.length === 0 ? (
                     <div className="flex flex-col items-center py-6 px-4 text-center">
                       <p className="text-xs text-gray-600 mb-2">
-                        No textbook pages yet
+                        No lesson pages yet
                       </p>
                       <button
                         onClick={openUploadModal}
@@ -4379,79 +4428,7 @@ export default function WorkspaceClient({
               </p>
               <div className="flex items-center gap-1.5">
                 {/* Usage limits */}
-                <div className="relative">
-                  <button
-                    onClick={() => {
-                      if (showUsage) { setShowUsage(false); return; }
-                      setShowUsage(true);
-                      setUsageLoading(true);
-                      fetch('/api/usage-limits')
-                        .then((r) => r.json())
-                        .then((d) => setUsageData(d))
-                        .catch(() => setUsageData(null))
-                        .finally(() => setUsageLoading(false));
-                    }}
-                    title="View usage limits"
-                    className={[
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-colors border",
-                      showUsage
-                        ? "text-blue-400 border-blue-800/60 bg-blue-950/30"
-                        : "text-gray-600 border-transparent hover:text-gray-300 hover:bg-gray-800",
-                    ].join(" ")}
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
-                    </svg>
-                    Usage
-                  </button>
-                  {showUsage && (
-                    <>
-                      <div className="fixed inset-0 z-10" onClick={() => setShowUsage(false)} />
-                      <div className="absolute bottom-full right-0 mb-1.5 z-20 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-4 text-xs">
-                        <p className="text-gray-400 font-medium mb-3">Usage Limits</p>
-                        {usageLoading ? (
-                          <p className="text-gray-500">Loading…</p>
-                        ) : !usageData || !usageData.available ? (
-                          <p className="text-gray-500">No data yet — send a message first.</p>
-                        ) : (
-                          <div className="space-y-3">
-                            {(usageData.captured_at as string) && (
-                              <p className="text-gray-600">Updated: {new Date(usageData.captured_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                            )}
-                            {(['primary', 'secondary'] as const).map((key) => {
-                              const w = usageData[key] as { used_percent: number; window_minutes?: number; resets_in_seconds?: number } | undefined;
-                              if (!w) return null;
-                              const used = Math.min(100, Math.max(0, w.used_percent));
-                              const left = Math.max(0, 100 - used);
-                              const label = key === 'primary' ? '⚡ 5-hour limit' : '📅 Weekly limit';
-                              const color = used >= 90 ? 'bg-red-500' : used >= 60 ? 'bg-yellow-500' : 'bg-green-500';
-                              let resetStr = '';
-                              if (w.resets_in_seconds != null) {
-                                const s = w.resets_in_seconds;
-                                const d = Math.floor(s / 86400);
-                                const h = Math.floor((s % 86400) / 3600);
-                                const m = Math.floor((s % 3600) / 60);
-                                resetStr = [d && `${d}d`, h && `${h}h`, m && `${m}m`].filter(Boolean).join(' ') || '<1m';
-                              }
-                              return (
-                                <div key={key}>
-                                  <div className="flex justify-between text-gray-400 mb-1">
-                                    <span>{label}</span>
-                                    <span>{used.toFixed(1)}% used · {left.toFixed(1)}% left</span>
-                                  </div>
-                                  <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                                    <div className={`h-full rounded-full ${color}`} style={{ width: `${used}%` }} />
-                                  </div>
-                                  {resetStr && <p className="text-gray-600 mt-1">⏳ Resets in {resetStr}</p>}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </div>
+                <UsageLimitsPopover />
 
                 {/* Thinking toggle */}
                 <button
@@ -4600,7 +4577,7 @@ export default function WorkspaceClient({
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800 shrink-0">
               <div>
                 <p className="text-[11px] uppercase tracking-wider text-gray-500">
-                  Textbook
+                  Lessons
                 </p>
                 <h2 className="text-base font-semibold text-white">New page</h2>
               </div>
@@ -5310,6 +5287,20 @@ export default function WorkspaceClient({
           </div>
         </div>
       )}
+
+      {learnErrorJob ? (
+        <LearnErrorDialog
+          message={learnErrorJob.error ?? "Learn failed while creating a section."}
+          currentStep={learnErrorJob.currentStep}
+          currentSectionTitle={learnErrorJob.currentSectionTitle}
+          currentPageTitle={learnErrorJob.currentPageTitle}
+          onDismiss={() => dismissLearnError(learnErrorJob)}
+          onOpenPanel={() => {
+            setLearnPanelOpen(true);
+            dismissLearnError(learnErrorJob);
+          }}
+        />
+      ) : null}
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>

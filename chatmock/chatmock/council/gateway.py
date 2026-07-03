@@ -10,6 +10,7 @@ Response shape is the standard OpenAI chat completion, extended with:
 """
 
 import json
+import re
 import time
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -89,6 +90,29 @@ def _with_cors(resp: Response) -> Response:
     return resp
 
 
+def _run_diagnostic_strings(run: CouncilRun) -> List[str]:
+    values: List[str] = []
+    for key in ("error", "candidateFailures", "reviewFailures", "synthesisFailure"):
+        value = run.diagnostics.get(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, list):
+            values.extend(str(item) for item in value if item)
+    return values
+
+
+def _empty_final_answer_message(run: CouncilRun) -> str:
+    diagnostics = "\n".join(_run_diagnostic_strings(run))
+    if re.search(r"\bHTTP\s+429\b", diagnostics, flags=re.IGNORECASE):
+        match = re.search(r"\bfor\s+([A-Za-z0-9_.:-]+)", diagnostics)
+        model = f" for {match.group(1)}" if match else ""
+        return (
+            f"The council could not produce an answer because ChatGPT returned HTTP 429{model}. "
+            "This is usually a usage or rate-limit issue; try again after the limit resets or choose another model."
+        )
+    return "The council could not produce an answer because all candidate models failed."
+
+
 def _error_response(message: str, run: Optional[CouncilRun] = None, status: int = 502) -> Response:
     body: Dict[str, Any] = {"error": {"message": message}}
     if run is not None:
@@ -160,7 +184,7 @@ def maybe_handle_with_council(
     if not (run.final_answer or "").strip():
         # Never leak raw provider errors to the frontend.
         return _error_response(
-            "The council could not produce an answer because all candidate models failed.",
+            _empty_final_answer_message(run),
             run,
         )
 
@@ -440,7 +464,7 @@ def maybe_handle_responses_with_council(
 
     if not (run.final_answer or "").strip():
         return _error_response(
-            "The council could not produce an answer because all candidate models failed.",
+            _empty_final_answer_message(run),
             run,
         )
 

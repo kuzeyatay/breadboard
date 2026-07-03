@@ -11,6 +11,14 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import ChatMarkdown from '@/app/components/chat-markdown';
+import LearnErrorDialog from '@/app/components/learn-error-dialog';
+import UsageLimitsPopover from '@/app/components/usage-limits-popover';
+import {
+  forgetDismissedLearnErrorsForGarden,
+  learnErrorDismissalKey,
+  loadDismissedLearnErrorKeys,
+  rememberDismissedLearnErrorKey,
+} from '@/lib/learn-error-dismissal';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -43,6 +51,7 @@ type LearnStatus =
   | 'idle'
   | 'planning'
   | 'awaiting_confirmation'
+  | 'generating_learning_pages'
   | 'generating_textbook'
   | 'generating_visuals'
   | 'writing_quartz'
@@ -53,8 +62,12 @@ type LearnStatus =
 
 interface AssistantLearnState {
   job?: {
+    id: string;
     status: LearnStatus;
     currentStep?: string;
+    currentSectionTitle?: string;
+    currentPageTitle?: string;
+    error?: string;
   } | null;
   confirmedLearningMapId?: string;
   hasSources?: boolean;
@@ -98,6 +111,7 @@ const EMPTY_STATS: GraphStats = {
 function isAssistantLearnActive(status?: LearnStatus): boolean {
   return (
     status === 'planning' ||
+    status === 'generating_learning_pages' ||
     status === 'generating_textbook' ||
     status === 'generating_visuals' ||
     status === 'writing_quartz' ||
@@ -326,9 +340,9 @@ export default function GardenAssistant({
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [learnState, setLearnState] = useState<AssistantLearnState | null>(null);
   const [learnBusy, setLearnBusy] = useState(false);
-  const [showUsage, setShowUsage] = useState(false);
-  const [usageData, setUsageData] = useState<Record<string, unknown> | null>(null);
-  const [usageLoading, setUsageLoading] = useState(false);
+  const [dismissedLearnErrorKeys, setDismissedLearnErrorKeys] = useState<string[]>(
+    () => loadDismissedLearnErrorKeys(),
+  );
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
   const [showPrompts, setShowPrompts] = useState(false);
   const [promptSearch, setPromptSearch] = useState('');
@@ -833,6 +847,7 @@ export default function GardenAssistant({
     }
 
     setLearnBusy(true);
+    setDismissedLearnErrorKeys(forgetDismissedLearnErrorsForGarden(activeClusterSlug));
     try {
       const endpoint = learnState?.confirmedLearningMapId ? 'regenerate' : 'plan';
       const response = await fetch(`/api/gardens/${encodeURIComponent(activeClusterSlug)}/learn/${endpoint}`, {
@@ -849,8 +864,8 @@ export default function GardenAssistant({
       await fetchLearnStatus();
       await appendAssistantNotice(
         endpoint === 'plan'
-          ? `Learning map drafted. Open the garden dashboard to confirm the textbook order: [${clusterLabel}](/gardens/${activeClusterSlug}).`
-          : `Textbook generation finished for [${clusterLabel}](/garden/${activeClusterSlug}).`,
+          ? `Learning map drafted. Open the garden dashboard to confirm the lesson order: [${clusterLabel}](/gardens/${activeClusterSlug}).`
+          : `Lesson generation finished for [${clusterLabel}](/garden/${activeClusterSlug}).`,
       );
     } catch (error) {
       await appendAssistantNotice(error instanceof Error ? error.message : 'Learn action failed.');
@@ -859,18 +874,10 @@ export default function GardenAssistant({
     }
   }
 
-  function loadUsage() {
-    if (showUsage) {
-      setShowUsage(false);
-      return;
-    }
-    setShowUsage(true);
-    setUsageLoading(true);
-    fetch('/api/usage-limits')
-      .then((response) => response.json())
-      .then((data) => setUsageData(data))
-      .catch(() => setUsageData(null))
-      .finally(() => setUsageLoading(false));
+  function dismissLearnError(job: NonNullable<AssistantLearnState['job']>) {
+    if (!activeClusterSlug) return;
+    const dismissalKey = learnErrorDismissalKey(activeClusterSlug, job);
+    setDismissedLearnErrorKeys(rememberDismissedLearnErrorKey(dismissalKey));
   }
 
   const chatPanelStyle = {
@@ -879,6 +886,17 @@ export default function GardenAssistant({
   const resizeHandleStyle = {
     right: panelWidth,
   } as CSSProperties;
+  const currentLearnErrorKey =
+    activeClusterSlug && learnState?.job?.status === 'failed' && learnState.job.error
+      ? learnErrorDismissalKey(activeClusterSlug, learnState.job)
+      : null;
+  const learnErrorJob =
+    learnState?.job?.status === 'failed' &&
+    learnState.job.error &&
+    currentLearnErrorKey &&
+    !dismissedLearnErrorKeys.includes(currentLearnErrorKey)
+      ? learnState.job
+      : null;
 
   const chatPanel = (
     <aside
@@ -1065,14 +1083,13 @@ export default function GardenAssistant({
         <div className="mt-2 flex items-center justify-between gap-3">
           <span className="text-xs text-gray-500">Enter to send, Shift+Enter for a new line</span>
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={loadUsage}
-              title="View usage limits"
-              className={`rounded-md border px-2.5 py-1 text-xs transition ${showUsage ? 'border-blue-700 bg-blue-950/30 text-blue-300' : 'border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'}`}
-            >
-              Usage
-            </button>
+            <UsageLimitsPopover
+              buttonClassName="rounded-md border px-2.5 py-1 text-xs transition"
+              activeButtonClassName="border-blue-700 bg-blue-950/30 text-blue-300"
+              inactiveButtonClassName="border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300"
+              popoverClassName="absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-md border border-gray-700 bg-gray-900 p-4 text-xs shadow-2xl"
+              showIcon={false}
+            />
             <button
               type="button"
               onClick={() => setThinkingMode((value) => !value)}
@@ -1144,46 +1161,6 @@ export default function GardenAssistant({
         </div>
       </form>
 
-      {showUsage ? (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setShowUsage(false)} />
-          <div className="absolute bottom-16 right-3 z-20 w-72 rounded-md border border-gray-700 bg-gray-900 p-4 text-xs shadow-2xl">
-            <p className="mb-3 font-medium text-gray-300">Usage Limits</p>
-            {usageLoading ? (
-              <p className="text-gray-500">Loading...</p>
-            ) : !usageData || !usageData.available ? (
-              <p className="text-gray-500">No data yet. Send a message first.</p>
-            ) : (
-              <div className="space-y-3">
-                {(usageData.captured_at as string) ? (
-                  <p className="text-gray-600">
-                    Updated: {new Date(usageData.captured_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </p>
-                ) : null}
-                {(['primary', 'secondary'] as const).map((key) => {
-                  const windowData = usageData[key] as { used_percent?: number; resets_in_seconds?: number } | undefined;
-                  if (!windowData) return null;
-                  const used = Math.min(100, Math.max(0, Number(windowData.used_percent) || 0));
-                  const resetSeconds = Number(windowData.resets_in_seconds);
-                  const resetMinutes = Number.isFinite(resetSeconds) ? Math.max(0, Math.round(resetSeconds / 60)) : null;
-                  return (
-                    <div key={key}>
-                      <div className="mb-1 flex justify-between text-gray-400">
-                        <span>{key === 'primary' ? '5-hour limit' : 'Weekly limit'}</span>
-                        <span>{used.toFixed(1)}% used</span>
-                      </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-gray-800">
-                        <div className="h-full rounded-full bg-gray-300" style={{ width: `${used}%` }} />
-                      </div>
-                      {resetMinutes !== null ? <p className="mt-1 text-gray-600">Resets in {resetMinutes}m</p> : null}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </>
-      ) : null}
     </aside>
   );
 
@@ -1468,6 +1445,20 @@ export default function GardenAssistant({
       {historyPanel}
       {promptsPanel}
       {promptEditor}
+      {learnErrorJob ? (
+        <LearnErrorDialog
+          message={learnErrorJob.error ?? 'Learn failed while creating a section.'}
+          currentStep={learnErrorJob.currentStep}
+          currentSectionTitle={learnErrorJob.currentSectionTitle}
+          currentPageTitle={learnErrorJob.currentPageTitle}
+          onDismiss={() => dismissLearnError(learnErrorJob)}
+          onOpenPanel={() => {
+            setChatOpen(true);
+            dismissLearnError(learnErrorJob);
+          }}
+          openPanelLabel="Open assistant"
+        />
+      ) : null}
     </>
   ) : (
     <>
@@ -1481,6 +1472,20 @@ export default function GardenAssistant({
       {historyPanel}
       {promptsPanel}
       {promptEditor}
+      {learnErrorJob ? (
+        <LearnErrorDialog
+          message={learnErrorJob.error ?? 'Learn failed while creating a section.'}
+          currentStep={learnErrorJob.currentStep}
+          currentSectionTitle={learnErrorJob.currentSectionTitle}
+          currentPageTitle={learnErrorJob.currentPageTitle}
+          onDismiss={() => dismissLearnError(learnErrorJob)}
+          onOpenPanel={() => {
+            setChatOpen(true);
+            dismissLearnError(learnErrorJob);
+          }}
+          openPanelLabel="Open assistant"
+        />
+      ) : null}
     </>
   );
 }

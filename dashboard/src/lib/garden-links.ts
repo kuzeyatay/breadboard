@@ -6,6 +6,11 @@ export interface GardenLink {
   id: string;
   title: string;
   url: string;
+  sourceSlug?: string;
+  sourceRelPath?: string;
+  contentHash?: string;
+  importedAt?: string;
+  provider?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -72,6 +77,26 @@ function normalizeLink(value: unknown): GardenLink | null {
     id: record.id,
     title: normalizeTitle(record.title, record.url),
     url: record.url,
+    sourceSlug:
+      typeof record.sourceSlug === "string" && record.sourceSlug.trim()
+        ? record.sourceSlug.trim()
+        : undefined,
+    sourceRelPath:
+      typeof record.sourceRelPath === "string" && record.sourceRelPath.trim()
+        ? record.sourceRelPath.trim()
+        : undefined,
+    contentHash:
+      typeof record.contentHash === "string" && record.contentHash.trim()
+        ? record.contentHash.trim()
+        : undefined,
+    importedAt:
+      typeof record.importedAt === "string" && record.importedAt.trim()
+        ? record.importedAt.trim()
+        : undefined,
+    provider:
+      typeof record.provider === "string" && record.provider.trim()
+        ? record.provider.trim()
+        : undefined,
     createdAt,
     updatedAt,
   };
@@ -113,7 +138,15 @@ function writeGardenLinks(
 export function addGardenLink(
   contentPath: string,
   gardenSlug: string,
-  input: { title?: unknown; url?: unknown },
+  input: {
+    title?: unknown;
+    url?: unknown;
+    sourceSlug?: unknown;
+    sourceRelPath?: unknown;
+    contentHash?: unknown;
+    importedAt?: unknown;
+    provider?: unknown;
+  },
 ): GardenLink {
   const url = normalizeUrl(input.url);
   const now = new Date().toISOString();
@@ -121,6 +154,26 @@ export function addGardenLink(
     id: crypto.randomUUID(),
     title: normalizeTitle(input.title, url),
     url,
+    sourceSlug:
+      typeof input.sourceSlug === "string" && input.sourceSlug.trim()
+        ? input.sourceSlug.trim()
+        : undefined,
+    sourceRelPath:
+      typeof input.sourceRelPath === "string" && input.sourceRelPath.trim()
+        ? input.sourceRelPath.trim()
+        : undefined,
+    contentHash:
+      typeof input.contentHash === "string" && input.contentHash.trim()
+        ? input.contentHash.trim()
+        : undefined,
+    importedAt:
+      typeof input.importedAt === "string" && input.importedAt.trim()
+        ? input.importedAt.trim()
+        : undefined,
+    provider:
+      typeof input.provider === "string" && input.provider.trim()
+        ? input.provider.trim()
+        : undefined,
     createdAt: now,
     updatedAt: now,
   };

@@ -56,15 +56,16 @@ describe("learning garden metadata", () => {
   });
 
   test("keeps Learning pages and lesson pages ahead of sources and legacy folders", () => {
+    // Only the learner-facing planning pages are ordered here; Source Map /
+    // Scope Contract / Source Coverage are internal and live under
+    // .breadboard/planning/.
     assert.deepEqual(LEARNING_PAGE_ORDER, [
       "Learning/Topic Overview.md",
       "Learning/Learning Map.md",
-      "Learning/Source Map.md",
-      "Learning/Scope Contract.md",
-      "Learning/Source Coverage.md",
     ]);
     assert.equal(readingOrderRank("Learning/Learning Map.md", "learning-map"), 1);
-    assert.equal(readingOrderRank("Learning/Source Map.md", "source-map"), 2);
+    // A page under Learning/ that is not a named planning page ranks as a lesson.
+    assert.equal(readingOrderRank("Learning/Source Map.md", "source-map"), 10);
     assert.equal(readingOrderRank("1. Waves/phase.md", TEXTBOOK_PAGE_TYPE), 20);
     // Legacy value maps to the same lesson rank.
     assert.equal(readingOrderRank("1. Waves/phase.md", "textbook-page"), 20);

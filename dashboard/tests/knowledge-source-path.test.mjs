@@ -38,8 +38,11 @@ describe("source document ingest path", () => {
     assert.match(knowledgeSource, /function migrateRootSourceDocumentsToSources/);
     assert.match(knowledgeSource, /inferKnowledgeType\(data\) === "source-document"/);
     assert.match(knowledgeSource, /fs\.renameSync\(entry\.filePath, targetPath\)/);
-    assert.match(knowledgeSource, /`## Sources\\n\\n\$\{sourceLines\.length > 0/);
-    assert.match(knowledgeSource, /wikilinkForRelPath\(node\.relPath, node\.title\)/);
+    // Raw source notes are internal now, so the published _index groups lessons
+    // under the source TITLE as plain text and links only the lesson pages.
+    assert.match(knowledgeSource, /## Reading Path\\n\\n\$\{readingPathSections/);
+    assert.match(knowledgeSource, /wikilinkForRelPath\(topic\.relPath, topic\.title\)/);
+    assert.match(knowledgeSource, /internal: "true"/);
   });
 
   test("markdown uploads go through the source ingest path", () => {
@@ -56,6 +59,24 @@ describe("source document ingest path", () => {
     );
     assert.match(ingestRoute, /writeDocumentKnowledge\(\{/);
     assert.match(ingestRoute, /sourceType: ext \|\| "text"/);
+  });
+
+  test("saved links are converted into source documents", () => {
+    const linksRoute = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "links", "route.ts"),
+      "utf8",
+    );
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+
+    assert.match(linksRoute, /convertUrlToMarkdown/);
+    assert.match(linksRoute, /writeDocumentKnowledge\(\{/);
+    assert.match(linksRoute, /sourceType: "url"/);
+    assert.match(linksRoute, /original_url: converted\.originalUrl/);
+    assert.match(linksRoute, /content_hash: converted\.contentHash/);
+    assert.match(knowledgeSource, /sourceMetadata\?: Record<string, string \| string\[\]>/);
   });
 
   test("snapshot-only fallback ingest does not create numbered source-snapshot lessons", () => {

@@ -21,12 +21,12 @@ export const INTERNAL_CONCEPT_TYPE = "internal-concept";
 export const LEGACY_GENERATED_TOPIC_FOLDER = "generated";
 export const INTERNAL_CONCEPT_FOLDER = "Internal/Concept Graph";
 
+// Learner-facing planning pages, in reading order. Source Map / Scope Contract
+// / Source Coverage are internal and live under .breadboard/planning/, so they
+// are intentionally absent here.
 export const LEARNING_PAGE_ORDER = [
   "Learning/Topic Overview.md",
   "Learning/Learning Map.md",
-  "Learning/Source Map.md",
-  "Learning/Scope Contract.md",
-  "Learning/Source Coverage.md",
 ] as const;
 
 export type BreadboardMetadata = Record<string, string | string[] | undefined>;
@@ -110,6 +110,53 @@ export function shouldPublishGardenPage({
   if (metadataString(metadata, "draft") === "true") return false;
   if (isInternalConceptMetadata(metadata, relPath)) return false;
   return true;
+}
+
+/** Internal folder segments that must never appear in the published garden. */
+const INTERNAL_PATH_SEGMENTS = new Set([
+  ".breadboard",
+  "sources",
+  "internal",
+  "generated",
+  "generated subtopics",
+  "subtopics",
+  "ai topics",
+  "topic cards",
+]);
+
+/** Filenames under Learning/ that are internal planning artifacts, not lessons. */
+const NON_PUBLIC_LEARNING_FILES = new Set([
+  "learning/source map.md",
+  "learning/scope contract.md",
+  "learning/source coverage.md",
+]);
+
+/**
+ * Filesystem-level gate for what may appear in the published garden. The
+ * visible tree is only ever: the garden `_index.md`, everything under
+ * `Learning/` (except the internal planning artifacts), and the cropped source
+ * figures under `assets/source-visuals/`. Everything else — raw sources,
+ * snapshots, planning, `.breadboard/` internals, legacy generated folders — is
+ * private. This is the single source of truth mirrored by the Quartz publish
+ * filter and the validator script.
+ */
+export function isPublicGardenPath(relPath = ""): boolean {
+  const p = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!p) return false;
+  const lower = p.toLowerCase();
+  const segments = lower.split("/");
+
+  if (segments.some((segment) => INTERNAL_PATH_SEGMENTS.has(segment))) return false;
+  // Numbered snapshot folders: "1. source-snapshots/…".
+  if (segments.some((segment) => /^\d+\.\s*source-snapshots$/.test(segment))) return false;
+  if (NON_PUBLIC_LEARNING_FILES.has(lower)) return false;
+
+  return (
+    lower === "_index.md" ||
+    lower.startsWith("learning/") ||
+    lower.startsWith("assets/source-visuals/") ||
+    lower.startsWith("assets/")
+  );
 }
 
 export function readingOrderRank(relPath = "", type = ""): number {

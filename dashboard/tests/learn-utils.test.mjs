@@ -197,8 +197,13 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /taskType: "topic_map"/);
     assert.match(learnSource, /taskType: "subsection_generation"/);
     assert.match(learnSource, /taskType: "full_page_revision"/);
-    assert.match(learnSource, /preparedFallback/);
-    assert.match(learnSource, /assessLessonQuality\(\s*preparedFallback/);
+    // Bad generation must fail the job, never degrade into a fallback learner
+    // page. The old preparedFallback path is gone; pageBody starts null and a
+    // failed page throws after quarantining the draft for debugging.
+    assert.doesNotMatch(learnSource, /preparedFallback/);
+    assert.match(learnSource, /let pageBody: string \| null = null/);
+    assert.match(learnSource, /No fallback learner page was written/);
+    assert.match(learnSource, /debugFailedSubsectionDraft/);
     assert.doesNotMatch(learnSource, /Start with the idea itself/);
     assert.doesNotMatch(learnSource, /Name the starting idea/);
     assert.doesNotMatch(learnSource, /What is the main idea to take away from/);

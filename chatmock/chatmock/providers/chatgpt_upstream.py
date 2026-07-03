@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List
 
 from ..config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
+from ..limits import record_rate_limits_from_response
 from ..model_registry import allowed_efforts_for_model, normalize_model_name, uses_codex_instructions
 from ..reasoning import build_reasoning_param
 from ..upstream import start_upstream_request
@@ -16,8 +17,8 @@ class ChatGptUpstreamProvider:
     """Council provider that reuses ChatMock's existing ChatGPT OAuth upstream.
 
     This keeps the council fully functional with zero extra configuration:
-    Breadboard never calls a model provider directly, and without an
-    OPENROUTER_API_KEY every council seat is filled by the ChatGPT upstream.
+    Breadboard never calls a model provider directly, and every council seat is
+    filled by the ChatGPT upstream through ChatMock.
 
     Mirrors the legacy /v1/chat/completions behavior: client system prompts
     are demoted to a leading user message and ChatMock's own base instructions
@@ -68,6 +69,7 @@ class ChatGptUpstreamProvider:
         )
         if error_resp is not None or upstream is None:
             raise ProviderError(f"chatgpt upstream unavailable for {model}")
+        record_rate_limits_from_response(upstream)
         if upstream.status_code >= 400:
             try:
                 upstream.close()

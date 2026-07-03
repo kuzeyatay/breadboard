@@ -1,61 +1,21 @@
 import { NextResponse } from 'next/server';
 import { requireUserId, RouteError, routeErrorResponse } from '@/lib/server-auth';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { readUsageLimits } from '@/lib/usage-limits';
 
 export const dynamic = 'force-dynamic';
 
-function trimEnv(value?: string | null): string | null {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
-}
-
-function candidateLimitPaths(): string[] {
-  const explicitPath = trimEnv(process.env.CHATMOCK_USAGE_LIMITS_PATH);
-  const homeCandidates = [
-    trimEnv(process.env.CHATMOCK_USAGE_HOME),
-    trimEnv(process.env.CHATGPT_LOCAL_HOME),
-    trimEnv(process.env.CODEX_HOME),
-    path.join(os.homedir(), '.chatgpt-local'),
-    path.join(os.homedir(), '.codex'),
-  ].filter((value): value is string => Boolean(value));
-
-  return [
-    ...(explicitPath ? [explicitPath] : []),
-    ...homeCandidates.map((home) => path.join(home, 'usage_limits.json')),
-  ];
-}
-
-function getLimitsPath(): string | null {
-  const candidates = candidateLimitPaths();
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  return candidates[0] ?? null;
-}
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, max-age=0, must-revalidate',
+  Pragma: 'no-cache',
+  Expires: '0',
+};
 
 export async function GET() {
   try {
     await requireUserId();
-
-    const filePath = getLimitsPath();
-    if (!filePath) {
-      return NextResponse.json({ available: false });
-    }
-
-    let raw: string;
-    try {
-      raw = fs.readFileSync(filePath, 'utf-8');
-    } catch {
-      return NextResponse.json({ available: false });
-    }
-
-    const data = JSON.parse(raw);
-    return NextResponse.json({ available: true, ...data });
+    return NextResponse.json(readUsageLimits(), { headers: NO_STORE_HEADERS });
   } catch (error) {
     if (error instanceof RouteError) return routeErrorResponse(error);
-    return NextResponse.json({ available: false });
+    return NextResponse.json({ available: false }, { headers: NO_STORE_HEADERS });
   }
 }

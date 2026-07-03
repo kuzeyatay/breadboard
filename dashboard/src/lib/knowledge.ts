@@ -1976,6 +1976,9 @@ function writeLearningReferencePages({
   date: string;
 }): void {
   const learningDir = ensureDirectory(clusterDir, LEARNING_FOLDER);
+  // Internal planning artifacts (Source Map, Scope Contract) live under
+  // .breadboard/planning/, never under the learner-facing Learning/ folder.
+  const planningDir = ensureDirectory(clusterDir, ".breadboard/planning");
   const pageLinks = artifacts.map(
     (artifact) => `- ${wikilinkForRelPath(artifact.relPath, artifact.title)} - ${artifact.locations.join(", ")}`,
   );
@@ -1993,6 +1996,7 @@ function writeLearningReferencePages({
       ? `- ${sectionNumber}. ${sectionTitle}`
       : `- No lesson sections were generated during ingest. Open ${wikilink(sourceSlug, sourceTitle)} under Sources, then use Learn to build the ordered lessons.`;
 
+  // Learner-facing planning pages live under Learning/.
   const learningPages: Array<{ fileName: string; title: string; type: string; body: string }> = [
     {
       fileName: "Topic Overview.md",
@@ -2012,12 +2016,17 @@ function writeLearningReferencePages({
       body:
         `# Learning Map\n\n` +
         `## Ordered Reading Path\n\n` +
-        `${pageLinks.length > 0 ? pageLinks.join("\n") : "- No textbook pages have been generated yet."}\n\n` +
+        `${pageLinks.length > 0 ? pageLinks.join("\n") : "- No lesson pages have been generated yet."}\n\n` +
         `## Internal Concept Graph\n\n` +
         `${conceptLines.length > 0 ? conceptLines.join("\n") : "- No ConceptNodes were extracted for this source."}\n\n` +
         `## Confirmation Status\n\n` +
-        `TODO: add an explicit section-order confirmation step before generating a full multi-section textbook. Until that UI exists, Breadboard writes the automatic order above and keeps ConceptNodes internal.\n`,
+        `Run Learn to build the confirmed multi-section learning spine. Until then Breadboard keeps the automatic order above and keeps ConceptNodes internal.\n`,
     },
+  ];
+
+  // Internal planning artifacts live under .breadboard/planning/, never under
+  // Learning/ (they must not appear in the published garden).
+  const planningPages: Array<{ fileName: string; title: string; type: string; body: string }> = [
     {
       fileName: "Source Map.md",
       title: "Source Map",
@@ -2046,7 +2055,7 @@ function writeLearningReferencePages({
         `## Background\n\n` +
         `- Internal ConceptNodes remain available for graph relationships, source coverage, tags, regeneration, and assistant context.\n\n` +
         `## Deferred\n\n` +
-        `- User confirmation of section order before long-form textbook expansion.\n`,
+        `- User confirmation of section order before long-form lesson expansion.\n`,
     },
   ];
 
@@ -2062,6 +2071,18 @@ function writeLearningReferencePages({
         source_document: sourceSlug,
       }) + page.body;
     fs.writeFileSync(path.join(learningDir, page.fileName), content, "utf-8");
+  }
+  for (const page of planningPages) {
+    const content =
+      frontmatter({
+        title: page.title,
+        date,
+        knowledge_type: page.type,
+        breadboardType: page.type.replace(/-/g, "_"),
+        internal: "true",
+        source_document: sourceSlug,
+      }) + page.body;
+    fs.writeFileSync(path.join(planningDir, page.fileName), content, "utf-8");
   }
 }
 
@@ -2080,6 +2101,7 @@ export async function writeDocumentKnowledge({
   plainText,
   pages = [],
   extraction,
+  sourceMetadata,
   abortSignal,
   createdFilePaths = [],
   onProgress,
@@ -2098,6 +2120,7 @@ export async function writeDocumentKnowledge({
   plainText: string;
   pages?: DocumentPage[];
   extraction: KnowledgeExtraction;
+  sourceMetadata?: Record<string, string | string[]>;
   abortSignal?: AbortSignal;
   createdFilePaths?: string[];
   onProgress?: (step: string) => void;
@@ -2174,10 +2197,23 @@ export async function writeDocumentKnowledge({
     source_type: sourceType,
     source_file: sourceFileName,
     generated_by: "chatmock",
-    textbook_pages: topicPlans.map((plan) => plan.finalSlug),
+    // Raw source notes are internal: they ground the lessons but never appear
+    // in the published garden. Only the distilled lessons under Learning/ are
+    // learner-facing.
+    internal: "true",
+    learning_pages: topicPlans.map((plan) => plan.finalSlug),
     topics: topicPlans.map((plan) => plan.finalSlug),
-    // Source notes are learner-visible reference pages and live under sources/.
   };
+  if (sourceMetadata) {
+    for (const [key, value] of Object.entries(sourceMetadata)) {
+      if (!key || key in sourceFrontmatter) continue;
+      if (Array.isArray(value)) {
+        sourceFrontmatter[key] = value.filter((item) => typeof item === "string" && item.trim());
+      } else if (typeof value === "string" && value.trim()) {
+        sourceFrontmatter[key] = value;
+      }
+    }
+  }
   if (sourceImages.length > 0) sourceFrontmatter.source_images = sourceImages;
   if (sourcePdfPath) sourceFrontmatter.source_pdf = sourcePdfPath;
   if (isHandwriting) {
@@ -2763,18 +2799,9 @@ export function refreshClusterIndex(
     return dateDiff || a.title.localeCompare(b.title);
   };
 
-  // The landing page is learner-facing: it lists lessons in reading order and
-  // links source notes separately from the ordered lesson path.
-  const sourceLines = knowledge.nodes
-    .filter((node) => node.type === "source-document")
-    .sort(byNewest)
-    .map(
-      (node) =>
-        `- ${wikilinkForRelPath(node.relPath, node.title)} - ${countLabel(
-          node.wordCount,
-          "word",
-        )}`,
-    );
+  // The landing page is learner-facing. Raw source notes are internal now, so
+  // the reading path groups lessons under the source TITLE as plain text (never
+  // a link to an unpublished page).
   const readingPathSections = [...knowledge.tree]
     .sort((a, b) => byNewest(a.source, b.source))
     .map(({ source, topics }) => {
@@ -2785,7 +2812,7 @@ export function refreshClusterIndex(
             byNewest(a, b),
         )
         .map((topic) => `  - ${wikilinkForRelPath(topic.relPath, topic.title)}`);
-      return [`- ${wikilinkForRelPath(source.relPath, source.title)}`, ...topicLines].join("\n");
+      return [`- **${source.title}**`, ...topicLines].join("\n");
     })
     .filter((section) => section.includes("\n"));
 
@@ -2805,7 +2832,6 @@ export function refreshClusterIndex(
     `${clusterOverviewText(knowledge, date)}\n\n` +
     `## Start Here\n\n` +
     `- ${wikilinkForRelPath(overviewLink, "Topic Overview")}\n\n` +
-    `## Sources\n\n${sourceLines.length > 0 ? sourceLines.join("\n") : "- No source documents yet."}\n\n` +
     `## Reading Path\n\n${readingPathSections.length > 0 ? readingPathSections.join("\n") : "- No lessons yet."}\n\n` +
     `## More Pages\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone pages yet."}\n`;
 
