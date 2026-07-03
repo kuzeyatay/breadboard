@@ -420,17 +420,18 @@ export function replacePlaceholderWithBlock(
 }
 
 /** Mutates an mdast `code` node in place so the trusted client renderer can
- * hydrate it. Valid specs are re-serialized (sanitized) into a data attribute;
- * invalid ones are tagged with the failure reasons. Returns whether the node
- * carried a valid spec. Kept here (dependency-free) so it is unit-testable
- * without loading the transformer's bundled script/style imports. */
+ * hydrate it. Only specs with a truly interactive renderer are hydrated;
+ * schema-valid-but-non-interactive and invalid blocks are tagged for removal
+ * (interactive or nothing — there is no static explainer card). Returns
+ * whether the node carries a renderable spec. Kept here (dependency-free) so
+ * it is unit-testable without loading the transformer's bundled imports. */
 export function tagVisualCodeNode(node: {
   lang?: string | null
   value: string
   data?: unknown
 }): boolean {
   const { spec, errors } = validateVisualSpec(node.value)
-  if (spec) {
+  if (spec && (IMPLEMENTED_VISUAL_TYPES as readonly string[]).includes(spec.type)) {
     node.data = {
       hProperties: {
         className: ["breadboard-visual-block"],
@@ -441,13 +442,23 @@ export function tagVisualCodeNode(node: {
     node.value = `Interactive visual: ${spec.title}${spec.caption ? ` — ${spec.caption}` : ""}`
     return true
   }
+  if (spec) {
+    node.data = {
+      hProperties: {
+        className: ["breadboard-visual-block", "breadboard-visual-noninteractive"],
+        "data-visual-error": `type "${spec.type}" has no interactive renderer`,
+      },
+    }
+    node.value = ""
+    return false
+  }
   node.data = {
     hProperties: {
       className: ["breadboard-visual-block", "breadboard-visual-invalid"],
       "data-visual-error": errors.slice(0, 3).join("; ") || "invalid visual spec",
     },
   }
-  node.value = "This interactive visual could not be loaded."
+  node.value = ""
   return false
 }
 

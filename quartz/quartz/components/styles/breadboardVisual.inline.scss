@@ -1,13 +1,19 @@
+// Interactive or nothing: blocks the transformer tagged as invalid or
+// non-interactive are removed by the inline script and must never flash a
+// static card (or an empty code box) before hydration.
+pre:has(> code.breadboard-visual-invalid),
+pre:has(> code.breadboard-visual-noninteractive),
+code.breadboard-visual-invalid,
+code.breadboard-visual-noninteractive {
+  display: none;
+}
+
 .breadboard-visual-card {
   margin: 1.4rem 0;
   border: 1px solid var(--lightgray);
   border-radius: 10px;
   background: color-mix(in srgb, var(--light) 90%, transparent);
   padding: 1rem 1.1rem 0.9rem 1.1rem;
-
-  &.bv-error {
-    border-style: dashed;
-  }
 
   .bv-kicker {
     margin: 0 0 0.1rem 0;

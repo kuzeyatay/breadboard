@@ -539,21 +539,19 @@ function buildCard(spec: Spec): HTMLElement {
     }
   }
 
+  // Interactive or nothing: dispatch guarantees a renderer exists for this
+  // type. If drawing still fails, the whole card is removed — a broken visual
+  // must never degrade into a static explainer card.
   const renderer = (RENDERERS as Record<string, Renderer | undefined>)[spec.type]
   const draw = () => {
-    if (renderer) {
-      try {
-        renderer(figure, state)
-      } catch {
-        figure.textContent = ""
-        figure.appendChild(el("p", "bv-unsupported", "This visual could not be drawn."))
-      }
-    } else {
-      figure.textContent = ""
-      const fallback = el("div", "bv-unsupported")
-      fallback.appendChild(el("p", undefined, `“${spec.title}” uses the visual type “${spec.type}”, which is not interactive yet.`))
-      fallback.appendChild(el("p", undefined, spec.pedagogicalPurpose))
-      figure.appendChild(fallback)
+    if (!renderer) {
+      card.remove()
+      return
+    }
+    try {
+      renderer(figure, state)
+    } catch {
+      card.remove()
     }
   }
 
@@ -675,14 +673,6 @@ function buildCard(spec: Spec): HTMLElement {
   return card
 }
 
-function buildErrorCard(message: string): HTMLElement {
-  const card = el("div", "breadboard-visual-card bv-error")
-  card.appendChild(el("p", "bv-kicker", "Interactive visual"))
-  card.appendChild(el("h4", "bv-title", "This visual could not be loaded"))
-  card.appendChild(el("p", "bv-unsupported", message))
-  return card
-}
-
 document.addEventListener("nav", () => {
   const nodes = document.querySelectorAll("code.breadboard-visual-block") as NodeListOf<HTMLElement>
   for (const code of nodes) {
@@ -690,20 +680,28 @@ document.addEventListener("nav", () => {
     if (host.dataset.bvBound === "true") continue
     host.dataset.bvBound = "true"
 
-    let replacement: HTMLElement
-    if (code.classList.contains("breadboard-visual-invalid")) {
-      replacement = buildErrorCard(code.dataset.visualError || "The visual spec was invalid.")
-    } else {
-      try {
-        const spec = JSON.parse(code.dataset.visualSpec ?? "") as Spec
-        if (!spec || typeof spec.id !== "string" || typeof spec.type !== "string") {
-          throw new Error("bad spec")
-        }
-        replacement = buildCard(spec)
-      } catch {
-        replacement = buildErrorCard("The visual spec was invalid.")
-      }
+    // Interactive or nothing: invalid or non-interactive blocks render nothing
+    // at all. The validation script and the garden event ledger are the places
+    // where a missing visual gets diagnosed, never the learner's page.
+    if (
+      code.classList.contains("breadboard-visual-invalid") ||
+      code.classList.contains("breadboard-visual-noninteractive")
+    ) {
+      host.remove()
+      continue
     }
-    host.replaceWith(replacement)
+    try {
+      const spec = JSON.parse(code.dataset.visualSpec ?? "") as Spec
+      if (!spec || typeof spec.id !== "string" || typeof spec.type !== "string") {
+        throw new Error("bad spec")
+      }
+      if (!(spec.type in RENDERERS)) {
+        host.remove()
+        continue
+      }
+      host.replaceWith(buildCard(spec))
+    } catch {
+      host.remove()
+    }
   }
 })

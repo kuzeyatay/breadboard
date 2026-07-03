@@ -1,6 +1,6 @@
 ---
 title: "Public garden"
-date: "2026-06-24"
+date: "2026-07-02"
 description: "Shared gardens ranked by popularity."
 knowledge_type: "garden-overview"
 garden_scope: "public"
@@ -13,9 +13,7 @@ cluster_order: []
 Shared gardens ranked by popularity.
 
 - Gardens: 0
-- Source documents: 0
-- Knowledge topics: 0
-- Generated chat notes: 0
+- Lesson pages: 0
 - Graph links: 0
 - Indexed words: 0
 

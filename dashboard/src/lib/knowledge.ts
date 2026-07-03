@@ -589,6 +589,82 @@ function cleanFileSegment(value: string): string {
   return slugify(value).replace(/^-+|-+$/g, "") || "section";
 }
 
+/** True when a title is just a file-name artifact ("2510.27379v1"), not a
+ * human topic title. Visible folders must never be named after raw uploads. */
+export function looksLikeFileArtifactTitle(
+  title: string,
+  sourceFileName = "",
+): boolean {
+  const trimmed = title.trim();
+  if (!trimmed) return true;
+  const fileBase = sourceFileName.replace(/\.[a-z0-9]+$/i, "");
+  if (fileBase && slugify(trimmed) === slugify(fileBase)) return true;
+  const compactTitle = trimmed.replace(/\s+/g, "");
+  // arXiv-style / numeric-dotted identifiers.
+  if (/^[0-9]{3,5}[.\-_][0-9]{3,6}(v[0-9]+)?$/i.test(compactTitle)) return true;
+  const letters = trimmed.replace(/[^a-zA-Z]/g, "");
+  return letters.length < 4;
+}
+
+const TITLE_SCAN_BANNED =
+  /\b(issn|doi|journal|volume|issue|copyright|license|licence|received|revised|accepted|published|university|department|corresponding|author|email|http|www)\b|@/i;
+
+/**
+ * Best-effort clean title for a source whose extracted title is a file-name
+ * artifact. Tries, in order: a real markdown heading, an "Original Article
+ * <Title>" style marker, a Title-Case run near the top of the text, and
+ * finally the artifact title itself (callers keep their own last resort).
+ */
+export function humanizeSourceTitle(
+  candidateTitle: string,
+  sourceFileName: string,
+  sourceText: string,
+): string {
+  if (!looksLikeFileArtifactTitle(candidateTitle, sourceFileName)) {
+    return candidateTitle.trim();
+  }
+
+  const text = sourceText
+    .replace(/\[\[[^\]]*\]\]/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, 4000);
+
+  const heading = sourceText.match(/^#{1,3}\s+(.{8,120})\s*$/m)?.[1]?.trim();
+  if (
+    heading &&
+    !looksLikeFileArtifactTitle(heading, sourceFileName) &&
+    !TITLE_SCAN_BANNED.test(heading) &&
+    !/^(summary|source material|abstract|introduction|contents?)$/i.test(heading)
+  ) {
+    return heading;
+  }
+
+  const articleMarker = text.match(
+    /(?:original|research|review)\s+article\s+(.{10,140}?)(?=\s+[A-Z][a-z]+\s+[A-Z]\.|\s+abstract\b|$)/i,
+  );
+  if (articleMarker?.[1] && !TITLE_SCAN_BANNED.test(articleMarker[1])) {
+    const candidate = articleMarker[1].trim().replace(/[,;:\-\s]+$/, "");
+    if (!looksLikeFileArtifactTitle(candidate, sourceFileName)) return candidate;
+  }
+
+  // First Title-Case run of 4-14 words without boilerplate vocabulary.
+  const words = text.split(" ").filter(Boolean);
+  for (let start = 0; start < Math.min(words.length, 220); start += 1) {
+    for (let length = 14; length >= 4; length -= 1) {
+      const run = words.slice(start, start + length);
+      if (run.length < 4) continue;
+      const phrase = run.join(" ").replace(/[,;.]+$/, "");
+      if (TITLE_SCAN_BANNED.test(phrase) || /\d{3,}/.test(phrase)) continue;
+      const capitalized = run.filter((word) => /^[A-Z]/.test(word)).length;
+      if (capitalized / run.length < 0.6) continue;
+      if (looksLikeFileArtifactTitle(phrase, sourceFileName)) continue;
+      return phrase;
+    }
+  }
+
+  return candidateTitle.trim();
+}
+
 function sourceSectionNumber(clusterDir: string): number {
   if (!fs.existsSync(clusterDir)) return 1;
   const existing = fs
@@ -1756,7 +1832,7 @@ function writeTextbookSectionIndex({
       source_document: sourceSlug,
     }) +
     `# ${sectionNumber}. ${sectionTitle}\n\n` +
-    `This section is part of the ordered Breadboard textbook generated from ${wikilink(sourceSlug, sourceTitle)}.\n`;
+    `This section collects the lessons on ${sourceTitle}.\n`;
 
   fs.writeFileSync(path.join(sectionDir, "_index.md"), content, "utf-8");
 }
@@ -1799,7 +1875,7 @@ function textbookPageBody({
     (pageGroundedDetails ? `## Page-Grounded Details\n\n${pageGroundedDetails}\n\n` : "") +
     `## Core Ideas\n\n${formatBullets(topic.keyPoints)}\n\n` +
     sourceEvidence +
-    `## Related Pages\n\n${relatedLinks.length > 0 ? relatedLinks.join("\n") : "- No direct related textbook pages yet."}\n\n` +
+    `## Related Pages\n\n${relatedLinks.length > 0 ? relatedLinks.join("\n") : "- No directly related pages yet."}\n\n` +
     (relationLines.length > 0 ? `## Concept Dependencies\n\n${relationLines.join("\n")}\n` : "")
   );
 }
@@ -1908,14 +1984,10 @@ function writeLearningReferencePages({
       type: "topic-overview",
       body:
         `# Topic Overview\n\n` +
-        `${metaTitle} is organized as a source-aware textbook. The latest source integrated into the learning path is ${wikilink(sourceSlug, sourceTitle)}.\n\n` +
-        `## Current Textbook Section\n\n` +
+        `${metaTitle} is organized as a sequence of lessons you can read in order. The newest material in the learning path comes from ${sourceTitle}.\n\n` +
+        `## Current Section\n\n` +
         `- ${sectionNumber}. ${sectionTitle}\n\n` +
-        `## Source Summary\n\n${extraction.summary}\n\n` +
-        `## Primary Destinations\n\n` +
-        `- [[Learning/Learning Map|Learning Map]]\n` +
-        `- [[Learning/Source Map|Source Map]]\n` +
-        `- [[Learning/Scope Contract|Scope Contract]]\n`,
+        `## What This Covers\n\n${extraction.summary}\n`,
     },
     {
       fileName: "Learning Map.md",
@@ -1963,6 +2035,8 @@ function writeLearningReferencePages({
   ];
 
   for (const page of learningPages) {
+    // Internal planning pages carry no public tags — tags are reserved for
+    // learner-facing lesson pages.
     const content =
       frontmatter({
         title: page.title,
@@ -1970,7 +2044,6 @@ function writeLearningReferencePages({
         knowledge_type: page.type,
         breadboardType: page.type.replace(/-/g, "_"),
         source_document: sourceSlug,
-        tags: normalizeTopicTags([page.title, "learning map"], page.body, 5, page.body),
       }) + page.body;
     fs.writeFileSync(path.join(learningDir, page.fileName), content, "utf-8");
   }
@@ -2018,14 +2091,23 @@ export async function writeDocumentKnowledge({
   fs.mkdirSync(clusterDir, { recursive: true });
   const sourcesDir = path.join(clusterDir, SOURCE_NOTE_FOLDER);
   const sectionNumber = sourceSectionNumber(clusterDir);
-  const sectionTitle = extraction.documentTitle || sourceTitle;
+  const cleanPages = cleanDocumentPages(pages);
+  const outputMarkdownText = cleanGeneratedText(markdownText);
+  const outputPlainText = cleanGeneratedText(plainText);
+  // Visible folders and titles must never be named after the raw upload
+  // ("2510.27379v1"). Repair artifact-like titles before anything is written,
+  // and keep the repaired title on the extraction so every later
+  // `extraction.documentTitle` consumer sees the same clean name.
+  const sectionTitle = humanizeSourceTitle(
+    extraction.documentTitle || sourceTitle,
+    sourceFileName,
+    outputMarkdownText || outputPlainText,
+  );
+  extraction.documentTitle = sectionTitle;
   const sectionFolder = `${sectionNumber}. ${cleanFileSegment(sectionTitle)}`;
   const sectionDir = ensureDirectory(clusterDir, sectionFolder);
   const conceptDir = ensureDirectory(clusterDir, CONCEPT_NODE_FOLDER);
   fs.mkdirSync(sourcesDir, { recursive: true });
-  const cleanPages = cleanDocumentPages(pages);
-  const outputMarkdownText = cleanGeneratedText(markdownText);
-  const outputPlainText = cleanGeneratedText(plainText);
 
   const usedSlugs = extractExistingSlugs(clusterDir);
   const sourceSlug = uniqueSlug(slugify(sourceTitle), usedSlugs);
@@ -2066,24 +2148,6 @@ export async function writeDocumentKnowledge({
     relationshipLookup.set(sourceKey, existing);
   }
 
-  const sourceTags = normalizeTopicTags(
-    [
-      ...extraction.suggestedTags,
-      ...topicPlans.flatMap((plan) => plan.topic.tags),
-      ...semanticTagsFromText(
-        extraction.documentTitle || sourceTitle,
-        4,
-        [extraction.documentTitle || sourceTitle, outputPlainText].join("\n"),
-      ),
-    ],
-    [
-      extraction.documentTitle || sourceTitle,
-      extraction.summary,
-      outputPlainText.slice(0, 3000),
-    ].join("\n"),
-    10,
-    [extraction.documentTitle || sourceTitle, outputPlainText].join("\n"),
-  );
   const sourceLinks = topicPlans.map((plan) => {
     const locations =
       plan.topic.locations.length > 0
@@ -2107,7 +2171,7 @@ export async function writeDocumentKnowledge({
     generated_by: "chatmock",
     textbook_pages: topicPlans.map((plan) => plan.finalSlug),
     topics: topicPlans.map((plan) => plan.finalSlug),
-    tags: sourceTags,
+    // Raw source archives are internal: they never carry public tags.
   };
   if (sourceImages.length > 0) sourceFrontmatter.source_images = sourceImages;
   if (sourcePdfPath) sourceFrontmatter.source_pdf = sourcePdfPath;
@@ -2603,25 +2667,20 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
 }
 
 function clusterIndexDescription(knowledge: ClusterKnowledge): string {
-  return `Quartz garden generated from ${countLabel(
-    knowledge.stats.documents,
-    "source document",
-  )}, with ${countLabel(
+  return `Learning garden with ${countLabel(
     knowledge.stats.textbookPages,
-    "textbook page",
+    "lesson page",
   )} and ${countLabel(knowledge.stats.links, "graph link")}.`;
 }
 
 function clusterOverviewText(knowledge: ClusterKnowledge, date: string): string {
-  const sourceText = countLabel(knowledge.stats.documents, "source document");
-  const textbookText = countLabel(knowledge.stats.textbookPages, "textbook page");
-  const conceptText = countLabel(knowledge.stats.conceptNodes, "internal ConceptNode");
+  const lessonText = countLabel(knowledge.stats.textbookPages, "lesson page");
   const linkText = countLabel(knowledge.stats.links, "graph link");
   const wordText = countLabel(knowledge.stats.words, "indexed word");
 
   return [
-    `This Quartz garden is generated from ${sourceText} and organized as a linked learning textbook. It currently contains ${textbookText}, ${conceptText}, ${linkText}, and ${wordText}.`,
-    `Start with the Learning folder, then follow the numbered textbook sections. Internal ConceptNodes are retained for planning, graph relationships, source coverage, and page-assistant context.`,
+    `This learning garden is organized as a sequence of linked lessons. It currently contains ${lessonText}, ${linkText}, and ${wordText}.`,
+    `Start with the Topic Overview, then follow the numbered sections in order.`,
     `Last updated: ${date}.`,
   ].join("\n\n");
 }
@@ -2641,7 +2700,9 @@ export function refreshClusterIndex(
     return dateDiff || a.title.localeCompare(b.title);
   };
 
-  const sourceSections = [...knowledge.tree]
+  // The landing page is learner-facing: it lists lessons in reading order and
+  // never links or counts raw source archives or internal planning artifacts.
+  const readingPathSections = [...knowledge.tree]
     .sort((a, b) => byNewest(a.source, b.source))
     .map(({ source, topics }) => {
       const topicLines = [...topics]
@@ -2650,56 +2711,29 @@ export function refreshClusterIndex(
             readingOrderRank(a.relPath, a.type) - readingOrderRank(b.relPath, b.type) ||
             byNewest(a, b),
         )
-        .map((topic) => {
-          const locations =
-            topic.locations.length > 0 ? ` - ${topic.locations.join(", ")}` : "";
-          return `  - ${wikilink(topic.slug, topic.title)}${locations}`;
-        });
-      return [`- ${wikilink(source.slug, source.title)}`, ...topicLines].join(
-        "\n",
-      );
-    });
-  const sourceDocumentLines = [...knowledge.tree]
-    .map(({ source }) => source)
-    .sort(byNewest)
-    .map(
-      (source) =>
-        `- ${wikilink(source.slug, source.title)} - full source markdown, ${source.wordCount} words`,
-    );
+        .map((topic) => `  - ${wikilink(topic.slug, topic.title)}`);
+      return [`- ${source.title}`, ...topicLines].join("\n");
+    })
+    .filter((section) => section.includes("\n"));
 
   const orphanLines = [...knowledge.orphanTopics]
     .sort(byNewest)
     .map((topic) => `- ${wikilink(topic.slug, topic.title)}`);
   const description = clusterIndexDescription(knowledge);
+  const overviewLink = LEARNING_PAGE_ORDER[0];
   const content =
     frontmatter({
       title: meta.title,
       date,
       description,
       knowledge_type: "cluster-index",
-      tags: normalizeTopicTags(
-        [meta.title, clusterSlug],
-        [meta.title, clusterSlug].join("\n"),
-        5,
-        [meta.title, clusterSlug].join("\n"),
-      ),
     }) +
     `## Garden overview\n\n` +
     `${clusterOverviewText(knowledge, date)}\n\n` +
-    `## Learning\n\n` +
-    LEARNING_PAGE_ORDER.map((page) =>
-      `- ${wikilinkForRelPath(page, page.replace(/^Learning\//, "").replace(/\.md$/, ""))}`,
-    ).join("\n") +
-    `\n\n## Sources\n\n` +
-    `${sourceDocumentLines.length > 0 ? sourceDocumentLines.join("\n") : "- No source documents yet."}\n\n` +
-    `## Source Coverage\n\n` +
-    `- Source documents: ${knowledge.stats.documents}\n` +
-    `- Textbook pages: ${knowledge.stats.textbookPages}\n` +
-    `- Learning pages: ${knowledge.stats.learningPages}\n` +
-    `- Internal ConceptNodes: ${knowledge.stats.conceptNodes}\n` +
-    `- Graph links: ${knowledge.stats.links}\n\n` +
-    `## Textbook Path By Source\n\n${sourceSections.length > 0 ? sourceSections.join("\n") : "- No source documents yet."}\n\n` +
-    `## Other Textbook Pages\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone textbook pages yet."}\n`;
+    `## Start Here\n\n` +
+    `- ${wikilinkForRelPath(overviewLink, "Topic Overview")}\n\n` +
+    `## Reading Path\n\n${readingPathSections.length > 0 ? readingPathSections.join("\n") : "- No lessons yet."}\n\n` +
+    `## More Pages\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone pages yet."}\n`;
 
   fs.writeFileSync(path.join(clusterDir, "_index.md"), content, "utf-8");
 }

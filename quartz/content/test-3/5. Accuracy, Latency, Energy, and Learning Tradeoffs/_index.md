@@ -1,0 +1,14 @@
+---
+title: "5. Accuracy, Latency, Energy, and Learning Tradeoffs"
+date: "2026-07-03T07:26:28.075Z"
+knowledge_type: "textbook-section"
+breadboardType: "textbook_section"
+gardenId: "test-3"
+generatedBy: "learn_button"
+textbookVersion: "textbook_mr4m0tt7_21gtzv6"
+sourceSetHash: "1a8c69e9b052968ea2e755389c511804d1ce94c20dbb841dad31dfcb2910f645"
+---
+
+# 5. Accuracy, Latency, Energy, and Learning Tradeoffs
+
+Now use the later-page tables and graphs as bounded evidence for the qualitative comparison structure across model families and metrics.
