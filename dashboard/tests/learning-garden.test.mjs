@@ -55,15 +55,19 @@ describe("learning garden metadata", () => {
     assert.equal(showLegacySubtopicPages(undefined), false);
   });
 
-  test("keeps Learning pages and textbook pages ahead of sources and legacy folders", () => {
+  test("keeps Learning pages and lesson pages ahead of sources and legacy folders", () => {
     assert.deepEqual(LEARNING_PAGE_ORDER, [
       "Learning/Topic Overview.md",
       "Learning/Learning Map.md",
       "Learning/Source Map.md",
       "Learning/Scope Contract.md",
+      "Learning/Source Coverage.md",
     ]);
     assert.equal(readingOrderRank("Learning/Learning Map.md", "learning-map"), 1);
+    assert.equal(readingOrderRank("Learning/Source Map.md", "source-map"), 2);
     assert.equal(readingOrderRank("1. Waves/phase.md", TEXTBOOK_PAGE_TYPE), 20);
+    // Legacy value maps to the same lesson rank.
+    assert.equal(readingOrderRank("1. Waves/phase.md", "textbook-page"), 20);
     assert.equal(readingOrderRank("sources/lecture-1.md", "source-document"), 30);
     assert.equal(readingOrderRank("generated/phase.md", "knowledge-topic"), 95);
   });

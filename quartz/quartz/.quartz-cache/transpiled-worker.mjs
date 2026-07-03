@@ -7740,6 +7740,17 @@ function getAllSegmentPrefixes(tags) {
   return results;
 }
 __name(getAllSegmentPrefixes, "getAllSegmentPrefixes");
+function scopedGardenTarget(src, targetCanonical, allSlugs) {
+  const gardenRoot = src.split("/").filter(Boolean)[0];
+  if (!gardenRoot || gardenRoot === "index") return null;
+  if (targetCanonical === gardenRoot || targetCanonical.startsWith(`${gardenRoot}/`)) return null;
+  const scoped = joinSegments(gardenRoot, targetCanonical);
+  if (allSlugs.includes(scoped)) return scoped;
+  const scopedIndex = joinSegments(scoped, "index");
+  if (allSlugs.includes(scopedIndex)) return scopedIndex;
+  return null;
+}
+__name(scopedGardenTarget, "scopedGardenTarget");
 function transformLink(src, target, opts) {
   let targetSlug = transformInternalLink(target);
   if (opts.strategy === "relative") {
@@ -7749,6 +7760,10 @@ function transformLink(src, target, opts) {
     const canonicalSlug = stripSlashes(targetSlug.slice(".".length));
     let [targetCanonical, targetAnchor] = splitAnchor(canonicalSlug);
     if (opts.strategy === "shortest") {
+      const scopedTarget = scopedGardenTarget(src, targetCanonical, opts.allSlugs);
+      if (scopedTarget) {
+        return resolveRelative(src, scopedTarget) + targetAnchor;
+      }
       const matchingFileNames = opts.allSlugs.filter((slug) => {
         const parts = slug.split("/");
         const fileName = parts.at(-1);
@@ -11693,6 +11708,10 @@ var VISUAL_TYPES = [
   "travelling_wave",
   "standing_wave",
   "ray_diagram",
+  "lif_neuron",
+  "neural_coding",
+  "stdp_window",
+  "tradeoff_explorer",
   "source_figure_explainer",
   "formula_derivation",
   "concept_diagram",
@@ -11703,7 +11722,11 @@ var IMPLEMENTED_VISUAL_TYPES = [
   "linked_time_plots",
   "mass_spring",
   "energy_exchange",
-  "resonance_curve"
+  "resonance_curve",
+  "lif_neuron",
+  "neural_coding",
+  "stdp_window",
+  "tradeoff_explorer"
 ];
 var MAX_SPEC_CHARS = 4e4;
 var ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
@@ -12010,26 +12033,16 @@ function isLegacySubtopicPath(relativePath = "") {
 }
 __name(isLegacySubtopicPath, "isLegacySubtopicPath");
 var INTERNAL_KNOWLEDGE_TYPES = /* @__PURE__ */ new Set([
-  "internal-concept",
-  "source-document",
-  "source-map",
-  "scope-contract",
-  "source-coverage",
-  "learning-map"
+  "internal-concept"
 ]);
 var INTERNAL_BREADBOARD_TYPES = /* @__PURE__ */ new Set([
-  "internal_concept",
-  "source_document",
-  "source_map",
-  "scope_contract",
-  "source_coverage",
-  "learning_map"
+  "internal_concept"
 ]);
 function isInternalPath(relativePath = "") {
   const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/");
   return parts.some((part) => {
     const lower = part.toLowerCase();
-    return lower === "sources" || lower === "internal" || lower === ".breadboard";
+    return lower === "internal" || lower === ".breadboard";
   });
 }
 __name(isInternalPath, "isInternalPath");
@@ -12047,6 +12060,17 @@ function isRawFileArtifactPage(fm) {
   return slugifyLoose(title) === slugifyLoose(sourceFile);
 }
 __name(isRawFileArtifactPage, "isRawFileArtifactPage");
+var LESSON_KNOWLEDGE_TYPES = /* @__PURE__ */ new Set(["learning-page", "learning-section", "textbook-page", "textbook-section"]);
+var LESSON_BREADBOARD_TYPES = /* @__PURE__ */ new Set(["learning_page", "learning_section", "textbook_page", "textbook_section"]);
+function isLearnAuthored(fm) {
+  return frontmatterString(fm, "generated_by") === "learn_button" || frontmatterString(fm, "generatedBy") === "learn_button";
+}
+__name(isLearnAuthored, "isLearnAuthored");
+function isIngestLessonArtifact(fm, knowledgeType2, breadboardType2) {
+  const isLesson = LESSON_KNOWLEDGE_TYPES.has(knowledgeType2) || LESSON_BREADBOARD_TYPES.has(breadboardType2);
+  return isLesson && !isLearnAuthored(fm);
+}
+__name(isIngestLessonArtifact, "isIngestLessonArtifact");
 var RemoveDrafts = /* @__PURE__ */ __name((opts = {}) => ({
   name: "RemoveDrafts",
   shouldPublish(_ctx, [_tree, vfile]) {
@@ -12057,7 +12081,7 @@ var RemoveDrafts = /* @__PURE__ */ __name((opts = {}) => ({
     const legacySubtopic = frontmatterString(fm, "legacy_subtopic_page") === "true" || isLegacySubtopicPath(relativePath);
     if (legacySubtopic) return opts.showLegacySubtopicPages === true;
     const draftFlag = fm?.draft === true || fm?.draft === "true";
-    if (INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType2) || INTERNAL_BREADBOARD_TYPES.has(breadboardType2) || frontmatterString(fm, "internal") === "true" || isInternalPath(relativePath) || isRawFileArtifactPage(fm)) {
+    if (INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType2) || INTERNAL_BREADBOARD_TYPES.has(breadboardType2) || frontmatterString(fm, "internal") === "true" || isInternalPath(relativePath) || isRawFileArtifactPage(fm) || isIngestLessonArtifact(fm, knowledgeType2, breadboardType2)) {
       return false;
     }
     return !draftFlag;
@@ -12486,8 +12510,10 @@ function readingOrderRank(file) {
   if (type === "topic-overview" || type === "learning-map" || type === "source-map" || type === "scope-contract") {
     return 1;
   }
-  if (/\/\d+\.\s*[^/]+\//.test(filePath) || type === "textbook-section") return 2;
-  if (type === "textbook-page" || breadboardType(file) === "textbook_page") return 3;
+  if (/\/\d+\.\s*[^/]+\//.test(filePath) || type === "textbook-section" || type === "learning-section")
+    return 2;
+  if (type === "textbook-page" || type === "learning-page" || breadboardType(file) === "textbook_page" || breadboardType(file) === "learning_page")
+    return 3;
   if (type === "source-document" || filePath.includes("/sources/")) return 4;
   if (isInternalConcept(file)) return 9;
   return 5;
@@ -12528,7 +12554,7 @@ var PageList = /* @__PURE__ */ __name(({ cfg, fileData, allFiles, limit, sort })
     const title = page.frontmatter?.title;
     const tags = page.frontmatter?.tags ?? [];
     const isSourceDocument = knowledgeType(page) === "source-document";
-    const isTextbookPage = knowledgeType(page) === "textbook-page";
+    const isTextbookPage = knowledgeType(page) === "textbook-page" || knowledgeType(page) === "learning-page";
     const isChatNodeNote = knowledgeType(page) === "generated-note" && generatedNoteType(page) === "chat-node";
     return /* @__PURE__ */ jsx9(
       "li",
@@ -13950,8 +13976,10 @@ var defaultOptions14 = {
       if (knowledgeType2 === "topic-overview" || knowledgeType2 === "learning-map" || knowledgeType2 === "source-map" || knowledgeType2 === "scope-contract") {
         return 1;
       }
-      if (/^\d+\b/.test(segment) || knowledgeType2 === "textbook-section") return 2;
-      if (knowledgeType2 === "textbook-page" || breadboardType2 === "textbook_page") return 3;
+      if (/^\d+\b/.test(segment) || knowledgeType2 === "textbook-section" || knowledgeType2 === "learning-section")
+        return 2;
+      if (knowledgeType2 === "textbook-page" || knowledgeType2 === "learning-page" || breadboardType2 === "textbook_page" || breadboardType2 === "learning_page")
+        return 3;
       if (segment === "sources" || knowledgeType2 === "source-document") return 4;
       if (segment === "legacy") return 8;
       if (knowledgeType2 === "internal-concept" || breadboardType2 === "internal_concept") return 9;

@@ -1,6 +1,6 @@
 ---
 title: "Signals and systems"
-date: "2026-07-02"
+date: "2026-07-03"
 description: "Learning garden with 0 lesson pages and 769 graph links."
 knowledge_type: "cluster-index"
 ---
@@ -11,7 +11,7 @@ This learning garden is organized as a sequence of linked lessons. It currently 
 
 Start with the Topic Overview, then follow the numbered sections in order.
 
-Last updated: 2026-07-02.
+Last updated: 2026-07-03.
 
 ## Start Here
 

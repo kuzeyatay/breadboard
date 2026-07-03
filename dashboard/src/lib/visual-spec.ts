@@ -23,6 +23,10 @@ export const VISUAL_TYPES = [
   "travelling_wave",
   "standing_wave",
   "ray_diagram",
+  "lif_neuron",
+  "neural_coding",
+  "stdp_window",
+  "tradeoff_explorer",
   "source_figure_explainer",
   "formula_derivation",
   "concept_diagram",
@@ -39,6 +43,10 @@ export const IMPLEMENTED_VISUAL_TYPES = [
   "mass_spring",
   "energy_exchange",
   "resonance_curve",
+  "lif_neuron",
+  "neural_coding",
+  "stdp_window",
+  "tradeoff_explorer",
 ] as const
 
 export interface SourceAnchor {

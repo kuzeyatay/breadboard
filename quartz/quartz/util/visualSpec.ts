@@ -22,6 +22,10 @@ export const VISUAL_TYPES = [
   "travelling_wave",
   "standing_wave",
   "ray_diagram",
+  "lif_neuron",
+  "neural_coding",
+  "stdp_window",
+  "tradeoff_explorer",
   "source_figure_explainer",
   "formula_derivation",
   "concept_diagram",
@@ -30,14 +34,19 @@ export const VISUAL_TYPES = [
 
 export type VisualType = (typeof VISUAL_TYPES)[number]
 
-/** Visual types the Quartz renderer can draw interactively today. Everything
- * else in VISUAL_TYPES is schema-valid and degrades to a readable card. */
+/** Visual types the Quartz renderer can draw interactively today. Anything not
+ * in this list has no renderer and is removed from the page (interactive or
+ * nothing — there is no static explainer card). */
 export const IMPLEMENTED_VISUAL_TYPES = [
   "function_plot",
   "linked_time_plots",
   "mass_spring",
   "energy_exchange",
   "resonance_curve",
+  "lif_neuron",
+  "neural_coding",
+  "stdp_window",
+  "tradeoff_explorer",
 ] as const
 
 export interface SourceAnchor {

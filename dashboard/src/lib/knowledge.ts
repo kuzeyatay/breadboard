@@ -14,8 +14,11 @@ import {
   INTERNAL_CONCEPT_TYPE,
   LEARNING_FOLDER,
   LEARNING_PAGE_ORDER,
+  LEARNING_PAGE_TYPE,
+  LEARNING_PAGE_TYPES,
+  LEARNING_SECTION_TYPE,
+  LEARNING_SECTION_TYPES,
   LEGACY_GENERATED_TOPIC_FOLDER,
-  TEXTBOOK_PAGE_TYPE,
   isInternalConceptMetadata,
   isLegacySubtopicRelPath,
   readingOrderRank,
@@ -60,6 +63,7 @@ export interface KnowledgeExtraction {
 
 export interface SavedKnowledge {
   sourceSlug: string;
+  sourceRelPath: string;
   sourceTitle: string;
   topics: {
     slug: string;
@@ -634,7 +638,7 @@ export function humanizeSourceTitle(
     heading &&
     !looksLikeFileArtifactTitle(heading, sourceFileName) &&
     !TITLE_SCAN_BANNED.test(heading) &&
-    !/^(summary|source material|abstract|introduction|contents?)$/i.test(heading)
+    !/^(summary|source material|source snapshots?|snapshots?|abstract|introduction|contents?)$/i.test(heading)
   ) {
     return heading;
   }
@@ -1471,7 +1475,13 @@ function overlapScore(a: Set<string>, b: Set<string>): number {
 
 function inferKnowledgeType(data: Frontmatter): string {
   const explicit = frontmatterString(data, "knowledge_type");
-  if (explicit) return explicit;
+  if (explicit) {
+    // Canonicalize legacy textbook-* values so every downstream comparison can
+    // use the current learning-* names.
+    if (LEARNING_PAGE_TYPES.has(explicit)) return LEARNING_PAGE_TYPE;
+    if (LEARNING_SECTION_TYPES.has(explicit)) return LEARNING_SECTION_TYPE;
+    return explicit;
+  }
   const tags = frontmatterArray(data, "tags");
   const source = frontmatterString(data, "source");
   const generatedBy = frontmatterString(data, "generated_by");
@@ -1497,7 +1507,7 @@ function readExistingTopicNotes(clusterDir: string): ExistingTopicNote[] {
         : inferKnowledgeType(data);
       if (
         type !== "knowledge-topic" &&
-        type !== TEXTBOOK_PAGE_TYPE &&
+        !LEARNING_PAGE_TYPES.has(type) &&
         type !== INTERNAL_CONCEPT_TYPE &&
         type !== "generated-note" &&
         type !== "user-note" &&
@@ -1593,7 +1603,7 @@ async function decideTopicWritePlans({
 
   for (const topic of topics) {
     const candidates = existingNotes
-      .filter((note) => note.type === TEXTBOOK_PAGE_TYPE)
+      .filter((note) => LEARNING_PAGE_TYPES.has(note.type))
       .map((note) => ({ note, score: candidateScore(topic, note) }))
       .filter((candidate) => candidate.score >= 0.16)
       .sort((a, b) => b.score - a.score)
@@ -1822,19 +1832,22 @@ function writeTextbookSectionIndex({
   sourceSlug: string;
   sourceTitle: string;
   date: string;
-}): void {
+}): string {
   const content =
     frontmatter({
       title: `${sectionNumber}. ${sectionTitle}`,
       date,
-      knowledge_type: "textbook-section",
-      breadboardType: "textbook_section",
+      knowledge_type: LEARNING_SECTION_TYPE,
+      breadboardType: "learning_section",
+      internal: "true",
       source_document: sourceSlug,
     }) +
     `# ${sectionNumber}. ${sectionTitle}\n\n` +
     `This section collects the lessons on ${sourceTitle}.\n`;
 
-  fs.writeFileSync(path.join(sectionDir, "_index.md"), content, "utf-8");
+  const filePath = path.join(sectionDir, "_index.md");
+  fs.writeFileSync(filePath, content, "utf-8");
+  return filePath;
 }
 
 function textbookPageBody({
@@ -1893,7 +1906,6 @@ function writeInternalConceptNode({
   textbookSlug,
   textbookTitle,
   relatedSlugs,
-  tags,
 }: {
   conceptDir: string;
   conceptSlug: string;
@@ -1907,8 +1919,9 @@ function writeInternalConceptNode({
   textbookSlug: string;
   textbookTitle: string;
   relatedSlugs: string[];
-  tags: string[];
 }): string {
+  // Internal planning node: hidden from the published garden, so it carries no
+  // public tags.
   const conceptContent =
     frontmatter({
       title: topic.title,
@@ -1919,10 +1932,9 @@ function writeInternalConceptNode({
       draft: "true",
       source_document: sourceSlug,
       source_file: sourceFileName,
-      textbook_page: textbookSlug,
+      learning_page: textbookSlug,
       locations,
       related: relatedSlugs,
-      tags,
     }) +
     `## ConceptNode: ${topic.title}\n\n` +
     `Planning node for ${wikilink(textbookSlug, textbookTitle)}.\n\n` +
@@ -1976,6 +1988,10 @@ function writeLearningReferencePages({
     (artifact) =>
       `- ${artifact.topic.title} -> ${wikilinkForRelPath(artifact.relPath, artifact.title)}`,
   );
+  const currentSectionLine =
+    artifacts.length > 0
+      ? `- ${sectionNumber}. ${sectionTitle}`
+      : `- No lesson sections were generated during ingest. Open ${wikilink(sourceSlug, sourceTitle)} under Sources, then use Learn to build the ordered lessons.`;
 
   const learningPages: Array<{ fileName: string; title: string; type: string; body: string }> = [
     {
@@ -1986,7 +2002,7 @@ function writeLearningReferencePages({
         `# Topic Overview\n\n` +
         `${metaTitle} is organized as a sequence of lessons you can read in order. The newest material in the learning path comes from ${sourceTitle}.\n\n` +
         `## Current Section\n\n` +
-        `- ${sectionNumber}. ${sectionTitle}\n\n` +
+        `${currentSectionLine}\n\n` +
         `## What This Covers\n\n${extraction.summary}\n`,
     },
     {
@@ -2101,25 +2117,14 @@ export async function writeDocumentKnowledge({
   const sectionTitle = humanizeSourceTitle(
     extraction.documentTitle || sourceTitle,
     sourceFileName,
-    outputMarkdownText || outputPlainText,
+    outputPlainText || outputMarkdownText,
   );
   extraction.documentTitle = sectionTitle;
-  const sectionFolder = `${sectionNumber}. ${cleanFileSegment(sectionTitle)}`;
-  const sectionDir = ensureDirectory(clusterDir, sectionFolder);
-  const conceptDir = ensureDirectory(clusterDir, CONCEPT_NODE_FOLDER);
   fs.mkdirSync(sourcesDir, { recursive: true });
 
   const usedSlugs = extractExistingSlugs(clusterDir);
   const sourceSlug = uniqueSlug(slugify(sourceTitle), usedSlugs);
   const date = new Date().toISOString();
-  writeTextbookSectionIndex({
-    sectionDir,
-    sectionNumber,
-    sectionTitle,
-    sourceSlug,
-    sourceTitle: extraction.documentTitle || sourceTitle,
-    date,
-  });
   const existingNotes = readExistingTopicNotes(clusterDir);
   onProgress?.(
     extraction.topics.length > 0
@@ -2171,7 +2176,7 @@ export async function writeDocumentKnowledge({
     generated_by: "chatmock",
     textbook_pages: topicPlans.map((plan) => plan.finalSlug),
     topics: topicPlans.map((plan) => plan.finalSlug),
-    // Raw source archives are internal: they never carry public tags.
+    // Source notes are learner-visible reference pages and live under sources/.
   };
   if (sourceImages.length > 0) sourceFrontmatter.source_images = sourceImages;
   if (sourcePdfPath) sourceFrontmatter.source_pdf = sourcePdfPath;
@@ -2188,154 +2193,165 @@ export async function writeDocumentKnowledge({
     `## Source material\n\n${outputMarkdownText.trim() || outputPlainText.trim()}\n`;
 
   throwIfAborted(abortSignal);
-  const sourceFilePath = path.join(sourcesDir, `${sourceSlug}.md`);
+  const sourceRelPath = `${SOURCE_NOTE_FOLDER}/${sourceSlug}.md`;
+  const sourceFilePath = path.join(clusterDir, sourceRelPath);
   fs.writeFileSync(sourceFilePath, sourceContent, "utf-8");
   createdFilePaths.push(sourceFilePath);
 
   const textbookArtifacts: TextbookArtifact[] = [];
-  let writtenCount = 0;
-  for (const plan of topicPlans) {
-    throwIfAborted(abortSignal);
-    writtenCount += 1;
-    onProgress?.(
-      `${plan.action === "merged" ? "Merging" : "Writing"} textbook page "${plan.topic.title}" (${writtenCount}/${topicPlans.length})...`,
-    );
-    const topic = plan.topic;
-    const subsectionNumber = writtenCount;
-    const relatedTitles = [
-      ...new Set([
-        ...topic.relatedTopics,
-        ...(relationshipLookup.get(topic.title.toLowerCase()) ?? []).map(
-          (rel) => rel.target,
-        ),
-      ]),
-    ];
-    const relatedLinks = relatedTitles
-      .map((relatedTitle) => {
-        const relatedSlug = topicSlugByTitle.get(relatedTitle.toLowerCase());
-        return relatedSlug
-          ? `- ${wikilink(relatedSlug, relatedTitle)}`
-          : undefined;
-      })
-      .filter((link): link is string => Boolean(link));
-    const relationLines = (
-      relationshipLookup.get(topic.title.toLowerCase()) ?? []
-    )
-      .map((rel) => {
-        const targetSlug = topicSlugByTitle.get(rel.target.toLowerCase());
-        return targetSlug
-          ? `- ${rel.relation}: ${wikilink(targetSlug, rel.target)}`
-          : undefined;
-      })
-      .filter((line): line is string => Boolean(line));
-    const locations =
-      topic.locations.length > 0 ? topic.locations : ["Uploaded document"];
-    const imagePages = pageImagesForTopic(topic, cleanPages, 2);
-    const snapshotMarkdown = formatSourceSnapshots(imagePages);
-    const pageGroundedDetails = formatPageGroundedDetails(topic, cleanPages);
-    const tags = normalizeTopicTags(
-      topic.tags,
-      [
-        topic.title,
-        topic.explanation,
-        topic.keyPoints.join("\n"),
-        topic.sourceEvidence.join("\n"),
-      ].join("\n"),
-      8,
-      [topic.title, outputPlainText].join("\n"),
-    );
-
-    const canMergeIntoTextbook =
-      plan.action === "merged" && plan.target?.type === TEXTBOOK_PAGE_TYPE;
-    const textbookSlug =
-      canMergeIntoTextbook && plan.target ? plan.target.slug : plan.finalSlug;
-    const textbookTitle = `${sectionNumber}.${subsectionNumber} ${topic.title}`;
-    const textbookRelPath =
-      canMergeIntoTextbook && plan.target
-        ? plan.target.relPath
-        : `${sectionFolder}/${textbookSlug}.md`;
-    const relatedSlugs = relatedTitles.map(
-      (relatedTitle) =>
-        topicSlugByTitle.get(relatedTitle.toLowerCase()) ?? slugify(relatedTitle),
-    );
-
-    if (canMergeIntoTextbook && plan.target) {
-      await harmonizeTopicNote({
-        client,
-        model,
-        target: plan.target,
-        topic,
+  if (topicPlans.length > 0) {
+    const sectionFolder = `${sectionNumber}. ${cleanFileSegment(sectionTitle)}`;
+    const sectionDir = ensureDirectory(clusterDir, sectionFolder);
+    const conceptDir = ensureDirectory(clusterDir, CONCEPT_NODE_FOLDER);
+    createdFilePaths.push(
+      writeTextbookSectionIndex({
+        sectionDir,
+        sectionNumber,
+        sectionTitle,
         sourceSlug,
         sourceTitle: extraction.documentTitle || sourceTitle,
-        sourceLabel,
-        imagePages,
-        outputPlainText,
-      });
-    } else {
-      const topicFrontmatter: Record<string, string | string[]> = {
-        title: textbookTitle,
         date,
-        source: sourceLabel,
-        knowledge_type: TEXTBOOK_PAGE_TYPE,
-        breadboardType: "textbook_page",
-        source_document: sourceSlug,
-        source_file: sourceFileName,
-        locations,
-        related: relatedSlugs,
-        tags,
-      };
-      const topicImages = imagePages
-        .map((page) => page.imagePath ?? "")
-        .filter(Boolean);
-      if (topicImages.length > 0) topicFrontmatter.source_images = topicImages;
+      }),
+    );
 
-      const topicContent =
-        frontmatter(topicFrontmatter) +
-        textbookPageBody({
-          sectionNumber,
-          subsectionNumber,
+    let writtenCount = 0;
+    for (const plan of topicPlans) {
+      throwIfAborted(abortSignal);
+      writtenCount += 1;
+      onProgress?.(
+        `${plan.action === "merged" ? "Merging" : "Writing"} textbook page "${plan.topic.title}" (${writtenCount}/${topicPlans.length})...`,
+      );
+      const topic = plan.topic;
+      const subsectionNumber = writtenCount;
+      const relatedTitles = [
+        ...new Set([
+          ...topic.relatedTopics,
+          ...(relationshipLookup.get(topic.title.toLowerCase()) ?? []).map(
+            (rel) => rel.target,
+          ),
+        ]),
+      ];
+      const relatedLinks = relatedTitles
+        .map((relatedTitle) => {
+          const relatedSlug = topicSlugByTitle.get(relatedTitle.toLowerCase());
+          return relatedSlug
+            ? `- ${wikilink(relatedSlug, relatedTitle)}`
+            : undefined;
+        })
+        .filter((link): link is string => Boolean(link));
+      const relationLines = (
+        relationshipLookup.get(topic.title.toLowerCase()) ?? []
+      )
+        .map((rel) => {
+          const targetSlug = topicSlugByTitle.get(rel.target.toLowerCase());
+          return targetSlug
+            ? `- ${rel.relation}: ${wikilink(targetSlug, rel.target)}`
+            : undefined;
+        })
+        .filter((line): line is string => Boolean(line));
+      const locations =
+        topic.locations.length > 0 ? topic.locations : ["Uploaded document"];
+      const imagePages = pageImagesForTopic(topic, cleanPages, 2);
+      const snapshotMarkdown = formatSourceSnapshots(imagePages);
+      const pageGroundedDetails = formatPageGroundedDetails(topic, cleanPages);
+
+      const canMergeIntoTextbook =
+        plan.action === "merged" && plan.target
+          ? LEARNING_PAGE_TYPES.has(plan.target.type)
+          : false;
+      const textbookSlug =
+        canMergeIntoTextbook && plan.target ? plan.target.slug : plan.finalSlug;
+      const textbookTitle = `${sectionNumber}.${subsectionNumber} ${topic.title}`;
+      const textbookRelPath =
+        canMergeIntoTextbook && plan.target
+          ? plan.target.relPath
+          : `${sectionFolder}/${textbookSlug}.md`;
+      const relatedSlugs = relatedTitles.map(
+        (relatedTitle) =>
+          topicSlugByTitle.get(relatedTitle.toLowerCase()) ?? slugify(relatedTitle),
+      );
+
+      if (canMergeIntoTextbook && plan.target) {
+        await harmonizeTopicNote({
+          client,
+          model,
+          target: plan.target,
           topic,
           sourceSlug,
           sourceTitle: extraction.documentTitle || sourceTitle,
-          locations,
-          snapshotMarkdown,
-          pageGroundedDetails,
-          relatedLinks,
-          relationLines,
+          sourceLabel,
+          imagePages,
+          outputPlainText,
         });
+      } else {
+        // Ingest pages are internal scaffolding superseded by the Learn pipeline's
+        // lessons; they are hidden from the published garden (no learn_button) and
+        // therefore carry a clean title and no public tags.
+        const cleanTopicTitle = humanizeSourceTitle(topic.title, sourceFileName, outputPlainText);
+        const topicFrontmatter: Record<string, string | string[]> = {
+          title: `${sectionNumber}.${subsectionNumber} ${cleanTopicTitle}`,
+          date,
+          source: sourceLabel,
+          knowledge_type: LEARNING_PAGE_TYPE,
+          breadboardType: "learning_page",
+          source_document: sourceSlug,
+          source_file: sourceFileName,
+          internal: "true",
+          locations,
+          related: relatedSlugs,
+        };
+        const topicImages = imagePages
+          .map((page) => page.imagePath ?? "")
+          .filter(Boolean);
+        if (topicImages.length > 0) topicFrontmatter.source_images = topicImages;
 
-      const topicFilePath = path.join(sectionDir, `${textbookSlug}.md`);
-      fs.writeFileSync(topicFilePath, topicContent, "utf-8");
-      createdFilePaths.push(topicFilePath);
+        const topicContent =
+          frontmatter(topicFrontmatter) +
+          textbookPageBody({
+            sectionNumber,
+            subsectionNumber,
+            topic,
+            sourceSlug,
+            sourceTitle: extraction.documentTitle || sourceTitle,
+            locations,
+            snapshotMarkdown,
+            pageGroundedDetails,
+            relatedLinks,
+            relationLines,
+          });
+
+        const topicFilePath = path.join(sectionDir, `${textbookSlug}.md`);
+        fs.writeFileSync(topicFilePath, topicContent, "utf-8");
+        createdFilePaths.push(topicFilePath);
+      }
+
+      const conceptSlug = uniqueSlug(`concept-${textbookSlug}`, usedSlugs);
+      const conceptRelPath = writeInternalConceptNode({
+        conceptDir,
+        conceptSlug,
+        topic,
+        date,
+        sourceSlug,
+        sourceTitle: extraction.documentTitle || sourceTitle,
+        sourceLabel,
+        sourceFileName,
+        locations,
+        textbookSlug,
+        textbookTitle,
+        relatedSlugs,
+      });
+      createdFilePaths.push(path.join(conceptDir, `${conceptSlug}.md`));
+      textbookArtifacts.push({
+        topic,
+        slug: textbookSlug,
+        title: textbookTitle,
+        relPath: textbookRelPath,
+        conceptSlug,
+        conceptRelPath,
+        locations,
+        action: canMergeIntoTextbook ? "merged" : "created",
+      });
     }
-
-    const conceptSlug = uniqueSlug(`concept-${textbookSlug}`, usedSlugs);
-    const conceptRelPath = writeInternalConceptNode({
-      conceptDir,
-      conceptSlug,
-      topic,
-      date,
-      sourceSlug,
-      sourceTitle: extraction.documentTitle || sourceTitle,
-      sourceLabel,
-      sourceFileName,
-      locations,
-      textbookSlug,
-      textbookTitle,
-      relatedSlugs,
-      tags,
-    });
-    createdFilePaths.push(path.join(conceptDir, `${conceptSlug}.md`));
-    textbookArtifacts.push({
-      topic,
-      slug: textbookSlug,
-      title: textbookTitle,
-      relPath: textbookRelPath,
-      conceptSlug,
-      conceptRelPath,
-      locations,
-      action: canMergeIntoTextbook ? "merged" : "created",
-    });
   }
 
   writeLearningReferencePages({
@@ -2361,6 +2377,7 @@ export async function writeDocumentKnowledge({
 
   return {
     sourceSlug,
+    sourceRelPath,
     sourceTitle: extraction.documentTitle || sourceTitle,
     topics: textbookArtifacts.map((artifact) => ({
       slug: artifact.slug,
@@ -2470,6 +2487,7 @@ export function scanClusterKnowledge(
     };
   }
 
+  migrateRootSourceDocumentsToSources(clusterDir);
   const markdownEntries = walkClusterMarkdown(clusterDir);
 
   const cacheKey = path.resolve(clusterDir);
@@ -2494,7 +2512,8 @@ export function scanClusterKnowledge(
     const sourceFile = frontmatterString(data, "source_file");
     const sourcePdf = frontmatterString(data, "source_pdf");
     const sourceDocument = frontmatterString(data, "source_document");
-    const textbookPage = frontmatterString(data, "textbook_page");
+    const textbookPage =
+      frontmatterString(data, "learning_page") || frontmatterString(data, "textbook_page");
     const nodeBreadboardType = frontmatterString(data, "breadboardType");
     const draft = frontmatterString(data, "draft");
     const flagColor = frontmatterString(data, "flag_color");
@@ -2588,7 +2607,7 @@ export function scanClusterKnowledge(
   }
 
   const sourceNodes = nodes.filter((node) => node.type === "source-document");
-  const textbookNodes = nodes.filter((node) => node.type === TEXTBOOK_PAGE_TYPE);
+  const textbookNodes = nodes.filter((node) => node.type === LEARNING_PAGE_TYPE);
   const legacyPublicTopics = nodes.filter(
     (node) => node.type === "knowledge-topic" && !isLegacySubtopicRelPath(node.relPath),
   );
@@ -2668,21 +2687,64 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
 
 function clusterIndexDescription(knowledge: ClusterKnowledge): string {
   return `Learning garden with ${countLabel(
+    knowledge.stats.documents,
+    "source document",
+  )}, ${countLabel(
     knowledge.stats.textbookPages,
     "lesson page",
-  )} and ${countLabel(knowledge.stats.links, "graph link")}.`;
+  )}, and ${countLabel(knowledge.stats.links, "graph link")}.`;
 }
 
 function clusterOverviewText(knowledge: ClusterKnowledge, date: string): string {
+  const sourceText = countLabel(knowledge.stats.documents, "source document");
   const lessonText = countLabel(knowledge.stats.textbookPages, "lesson page");
   const linkText = countLabel(knowledge.stats.links, "graph link");
   const wordText = countLabel(knowledge.stats.words, "indexed word");
 
   return [
-    `This learning garden is organized as a sequence of linked lessons. It currently contains ${lessonText}, ${linkText}, and ${wordText}.`,
+    `This learning garden is organized from ${sourceText} into a sequence of linked lessons. It currently contains ${lessonText}, ${linkText}, and ${wordText}.`,
     `Start with the Topic Overview, then follow the numbered sections in order.`,
     `Last updated: ${date}.`,
   ].join("\n\n");
+}
+
+function uniqueMigrationPath(root: string, fileName: string): string {
+  const parsed = path.parse(fileName);
+  let candidate = path.join(root, fileName);
+  let index = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(root, `${parsed.name}-${index}${parsed.ext}`);
+    index += 1;
+  }
+  return candidate;
+}
+
+function migrateRootSourceDocumentsToSources(clusterDir: string): void {
+  if (!fs.existsSync(clusterDir)) return;
+
+  const entries = walkClusterMarkdown(clusterDir);
+  const rootSourceEntries = entries.filter((entry) => {
+    if (entry.folder) return false;
+    const content = fs.readFileSync(entry.filePath, "utf-8");
+    const { data } = parseMarkdownFile(content);
+    return inferKnowledgeType(data) === "source-document";
+  });
+
+  if (rootSourceEntries.length === 0) return;
+
+  const sourceDir = ensureDirectory(clusterDir, SOURCE_NOTE_FOLDER);
+  const migrationDir = path.join(clusterDir, ".breadboard", "migrated-root-sources");
+
+  for (const entry of rootSourceEntries) {
+    const targetPath = path.join(sourceDir, entry.entry);
+    if (!fs.existsSync(targetPath)) {
+      fs.renameSync(entry.filePath, targetPath);
+      continue;
+    }
+
+    fs.mkdirSync(migrationDir, { recursive: true });
+    fs.renameSync(entry.filePath, uniqueMigrationPath(migrationDir, entry.entry));
+  }
 }
 
 export function refreshClusterIndex(
@@ -2691,6 +2753,7 @@ export function refreshClusterIndex(
 ): void {
   const clusterDir = path.join(contentPath, clusterSlug.trim());
   fs.mkdirSync(clusterDir, { recursive: true });
+  migrateRootSourceDocumentsToSources(clusterDir);
   const meta = readClusterIndexMeta(clusterDir, clusterSlug);
   const knowledge = scanClusterKnowledge(contentPath, clusterSlug);
   const date = new Date().toISOString().split("T")[0];
@@ -2701,7 +2764,17 @@ export function refreshClusterIndex(
   };
 
   // The landing page is learner-facing: it lists lessons in reading order and
-  // never links or counts raw source archives or internal planning artifacts.
+  // links source notes separately from the ordered lesson path.
+  const sourceLines = knowledge.nodes
+    .filter((node) => node.type === "source-document")
+    .sort(byNewest)
+    .map(
+      (node) =>
+        `- ${wikilinkForRelPath(node.relPath, node.title)} - ${countLabel(
+          node.wordCount,
+          "word",
+        )}`,
+    );
   const readingPathSections = [...knowledge.tree]
     .sort((a, b) => byNewest(a.source, b.source))
     .map(({ source, topics }) => {
@@ -2711,8 +2784,8 @@ export function refreshClusterIndex(
             readingOrderRank(a.relPath, a.type) - readingOrderRank(b.relPath, b.type) ||
             byNewest(a, b),
         )
-        .map((topic) => `  - ${wikilink(topic.slug, topic.title)}`);
-      return [`- ${source.title}`, ...topicLines].join("\n");
+        .map((topic) => `  - ${wikilinkForRelPath(topic.relPath, topic.title)}`);
+      return [`- ${wikilinkForRelPath(source.relPath, source.title)}`, ...topicLines].join("\n");
     })
     .filter((section) => section.includes("\n"));
 
@@ -2732,6 +2805,7 @@ export function refreshClusterIndex(
     `${clusterOverviewText(knowledge, date)}\n\n` +
     `## Start Here\n\n` +
     `- ${wikilinkForRelPath(overviewLink, "Topic Overview")}\n\n` +
+    `## Sources\n\n${sourceLines.length > 0 ? sourceLines.join("\n") : "- No source documents yet."}\n\n` +
     `## Reading Path\n\n${readingPathSections.length > 0 ? readingPathSections.join("\n") : "- No lessons yet."}\n\n` +
     `## More Pages\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone pages yet."}\n`;
 

@@ -1,0 +1,83 @@
+import test, { describe } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+
+describe("source document ingest path", () => {
+  const repoRoot = path.resolve(process.cwd());
+
+  test("upload source markdown is written under sources", () => {
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+    const ingestRoute = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "ingest", "route.ts"),
+      "utf8",
+    );
+
+    assert.match(knowledgeSource, /export const SOURCE_NOTE_FOLDER = "sources"/);
+    assert.match(
+      knowledgeSource,
+      /const sourceRelPath = `\$\{SOURCE_NOTE_FOLDER\}\/\$\{sourceSlug\}\.md`;/,
+    );
+    assert.match(
+      knowledgeSource,
+      /const sourceFilePath = path\.join\(clusterDir, sourceRelPath\);/,
+    );
+    assert.match(knowledgeSource, /sourceRelPath,/);
+    assert.match(ingestRoute, /sourceRelPath: saved\.sourceRelPath/);
+  });
+
+  test("cluster index migrates and links source markdowns from sources", () => {
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+
+    assert.match(knowledgeSource, /function migrateRootSourceDocumentsToSources/);
+    assert.match(knowledgeSource, /inferKnowledgeType\(data\) === "source-document"/);
+    assert.match(knowledgeSource, /fs\.renameSync\(entry\.filePath, targetPath\)/);
+    assert.match(knowledgeSource, /`## Sources\\n\\n\$\{sourceLines\.length > 0/);
+    assert.match(knowledgeSource, /wikilinkForRelPath\(node\.relPath, node\.title\)/);
+  });
+
+  test("markdown uploads go through the source ingest path", () => {
+    const ingestRoute = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "ingest", "route.ts"),
+      "utf8",
+    );
+
+    assert.match(ingestRoute, /plainText = await file\.text\(\);/);
+    assert.match(ingestRoute, /markdownText = plainText;/);
+    assert.match(
+      ingestRoute,
+      /pages = \[\{ label: ext === "md" \? "Markdown" : "Text", text: plainText \}\];/,
+    );
+    assert.match(ingestRoute, /writeDocumentKnowledge\(\{/);
+    assert.match(ingestRoute, /sourceType: ext \|\| "text"/);
+  });
+
+  test("snapshot-only fallback ingest does not create numbered source-snapshot lessons", () => {
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+
+    assert.match(
+      knowledgeSource,
+      /source snapshots\?\|snapshots\?/,
+      "source snapshot headings should be ignored during title detection",
+    );
+    assert.match(
+      knowledgeSource,
+      /if \(topicPlans\.length > 0\) \{/,
+      "numbered lesson folders should only be created when topics exist",
+    );
+    assert.match(
+      knowledgeSource,
+      /writeTextbookSectionIndex\(/,
+      "section index writer should still exist for real topic plans",
+    );
+  });
+});

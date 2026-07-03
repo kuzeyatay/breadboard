@@ -10,7 +10,18 @@
       "Glob(*)",
       "Grep(*)",
       "LS(*)",
-      "PowerShell(*)"
+      "PowerShell(*)",
+      "Bash(git ls-tree *)",
+      "Bash(grep -v \"^.*//.*textbook\")",
+      "Bash(perl -0pi -e 's/knowledgeType === \"textbook-page\" \\\\|\\\\| node\\\\.breadboardType === \"textbook_page\"/knowledgeType === \"textbook-page\" || node.knowledgeType === \"learning-page\" || node.breadboardType === \"textbook_page\" || node.breadboardType === \"learning_page\"/g' quartz/quartz/components/scripts/graph.inline.ts)",
+      "Bash(perl -0pi -e 's/d\\\\.knowledgeType === \"textbook-page\" \\\\|\\\\| d\\\\.breadboardType === \"textbook_page\"/d.knowledgeType === \"textbook-page\" || d.knowledgeType === \"learning-page\" || d.breadboardType === \"textbook_page\" || d.breadboardType === \"learning_page\"/g' quartz/quartz/components/scripts/graph.inline.ts)",
+      "Bash(perl -0pi -e 's/node\\\\.data\\\\?\\\\.knowledgeType === \"textbook-page\" \\\\|\\\\| node\\\\.data\\\\?\\\\.breadboardType === \"textbook_page\"/node.data?.knowledgeType === \"textbook-page\" || node.data?.knowledgeType === \"learning-page\" || node.data?.breadboardType === \"textbook_page\" || node.data?.breadboardType === \"learning_page\"/g' quartz/quartz/components/scripts/explorer.inline.ts)",
+      "Bash(perl -0pi -e 's/node\\\\.knowledgeType === \"textbook-page\" \\\\|\\\\| node\\\\.breadboardType === \"textbook_page\"/node.knowledgeType === \"textbook-page\" || node.knowledgeType === \"learning-page\" || node.breadboardType === \"textbook_page\" || node.breadboardType === \"learning_page\"/g' quartz/components/scripts/graph.inline.ts)",
+      "Bash(perl -0pi -e 's/d\\\\.knowledgeType === \"textbook-page\" \\\\|\\\\| d\\\\.breadboardType === \"textbook_page\"/d.knowledgeType === \"textbook-page\" || d.knowledgeType === \"learning-page\" || d.breadboardType === \"textbook_page\" || d.breadboardType === \"learning_page\"/g' quartz/components/scripts/graph.inline.ts)",
+      "Bash(perl -0pi -e 's/node\\\\.data\\\\?\\\\.knowledgeType === \"textbook-page\" \\\\|\\\\| node\\\\.data\\\\?\\\\.breadboardType === \"textbook_page\"/node.data?.knowledgeType === \"textbook-page\" || node.data?.knowledgeType === \"learning-page\" || node.data?.breadboardType === \"textbook_page\" || node.data?.breadboardType === \"learning_page\"/g' quartz/components/scripts/explorer.inline.ts)",
+      "Bash(npx tsc *)",
+      "Bash(npx tsx *)",
+      "Bash(npm test *)"
     ]
   }
 }

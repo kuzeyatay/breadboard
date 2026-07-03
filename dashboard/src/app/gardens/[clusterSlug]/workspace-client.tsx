@@ -779,7 +779,7 @@ export default function WorkspaceClient({
   // Learn pipeline
   const [learnState, setLearnState] = useState<LearnStatusResponse | null>(null);
   const [learnBusy, setLearnBusy] = useState(false);
-  const [learnPanelOpen, setLearnPanelOpen] = useState(true);
+  const [learnPanelOpen, setLearnPanelOpen] = useState(false);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnIncludeSnapshots, setLearnIncludeSnapshots] = useState(false);
 
@@ -1156,7 +1156,9 @@ export default function WorkspaceClient({
 
     let successCount = 0;
     let snapshotCount = 0;
+    let mapGeneratedCount = 0;
     const screenshotWarnings: string[] = [];
+    const mapWarnings: string[] = [];
 
     for (const file of uploadFiles) {
       if (uploadCanceledRef.current || abortController.signal.aborted) break;
@@ -1258,8 +1260,14 @@ export default function WorkspaceClient({
           successCount++;
           snapshotCount +=
             typeof result.imageCount === "number" ? result.imageCount : 0;
+          if (result.mapGenerated === true) {
+            mapGeneratedCount++;
+          }
           if (typeof result.screenshotWarning === "string") {
             screenshotWarnings.push(`${file.name}: ${result.screenshotWarning}`);
+          }
+          if (typeof result.mapGenerationWarning === "string") {
+            mapWarnings.push(`${file.name}: ${result.mapGenerationWarning}`);
           }
         } else {
           const message = streamError || "Upload failed";
@@ -1283,10 +1291,20 @@ export default function WorkspaceClient({
     const canceled = uploadCanceledRef.current || abortController.signal.aborted;
 
     if (!canceled && successCount > 0) {
+      const generationLabel = !generateMap
+        ? "no map generation"
+        : mapWarnings.length > 0 && mapGeneratedCount === 0
+          ? "source saving; map generation needs retry"
+          : mapWarnings.length > 0
+            ? "partial map generation"
+            : isHandwriting && hasHandwritingCompatibleFile
+              ? "handwriting OCR and map generation"
+              : "map generation";
       addToast(
-        `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${isHandwriting && hasHandwritingCompatibleFile ? "handwriting OCR and map generation" : generateMap ? "map generation" : "no map generation"}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
+        `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${generationLabel}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
       );
       for (const warning of screenshotWarnings) addToast(warning);
+      for (const warning of mapWarnings) addToast(warning);
       fetchDocuments();
       void fetchLearnStatus();
       setSourceDocsExpanded(true);
@@ -1784,6 +1802,7 @@ export default function WorkspaceClient({
     endpoint: "plan" | "confirm" | "generate" | "regenerate" | "cancel",
     body: Record<string, unknown> = {},
   ) {
+    if (endpoint !== "cancel") setLearnPanelOpen(true);
     setLearnBusy(true);
     try {
       const res = await fetch(
@@ -1813,6 +1832,7 @@ export default function WorkspaceClient({
       } else if (endpoint === "confirm" || endpoint === "generate" || endpoint === "regenerate") {
         addToast("Textbook generated", "success");
       } else if (endpoint === "cancel") {
+        setLearnPanelOpen(false);
         addToast("Learn job cancelled");
       }
     } catch (error) {
@@ -2178,9 +2198,18 @@ export default function WorkspaceClient({
     const active = isLearnActive(status);
     const proposedMap = learnState?.proposedLearningMap ?? null;
     const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
+    const displayProgress = status === "complete" || status === "failed" ? 100 : progress;
     const canStart = Boolean(learnState?.hasSources) && !learnBusy && !active;
+    const shouldShowPanel =
+      learnPanelOpen || active || status === "awaiting_confirmation";
+    const panelExpanded =
+      learnPanelOpen || active || status === "awaiting_confirmation";
+    const canClosePanel =
+      !active && (status === "complete" || status === "failed" || status === "cancelled");
+    const showPrimaryAction = !canClosePanel;
 
     if (!isOwner || (!learnState?.hasSources && status !== "failed")) return null;
+    if (!shouldShowPanel) return null;
 
     return (
       <section className="mx-auto mb-4 max-w-5xl rounded-lg border border-gray-800 bg-gray-950/70 p-3 shadow-sm">
@@ -2231,31 +2260,55 @@ export default function WorkspaceClient({
               />
               Snapshots
             </label>
-            <button
-              type="button"
-              onClick={handleLearnPrimary}
-              disabled={!canStart && status !== "awaiting_confirmation"}
-              className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {learnBusy || active ? <Spinner className="h-3.5 w-3.5" /> : null}
-              {learnState?.buttonLabel ?? "Learn"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setLearnPanelOpen((value) => !value)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
-              aria-label={learnPanelOpen ? "Collapse Learn panel" : "Expand Learn panel"}
-              title={learnPanelOpen ? "Collapse" : "Expand"}
-            >
-              <svg
-                className={`h-3.5 w-3.5 transition-transform ${learnPanelOpen ? "" : "rotate-180"}`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
+            {showPrimaryAction && (
+              <button
+                type="button"
+                onClick={handleLearnPrimary}
+                disabled={!canStart && status !== "awaiting_confirmation"}
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
-              </svg>
+                {learnBusy || active ? <Spinner className="h-3.5 w-3.5" /> : null}
+                {learnState?.buttonLabel ?? "Learn"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() =>
+                canClosePanel
+                  ? setLearnPanelOpen(false)
+                  : setLearnPanelOpen((value) => !value)
+              }
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
+              aria-label={
+                canClosePanel
+                  ? "Close Learn panel"
+                  : panelExpanded
+                    ? "Collapse Learn panel"
+                    : "Expand Learn panel"
+              }
+              title={canClosePanel ? "Close" : panelExpanded ? "Collapse" : "Expand"}
+            >
+              {canClosePanel ? (
+                <svg
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              ) : (
+                <svg
+                  className={`h-3.5 w-3.5 transition-transform ${panelExpanded ? "" : "rotate-180"}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
@@ -2266,9 +2319,9 @@ export default function WorkspaceClient({
               <div
                 className={[
                   "h-full rounded-full transition-all",
-                  status === "failed" ? "bg-red-500" : "bg-cyan-300",
+                  status === "failed" ? "bg-red-500" : "bg-white",
                 ].join(" ")}
-                style={{ width: `${status === "failed" ? 100 : progress}%` }}
+                style={{ width: `${displayProgress}%` }}
               />
             </div>
             {status === "failed" && job?.error ? (
@@ -2277,7 +2330,7 @@ export default function WorkspaceClient({
           </div>
         )}
 
-        {learnPanelOpen && proposedMap && status === "awaiting_confirmation" && (
+        {panelExpanded && proposedMap && status === "awaiting_confirmation" && (
           <div className="mt-4 border-t border-gray-800 pt-3">
             <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -2360,7 +2413,7 @@ export default function WorkspaceClient({
           </div>
         )}
 
-        {learnPanelOpen && status === "complete" && (
+        {panelExpanded && status === "complete" && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-800 pt-3">
             <Link
               href={`/garden/${clusterSlug}`}

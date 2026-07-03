@@ -41,8 +41,15 @@ function readingOrderRank(file: QuartzPluginData): number {
   ) {
     return 1
   }
-  if (/\/\d+\.\s*[^/]+\//.test(filePath) || type === "textbook-section") return 2
-  if (type === "textbook-page" || breadboardType(file) === "textbook_page") return 3
+  if (/\/\d+\.\s*[^/]+\//.test(filePath) || type === "textbook-section" || type === "learning-section")
+    return 2
+  if (
+    type === "textbook-page" ||
+    type === "learning-page" ||
+    breadboardType(file) === "textbook_page" ||
+    breadboardType(file) === "learning_page"
+  )
+    return 3
   if (type === "source-document" || filePath.includes("/sources/")) return 4
   if (isInternalConcept(file)) return 9
   return 5
@@ -122,7 +129,8 @@ export const PageList: QuartzComponent = ({ cfg, fileData, allFiles, limit, sort
         const title = page.frontmatter?.title
         const tags = page.frontmatter?.tags ?? []
         const isSourceDocument = knowledgeType(page) === "source-document"
-        const isTextbookPage = knowledgeType(page) === "textbook-page"
+        const isTextbookPage =
+          knowledgeType(page) === "textbook-page" || knowledgeType(page) === "learning-page"
         const isChatNodeNote =
           knowledgeType(page) === "generated-note" && generatedNoteType(page) === "chat-node"
 

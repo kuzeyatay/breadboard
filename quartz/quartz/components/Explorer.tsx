@@ -44,8 +44,15 @@ const defaultOptions: Options = {
       ) {
         return 1
       }
-      if (/^\d+\b/.test(segment) || knowledgeType === "textbook-section") return 2
-      if (knowledgeType === "textbook-page" || breadboardType === "textbook_page") return 3
+      if (/^\d+\b/.test(segment) || knowledgeType === "textbook-section" || knowledgeType === "learning-section")
+        return 2
+      if (
+        knowledgeType === "textbook-page" ||
+        knowledgeType === "learning-page" ||
+        breadboardType === "textbook_page" ||
+        breadboardType === "learning_page"
+      )
+        return 3
       if (segment === "sources" || knowledgeType === "source-document") return 4
       if (segment === "legacy") return 8
       if (knowledgeType === "internal-concept" || breadboardType === "internal_concept") return 9

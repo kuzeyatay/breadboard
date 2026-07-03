@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
+    <title>Learning Map</title>
+    <link>https://localhost:8081/test-2/Learning/Learning-Map</link>
+    <guid>https://localhost:8081/test-2/Learning/Learning-Map</guid>
+    <description><![CDATA[ Learning Map Section Order Why the Source Turns from Conventional Neural Networks to SNNs 1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview What Spiking Neural Networks Are in This Paper 2.1 What Spiking Neural Networks Are in This Paper Overview The Named Neuron Model: LIF... ]]></description>
+    <pubDate>Fri, 03 Jul 2026 11:41:52 GMT</pubDate>
+  </item><item>
     <title>Topic Overview</title>
-    <link>https://localhost:8081/test-3/Learning/Topic-Overview</link>
-    <guid>https://localhost:8081/test-3/Learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks are neural models built around discrete events in time. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:28:13 GMT</pubDate>
+    <link>https://localhost:8081/test-2/Learning/Topic-Overview</link>
+    <guid>https://localhost:8081/test-2/Learning/Topic-Overview</guid>
+    <description><![CDATA[ Topic Overview test is organized as a sequence of lessons you can read in order. How To Learn This Garden Read the sections in order. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 11:41:52 GMT</pubDate>
   </item><item>
-    <title>1. Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/</link>
-    <guid>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/</guid>
+    <title>Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs</title>
+    <link>https://localhost:8081/test-2/Learning/</link>
+    <guid>https://localhost:8081/test-2/Learning/</guid>
+    <description><![CDATA[ Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs A source-only learning spine that follows the paper from its motivation for spiking neural networks, through the intuition of spike-based computation, the named LIF neuron model, the three compared training paradigms, the un... ]]></description>
+    <pubDate>Fri, 03 Jul 2026 11:41:52 GMT</pubDate>
+  </item><item>
+    <title>1. From Conventional Neural Networks to SNNs</title>
+    <link>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/</link>
+    <guid>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/</guid>
     <description><![CDATA[ 1. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
+    <pubDate>Fri, 03 Jul 2026 11:37:04 GMT</pubDate>
   </item><item>
-    <title>1.1 Limits of Synchronous Continuous Networks</title>
-    <link>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/1.1-Limits-of-Synchronous-Continuous-Networks</link>
-    <guid>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/1.1-Limits-of-Synchronous-Continuous-Networks</guid>
-    <description><![CDATA[ Limits of Synchronous Continuous Networks Many neural networks achieve strong results by keeping activity continuous and updating many units in a coordinated way across layers or time steps. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
+    <title>1.1 From Conventional Neural Networks to SNNs</title>
+    <link>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</link>
+    <guid>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</guid>
+    <description><![CDATA[ 1.1 From Conventional Neural Networks to SNNs Introduce Why the Source Turns from Conventional Neural Networks to SNNs from the uploaded sources. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 11:37:04 GMT</pubDate>
   </item><item>
-    <title>1.2 Spikes, Timing, and Event-Driven Computation</title>
-    <link>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/1.2-Spikes,-Timing,-and-Event-Driven-Computation</link>
-    <guid>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/1.2-Spikes,-Timing,-and-Event-Driven-Computation</guid>
-    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation A spiking neural network carries information in discrete timed events called spikes. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
-  </item><item>
-    <title>2. Spikes, Neurons, and Network Architecture</title>
-    <link>https://localhost:8081/test-3/2.-Spikes,-Neurons,-and-Network-Architecture/</link>
-    <guid>https://localhost:8081/test-3/2.-Spikes,-Neurons,-and-Network-Architecture/</guid>
+    <title>2. What Spiking Neural Networks Are</title>
+    <link>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/</link>
+    <guid>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/</guid>
     <description><![CDATA[ 2. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
+    <pubDate>Fri, 03 Jul 2026 11:37:04 GMT</pubDate>
   </item><item>
-    <title>1.3 Neuromorphic Hardware and Real-Time Applications</title>
-    <link>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/1.3-Neuromorphic-Hardware-and-Real-Time-Applications</link>
-    <guid>https://localhost:8081/test-3/1.-Why-Spiking-Neural-Networks-Exist/1.3-Neuromorphic-Hardware-and-Real-Time-Applications</guid>
-    <description><![CDATA[ Spiking neural networks matter when a system must do more than produce correct outputs. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
+    <title>2.1 What Spiking Neural Networks Are</title>
+    <link>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</link>
+    <guid>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</guid>
+    <description><![CDATA[ 2.1 What Spiking Neural Networks Are Introduce What Spiking Neural Networks Are in This Paper from the uploaded sources. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 11:37:04 GMT</pubDate>
   </item><item>
-    <title>2.1 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test-3/2.-Spikes,-Neurons,-and-Network-Architecture/2.1-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test-3/2.-Spikes,-Neurons,-and-Network-Architecture/2.1-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ A spiking neuron is useful when computation depends on when signals arrive, not just on how much signal arrives in total. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
-  </item><item>
-    <title>2.2 Spiking Network Architecture and Lateral Inhibition</title>
-    <link>https://localhost:8081/test-3/2.-Spikes,-Neurons,-and-Network-Architecture/2.2-Spiking-Network-Architecture-and-Lateral-Inhibition</link>
-    <guid>https://localhost:8081/test-3/2.-Spikes,-Neurons,-and-Network-Architecture/2.2-Spiking-Network-Architecture-and-Lateral-Inhibition</guid>
-    <description><![CDATA[ A spiking neural network is not just a set of neurons that can emit spikes. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
-  </item><item>
-    <title>3. How Spiking Neural Networks Learn</title>
-    <link>https://localhost:8081/test-3/3.-How-Spiking-Neural-Networks-Learn/</link>
-    <guid>https://localhost:8081/test-3/3.-How-Spiking-Neural-Networks-Learn/</guid>
+    <title>3. Neuron Model: LIF</title>
+    <link>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/</link>
+    <guid>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/</guid>
     <description><![CDATA[ 3. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
+    <pubDate>Fri, 03 Jul 2026 11:37:04 GMT</pubDate>
   </item><item>
-    <title>3.1 Why Training Strategy Is the Central Comparison</title>
-    <link>https://localhost:8081/test-3/3.-How-Spiking-Neural-Networks-Learn/3.1-Why-Training-Strategy-Is-the-Central-Comparison</link>
-    <guid>https://localhost:8081/test-3/3.-How-Spiking-Neural-Networks-Learn/3.1-Why-Training-Strategy-Is-the-Central-Comparison</guid>
-    <description><![CDATA[ A spiking neural network is useful when its discrete spike-based computation leads to useful behavior on a real task. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 07:26:28 GMT</pubDate>
+    <title>4. SNN Training Paradigms</title>
+    <link>https://localhost:8081/test-2/Learning/4.-SNN-Training-Paradigms/</link>
+    <guid>https://localhost:8081/test-2/Learning/4.-SNN-Training-Paradigms/</guid>
+    <description><![CDATA[ 4. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 11:37:04 GMT</pubDate>
+  </item><item>
+    <title>3.1 Neuron Model: LIF as Evidence</title>
+    <link>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</link>
+    <guid>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</guid>
+    <description><![CDATA[ 3.1 Neuron Model: LIF as Evidence Introduce The Named Neuron Model: LIF as Source-Central Evidence from the uploaded sources. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 11:37:04 GMT</pubDate>
   </item>
     </channel>
   </rss>

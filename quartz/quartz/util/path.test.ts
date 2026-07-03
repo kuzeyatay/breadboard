@@ -274,6 +274,32 @@ describe("link strategies", () => {
       assert.strictEqual(path.transformLink(cur, "a/b/index", opts), "./a/b/")
       assert.strictEqual(path.transformLink(cur, "index", opts), "./")
     })
+
+    test("resolves garden-relative links within the current garden", () => {
+      const gardenOpts: TransformOptions = {
+        strategy: "shortest",
+        allSlugs: [
+          ...allSlugs,
+          "test/index",
+          "test/sources/reader",
+          "test/Learning/Topic-Overview",
+          "other/sources/reader",
+        ] as FullSlug[],
+      }
+
+      assert.strictEqual(
+        path.transformLink("test/index" as FullSlug, "sources/reader", gardenOpts),
+        "../test/sources/reader",
+      )
+      assert.strictEqual(
+        path.transformLink("test/index" as FullSlug, "Learning/Topic Overview", gardenOpts),
+        "../test/Learning/Topic-Overview",
+      )
+      assert.strictEqual(
+        path.transformLink("other/index" as FullSlug, "sources/reader", gardenOpts),
+        "../other/sources/reader",
+      )
+    })
   })
 
   describe("relative", () => {

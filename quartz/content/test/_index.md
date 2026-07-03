@@ -1,22 +1,22 @@
 ---
 title: "test"
 date: "2026-04-20"
-description: "Quartz garden generated from 1 source document, with 0 knowledge topics and 0 graph links."
+description: "Learning garden with 1 source document, 0 lesson pages, and 0 graph links."
 knowledge_type: "cluster-index"
 tags: ["test"]
 ---
 
 ## Garden overview
 
-This Quartz garden is generated from 1 source document and rebuilt into a linked knowledge map. It currently contains 0 knowledge topics, 0 generated chat notes, 0 graph links, and 4291 indexed words.
+This learning garden is organized from 1 source document into a sequence of linked lessons. It currently contains 0 lesson pages, 0 graph links, and 4291 indexed words.
 
-Whenever a new document is uploaded and markdown content is generated, this cluster index is updated so the map, counts, and source tree stay aligned with the current material.
+Start with the Topic Overview once Learn has generated lessons. Until then, the uploaded source markdown is available below.
 
-Last updated: 2026-04-20.
+Last updated: 2026-07-03.
 
-## Full source notes
+## Sources
 
-- [[983068-english-annotated|983068-english-annotated]] - full source-generated markdown, 4291 words
+- [[sources/983068-english-annotated|983068-english-annotated]] - 4291 words
 
 ## Cluster map
 
@@ -27,7 +27,7 @@ Last updated: 2026-04-20.
 
 ## Source tree
 
-- [[983068-english-annotated|983068-english-annotated]]
+- [[sources/983068-english-annotated|983068-english-annotated]]
 
 ## Other knowledge notes
 

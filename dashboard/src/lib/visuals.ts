@@ -116,6 +116,10 @@ const IMPLEMENTED_PROPS_GUIDE = `Prop contracts for the interactive types (these
 - mass_spring: { "amplitude": 1, "angularFrequency": 1, "phase": 0, "showForceVector": true, "showVelocityVector": false }
 - energy_exchange: { "amplitude": 1, "springConstant": 1, "mass": 1, "phase": 0 }
 - resonance_curve: { "naturalFrequency": 1, "damping": 0.2, "driveFrequency": 1 }
+- lif_neuron (leaky integrate-and-fire membrane simulator: input, leak, threshold, reset, refractory): { "restPotential": 0, "threshold": 1, "resetPotential": 0, "inputCurrent": 1.2, "leak": 0.15, "refractory": 2, "duration": 40 } — good controls: inputCurrent, leak, threshold, refractory (sliders).
+- neural_coding (rate coding vs temporal coding for one stimulus): { "strength": 0.6, "mode": "both" } — controls: strength (slider 0..1), mode (select: rate|temporal|both).
+- stdp_window (spike-timing-dependent plasticity Δw vs Δt): { "aPlus": 1, "aMinus": 1, "tauPlus": 20, "tauMinus": 20, "deltaT": 8 } — controls: deltaT (slider, e.g. -60..60), aPlus, aMinus (sliders).
+- tradeoff_explorer (accuracy/latency/energy tradeoff across model families): { "models": [ {"label": "ANN", "accuracy": 0.99, "latency": 0.9, "energy": 0.95}, {"label": "Converted SNN", "accuracy": 0.95, "latency": 0.6, "energy": 0.45}, {"label": "Surrogate-gradient SNN", "accuracy": 0.96, "latency": 0.45, "energy": 0.4}, {"label": "STDP SNN", "accuracy": 0.86, "latency": 0.35, "energy": 0.2} ], "priority": "balanced" } — accuracy is 0..1 higher-better; latency and energy are 0..1 lower-better (cost). Control: priority (select: accuracy|latency|energy|balanced).
 Controls bind by "name" to a prop key (e.g. a slider named "amplitude" drives props.amplitude).`;
 
 const VISUAL_SPEC_SYSTEM_PROMPT =
