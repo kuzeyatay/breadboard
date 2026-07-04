@@ -15,11 +15,17 @@
 // Exit code 0 = all checks pass, 1 = at least one failure.
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractQuartzMath } from "../dashboard/src/lib/quartz-markdown.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
+const require = createRequire(path.resolve(SCRIPT_DIR, "..", "dashboard", "package.json"));
+const katex = require("katex") as {
+  renderToString: (formula: string, options: { displayMode: boolean; throwOnError: boolean; strict?: "warn" }) => string;
+};
 
 // ---------------------------------------------------------------------------
 // Shared rule mirrors (keep in sync with dashboard/src/lib/learn-utils.ts,
@@ -279,6 +285,55 @@ function countPattern(text: string, pattern: RegExp): number {
   return (text.match(global) ?? []).length;
 }
 
+function withoutCodeFences(markdown: string): string {
+  return markdown.replace(/```[\s\S]*?```/g, (match) => " ".repeat(match.length));
+}
+
+function sectionBody(markdown: string, heading: string): string {
+  const re = new RegExp(`^##\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "im");
+  const match = re.exec(markdown);
+  if (!match || match.index === undefined) return "";
+  const start = match.index + match[0].length;
+  const next = markdown.slice(start).search(/\n##\s+/);
+  return next >= 0 ? markdown.slice(start, start + next) : markdown.slice(start);
+}
+
+function readIfExists(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+function visualAnchorIds(spec: Record<string, unknown>): string[] {
+  const raw = spec.sourceAnchors;
+  if (!Array.isArray(raw)) return [];
+  const ids: string[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    for (const key of ["figureId", "tableId", "equationId", "questionId"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) ids.push(value.trim());
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function pageSourceIds(page: PageFile): Set<string> {
+  return new Set([
+    ...fmArray(page.frontmatter, "sourceAnchors"),
+    ...fmArray(page.frontmatter, "sourceVisualIds"),
+    ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
+    fmString(page.frontmatter, "sourceFormulaAnchor"),
+  ].filter(Boolean));
+}
+
+function isFormulaVisual(visual: Record<string, unknown>): boolean {
+  return String(visual.type ?? "") === "equation" || /^S\d+\.P\d+\.E\d+$/i.test(String(visual.sourceVisualId ?? ""));
+}
+
 // ---------------------------------------------------------------------------
 // Check machinery
 // ---------------------------------------------------------------------------
@@ -477,24 +532,29 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(7, "visible tree is only _index.md, Learning/, sources/, assets/", [...new Set(problems)]);
   }
 
-  // 8. Learner lesson pages carry 4-8 page-relevant Zettelkasten concept handles; no conceptTags.
+  // 8. Learner lesson pages carry 3-7 page-relevant, namespaced Zettelkasten concept handles; no conceptTags.
   {
     const problems: string[] = [];
+    const tagCounts = new Map<string, number>();
     for (const page of lessonPages) {
       if (fmArray(page.frontmatter, "conceptTags").length > 0 || "conceptTags" in page.frontmatter) {
         problems.push(`${page.relPath}: has conceptTags (banned on learner pages)`);
       }
       const tags = fmArray(page.frontmatter, "tags");
-      if (tags.length < 4 || tags.length > 8) {
-        problems.push(`${page.relPath}: ${tags.length} tags (need 4-8)`);
+      for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+      if (tags.length < 3 || tags.length > 7) {
+        problems.push(`${page.relPath}: ${tags.length} tags (need 3-7)`);
         continue;
       }
       const haystack = `${fmString(page.frontmatter, "title")}\n${teachingProse(page.body)}`.toLowerCase();
       const titleSlug = slugifyLoose(fmString(page.frontmatter, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, ""));
       for (const tag of tags) {
-        if (!/^[a-z0-9][a-z0-9/-]{1,38}[a-z0-9]$/.test(tag)) {
+        if (!/^[a-z0-9][a-z0-9/-]{1,78}[a-z0-9]$/.test(tag)) {
           problems.push(`${page.relPath}: tag "${tag}" is not lower-case kebab-case`);
           continue;
+        }
+        if (!tag.includes("/")) {
+          problems.push(`${page.relPath}: tag "${tag}" is not namespaced (expected namespace/concept-handle)`);
         }
         if (tag === titleSlug || tag.split("/").pop() === titleSlug) {
           problems.push(`${page.relPath}: tag "${tag}" copies the page title slug`);
@@ -503,8 +563,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           problems.push(`${page.relPath}: tag "${tag}" looks like a source filename/id`);
         }
         const words = tag.split(/[/-]/).filter(Boolean);
+        const leaf = tag.split("/").pop() ?? tag;
         if (BANNED_TAG_SEGMENTS.has(tag.toLowerCase()) || words.every((word) => BANNED_TAG_SEGMENTS.has(word.toLowerCase()))) {
           problems.push(`${page.relPath}: tag "${tag}" contains a banned generic segment`);
+        }
+        if (!leaf.includes("-") && BANNED_TAG_SEGMENTS.has(leaf.toLowerCase())) {
+          problems.push(`${page.relPath}: tag "${tag}" has a broad one-word leaf`);
         }
         if (/^sn\//.test(tag)) problems.push(`${page.relPath}: tag "${tag}" uses typo root "sn/"`);
         for (const rule of TAG_RELEVANCE_RULES) {
@@ -517,7 +581,13 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         }
       }
     }
-    check(8, "learner pages have 4-8 relevant zettel concept tags", problems, lessonPages.length === 0);
+    if (lessonPages.length >= 4) {
+      const maxAllowed = Math.ceil(lessonPages.length * 0.6);
+      for (const [tag, count] of tagCounts) {
+        if (count > maxAllowed) problems.push(`tag "${tag}" appears on ${count}/${lessonPages.length} learner pages (too broad/reused)`);
+      }
+    }
+    check(8, "learner pages have 3-7 namespaced zettel concept tags", problems, lessonPages.length === 0);
   }
 
   // 9. Internal/source/planning pages carry no public tags.
@@ -601,6 +671,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 
   // Run-level accumulators shared with the stale-index check (#18).
   const embeddedVisualIds = new Set<string>();
+  const embeddedVisualSpecs: Array<{ page: PageFile; spec: Record<string, unknown> }> = [];
   let visualIndexKeys: string[] = [];
 
   // 13 + 14. Interactive visual consistency, content, and hard-concept coverage.
@@ -637,6 +708,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           continue;
         }
         embedded.push(spec.id);
+        embeddedVisualSpecs.push({ page, spec });
         embeddedVisualIds.add(spec.id);
         interactiveCount += 1;
         const type = String(spec.type ?? "");
@@ -676,9 +748,11 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       // Hard-concept coverage: a lesson teaching a hard dynamic concept must
       // ship an interactive visual (or record an explicit skip reason).
       if (lessonPages.includes(page)) {
-        const hard = HARD_CONCEPT_PATTERNS.find((c) => c.test.test(`${fmString(page.frontmatter, "title")}\n${page.body}`));
+        const pageText = `${fmString(page.frontmatter, "title")}\n${page.body}`;
+        const hard = HARD_CONCEPT_PATTERNS.find((c) => c.test.test(pageText));
         const skipReason = fmString(page.frontmatter, "visualSkipReason");
-        if (hard && embedded.length === 0 && !skipReason) {
+        const openChallengePage = /open challenges?|unresolved|limitations?|future work/i.test(pageText);
+        if (hard && embedded.length === 0 && !skipReason && !openChallengePage) {
           hardConceptProblems.push(`${page.relPath}: teaches ${hard.label} but has no interactive visual`);
         }
       }
@@ -729,6 +803,235 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     check(18, "visual index only lists visuals referenced by current pages", problems, visualIndexKeys.length === 0);
+  }
+
+  // 19. Quartz/KaTeX math is normalized and renderable. Source documents are
+  //     included: raw converted sources still ship through Quartz.
+  {
+    const problems: string[] = [];
+    for (const page of published) {
+      const bodyNoCode = withoutCodeFences(page.body);
+      if (/\\\(|\\\[/.test(bodyNoCode)) {
+        problems.push(`${page.relPath}: raw \\(...\\) or \\[...\\] math delimiter remains`);
+      }
+      for (const expr of extractQuartzMath(page.body)) {
+        if (/\\tag\{[^}]+\}/.test(expr.formula)) {
+          problems.push(`${page.relPath}:${expr.line}: KaTeX-hostile \\tag{} remains in formula "${expr.excerpt}"`);
+        }
+        try {
+          katex.renderToString(expr.formula, {
+            displayMode: expr.display,
+            throwOnError: true,
+            strict: "warn",
+          });
+        } catch (error) {
+          problems.push(
+            `${page.relPath}:${expr.line}: KaTeX cannot render "${expr.excerpt}" (${error instanceof Error ? error.message : String(error)})`,
+          );
+        }
+      }
+    }
+    check(19, "Quartz math delimiters are normalized and KaTeX-renderable", problems);
+  }
+
+  // 20. Root index is a live learning path, not stale source-conversion pages.
+  {
+    const problems: string[] = [];
+    const rootPage = pages.find((page) => page.relPath === "_index.md");
+    if (!rootPage) {
+      problems.push("_index.md missing");
+    } else {
+      const reading = sectionBody(rootPage.body, "Reading Path");
+      if (lessonPages.length > 0 && !reading.trim()) {
+        problems.push("_index.md has no ## Reading Path section");
+      }
+      const linkedTargets: string[] = [];
+      let match: RegExpExecArray | null;
+      const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
+      while ((match = re.exec(reading)) !== null) {
+        const inner = match[2];
+        const rawTarget = (inner.includes("|") ? inner.slice(0, inner.indexOf("|")) : inner).trim();
+        const base = rawTarget.split("#")[0].replace(/^\//, "").replace(/\.md$/i, "");
+        if (!base) continue;
+        linkedTargets.push(base);
+        if (!base.startsWith("Learning/")) {
+          problems.push(`_index.md Reading Path links outside Learning/: [[${rawTarget}]]`);
+        }
+        if (/source|conversion|2510-27379|future-of-brain-inspired-computing/i.test(base)) {
+          problems.push(`_index.md Reading Path contains stale source-conversion target: [[${rawTarget}]]`);
+        }
+      }
+      if (lessonPages.length > 0 && linkedTargets.length !== lessonPages.length) {
+        problems.push(`_index.md Reading Path links ${linkedTargets.length} lesson(s), but ${lessonPages.length} learn-authored lesson page(s) exist`);
+      }
+    }
+    for (const page of pages) {
+      const kt = fmString(page.frontmatter, "knowledge_type");
+      const bt = fmString(page.frontmatter, "breadboardType") || fmString(page.frontmatter, "breadboard_type");
+      const isLesson =
+        kt === "learning-page" || kt === "textbook-page" ||
+        bt === "learning_page" || bt === "textbook_page";
+      if (!isLesson) continue;
+      if (fmString(page.frontmatter, "internal") === "true") {
+        problems.push(`${page.relPath}: internal:true page is still typed as a learning page`);
+      }
+      const top = page.relPath.split("/")[0];
+      if (page.relPath !== "_index.md" && top !== "Learning") {
+        problems.push(`${page.relPath}: learning page exists outside Learning/`);
+      }
+    }
+    check(20, "root index excludes stale source-conversion pages", [...new Set(problems)]);
+  }
+
+  // 21. Source Map must not contradict extracted formula anchors.
+  {
+    const problems: string[] = [];
+    const formulaVisuals = ledger.filter(isFormulaVisual);
+    if (formulaVisuals.length > 0) {
+      const sourceMap = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"));
+      if (!sourceMap) {
+        problems.push(".breadboard/planning/Source Map.md missing despite formula anchors");
+      } else {
+        if (/explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only/i.test(sourceMap)) {
+          problems.push("Source Map says formulas are absent/caption-only even though formula anchors exist");
+        }
+        if (!/Formula Coverage|explicit metric formulas|formula anchors? (?:are )?present/i.test(sourceMap)) {
+          problems.push("Source Map does not explicitly acknowledge formula coverage");
+        }
+      }
+    }
+    check(21, "Source Map is consistent with extracted formula anchors", problems, formulaVisuals.length === 0);
+  }
+
+  // 22. Source Coverage must treat metric formulas as central when a metric page exists.
+  {
+    const problems: string[] = [];
+    const formulaVisuals = ledger.filter(isFormulaVisual);
+    const hasMetricLesson = lessonPages.some((page) =>
+      /metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/i.test(`${fmString(page.frontmatter, "title")} ${page.relPath}`),
+    );
+    if (formulaVisuals.length > 0 && hasMetricLesson) {
+      const coverage = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"));
+      if (!coverage) {
+        problems.push(".breadboard/planning/Source Coverage.md missing despite formula anchors");
+      } else {
+        for (const visual of formulaVisuals) {
+          const id = String(visual.sourceVisualId ?? "");
+          if (id && new RegExp(`${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*Not central`, "i").test(coverage)) {
+            problems.push(`${id}: Source Coverage marks metric formula as Not central`);
+          }
+        }
+        if (!/Formula Anchor Assignments|central to/i.test(coverage)) {
+          problems.push("Source Coverage lacks formula anchor assignments to the metric lesson");
+        }
+      }
+    }
+    check(22, "Source Coverage assigns metric formulas centrally", problems, formulaVisuals.length === 0 || !hasMetricLesson);
+  }
+
+  // 23. Embedded interactive visuals must be grounded, page-specific, and not
+  //     generic mismatches.
+  {
+    const problems: string[] = [];
+    const visualsDir = path.join(gardenDir, ".breadboard", "visuals");
+    try {
+      for (const file of fs.readdirSync(visualsDir).filter((name) => name.endsWith(".json"))) {
+        const id = file.replace(/\.json$/i, "");
+        if (!embeddedVisualIds.has(id)) problems.push(`.breadboard/visuals/${file}: spec file is orphaned (not embedded by any page)`);
+      }
+    } catch {
+      // A garden with no visuals may have no directory; existing checks cover missing specs for embedded blocks.
+    }
+
+    for (const { page, spec } of embeddedVisualSpecs) {
+      const id = String(spec.id ?? "(missing id)");
+      const type = String(spec.type ?? "");
+      const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors : [];
+      const grounding = String(spec.sourceGroundingStatus ?? "");
+      const justification = String(spec.justification ?? "").trim();
+      if (anchors.length === 0 && !(grounding === "conceptual-no-direct-source-figure" && justification)) {
+        problems.push(`${page.relPath}: visual ${id} has no sourceAnchors and no conceptual grounding justification`);
+      }
+      for (const field of ["pagePath", "learningGoal", "regenerationPrompt"]) {
+        if (!String(spec[field] ?? "").trim()) problems.push(`${page.relPath}: visual ${id} lacks ${field}`);
+      }
+      for (const field of ["inputs", "outputs"]) {
+        if (!Array.isArray(spec[field]) || (spec[field] as unknown[]).length === 0) {
+          problems.push(`${page.relPath}: visual ${id} lacks ${field}`);
+        }
+      }
+      const anchorIds = visualAnchorIds(spec);
+      if (anchorIds.length > 0) {
+        const idsOnPage = pageSourceIds(page);
+        if (!anchorIds.some((anchorId) => idsOnPage.has(anchorId))) {
+          problems.push(`${page.relPath}: visual ${id} sourceAnchors [${anchorIds.join(", ")}] do not overlap page sourceAnchors/sourceVisualIds`);
+        }
+      }
+      const pageText = `${page.relPath} ${fmString(page.frontmatter, "title")}`.toLowerCase();
+      if (/metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/.test(pageText) && type !== "tradeoff_explorer") {
+        problems.push(`${page.relPath}: metric/evaluation page uses ${type}; expected tradeoff_explorer`);
+      }
+      if (/comparative|results|model comparison|models-and-metrics/.test(pageText) && type !== "tradeoff_explorer") {
+        problems.push(`${page.relPath}: comparative/results page uses ${type}; expected tradeoff_explorer`);
+      }
+      if (/application|hardware|neuromorphic|deployment/.test(pageText) && type !== "tradeoff_explorer") {
+        problems.push(`${page.relPath}: application/hardware page uses ${type}; expected tradeoff_explorer`);
+      }
+      if (/open challenges|unresolved|limitations|future work/.test(pageText)) {
+        problems.push(`${page.relPath}: open-challenges page embeds visual ${id}; no generic interactive visual should be forced here`);
+      }
+    }
+    check(23, "interactive visuals are source-grounded and page-specific", problems, embeddedVisualSpecs.length === 0);
+  }
+
+  // 24. Tag namespaces are specific and not broadly reused.
+  {
+    const problems: string[] = [];
+    const counts = new Map<string, number>();
+    for (const page of lessonPages) {
+      for (const tag of fmArray(page.frontmatter, "tags")) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+        const leaf = tag.split("/").pop() ?? tag;
+        if (!tag.includes("/")) problems.push(`${page.relPath}: unnamespaced tag "${tag}"`);
+        if (!leaf.includes("-") && BANNED_TAG_SEGMENTS.has(leaf.toLowerCase())) {
+          problems.push(`${page.relPath}: broad tag leaf "${tag}"`);
+        }
+      }
+    }
+    if (lessonPages.length >= 4) {
+      const maxAllowed = Math.ceil(lessonPages.length * 0.6);
+      for (const [tag, count] of counts) {
+        if (count > maxAllowed) problems.push(`tag "${tag}" appears on ${count}/${lessonPages.length} learner pages`);
+      }
+    }
+    check(24, "learner tags are namespaced and specific", [...new Set(problems)], lessonPages.length === 0);
+  }
+
+  // 25. Learner formulas must be explicitly grounded or declared conceptual.
+  {
+    const problems: string[] = [];
+    const formulaVisuals = ledger.filter(isFormulaVisual);
+    for (const page of lessonPages) {
+      const math = extractQuartzMath(page.body);
+      if (math.length > 0) {
+        const formulaAnchors = [
+          ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
+          fmString(page.frontmatter, "sourceFormulaAnchor"),
+        ].filter(Boolean);
+        const status = fmString(page.frontmatter, "formulaGroundingStatus");
+        const justification = fmString(page.frontmatter, "formulaJustification");
+        if (formulaAnchors.length === 0 && !(status && justification)) {
+          problems.push(`${page.relPath}: contains math but lacks sourceFormulaAnchors or formulaGroundingStatus/formulaJustification`);
+        }
+      }
+      if (
+        formulaVisuals.length > 0 &&
+        /formulas? (?:are|is) not present|does not derive .* formulas|formal .* formulas.*outside|outside the supported scope/i.test(page.body)
+      ) {
+        problems.push(`${page.relPath}: says formulas are absent/out of scope despite extracted source formula anchors`);
+      }
+    }
+    check(25, "learner formulas are grounded or explicitly conceptual", problems, lessonPages.length === 0);
   }
 
   return results;
@@ -797,12 +1100,6 @@ function validateInternalWikilinks(pages: PageFile[], published: PageFile[]): st
   };
 
   for (const page of published) {
-    // Raw uploaded source documents are grounding material: any `[[Page 3]]`
-    // style refs in them are conversion artifacts, not learner navigation.
-    const kt = fmString(page.frontmatter, "knowledge_type");
-    const bt = fmString(page.frontmatter, "breadboardType") || fmString(page.frontmatter, "breadboard_type");
-    if (isSourceDocument(kt, bt, page.relPath)) continue;
-
     let match: RegExpExecArray | null;
     const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
     while ((match = re.exec(page.body)) !== null) {

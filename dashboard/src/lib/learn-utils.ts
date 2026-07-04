@@ -597,6 +597,51 @@ function domainNamespace(domainHint: string): string {
   return TAG_ROOT_FIXES[words[0] ?? slug] ?? words[0] ?? slug;
 }
 
+const LEARNER_TAG_NAMESPACE_BY_LEAF: Record<string, string> = {
+  "accuracy": "metric/classification-accuracy",
+  "ann-to-snn-conversion": "conversion/activation-to-spike-rate",
+  "backpropagation": "training/backpropagation-through-continuous-activations",
+  "convergence": "metric/convergence-time-target-epoch",
+  "continuous-activation": "neural-networks/continuous-activation-values",
+  "dense-computation": "neural-networks/synchronous-dense-updates",
+  "energy-efficiency": "metric/accuracy-per-energy",
+  "event-driven-computation": "snn/event-driven-sparsity",
+  "event-driven-processing": "snn/event-driven-sparsity",
+  "hardware-constraints": "deployment/reproducibility-and-hardware-standardization",
+  "lif-neuron": "snn/lif-neuron-threshold-reset",
+  "membrane-potential": "computational-neuroscience/membrane-potential-accumulation",
+  "neuromorphic-computing": "hardware/event-driven-neuromorphic-execution",
+  "non-differentiable-spikes": "training/surrogate-gradient-for-discrete-spikes",
+  "rate-coding": "snn/spike-rate-coding",
+  "refractory-period": "snn/refractory-reset-window",
+  "reset-dynamics": "snn/reset-after-threshold-spike",
+  "spike-coding": "snn/spike-timing-as-information",
+  "spike-count": "metric/total-spike-count",
+  "spike-threshold": "snn/threshold-firing-event",
+  "spike-timing": "snn/spike-timing-as-information",
+  "spiking-neural-network": "snn/event-driven-spiking-computation",
+  "spiking-neural-networks": "snn/event-driven-spiking-computation",
+  "stdp": "training/stdp-local-timing-rule",
+  "surrogate-gradient": "training/surrogate-gradient-for-discrete-spikes",
+  "surrogate-gradient-training": "training/surrogate-gradient-for-discrete-spikes",
+  "synchronous-computation": "neural-networks/synchronous-dense-updates",
+  "synaptic-plasticity": "training/stdp-local-timing-rule",
+  "temporal-coding": "snn/spike-timing-as-information",
+  "threshold-firing": "snn/threshold-firing-event",
+};
+
+function namespaceLearnerTag(tag: string, domainHint: string): string | null {
+  const normalized = tag.replace(/^#+/, "").toLowerCase();
+  const leaf = normalized.split("/").filter(Boolean).at(-1) ?? normalized;
+  const exact = LEARNER_TAG_NAMESPACE_BY_LEAF[leaf] ?? LEARNER_TAG_NAMESPACE_BY_LEAF[normalized];
+  if (exact) return exact;
+  if (normalized.includes("/")) return normalized;
+
+  const words = leaf.split("-").filter((word) => word.length > 2 && !TAG_STOPWORDS.has(word));
+  if (words.length < 2) return null;
+  return `${domainNamespace(domainHint)}/${leaf}`;
+}
+
 /** What a tag must be checked against before it lands on a page: the page's
  * own title, section title, final accepted body, and the captions of the
  * source visuals actually embedded there. */
@@ -703,7 +748,21 @@ export function normalizeZettelTags(
   const relevant = relevance
     ? normalized.filter((tag) => tagIsRelevantToPage(tag, relevance))
     : normalized;
-  if (relevant.length >= 4) return relevant.slice(0, 8);
+  const namespaceAndDedupe = (tags: string[]): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const tag of tags) {
+      const namespaced = namespaceLearnerTag(tag, domainHint);
+      if (!namespaced || seen.has(namespaced)) continue;
+      seen.add(namespaced);
+      out.push(namespaced);
+      if (out.length >= 8) break;
+    }
+    return out;
+  };
+
+  const namespacedRelevant = namespaceAndDedupe(relevant);
+  if (namespacedRelevant.length >= 4) return namespacedRelevant;
 
   const fallback = normalizeConceptTags(
     [...relevant, ...semanticConceptTagsFromText(grounding, 8, grounding)],
@@ -717,7 +776,9 @@ export function normalizeZettelTags(
       sourceTopics: [domainHint],
     },
   );
-  return (relevance ? fallback.filter((tag) => tagIsRelevantToPage(tag, relevance)) : fallback).slice(0, 8);
+  return namespaceAndDedupe(
+    relevance ? fallback.filter((tag) => tagIsRelevantToPage(tag, relevance)) : fallback,
+  );
 }
 
 /** Stored full-page snapshot assets look like "...-page-003.png". */
@@ -999,6 +1060,9 @@ export function buildLearningPageFrontmatter({
   tags,
   visualIds,
   sourceVisualIds,
+  sourceFormulaAnchors,
+  formulaGroundingStatus,
+  formulaJustification,
   learningVersionId,
   sourceSetHash,
   generatedAt,
@@ -1014,6 +1078,10 @@ export function buildLearningPageFrontmatter({
   visualIds: string[];
   /** Source visuals (S1.P4.F1 style) embedded in this page's body. */
   sourceVisualIds?: string[];
+  /** Source formula anchors (S1.P6.E1 style) taught or referenced by this page. */
+  sourceFormulaAnchors?: string[];
+  formulaGroundingStatus?: string;
+  formulaJustification?: string;
   learningVersionId: string;
   sourceSetHash?: string;
   generatedAt: string;
@@ -1035,6 +1103,10 @@ export function buildLearningPageFrontmatter({
     visualIds,
     sourceVisualIds:
       sourceVisualIds && sourceVisualIds.length > 0 ? sourceVisualIds : undefined,
+    sourceFormulaAnchors:
+      sourceFormulaAnchors && sourceFormulaAnchors.length > 0 ? sourceFormulaAnchors : undefined,
+    formulaGroundingStatus: formulaGroundingStatus || undefined,
+    formulaJustification: formulaJustification || undefined,
     generatedBy: "learn_button",
     generated_by: "learn_button",
     learningVersion: visibleVersionId,
