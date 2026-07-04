@@ -337,6 +337,38 @@ function isFormulaVisual(visual: Record<string, unknown>): boolean {
   return String(visual.type ?? "") === "equation" || /^S\d+\.P\d+\.E\d+$/i.test(String(visual.sourceVisualId ?? ""));
 }
 
+// Metric keyword families shared by a formula's rendered text and a source
+// formula caption. Content-based, never positional (mirror of garden-finalize).
+const METRIC_KEYWORD_FAMILIES: Array<[string, string[]]> = [
+  ["accuracy", ["accuracy", "correct prediction", "correct", "%"]],
+  ["latency", ["latency", "decision time", "response time"]],
+  ["spike-count", ["spike count", "total spike", "n_{\\text{events}}", "number of spikes"]],
+  ["energy", ["energy", "e_{\\text{total}}", "e_{\\text{event}}", "joule", "millijoule"]],
+  ["efficiency", ["efficiency", "accuracy over energy", "normalized energy"]],
+  ["convergence", ["convergence", "epoch", "target accuracy"]],
+];
+
+function metricFamilies(text: string): Set<string> {
+  const lower = text.toLowerCase();
+  const families = new Set<string>();
+  for (const [family, aliases] of METRIC_KEYWORD_FAMILIES) {
+    if (aliases.some((alias) => lower.includes(alias))) families.add(family);
+  }
+  return families;
+}
+
+/** A source-anchored formula's rendered text must share at least one metric
+ * family with the source formula caption it claims. Accuracy-as-percentage
+ * fractions are recognized even without the word "accuracy". */
+function formulaMatchesCaption(formulaText: string, caption: string): boolean {
+  const captionFamilies = metricFamilies(caption);
+  if (captionFamilies.size === 0) return true; // unknown caption: don't over-flag
+  const formulaFamilies = metricFamilies(formulaText);
+  if (/%|\\%/.test(formulaText) && /\\frac|\//.test(formulaText) && captionFamilies.has("accuracy")) return true;
+  for (const family of formulaFamilies) if (captionFamilies.has(family)) return true;
+  return false;
+}
+
 function unquoteYamlScalar(value: string): string {
   return value.trim().replace(/^["']|["']$/g, "");
 }
@@ -1167,6 +1199,19 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           if (entry.groundingStatus === "source-anchored" && !String(entry.sourceAnchor ?? "").trim()) {
             problems.push(`${label} is source-anchored but lacks sourceAnchor`);
           }
+          // Content-based grounding: a source-anchored formula's symbols/metric
+          // must actually match the caption of the anchor it claims. This
+          // catches index-based mapping (e.g. an energy symbol anchored to the
+          // normalized-efficiency equation).
+          if (entry.groundingStatus === "source-anchored" && entry.sourceAnchor) {
+            const anchorVisual = ledger.find((visual) => String(visual.sourceVisualId ?? "") === entry.sourceAnchor);
+            const caption = String(anchorVisual?.caption ?? "");
+            if (caption && !formulaMatchesCaption(String(entry.text ?? ""), caption)) {
+              problems.push(
+                `${label} is anchored to ${entry.sourceAnchor} but its content does not match that source formula ("${caption}")`,
+              );
+            }
+          }
         }
         if (formulaAnchors.length > 0 && sourceAnchoredEntries.length === 0) {
           problems.push(`${page.relPath}: has sourceFormulaAnchors but no source-anchored formula entry`);
@@ -1568,14 +1613,33 @@ export function writeValidationReport(
   fs.mkdirSync(reportDir, { recursive: true });
   const counts = pageCountsForReport(gardenDir);
   const accepted = results.every((result) => result.status !== "FAIL");
+  const sourceFiles: string[] = [];
+  {
+    const allPages: PageFile[] = [];
+    walkMarkdown(gardenDir, "", allPages);
+    for (const page of allPages) {
+      const file = fmString(page.frontmatter, "source_file");
+      if (file && !sourceFiles.includes(file)) sourceFiles.push(file);
+    }
+  }
+  const passCount = results.filter((r) => r.status === "PASS").length;
+  const failCount = results.filter((r) => r.status === "FAIL").length;
+  const skipCount = results.filter((r) => r.status === "SKIP").length;
   const lines = [
     "# Breadboard Validation Report",
     "",
     `Generated: ${new Date().toISOString()}`,
     `Root: ${path.resolve(gardenDir)}`,
     `Garden: ${gardenSlug}`,
+    `Source files: ${sourceFiles.length > 0 ? sourceFiles.join(", ") : "(none detected)"}`,
     `Page counts: total=${counts.total}, published=${counts.published}, learner=${counts.learner}, sources=${counts.sources}`,
+    `Check results: ${passCount} PASS, ${failCount} FAIL, ${skipCount} SKIP`,
     `Accepted: ${accepted ? "yes" : "no"}`,
+    `Produced by: scripts/validate-breadboard-garden.ts (runChecks + writeValidationReport), also run as the pipeline's export gate via dashboard/src/lib/garden-finalize.ts`,
+    "",
+    accepted
+      ? "Summary: artifact is acceptable — all critical checks pass."
+      : "Summary: artifact is NOT acceptable — see failing checks and file paths below.",
     "",
     "## Checks",
     "",

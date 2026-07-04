@@ -11,6 +11,7 @@ import {
   scanClusterKnowledge,
 } from "@/lib/knowledge";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
+import { finalizeGardenExport, groundLearnerFormula, classifyFigure } from "@/lib/garden-finalize";
 import {
   appendGardenEvent,
   buildDeterministicVisual,
@@ -1441,19 +1442,29 @@ function learningSectionFolder(sectionNumber: number, title: string): string {
   return `${LEARNING_ROOT}/${textbookSectionFolder(sectionNumber, title)}`;
 }
 
+/**
+ * Per-formula grounding is content-based, never positional: each rendered
+ * learner formula is matched to a source formula anchor only when their
+ * symbols/metric families overlap. A simplified helper or single symbol that
+ * matches nothing is honestly labelled a conceptual helper instead of being
+ * mapped to whatever source anchor happens to share its array index.
+ */
 function formulaGroundingEntries(
   mathExpressions: ReturnType<typeof extractQuartzMath>,
-  sourceFormulaAnchors: string[],
+  sourceFormulaFigureList: SourceFigure[],
 ): FormulaGroundingEntry[] {
-  const anchors = [...new Set(sourceFormulaAnchors.filter(Boolean))];
-  return mathExpressions.map((expr, index) => {
-    const sourceAnchor = anchors[index];
-    if (sourceAnchor) {
+  const sources = sourceFormulaFigureList
+    .filter((figure) => figure.figureId)
+    .map((figure) => ({ id: figure.figureId, caption: figure.caption ?? "" }));
+  const captionById = new Map(sources.map((source) => [source.id, source.caption]));
+  return mathExpressions.map((expr) => {
+    const grounded = groundLearnerFormula(expr.formula, sources);
+    if (grounded.groundingStatus === "source-anchored" && grounded.sourceAnchor) {
       return {
         text: expr.formula,
         groundingStatus: "source-anchored",
-        sourceAnchor,
-        justification: `Matches or restates source formula anchor ${sourceAnchor} for the page objective.`,
+        sourceAnchor: grounded.sourceAnchor,
+        justification: `Content matches source metric formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`,
       };
     }
     return {
@@ -1972,6 +1983,28 @@ function sourceAnchorFromId(anchorId: string, sourceFigures: SourceFigure[]): Vi
   return anchor;
 }
 
+// Which source-figure classes each interactive renderer may legitimately be
+// grounded in (mirror of the validator + finalize compatibility rules).
+const VISUAL_TYPE_ANCHOR_CLASSES: Record<string, ReadonlySet<string>> = {
+  lif_neuron: new Set(["lif", "architecture"]),
+  tradeoff_explorer: new Set(["equation", "result"]),
+  stdp_window: new Set(["result"]),
+  neural_coding: new Set<string>(),
+};
+
+function anchorCompatibleWithVisual(type: string, anchor: VisualSourceAnchor): boolean {
+  const allowed = VISUAL_TYPE_ANCHOR_CLASSES[type];
+  if (!allowed) return true; // renderer with no dedicated source coupling
+  if (allowed.size === 0) return false;
+  const id = String(anchor.figureId ?? anchor.tableId ?? anchor.equationId ?? "");
+  const cls = classifyFigure({
+    sourceVisualId: id,
+    caption: anchor.description,
+    pageNumber: anchor.page,
+  });
+  return allowed.has(cls);
+}
+
 function uniqueSourceAnchors(anchors: VisualSourceAnchor[]): VisualSourceAnchor[] {
   const seen = new Set<string>();
   const out: VisualSourceAnchor[] = [];
@@ -2131,7 +2164,14 @@ async function reconcileInteractiveVisuals({
     const derivedAnchors = pageAnchorIds
       .map((anchorId) => sourceAnchorFromId(anchorId, sourceFigures))
       .filter((anchor): anchor is VisualSourceAnchor => Boolean(anchor));
-    spec.sourceAnchors = uniqueSourceAnchors([...existingAnchors, ...derivedAnchors]);
+    // Type-compatibility gate: a LIF simulator must never be "grounded" in
+    // energy/latency/result anchors just because they were assigned to the
+    // page, and a tradeoff explorer must ground in metric/result figures. This
+    // prevents fake grounding where sourceAnchors is non-empty but semantically
+    // wrong for the renderer.
+    spec.sourceAnchors = uniqueSourceAnchors([...existingAnchors, ...derivedAnchors]).filter((anchor) =>
+      anchorCompatibleWithVisual(spec.type, anchor),
+    );
     if (spec.sourceAnchors.length > 0) {
       spec.sourceGroundingStatus = "source-anchored";
       spec.justification = spec.justification || "This interactive visual is tied to source visuals or formula anchors assigned to the same lesson page.";
@@ -3184,7 +3224,7 @@ export async function runTextbookGeneration({
         );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const pageMathExpressions = extractQuartzMath(normalizeQuartzMarkdown(pageBody));
-        const formulas = formulaGroundingEntries(pageMathExpressions, metricFormulaAnchorIds);
+        const formulas = formulaGroundingEntries(pageMathExpressions, sourceFormulaFigures(context));
         const finalContent =
           buildLearningPageFrontmatter({
             gardenId,
@@ -3299,6 +3339,31 @@ export async function runTextbookGeneration({
       currentPageTitle: undefined,
     });
     refreshClusterIndex(contentPath, gardenId);
+
+    // Stage 8 (deterministic export finalize + hard gate): repair the on-disk
+    // tree so what Quartz publishes is exactly what the acceptance validator
+    // accepts — clean export tree, source pages typed as sources (never learner
+    // pages), resolvable source wikilinks, no stale caveats that contradict the
+    // extracted anchors, semantically-placed source visuals, type-compatible
+    // interactive grounding, content-based formula grounding, central tags, no
+    // repeated first-page motivation — and write .breadboard/validation-report.md.
+    // Critical validation is a hard gate: a garden that cannot be repaired fails
+    // the job rather than shipping a broken artifact.
+    const finalizeReport = finalizeGardenExport({ gardenDir: clusterDir, gardenSlug: gardenId });
+    appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
+      jobId: job.id,
+      textbookVersionId,
+      removed: finalizeReport.removed,
+      changedCount: finalizeReport.changed.length,
+      criticalProblems: finalizeReport.criticalProblems,
+    });
+    if (finalizeReport.criticalProblems.length > 0) {
+      throw new Error(
+        `Export finalize failed critical validation for ${gardenId}: ${finalizeReport.criticalProblems.join("; ")}. ` +
+          "The garden was not published. See .breadboard/validation-report.md.",
+      );
+    }
+
     await publishQuartzAfterMutation(`learn textbook generation in ${gardenId}`);
 
     insertLearnVersion({

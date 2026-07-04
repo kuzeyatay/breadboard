@@ -548,6 +548,8 @@ export function sanitizeLearnerTitle(rawTitle: string): string {
     [/^source[- ](?:derived|central|anchored|based)\s+(.+)$/i, (m) => m[1]],
     // "X as Source-Central Evidence" -> "X"
     [/^(.*?)\s+as source[- ](?:derived|central|anchored)(?:\s+evidence)?$/i, (m) => m[1]],
+    // "X as Evidence" / "X as the Evidence" -> "X" (source-commentary residue)
+    [/^(.*?)\s+as (?:the )?evidence$/i, (m) => m[1]],
   ];
   for (const [pattern, rewrite] of structural) {
     const match = title.match(pattern);

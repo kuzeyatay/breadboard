@@ -9,7 +9,26 @@
       "MultiEdit(*)",
       "Glob(*)",
       "Grep(*)",
-      "LS(*)"
+      "LS(*)",
+      "Bash(node -e \"const l=require\\('./.breadboard/source-visuals.json'\\); const f=l.find\\(v=>v.sourceVisualId==='S1.P4.F1'\\); console.log\\(JSON.stringify\\({id:f.sourceVisualId,status:f.usageStatus,page:f.assignedPageId,skip:f.skipReason},null,2\\)\\);\")",
+      "Bash(node -e \"const i=require\\('./.breadboard/visual-index.json'\\); console.log\\('in index:', 'vis-4-1-snn-training-paradigms-lif' in i\\);\")",
+      "Bash(npx tsc *)",
+      "Bash(npm test *)",
+      "Bash(node --test --experimental-strip-types tests/garden-finalize.test.mjs)",
+      "Bash(cp src/lib/garden-finalize.ts /tmp/gf-backup.ts)",
+      "Bash(node -e ' *)",
+      "Bash(DBGTAGS=1 node --test --experimental-strip-types tests/garden-finalize.test.mjs)",
+      "Bash(grep -E \"tests [0-9]+$|pass [0-9]+$|fail [0-9]+$\")",
+      "Bash(node --experimental-strip-types scripts/finalize-breadboard-garden.ts quartz/content/test-2 test-2)",
+      "Bash(node --experimental-strip-types scripts/validate-breadboard-garden.ts test-2)",
+      "Bash(echo \"exit\\(after\\): $?\")",
+      "Bash(node --experimental-strip-types scripts/finalize-breadboard-garden.ts \"quartz/content/test-2\" test-2)",
+      "Bash(echo \"exit\\(2nd finalize\\): $?\")",
+      "Bash(git check-ignore *)",
+      "Bash(grep -A1 'E_{\\\\\\\\text{total}} = N' 'C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/broken-test-2/learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation.md')"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }
