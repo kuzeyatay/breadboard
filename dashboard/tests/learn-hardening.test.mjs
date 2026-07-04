@@ -186,11 +186,12 @@ describe("routing + terminology helpers", () => {
     assert.equal(publicLearningVersionId("learning_abc123"), "learning_abc123");
   });
 
-  test("isPublicGardenPath allows only _index, Learning/, assets/", () => {
+  test("isPublicGardenPath allows _index, Learning/, sources/, assets/", () => {
     assert.equal(isPublicGardenPath("_index.md"), true);
     assert.equal(isPublicGardenPath("Learning/1. X/1.1 Page.md"), true);
     assert.equal(isPublicGardenPath("assets/source-visuals/fig.png"), true);
-    assert.equal(isPublicGardenPath("sources/reader.md"), false);
+    // Sources publish under a visible Sources folder.
+    assert.equal(isPublicGardenPath("sources/reader.md"), true);
     assert.equal(isPublicGardenPath("Internal/Concept Graph/x.md"), false);
     assert.equal(isPublicGardenPath(".breadboard/planning/Source Map.md"), false);
     assert.equal(isPublicGardenPath("Learning/Source Map.md"), false);

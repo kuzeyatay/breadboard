@@ -506,14 +506,35 @@ export type HardConceptKind =
   | "stdp_window"
   | "tradeoff_explorer"
 
+/**
+ * Build a clean, readable, deterministic visual id from a page path and a
+ * purpose suffix. The id reads front-to-back — `vis-4-2-normalized-energy-
+ * efficiency-calculator` — instead of a tail-sliced garble like
+ * `vis-vations-Dense-Computation-...`. It is derived from the subsection's
+ * `N.M` number and its concept words (with the number prefix stripped), so it
+ * is stable across regenerations and collision-safe within a garden.
+ */
 function deterministicVisualId(pageSlug: string | undefined, suffix: string): string {
-  const base =
-    (pageSlug ?? "page")
-      .replace(/\.md$/i, "")
-      .replace(/[^A-Za-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(-48) || "page"
-  return `vis-${base}-${suffix}`.slice(0, 80)
+  const basename = (pageSlug ?? "page")
+    .replace(/\.md$/i, "")
+    .split(/[\\/]/)
+    .pop() ?? "page"
+  // Leading "N" / "N.M" / "N.M.K" number label -> "n-m-k".
+  const numberMatch = basename.match(/^(\d+(?:\.\d+)*)\.?\s+(.*)$/)
+  const numberPart = numberMatch ? numberMatch[1].replace(/\./g, "-") : ""
+  const conceptSource = (numberMatch ? numberMatch[2] : basename)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+  // Front-to-back words, capped so the id stays short and readable.
+  const conceptPart = conceptSource.split(/\s+/).filter(Boolean).slice(0, 6).join("-")
+  const cleanSuffix = suffix.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+  const id = ["vis", numberPart, conceptPart, cleanSuffix]
+    .filter(Boolean)
+    .join("-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return (id || `vis-${cleanSuffix || "visual"}`).slice(0, 80).replace(/-+$/g, "")
 }
 
 function baseSpec(id: string, type: VisualType, fields: Partial<VisualSpec>): VisualSpec {

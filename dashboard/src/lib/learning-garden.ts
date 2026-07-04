@@ -115,7 +115,6 @@ export function shouldPublishGardenPage({
 /** Internal folder segments that must never appear in the published garden. */
 const INTERNAL_PATH_SEGMENTS = new Set([
   ".breadboard",
-  "sources",
   "internal",
   "generated",
   "generated subtopics",
@@ -133,12 +132,12 @@ const NON_PUBLIC_LEARNING_FILES = new Set([
 
 /**
  * Filesystem-level gate for what may appear in the published garden. The
- * visible tree is only ever: the garden `_index.md`, everything under
- * `Learning/` (except the internal planning artifacts), and the cropped source
- * figures under `assets/source-visuals/`. Everything else — raw sources,
- * snapshots, planning, `.breadboard/` internals, legacy generated folders — is
- * private. This is the single source of truth mirrored by the Quartz publish
- * filter and the validator script.
+ * visible tree is: the garden `_index.md`, everything under `Learning/` (except
+ * the internal planning artifacts), the raw uploaded sources under `sources/`,
+ * and the cropped source figures under `assets/source-visuals/`. Everything
+ * else — snapshots, planning, `.breadboard/` internals, legacy generated
+ * folders — is private. This is the single source of truth mirrored by the
+ * Quartz publish filter and the validator script.
  */
 export function isPublicGardenPath(relPath = ""): boolean {
   const p = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -154,6 +153,7 @@ export function isPublicGardenPath(relPath = ""): boolean {
   return (
     lower === "_index.md" ||
     lower.startsWith("learning/") ||
+    lower.startsWith("sources/") ||
     lower.startsWith("assets/source-visuals/") ||
     lower.startsWith("assets/")
   );

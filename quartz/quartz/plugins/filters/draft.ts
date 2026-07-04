@@ -23,12 +23,10 @@ function isLegacySubtopicPath(relativePath = ""): boolean {
 }
 
 /** Frontmatter types that are internal pipeline artifacts, never learner pages.
- * Raw source documents and planning artifacts (source map, scope contract,
- * source coverage) are internal too — only their distilled lessons under
- * Learning/ are learner-facing. */
+ * Planning artifacts (source map, scope contract, source coverage) are internal.
+ * Raw source documents are learner-facing — see isSourceDocument below. */
 const INTERNAL_KNOWLEDGE_TYPES = new Set([
   "internal-concept",
-  "source-document",
   "source-map",
   "scope-contract",
   "source-coverage",
@@ -36,14 +34,26 @@ const INTERNAL_KNOWLEDGE_TYPES = new Set([
 
 const INTERNAL_BREADBOARD_TYPES = new Set([
   "internal_concept",
-  "source_document",
   "source_map",
   "scope_contract",
   "source_coverage",
 ])
 
-/** Internal Breadboard metadata lives under Internal/, .breadboard/, sources/,
- * and numbered source-snapshot folders — none of which are learner-facing. */
+/** Raw uploaded source notes. These publish under a visible Sources folder so
+ * learners can open the originals that ground the lessons. Older sources were
+ * stamped internal:true; the explicit allow in shouldPublish overrides that. */
+function isSourceDocument(
+  knowledgeType: string,
+  breadboardType: string,
+  relativePath = "",
+): boolean {
+  if (knowledgeType === "source-document" || breadboardType === "source_document") return true
+  const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/")
+  return parts.some((part) => part.toLowerCase() === "sources")
+}
+
+/** Internal Breadboard metadata lives under Internal/, .breadboard/, and
+ * numbered source-snapshot folders — none of which are learner-facing. */
 function isInternalPath(relativePath = ""): boolean {
   const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/")
   // parts[0] is the garden slug for nested content; check every segment so the
@@ -53,7 +63,6 @@ function isInternalPath(relativePath = ""): boolean {
     return (
       lower === "internal" ||
       lower === ".breadboard" ||
-      lower === "sources" ||
       /^\d+\.\s*source-snapshots$/.test(lower)
     )
   })
@@ -127,6 +136,13 @@ export const RemoveDrafts: QuartzFilterPlugin<RemoveDraftsOptions> = (opts = {})
     if (legacySubtopic) return opts.showLegacySubtopicPages === true
 
     const draftFlag: boolean = fm?.draft === true || fm?.draft === "true"
+    // Source documents ground the lessons and are now learner-facing: they
+    // publish under a visible Sources folder. Older sources were stamped
+    // internal:true, so this explicit allow overrides that legacy flag before
+    // the internal checks below (which still hide planning artifacts).
+    if (isSourceDocument(knowledgeType, breadboardType, relativePath)) {
+      return !draftFlag
+    }
     if (
       INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType) ||
       INTERNAL_BREADBOARD_TYPES.has(breadboardType) ||

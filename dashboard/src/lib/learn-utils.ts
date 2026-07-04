@@ -185,6 +185,11 @@ export const PLACEHOLDER_PATTERNS: RegExp[] = [
   /\blorem ipsum\b/i,
   /\b(?:use|from) the page \d+ and \d+ materials?\b/i,
   /\bthis (?:section|page) (?:will|should) (?:cover|explain|introduce)\b/i,
+  // Scaffold verbs left in a half-written draft.
+  /\binsert (?:explanation|the |your |text|content|details?|example|figure|analogy)\b/i,
+  /\b(?:add|write|fill in) (?:the |your |an? )?(?:explanation|example|analogy|content|details?) here\b/i,
+  /\bsource says\b/i,
+  /\bexpand (?:on )?this (?:later|section|point)\b/i,
 ];
 
 /** Annoying AI-style discourse patterns, especially teaching-by-negation.
@@ -331,6 +336,18 @@ export function hasPlaceholderText(markdown: string): boolean {
   return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(markdown));
 }
 
+/** True when the markdown carries empty or ellipsis-only bullet scaffolds
+ * (`- `, `- ...`, `- TBD`) — a sign a draft's outline was never filled in. Two
+ * or more such items on a page is a hard failure. */
+export function hasEmptyBulletScaffold(markdown: string): boolean {
+  const body = stripMarkdownFrontmatter(markdown).replace(/```[\s\S]*?```/g, " ");
+  let empties = 0;
+  for (const line of body.split(/\r?\n/)) {
+    if (/^\s*[-*+]\s*(?:\.{2,}|…|TBD|N\/A|-{2,})?\s*$/i.test(line)) empties += 1;
+  }
+  return empties >= 2;
+}
+
 /** Count AI-style discourse patterns in prose. */
 export function countAiisms(markdown: string): number {
   let count = 0;
@@ -390,6 +407,9 @@ export function assessLessonQuality(
 
   if (hasPlaceholderText(body)) {
     problems.push({ code: "placeholder", message: "contains placeholder / meta-instruction text", hard: true });
+  }
+  if (hasEmptyBulletScaffold(body)) {
+    problems.push({ code: "empty-bullet-scaffold", message: "contains empty/placeholder bullet scaffolds", hard: true });
   }
   if (hasFallbackFingerprint(body)) {
     problems.push({ code: "fallback-fingerprint", message: "contains fallback-template prose", hard: true });
@@ -760,6 +780,189 @@ export function textbookPageFileName(
 export function wikilinkForRelPath(relPath: string, label: string): string {
   const target = relPath.replace(/\\/g, "/").replace(/\.md$/i, "");
   return `[[${target}|${label}]]`;
+}
+
+// ---------------------------------------------------------------------------
+// Wikilink canonicalization
+//
+// LLM-authored planning pages (Topic Overview, section intros) tend to emit
+// loose Obsidian links against section/subsection *titles* — e.g.
+// `[[Why Spiking Neural Networks Exist]]` or
+// `[[Why Spiking Neural Networks Exist#Surrogate Gradient Descent]]`. Those do
+// not resolve: the real files live under numbered folders
+// (`Learning/1. Why Spiking Neural Networks Exist/_index.md`) and each
+// subsection is its own file, not a heading. This canonicalizer rewrites every
+// resolvable loose link to the exact on-disk vault-root path the pipeline
+// writes, using the SAME folder/file naming as renderLearningIndexMarkdown and
+// the generation loop. Anything it cannot resolve is reported so navigation is
+// never silently broken.
+// ---------------------------------------------------------------------------
+
+const LEARNING_ROOT = "Learning";
+
+function linkSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+interface LinkTargetEntry {
+  kind: "section" | "subsection" | "page";
+  /** Canonical vault-root target, no `.md`. */
+  target: string;
+  /** Display label to use when the source link had no explicit `|label`. */
+  label: string;
+  /** Slug of the (sanitized + raw) title, for loose matching. */
+  slugs: Set<string>;
+  /** For subsections: the parent section's slug, for `[[Section#Sub]]` disambiguation. */
+  sectionSlug?: string;
+  /** For subsections: the `N.M` numeric label. */
+  numberLabel?: string;
+}
+
+/** Build the resolver entries for a confirmed learning map, mirroring exactly
+ * the folder/file naming used when the pages are written to disk. */
+export function buildLearningLinkTargets(
+  map: ProposedLearningMap,
+): LinkTargetEntry[] {
+  const entries: LinkTargetEntry[] = [
+    {
+      kind: "page",
+      target: `${LEARNING_ROOT}/Topic Overview`,
+      label: "Topic Overview",
+      slugs: new Set([linkSlug("Topic Overview")]),
+    },
+    {
+      kind: "page",
+      target: `${LEARNING_ROOT}/Learning Map`,
+      label: "Learning Map",
+      slugs: new Set([linkSlug("Learning Map")]),
+    },
+  ];
+  map.sections.forEach((section, sectionIndex) => {
+    const sectionNumber = sectionIndex + 1;
+    const sectionTitle = sanitizeLearnerTitle(section.title);
+    const folder = `${LEARNING_ROOT}/${textbookSectionFolder(sectionNumber, sectionTitle)}`;
+    const sectionSlug = linkSlug(sectionTitle);
+    entries.push({
+      kind: "section",
+      target: `${folder}/_index`,
+      label: sectionTitle,
+      slugs: new Set([sectionSlug, linkSlug(section.title), linkSlug(`${sectionNumber}. ${sectionTitle}`)]),
+      sectionSlug,
+    });
+    section.subsections.forEach((subsection, subsectionIndex) => {
+      const subsectionNumber = subsectionIndex + 1;
+      const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+      const fileName = textbookPageFileName(sectionNumber, subsectionNumber, subsectionTitle);
+      const numberLabel = `${sectionNumber}.${subsectionNumber}`;
+      entries.push({
+        kind: "subsection",
+        target: `${folder}/${fileName.replace(/\.md$/i, "")}`,
+        label: subsectionTitle,
+        slugs: new Set([
+          linkSlug(subsectionTitle),
+          linkSlug(subsection.title),
+          linkSlug(`${numberLabel} ${subsectionTitle}`),
+        ]),
+        sectionSlug,
+        numberLabel,
+      });
+    });
+  });
+  return entries;
+}
+
+export interface WikilinkCanonicalizationResult {
+  markdown: string;
+  /** Loose link targets that could not be resolved (stripped to plain text). */
+  unresolved: string[];
+  /** Count of loose links rewritten to canonical paths. */
+  rewritten: number;
+}
+
+const WIKILINK_RE = /\[\[([^\]]+?)\]\]/g;
+
+/**
+ * Rewrite loose title-based wikilinks in learner-facing markdown to the
+ * canonical on-disk paths of the confirmed learning map. Links that already
+ * carry a `/` (canonical paths) and links to non-map targets are left as-is.
+ * Loose links that cannot be resolved are downgraded to plain text and
+ * reported in `unresolved` so the caller can fail validation rather than ship
+ * broken navigation.
+ */
+export function canonicalizeLearnerWikilinks(
+  markdown: string,
+  map: ProposedLearningMap,
+): WikilinkCanonicalizationResult {
+  const entries = buildLearningLinkTargets(map);
+  const bySlug = new Map<string, LinkTargetEntry[]>();
+  for (const entry of entries) {
+    for (const slug of entry.slugs) {
+      if (!slug) continue;
+      const list = bySlug.get(slug) ?? [];
+      list.push(entry);
+      bySlug.set(slug, list);
+    }
+  }
+
+  const unresolved: string[] = [];
+  let rewritten = 0;
+
+  const out = markdown.replace(WIKILINK_RE, (whole, inner: string) => {
+    const pipeIndex = inner.indexOf("|");
+    const rawTarget = (pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner).trim();
+    const explicitLabel = pipeIndex >= 0 ? inner.slice(pipeIndex + 1).trim() : "";
+
+    // Already a path (canonical or intentionally cross-note) — leave untouched.
+    if (rawTarget.includes("/")) return whole;
+
+    const hashIndex = rawTarget.indexOf("#");
+    const base = (hashIndex >= 0 ? rawTarget.slice(0, hashIndex) : rawTarget).trim();
+    const fragment = hashIndex >= 0 ? rawTarget.slice(hashIndex + 1).trim() : "";
+
+    const baseSlug = linkSlug(base);
+    const fragmentSlug = linkSlug(fragment);
+
+    const pickSubsection = (slug: string, sectionSlug?: string): LinkTargetEntry | undefined => {
+      const candidates = (bySlug.get(slug) ?? []).filter((entry) => entry.kind === "subsection");
+      if (candidates.length === 0) return undefined;
+      if (sectionSlug) {
+        const scoped = candidates.find((entry) => entry.sectionSlug === sectionSlug);
+        if (scoped) return scoped;
+      }
+      return candidates[0];
+    };
+
+    let resolved: LinkTargetEntry | undefined;
+    if (fragment) {
+      // `[[Section#Subsection]]` — the fragment is the real lesson target.
+      resolved =
+        pickSubsection(fragmentSlug, baseSlug) ??
+        (bySlug.get(fragmentSlug) ?? []).find((entry) => entry.kind === "subsection");
+    }
+    if (!resolved) {
+      // Bare `[[Subsection]]` first (more specific), then `[[Section]]`.
+      resolved =
+        pickSubsection(baseSlug) ??
+        (bySlug.get(baseSlug) ?? []).find((entry) => entry.kind === "section" || entry.kind === "page");
+    }
+
+    if (!resolved) {
+      unresolved.push(rawTarget);
+      // Never ship a broken link: fall back to the readable label as plain text.
+      return explicitLabel || fragment || base || rawTarget;
+    }
+
+    rewritten += 1;
+    const label = explicitLabel || resolved.label;
+    return `[[${resolved.target}|${label}]]`;
+  });
+
+  return { markdown: out, unresolved, rewritten };
 }
 
 function yamlScalar(value: string | number | boolean): string {

@@ -15,6 +15,7 @@ import {
   appendGardenEvent,
   buildDeterministicVisual,
   generateVisualSpec,
+  pruneVisualArtifacts,
   saveVisualSpec,
 } from "@/lib/visuals";
 import {
@@ -36,6 +37,7 @@ import {
 import {
   assessLessonQuality,
   buildLearningPageFrontmatter,
+  canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
   ensureQuestionBlock,
   extractTagSeeds,
@@ -2342,6 +2344,7 @@ export async function runTextbookGeneration({
   mode = "generate",
   sourceOnly = true,
   includeSourceSnapshots = false,
+  autoConfirmTopicMap = false,
 }: {
   gardenId: string;
   userId?: number;
@@ -2352,12 +2355,32 @@ export async function runTextbookGeneration({
   mode?: Exclude<LearnMode, "plan">;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
+  /**
+   * Noninteractive/test escape hatch. When true, a proposed (unconfirmed) topic
+   * map is auto-promoted to confirmed so page generation can proceed without a
+   * human review gate. Off by default: interactive runs MUST go through
+   * `confirmLearningMap` after reviewing the proposed map.
+   */
+  autoConfirmTopicMap?: boolean;
 }): Promise<{ job: LearnJob; textbookVersionId: string; pageCount: number }> {
-  const map =
+  let map =
     (confirmedLearningMapId ? getLearnMapById(confirmedLearningMapId) : null) ??
     getLatestConfirmedLearnMap(gardenId);
+  if ((!map || map.status !== "confirmed") && autoConfirmTopicMap) {
+    // Explicitly requested: promote the latest proposed map without the gate.
+    const proposed =
+      (confirmedLearningMapId ? getLearnMapById(confirmedLearningMapId) : null) ??
+      getLatestProposedLearnMap(gardenId);
+    if (proposed && proposed.status !== "confirmed") {
+      confirmLearningMap({ gardenId, learningMapId: proposed.id, contentPath });
+    }
+    map = proposed ? getLearnMapById(proposed.id) : map;
+  }
   if (!map || map.status !== "confirmed") {
-    throw new Error("Confirm a learning map before generating lessons");
+    throw new Error(
+      "Confirm a learning map before generating lessons (status must be 'confirmed'; " +
+        "pass autoConfirmTopicMap:true only in noninteractive/test runs).",
+    );
   }
 
   const context = collectLearnSourceContext(contentPath, gardenId);
@@ -2440,6 +2463,21 @@ export async function runTextbookGeneration({
       );
     } catch {
       overviewBody = renderTopicOverviewFallback(map.learningMap, context);
+    }
+
+    // The overview is LLM-authored and tends to emit loose title-based
+    // wikilinks (`[[Section]]`, `[[Section#Subsection]]`) that do not resolve
+    // to the numbered on-disk folders. Rewrite every resolvable link to its
+    // canonical vault-root path; report anything left broken.
+    {
+      const canonicalized = canonicalizeLearnerWikilinks(overviewBody, map.learningMap);
+      overviewBody = canonicalized.markdown;
+      if (canonicalized.unresolved.length > 0) {
+        appendLearnEvent(contentPath, gardenId, "learn_overview_broken_links", {
+          jobId: job.id,
+          unresolved: canonicalized.unresolved,
+        });
+      }
     }
 
     // Learner-facing planning pages live in Learning/. Everything else is
@@ -2881,6 +2919,23 @@ export async function runTextbookGeneration({
       }
     }
 
+    // Stale-artifact cleanup: the visual index merges on every save, so IDs
+    // from earlier runs linger. Rewrite it to exactly the interactive visuals
+    // this run embedded, and delete orphan spec files, so the index never
+    // advertises a visual no current page references.
+    {
+      const liveVisualIds = new Set(generatedPages.flatMap((page) => page.visualIds));
+      const pruned = pruneVisualArtifacts(contentPath, gardenId, liveVisualIds);
+      if (pruned.removedFromIndex.length > 0 || pruned.removedSpecFiles.length > 0) {
+        appendLearnEvent(contentPath, gardenId, "learn_visual_index_pruned", {
+          jobId: job.id,
+          textbookVersionId,
+          removedFromIndex: pruned.removedFromIndex,
+          removedSpecFiles: pruned.removedSpecFiles,
+        });
+      }
+    }
+
     // Stage 3 closeout: every extracted visual is either assigned to the page
     // that embedded it, or intentionally skipped with a recorded reason.
     const finalLedger = recordSourceVisualAssignments(
@@ -2976,6 +3031,7 @@ export async function runLearnPipeline({
   confirmedLearningMapId,
   sourceOnly = true,
   includeSourceSnapshots = false,
+  autoConfirmTopicMap = false,
   client,
   model = DEFAULT_MODEL,
   contentPath,
@@ -2986,6 +3042,7 @@ export async function runLearnPipeline({
   confirmedLearningMapId?: string;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
+  autoConfirmTopicMap?: boolean;
   client: OpenAI;
   model?: string;
   contentPath: string;
@@ -3011,6 +3068,7 @@ export async function runLearnPipeline({
     mode,
     sourceOnly,
     includeSourceSnapshots,
+    autoConfirmTopicMap,
   });
 }
 

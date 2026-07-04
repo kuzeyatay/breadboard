@@ -10,6 +10,8 @@ import {
   normalizeZettelTags,
   sanitizeLearnerTitle,
   hasPlaceholderText,
+  hasEmptyBulletScaffold,
+  assessLessonQuality,
   countAiisms,
   removeRawVisualPlaceholders,
   sourceSetHashForSources,
@@ -214,5 +216,57 @@ describe("learn route and council wiring", () => {
     assert.doesNotMatch(learnSource, /Start with the idea itself/);
     assert.doesNotMatch(learnSource, /Name the starting idea/);
     assert.doesNotMatch(learnSource, /What is the main idea to take away from/);
+  });
+
+  test("page generation is gated behind an explicit topic-map confirmation", () => {
+    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+
+    // Planning stops at a pending confirmation state and never generates pages.
+    assert.match(learnSource, /status: "awaiting_confirmation"/);
+    // Generation refuses unless the map is confirmed.
+    assert.match(learnSource, /map\.status !== "confirmed"/);
+    assert.match(learnSource, /Confirm a learning map before generating lessons/);
+    // A noninteractive/test escape hatch exists, defaulting OFF.
+    assert.match(learnSource, /autoConfirmTopicMap = false/);
+    assert.match(learnSource, /autoConfirmTopicMap\?: boolean/);
+    // The bypass only fires when the flag is set (auto-promotes a proposed map).
+    assert.match(learnSource, /&& autoConfirmTopicMap\)/);
+    // Confirmation is a distinct exported step, not folded into planning.
+    assert.match(learnSource, /export function confirmLearningMap/);
+  });
+});
+
+describe("anti-placeholder quality gate", () => {
+  // A long, otherwise-valid lesson body we can inject scaffold text into.
+  const LONG = "The membrane potential rises as input current arrives. ".repeat(50);
+  const withScaffold = (scaffold) =>
+    `# Lesson\n\n${LONG}\n\n${scaffold}\n\nFor example, raising the current makes it climb faster.\n\n**Question.** Why?\n\n**Answer.** Because timing carries information.\n`;
+
+  test("rejects half-written scaffold verbs (insert / fill in / source says)", () => {
+    for (const scaffold of [
+      "Insert explanation of the threshold here.",
+      "Add the example here.",
+      "Source says the neuron leaks.",
+    ]) {
+      const q = assessLessonQuality(withScaffold(scaffold), {});
+      assert.ok(q.hardFail, `should hard-fail: ${scaffold}`);
+      assert.ok(
+        q.problems.some((p) => p.code === "placeholder"),
+        `should flag placeholder: ${scaffold}`,
+      );
+    }
+  });
+
+  test("rejects empty/ellipsis bullet scaffolds", () => {
+    assert.ok(hasEmptyBulletScaffold("- \n- \n- "));
+    assert.ok(hasEmptyBulletScaffold("- ...\n- TBD"));
+    assert.ok(!hasEmptyBulletScaffold("- a real point\n- another real point"));
+    const q = assessLessonQuality(withScaffold("- \n- \n- "), {});
+    assert.ok(q.problems.some((p) => p.code === "empty-bullet-scaffold"));
+  });
+
+  test("a fully written lesson without scaffolds passes these checks", () => {
+    const q = assessLessonQuality(withScaffold("A neuron integrates current until it fires."), {});
+    assert.ok(!q.problems.some((p) => p.code === "placeholder" || p.code === "empty-bullet-scaffold"));
   });
 });

@@ -67,7 +67,8 @@ function buildGoodGarden(root) {
 
   fs.writeFileSync(path.join(gardenDir, "_index.md"), fm({ title: "Spiking Neural Networks", knowledge_type: "cluster-index" }) + "# SNN\n");
 
-  // Internal source note (must not be published).
+  // Source note: publishes under a visible Sources folder. Older sources still
+  // carry internal:true, which the source-document allow overrides.
   fs.writeFileSync(
     path.join(gardenDir, "sources", "snn.md"),
     fm({
@@ -217,6 +218,85 @@ describe("garden validator regression fixture", () => {
       for (const id of [1, 2, 3, 5, 7, 8, 10]) {
         assert.ok(failed.has(id), `check ${id} should fail on the broken garden`);
       }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a Topic Overview whose links resolve passes the link check", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-links-ok-"));
+    try {
+      const dir = buildGoodGarden(root);
+      // Canonical links to real fixture files.
+      fs.writeFileSync(
+        path.join(dir, "Learning", "Topic Overview.md"),
+        fm({ title: "Topic Overview", knowledge_type: "topic-overview" }) +
+          "# Overview\n\n" +
+          "- [[Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|LIF neuron]]\n" +
+          "- [[Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|Tradeoffs]]\n",
+      );
+      const results = runChecks(dir, "snn-fixture");
+      const link = results.find((r) => r.id === 17);
+      assert.equal(link.status, "PASS", `link check should pass: ${link.problems.join(" | ")}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a stale visual-index entry (a second run's leftover) fails the index check until pruned", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-stale-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const indexPath = path.join(dir, ".breadboard", "visual-index.json");
+      const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+
+      // Simulate a previous run leaving an orphan index entry no page embeds.
+      const stale = { ...index };
+      stale["vis-9-9-removed-from-a-previous-run-lif"] = {
+        id: "vis-9-9-removed-from-a-previous-run-lif",
+        type: "lif_neuron",
+        title: "Old",
+        version: 1,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      };
+      fs.writeFileSync(indexPath, JSON.stringify(stale, null, 2));
+
+      let results = runChecks(dir, "snn-fixture");
+      let check18 = results.find((r) => r.id === 18);
+      assert.equal(check18.status, "FAIL", "stale index entry must fail check 18");
+      assert.match(check18.problems.join("\n"), /stale/);
+
+      // Pruning back to only the embedded ids restores a clean index.
+      fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+      results = runChecks(dir, "snn-fixture");
+      check18 = results.find((r) => r.id === 18);
+      assert.equal(check18.status, "PASS", "pruned index must pass check 18");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a Topic Overview with loose title/heading links fails the link check with suggestions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-links-bad-"));
+    try {
+      const dir = buildGoodGarden(root);
+      // The exact failure pattern from the shipped garden: bare title links and
+      // Section#Subsection heading links that never resolve.
+      fs.writeFileSync(
+        path.join(dir, "Learning", "Topic Overview.md"),
+        fm({ title: "Topic Overview", knowledge_type: "topic-overview" }) +
+          "# Overview\n\n" +
+          "- [[The Leaky Integrate-and-Fire Neuron]]\n" +
+          "- [[Spiking Neurons#Encoding Information as Spike Trains]]\n" +
+          "- [[Totally Made Up Concept]]\n",
+      );
+      const results = runChecks(dir, "snn-fixture");
+      const link = results.find((r) => r.id === 17);
+      assert.equal(link.status, "FAIL", "loose/broken links must fail check 17");
+      const joined = link.problems.join("\n");
+      assert.match(joined, /Totally Made Up Concept/);
+      // The resolver should suggest the real file for a link it can localize.
+      assert.match(joined, /did you mean \[\[/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

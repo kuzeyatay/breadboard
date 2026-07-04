@@ -12033,19 +12033,36 @@ function isLegacySubtopicPath(relativePath = "") {
 }
 __name(isLegacySubtopicPath, "isLegacySubtopicPath");
 var INTERNAL_KNOWLEDGE_TYPES = /* @__PURE__ */ new Set([
-  "internal-concept"
+  "internal-concept",
+  "source-map",
+  "scope-contract",
+  "source-coverage"
 ]);
 var INTERNAL_BREADBOARD_TYPES = /* @__PURE__ */ new Set([
-  "internal_concept"
+  "internal_concept",
+  "source_map",
+  "scope_contract",
+  "source_coverage"
 ]);
+function isSourceDocument(knowledgeType2, breadboardType2, relativePath = "") {
+  if (knowledgeType2 === "source-document" || breadboardType2 === "source_document") return true;
+  const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/");
+  return parts.some((part) => part.toLowerCase() === "sources");
+}
+__name(isSourceDocument, "isSourceDocument");
 function isInternalPath(relativePath = "") {
   const parts = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").split("/");
   return parts.some((part) => {
     const lower = part.toLowerCase();
-    return lower === "internal" || lower === ".breadboard";
+    return lower === "internal" || lower === ".breadboard" || /^\d+\.\s*source-snapshots$/.test(lower);
   });
 }
 __name(isInternalPath, "isInternalPath");
+function isInternalLearningArtifact(relativePath = "") {
+  const lower = relativePath.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  return lower.endsWith("learning/source map.md") || lower.endsWith("learning/scope contract.md") || lower.endsWith("learning/source coverage.md");
+}
+__name(isInternalLearningArtifact, "isInternalLearningArtifact");
 function slugifyLoose(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
@@ -12081,7 +12098,10 @@ var RemoveDrafts = /* @__PURE__ */ __name((opts = {}) => ({
     const legacySubtopic = frontmatterString(fm, "legacy_subtopic_page") === "true" || isLegacySubtopicPath(relativePath);
     if (legacySubtopic) return opts.showLegacySubtopicPages === true;
     const draftFlag = fm?.draft === true || fm?.draft === "true";
-    if (INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType2) || INTERNAL_BREADBOARD_TYPES.has(breadboardType2) || frontmatterString(fm, "internal") === "true" || isInternalPath(relativePath) || isRawFileArtifactPage(fm) || isIngestLessonArtifact(fm, knowledgeType2, breadboardType2)) {
+    if (isSourceDocument(knowledgeType2, breadboardType2, relativePath)) {
+      return !draftFlag;
+    }
+    if (INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType2) || INTERNAL_BREADBOARD_TYPES.has(breadboardType2) || frontmatterString(fm, "internal") === "true" || isInternalPath(relativePath) || isInternalLearningArtifact(relativePath) || isRawFileArtifactPage(fm) || isIngestLessonArtifact(fm, knowledgeType2, breadboardType2)) {
       return false;
     }
     return !draftFlag;
@@ -12553,13 +12573,13 @@ var PageList = /* @__PURE__ */ __name(({ cfg, fileData, allFiles, limit, sort })
   return /* @__PURE__ */ jsx9("ul", { class: "section-ul", children: list.map((page) => {
     const title = page.frontmatter?.title;
     const tags = page.frontmatter?.tags ?? [];
-    const isSourceDocument = knowledgeType(page) === "source-document";
+    const isSourceDocument2 = knowledgeType(page) === "source-document";
     const isTextbookPage = knowledgeType(page) === "textbook-page" || knowledgeType(page) === "learning-page";
     const isChatNodeNote = knowledgeType(page) === "generated-note" && generatedNoteType(page) === "chat-node";
     return /* @__PURE__ */ jsx9(
       "li",
       {
-        class: `section-li${isSourceDocument ? " source-document-entry" : ""}${isTextbookPage ? " textbook-page-entry" : ""}${isChatNodeNote ? " chat-node-note-entry" : ""}`,
+        class: `section-li${isSourceDocument2 ? " source-document-entry" : ""}${isTextbookPage ? " textbook-page-entry" : ""}${isChatNodeNote ? " chat-node-note-entry" : ""}`,
         children: /* @__PURE__ */ jsxs3("div", { class: "section", children: [
           /* @__PURE__ */ jsx9("p", { class: "meta", children: page.dates && /* @__PURE__ */ jsx9(Date2, { date: getDate(cfg, page), locale: cfg.locale }) }),
           /* @__PURE__ */ jsx9("div", { class: "desc", children: /* @__PURE__ */ jsx9("h3", { children: /* @__PURE__ */ jsx9("a", { href: resolveRelative(fileData.slug, page.slug), class: "internal", children: title }) }) }),
@@ -13964,7 +13984,9 @@ var defaultOptions14 = {
   folderClickBehavior: "link",
   useSavedState: true,
   mapFn: /* @__PURE__ */ __name((node) => {
-    return node;
+    if (node.isFolder && String(node.slugSegment ?? "").toLowerCase() === "learning") {
+      node.displayName = "Learning";
+    }
   }, "mapFn"),
   sortFn: /* @__PURE__ */ __name((a, b) => {
     const rank = /* @__PURE__ */ __name((node) => {

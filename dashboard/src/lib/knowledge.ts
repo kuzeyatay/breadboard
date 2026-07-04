@@ -2197,10 +2197,9 @@ export async function writeDocumentKnowledge({
     source_type: sourceType,
     source_file: sourceFileName,
     generated_by: "chatmock",
-    // Raw source notes are internal: they ground the lessons but never appear
-    // in the published garden. Only the distilled lessons under Learning/ are
-    // learner-facing.
-    internal: "true",
+    // Raw source notes ground the lessons and publish under a visible Sources
+    // folder so learners can open the originals. Planning artifacts (source
+    // map, scope contract, source coverage) remain internal.
     learning_pages: topicPlans.map((plan) => plan.finalSlug),
     topics: topicPlans.map((plan) => plan.finalSlug),
   };
