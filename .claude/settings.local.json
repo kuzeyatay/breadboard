@@ -21,7 +21,19 @@
       "Bash(perl -0pi -e 's/node\\\\.data\\\\?\\\\.knowledgeType === \"textbook-page\" \\\\|\\\\| node\\\\.data\\\\?\\\\.breadboardType === \"textbook_page\"/node.data?.knowledgeType === \"textbook-page\" || node.data?.knowledgeType === \"learning-page\" || node.data?.breadboardType === \"textbook_page\" || node.data?.breadboardType === \"learning_page\"/g' quartz/components/scripts/explorer.inline.ts)",
       "Bash(npx tsc *)",
       "Bash(npx tsx *)",
-      "Bash(npm test *)"
+      "Bash(npm test *)",
+      "Bash(find . -iname \"*.md\" -path \"*council*\")",
+      "Bash(ls -la .claude/skills/)",
+      "Bash(ls -la ~/.claude/skills/)",
+      "Read(//c/Users/20252082/.claude/**)",
+      "Read(//c/Users/20252082/.claude/plugins/**)",
+      "Bash(mkdir -p \"/c/Users/20252082/.claude/skills/llm-council\" && echo \"created\" && ls -la \"/c/Users/20252082/.claude/skills/\")",
+      "Edit(~/.claude/skills/llm-council/**)",
+      "Read(//c/Users/20252082/.claude/skills/llm-council/**)",
+      "Bash(awk 'NR==1{print} /^---$/{c++} c<2{print} c==2{print; exit}' SKILL.md)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\20252082\\.claude\\skills"
     ]
   }
 }

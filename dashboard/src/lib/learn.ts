@@ -195,6 +195,90 @@ interface GeneratedPageRecord {
   sourceFigureIds: string[];
 }
 
+// --- Learn generation token-budget configuration ----------------------------
+// Expensive full-council reasoning is reserved for planning (source map,
+// scope contract, topic map / learning spine). Page writing and repair default
+// to a single direct_council call guarded by the deterministic quality gate,
+// and each page prompt receives a compact PageDossier instead of the whole
+// garden brain. Defaults are token-efficient; env vars can loosen them.
+
+const COUNCIL_MODE_VALUES: readonly CouncilMode[] = [
+  "direct_council",
+  "lite_council",
+  "full_council",
+  "evolution_council",
+];
+
+function envCouncilMode(name: string, fallback: CouncilMode): CouncilMode {
+  const value = process.env[name];
+  return (COUNCIL_MODE_VALUES as readonly string[]).includes(value ?? "")
+    ? (value as CouncilMode)
+    : fallback;
+}
+
+function envPositiveInt(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : fallback;
+}
+
+/** Council mode for normal subsection/page writing. Never full_council by default. */
+const LEARN_GENERATION_COUNCIL_MODE = envCouncilMode(
+  "LEARN_GENERATION_COUNCIL_MODE",
+  "direct_council",
+);
+/** Council mode for revision/repair calls. Never full_council by default. */
+const LEARN_REVISION_COUNCIL_MODE = envCouncilMode(
+  "LEARN_REVISION_COUNCIL_MODE",
+  "direct_council",
+);
+/** Full-regeneration attempts per page. Clamped to [1, 2]: a failed page gets
+ * one focused repair call, never repeated full regeneration. */
+const MAX_PAGE_ATTEMPTS = Math.max(
+  1,
+  Math.min(2, envPositiveInt("LEARN_MAX_PAGE_ATTEMPTS", 1)),
+);
+const MAX_SNIPPETS_PER_PAGE = envPositiveInt("LEARN_MAX_SNIPPETS_PER_PAGE", 5);
+const MAX_CHARS_PER_SNIPPET = envPositiveInt("LEARN_MAX_CHARS_PER_SNIPPET", 1200);
+const MAX_TOTAL_SOURCE_CHARS_PER_PAGE = envPositiveInt(
+  "LEARN_MAX_TOTAL_SOURCE_CHARS_PER_PAGE",
+  6000,
+);
+const MAX_VISUALS_PER_PAGE = envPositiveInt("LEARN_MAX_VISUALS_PER_PAGE", 3);
+/** Developer-only escape hatch: revise every page even when the quality gate
+ * passes. Off by default — revision is normally hard-fail-only. */
+const LEARN_ENABLE_UNCONDITIONAL_REVISION =
+  process.env.LEARN_ENABLE_UNCONDITIONAL_REVISION === "true";
+
+/** Compact JSON for prompts. Pretty-printed JSON is reserved for debug
+ * artifacts on disk; whitespace in prompt JSON is pure token waste. */
+function compactJson(value: unknown): string {
+  return JSON.stringify(value ?? null);
+}
+
+function approxTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+function logPromptBudget(
+  label: string,
+  system: string,
+  user: string,
+  sourceContext?: unknown,
+): void {
+  if (process.env.LEARN_LOG_PROMPT_BUDGET === "false") return;
+
+  const sourceText = sourceContext ? JSON.stringify(sourceContext) : "";
+  const totalChars = system.length + user.length + sourceText.length;
+
+  console.log(`[learn-token-budget] ${label}`, {
+    systemChars: system.length,
+    userChars: user.length,
+    sourceContextChars: sourceText.length,
+    totalChars,
+    approxInputTokens: approxTokens(system + user + sourceText),
+  });
+}
+
 // Voice rules shared by every prose-producing prompt. The generated garden is a
 // standalone lesson on the topic; the uploaded source grounds it silently.
 const LEARNER_VOICE_RULES = `Voice rules (hard requirements):
@@ -304,15 +388,20 @@ ${ANTI_AIISM_RULES}
 Keep it one flowing lesson. Keep every embedded image where it is (or move it nearer the prose it supports) and make sure each image is interpreted, not just captioned. Keep any \`\`\`breadboard-visual block byte-for-byte unchanged. Remove any placeholder or self-instruction text. Keep or add 1-2 **Question.** / **Answer.** pairs.
 If source-only mode is true, do not add unsupported facts; say plainly when material is missing.`;
 
-const COMMENTARY_REPAIR_PROMPT = `Repair one lesson page that leaked document-commentary wording.
+const SUBSECTION_REPAIR_PROMPT = `Repair one lesson page that failed specific hard quality checks. This is a focused repair, not a rewrite.
 Return Markdown body only, no frontmatter.
 ${LEARNER_VOICE_RULES}
+${ANTI_AIISM_RULES}
 Task:
-- Preserve the lesson's substance, examples, formulas, questions, and structure.
-- Rewrite only the sentences that talk about "the paper", "the source", "source-derived", "source-central", or similar document framing.
-- The repaired page must teach the concept directly. The uploaded material should ground the lesson silently.
-- Keep image markdown and \`\`\`breadboard-visual blocks byte-for-byte unchanged.
-- Do not shorten the lesson and do not remove the Question./Answer. section.`;
+- Fix ONLY the listed hard failures (failedProblems). Leave everything that already works untouched.
+- Preserve correct existing content: explanations, examples, formulas, structure, and the Question./Answer. section.
+- Do not restart from scratch unless the page is genuinely unusable.
+- If a failure says the page is too short, lacks a concrete example, or lacks a **Question.** / **Answer.** pair, add the missing depth in the same flowing, beginner-friendly voice: motivate before mechanism, define terms as they appear, put a concrete example right after the idea it illustrates, and keep at least ~700 words of real explanatory prose.
+- Rewrite any sentence that comments on "the paper", "the source", "source-derived", or similar document framing so it teaches the concept directly.
+- Keep every embedded image markdown where it is and keep any \`\`\`breadboard-visual block byte-for-byte unchanged.
+- Remove placeholder or self-instruction text.
+- If source-only mode is true, do not add unsupported facts.
+- Return only the final Markdown.`;
 
 function ensureLearnTables(): void {
   db.exec(`
@@ -960,6 +1049,12 @@ async function callCouncilText({
   sourceContext: unknown;
   councilModeOverride?: CouncilMode;
 }): Promise<CouncilCallResult> {
+  logPromptBudget(
+    `${taskType}${pageId ? ` ${pageId}` : ""} (${councilModeOverride ?? "default"})`,
+    system,
+    user,
+    sourceContext,
+  );
   const response = await client.chat.completions.create(
     withCouncil(
       {
@@ -1108,18 +1203,22 @@ export async function runLearnPlanning({
       sourceIds: context.sources.map((source) => source.slug),
     });
 
+    // Planning keeps full_council reasoning, but the full context rides ONLY
+    // in the user message — sourceContext carries small routing metadata so
+    // the payload is not duplicated across every council candidate/critic.
+    const planningSourceMeta = {
+      gardenId,
+      sourceIds: context.sources.map((source) => source.slug),
+      sourceSetHash: context.sourceSetHash,
+    };
     const sourceMapCall = await callCouncilJson({
       client,
       model,
       taskType: "source_map",
       gardenId,
       system: SOURCE_MAP_PROMPT,
-      user: JSON.stringify(
-        { sourceOnly, sourceContext: promptSourceContext },
-        null,
-        2,
-      ),
-      sourceContext: promptSourceContext,
+      user: compactJson({ sourceOnly, sourceContext: promptSourceContext }),
+      sourceContext: { ...planningSourceMeta, taskType: "source_map" },
       councilModeOverride: "full_council",
     });
     const sourceMap = sourceMapCall.parsed ?? fallbackSourceMap(context);
@@ -1139,8 +1238,8 @@ export async function runLearnPlanning({
       taskType: "scope_contract",
       gardenId,
       system: SCOPE_CONTRACT_PROMPT,
-      user: JSON.stringify({ sourceOnly, sourceMap, sources: promptSourceContext }, null, 2),
-      sourceContext: { sourceMap, sources: promptSourceContext },
+      user: compactJson({ sourceOnly, sourceMap, sources: promptSourceContext }),
+      sourceContext: { ...planningSourceMeta, taskType: "scope_contract" },
       councilModeOverride: "full_council",
     });
     const scopeContract =
@@ -1156,17 +1255,13 @@ export async function runLearnPlanning({
     });
 
     const topicMapUser = (deepenNote: string) =>
-      JSON.stringify(
-        {
-          sourceOnly,
-          sourceMap,
-          scopeContract,
-          sources: promptSourceContext,
-          responseShape: "ProposedLearningMap JSON",
-        },
-        null,
-        2,
-      ) + deepenNote;
+      compactJson({
+        sourceOnly,
+        sourceMap,
+        scopeContract,
+        sources: promptSourceContext,
+        responseShape: "ProposedLearningMap JSON",
+      }) + deepenNote;
 
     let topicMapCall = await callCouncilJson({
       client,
@@ -1175,7 +1270,7 @@ export async function runLearnPlanning({
       gardenId,
       system: TOPIC_MAP_PROMPT,
       user: topicMapUser(""),
-      sourceContext: { sourceMap, scopeContract, sources: promptSourceContext },
+      sourceContext: { ...planningSourceMeta, taskType: "topic_map" },
       councilModeOverride: "full_council",
     });
     let learningMap = normalizeLearningMapCandidate(topicMapCall.parsed, context, {
@@ -1199,7 +1294,7 @@ export async function runLearnPlanning({
         gardenId,
         system: TOPIC_MAP_PROMPT,
         user: topicMapUser(deepenNote),
-        sourceContext: { sourceMap, scopeContract, sources: promptSourceContext },
+        sourceContext: { ...planningSourceMeta, taskType: "topic_map" },
         councilModeOverride: "full_council",
       });
       const retryMap = normalizeLearningMapCandidate(retryCall.parsed, context, {
@@ -1651,11 +1746,13 @@ function assignSourceVisualsForSubsection({
       .map((visual) => ({ visual, score: tokenOverlap(pageTokens, textTokens(visual.caption)) }))
       .filter((item) => item.score >= 2)
       .sort((a, b) => b.score - a.score)
-      .slice(0, 3)
+      .slice(0, MAX_VISUALS_PER_PAGE)
       .map((item) => item.visual);
   }
 
-  chosen = chosen.slice(0, 3);
+  // Above the per-page cap, keep the most relevant (plan order first) and
+  // leave the rest unclaimed for later pages.
+  chosen = chosen.slice(0, MAX_VISUALS_PER_PAGE);
   for (const visual of chosen) claimed.add(visual.sourceVisualId);
   return chosen;
 }
@@ -2038,6 +2135,185 @@ function fallbackRelevantDetails({
     .slice(0, 3);
 }
 
+// --- PageDossier: compact per-page context for subsection writing -----------
+// A subsection prompt no longer receives the full source map, scope contract,
+// and learning spine. It receives one curated local packet: what this exact
+// page must teach, the source excerpts that ground it, and the visuals
+// assigned to it. Selection is deterministic keyword matching — no extra
+// model calls.
+
+type PageDossier = {
+  gardenTitle: string;
+  sectionTitle: string;
+  subsectionTitle: string;
+  subsectionPurpose?: string;
+  learningGoal?: string;
+
+  mustCover: string[];
+  avoid: string[];
+
+  relevantSourceSnippets: Array<{
+    sourceId: string;
+    title: string;
+    excerpt: string;
+  }>;
+
+  assignedSourceVisuals: Array<{
+    sourceVisualId: string;
+    sourceId?: string;
+    title?: string;
+    caption?: string;
+    type?: string;
+    markdown?: string;
+  }>;
+
+  localAnchors?: string[];
+  sourceOnly: boolean;
+};
+
+/** Blocks worth quoting: formulas, definitions, examples, figure/table talk. */
+function snippetLooksHighValue(text: string): boolean {
+  return (
+    /[=≈≤≥∑∫]/.test(text) ||
+    /\b(defin\w*|formula|equation|for example|for instance|figure|table|means that|is called)\b/i.test(text)
+  );
+}
+
+/**
+ * Deterministic snippet selector: score source paragraphs against the
+ * subsection's keywords, prefer definition/formula/example/figure blocks,
+ * deduplicate near-identical blocks, and stop at the per-page budgets.
+ */
+function selectRelevantSourceSnippets({
+  sources,
+  keywords,
+}: {
+  sources: LearnSourceSummary[];
+  keywords: Set<string>;
+}): Array<{ sourceId: string; title: string; excerpt: string }> {
+  const candidates: Array<{
+    sourceId: string;
+    title: string;
+    excerpt: string;
+    score: number;
+  }> = [];
+  for (const source of sources) {
+    const blocks = [source.excerpt ?? "", ...(source.body ?? "").split(/\n{2,}/)];
+    for (const block of blocks) {
+      const text = compactFallbackText(block);
+      if (text.length < 80) continue;
+      const words = text.toLowerCase().split(/[^a-z0-9]+/g);
+      let score = words.reduce((sum, word) => sum + (keywords.has(word) ? 1 : 0), 0);
+      if (score === 0) continue;
+      if (snippetLooksHighValue(text)) score += 2;
+      candidates.push({
+        sourceId: source.slug,
+        title: source.title,
+        excerpt: text.slice(0, MAX_CHARS_PER_SNIPPET),
+        score,
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  const selected: Array<{ sourceId: string; title: string; excerpt: string }> = [];
+  let totalChars = 0;
+  for (const candidate of candidates.sort((a, b) => b.score - a.score)) {
+    if (selected.length >= MAX_SNIPPETS_PER_PAGE) break;
+    const key = `${candidate.sourceId}:${candidate.excerpt.slice(0, 80).toLowerCase()}`;
+    if (seen.has(key)) continue;
+    if (totalChars + candidate.excerpt.length > MAX_TOTAL_SOURCE_CHARS_PER_PAGE) continue;
+    seen.add(key);
+    totalChars += candidate.excerpt.length;
+    selected.push({
+      sourceId: candidate.sourceId,
+      title: candidate.title,
+      excerpt: candidate.excerpt,
+    });
+  }
+
+  // No keyword hit anywhere (very short sources, odd titles): still ground the
+  // page with each source's opening so source-awareness never drops to zero.
+  if (selected.length === 0) {
+    for (const source of sources.slice(0, MAX_SNIPPETS_PER_PAGE)) {
+      const text = compactFallbackText(source.excerpt ?? source.body ?? "");
+      if (text.length < 40) continue;
+      const excerpt = text.slice(0, MAX_CHARS_PER_SNIPPET);
+      if (totalChars + excerpt.length > MAX_TOTAL_SOURCE_CHARS_PER_PAGE) break;
+      totalChars += excerpt.length;
+      selected.push({ sourceId: source.slug, title: source.title, excerpt });
+    }
+  }
+  return selected;
+}
+
+/** Short scope reminders for the dossier's avoid list. */
+function scopeAvoidList(scopeContract: unknown): string[] {
+  if (!scopeContract || typeof scopeContract !== "object") return [];
+  const excluded = (scopeContract as Record<string, unknown>).excluded;
+  if (!Array.isArray(excluded)) return [];
+  return excluded
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim().slice(0, 200))
+    .slice(0, 5);
+}
+
+function buildPageDossier({
+  gardenTitle,
+  sectionTitle,
+  sectionPurpose,
+  subsection,
+  anchors,
+  scopeContract,
+  sources,
+  assignedVisuals,
+  sourceOnly,
+}: {
+  gardenTitle: string;
+  sectionTitle: string;
+  sectionPurpose?: string;
+  subsection: LearningSubsectionPlan;
+  anchors: string[];
+  scopeContract: unknown;
+  sources: LearnSourceSummary[];
+  assignedVisuals: SourceVisual[];
+  sourceOnly: boolean;
+}): PageDossier {
+  const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+  const keywords = fallbackKeywords(subsection, anchors);
+  for (const word of [sectionTitle, ...assignedVisuals.map((visual) => visual.caption)]
+    .join(" ")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)) {
+    if (word.length > 3) keywords.add(word);
+  }
+
+  return {
+    gardenTitle,
+    sectionTitle,
+    subsectionTitle,
+    subsectionPurpose: subsection.purpose || undefined,
+    learningGoal: sectionPurpose || undefined,
+    mustCover: (subsection.conceptTags ?? [])
+      .map((tag) => tag.split("/").at(-1)?.replace(/-/g, " ") ?? "")
+      .filter(Boolean)
+      .slice(0, 8),
+    avoid: scopeAvoidList(scopeContract),
+    relevantSourceSnippets: selectRelevantSourceSnippets({ sources, keywords }),
+    assignedSourceVisuals: assignedVisuals
+      .slice(0, MAX_VISUALS_PER_PAGE)
+      .map((visual) => ({
+        sourceVisualId: visual.sourceVisualId,
+        sourceId: visual.sourceId,
+        caption: visual.caption,
+        type: visual.type,
+        markdown: sourceVisualMarkdown(visual) ?? undefined,
+      })),
+    localAnchors: anchors.slice(0, 8),
+    sourceOnly,
+  };
+}
+
 function snapshotSourceContext({
   clusterDir,
   textbookVersionId,
@@ -2145,18 +2421,18 @@ export async function runTextbookGeneration({
         gardenId,
         pageId: "Learning/Topic Overview",
         system: OVERVIEW_PROMPT,
-        user: JSON.stringify(
-          {
-            learningMap: map.learningMap,
-            sourceMap: map.sourceMap,
-            scopeContract: map.scopeContract,
-            sourceOnly,
-          },
-          null,
-          2,
-        ),
-        sourceContext: { sourceMap: map.sourceMap, scopeContract: map.scopeContract, sources: promptSources(context) },
-        councilModeOverride: "full_council",
+        user: compactJson({
+          learningMap: map.learningMap,
+          scopeContract: map.scopeContract,
+          sourceOnly,
+        }),
+        sourceContext: {
+          gardenId,
+          pageId: "Learning/Topic Overview",
+          taskType: "source_synthesis",
+          sourceIds: context.sources.map((source) => source.slug),
+        },
+        councilModeOverride: LEARN_GENERATION_COUNCIL_MODE,
       });
       overviewBody = cleanCouncilMarkdown(
         overviewCall.content,
@@ -2289,20 +2565,27 @@ export async function runTextbookGeneration({
           claimed: claimedVisualIds,
         });
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
-        const pageSourceContext = {
-          sourceMap: map.sourceMap,
+        // Compact per-page packet: everything the model needs to write THIS
+        // subsection, nothing else. The full source map / scope contract /
+        // learning spine never ride into page prompts anymore.
+        const pageDossier = buildPageDossier({
+          gardenTitle: map.learningMap.title || context.gardenTitle,
+          sectionTitle,
+          sectionPurpose: section.purpose,
+          subsection,
+          anchors,
           scopeContract: map.scopeContract,
-          learningSpine: map.learningMap,
-          subsectionPlan: subsection,
-          sourceAnchors: anchors,
-          sourceFigures,
-          assignedSourceVisuals: assignedVisuals.map((visual) => ({
-            sourceVisualId: visual.sourceVisualId,
-            caption: visual.caption,
-            page: visual.pageNumber,
-            type: visual.type,
-            markdown: sourceVisualMarkdown(visual),
-          })),
+          sources: context.sources,
+          assignedVisuals,
+          sourceOnly,
+        });
+        // sourceContext carries small routing metadata only during page
+        // writing; the dossier lives in the user message.
+        const pageSourceMeta = {
+          gardenId,
+          pageId,
+          sourceIds: [...new Set(pageDossier.relevantSourceSnippets.map((s) => s.sourceId))],
+          visualIds: pageDossier.assignedSourceVisuals.map((v) => v.sourceVisualId),
           sourceOnly,
         };
 
@@ -2325,7 +2608,7 @@ export async function runTextbookGeneration({
             clusterDir,
             textbookVersionId,
             pageId,
-            sourceContext: pageSourceContext,
+            sourceContext: { dossier: pageDossier, sourceContextMeta: pageSourceMeta },
           });
         }
 
@@ -2333,23 +2616,23 @@ export async function runTextbookGeneration({
           .map((visual) => sourceVisualEmbedUrl(visual))
           .filter((url): url is string => Boolean(url));
 
-        // Stage 4: generate → revise → scrub → embed, then run the local quality
-        // critic. Every quality problem is a HARD failure now: a page that trips
-        // any gate is never written as learner content. Retry a few times; if no
-        // attempt passes, the last draft is quarantined for debugging and the
-        // job fails. The deterministic emergency draft is never learner-facing.
+        // Stage 4: one direct_council generation call, deterministic
+        // clean/scrub + visual embedding, then the local quality critic. A
+        // second model call happens ONLY when the deterministic gate hard-fails
+        // (one focused repair, never a full-council rewrite). If no attempt
+        // passes, the last draft is quarantined for debugging and the job
+        // fails. The deterministic emergency draft is never learner-facing.
         let pageBody: string | null = null;
         let subsectionRunId: string | undefined;
         let revisionRunId: string | undefined;
         let lastQuality: ReturnType<typeof assessLessonQuality> | null = null;
         let lastAttemptBody = "";
-        const MAX_PAGE_ATTEMPTS = 3;
 
         for (let attempt = 0; attempt < MAX_PAGE_ATTEMPTS; attempt += 1) {
-          const strictnessNote =
+          const retryNote =
             attempt === 0
-              ? ""
-              : `\n\nThis is retry ${attempt}. The previous draft failed quality checks (${(lastQuality?.problems ?? [])
+              ? undefined
+              : `This is retry ${attempt}. The previous draft failed quality checks (${(lastQuality?.problems ?? [])
                   .map((problem) => problem.code)
                   .join(", ")}). Write a longer, deeper, fully-written lesson (at least 700 words) with a concrete example and a real Question./Answer. Teach the concept directly — never comment on "the paper" or "the source".`;
 
@@ -2362,9 +2645,19 @@ export async function runTextbookGeneration({
               gardenId,
               pageId,
               system: SUBSECTION_PROMPT,
-              user: JSON.stringify(pageSourceContext, null, 2) + strictnessNote,
-              sourceContext: pageSourceContext,
-              councilModeOverride: "full_council",
+              user: compactJson({
+                task: "write_subsection",
+                dossier: pageDossier,
+                instructions: {
+                  style: "flowing beginner-friendly textbook subsection",
+                  sourceAware: true,
+                  includeQuestions: true,
+                  includeVisualsWhereRelevant: true,
+                },
+                ...(retryNote ? { retryNote } : {}),
+              }),
+              sourceContext: { ...pageSourceMeta, taskType: "subsection_generation" },
+              councilModeOverride: LEARN_GENERATION_COUNCIL_MODE,
             });
             subsectionRunId = generated.councilRunId;
             attemptBody = cleanCouncilMarkdown(generated.content, "").trim() || null;
@@ -2374,27 +2667,27 @@ export async function runTextbookGeneration({
           // Generation failed outright: do not substitute fallback prose.
           if (!attemptBody) continue;
 
-          try {
-            const revised = await callCouncilText({
-              client,
-              model,
-              taskType: "full_page_revision",
-              gardenId,
-              pageId,
-              system: REVISION_PROMPT,
-              user: JSON.stringify(
-                { pageMarkdown: attemptBody, sourceOnly, sourceContext: pageSourceContext },
-                null,
-                2,
-              ),
-              sourceContext: pageSourceContext,
-              councilModeOverride: "full_council",
-            });
-            revisionRunId = revised.councilRunId;
-            // Revision failure keeps the generated body; never the fallback.
-            attemptBody = cleanCouncilMarkdown(revised.content, attemptBody);
-          } catch {
-            // Keep the generated attempt body.
+          // Developer-only escape hatch. Off by default: revision normally
+          // happens only when the deterministic gate below hard-fails.
+          if (LEARN_ENABLE_UNCONDITIONAL_REVISION) {
+            try {
+              const revised = await callCouncilText({
+                client,
+                model,
+                taskType: "full_page_revision",
+                gardenId,
+                pageId,
+                system: REVISION_PROMPT,
+                user: compactJson({ pageMarkdown: attemptBody, sourceOnly, dossier: pageDossier }),
+                sourceContext: { ...pageSourceMeta, taskType: "full_page_revision" },
+                councilModeOverride: LEARN_REVISION_COUNCIL_MODE,
+              });
+              revisionRunId = revised.councilRunId;
+              // Revision failure keeps the generated body; never the fallback.
+              attemptBody = cleanCouncilMarkdown(revised.content, attemptBody);
+            } catch {
+              // Keep the generated attempt body.
+            }
           }
 
           // Deterministic hygiene, Q&A safety net, and source-visual embedding
@@ -2405,33 +2698,46 @@ export async function runTextbookGeneration({
 
           let quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
           if (quality.problems.some((problem) => problem.code === "source-commentary")) {
+            // Free deterministic re-scrub before spending any model call.
             attemptBody = scrubSourceCommentaryProse(attemptBody);
             attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
             attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
             quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
           }
-          if (quality.problems.some((problem) => problem.code === "source-commentary")) {
+
+          // Hard-fail-only repair: one focused call that fixes the listed
+          // problems in place. Minor style issues never trigger a rewrite.
+          if (quality.hardFail) {
             try {
               const repaired = await callCouncilText({
                 client,
                 model,
-                taskType: "full_page_revision",
+                taskType: "subsection_repair",
                 gardenId,
                 pageId,
-                system: COMMENTARY_REPAIR_PROMPT,
-                user: JSON.stringify(
-                  {
-                    pageMarkdown: attemptBody,
-                    sourceOnly,
-                    failedProblems: quality.problems.map((problem) => problem.message),
-                    repairGoal:
-                      "Remove document-commentary phrases while preserving all teaching content, examples, images, and Q&A.",
-                  },
-                  null,
-                  2,
-                ),
-                sourceContext: pageSourceContext,
-                councilModeOverride: "full_council",
+                system: SUBSECTION_REPAIR_PROMPT,
+                user: compactJson({
+                  pageMarkdown: attemptBody,
+                  failedProblems: quality.problems
+                    .filter((problem) => problem.hard)
+                    .map((problem) => `${problem.code}: ${problem.message}`),
+                  dossier: pageDossier,
+                  repairRules: [
+                    "Fix only the listed hard failures.",
+                    "Preserve correct existing content.",
+                    "Do not restart from scratch unless the page is unusable.",
+                    "Keep the section flowing and beginner-friendly.",
+                    "Keep source-only constraints.",
+                    "Keep assigned visuals embedded where relevant.",
+                    "Return only the final markdown.",
+                  ],
+                }),
+                sourceContext: {
+                  ...pageSourceMeta,
+                  taskType: "subsection_repair",
+                  failedProblemCount: quality.problems.length,
+                },
+                councilModeOverride: LEARN_REVISION_COUNCIL_MODE,
               });
               revisionRunId = repaired.councilRunId ?? revisionRunId;
               attemptBody = cleanCouncilMarkdown(repaired.content, attemptBody);
@@ -2440,7 +2746,7 @@ export async function runTextbookGeneration({
               attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
               quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
             } catch {
-              // Keep the deterministic repair result and let the hard gate decide.
+              // Keep the deterministic result and let the hard gate decide.
             }
           }
           lastQuality = quality;
@@ -2503,7 +2809,7 @@ export async function runTextbookGeneration({
           markdown: pageBody,
           sectionTitle,
           subsection,
-          sourceContext: pageSourceContext,
+          sourceContext: pageDossier,
           sourceFigures,
         });
         pageBody = visualized.markdown;
