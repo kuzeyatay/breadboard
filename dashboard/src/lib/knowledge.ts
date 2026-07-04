@@ -1981,7 +1981,7 @@ function writeLearningReferencePages({
 }): void {
   const learningDir = ensureDirectory(clusterDir, LEARNING_FOLDER);
   // Internal planning artifacts (Source Map, Scope Contract) live under
-  // .breadboard/planning/, never under the learner-facing Learning/ folder.
+  // .breadboard/planning/, never under the learner-facing learning/ folder.
   const planningDir = ensureDirectory(clusterDir, ".breadboard/planning");
   const pageLinks = artifacts.map(
     (artifact) => `- ${wikilinkForRelPath(artifact.relPath, artifact.title)} - ${artifact.locations.join(", ")}`,
@@ -2000,7 +2000,7 @@ function writeLearningReferencePages({
       ? `- ${sectionNumber}. ${sectionTitle}`
       : `- No lesson sections were generated during ingest. Open ${wikilink(sourceSlug, sourceTitle)} under Sources, then use Learn to build the ordered lessons.`;
 
-  // Learner-facing planning pages live under Learning/.
+  // Learner-facing planning pages live under learning/.
   const learningPages: Array<{ fileName: string; title: string; type: string; body: string }> = [
     {
       fileName: "Topic Overview.md",
@@ -2029,7 +2029,7 @@ function writeLearningReferencePages({
   ];
 
   // Internal planning artifacts live under .breadboard/planning/, never under
-  // Learning/ (they must not appear in the published garden).
+  // learning/ (they must not appear in the published garden).
   const planningPages: Array<{ fileName: string; title: string; type: string; body: string }> = [
     {
       fileName: "Source Map.md",
@@ -2824,28 +2824,61 @@ export function refreshClusterIndex(
     return dateDiff || a.title.localeCompare(b.title);
   };
 
-  // The landing page is learner-facing. Raw source notes are internal now, so
-  // the reading path groups lessons under the source TITLE as plain text (never
-  // a link to an unpublished page).
-  const readingPathSections = [...knowledge.tree]
-    .sort((a, b) => byNewest(a.source, b.source))
-    .map(({ source, topics }) => {
-      const topicLines = [...topics]
-        .sort(
-          (a, b) =>
-            readingOrderRank(a.relPath, a.type) - readingOrderRank(b.relPath, b.type) ||
-            byNewest(a, b),
-        )
-        .map((topic) => `  - ${wikilinkForRelPath(topic.relPath, topic.title)}`);
-      return [`- **${source.title}**`, ...topicLines].join("\n");
+  const allTopics = [
+    ...knowledge.tree.flatMap(({ topics }) => topics),
+    ...knowledge.orphanTopics,
+  ];
+  const learnerPages = allTopics
+    .filter((topic) => {
+      const rel = topic.relPath.replace(/\\/g, "/");
+      return (
+        rel.toLowerCase().startsWith(`${LEARNING_FOLDER}/`) &&
+        LEARNING_PAGE_TYPES.has(topic.type)
+      );
     })
-    .filter((section) => section.includes("\n"));
+    .sort(
+      (a, b) =>
+        readingOrderRank(a.relPath, a.type) - readingOrderRank(b.relPath, b.type) ||
+        a.relPath.localeCompare(b.relPath),
+    );
+  const readingPathLines = learnerPages.map(
+    (topic, index) => `${index + 1}. ${wikilinkForRelPath(topic.relPath, topic.title)}`,
+  );
 
+  const learnerRelPaths = new Set(learnerPages.map((topic) => topic.relPath));
   const orphanLines = [...knowledge.orphanTopics]
+    .filter((topic) => !learnerRelPaths.has(topic.relPath))
     .sort(byNewest)
     .map((topic) => `- ${wikilinkForRelPath(topic.relPath, topic.title)}`);
   const description = clusterIndexDescription(knowledge);
   const overviewLink = LEARNING_PAGE_ORDER[0];
+  const sourcesDir = path.join(clusterDir, "sources");
+  if (fs.existsSync(sourcesDir)) {
+    const sourceLinks = fs
+      .readdirSync(sourcesDir)
+      .filter((name) => name.endsWith(".md") && name !== "_index.md")
+      .sort()
+      .map((name) => {
+        const relPath = `sources/${name}`;
+        const sourcePath = path.join(sourcesDir, name);
+        const parsed = parseMarkdownFile(fs.readFileSync(sourcePath, "utf-8"));
+        return `- ${wikilinkForRelPath(relPath, parsed.data.title || name.replace(/\.md$/i, ""))}`;
+      });
+    fs.writeFileSync(
+      path.join(sourcesDir, "_index.md"),
+      normalizeQuartzMarkdown(
+        frontmatter({
+          title: "Sources",
+          date,
+          knowledge_type: "source-index",
+          breadboardType: "source_index",
+          internal: "true",
+        }) +
+          `# Sources\n\n${sourceLinks.length > 0 ? sourceLinks.join("\n") : "- No source notes yet."}\n`,
+      ),
+      "utf-8",
+    );
+  }
   const content =
     frontmatter({
       title: meta.title,
@@ -2855,9 +2888,11 @@ export function refreshClusterIndex(
     }) +
     `## Garden overview\n\n` +
     `${clusterOverviewText(knowledge, date)}\n\n` +
-    `## Start Here\n\n` +
+    `## Learning\n\n` +
     `- ${wikilinkForRelPath(overviewLink, "Topic Overview")}\n\n` +
-    `## Reading Path\n\n${readingPathSections.length > 0 ? readingPathSections.join("\n") : "- No lessons yet."}\n\n` +
+    `## Sources\n\n` +
+    `- [[sources/_index|Sources]]\n\n` +
+    `## Reading Path\n\n${readingPathLines.length > 0 ? readingPathLines.join("\n") : "- No lessons yet."}\n\n` +
     `## More Pages\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone pages yet."}\n`;
 
   fs.writeFileSync(path.join(clusterDir, "_index.md"), normalizeQuartzMarkdown(content), "utf-8");

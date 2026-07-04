@@ -38,9 +38,11 @@ describe("source document ingest path", () => {
     assert.match(knowledgeSource, /function migrateRootSourceDocumentsToSources/);
     assert.match(knowledgeSource, /inferKnowledgeType\(data\) === "source-document"/);
     assert.match(knowledgeSource, /fs\.renameSync\(entry\.filePath, targetPath\)/);
-    // Raw source notes are internal now, so the published _index groups lessons
-    // under the source TITLE as plain text and links only the lesson pages.
-    assert.match(knowledgeSource, /## Reading Path\\n\\n\$\{readingPathSections/);
+    // The published _index exposes the strict export contract: Learning,
+    // Sources, and a numbered Reading Path built from learner pages.
+    assert.match(knowledgeSource, /## Learning\\n\\n/);
+    assert.match(knowledgeSource, /\[\[sources\/_index\|Sources\]\]/);
+    assert.match(knowledgeSource, /readingPathLines\.length > 0 \? readingPathLines\.join/);
     assert.match(knowledgeSource, /wikilinkForRelPath\(topic\.relPath, topic\.title\)/);
     assert.match(knowledgeSource, /internal: "true"/);
   });
