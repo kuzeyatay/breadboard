@@ -278,6 +278,31 @@ SECOND_BRAIN_INITIAL_INVITE_CODE=YOURINVITECODE
 
 You may also need to add any backend-specific variables your local model bridge expects.
 
+#### Learn generation token limits (optional)
+
+The Learn pipeline uses token-efficient defaults: planning (source map, scope
+contract, topic map) runs on `full_council`, while subsection writing and
+repair run on `direct_council` with a compact per-page dossier. These are the
+defaults — set the variables only to change them:
+
+```env
+LEARN_GENERATION_COUNCIL_MODE=direct_council
+LEARN_REVISION_COUNCIL_MODE=direct_council
+LEARN_MAX_PAGE_ATTEMPTS=1
+LEARN_MAX_SNIPPETS_PER_PAGE=5
+LEARN_MAX_CHARS_PER_SNIPPET=1200
+LEARN_MAX_TOTAL_SOURCE_CHARS_PER_PAGE=6000
+LEARN_MAX_VISUALS_PER_PAGE=3
+LEARN_ENABLE_UNCONDITIONAL_REVISION=false
+LEARN_LOG_PROMPT_BUDGET=true
+```
+
+`LEARN_MAX_PAGE_ATTEMPTS` is clamped to at most 2. A page that fails the
+deterministic quality gate gets one focused repair call, never repeated
+full regeneration. `LEARN_LOG_PROMPT_BUDGET` prints a
+`[learn-token-budget]` line with approximate input tokens before every
+ChatMock call.
+
 ### 4. Start the App
 
 #### Easiest Route on Windows

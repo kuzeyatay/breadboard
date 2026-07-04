@@ -17,6 +17,7 @@ export type CouncilTaskType =
   | 'scope_contract'
   | 'exam_question_generation'
   | 'full_page_revision'
+  | 'subsection_repair'
   | 'visualization_generation'
   | 'small_revision'
   | 'critique'
