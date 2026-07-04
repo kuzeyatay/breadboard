@@ -87,12 +87,18 @@ export interface VisualSpec {
   id: string
   gardenId?: string
   pageId?: string
+  pagePath?: string
   type: VisualType
   title: string
   subtitle?: string
   sourceAnchors: SourceAnchor[]
+  sourceGroundingStatus?: "source-anchored" | "conceptual-no-direct-source-figure"
+  justification?: string
   conceptTargets: string[]
   misconceptionTargets?: string[]
+  learningGoal?: string
+  inputs?: string[]
+  outputs?: string[]
   pedagogicalPurpose: string
   formulaRefs?: FormulaRef[]
   props: Record<string, unknown>
@@ -341,8 +347,25 @@ export function validateVisualSpec(input: unknown): VisualSpecValidation {
   if (gardenId) spec.gardenId = gardenId
   const pageId = safeString(candidate.pageId, "pageId", errors, 300)
   if (pageId) spec.pageId = pageId
+  const pagePath = safeString(candidate.pagePath, "pagePath", errors, 300)
+  if (pagePath) spec.pagePath = pagePath
   const updatedAt = safeString(candidate.updatedAt, "updatedAt", errors, 60)
   if (updatedAt) spec.updatedAt = updatedAt
+
+  const sourceGroundingStatus =
+    candidate.sourceGroundingStatus === "source-anchored" ||
+    candidate.sourceGroundingStatus === "conceptual-no-direct-source-figure"
+      ? candidate.sourceGroundingStatus
+      : undefined
+  if (sourceGroundingStatus) spec.sourceGroundingStatus = sourceGroundingStatus
+  const justification = safeString(candidate.justification, "justification", errors, 1200)
+  if (justification) spec.justification = justification
+  const learningGoal = safeString(candidate.learningGoal, "learningGoal", errors, 1200)
+  if (learningGoal) spec.learningGoal = learningGoal
+  const inputs = safeStringArray(candidate.inputs, "inputs", errors)
+  if (inputs.length > 0) spec.inputs = inputs
+  const outputs = safeStringArray(candidate.outputs, "outputs", errors)
+  if (outputs.length > 0) spec.outputs = outputs
 
   const misconceptions = safeStringArray(candidate.misconceptionTargets, "misconceptionTargets", errors)
   if (misconceptions.length > 0) spec.misconceptionTargets = misconceptions

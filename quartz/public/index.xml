@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/Learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/Learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why the Source Turns from Conventional Neural Networks to SNNs 1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview What Spiking Neural Networks Are in This Paper 2.1 What Spiking Neural Networks Are in This Paper Overview The Named Neuron Model: LIF... ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:56:39 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order From Conventional Neural Networks to SNNs 1.1 From Conventional Neural Networks to SNNs What Spiking Neural Networks Are 2.1 What Spiking Neural Networks Are Neuron Model: LIF 3.1 Neuron Model: LIF as Evidence SNN Training Paradigms 4.1 SNN Training Paradigms Unified Multi... ]]></description>
+    <pubDate>Sat, 04 Jul 2026 11:40:26 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/Learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/Learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs Spiking Neural Networks, or SNNs, study neural computation as a sequence of discrete spike events rather than as a constant stream of continuous-valued activations. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:56:39 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs Spiking Neural Networks, or SNNs, are neural networks built around discrete spike events. ]]></description>
+    <pubDate>Sat, 04 Jul 2026 11:40:26 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs</title>
     <link>https://localhost:8081/test-2/Learning/</link>
     <guid>https://localhost:8081/test-2/Learning/</guid>
     <description><![CDATA[ Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs A source-only learning spine that follows the paper from its motivation for spiking neural networks, through the intuition of spike-based computation, the named LIF neuron model, the three compared training paradigms, the un... ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:56:39 GMT</pubDate>
+    <pubDate>Sat, 04 Jul 2026 11:40:26 GMT</pubDate>
   </item><item>
     <title>1. From Conventional Neural Networks to SNNs</title>
     <link>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/</link>
     <guid>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/</guid>
     <description><![CDATA[ 1. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:51:39 GMT</pubDate>
-  </item><item>
-    <title>1.1 From Conventional Neural Networks to SNNs</title>
-    <link>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</link>
-    <guid>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</guid>
-    <description><![CDATA[ Imagine a small camera watching a hallway after everyone has gone home. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:51:39 GMT</pubDate>
+    <pubDate>Sat, 04 Jul 2026 11:35:07 GMT</pubDate>
   </item><item>
     <title>2. What Spiking Neural Networks Are</title>
     <link>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/</link>
     <guid>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/</guid>
     <description><![CDATA[ 2. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:51:39 GMT</pubDate>
+    <pubDate>Sat, 04 Jul 2026 11:35:07 GMT</pubDate>
   </item><item>
-    <title>2.1 What Spiking Neural Networks Are</title>
-    <link>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</link>
-    <guid>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</guid>
-    <description><![CDATA[ What Spiking Neural Networks Are Imagine a small camera watching a hallway where almost nothing moves. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:51:39 GMT</pubDate>
+    <title>1.1 From Conventional Neural Networks to SNNs</title>
+    <link>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</link>
+    <guid>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</guid>
+    <description><![CDATA[ Imagine a small camera on a battery-powered robot watching a hallway. ]]></description>
+    <pubDate>Sat, 04 Jul 2026 11:35:07 GMT</pubDate>
   </item><item>
     <title>3. Neuron Model: LIF</title>
     <link>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/</link>
     <guid>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/</guid>
     <description><![CDATA[ 3. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:51:39 GMT</pubDate>
+    <pubDate>Sat, 04 Jul 2026 11:35:07 GMT</pubDate>
+  </item><item>
+    <title>2.1 What Spiking Neural Networks Are</title>
+    <link>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</link>
+    <guid>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</guid>
+    <description><![CDATA[ What Spiking Neural Networks Are Imagine a tiny camera mounted on a battery-powered robot watching a quiet hallway. ]]></description>
+    <pubDate>Sat, 04 Jul 2026 11:35:07 GMT</pubDate>
   </item><item>
     <title>4. SNN Training Paradigms</title>
     <link>https://localhost:8081/test-2/Learning/4.-SNN-Training-Paradigms/</link>
     <guid>https://localhost:8081/test-2/Learning/4.-SNN-Training-Paradigms/</guid>
     <description><![CDATA[ 4. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:51:39 GMT</pubDate>
+    <pubDate>Sat, 04 Jul 2026 11:35:07 GMT</pubDate>
   </item><item>
     <title>3.1 Neuron Model: LIF as Evidence</title>
     <link>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</link>
     <guid>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</guid>
-    <description><![CDATA[ Neuron Model: LIF as Evidence Imagine a tiny sensor listening for a sudden sound in a quiet room. Most of the time, there is little to report. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 09:51:39 GMT</pubDate>
+    <description><![CDATA[ Neuron Model: LIF as Evidence Imagine a small sound sensor listening for a hand clap in a quiet room. ]]></description>
+    <pubDate>Sat, 04 Jul 2026 11:35:07 GMT</pubDate>
   </item>
     </channel>
   </rss>

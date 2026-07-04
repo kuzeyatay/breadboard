@@ -55,6 +55,22 @@ function block(spec) {
   return "```breadboard-visual\n" + JSON.stringify(spec, null, 2) + "\n```";
 }
 
+function enrichFixtureSpec(spec, { pageRel, sourceAnchors = [] }) {
+  spec.pagePath = pageRel;
+  spec.learningGoal = `Teach ${spec.title} on this page.`;
+  spec.inputs = (spec.controls ?? []).map((control) => `${control.label} control`);
+  spec.outputs = [spec.caption ?? spec.pedagogicalPurpose];
+  spec.sourceAnchors = sourceAnchors;
+  if (sourceAnchors.length > 0) {
+    spec.sourceGroundingStatus = "source-anchored";
+    spec.justification = "Fixture visual is anchored to the source figure assigned to this page.";
+  } else {
+    spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
+    spec.justification = "Fixture visual teaches a dynamic concept without a directly assigned source figure.";
+  }
+  return spec;
+}
+
 function buildGoodGarden(root) {
   const gardenDir = path.join(root, "snn-fixture");
   const bb = path.join(gardenDir, ".breadboard");
@@ -65,7 +81,16 @@ function buildGoodGarden(root) {
   fs.mkdirSync(path.join(gardenDir, "Learning", "3. How SNNs Learn"), { recursive: true });
   fs.mkdirSync(path.join(gardenDir, "Learning", "4. Evaluating SNNs"), { recursive: true });
 
-  fs.writeFileSync(path.join(gardenDir, "_index.md"), fm({ title: "Spiking Neural Networks", knowledge_type: "cluster-index" }) + "# SNN\n");
+  fs.writeFileSync(
+    path.join(gardenDir, "_index.md"),
+    fm({ title: "Spiking Neural Networks", knowledge_type: "cluster-index" }) +
+      "# SNN\n\n## Reading Path\n\n" +
+      "- [[Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]\n" +
+      "- [[Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains|2.2 Encoding Information as Spike Trains]]\n" +
+      "- [[Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity|3.4 Spike-Timing Dependent Plasticity]]\n" +
+      "- [[Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]\n\n" +
+      "## More Pages\n\n- No standalone pages yet.\n",
+  );
 
   // Source note: publishes under a visible Sources folder. Older sources still
   // carry internal:true, which the source-document allow overrides.
@@ -99,10 +124,25 @@ function buildGoodGarden(root) {
 
   // Four interactive visuals across pages.
   const specs = {
-    lif: buildLifThresholdResetVisual("Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron"),
-    coding: buildRateVsTemporalCodingVisual("Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains"),
-    stdp: buildStdpTimingWindowVisual("Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity"),
-    tradeoff: buildMetricTradeoffExplorerVisual("Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy"),
+    lif: enrichFixtureSpec(
+      buildLifThresholdResetVisual("Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron"),
+      {
+        pageRel: "Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
+        sourceAnchors: [{ sourceId: "snn", page: 4, figureId: "S1.P4.F1", description: "LIF neuron model" }],
+      },
+    ),
+    coding: enrichFixtureSpec(
+      buildRateVsTemporalCodingVisual("Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains"),
+      { pageRel: "Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md" },
+    ),
+    stdp: enrichFixtureSpec(
+      buildStdpTimingWindowVisual("Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity"),
+      { pageRel: "Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md" },
+    ),
+    tradeoff: enrichFixtureSpec(
+      buildMetricTradeoffExplorerVisual("Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy"),
+      { pageRel: "Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md" },
+    ),
   };
   const index = {};
   for (const spec of Object.values(specs)) {
@@ -115,7 +155,12 @@ function buildGoodGarden(root) {
     {
       rel: "Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
       title: "2.1 The Leaky Integrate-and-Fire Neuron",
-      tags: ["lif-neuron", "membrane-potential", "spike-threshold", "reset-dynamics"],
+      tags: [
+        "snn/lif-neuron-threshold-reset",
+        "computational-neuroscience/membrane-potential-accumulation",
+        "snn/threshold-firing-event",
+        "snn/reset-after-threshold-spike",
+      ],
       body: LONG_PARAGRAPH("The leaky integrate-and-fire neuron and its membrane potential threshold"),
       spec: specs.lif,
       imageUrl,
@@ -124,24 +169,39 @@ function buildGoodGarden(root) {
     {
       rel: "Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md",
       title: "2.2 Encoding Information as Spike Trains",
-      tags: ["rate-coding", "temporal-coding", "spike-timing", "spike-coding"],
+      tags: [
+        "snn/spike-rate-coding",
+        "snn/spike-timing-as-information",
+        "snn/spike-train-encoding",
+        "snn/temporal-code-timing",
+      ],
       body: LONG_PARAGRAPH("Rate coding and temporal coding of spike trains and spike timing"),
       spec: specs.coding,
     },
     {
       rel: "Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md",
       title: "3.4 Spike-Timing Dependent Plasticity",
-      tags: ["stdp", "synaptic-plasticity", "spike-timing", "temporal-credit-assignment"],
+      tags: [
+        "training/stdp-local-timing-rule",
+        "training/synaptic-plasticity-window",
+        "snn/spike-timing-window",
+        "training/temporal-credit-assignment",
+      ],
       body: LONG_PARAGRAPH("Spike-timing dependent plasticity (STDP) and synaptic plasticity across the timing window"),
       spec: specs.stdp,
     },
     {
       rel: "Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md",
       title: "4.1 Accuracy, Latency, and Energy",
-      tags: ["latency", "energy-efficiency", "spike-count", "model-tradeoffs"],
+      tags: [
+        "metric/latency-to-decision",
+        "metric/accuracy-per-energy",
+        "metric/total-spike-count",
+        "metric/model-family-comparison",
+      ],
       body:
         LONG_PARAGRAPH("Accuracy, latency, energy and spike count as a tradeoff") +
-        " latency latency spike count spike count energy energy trade-off across model families.",
+        " latency latency spike count spike count energy energy trade-off across model families and model family comparison.",
       spec: specs.tradeoff,
     },
   ];

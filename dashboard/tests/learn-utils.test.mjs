@@ -120,8 +120,8 @@ describe("learn utilities", () => {
     assert.ok(tags.length >= 4 && tags.length <= 8, `got ${tags.length} tags`);
     assert.ok(!tags.includes("motivation"), "drops generic 'motivation'");
     assert.ok(!tags.includes("energy"), "drops broad debris 'energy'");
-    assert.ok(tags.includes("lif-neuron"));
-    assert.ok(tags.includes("membrane-potential"));
+    assert.ok(tags.includes("snn/lif-neuron-threshold-reset"));
+    assert.ok(tags.includes("computational-neuroscience/membrane-potential-accumulation"));
     assert.ok(tags.every((tag) => /^[a-z0-9][a-z0-9/-]*[a-z0-9]$/.test(tag)));
   });
 

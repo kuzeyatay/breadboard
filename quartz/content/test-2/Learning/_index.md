@@ -1,14 +1,14 @@
 ---
 title: "Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs"
-date: "2026-07-04T09:56:39.815Z"
+date: "2026-07-04T11:40:26.912Z"
 knowledge_type: "learning-index"
 breadboardType: "learning_index"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr66ne0d_ank5t10"
-learningVersionId: "learning_mr66ne0d_ank5t10"
-sourceSetHash: "b55fb648928bf101286613aa3a37842349c570a9dc74f2ae905c52b953092f3a"
+learningVersion: "learning_mr6acgil_5lgd28z"
+learningVersionId: "learning_mr6acgil_5lgd28z"
+sourceSetHash: "c61ec2b1ccff93dca7e48434460dc0548b460ac532c89e35405b09fede84a075"
 ---
 
 # Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs

@@ -1,66 +1,66 @@
 ---
 title: "Learning Map"
-date: "2026-07-04T09:56:39.821Z"
+date: "2026-07-04T11:40:26.920Z"
 knowledge_type: "learning-map"
 breadboardType: "learning_map"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr66ne0d_ank5t10"
-learningVersionId: "learning_mr66ne0d_ank5t10"
-sourceSetHash: "b55fb648928bf101286613aa3a37842349c570a9dc74f2ae905c52b953092f3a"
+learningVersion: "learning_mr6acgil_5lgd28z"
+learningVersionId: "learning_mr6acgil_5lgd28z"
+sourceSetHash: "c61ec2b1ccff93dca7e48434460dc0548b460ac532c89e35405b09fede84a075"
 ---
 
 # Learning Map
 
 ## Section Order
 
-- 1. Why the Source Turns from Conventional Neural Networks to SNNs
-  - 1.1 [[Learning/1. Why the Source Turns from Conventional Neural Networks to SNNs/1.1 Why the Source Turns from Conventional Neural Networks to SNNs Overview|Why the Source Turns from Conventional Neural Networks to SNNs Overview]]
-- 2. What Spiking Neural Networks Are in This Paper
-  - 2.1 [[Learning/2. What Spiking Neural Networks Are in This Paper/2.1 What Spiking Neural Networks Are in This Paper Overview|What Spiking Neural Networks Are in This Paper Overview]]
-- 3. The Named Neuron Model: LIF as Source-Central Evidence
-  - 3.1 [[Learning/3. The Named Neuron Model LIF as Source-Central Evidence/3.1 The Named Neuron Model LIF as Source-Central Evidence Overview|The Named Neuron Model: LIF as Source-Central Evidence Overview]]
-- 4. How the Paper Organizes SNN Training Paradigms
-  - 4.1 [[Learning/4. How the Paper Organizes SNN Training Paradigms/4.1 How the Paper Organizes SNN Training Paradigms Overview|How the Paper Organizes SNN Training Paradigms Overview]]
-- 5. The Paper’s Core Contribution: Unified Multi-Metric Evaluation
-  - 5.1 [[Learning/5. The Paper’s Core Contribution Unified Multi-Metric Evaluation/5.1 The Paper’s Core Contribution Unified Multi-Metric Evaluation Overview|The Paper’s Core Contribution: Unified Multi-Metric Evaluation Overview]]
-- 6. Source-Derived Comparative Results Across Models and Metrics
-  - 6.1 [[Learning/6. Source-Derived Comparative Results Across Models and Metrics/6.1 Source-Derived Comparative Results Across Models and Metrics Overview|Source-Derived Comparative Results Across Models and Metrics Overview]]
+- 1. From Conventional Neural Networks to SNNs
+  - 1.1 [[Learning/1. From Conventional Neural Networks to SNNs/1.1 From Conventional Neural Networks to SNNs|From Conventional Neural Networks to SNNs]]
+- 2. What Spiking Neural Networks Are
+  - 2.1 [[Learning/2. What Spiking Neural Networks Are/2.1 What Spiking Neural Networks Are|What Spiking Neural Networks Are]]
+- 3. Neuron Model: LIF
+  - 3.1 [[Learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|Neuron Model: LIF as Evidence]]
+- 4. SNN Training Paradigms
+  - 4.1 [[Learning/4. SNN Training Paradigms/4.1 SNN Training Paradigms|SNN Training Paradigms]]
+- 5. Unified Multi-Metric Evaluation
+  - 5.1 [[Learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation|Unified Multi-Metric Evaluation]]
+- 6. Comparative Results Across Models and Metrics
+  - 6.1 [[Learning/6. Comparative Results Across Models and Metrics/6.1 Comparative Results Across Models and Metrics|Comparative Results Across Models and Metrics]]
 - 7. What the Tradeoffs Suggest for Applications and Hardware Context
-  - 7.1 [[Learning/7. What the Tradeoffs Suggest for Applications and Hardware Context/7.1 What the Tradeoffs Suggest for Applications and Hardware Context Overview|What the Tradeoffs Suggest for Applications and Hardware Context Overview]]
+  - 7.1 [[Learning/7. What the Tradeoffs Suggest for Applications and Hardware Context/7.1 What the Tradeoffs Suggest for Applications and Hardware Context|What the Tradeoffs Suggest for Applications and Hardware Context]]
 - 8. Open Challenges and What Remains Unresolved
-  - 8.1 [[Learning/8. Open Challenges and What Remains Unresolved/8.1 Open Challenges and What Remains Unresolved Overview|Open Challenges and What Remains Unresolved Overview]]
+  - 8.1 [[Learning/8. Open Challenges and What Remains Unresolved/8.1 Open Challenges and What Remains Unresolved|Open Challenges and What Remains Unresolved]]
 
 ## Prerequisite Chain
 
-- Start here -> Why the Source Turns from Conventional Neural Networks to SNNs
-- Why the Source Turns from Conventional Neural Networks to SNNs -> What Spiking Neural Networks Are in This Paper
-- What Spiking Neural Networks Are in This Paper -> The Named Neuron Model: LIF as Source-Central Evidence
-- The Named Neuron Model: LIF as Source-Central Evidence -> How the Paper Organizes SNN Training Paradigms
-- How the Paper Organizes SNN Training Paradigms -> The Paper’s Core Contribution: Unified Multi-Metric Evaluation
-- The Paper’s Core Contribution: Unified Multi-Metric Evaluation -> Source-Derived Comparative Results Across Models and Metrics
-- Source-Derived Comparative Results Across Models and Metrics -> What the Tradeoffs Suggest for Applications and Hardware Context
+- Start here -> From Conventional Neural Networks to SNNs
+- From Conventional Neural Networks to SNNs -> What Spiking Neural Networks Are
+- What Spiking Neural Networks Are -> Neuron Model: LIF
+- Neuron Model: LIF -> SNN Training Paradigms
+- SNN Training Paradigms -> Unified Multi-Metric Evaluation
+- Unified Multi-Metric Evaluation -> Comparative Results Across Models and Metrics
+- Comparative Results Across Models and Metrics -> What the Tradeoffs Suggest for Applications and Hardware Context
 - What the Tradeoffs Suggest for Applications and Hardware Context -> Open Challenges and What Remains Unresolved
 
 ## Trunk, Branch, Leaf Concepts
 
-- Trunk: Why the Source Turns from Conventional Neural Networks to SNNs
-  - Branch/leaf: Why the Source Turns from Conventional Neural Networks to SNNs Overview
-- Trunk: What Spiking Neural Networks Are in This Paper
-  - Branch/leaf: What Spiking Neural Networks Are in This Paper Overview
-- Trunk: The Named Neuron Model: LIF as Source-Central Evidence
-  - Branch/leaf: The Named Neuron Model: LIF as Source-Central Evidence Overview
-- Trunk: How the Paper Organizes SNN Training Paradigms
-  - Branch/leaf: How the Paper Organizes SNN Training Paradigms Overview
-- Trunk: The Paper’s Core Contribution: Unified Multi-Metric Evaluation
-  - Branch/leaf: The Paper’s Core Contribution: Unified Multi-Metric Evaluation Overview
-- Trunk: Source-Derived Comparative Results Across Models and Metrics
-  - Branch/leaf: Source-Derived Comparative Results Across Models and Metrics Overview
+- Trunk: From Conventional Neural Networks to SNNs
+  - Branch/leaf: From Conventional Neural Networks to SNNs
+- Trunk: What Spiking Neural Networks Are
+  - Branch/leaf: What Spiking Neural Networks Are
+- Trunk: Neuron Model: LIF
+  - Branch/leaf: Neuron Model: LIF as Evidence
+- Trunk: SNN Training Paradigms
+  - Branch/leaf: SNN Training Paradigms
+- Trunk: Unified Multi-Metric Evaluation
+  - Branch/leaf: Unified Multi-Metric Evaluation
+- Trunk: Comparative Results Across Models and Metrics
+  - Branch/leaf: Comparative Results Across Models and Metrics
 - Trunk: What the Tradeoffs Suggest for Applications and Hardware Context
-  - Branch/leaf: What the Tradeoffs Suggest for Applications and Hardware Context Overview
+  - Branch/leaf: What the Tradeoffs Suggest for Applications and Hardware Context
 - Trunk: Open Challenges and What Remains Unresolved
-  - Branch/leaf: Open Challenges and What Remains Unresolved Overview
+  - Branch/leaf: Open Challenges and What Remains Unresolved
 
 ## Bridge Concepts
 

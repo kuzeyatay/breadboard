@@ -69,6 +69,7 @@ import {
   type LearningSubsectionPlan,
   type ProposedLearningMap,
 } from "@/lib/learn-utils";
+import { extractQuartzMath, normalizeQuartzMarkdown } from "@/lib/quartz-markdown";
 
 export type {
   LearnStatus,
@@ -1448,28 +1449,30 @@ function renderLearningMapMarkdown(map: ProposedLearningMap): string {
   ];
   map.sections.forEach((section, sectionIndex) => {
     const sectionNumber = sectionIndex + 1;
-    lines.push(`- ${sectionNumber}. ${section.title}`);
+    const sectionTitle = sanitizeLearnerTitle(section.title);
+    lines.push(`- ${sectionNumber}. ${sectionTitle}`);
     section.subsections.forEach((subsection, subsectionIndex) => {
-      const relPath = `${learningSectionFolder(sectionNumber, section.title)}/${textbookPageFileName(
+      const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+      const relPath = `${learningSectionFolder(sectionNumber, sectionTitle)}/${textbookPageFileName(
         sectionNumber,
         subsectionIndex + 1,
-        subsection.title,
+        subsectionTitle,
       )}`;
       lines.push(
-        `  - ${sectionNumber}.${subsectionIndex + 1} ${wikilinkForRelPath(relPath, subsection.title)}`,
+        `  - ${sectionNumber}.${subsectionIndex + 1} ${wikilinkForRelPath(relPath, subsectionTitle)}`,
       );
     });
   });
   lines.push("", "## Prerequisite Chain", "");
   map.sections.forEach((section, index) => {
-    const previous = index === 0 ? "Start here" : map.sections[index - 1].title;
-    lines.push(`- ${previous} -> ${section.title}`);
+    const previous = index === 0 ? "Start here" : sanitizeLearnerTitle(map.sections[index - 1].title);
+    lines.push(`- ${previous} -> ${sanitizeLearnerTitle(section.title)}`);
   });
   lines.push("", "## Trunk, Branch, Leaf Concepts", "");
   map.sections.forEach((section) => {
-    lines.push(`- Trunk: ${section.title}`);
+    lines.push(`- Trunk: ${sanitizeLearnerTitle(section.title)}`);
     section.subsections.forEach((subsection) => {
-      lines.push(`  - Branch/leaf: ${subsection.title}`);
+      lines.push(`  - Branch/leaf: ${sanitizeLearnerTitle(subsection.title)}`);
     });
   });
   lines.push("", "## Bridge Concepts", "");
@@ -1527,14 +1530,16 @@ function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSou
   ];
   map.sections.forEach((section, sectionIndex) => {
     const sectionNumber = sectionIndex + 1;
-    lines.push(`- ${sectionNumber}. ${section.title}`);
+    const sectionTitle = sanitizeLearnerTitle(section.title);
+    lines.push(`- ${sectionNumber}. ${sectionTitle}`);
     section.subsections.forEach((subsection, subsectionIndex) => {
-      const relPath = `${learningSectionFolder(sectionNumber, section.title)}/${textbookPageFileName(
+      const subsectionTitle = sanitizeLearnerTitle(subsection.title);
+      const relPath = `${learningSectionFolder(sectionNumber, sectionTitle)}/${textbookPageFileName(
         sectionNumber,
         subsectionIndex + 1,
-        subsection.title,
+        subsectionTitle,
       )}`;
-      lines.push(`  - ${wikilinkForRelPath(relPath, `${sectionNumber}.${subsectionIndex + 1} ${subsection.title}`)}`);
+      lines.push(`  - ${wikilinkForRelPath(relPath, `${sectionNumber}.${subsectionIndex + 1} ${subsectionTitle}`)}`);
     });
   });
   const tags = normalizeTopicTags(
@@ -1553,6 +1558,20 @@ function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSou
 }
 
 function sourceMapMarkdown(sourceMap: unknown, context: LearnSourceContext): string {
+  const formulas = sourceFormulaFigures(context);
+  const formulaAcknowledgement =
+    formulas.length > 0
+      ? [
+          "",
+          "## Formula Coverage",
+          "",
+          "The source contains explicit metric formulas for accuracy, latency, total spike count, total energy, normalized energy efficiency, and convergence time. These formulas should be taught in the unified evaluation section.",
+          "",
+          ...formulas.map((formula) => `- ${formula.figureId}: ${formula.caption ?? "metric formula"}`),
+          "",
+        ]
+      : [];
+  const renderedSourceMap = sanitizeFormulaContradictions(sourceMap, formulas.length > 0);
   return [
     "# Source Map",
     "",
@@ -1568,16 +1587,50 @@ function sourceMapMarkdown(sourceMap: unknown, context: LearnSourceContext): str
             `- ${figure.figureId}: ${figure.caption ?? figure.kind} (${figure.kind})${figure.page ? `, page ${figure.page}` : ""}`,
         )
       : ["- No source figures were detected from markdown snapshots."]),
+    ...formulaAcknowledgement,
     "",
     "## Council Source Map",
     "",
-    renderObjectMarkdown(sourceMap),
+    renderObjectMarkdown(renderedSourceMap),
     "",
   ].join("\n");
 }
 
 function scopeContractMarkdown(scopeContract: unknown): string {
   return ["# Scope Contract", "", renderObjectMarkdown(scopeContract), ""].join("\n");
+}
+
+function sourceFormulaFigures(context: LearnSourceContext): SourceFigure[] {
+  return context.sourceFigures.filter(
+    (figure) => figure.kind === "formula" || /\.E\d+$/i.test(figure.figureId),
+  );
+}
+
+function sanitizeFormulaContradictions(value: unknown, hasFormulas: boolean): unknown {
+  if (!hasFormulas) return value;
+  if (typeof value === "string") {
+    return value
+      .replace(
+        /explicit mathematical definitions are not present[^.]*\./gi,
+        "explicit metric formulas are present in the extracted source anchors.",
+      )
+      .replace(
+        /explicit mathematical definitions are not present/gi,
+        "explicit metric formulas are present",
+      )
+      .replace(/formulas? (?:are|is) not present/gi, "formula anchors are present")
+      .replace(/caption-only/gi, "extracted formula anchor");
+  }
+  if (Array.isArray(value)) return value.map((item) => sanitizeFormulaContradictions(item, hasFormulas));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        sanitizeFormulaContradictions(item, hasFormulas),
+      ]),
+    );
+  }
+  return value;
 }
 
 function sourceCoverageMarkdown({
@@ -1590,6 +1643,15 @@ function sourceCoverageMarkdown({
   unusedFigureReasons: Map<string, string>;
 }): string {
   const usedFigures = new Set(generatedPages.flatMap((page) => page.sourceFigureIds));
+  const formulaFigures = sourceFormulaFigures(context);
+  const metricPage = generatedPages.find((page) =>
+    /metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/i.test(
+      `${page.title} ${page.relPath} ${page.sourceAnchors.join(" ")}`,
+    ),
+  );
+  if (metricPage) {
+    for (const formula of formulaFigures) usedFigures.add(formula.figureId);
+  }
   const lines = [
     "# Source Coverage",
     "",
@@ -1611,6 +1673,14 @@ function sourceCoverageMarkdown({
           .map((figure) => `- ${figure.figureId}: ${figure.caption ?? figure.kind}`)
       : ["- No source figures were used as explicit visual anchors."]),
   );
+  if (formulaFigures.length > 0) {
+    lines.push("", "## Formula Anchor Assignments", "");
+    for (const formula of formulaFigures) {
+      lines.push(
+        `- ${formula.figureId}: ${metricPage ? `central to ${wikilinkForRelPath(metricPage.relPath, metricPage.title)}` : "central metric formula; no matching metric page was generated"}`,
+      );
+    }
+  }
   lines.push("", "## Figures Not Used", "");
   lines.push(
     ...(context.sourceFigures.filter((figure) => !usedFigures.has(figure.figureId)).length > 0
@@ -1623,7 +1693,7 @@ function sourceCoverageMarkdown({
       : ["- None."]),
   );
   lines.push("", "## Notes", "");
-  lines.push("- Formula, example, and question coverage is tracked through source anchors on the generated textbook pages.");
+  lines.push("- Formula, example, and question coverage is tracked through source anchors on the generated learning pages.");
   return `${lines.join("\n")}\n`;
 }
 
@@ -1673,7 +1743,7 @@ function writeMarkdownWithBackup({
   assertInsideCluster(clusterDir, filePath);
   const backedUpTo = backupExistingMarkdown({ clusterDir, filePath, textbookVersionId });
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, content, "utf-8");
+  fs.writeFileSync(filePath, normalizeQuartzMarkdown(content), "utf-8");
   return { filePath, backedUpTo };
 }
 
@@ -1725,36 +1795,62 @@ function assignSourceVisualsForSubsection({
   section: LearningSectionPlan;
   claimed: Set<string>;
 }): SourceVisual[] {
-  const available = visuals.filter(
-    (visual) => !claimed.has(visual.sourceVisualId) && sourceVisualEmbedUrl(visual),
-  );
+  const available = visuals.filter((visual) => {
+    if (claimed.has(visual.sourceVisualId)) return false;
+    if (visual.type === "full_page_fallback") return Boolean(sourceVisualEmbedUrl(visual));
+    // A real extracted figure/table/equation without a crop should remain a
+    // source anchor, not be embedded as a misleading full-page screenshot.
+    return Boolean(visual.croppedImagePath);
+  });
 
   const planned = (subsection.sourceVisualIds ?? [])
     .map((id) => available.find((visual) => visual.sourceVisualId === id))
     .filter((visual): visual is SourceVisual => Boolean(visual));
 
+  const pageText = [
+    section.title,
+    section.purpose,
+    subsection.title,
+    subsection.purpose,
+    ...(subsection.sourceAnchors ?? []),
+    ...(section.sourceAnchors ?? []),
+    ...(subsection.conceptTags ?? []),
+  ].join(" ");
+
   let chosen = planned;
+  if (/metric|evaluation|accuracy|latency|energy|spike count|convergence/i.test(pageText)) {
+    const formulas = available.filter(
+      (visual) =>
+        visual.type === "equation" &&
+        /accuracy|latency|spike|energy|convergence/i.test(visual.caption),
+    );
+    chosen = [...chosen, ...formulas.filter((visual) => !chosen.includes(visual))];
+  }
+  if (/comparative|results|models and metrics|model comparison|tradeoff/i.test(pageText)) {
+    const comparisons = available.filter(
+      (visual) =>
+        (visual.type === "table" || visual.type === "graph") &&
+        /accuracy|latency|energy|spike|convergence|model/i.test(visual.caption),
+    );
+    chosen = [...chosen, ...comparisons.filter((visual) => !chosen.includes(visual))];
+  }
+
   if (chosen.length === 0) {
-    const pageText = [
-      subsection.title,
-      subsection.purpose,
-      ...(subsection.sourceAnchors ?? []),
-      ...(section.sourceAnchors ?? []),
-      ...(subsection.conceptTags ?? []),
-    ].join(" ");
     const pageTokens = textTokens(pageText);
     chosen = available
       .filter((visual) => visual.type !== "full_page_fallback")
       .map((visual) => ({ visual, score: tokenOverlap(pageTokens, textTokens(visual.caption)) }))
       .filter((item) => item.score >= 2)
       .sort((a, b) => b.score - a.score)
-      .slice(0, MAX_VISUALS_PER_PAGE)
       .map((item) => item.visual);
   }
 
   // Above the per-page cap, keep the most relevant (plan order first) and
   // leave the rest unclaimed for later pages.
-  chosen = chosen.slice(0, MAX_VISUALS_PER_PAGE);
+  const cap = /metric|evaluation|comparative|results|tradeoff/i.test(pageText)
+    ? Math.max(MAX_VISUALS_PER_PAGE, 8)
+    : MAX_VISUALS_PER_PAGE;
+  chosen = chosen.slice(0, cap);
   for (const visual of chosen) claimed.add(visual.sourceVisualId);
   return chosen;
 }
@@ -1780,6 +1876,10 @@ function embedAssignedSourceVisuals(markdown: string, visuals: SourceVisual[]): 
 }
 
 const EMBEDDED_VISUAL_BLOCK_RE = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
+
+function stripEmbeddedVisualBlocks(markdown: string): string {
+  return markdown.replace(EMBEDDED_VISUAL_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 // Hard dynamic concepts that genuinely need an interactive visual, each mapped
 // to the interactive renderer type that teaches it. When a lesson body/title
@@ -1822,6 +1922,121 @@ const HARD_CONCEPTS: HardConcept[] = [
 function detectHardConcept(subsection: LearningSubsectionPlan, body: string): HardConcept | null {
   const haystack = [subsection.title, subsection.purpose, body].join("\n");
   return HARD_CONCEPTS.find((concept) => concept.test.test(haystack)) ?? null;
+}
+
+type VisualSourceAnchor = VisualSpec["sourceAnchors"][number];
+
+function sourceAnchorFromId(anchorId: string, sourceFigures: SourceFigure[]): VisualSourceAnchor | null {
+  const clean = anchorId.trim();
+  if (!/^S\d+\.P\d+\.[A-Z]\d+$/i.test(clean)) return null;
+  const figure = sourceFigures.find((item) => item.figureId === clean);
+  const page =
+    figure?.page ??
+    (() => {
+      const match = clean.match(/\.P(\d+)\./i);
+      return match ? Number.parseInt(match[1], 10) : undefined;
+    })();
+  const anchor: VisualSourceAnchor = {
+    description: figure?.caption?.trim() || clean,
+  };
+  if (figure?.sourceId) anchor.sourceId = figure.sourceId;
+  if (page !== undefined && Number.isFinite(page)) anchor.page = page;
+  if (/\.E\d+$/i.test(clean)) anchor.equationId = clean;
+  else if (/\.T\d+$/i.test(clean)) anchor.tableId = clean;
+  else anchor.figureId = clean;
+  return anchor;
+}
+
+function uniqueSourceAnchors(anchors: VisualSourceAnchor[]): VisualSourceAnchor[] {
+  const seen = new Set<string>();
+  const out: VisualSourceAnchor[] = [];
+  for (const anchor of anchors) {
+    const key = anchor.equationId ?? anchor.tableId ?? anchor.figureId ?? `${anchor.sourceId ?? ""}:${anchor.page ?? ""}:${anchor.description}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(anchor);
+  }
+  return out;
+}
+
+function visualAnchorIdsForPage({
+  subsection,
+  sourceFigures,
+}: {
+  subsection: LearningSubsectionPlan;
+  sourceFigures: SourceFigure[];
+}): string[] {
+  const ids = [
+    ...sourceFigures.map((figure) => figure.figureId),
+    ...(subsection.sourceAnchors ?? []).filter((anchor) => /^S\d+\.P\d+\.[A-Z]\d+$/i.test(anchor)),
+  ];
+  return [...new Set(ids)];
+}
+
+type PageVisualIntent = {
+  spec: VisualSpec | null;
+  suppressGeneric: boolean;
+  reason?: string;
+};
+
+function pageVisualIntent({
+  gardenId,
+  pageSlug,
+  sectionTitle,
+  subsection,
+}: {
+  gardenId: string;
+  pageSlug: string;
+  sectionTitle: string;
+  subsection: LearningSubsectionPlan;
+}): PageVisualIntent {
+  const pageText = [sectionTitle, subsection.title, subsection.purpose, ...(subsection.conceptTags ?? [])].join(" ");
+  if (/open challenges?|unresolved|limitations?|future work|remaining/i.test(pageText)) {
+    return {
+      spec: null,
+      suppressGeneric: true,
+      reason: "This page discusses unresolved challenges rather than a concrete dynamic mechanism with a supported renderer.",
+    };
+  }
+
+  const metricPage = /metric|evaluation|accuracy|latency|energy|spike count|convergence/i.test(pageText);
+  const comparisonPage = /comparative|results|models and metrics|model comparison|trade[- ]?off/i.test(pageText);
+  const applicationPage = /application|hardware|neuromorphic|deployment|edge/i.test(pageText);
+  if (!metricPage && !comparisonPage && !applicationPage) {
+    return { spec: null, suppressGeneric: false };
+  }
+
+  const spec = buildDeterministicVisual("tradeoff_explorer", { gardenId, pageSlug });
+  if (!spec) return { spec: null, suppressGeneric: false };
+  if (metricPage) {
+    spec.title = "Metric calculator for SNN evaluation";
+    spec.conceptTargets = ["accuracy", "latency", "total spike count", "total energy", "energy efficiency", "convergence time"];
+    spec.pedagogicalPurpose =
+      "Let the learner change evaluation priorities while keeping the source metric formulas in view: accuracy is higher-better, while latency, spike count, energy, and convergence time are costs.";
+    spec.caption =
+      "Switch the priority to see how accuracy, latency, spike count, energy, and convergence change the preferred SNN family.";
+    spec.regenerationPrompt =
+      "Improve the metric calculator with clearer links from each slider choice to the source formulas for accuracy, latency, spike count, energy efficiency, and convergence.";
+  } else if (comparisonPage) {
+    spec.title = "Model tradeoff comparison explorer";
+    spec.conceptTargets = ["model comparison", "accuracy", "latency", "energy", "spike count"];
+    spec.pedagogicalPurpose =
+      "Let the learner compare model families under different deployment priorities instead of treating one metric as the whole result.";
+    spec.caption =
+      "Change the priority to see why the best model depends on whether accuracy, latency, or energy matters most.";
+    spec.regenerationPrompt =
+      "Improve the comparison explorer by aligning the model families and metric directions with the source comparison tables and graphs.";
+  } else {
+    spec.title = "Application constraint tradeoff selector";
+    spec.conceptTargets = ["neuromorphic deployment", "energy budget", "latency budget", "accuracy target", "hardware constraints"];
+    spec.pedagogicalPurpose =
+      "Let the learner choose an application priority and see how hardware and deployment constraints change the practical SNN choice.";
+    spec.caption =
+      "Choose the deployment priority to see how application constraints shift the preferred SNN approach.";
+    spec.regenerationPrompt =
+      "Improve the application tradeoff selector by making the hardware constraint and metric priority more explicit.";
+  }
+  return { spec, suppressGeneric: false };
 }
 
 /**
@@ -1869,8 +2084,43 @@ async function reconcileInteractiveVisuals({
 }): Promise<{ markdown: string; visualIds: string[] }> {
   const pageSlug = pageRelPath.replace(/\.md$/i, "");
   const keptIds: string[] = [];
+  const intent = pageVisualIntent({ gardenId, pageSlug, sectionTitle, subsection });
+  const pageAnchorIds = visualAnchorIdsForPage({ subsection, sourceFigures });
+
+  const enrichVisualSpec = (spec: VisualSpec): VisualSpec => {
+    spec.gardenId = gardenId;
+    spec.pageId = pageSlug;
+    spec.pagePath = pageRelPath;
+    spec.learningGoal = spec.learningGoal || subsection.purpose || sectionTitle;
+    spec.inputs =
+      spec.inputs && spec.inputs.length > 0
+        ? spec.inputs
+        : (spec.controls ?? []).map((control) => `${control.label} control`).slice(0, 6);
+    if (!spec.inputs || spec.inputs.length === 0) spec.inputs = ["Learner-adjusted interactive controls"];
+    spec.outputs =
+      spec.outputs && spec.outputs.length > 0
+        ? spec.outputs
+        : [spec.caption || spec.pedagogicalPurpose || "Interactive comparison output"];
+
+    const existingAnchors = spec.sourceAnchors ?? [];
+    const derivedAnchors = pageAnchorIds
+      .map((anchorId) => sourceAnchorFromId(anchorId, sourceFigures))
+      .filter((anchor): anchor is VisualSourceAnchor => Boolean(anchor));
+    spec.sourceAnchors = uniqueSourceAnchors([...existingAnchors, ...derivedAnchors]);
+    if (spec.sourceAnchors.length > 0) {
+      spec.sourceGroundingStatus = "source-anchored";
+      spec.justification = spec.justification || "This interactive visual is tied to source visuals or formula anchors assigned to the same lesson page.";
+    } else {
+      spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
+      spec.justification =
+        spec.justification ||
+        "This visual teaches a dynamic concept discussed on the page; no directly matching source figure was assigned to this lesson.";
+    }
+    return spec;
+  };
 
   const recordVisual = (spec: VisualSpec) => {
+    spec = enrichVisualSpec(spec);
     saveVisualSpec(contentPath, gardenId, spec, pageSlug);
     keptIds.push(spec.id);
     appendLearnEvent(contentPath, gardenId, "learn_visual_created", {
@@ -1881,13 +2131,14 @@ async function reconcileInteractiveVisuals({
       sourceIds: [...new Set(spec.sourceAnchors.map((anchor) => anchor.sourceId).filter(Boolean))],
     });
     for (const anchor of spec.sourceAnchors) {
-      if (!anchor.figureId) continue;
+      const figureId = anchor.figureId ?? anchor.tableId ?? anchor.equationId;
+      if (!figureId) continue;
       appendLearnEvent(contentPath, gardenId, "learn_source_figure_linked", {
         jobId,
         textbookVersionId,
         pageId,
         visualId: spec.id,
-        figureId: anchor.figureId,
+        figureId,
         sourceId: anchor.sourceId,
       });
     }
@@ -1898,6 +2149,7 @@ async function reconcileInteractiveVisuals({
   //    in the renderer, so anything else is removed rather than embedded.
   let nextMarkdown = markdown.replace(EMBEDDED_VISUAL_BLOCK_RE, (fullMatch, json: string) => {
     const { spec } = validateVisualSpec(json);
+    if (intent.suppressGeneric || intent.spec) return "";
     if (
       spec &&
       (IMPLEMENTED_VISUAL_TYPES as readonly string[]).includes(spec.type) &&
@@ -1914,6 +2166,29 @@ async function reconcileInteractiveVisuals({
   // 2) Legacy bracket placeholders are removed, never replaced by filler.
   if (containsRawVisualPlaceholder(nextMarkdown)) {
     nextMarkdown = removeRawVisualPlaceholders(nextMarkdown, "");
+  }
+
+  if (intent.spec && keptIds.length === 0) {
+    const paragraphs = nextMarkdown.trim().split(/\n{2,}/);
+    const index = bestParagraphIndex(paragraphs, `${intent.spec.title} ${intent.spec.pedagogicalPurpose}`);
+    recordVisual(intent.spec);
+    nextMarkdown = [
+      ...paragraphs.slice(0, index + 1),
+      buildVisualBlock(enrichVisualSpec(intent.spec)),
+      ...paragraphs.slice(index + 1),
+    ].join("\n\n");
+  }
+
+  if (intent.suppressGeneric) {
+    if (intent.reason) {
+      appendLearnEvent(contentPath, gardenId, "learn_visual_skipped", {
+        jobId,
+        textbookVersionId,
+        pageId,
+        reason: intent.reason,
+      });
+    }
+    return { markdown: nextMarkdown, visualIds: keptIds };
   }
 
   // 3) Decide which interactive visuals this page should get. The plan's
@@ -2478,6 +2753,7 @@ export async function runTextbookGeneration({
           unresolved: canonicalized.unresolved,
         });
       }
+      overviewBody = stripEmbeddedVisualBlocks(overviewBody);
     }
 
     // Learner-facing planning pages live in Learning/. Everything else is
@@ -2602,7 +2878,21 @@ export async function runTextbookGeneration({
           section,
           claimed: claimedVisualIds,
         });
+        const metricFormulaAnchorIds = /metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/i.test(
+          `${sectionTitle} ${subsectionTitle} ${subsection.purpose} ${(subsection.conceptTags ?? []).join(" ")}`,
+        )
+          ? sourceFormulaFigures(context).map((figure) => figure.figureId)
+          : [];
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
+        const interactiveSourceFigures =
+          metricFormulaAnchorIds.length > 0
+            ? [
+                ...sourceFigures,
+                ...sourceFormulaFigures(context).filter(
+                  (formula) => !sourceFigures.some((figure) => figure.figureId === formula.figureId),
+                ),
+              ]
+            : sourceFigures;
         // Compact per-page packet: everything the model needs to write THIS
         // subsection, nothing else. The full source map / scope contract /
         // learning spine never ride into page prompts anymore.
@@ -2848,7 +3138,7 @@ export async function runTextbookGeneration({
           sectionTitle,
           subsection,
           sourceContext: pageDossier,
-          sourceFigures,
+          sourceFigures: interactiveSourceFigures,
         });
         pageBody = visualized.markdown;
 
@@ -2868,6 +3158,7 @@ export async function runTextbookGeneration({
           },
         );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
+        const pageMathExpressions = extractQuartzMath(normalizeQuartzMarkdown(pageBody));
         const finalContent =
           buildLearningPageFrontmatter({
             gardenId,
@@ -2878,6 +3169,13 @@ export async function runTextbookGeneration({
             tags: zettelTags,
             visualIds: visualized.visualIds,
             sourceVisualIds: assignedVisualIds,
+            sourceFormulaAnchors: metricFormulaAnchorIds,
+            formulaGroundingStatus:
+              pageMathExpressions.length > 0 ? "conceptual-helper-or-source-anchored" : undefined,
+            formulaJustification:
+              pageMathExpressions.length > 0
+                ? "Inline formulas are either source metric formulas or compact conceptual helpers used to explain the lesson; they are not treated as unsupported new source claims."
+                : undefined,
             learningVersionId: textbookVersionId,
             sourceSetHash: context.sourceSetHash,
             generatedAt,
@@ -2942,7 +3240,10 @@ export async function runTextbookGeneration({
       contentPath,
       gardenId,
       visualAssignments,
-      () => "Not central to any confirmed subsection of this learning map.",
+      (visual) =>
+        visual.type === "equation"
+          ? "Central source formula is taught from source markdown and linked through sourceFormulaAnchors; no reliable crop was available for this equation."
+          : "Not central to any confirmed subsection of this learning map.",
     );
     for (const visual of finalLedger) {
       if (visual.usageStatus === "intentionally_skipped" && visual.skipReason) {

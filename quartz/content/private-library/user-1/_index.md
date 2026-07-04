@@ -19,10 +19,11 @@ All the gardens attached to your account.
 
 ## Gardens
 
+1. [test](/test-2/) - 0 lesson pages, 0 links
+
 ### EE Year 1
 
-1. [test](/test-2/) - 0 lesson pages, 0 links
-2. [Physics for EE](/physics-for-ee/) - 0 lesson pages, 602 links
-3. [Math 2](/math-2/) - 0 lesson pages, 93 links
-4. [Signals and systems](/signals-and-systems/) - 0 lesson pages, 821 links
-5. [Communication 1](/communication-1/) - 0 lesson pages, 2083 links
+1. [Physics for EE](/physics-for-ee/) - 0 lesson pages, 602 links
+2. [Math 2](/math-2/) - 0 lesson pages, 93 links
+3. [Signals and systems](/signals-and-systems/) - 0 lesson pages, 821 links
+4. [Communication 1](/communication-1/) - 0 lesson pages, 2083 links

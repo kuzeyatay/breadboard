@@ -115,8 +115,8 @@ describe("page-relevant tag gating", () => {
       "Spiking Neural Networks",
       lifContext,
     );
-    assert.ok(tags.includes("lif-neuron"));
-    assert.ok(!tags.includes("stdp"), "STDP is unrelated to a LIF page");
+    assert.ok(tags.includes("snn/lif-neuron-threshold-reset"));
+    assert.ok(!tags.some((tag) => tag.includes("stdp")), "STDP is unrelated to a LIF page");
   });
 });
 

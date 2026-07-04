@@ -23,6 +23,7 @@ import {
   isLegacySubtopicRelPath,
   readingOrderRank,
 } from "./learning-garden";
+import { normalizeQuartzMarkdown } from "./quartz-markdown";
 
 // Re-exported so existing `@/lib/knowledge` importers keep working unchanged.
 export { slugify, semanticTagsFromText, normalizeTopicTags };
@@ -109,6 +110,9 @@ export interface KnowledgeNode {
   textbookPage: string;
   breadboardType: string;
   draft: string;
+  generatedBy: string;
+  generated_by: string;
+  internal: string;
   flagColor: string;
   locations: string[];
   tags: string[];
@@ -2230,7 +2234,7 @@ export async function writeDocumentKnowledge({
   throwIfAborted(abortSignal);
   const sourceRelPath = `${SOURCE_NOTE_FOLDER}/${sourceSlug}.md`;
   const sourceFilePath = path.join(clusterDir, sourceRelPath);
-  fs.writeFileSync(sourceFilePath, sourceContent, "utf-8");
+  fs.writeFileSync(sourceFilePath, normalizeQuartzMarkdown(sourceContent), "utf-8");
   createdFilePaths.push(sourceFilePath);
 
   const textbookArtifacts: TextbookArtifact[] = [];
@@ -2356,7 +2360,7 @@ export async function writeDocumentKnowledge({
           });
 
         const topicFilePath = path.join(sectionDir, `${textbookSlug}.md`);
-        fs.writeFileSync(topicFilePath, topicContent, "utf-8");
+        fs.writeFileSync(topicFilePath, normalizeQuartzMarkdown(topicContent), "utf-8");
         createdFilePaths.push(topicFilePath);
       }
 
@@ -2551,6 +2555,9 @@ export function scanClusterKnowledge(
       frontmatterString(data, "learning_page") || frontmatterString(data, "textbook_page");
     const nodeBreadboardType = frontmatterString(data, "breadboardType");
     const draft = frontmatterString(data, "draft");
+    const generatedBy = frontmatterString(data, "generatedBy");
+    const generated_by = frontmatterString(data, "generated_by");
+    const internal = frontmatterString(data, "internal");
     const flagColor = frontmatterString(data, "flag_color");
     const locations = frontmatterArray(data, "locations");
     const tags = normalizeTopicTags(
@@ -2581,6 +2588,9 @@ export function scanClusterKnowledge(
       textbookPage,
       breadboardType: nodeBreadboardType,
       draft,
+      generatedBy,
+      generated_by,
+      internal,
       flagColor,
       locations,
       tags,
@@ -2641,10 +2651,21 @@ export function scanClusterKnowledge(
     }
   }
 
+  const isLearnAuthoredLesson = (node: KnowledgeNode): boolean =>
+    node.type === LEARNING_PAGE_TYPE &&
+    node.relPath.replace(/\\/g, "/").startsWith(`${LEARNING_FOLDER}/`) &&
+    node.internal !== "true" &&
+    node.draft !== "true" &&
+    (node.generatedBy === "learn_button" || node.generated_by === "learn_button");
+
   const sourceNodes = nodes.filter((node) => node.type === "source-document");
-  const textbookNodes = nodes.filter((node) => node.type === LEARNING_PAGE_TYPE);
+  const textbookNodes = nodes.filter(isLearnAuthoredLesson);
   const legacyPublicTopics = nodes.filter(
-    (node) => node.type === "knowledge-topic" && !isLegacySubtopicRelPath(node.relPath),
+    (node) =>
+      node.type === "knowledge-topic" &&
+      node.internal !== "true" &&
+      node.draft !== "true" &&
+      !isLegacySubtopicRelPath(node.relPath),
   );
   const topicNodes = [...textbookNodes, ...legacyPublicTopics].sort(
     (a, b) =>
@@ -2652,7 +2673,12 @@ export function scanClusterKnowledge(
       a.title.localeCompare(b.title),
   );
   const conceptNodes = nodes.filter((node) => node.type === INTERNAL_CONCEPT_TYPE);
-  const learningNodes = nodes.filter((node) => node.relPath.startsWith(`${LEARNING_FOLDER}/`));
+  const learningNodes = nodes.filter(
+    (node) =>
+      node.relPath.replace(/\\/g, "/").startsWith(`${LEARNING_FOLDER}/`) &&
+      node.internal !== "true" &&
+      node.draft !== "true",
+  );
   const generatedNotes = nodes.filter((node) => node.type === "generated-note");
   const usedTopicSlugs = new Set<string>();
 
@@ -2817,7 +2843,7 @@ export function refreshClusterIndex(
 
   const orphanLines = [...knowledge.orphanTopics]
     .sort(byNewest)
-    .map((topic) => `- ${wikilink(topic.slug, topic.title)}`);
+    .map((topic) => `- ${wikilinkForRelPath(topic.relPath, topic.title)}`);
   const description = clusterIndexDescription(knowledge);
   const overviewLink = LEARNING_PAGE_ORDER[0];
   const content =
@@ -2834,7 +2860,7 @@ export function refreshClusterIndex(
     `## Reading Path\n\n${readingPathSections.length > 0 ? readingPathSections.join("\n") : "- No lessons yet."}\n\n` +
     `## More Pages\n\n${orphanLines.length > 0 ? orphanLines.join("\n") : "- No standalone pages yet."}\n`;
 
-  fs.writeFileSync(path.join(clusterDir, "_index.md"), content, "utf-8");
+  fs.writeFileSync(path.join(clusterDir, "_index.md"), normalizeQuartzMarkdown(content), "utf-8");
 }
 
 export interface LegacySubtopicMigrationResult {
