@@ -75,6 +75,62 @@ export function saveVisualSpec(
   }
 }
 
+/**
+ * Prune stale interactive-visual artifacts after a generation run. The index
+ * merges on every save, so IDs from earlier runs linger even after their page
+ * was overwritten or removed. This rewrites visual-index.json to only the
+ * visuals still referenced by the current run and deletes orphan spec files, so
+ * the index never advertises a visual no page embeds.
+ *
+ * Returns the ids that were removed (for logging).
+ */
+export function pruneVisualArtifacts(
+  contentPath: string,
+  gardenSlug: string,
+  keepIds: Iterable<string>,
+): { removedFromIndex: string[]; removedSpecFiles: string[] } {
+  const keep = new Set(keepIds);
+  const removedFromIndex: string[] = [];
+  const removedSpecFiles: string[] = [];
+  try {
+    const indexPath = path.join(gardenBreadboardDir(contentPath, gardenSlug), 'visual-index.json');
+    let index: Record<string, VisualIndexEntry> = {};
+    try {
+      index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+    } catch {
+      index = {};
+    }
+    const nextIndex: Record<string, VisualIndexEntry> = {};
+    for (const [id, entry] of Object.entries(index)) {
+      if (keep.has(id)) nextIndex[id] = entry;
+      else removedFromIndex.push(id);
+    }
+    fs.writeFileSync(indexPath, JSON.stringify(nextIndex, null, 2), 'utf-8');
+
+    // Delete orphan spec files so the on-disk visuals/ set matches the index.
+    const dir = visualsDir(contentPath, gardenSlug);
+    let files: string[] = [];
+    try {
+      files = fs.readdirSync(dir).filter((name) => name.endsWith('.json'));
+    } catch {
+      files = [];
+    }
+    for (const file of files) {
+      const id = file.replace(/\.json$/i, '');
+      if (keep.has(id)) continue;
+      try {
+        fs.rmSync(path.join(dir, file), { force: true });
+        removedSpecFiles.push(id);
+      } catch {
+        // Best-effort; a lingering spec file is caught by the validator.
+      }
+    }
+  } catch (error) {
+    console.warn(`[visuals] could not prune stale visuals for ${gardenSlug}:`, error);
+  }
+  return { removedFromIndex, removedSpecFiles };
+}
+
 export function loadVisualSpec(
   contentPath: string,
   gardenSlug: string,

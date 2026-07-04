@@ -71,14 +71,33 @@ describe("RemoveDrafts", () => {
     )
   })
 
-  test("hides raw sources and internal planning artifacts", () => {
-    // Raw source notes are internal: they ground lessons but never publish.
+  test("publishes source documents under a visible Sources folder", () => {
+    // Source notes ground the lessons and are now learner-facing.
     assert.equal(
       shouldPublish({ knowledge_type: "source-document" }, "course/sources/reader.md"),
+      true,
+    )
+    // Anything under sources/ publishes, even without frontmatter.
+    assert.equal(shouldPublish({}, "course/sources/reader.md"), true)
+    // Older sources were stamped internal:true; the source allow overrides it.
+    assert.equal(
+      shouldPublish(
+        { knowledge_type: "source-document", internal: "true" },
+        "course/sources/reader.md",
+      ),
+      true,
+    )
+    // A draft source is still withheld.
+    assert.equal(
+      shouldPublish(
+        { knowledge_type: "source-document", draft: "true" },
+        "course/sources/reader.md",
+      ),
       false,
     )
-    // Anything under sources/ is internal, even without frontmatter.
-    assert.equal(shouldPublish({}, "course/sources/reader.md"), false)
+  })
+
+  test("hides internal planning artifacts", () => {
     // Planning artifacts are internal by knowledge type.
     for (const knowledgeType of ["source-map", "scope-contract", "source-coverage"]) {
       assert.equal(
@@ -107,6 +126,7 @@ describe("RemoveDrafts", () => {
       shouldPublish({ knowledge_type: "topic-overview" }, "course/Learning/Topic Overview.md"),
       true,
     )
+    // A non-source page flagged internal:true is still hidden.
     assert.equal(shouldPublish({ internal: "true" }, "course/Learning/page.md"), false)
   })
 

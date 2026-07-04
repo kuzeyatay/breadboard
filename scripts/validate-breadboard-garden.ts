@@ -46,7 +46,22 @@ const FALLBACK_FINGERPRINTS: RegExp[] = [
   /Introduce .* from uploaded sources/i,
   /This section is part of the confirmed Breadboard learning map/i,
   /The confirmed learning map did not provide enough local detail/i,
+  // Half-written scaffold verbs / placeholders (mirror of PLACEHOLDER_PATTERNS).
+  /\binsert (?:explanation|the |your |text|content|details?|example|figure|analogy)\b/i,
+  /\b(?:add|write|fill in) (?:the |your |an? )?(?:explanation|example|analogy|content|details?) here\b/i,
+  /\bsource says\b/i,
+  /\bTODO\b/,
+  /\bplaceholder\b/i,
 ];
+
+/** Two or more empty/ellipsis bullet items ("- ", "- ...", "- TBD"). */
+function hasEmptyBulletScaffold(body: string): boolean {
+  let empties = 0;
+  for (const line of body.replace(/```[\s\S]*?```/g, " ").split(/\r?\n/)) {
+    if (/^\s*[-*+]\s*(?:\.{2,}|…|TBD|N\/A|-{2,})?\s*$/i.test(line)) empties += 1;
+  }
+  return empties >= 2;
+}
 
 const RAW_REFERENCE_DUMP_RE = /\[\d+\]\s+[A-Z][^"\n]+,\s*["“].+["”]/;
 
@@ -158,6 +173,13 @@ function slugifyLoose(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+// Raw uploaded source notes publish under a visible Sources folder (mirror of
+// quartz draft.ts isSourceDocument).
+function isSourceDocument(knowledgeType: string, breadboardType: string, relPath: string): boolean {
+  if (knowledgeType === "source-document" || breadboardType === "source_document") return true;
+  return relPath.split("/").some((part) => part.toLowerCase() === "sources");
+}
+
 // Mirror of quartz RemoveDrafts.shouldPublish (draft.ts).
 function isPublished(relPath: string, fm: Record<string, string | string[]>): boolean {
   const parts = relPath.split("/");
@@ -165,7 +187,7 @@ function isPublished(relPath: string, fm: Record<string, string | string[]>): bo
   if (
     lowerParts.some(
       (part) =>
-        part === "sources" || part === "internal" || part === ".breadboard" ||
+        part === "internal" || part === ".breadboard" ||
         part === "generated" || part === "generated subtopics" || part === "subtopics" ||
         part === "ai topics" || part === "topic cards" ||
         /^\d+\.\s*source-snapshots$/.test(part),
@@ -183,9 +205,11 @@ function isPublished(relPath: string, fm: Record<string, string | string[]>): bo
   }
   if (fmString(fm, "legacy_subtopic_page") === "true") return false;
   if (fmString(fm, "draft") === "true" || fm["draft"] === "true") return false;
-  if (fmString(fm, "internal") === "true") return false;
   const knowledgeType = fmString(fm, "knowledge_type");
   const breadboardType = fmString(fm, "breadboardType") || fmString(fm, "breadboard_type");
+  // Source documents publish even though older sources carry internal:true.
+  if (isSourceDocument(knowledgeType, breadboardType, relPath)) return true;
+  if (fmString(fm, "internal") === "true") return false;
   if (INTERNAL_KNOWLEDGE_TYPES.has(knowledgeType)) return false;
   if (INTERNAL_KNOWLEDGE_TYPES.has(breadboardType.replace(/_/g, "-"))) return false;
 
@@ -333,6 +357,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   {
     const problems: string[] = [];
     for (const page of published) {
+      // Raw uploaded sources are grounding material, not pipeline-generated
+      // branding: their body may legitimately use the word (e.g. an academic
+      // paper). Only the Learn pipeline's own output is held to this rule.
+      const kt = fmString(page.frontmatter, "knowledge_type");
+      const bt = fmString(page.frontmatter, "breadboardType");
+      if (kt === "source-document" || bt === "source_document") continue;
       const surfaces: Array<[string, string]> = [
         ["path", page.relPath],
         ["title", fmString(page.frontmatter, "title")],
@@ -366,12 +396,15 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(2, "learner prose teaches directly (no source commentary)", problems, lessonPages.length === 0);
   }
 
-  // 3. No fallback-template prose in learner pages.
+  // 3. No fallback-template / scaffold prose in learner pages.
   {
     const problems: string[] = [];
     for (const page of lessonPages) {
       const hit = FALLBACK_FINGERPRINTS.find((pattern) => pattern.test(page.body));
       if (hit) problems.push(`${page.relPath}: matches ${hit}`);
+      if (hasEmptyBulletScaffold(page.body)) {
+        problems.push(`${page.relPath}: contains empty/placeholder bullet scaffolds`);
+      }
     }
     check(3, "no fallback-template prose in learner pages", problems, lessonPages.length === 0);
   }
@@ -408,22 +441,22 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(6, "learner subsections have an example and a Q&A pair", problems, lessonPages.length === 0);
   }
 
-  // 7. No visible sources / Internal / snapshot / raw-upload folders or planning files.
+  // 7. No visible Internal / snapshot / raw-upload folders or planning files.
+  //    Sources publish under a visible sources/ folder and are allowed.
   {
     const problems: string[] = [];
     for (const page of published) {
       const rel = page.relPath;
       const lower = rel.toLowerCase();
-      if (/(^|\/)sources\//i.test(rel)) problems.push(`raw source visible: ${rel}`);
       if (/(^|\/)internal\//i.test(rel)) problems.push(`internal folder visible: ${rel}`);
       if (/(^|\/)\d+\.\s*source-snapshots\//i.test(rel)) problems.push(`snapshot folder visible: ${rel}`);
       if (lower.endsWith("learning/source map.md") || lower.endsWith("learning/scope contract.md") ||
           lower.endsWith("learning/source coverage.md")) {
         problems.push(`planning artifact visible: ${rel}`);
       }
-      // Top-level content outside _index.md, Learning/, assets/.
+      // Top-level content outside _index.md, Learning/, sources/, assets/.
       const top = rel.split("/")[0];
-      if (rel !== "_index.md" && top !== "Learning" && top !== "assets") {
+      if (rel !== "_index.md" && top !== "Learning" && top !== "sources" && top !== "assets") {
         problems.push(`top-level page outside Learning/: ${rel}`);
       }
     }
@@ -441,7 +474,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`folder named after raw upload: ${top}/`);
       }
     }
-    check(7, "visible tree is only _index.md, Learning/, assets/", [...new Set(problems)]);
+    check(7, "visible tree is only _index.md, Learning/, sources/, assets/", [...new Set(problems)]);
   }
 
   // 8. Learner lesson pages carry 4-8 page-relevant Zettelkasten concept handles; no conceptTags.
@@ -566,6 +599,10 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(12, "full-page snapshots only used as explicit fallbacks", problems, !ledgerExists);
   }
 
+  // Run-level accumulators shared with the stale-index check (#18).
+  const embeddedVisualIds = new Set<string>();
+  let visualIndexKeys: string[] = [];
+
   // 13 + 14. Interactive visual consistency, content, and hard-concept coverage.
   {
     const idProblems: string[] = [];
@@ -577,6 +614,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     } catch {
       index = {};
     }
+    visualIndexKeys = Object.keys(index);
 
     let interactiveCount = 0;
     const blockRe = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
@@ -599,6 +637,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           continue;
         }
         embedded.push(spec.id);
+        embeddedVisualIds.add(spec.id);
         interactiveCount += 1;
         const type = String(spec.type ?? "");
         if (!INTERACTIVE_VISUAL_TYPES.has(type)) {
@@ -673,7 +712,151 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     }
   }
 
+  // 17. Every internal wikilink resolves to a real page (or a real heading).
+  {
+    const problems = validateInternalWikilinks(pages, published);
+    check(17, "internal wikilinks resolve to existing pages/headings", problems);
+  }
+
+  // 18. No stale visual-index entries: every id in visual-index.json must be
+  //     embedded by some current page. Stale entries from earlier runs mean the
+  //     post-generation prune did not run.
+  {
+    const problems: string[] = [];
+    for (const id of visualIndexKeys) {
+      if (!embeddedVisualIds.has(id)) {
+        problems.push(`visual-index.json lists "${id}" but no current page embeds it (stale)`);
+      }
+    }
+    check(18, "visual index only lists visuals referenced by current pages", problems, visualIndexKeys.length === 0);
+  }
+
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Wikilink resolution
+// ---------------------------------------------------------------------------
+
+const HEADING_RE = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm;
+const WIKILINK_RE = /(!?)\[\[([^\]]+?)\]\]/g;
+
+function headingSlugs(body: string): Set<string> {
+  const slugs = new Set<string>();
+  let match: RegExpExecArray | null;
+  const re = new RegExp(HEADING_RE.source, HEADING_RE.flags);
+  while ((match = re.exec(body)) !== null) {
+    slugs.add(slugifyLoose(match[1]));
+  }
+  return slugs;
+}
+
+/** Scan published pages for `[[wikilinks]]` and verify each resolves to an
+ * existing markdown file (by canonical vault path or unique basename) and, when
+ * a `#fragment` is present, to a real heading in that file. Broken links are
+ * reported with the nearest resolvable suggestion so navigation is never
+ * silently broken. */
+function validateInternalWikilinks(pages: PageFile[], published: PageFile[]): string[] {
+  const problems: string[] = [];
+
+  // Existence indexes over ALL pages (a link may point at a section _index).
+  const byTarget = new Map<string, PageFile>();
+  const byBasenameSlug = new Map<string, PageFile[]>();
+  // Number-stripped "concept slug": a generated file is "2.1 The LIF Neuron.md"
+  // but the LLM links "[[The LIF Neuron]]". Index both so we can suggest the
+  // real numbered file for a loose title link.
+  const byConceptSlug = new Map<string, PageFile[]>();
+  const conceptSlug = (name: string): string =>
+    slugifyLoose(name.replace(/^\d+(?:\.\d+)*\.?\s*/, ""));
+  for (const page of pages) {
+    const target = page.relPath.replace(/\.md$/i, "");
+    byTarget.set(target.toLowerCase(), page);
+    const segments = target.split("/");
+    const base = segments.pop() ?? target;
+    // A section _index page is best addressed by its FOLDER name, not "_index".
+    const names = base.toLowerCase() === "_index" && segments.length > 0 ? [segments[segments.length - 1]] : [base];
+    for (const name of names) {
+      for (const [map, slug] of [
+        [byBasenameSlug, slugifyLoose(name)],
+        [byConceptSlug, conceptSlug(name)],
+      ] as Array<[Map<string, PageFile[]>, string]>) {
+        if (!slug) continue;
+        const list = map.get(slug) ?? [];
+        list.push(page);
+        map.set(slug, list);
+      }
+    }
+  }
+
+  const suggestFor = (base: string): string | undefined => {
+    const leaf = base.split("/").pop() ?? base;
+    for (const matches of [byBasenameSlug.get(slugifyLoose(leaf)), byConceptSlug.get(conceptSlug(leaf))]) {
+      if (matches && matches.length === 1) return matches[0].relPath.replace(/\.md$/i, "");
+    }
+    return undefined;
+  };
+
+  for (const page of published) {
+    // Raw uploaded source documents are grounding material: any `[[Page 3]]`
+    // style refs in them are conversion artifacts, not learner navigation.
+    const kt = fmString(page.frontmatter, "knowledge_type");
+    const bt = fmString(page.frontmatter, "breadboardType") || fmString(page.frontmatter, "breadboard_type");
+    if (isSourceDocument(kt, bt, page.relPath)) continue;
+
+    let match: RegExpExecArray | null;
+    const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
+    while ((match = re.exec(page.body)) !== null) {
+      const isEmbed = match[1] === "!";
+      const inner = match[2];
+      const rawTarget = (inner.includes("|") ? inner.slice(0, inner.indexOf("|")) : inner).trim();
+      if (!rawTarget || /^[a-z][a-z\d+.-]*:/i.test(rawTarget)) continue; // URL/scheme
+      if (isEmbed) continue; // image/transclusion embeds are not navigation
+
+      const hashIndex = rawTarget.indexOf("#");
+      const base = (hashIndex >= 0 ? rawTarget.slice(0, hashIndex) : rawTarget)
+        .replace(/^\//, "")
+        .replace(/\.md$/i, "")
+        .trim();
+      const fragment = hashIndex >= 0 ? rawTarget.slice(hashIndex + 1).trim() : "";
+
+      // Same-page heading link (`[[#Heading]]`).
+      if (!base) {
+        if (fragment && !headingSlugs(page.body).has(slugifyLoose(fragment))) {
+          problems.push(`${page.relPath}: heading link "#${fragment}" not found on the page`);
+        }
+        continue;
+      }
+
+      let targetPage = byTarget.get(base.toLowerCase());
+      if (!targetPage) {
+        const byBase = byBasenameSlug.get(slugifyLoose(base.split("/").pop() ?? base));
+        if (byBase && byBase.length === 1) targetPage = byBase[0];
+      }
+
+      if (!targetPage) {
+        // For `[[Section#Subsection]]`, the subsection is its own file — prefer
+        // suggesting that over the (missing) section.
+        const suggestion = (fragment ? suggestFor(fragment) : undefined) ?? suggestFor(base);
+        problems.push(
+          `${page.relPath}: broken link [[${rawTarget}]] -> no page "${base}"` +
+            (suggestion ? ` (did you mean [[${suggestion}]]?)` : ""),
+        );
+        continue;
+      }
+
+      if (fragment && !headingSlugs(targetPage.body).has(slugifyLoose(fragment))) {
+        // A title-based fragment almost always means the LLM linked a
+        // subsection as a heading of its section; suggest the real file.
+        const suggestion = suggestFor(fragment);
+        problems.push(
+          `${page.relPath}: link [[${rawTarget}]] -> heading "${fragment}" missing in ${targetPage.relPath}` +
+            (suggestion ? ` (did you mean [[${suggestion}]]?)` : ""),
+        );
+      }
+    }
+  }
+
+  return [...new Set(problems)];
 }
 
 // ---------------------------------------------------------------------------

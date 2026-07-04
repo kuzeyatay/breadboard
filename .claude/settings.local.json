@@ -30,7 +30,15 @@
       "Bash(mkdir -p \"/c/Users/20252082/.claude/skills/llm-council\" && echo \"created\" && ls -la \"/c/Users/20252082/.claude/skills/\")",
       "Edit(~/.claude/skills/llm-council/**)",
       "Read(//c/Users/20252082/.claude/skills/llm-council/**)",
-      "Bash(awk 'NR==1{print} /^---$/{c++} c<2{print} c==2{print; exit}' SKILL.md)"
+      "Bash(awk 'NR==1{print} /^---$/{c++} c<2{print} c==2{print; exit}' SKILL.md)",
+      "Bash(node --test --import tsx quartz/plugins/filters/draft.test.ts)",
+      "Bash(node --experimental-strip-types ../scripts/validate-breadboard-garden.ts ../quartz/content/tests)",
+      "Bash(node --experimental-strip-types ../scripts/validate-breadboard-garden.ts --help)",
+      "Bash(node --experimental-strip-types ../scripts/validate-breadboard-garden.ts \"../quartz/content\" tests)",
+      "Bash(node --experimental-strip-types scripts/validate-breadboard-garden.ts tests)",
+      "Bash(node --experimental-strip-types scripts/validate-breadboard-garden.ts \"quartz/content/tests\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); for \\(const p of ['quartz/content','quartz/content/tests','quartz/content/tests/sources','quartz/content/tests/Learning']\\) console.log\\(p, fs.existsSync\\(p\\), \\(\\(\\)=>{try{return fs.statSync\\(p\\).isDirectory\\(\\)}catch\\(e\\){return e.code}}\\)\\(\\)\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); console.log\\(fs.readdirSync\\('quartz/content'\\).filter\\(x=>/test/i.test\\(x\\)\\)\\);\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\20252082\\.claude\\skills"

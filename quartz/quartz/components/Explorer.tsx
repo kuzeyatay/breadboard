@@ -27,7 +27,13 @@ const defaultOptions: Options = {
   folderClickBehavior: "link",
   useSavedState: true,
   mapFn: (node) => {
-    return node
+    // The generated Learning/ folder inherits its index page title (the topic
+    // name, e.g. "Spiking Neural Networks") as its display name. Relabel just
+    // the sidebar entry to "Learning" so it reads as a clear container for the
+    // numbered sections, while the landing page keeps its topic title.
+    if (node.isFolder && String(node.slugSegment ?? "").toLowerCase() === "learning") {
+      node.displayName = "Learning"
+    }
   },
   sortFn: (a, b) => {
     const rank = (node: FileTrieNode) => {
