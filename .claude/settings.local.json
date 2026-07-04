@@ -38,7 +38,13 @@
       "Bash(node --experimental-strip-types scripts/validate-breadboard-garden.ts tests)",
       "Bash(node --experimental-strip-types scripts/validate-breadboard-garden.ts \"quartz/content/tests\")",
       "Bash(node -e \"const fs=require\\('fs'\\); for \\(const p of ['quartz/content','quartz/content/tests','quartz/content/tests/sources','quartz/content/tests/Learning']\\) console.log\\(p, fs.existsSync\\(p\\), \\(\\(\\)=>{try{return fs.statSync\\(p\\).isDirectory\\(\\)}catch\\(e\\){return e.code}}\\)\\(\\)\\);\")",
-      "Bash(node -e \"const fs=require\\('fs'\\); console.log\\(fs.readdirSync\\('quartz/content'\\).filter\\(x=>/test/i.test\\(x\\)\\)\\);\")"
+      "Bash(node -e \"const fs=require\\('fs'\\); console.log\\(fs.readdirSync\\('quartz/content'\\).filter\\(x=>/test/i.test\\(x\\)\\)\\);\")",
+      "Bash(node --experimental-strip-types scripts/validate-breadboard-garden.ts test-2)",
+      "Read(//c/Users/20252082/OneDrive - TU Eindhoven//**)",
+      "Read(//c/Users/20252082/OneDrive - TU Eindhoven/**)",
+      "Bash(rm -rf C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/regen-test-2)",
+      "Bash(cp -r C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/broken-test-2 C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/regen-test-2)",
+      "Bash(node --experimental-strip-types scripts/finalize-breadboard-garden.ts C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/regen-test-2 test-2)"
     ],
     "additionalDirectories": [
       "C:\\Users\\20252082\\.claude\\skills"

@@ -1,14 +1,14 @@
 ---
 title: "Learning Map"
-date: "2026-07-04T14:23:52.404Z"
+date: "2026-07-04T15:46:32.365Z"
 knowledge_type: "learning-map"
 breadboardType: "learning_map"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr6g8y21_n13h82r"
-learningVersionId: "learning_mr6g8y21_n13h82r"
-sourceSetHash: "f68ebe1d1a3f48ec83767f9e72a680444a9b5b5d10a76f661704710ebdd8a849"
+learningVersion: "learning_mr6jacb9_zeyl4kq"
+learningVersionId: "learning_mr6jacb9_zeyl4kq"
+sourceSetHash: "92ec0a3acc65ff353e12b51527dd716e69c61e6dab4755584941a46a11ac4286"
 ---
 
 # Learning Map
@@ -20,7 +20,7 @@ sourceSetHash: "f68ebe1d1a3f48ec83767f9e72a680444a9b5b5d10a76f661704710ebdd8a849
 - 2. What Spiking Neural Networks Are
   - 2.1 [[learning/2. What Spiking Neural Networks Are/2.1 What Spiking Neural Networks Are|What Spiking Neural Networks Are]]
 - 3. Neuron Model: LIF
-  - 3.1 [[learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|Neuron Model: LIF as Evidence]]
+  - 3.1 [[learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|Neuron Model: LIF]]
 - 4. SNN Training Paradigms
   - 4.1 [[learning/4. SNN Training Paradigms/4.1 SNN Training Paradigms|SNN Training Paradigms]]
 - 5. Unified Multi-Metric Evaluation
@@ -50,7 +50,7 @@ sourceSetHash: "f68ebe1d1a3f48ec83767f9e72a680444a9b5b5d10a76f661704710ebdd8a849
 - Trunk: What Spiking Neural Networks Are
   - Branch/leaf: What Spiking Neural Networks Are
 - Trunk: Neuron Model: LIF
-  - Branch/leaf: Neuron Model: LIF as Evidence
+  - Branch/leaf: Neuron Model: LIF
 - Trunk: SNN Training Paradigms
   - Branch/leaf: SNN Training Paradigms
 - Trunk: Unified Multi-Metric Evaluation
@@ -69,9 +69,6 @@ sourceSetHash: "f68ebe1d1a3f48ec83767f9e72a680444a9b5b5d10a76f661704710ebdd8a849
 ## Warnings
 
 - This map is intentionally section-level only; generated subtopics are not published yet, so subsection arrays are left empty.
-- The main prose source is truncated after Page 2, so later-paper details must not be inferred beyond the provided anchors and source-derived tables.
-- The LIF neuron model is source-central, but the supplied material does not include its governing equations; later treatment must remain qualitative unless more verified source text is provided.
-- The performance metrics are named and numerically compared, but formal mathematical definitions are not present in the supplied material and should not be fabricated.
 - Tables S1.P0.T1, S1.P0.T2, S1.P0.T3, S1.P0.T5, and S1.P0.T6 are usable as source-derived evidence, but OCR artifacts, missing captions, and missing surrounding explanation may limit certainty.
 - S1.P0.T4 appears duplicative of S1.P0.T3 and should not be treated as an independent latency result.
 - S1.P0.T6 is only safe to use as convergence-related evidence because the exact metric represented by its values is unclear in the provided OCR.

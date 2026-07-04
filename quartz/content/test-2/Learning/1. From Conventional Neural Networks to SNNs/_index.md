@@ -1,13 +1,13 @@
 ---
 title: "1. From Conventional Neural Networks to SNNs"
-date: "2026-07-04T14:20:21.481Z"
+date: "2026-07-04T15:45:25.461Z"
 knowledge_type: "learning-section"
 breadboardType: "learning_section"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr6g8y21_n13h82r"
-sourceSetHash: "f68ebe1d1a3f48ec83767f9e72a680444a9b5b5d10a76f661704710ebdd8a849"
+learningVersion: "learning_mr6jacb9_zeyl4kq"
+sourceSetHash: "92ec0a3acc65ff353e12b51527dd716e69c61e6dab4755584941a46a11ac4286"
 ---
 
 # 1. From Conventional Neural Networks to SNNs

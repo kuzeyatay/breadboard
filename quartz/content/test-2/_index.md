@@ -1,13 +1,13 @@
 ---
 title: "test"
 date: "2026-07-04"
-description: "Learning garden with 1 source document, 8 lesson pages, and 43 graph links."
+description: "Learning garden with 1 source document, 8 lesson pages, and 39 graph links."
 knowledge_type: "cluster-index"
 ---
 
 ## Garden overview
 
-This learning garden is organized from 1 source document into a sequence of linked lessons. It currently contains 8 lesson pages, 43 graph links, and 27515 indexed words.
+This learning garden is organized from 1 source document into a sequence of linked lessons. It currently contains 8 lesson pages, 39 graph links, and 26432 indexed words.
 
 Start with the Topic Overview, then follow the numbered sections in order.
 
@@ -25,7 +25,7 @@ Last updated: 2026-07-04.
 
 1. [[learning/1. From Conventional Neural Networks to SNNs/1.1 From Conventional Neural Networks to SNNs|1.1 From Conventional Neural Networks to SNNs]]
 2. [[learning/2. What Spiking Neural Networks Are/2.1 What Spiking Neural Networks Are|2.1 What Spiking Neural Networks Are]]
-3. [[learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|3.1 Neuron Model: LIF as Evidence]]
+3. [[learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|3.1 Neuron Model: LIF]]
 4. [[learning/4. SNN Training Paradigms/4.1 SNN Training Paradigms|4.1 SNN Training Paradigms]]
 5. [[learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation|5.1 Unified Multi-Metric Evaluation]]
 6. [[learning/6. Comparative Results Across Models and Metrics/6.1 Comparative Results Across Models and Metrics|6.1 Comparative Results Across Models and Metrics]]
