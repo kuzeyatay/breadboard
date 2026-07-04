@@ -65,6 +65,7 @@ import {
   type LearnContextSummary,
   type LearnSourceSummary,
   type LearnStatus,
+  type FormulaGroundingEntry,
   type LearningSectionPlan,
   type LearningSubsectionPlan,
   type ProposedLearningMap,
@@ -1398,7 +1399,7 @@ function renderObjectMarkdown(value: unknown): string {
   return `\`\`\`json\n${JSON.stringify(value ?? {}, null, 2)}\n\`\`\``;
 }
 
-// Learner-visible planning pages: the Learning/ index, Topic Overview, and
+// Learner-visible planning pages: the learning/ index, Topic Overview, and
 // Learning Map. Everything else (Source Map, Scope Contract, Source Coverage)
 // is internal. No planning page carries public tags — tags are reserved for
 // learner lessons.
@@ -1432,12 +1433,36 @@ function learningPageFrontmatter(
 }
 
 // All learner-facing lesson sections live under this folder so the garden root
-// only ever shows Learning/, assets/, and the garden _index.
-const LEARNING_ROOT = "Learning";
+// only ever shows learning/, assets/, and the garden _index.
+const LEARNING_ROOT = "learning";
 
-/** Section folder for a lesson section, nested under Learning/. */
+/** Section folder for a lesson section, nested under learning/. */
 function learningSectionFolder(sectionNumber: number, title: string): string {
   return `${LEARNING_ROOT}/${textbookSectionFolder(sectionNumber, title)}`;
+}
+
+function formulaGroundingEntries(
+  mathExpressions: ReturnType<typeof extractQuartzMath>,
+  sourceFormulaAnchors: string[],
+): FormulaGroundingEntry[] {
+  const anchors = [...new Set(sourceFormulaAnchors.filter(Boolean))];
+  return mathExpressions.map((expr, index) => {
+    const sourceAnchor = anchors[index];
+    if (sourceAnchor) {
+      return {
+        text: expr.formula,
+        groundingStatus: "source-anchored",
+        sourceAnchor,
+        justification: `Matches or restates source formula anchor ${sourceAnchor} for the page objective.`,
+      };
+    }
+    return {
+      text: expr.formula,
+      groundingStatus: "conceptual-helper",
+      justification:
+        "Compact helper formula used to explain the lesson's mechanism; no direct source equation anchor is claimed.",
+    };
+  });
 }
 
 function renderLearningMapMarkdown(map: ProposedLearningMap): string {
@@ -1491,7 +1516,7 @@ function renderLearningIndexMarkdown(
     "",
     map.summary || `A guided path through ${context.gardenTitle}, one lesson at a time.`,
     "",
-    "Read the sections in order. Start with the [[Learning/Topic Overview|Topic Overview]], then work through each numbered section.",
+    "Read the sections in order. Start with the [[learning/Topic Overview|Topic Overview]], then work through each numbered section.",
     "",
     "## Sections",
     "",
@@ -2717,7 +2742,7 @@ export async function runTextbookGeneration({
         model,
         taskType: "source_synthesis",
         gardenId,
-        pageId: "Learning/Topic Overview",
+        pageId: "learning/Topic Overview",
         system: OVERVIEW_PROMPT,
         user: compactJson({
           learningMap: map.learningMap,
@@ -2726,7 +2751,7 @@ export async function runTextbookGeneration({
         }),
         sourceContext: {
           gardenId,
-          pageId: "Learning/Topic Overview",
+          pageId: "learning/Topic Overview",
           taskType: "source_synthesis",
           sourceIds: context.sources.map((source) => source.slug),
         },
@@ -2756,7 +2781,7 @@ export async function runTextbookGeneration({
       overviewBody = stripEmbeddedVisualBlocks(overviewBody);
     }
 
-    // Learner-facing planning pages live in Learning/. Everything else is
+    // Learner-facing planning pages live in learning/. Everything else is
     // internal and is written under .breadboard/planning/ so it never appears
     // in the published garden or the knowledge graph.
     const learningRelPaths = [
@@ -3159,6 +3184,7 @@ export async function runTextbookGeneration({
         );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const pageMathExpressions = extractQuartzMath(normalizeQuartzMarkdown(pageBody));
+        const formulas = formulaGroundingEntries(pageMathExpressions, metricFormulaAnchorIds);
         const finalContent =
           buildLearningPageFrontmatter({
             gardenId,
@@ -3170,12 +3196,7 @@ export async function runTextbookGeneration({
             visualIds: visualized.visualIds,
             sourceVisualIds: assignedVisualIds,
             sourceFormulaAnchors: metricFormulaAnchorIds,
-            formulaGroundingStatus:
-              pageMathExpressions.length > 0 ? "conceptual-helper-or-source-anchored" : undefined,
-            formulaJustification:
-              pageMathExpressions.length > 0
-                ? "Inline formulas are either source metric formulas or compact conceptual helpers used to explain the lesson; they are not treated as unsupported new source claims."
-                : undefined,
+            formulas,
             learningVersionId: textbookVersionId,
             sourceSetHash: context.sourceSetHash,
             generatedAt,

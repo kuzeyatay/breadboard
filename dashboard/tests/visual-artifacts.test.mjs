@@ -9,12 +9,12 @@ import {
 describe("stable, readable visual ids", () => {
   test("ids read front-to-back from the section number + concept, never tail-sliced", () => {
     const lif = buildLifThresholdResetVisual(
-      "Learning/2. How Spiking Neural Networks Are Structured/2.1 The Leaky Integrate-and-Fire Neuron",
+      "learning/2. How Spiking Neural Networks Are Structured/2.1 The Leaky Integrate-and-Fire Neuron",
     );
     assert.equal(lif.id, "vis-2-1-the-leaky-integrate-and-fire-neuron-lif");
 
     const energy = buildMetricTradeoffExplorerVisual(
-      "Learning/4. How SNN Performance Is Measured/4.2 Normalized Energy Efficiency",
+      "learning/4. How SNN Performance Is Measured/4.2 Normalized Energy Efficiency",
     );
     assert.equal(energy.id, "vis-4-2-normalized-energy-efficiency-tradeoff");
 
@@ -28,13 +28,13 @@ describe("stable, readable visual ids", () => {
   });
 
   test("ids are deterministic across regenerations", () => {
-    const a = buildStdpTimingWindowVisual("Learning/3. How SNNs Learn/3.3 Spike-Timing Dependent Plasticity");
-    const b = buildStdpTimingWindowVisual("Learning/3. How SNNs Learn/3.3 Spike-Timing Dependent Plasticity");
+    const a = buildStdpTimingWindowVisual("learning/3. How SNNs Learn/3.3 Spike-Timing Dependent Plasticity");
+    const b = buildStdpTimingWindowVisual("learning/3. How SNNs Learn/3.3 Spike-Timing Dependent Plasticity");
     assert.equal(a.id, b.id);
   });
 
   test("a page with no number label still yields a readable id", () => {
-    const v = buildLifThresholdResetVisual("Learning/Topic Overview");
+    const v = buildLifThresholdResetVisual("learning/Topic Overview");
     assert.match(v.id, /^vis-topic-overview-lif$/);
   });
 });

@@ -1349,66 +1349,81 @@
     <loc>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/</loc>
     <lastmod>2026-06-24T08:48:30.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/</loc>
+    <loc>https://localhost:8081/signals-and-systems/sources/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/sources/</loc>
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/sources/2510-27379v1</loc>
-    <lastmod>2026-07-04T11:34:52.091Z</lastmod>
+    <lastmod>2026-07-04T14:19:55.570Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/Topic-Overview</loc>
-    <lastmod>2026-07-04T11:40:26.915Z</lastmod>
+    <loc>https://localhost:8081/test-2/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/Learning-Map</loc>
-    <lastmod>2026-07-04T11:40:26.920Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/Learning-Map</loc>
+    <lastmod>2026-07-04T14:23:52.404Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/Topic-Overview</loc>
+    <lastmod>2026-07-04T14:23:52.399Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/</loc>
-    <lastmod>2026-07-04T11:40:26.912Z</lastmod>
+    <loc>https://localhost:8081/test-2/sources/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-From-Conventional-Neural-Networks-to-SNNs/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/</loc>
+    <lastmod>2026-07-04T14:23:52.397Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-What-Spiking-Neural-Networks-Are/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/4.-SNN-Training-Paradigms/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-Neuron-Model-LIF/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/4.-SNN-Training-Paradigms/4.1-SNN-Training-Paradigms</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/5.-Unified-Multi-Metric-Evaluation/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-SNN-Training-Paradigms/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/5.-Unified-Multi-Metric-Evaluation/5.1-Unified-Multi-Metric-Evaluation</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/5.-Unified-Multi-Metric-Evaluation/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/6.-Comparative-Results-Across-Models-and-Metrics/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-SNN-Training-Paradigms/4.1-SNN-Training-Paradigms</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/6.-Comparative-Results-Across-Models-and-Metrics/6.1-Comparative-Results-Across-Models-and-Metrics</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/5.-Unified-Multi-Metric-Evaluation/5.1-Unified-Multi-Metric-Evaluation</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/7.-What-the-Tradeoffs-Suggest-for-Applications-and-Hardware-Context/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/6.-Comparative-Results-Across-Models-and-Metrics/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/8.-Open-Challenges-and-What-Remains-Unresolved/</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/7.-What-the-Tradeoffs-Suggest-for-Applications-and-Hardware-Context/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/7.-What-the-Tradeoffs-Suggest-for-Applications-and-Hardware-Context/7.1-What-the-Tradeoffs-Suggest-for-Applications-and-Hardware-Context</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/6.-Comparative-Results-Across-Models-and-Metrics/6.1-Comparative-Results-Across-Models-and-Metrics</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/Learning/8.-Open-Challenges-and-What-Remains-Unresolved/8.1-Open-Challenges-and-What-Remains-Unresolved</loc>
-    <lastmod>2026-07-04T11:35:07.677Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/7.-What-the-Tradeoffs-Suggest-for-Applications-and-Hardware-Context/7.1-What-the-Tradeoffs-Suggest-for-Applications-and-Hardware-Context</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/8.-Open-Challenges-and-What-Remains-Unresolved/</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/8.-Open-Challenges-and-What-Remains-Unresolved/8.1-Open-Challenges-and-What-Remains-Unresolved</loc>
+    <lastmod>2026-07-04T14:20:21.481Z</lastmod>
   </url></urlset>

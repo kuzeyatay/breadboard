@@ -13,9 +13,13 @@ Start with the Topic Overview, then follow the numbered sections in order.
 
 Last updated: 2026-07-04.
 
-## Start Here
+## Learning
 
-- [[Learning/Topic Overview|Topic Overview]]
+- [[learning/Topic Overview|Topic Overview]]
+
+## Sources
+
+- [[sources/_index|Sources]]
 
 ## Reading Path
 

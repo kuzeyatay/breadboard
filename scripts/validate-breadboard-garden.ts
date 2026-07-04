@@ -133,6 +133,7 @@ interface PageFile {
   absPath: string;
   relPath: string; // garden-relative, posix separators
   frontmatter: Record<string, string | string[]>;
+  rawFrontmatter: string;
   body: string;
   published: boolean;
 }
@@ -151,17 +152,18 @@ function parseYamlValue(value: string): string | string[] {
 
 function splitFrontmatter(content: string): {
   frontmatter: Record<string, string | string[]>;
+  rawFrontmatter: string;
   body: string;
 } {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content };
+  if (!match) return { frontmatter: {}, rawFrontmatter: "", body: content };
   const frontmatter: Record<string, string | string[]> = {};
   for (const line of (match[1] ?? "").split(/\r?\n/)) {
     const index = line.indexOf(":");
     if (index <= 0) continue;
     frontmatter[line.slice(0, index).trim()] = parseYamlValue(line.slice(index + 1));
   }
-  return { frontmatter, body: match[2] ?? "" };
+  return { frontmatter, rawFrontmatter: match[1] ?? "", body: match[2] ?? "" };
 }
 
 function fmString(fm: Record<string, string | string[]>, key: string): string {
@@ -255,11 +257,12 @@ function walkMarkdown(dir: string, relDir: string, output: PageFile[]): void {
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
     const absPath = path.join(dir, entry.name);
     const content = fs.readFileSync(absPath, "utf-8");
-    const { frontmatter, body } = splitFrontmatter(content);
+    const { frontmatter, rawFrontmatter, body } = splitFrontmatter(content);
     output.push({
       absPath,
       relPath: rel,
       frontmatter,
+      rawFrontmatter,
       body,
       published: isPublished(rel, frontmatter),
     });
@@ -332,6 +335,69 @@ function pageSourceIds(page: PageFile): Set<string> {
 
 function isFormulaVisual(visual: Record<string, unknown>): boolean {
   return String(visual.type ?? "") === "equation" || /^S\d+\.P\d+\.E\d+$/i.test(String(visual.sourceVisualId ?? ""));
+}
+
+function unquoteYamlScalar(value: string): string {
+  return value.trim().replace(/^["']|["']$/g, "");
+}
+
+interface FormulaFrontmatterEntry {
+  text?: string;
+  groundingStatus?: string;
+  justification?: string;
+  sourceAnchor?: string;
+}
+
+function formulaEntriesFromFrontmatter(rawFrontmatter: string): FormulaFrontmatterEntry[] {
+  const lines = rawFrontmatter.split(/\r?\n/);
+  const entries: FormulaFrontmatterEntry[] = [];
+  let inFormulas = false;
+  let current: FormulaFrontmatterEntry | null = null;
+  for (const line of lines) {
+    if (!inFormulas) {
+      const start = line.match(/^formulas:\s*(.*)$/);
+      if (!start) continue;
+      inFormulas = true;
+      const inline = (start[1] ?? "").trim();
+      if (inline.startsWith("[") && inline.endsWith("]")) {
+        const objectMatches = [...inline.matchAll(/\{([^{}]+)\}/g)];
+        for (const objectMatch of objectMatches) {
+          const entry: FormulaFrontmatterEntry = {};
+          for (const pair of (objectMatch[1] ?? "").split(/,\s*/)) {
+            const index = pair.indexOf(":");
+            if (index <= 0) continue;
+            const key = pair.slice(0, index).trim() as keyof FormulaFrontmatterEntry;
+            entry[key] = unquoteYamlScalar(pair.slice(index + 1));
+          }
+          entries.push(entry);
+        }
+      }
+      continue;
+    }
+    if (/^\S[^:]*:\s*/.test(line)) break;
+    const first = line.match(/^\s*-\s*([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (first) {
+      current = {};
+      current[first[1] as keyof FormulaFrontmatterEntry] = unquoteYamlScalar(first[2] ?? "");
+      entries.push(current);
+      continue;
+    }
+    const nested = line.match(/^\s{4,}([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (nested && current) {
+      current[nested[1] as keyof FormulaFrontmatterEntry] = unquoteYamlScalar(nested[2] ?? "");
+    }
+  }
+  return entries.filter((entry) => Object.values(entry).some((value) => String(value ?? "").trim()));
+}
+
+function visualText(visual: Record<string, unknown>): string {
+  return [
+    visual.sourceVisualId,
+    visual.type,
+    visual.caption,
+    visual.description,
+    visual.pageNumber,
+  ].map((value) => String(value ?? "")).join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -496,10 +562,29 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(6, "learner subsections have an example and a Q&A pair", problems, lessonPages.length === 0);
   }
 
-  // 7. No visible Internal / snapshot / raw-upload folders or planning files.
-  //    Sources publish under a visible sources/ folder and are allowed.
+  // 7. Strict exported filesystem: only _index.md, learning/, sources/,
+  //    assets/, and .breadboard/ may exist at the root. Sources publish under
+  //    a visible sources/ folder and are allowed.
   {
     const problems: string[] = [];
+    const allowedTopLevel = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
+    try {
+      for (const entry of fs.readdirSync(gardenDir, { withFileTypes: true })) {
+        if (!allowedTopLevel.has(entry.name)) {
+          problems.push(`top-level entry is not exportable: ${entry.name}${entry.isDirectory() ? "/" : ""}`);
+        }
+        if (entry.name === "Learning") problems.push("uppercase Learning/ folder is not allowed; export must use learning/");
+        if (entry.name === "Internal") problems.push("Internal/ folder is not allowed in the exported garden root");
+        if (entry.isDirectory() && /^\d+\.\s+/.test(entry.name)) {
+          problems.push(`root-level numbered source-conversion folder is not allowed: ${entry.name}/`);
+        }
+      }
+    } catch (error) {
+      problems.push(`cannot read garden root: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!fs.existsSync(path.join(gardenDir, "sources", "_index.md"))) {
+      problems.push("sources/_index.md missing");
+    }
     for (const page of published) {
       const rel = page.relPath;
       const lower = rel.toLowerCase();
@@ -509,10 +594,11 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           lower.endsWith("learning/source coverage.md")) {
         problems.push(`planning artifact visible: ${rel}`);
       }
-      // Top-level content outside _index.md, Learning/, sources/, assets/.
+      if (rel.startsWith("Learning/")) problems.push(`uppercase Learning/ page path is not allowed: ${rel}`);
+      // Top-level content outside _index.md, learning/, sources/, assets/.
       const top = rel.split("/")[0];
-      if (rel !== "_index.md" && top !== "Learning" && top !== "sources" && top !== "assets") {
-        problems.push(`top-level page outside Learning/: ${rel}`);
+      if (rel !== "_index.md" && top !== "learning" && top !== "sources" && top !== "assets") {
+        problems.push(`top-level page outside learning/: ${rel}`);
       }
     }
     // Numbered folder named after the raw upload.
@@ -529,7 +615,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`folder named after raw upload: ${top}/`);
       }
     }
-    check(7, "visible tree is only _index.md, Learning/, sources/, assets/", [...new Set(problems)]);
+    check(7, "exported tree is only _index.md, learning/, sources/, assets/, .breadboard/", [...new Set(problems)]);
   }
 
   // 8. Learner lesson pages carry 3-7 page-relevant, namespaced Zettelkasten concept handles; no conceptTags.
@@ -841,11 +927,30 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     if (!rootPage) {
       problems.push("_index.md missing");
     } else {
+      if (!/^##\s+Learning\s*$/im.test(rootPage.body)) {
+        problems.push("_index.md missing ## Learning section");
+      }
+      if (!/\[\[learning\/Topic Overview\|Topic Overview\]\]/.test(rootPage.body)) {
+        problems.push("_index.md missing [[learning/Topic Overview|Topic Overview]]");
+      }
+      if (!/^##\s+Sources\s*$/im.test(rootPage.body)) {
+        problems.push("_index.md missing ## Sources section");
+      }
+      if (!/\[\[sources\/_index\|Sources\]\]/.test(rootPage.body)) {
+        problems.push("_index.md missing [[sources/_index|Sources]]");
+      }
       const reading = sectionBody(rootPage.body, "Reading Path");
       if (lessonPages.length > 0 && !reading.trim()) {
         problems.push("_index.md has no ## Reading Path section");
       }
+      if (lessonPages.length > 0 && /No lessons yet/i.test(reading)) {
+        problems.push("_index.md says \"No lessons yet\" even though learner pages exist");
+      }
       const linkedTargets: string[] = [];
+      const numberedLinkLines = reading
+        .split(/\r?\n/)
+        .filter((line) => /\[\[/.test(line))
+        .filter((line) => /^\s*\d+\.\s+\[\[/.test(line));
       let match: RegExpExecArray | null;
       const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
       while ((match = re.exec(reading)) !== null) {
@@ -854,12 +959,15 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         const base = rawTarget.split("#")[0].replace(/^\//, "").replace(/\.md$/i, "");
         if (!base) continue;
         linkedTargets.push(base);
-        if (!base.startsWith("Learning/")) {
-          problems.push(`_index.md Reading Path links outside Learning/: [[${rawTarget}]]`);
+        if (!base.startsWith("learning/")) {
+          problems.push(`_index.md Reading Path links outside learning/: [[${rawTarget}]]`);
         }
         if (/source|conversion|2510-27379|future-of-brain-inspired-computing/i.test(base)) {
           problems.push(`_index.md Reading Path contains stale source-conversion target: [[${rawTarget}]]`);
         }
+      }
+      if (lessonPages.length > 0 && numberedLinkLines.length !== linkedTargets.length) {
+        problems.push("_index.md Reading Path must use numbered links (1. [[...]])");
       }
       if (lessonPages.length > 0 && linkedTargets.length !== lessonPages.length) {
         problems.push(`_index.md Reading Path links ${linkedTargets.length} lesson(s), but ${lessonPages.length} learn-authored lesson page(s) exist`);
@@ -876,11 +984,11 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${page.relPath}: internal:true page is still typed as a learning page`);
       }
       const top = page.relPath.split("/")[0];
-      if (page.relPath !== "_index.md" && top !== "Learning") {
-        problems.push(`${page.relPath}: learning page exists outside Learning/`);
+      if (page.relPath !== "_index.md" && top !== "learning") {
+        problems.push(`${page.relPath}: learning page exists outside learning/`);
       }
     }
-    check(20, "root index excludes stale source-conversion pages", [...new Set(problems)]);
+    check(20, "root index exposes live learning/sources navigation", [...new Set(problems)]);
   }
 
   // 21. Source Map must not contradict extracted formula anchors.
@@ -980,6 +1088,25 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (/open challenges|unresolved|limitations|future work/.test(pageText)) {
         problems.push(`${page.relPath}: open-challenges page embeds visual ${id}; no generic interactive visual should be forced here`);
       }
+      const anchorText = JSON.stringify(anchors).toLowerCase();
+      const specText = `${pageText} ${anchorText} ${String(spec.regenerationPrompt ?? "").toLowerCase()}`;
+      if (type === "lif_neuron") {
+        if (!/lif|leaky|membrane|threshold|what spiking neural networks are/.test(specText)) {
+          problems.push(`${page.relPath}: lif_neuron visual is not tied to a LIF/membrane/threshold objective`);
+        }
+        if (/training loss|accuracy|latency|energy|comparison|convergence/.test(anchorText)) {
+          problems.push(`${page.relPath}: lif_neuron visual is anchored to evaluation/training-result material`);
+        }
+      }
+      if (type === "stdp_window" && !/stdp|spike[- ]?timing|plasticity|training/.test(specText)) {
+        problems.push(`${page.relPath}: stdp_window visual is not tied to STDP/training timing`);
+      }
+      if (
+        type === "tradeoff_explorer" &&
+        !/metric|evaluation|comparative|results|application|hardware|energy|latency|spike count|tradeoff/.test(specText)
+      ) {
+        problems.push(`${page.relPath}: tradeoff_explorer visual is not tied to metric/result/application tradeoffs`);
+      }
     }
     check(23, "interactive visuals are source-grounded and page-specific", problems, embeddedVisualSpecs.length === 0);
   }
@@ -1007,21 +1134,42 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(24, "learner tags are namespaced and specific", [...new Set(problems)], lessonPages.length === 0);
   }
 
-  // 25. Learner formulas must be explicitly grounded or declared conceptual.
+  // 25. Learner formulas must be explicitly grounded per formula, never with a
+  //     broad page-level escape hatch.
   {
     const problems: string[] = [];
     const formulaVisuals = ledger.filter(isFormulaVisual);
     for (const page of lessonPages) {
       const math = extractQuartzMath(page.body);
+      if ("formulaGroundingStatus" in page.frontmatter || "formulaJustification" in page.frontmatter) {
+        problems.push(`${page.relPath}: uses broad formulaGroundingStatus/formulaJustification instead of per-formula formulas: entries`);
+      }
       if (math.length > 0) {
         const formulaAnchors = [
           ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
           fmString(page.frontmatter, "sourceFormulaAnchor"),
         ].filter(Boolean);
-        const status = fmString(page.frontmatter, "formulaGroundingStatus");
-        const justification = fmString(page.frontmatter, "formulaJustification");
-        if (formulaAnchors.length === 0 && !(status && justification)) {
-          problems.push(`${page.relPath}: contains math but lacks sourceFormulaAnchors or formulaGroundingStatus/formulaJustification`);
+        const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
+        if (entries.length === 0) {
+          problems.push(`${page.relPath}: contains math but has no per-formula formulas: frontmatter entries`);
+        }
+        if (entries.length > 0 && entries.length < math.length) {
+          problems.push(`${page.relPath}: has ${math.length} math expression(s) but only ${entries.length} formulas: entr${entries.length === 1 ? "y" : "ies"}`);
+        }
+        const sourceAnchoredEntries = entries.filter((entry) => entry.groundingStatus === "source-anchored");
+        for (const [index, entry] of entries.entries()) {
+          const label = `${page.relPath}: formulas[${index}]`;
+          if (!String(entry.text ?? "").trim()) problems.push(`${label} missing text`);
+          if (!/^(source-anchored|conceptual-helper)$/.test(String(entry.groundingStatus ?? ""))) {
+            problems.push(`${label} has invalid groundingStatus "${entry.groundingStatus ?? ""}"`);
+          }
+          if (!String(entry.justification ?? "").trim()) problems.push(`${label} missing justification`);
+          if (entry.groundingStatus === "source-anchored" && !String(entry.sourceAnchor ?? "").trim()) {
+            problems.push(`${label} is source-anchored but lacks sourceAnchor`);
+          }
+        }
+        if (formulaAnchors.length > 0 && sourceAnchoredEntries.length === 0) {
+          problems.push(`${page.relPath}: has sourceFormulaAnchors but no source-anchored formula entry`);
         }
       }
       if (
@@ -1031,7 +1179,226 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${page.relPath}: says formulas are absent/out of scope despite extracted source formula anchors`);
       }
     }
-    check(25, "learner formulas are grounded or explicitly conceptual", problems, lessonPages.length === 0);
+    check(25, "learner formulas have per-formula grounding metadata", problems, lessonPages.length === 0);
+  }
+
+  // 26. Source visual assignment metadata must agree across the ledger,
+  //     learner frontmatter, embedded image URLs, and Source Coverage.
+  {
+    const problems: string[] = [];
+    const ledgerById = new Map(ledger.map((visual) => [String(visual.sourceVisualId ?? ""), visual]));
+    const ledgerByUrl = new Map<string, Record<string, unknown>>();
+    for (const visual of ledger) {
+      for (const key of ["croppedImagePath", "pageImagePath"]) {
+        const url = String(visual[key] ?? "");
+        if (url) ledgerByUrl.set(url, visual);
+      }
+    }
+    const coverage = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"));
+    for (const page of lessonPages) {
+      const pageId = page.relPath.replace(/\.md$/i, "");
+      const declaredIds = new Set(fmArray(page.frontmatter, "sourceVisualIds"));
+      for (const id of declaredIds) {
+        const visual = ledgerById.get(id);
+        if (!visual) {
+          problems.push(`${page.relPath}: sourceVisualIds includes ${id}, but it is missing from .breadboard/source-visuals.json`);
+          continue;
+        }
+        if (String(visual.usageStatus ?? "") !== "assigned") {
+          problems.push(`${page.relPath}: sourceVisualIds includes ${id}, but ledger status is ${String(visual.usageStatus ?? "missing")}`);
+        }
+        if (String(visual.assignedPageId ?? "") !== pageId) {
+          problems.push(`${page.relPath}: sourceVisualIds includes ${id}, but ledger assigns it to ${String(visual.assignedPageId ?? "nowhere")}`);
+        }
+      }
+      for (const match of page.body.matchAll(/!\[[^\]]*\]\(([^)]*source-visuals[^)]*)\)/gi)) {
+        const url = match[1] ?? "";
+        const visual = ledgerByUrl.get(url);
+        if (!visual) {
+          problems.push(`${page.relPath}: embeds ${url}, but no ledger visual has that path`);
+          continue;
+        }
+        const id = String(visual.sourceVisualId ?? "");
+        if (id && !declaredIds.has(id)) {
+          problems.push(`${page.relPath}: embeds ${id} image but frontmatter sourceVisualIds omits it`);
+        }
+        if (String(visual.usageStatus ?? "") !== "assigned") {
+          problems.push(`${page.relPath}: embeds ${id}, but ledger status is ${String(visual.usageStatus ?? "missing")}`);
+        }
+      }
+    }
+    if (coverage) {
+      for (const visual of ledger) {
+        const id = String(visual.sourceVisualId ?? "");
+        if (!id || String(visual.usageStatus ?? "") !== "assigned") continue;
+        const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`${escaped}[^\\n]*(?:Not central|intentionally skipped|unassigned)`, "i").test(coverage)) {
+          problems.push(`${id}: Source Coverage contradicts assigned ledger status`);
+        }
+      }
+    }
+    check(26, "source visual metadata agrees across ledger/frontmatter/body/coverage", [...new Set(problems)], !ledgerExists);
+  }
+
+  // 27. Source visual placement must match the learner page's semantic role.
+  {
+    const problems: string[] = [];
+    const pageById = new Map(lessonPages.map((page) => [page.relPath.replace(/\.md$/i, ""), page]));
+    const idsForPage = (page: PageFile): Set<string> =>
+      new Set([
+        ...fmArray(page.frontmatter, "sourceVisualIds"),
+        ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
+      ].filter(Boolean));
+    const comparisonPage = lessonPages.find((page) =>
+      /comparative|results|models and metrics|models-and-metrics/i.test(`${page.relPath} ${fmString(page.frontmatter, "title")}`),
+    );
+    const metricPage = lessonPages.find((page) => {
+      const text = `${page.relPath} ${fmString(page.frontmatter, "title")}`;
+      return /metric|evaluation|accuracy|latency|energy|spike count|convergence/i.test(text) &&
+        !/comparative|results|models and metrics|models-and-metrics/i.test(text);
+    });
+    const applicationPage = lessonPages.find((page) =>
+      /application|hardware|neuromorphic|deployment/i.test(`${page.relPath} ${fmString(page.frontmatter, "title")}`),
+    );
+    const resultVisualIds = ledger
+      .filter((visual) => /S\d+\.P(?:7|8|9|10|11)\.(?:T|G|F)\d+/i.test(String(visual.sourceVisualId ?? "")))
+      .map((visual) => String(visual.sourceVisualId ?? ""));
+    const metricFormulaIds = ledger
+      .filter((visual) => /S\d+\.P6\.E[1-6]$/i.test(String(visual.sourceVisualId ?? "")))
+      .map((visual) => String(visual.sourceVisualId ?? ""));
+
+    for (const visual of ledger) {
+      if (String(visual.usageStatus ?? "") !== "assigned") continue;
+      const page = pageById.get(String(visual.assignedPageId ?? ""));
+      if (!page) continue;
+      const pageText = `${page.relPath} ${fmString(page.frontmatter, "title")}`.toLowerCase();
+      const vText = visualText(visual).toLowerCase();
+      const id = String(visual.sourceVisualId ?? "");
+      if (/what spiking neural networks are/.test(pageText) && !/^S\d+\.P4\.(?:G|F)\d+$/i.test(id)) {
+        problems.push(`${id}: basic SNN page may only use page-4 LIF/membrane visuals, not ${vText}`);
+      }
+      if (/what spiking neural networks are|from conventional neural networks to snns/.test(pageText) &&
+          /S\d+\.P(?:7|8|9|10|11)\.|latency|energy|convergence|performance|accuracy|training loss|results?/i.test(vText)) {
+        problems.push(`${id}: evaluation/result visual assigned to an introductory SNN page`);
+      }
+      const comparisonRole = /comparative|results|models and metrics|models-and-metrics/.test(pageText);
+      if (!comparisonRole &&
+          /metric|evaluation|accuracy|latency|energy|spike count|convergence/.test(pageText) &&
+          /S\d+\.P(?:7|8|9|10|11)\.(?:T|G|F)\d+/i.test(id)) {
+        problems.push(`${id}: result table/graph belongs on the comparison page, not the metric-definition page`);
+      }
+      if (/comparative|results|models and metrics|models-and-metrics/.test(pageText) && /S\d+\.P6\.E\d+/i.test(id)) {
+        problems.push(`${id}: metric formula belongs on the metric page, not the comparison/results page`);
+      }
+      if (/open challenges|unresolved|limitations|future work/.test(pageText) && /lif|leaky|membrane|threshold|S\d+\.P4\./i.test(vText)) {
+        problems.push(`${id}: open-challenges page is using a LIF/basic-neuron visual`);
+      }
+    }
+
+    if (metricPage && metricFormulaIds.length > 0) {
+      const ids = idsForPage(metricPage);
+      for (const id of metricFormulaIds) {
+        if (!ids.has(id)) problems.push(`${metricPage.relPath}: missing metric formula anchor ${id}`);
+      }
+    }
+    if (comparisonPage && resultVisualIds.length > 0) {
+      const ids = idsForPage(comparisonPage);
+      for (const id of resultVisualIds) {
+        if (!ids.has(id)) problems.push(`${comparisonPage.relPath}: missing comparison result visual ${id}`);
+      }
+    }
+    if (applicationPage) {
+      const haystack = `${applicationPage.body} ${fmArray(applicationPage.frontmatter, "sourceAnchors").join(" ")}`.toLowerCase();
+      if (!/deployment|hardware|neuromorphic|loihi|edge|application/.test(haystack)) {
+        problems.push(`${applicationPage.relPath}: application page lacks deployment/hardware anchors`);
+      }
+    }
+    check(27, "source visuals match page semantics", [...new Set(problems)], !isSnnGarden || !ledgerExists);
+  }
+
+  // 28. Tags must be central to the page, not only namespaced.
+  {
+    const problems: string[] = [];
+    for (const page of lessonPages) {
+      const haystack = `${fmString(page.frontmatter, "title")} ${teachingProse(page.body)}`.toLowerCase();
+      const pageText = `${page.relPath} ${fmString(page.frontmatter, "title")}`.toLowerCase();
+      for (const tag of fmArray(page.frontmatter, "tags")) {
+        const leaf = (tag.split("/").pop() ?? tag).toLowerCase();
+        const distinctive = leaf
+          .split("-")
+          .filter((word) => word.length >= 4 && !BANNED_TAG_SEGMENTS.has(word));
+        if (distinctive.length > 0 && !distinctive.some((word) => haystack.includes(word))) {
+          problems.push(`${page.relPath}: tag "${tag}" is namespaced but not semantically central to the page`);
+        }
+        if (/metric\/convergence-time-target-epoch/.test(tag) && !/metric|evaluation|convergence|training|results/.test(pageText)) {
+          problems.push(`${page.relPath}: convergence-time tag belongs on metric/training/result pages`);
+        }
+        if (/snn\/lif-neuron-threshold-reset/.test(tag) && !/lif|leaky|neuron model|what spiking neural networks are/.test(pageText)) {
+          problems.push(`${page.relPath}: LIF tag is not central to this page`);
+        }
+        if (/open challenges|unresolved|limitations|future work/.test(pageText) && /lif|leaky|threshold-reset/.test(tag)) {
+          problems.push(`${page.relPath}: open-challenges page carries a LIF/basic-neuron tag`);
+        }
+      }
+    }
+    check(28, "learner tags are central to their pages", [...new Set(problems)], lessonPages.length === 0);
+  }
+
+  // 29. Repeated learner-page openings are rejected, including the known
+  //     battery-robot / quiet-hallway / dense-ANN / silent-SNN motif.
+  {
+    const problems: string[] = [];
+    const introByFingerprint = new Map<string, string[]>();
+    const motifPages: string[] = [];
+    for (const page of lessonPages) {
+      const intro = teachingProse(page.body)
+        .replace(/^#.*$/gm, " ")
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 80)
+        .join(" ")
+        .toLowerCase();
+      if (/battery-powered robot|quiet hallway|dense ann|silent snn/.test(intro)) {
+        motifPages.push(page.relPath);
+      }
+      const fingerprint = intro
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 16)
+        .join(" ");
+      if (fingerprint.split(" ").length >= 12) {
+        const pagesForFingerprint = introByFingerprint.get(fingerprint) ?? [];
+        pagesForFingerprint.push(page.relPath);
+        introByFingerprint.set(fingerprint, pagesForFingerprint);
+      }
+    }
+    if (motifPages.length > 1) {
+      problems.push(`repeated battery/quiet-hallway/dense-ANN intro motif on ${motifPages.join(", ")}`);
+    }
+    for (const [fingerprint, rels] of introByFingerprint) {
+      if (rels.length >= 3) {
+        problems.push(`repeated opening phrase "${fingerprint}" on ${rels.join(", ")}`);
+      }
+    }
+    check(29, "learner page openings are not repeated across pages", problems, lessonPages.length < 3);
+  }
+
+  // 30. Exported artifact includes the machine-readable validation report.
+  {
+    const problems: string[] = [];
+    const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
+    const report = readIfExists(reportPath);
+    if (!report) {
+      problems.push(".breadboard/validation-report.md missing");
+    } else {
+      if (!/^Generated:\s+/m.test(report)) problems.push("validation report missing timestamp");
+      if (!/^Root:\s+/m.test(report)) problems.push("validation report missing root");
+      if (!/^Page counts:\s+/m.test(report)) problems.push("validation report missing page counts");
+      if (!/\[(?:PASS|FAIL|SKIP)\]/.test(report)) problems.push("validation report missing check statuses");
+      if (!/^Accepted:\s+(?:yes|no)$/im.test(report)) problems.push("validation report missing accepted yes/no");
+    }
+    check(30, "validation report is exported", problems);
   }
 
   return results;
@@ -1167,6 +1534,59 @@ function listGardens(): string[] {
     .map((entry) => entry.name);
 }
 
+function pageCountsForReport(gardenDir: string): {
+  total: number;
+  published: number;
+  learner: number;
+  sources: number;
+} {
+  const pages: PageFile[] = [];
+  walkMarkdown(gardenDir, "", pages);
+  const published = pages.filter((page) => page.published);
+  return {
+    total: pages.length,
+    published: published.length,
+    learner: published.filter((page) => {
+      const kt = fmString(page.frontmatter, "knowledge_type");
+      const bt = fmString(page.frontmatter, "breadboardType");
+      return (
+        (kt === "learning-page" || kt === "textbook-page" || bt === "learning_page" || bt === "textbook_page") &&
+        (fmString(page.frontmatter, "generated_by") === "learn_button" ||
+          fmString(page.frontmatter, "generatedBy") === "learn_button")
+      );
+    }).length,
+    sources: published.filter((page) => page.relPath.toLowerCase().startsWith("sources/")).length,
+  };
+}
+
+export function writeValidationReport(
+  gardenDir: string,
+  gardenSlug: string,
+  results: CheckResult[],
+): void {
+  const reportDir = path.join(gardenDir, ".breadboard");
+  fs.mkdirSync(reportDir, { recursive: true });
+  const counts = pageCountsForReport(gardenDir);
+  const accepted = results.every((result) => result.status !== "FAIL");
+  const lines = [
+    "# Breadboard Validation Report",
+    "",
+    `Generated: ${new Date().toISOString()}`,
+    `Root: ${path.resolve(gardenDir)}`,
+    `Garden: ${gardenSlug}`,
+    `Page counts: total=${counts.total}, published=${counts.published}, learner=${counts.learner}, sources=${counts.sources}`,
+    `Accepted: ${accepted ? "yes" : "no"}`,
+    "",
+    "## Checks",
+    "",
+  ];
+  for (const result of results) {
+    lines.push(`- [${result.status}] ${result.id}. ${result.name}`);
+    for (const problem of result.problems) lines.push(`  - ${problem}`);
+  }
+  fs.writeFileSync(path.join(reportDir, "validation-report.md"), `${lines.join("\n")}\n`, "utf-8");
+}
+
 /** Resolve an argument that is either a bare garden slug (under quartz/content)
  * or a path to a garden directory. */
 function resolveGarden(arg: string): { dir: string; slug: string } {
@@ -1192,7 +1612,10 @@ function main(): void {
   let anyFailure = false;
   for (const { dir, slug } of targets) {
     console.log(`\n=== ${slug} ===`);
-    const results = runChecks(dir, slug);
+    let results = runChecks(dir, slug);
+    writeValidationReport(dir, slug, results);
+    results = runChecks(dir, slug);
+    writeValidationReport(dir, slug, results);
     for (const result of results) {
       const badge = result.status === "PASS" ? "PASS" : result.status === "SKIP" ? "SKIP" : "FAIL";
       console.log(`[${badge}] ${result.id}. ${result.name}`);

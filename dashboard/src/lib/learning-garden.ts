@@ -1,4 +1,4 @@
-export const LEARNING_FOLDER = "Learning";
+export const LEARNING_FOLDER = "learning";
 // Learner-facing lesson pages/sections. The word "textbook" is never written to
 // visible markdown, so the current values are learning-* and the older
 // textbook-* values are still accepted when reading existing gardens.
@@ -25,8 +25,8 @@ export const INTERNAL_CONCEPT_FOLDER = "Internal/Concept Graph";
 // / Source Coverage are internal and live under .breadboard/planning/, so they
 // are intentionally absent here.
 export const LEARNING_PAGE_ORDER = [
-  "Learning/Topic Overview.md",
-  "Learning/Learning Map.md",
+  "learning/Topic Overview.md",
+  "learning/Learning Map.md",
 ] as const;
 
 export type BreadboardMetadata = Record<string, string | string[] | undefined>;
@@ -123,7 +123,7 @@ const INTERNAL_PATH_SEGMENTS = new Set([
   "topic cards",
 ]);
 
-/** Filenames under Learning/ that are internal planning artifacts, not lessons. */
+/** Filenames under learning/ that are internal planning artifacts, not lessons. */
 const NON_PUBLIC_LEARNING_FILES = new Set([
   "learning/source map.md",
   "learning/scope contract.md",
@@ -132,7 +132,7 @@ const NON_PUBLIC_LEARNING_FILES = new Set([
 
 /**
  * Filesystem-level gate for what may appear in the published garden. The
- * visible tree is: the garden `_index.md`, everything under `Learning/` (except
+ * visible tree is: the garden `_index.md`, everything under `learning/` (except
  * the internal planning artifacts), the raw uploaded sources under `sources/`,
  * and the cropped source figures under `assets/source-visuals/`. Everything
  * else — snapshots, planning, `.breadboard/` internals, legacy generated

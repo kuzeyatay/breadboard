@@ -88,7 +88,16 @@ export interface ProposedLearningMap {
   createdAt: string;
 }
 
-type FrontmatterValue = string | number | boolean | string[] | undefined | null;
+type FrontmatterScalar = string | number | boolean;
+type FrontmatterObject = Record<string, FrontmatterScalar | string[] | undefined | null>;
+type FrontmatterValue = FrontmatterScalar | string[] | FrontmatterObject[] | undefined | null;
+
+export interface FormulaGroundingEntry {
+  text: string;
+  groundingStatus: "source-anchored" | "conceptual-helper";
+  justification: string;
+  sourceAnchor?: string;
+}
 
 const RAW_VISUAL_PLACEHOLDER_RE =
   /\[(?:Interactive visual|Visual|Generated visual)\s*:\s*([^\[\]]+)\]/gi;
@@ -851,7 +860,7 @@ export function wikilinkForRelPath(relPath: string, label: string): string {
 // `[[Why Spiking Neural Networks Exist]]` or
 // `[[Why Spiking Neural Networks Exist#Surrogate Gradient Descent]]`. Those do
 // not resolve: the real files live under numbered folders
-// (`Learning/1. Why Spiking Neural Networks Exist/_index.md`) and each
+// (`learning/1. Why Spiking Neural Networks Exist/_index.md`) and each
 // subsection is its own file, not a heading. This canonicalizer rewrites every
 // resolvable loose link to the exact on-disk vault-root path the pipeline
 // writes, using the SAME folder/file naming as renderLearningIndexMarkdown and
@@ -859,7 +868,7 @@ export function wikilinkForRelPath(relPath: string, label: string): string {
 // never silently broken.
 // ---------------------------------------------------------------------------
 
-const LEARNING_ROOT = "Learning";
+const LEARNING_ROOT = "learning";
 
 function linkSlug(value: string): string {
   return value
@@ -1037,7 +1046,30 @@ export function yamlFrontmatter(values: Record<string, FrontmatterValue>): strin
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined || value === null) continue;
     if (Array.isArray(value)) {
-      lines.push(`${key}: [${value.map((item) => yamlScalar(item)).join(", ")}]`);
+      if (value.length === 0) continue;
+      if (value.every((item) => typeof item === "string")) {
+        lines.push(`${key}: [${value.map((item) => yamlScalar(item as string)).join(", ")}]`);
+      } else {
+        lines.push(`${key}:`);
+        for (const item of value) {
+          if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+          const entries = Object.entries(item).filter(([, nested]) => nested !== undefined && nested !== null);
+          if (entries.length === 0) continue;
+          const [firstKey, firstValue] = entries[0];
+          if (Array.isArray(firstValue)) {
+            lines.push(`  - ${firstKey}: [${firstValue.map((nested) => yamlScalar(nested)).join(", ")}]`);
+          } else {
+            lines.push(`  - ${firstKey}: ${yamlScalar(firstValue)}`);
+          }
+          for (const [nestedKey, nestedValue] of entries.slice(1)) {
+            if (Array.isArray(nestedValue)) {
+              lines.push(`    ${nestedKey}: [${nestedValue.map((nested) => yamlScalar(nested)).join(", ")}]`);
+            } else {
+              lines.push(`    ${nestedKey}: ${yamlScalar(nestedValue)}`);
+            }
+          }
+        }
+      }
     } else {
       lines.push(`${key}: ${yamlScalar(value)}`);
     }
@@ -1061,8 +1093,7 @@ export function buildLearningPageFrontmatter({
   visualIds,
   sourceVisualIds,
   sourceFormulaAnchors,
-  formulaGroundingStatus,
-  formulaJustification,
+  formulas,
   learningVersionId,
   sourceSetHash,
   generatedAt,
@@ -1080,8 +1111,7 @@ export function buildLearningPageFrontmatter({
   sourceVisualIds?: string[];
   /** Source formula anchors (S1.P6.E1 style) taught or referenced by this page. */
   sourceFormulaAnchors?: string[];
-  formulaGroundingStatus?: string;
-  formulaJustification?: string;
+  formulas?: FormulaGroundingEntry[];
   learningVersionId: string;
   sourceSetHash?: string;
   generatedAt: string;
@@ -1105,8 +1135,7 @@ export function buildLearningPageFrontmatter({
       sourceVisualIds && sourceVisualIds.length > 0 ? sourceVisualIds : undefined,
     sourceFormulaAnchors:
       sourceFormulaAnchors && sourceFormulaAnchors.length > 0 ? sourceFormulaAnchors : undefined,
-    formulaGroundingStatus: formulaGroundingStatus || undefined,
-    formulaJustification: formulaJustification || undefined,
+    formulas: formulas && formulas.length > 0 ? formulas : undefined,
     generatedBy: "learn_button",
     generated_by: "learn_button",
     learningVersion: visibleVersionId,

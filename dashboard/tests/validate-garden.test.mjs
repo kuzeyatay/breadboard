@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runChecks } from "../../scripts/validate-breadboard-garden.ts";
+import { runChecks, writeValidationReport } from "../../scripts/validate-breadboard-garden.ts";
 import {
   buildLifThresholdResetVisual,
   buildRateVsTemporalCodingVisual,
@@ -55,6 +55,14 @@ function block(spec) {
   return "```breadboard-visual\n" + JSON.stringify(spec, null, 2) + "\n```";
 }
 
+function runChecksWithReport(dir, slug) {
+  let results = runChecks(dir, slug);
+  writeValidationReport(dir, slug, results);
+  results = runChecks(dir, slug);
+  writeValidationReport(dir, slug, results);
+  return results;
+}
+
 function enrichFixtureSpec(spec, { pageRel, sourceAnchors = [] }) {
   spec.pagePath = pageRel;
   spec.learningGoal = `Teach ${spec.title} on this page.`;
@@ -77,19 +85,34 @@ function buildGoodGarden(root) {
   fs.mkdirSync(path.join(bb, "visuals"), { recursive: true });
   fs.mkdirSync(path.join(gardenDir, "assets", "source-visuals"), { recursive: true });
   fs.mkdirSync(path.join(gardenDir, "sources"), { recursive: true });
-  fs.mkdirSync(path.join(gardenDir, "Learning", "2. Spiking Neurons"), { recursive: true });
-  fs.mkdirSync(path.join(gardenDir, "Learning", "3. How SNNs Learn"), { recursive: true });
-  fs.mkdirSync(path.join(gardenDir, "Learning", "4. Evaluating SNNs"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "learning", "2. Spiking Neurons"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "learning", "3. How SNNs Learn"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "learning", "4. Evaluating SNNs"), { recursive: true });
 
   fs.writeFileSync(
     path.join(gardenDir, "_index.md"),
     fm({ title: "Spiking Neural Networks", knowledge_type: "cluster-index" }) +
-      "# SNN\n\n## Reading Path\n\n" +
-      "- [[Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]\n" +
-      "- [[Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains|2.2 Encoding Information as Spike Trains]]\n" +
-      "- [[Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity|3.4 Spike-Timing Dependent Plasticity]]\n" +
-      "- [[Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]\n\n" +
-      "## More Pages\n\n- No standalone pages yet.\n",
+      "# SNN\n\n## Learning\n\n- [[learning/Topic Overview|Topic Overview]]\n\n" +
+      "## Sources\n\n- [[sources/_index|Sources]]\n\n" +
+      "## Reading Path\n\n" +
+      "1. [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]\n" +
+      "2. [[learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains|2.2 Encoding Information as Spike Trains]]\n" +
+      "3. [[learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity|3.4 Spike-Timing Dependent Plasticity]]\n" +
+      "4. [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "learning", "Topic Overview.md"),
+    fm({ title: "Topic Overview", knowledge_type: "topic-overview", breadboardType: "topic_overview" }) +
+      "# Topic Overview\n\n## Reading Order\n\n" +
+      "- [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|LIF neuron]]\n" +
+      "- [[learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains|Spike trains]]\n" +
+      "- [[learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity|STDP]]\n" +
+      "- [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|Metrics]]\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "learning", "Learning Map.md"),
+    fm({ title: "Learning Map", knowledge_type: "learning-map", breadboardType: "learning_map" }) +
+      "# Learning Map\n\n- [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|LIF neuron]]\n",
   );
 
   // Source note: publishes under a visible Sources folder. Older sources still
@@ -104,6 +127,11 @@ function buildGoodGarden(root) {
       source_images: ["/snn-fixture/assets/snn-page-004.png"],
     }) + "See Figure 1 for the LIF model and Table 2 for latency.\n",
   );
+  fs.writeFileSync(
+    path.join(gardenDir, "sources", "_index.md"),
+    fm({ title: "Sources", knowledge_type: "source-index", breadboardType: "source_index", internal: "true" }) +
+      "# Sources\n\n- [[sources/snn|Spiking Neural Networks Review]]\n",
+  );
 
   // Cropped source figure asset + ledger.
   const imageUrl = "/snn-fixture/assets/source-visuals/snn-lif.png";
@@ -117,7 +145,7 @@ function buildGoodGarden(root) {
       caption: "LIF neuron model",
       croppedImagePath: imageUrl,
       usageStatus: "assigned",
-      assignedPageId: "Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron",
+      assignedPageId: "learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron",
     },
   ];
   fs.writeFileSync(path.join(bb, "source-visuals.json"), JSON.stringify(ledger, null, 2));
@@ -125,23 +153,23 @@ function buildGoodGarden(root) {
   // Four interactive visuals across pages.
   const specs = {
     lif: enrichFixtureSpec(
-      buildLifThresholdResetVisual("Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron"),
+      buildLifThresholdResetVisual("learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron"),
       {
-        pageRel: "Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
+        pageRel: "learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
         sourceAnchors: [{ sourceId: "snn", page: 4, figureId: "S1.P4.F1", description: "LIF neuron model" }],
       },
     ),
     coding: enrichFixtureSpec(
-      buildRateVsTemporalCodingVisual("Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains"),
-      { pageRel: "Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md" },
+      buildRateVsTemporalCodingVisual("learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains"),
+      { pageRel: "learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md" },
     ),
     stdp: enrichFixtureSpec(
-      buildStdpTimingWindowVisual("Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity"),
-      { pageRel: "Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md" },
+      buildStdpTimingWindowVisual("learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity"),
+      { pageRel: "learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md" },
     ),
     tradeoff: enrichFixtureSpec(
-      buildMetricTradeoffExplorerVisual("Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy"),
-      { pageRel: "Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md" },
+      buildMetricTradeoffExplorerVisual("learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy"),
+      { pageRel: "learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md" },
     ),
   };
   const index = {};
@@ -153,7 +181,7 @@ function buildGoodGarden(root) {
 
   const pages = [
     {
-      rel: "Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
+      rel: "learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
       title: "2.1 The Leaky Integrate-and-Fire Neuron",
       tags: [
         "snn/lif-neuron-threshold-reset",
@@ -167,7 +195,7 @@ function buildGoodGarden(root) {
       sourceVisualIds: ["S1.P4.F1"],
     },
     {
-      rel: "Learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md",
+      rel: "learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md",
       title: "2.2 Encoding Information as Spike Trains",
       tags: [
         "snn/spike-rate-coding",
@@ -179,7 +207,7 @@ function buildGoodGarden(root) {
       spec: specs.coding,
     },
     {
-      rel: "Learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md",
+      rel: "learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md",
       title: "3.4 Spike-Timing Dependent Plasticity",
       tags: [
         "training/stdp-local-timing-rule",
@@ -187,11 +215,11 @@ function buildGoodGarden(root) {
         "snn/spike-timing-window",
         "training/temporal-credit-assignment",
       ],
-      body: LONG_PARAGRAPH("Spike-timing dependent plasticity (STDP) and synaptic plasticity across the timing window"),
+      body: LONG_PARAGRAPH("Spike-timing dependent plasticity (STDP), temporal credit assignment, and synaptic plasticity across the timing window"),
       spec: specs.stdp,
     },
     {
-      rel: "Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md",
+      rel: "learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md",
       title: "4.1 Accuracy, Latency, and Energy",
       tags: [
         "metric/latency-to-decision",
@@ -223,6 +251,52 @@ function buildGoodGarden(root) {
   return gardenDir;
 }
 
+function buildBadZipShapedGarden(root) {
+  const gardenDir = path.join(root, "test-2");
+  fs.mkdirSync(path.join(gardenDir, ".breadboard"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "Learning", "1. Bad Export"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "Internal", "Concept Graph"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "1. spiking-neural-networks-the-future-of-brain-inspired-computing"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "sources"), { recursive: true });
+  fs.mkdirSync(path.join(gardenDir, "assets"), { recursive: true });
+  fs.writeFileSync(
+    path.join(gardenDir, "_index.md"),
+    fm({ title: "Spiking Neural Networks", knowledge_type: "cluster-index" }) +
+      "# Spiking Neural Networks\n\n## Reading Path\n\n- No lessons yet.\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "Learning", "1. Bad Export", "1.1 Bad Export.md"),
+    fm({
+      title: "1.1 Bad Export",
+      knowledge_type: "learning-page",
+      breadboardType: "learning_page",
+      generated_by: "learn_button",
+      generatedBy: "learn_button",
+      tags: ["snn/bad-export", "snn/lif-neuron-threshold-reset", "metric/convergence-time-target-epoch"],
+      visualIds: [],
+      learningVersion: "learning_bad",
+      learningVersionId: "learning_bad",
+    }) +
+      "# 1.1 Bad Export\n\nImagine a battery-powered robot in a quiet hallway. This page is intentionally short.\n\n**Question.** x\n\n**Answer.** y\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "Internal", "Concept Graph", "concept.md"),
+    fm({ title: "Internal Concept", knowledge_type: "internal-concept", breadboardType: "internal_concept" }) + "# Internal\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "1. spiking-neural-networks-the-future-of-brain-inspired-computing", "source.md"),
+    fm({ title: "Source Conversion", knowledge_type: "learning-page", breadboardType: "learning_page", internal: "true" }) + "# Source\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "sources", "2510-27379v1.md"),
+    fm({ title: "Source", knowledge_type: "source-document", breadboardType: "source_document", internal: "true" }) +
+      "# Source\n\nSee [[2510-27379v1]] and [[Page 1]].\n",
+  );
+  fs.writeFileSync(path.join(gardenDir, ".breadboard", "source-visuals.json"), "[]");
+  fs.writeFileSync(path.join(gardenDir, ".breadboard", "visual-index.json"), "{}");
+  return gardenDir;
+}
+
 // ---------------------------------------------------------------------------
 
 describe("garden validator regression fixture", () => {
@@ -230,7 +304,7 @@ describe("garden validator regression fixture", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-good-"));
     try {
       const dir = buildGoodGarden(root);
-      const results = runChecks(dir, "snn-fixture");
+      const results = runChecksWithReport(dir, "snn-fixture");
       const fails = results.filter((r) => r.status === "FAIL");
       assert.deepEqual(
         fails.map((f) => `${f.id}. ${f.name}: ${f.problems.join(" | ")}`),
@@ -252,14 +326,14 @@ describe("garden validator regression fixture", () => {
       // Break it the way the failing zip was broken:
       // 1. empty source-visuals ledger
       fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
-      // 2. a stray published page at the garden root (outside Learning/)
+      // 2. a stray published page at the garden root (outside learning/)
       fs.writeFileSync(
         path.join(dir, "Stray Page.md"),
         fm({ title: "Stray Page", knowledge_type: "knowledge-topic" }) + "x\n",
       );
       // 3. a short fallback-template learner page that leaks "textbook"
       fs.writeFileSync(
-        path.join(dir, "Learning", "2. Spiking Neurons", "2.3 Broken.md"),
+        path.join(dir, "learning", "2. Spiking Neurons", "2.3 Broken.md"),
         fm({
           title: "2.3 What The Paper Covers",
           knowledge_type: "learning-page",
@@ -271,7 +345,7 @@ describe("garden validator regression fixture", () => {
           "# 2.3 What The Paper Covers\n\nThe durable concept is X. Relevant details:\n- one\n\nAccording to the source, this is short.\n",
       );
 
-      const results = runChecks(dir, "snn-fixture");
+      const results = runChecksWithReport(dir, "snn-fixture");
       const failed = new Set(results.filter((r) => r.status === "FAIL").map((r) => r.id));
       // textbook leak, source-commentary title, fallback prose, short page,
       // visible snapshot folder, bad tags, empty visual-rich ledger.
@@ -283,19 +357,36 @@ describe("garden validator regression fixture", () => {
     }
   });
 
+  test("a ZIP-shaped artifact with uppercase/internal/root-source folders fails strict export checks", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-zip-bad-"));
+    try {
+      const dir = buildBadZipShapedGarden(root);
+      const results = runChecksWithReport(dir, "test-2");
+      const byId = new Map(results.map((result) => [result.id, result]));
+      assert.equal(byId.get(7).status, "FAIL", "strict top-level export tree must fail");
+      assert.match(byId.get(7).problems.join("\n"), /uppercase Learning|Internal|numbered source-conversion|sources\/_index/);
+      assert.equal(byId.get(20).status, "FAIL", "root index must fail when it says there are no lessons");
+      assert.match(byId.get(20).problems.join("\n"), /No lessons yet|learning\/Topic Overview|sources\/_index/);
+      assert.equal(byId.get(17).status, "FAIL", "visible source links must be validated too");
+      assert.match(byId.get(17).problems.join("\n"), /2510-27379v1|Page 1/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a Topic Overview whose links resolve passes the link check", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-links-ok-"));
     try {
       const dir = buildGoodGarden(root);
       // Canonical links to real fixture files.
       fs.writeFileSync(
-        path.join(dir, "Learning", "Topic Overview.md"),
+        path.join(dir, "learning", "Topic Overview.md"),
         fm({ title: "Topic Overview", knowledge_type: "topic-overview" }) +
           "# Overview\n\n" +
-          "- [[Learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|LIF neuron]]\n" +
-          "- [[Learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|Tradeoffs]]\n",
+          "- [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|LIF neuron]]\n" +
+          "- [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|Tradeoffs]]\n",
       );
-      const results = runChecks(dir, "snn-fixture");
+      const results = runChecksWithReport(dir, "snn-fixture");
       const link = results.find((r) => r.id === 17);
       assert.equal(link.status, "PASS", `link check should pass: ${link.problems.join(" | ")}`);
     } finally {
@@ -321,14 +412,14 @@ describe("garden validator regression fixture", () => {
       };
       fs.writeFileSync(indexPath, JSON.stringify(stale, null, 2));
 
-      let results = runChecks(dir, "snn-fixture");
+      let results = runChecksWithReport(dir, "snn-fixture");
       let check18 = results.find((r) => r.id === 18);
       assert.equal(check18.status, "FAIL", "stale index entry must fail check 18");
       assert.match(check18.problems.join("\n"), /stale/);
 
       // Pruning back to only the embedded ids restores a clean index.
       fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
-      results = runChecks(dir, "snn-fixture");
+      results = runChecksWithReport(dir, "snn-fixture");
       check18 = results.find((r) => r.id === 18);
       assert.equal(check18.status, "PASS", "pruned index must pass check 18");
     } finally {
@@ -343,14 +434,14 @@ describe("garden validator regression fixture", () => {
       // The exact failure pattern from the shipped garden: bare title links and
       // Section#Subsection heading links that never resolve.
       fs.writeFileSync(
-        path.join(dir, "Learning", "Topic Overview.md"),
+        path.join(dir, "learning", "Topic Overview.md"),
         fm({ title: "Topic Overview", knowledge_type: "topic-overview" }) +
           "# Overview\n\n" +
           "- [[The Leaky Integrate-and-Fire Neuron]]\n" +
           "- [[Spiking Neurons#Encoding Information as Spike Trains]]\n" +
           "- [[Totally Made Up Concept]]\n",
       );
-      const results = runChecks(dir, "snn-fixture");
+      const results = runChecksWithReport(dir, "snn-fixture");
       const link = results.find((r) => r.id === 17);
       assert.equal(link.status, "FAIL", "loose/broken links must fail check 17");
       const joined = link.problems.join("\n");

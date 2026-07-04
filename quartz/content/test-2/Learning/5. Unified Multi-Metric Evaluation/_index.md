@@ -1,13 +1,13 @@
 ---
 title: "5. Unified Multi-Metric Evaluation"
-date: "2026-07-04T11:35:07.677Z"
+date: "2026-07-04T14:20:21.481Z"
 knowledge_type: "learning-section"
 breadboardType: "learning_section"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr6acgil_5lgd28z"
-sourceSetHash: "c61ec2b1ccff93dca7e48434460dc0548b460ac532c89e35405b09fede84a075"
+learningVersion: "learning_mr6g8y21_n13h82r"
+sourceSetHash: "f68ebe1d1a3f48ec83767f9e72a680444a9b5b5d10a76f661704710ebdd8a849"
 ---
 
 # 5. Unified Multi-Metric Evaluation

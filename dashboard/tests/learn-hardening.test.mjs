@@ -130,7 +130,7 @@ describe("deterministic interactive visual builders", () => {
 
   for (const [type, build] of builders) {
     test(`${type} builder produces a valid, implemented, non-empty spec`, () => {
-      const spec = build("Learning/2. X/2.1 Page");
+      const spec = build("learning/2. X/2.1 Page");
       const { spec: validated, errors } = validateVisualSpec(spec);
       assert.ok(validated, `spec should validate: ${errors.join(", ")}`);
       assert.equal(validated.type, type);
@@ -186,15 +186,15 @@ describe("routing + terminology helpers", () => {
     assert.equal(publicLearningVersionId("learning_abc123"), "learning_abc123");
   });
 
-  test("isPublicGardenPath allows _index, Learning/, sources/, assets/", () => {
+  test("isPublicGardenPath allows _index, learning/, sources/, assets/", () => {
     assert.equal(isPublicGardenPath("_index.md"), true);
-    assert.equal(isPublicGardenPath("Learning/1. X/1.1 Page.md"), true);
+    assert.equal(isPublicGardenPath("learning/1. X/1.1 Page.md"), true);
     assert.equal(isPublicGardenPath("assets/source-visuals/fig.png"), true);
     // Sources publish under a visible Sources folder.
     assert.equal(isPublicGardenPath("sources/reader.md"), true);
     assert.equal(isPublicGardenPath("Internal/Concept Graph/x.md"), false);
     assert.equal(isPublicGardenPath(".breadboard/planning/Source Map.md"), false);
-    assert.equal(isPublicGardenPath("Learning/Source Map.md"), false);
+    assert.equal(isPublicGardenPath("learning/Source Map.md"), false);
     assert.equal(isPublicGardenPath("1. source-snapshots/page-003.png"), false);
     assert.equal(isPublicGardenPath("6. spiking-neural-networks/1.1 x.md"), false);
   });

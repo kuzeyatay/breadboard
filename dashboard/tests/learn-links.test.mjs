@@ -59,7 +59,7 @@ describe("learner wikilink canonicalization", () => {
     assert.equal(rewritten, 1);
     assert.match(
       markdown,
-      /\[\[Learning\/1\. Why Spiking Neural Networks Exist\/_index\|Why Spiking Neural Networks Exist\]\]/,
+      /\[\[learning\/1\. Why Spiking Neural Networks Exist\/_index\|Why Spiking Neural Networks Exist\]\]/,
     );
   });
 
@@ -71,7 +71,7 @@ describe("learner wikilink canonicalization", () => {
     assert.equal(unresolved.length, 0);
     assert.match(
       markdown,
-      /\[\[Learning\/3\. How Spiking Neural Networks Learn\/3\.1 Surrogate Gradient Descent\|Surrogate Gradient Descent\]\]/,
+      /\[\[learning\/3\. How Spiking Neural Networks Learn\/3\.1 Surrogate Gradient Descent\|Surrogate Gradient Descent\]\]/,
     );
     // No loose heading-style link survives.
     assert.doesNotMatch(markdown, /\[\[[^\]/]*#[^\]]*\]\]/);
@@ -84,7 +84,7 @@ describe("learner wikilink canonicalization", () => {
     );
     assert.match(
       markdown,
-      /\[\[Learning\/2\. How Spiking Neural Networks Are Structured\/2\.1 The Leaky Integrate-and-Fire Neuron\|The Leaky Integrate-and-Fire Neuron\]\]/,
+      /\[\[learning\/2\. How Spiking Neural Networks Are Structured\/2\.1 The Leaky Integrate-and-Fire Neuron\|The Leaky Integrate-and-Fire Neuron\]\]/,
     );
   });
 
@@ -97,7 +97,7 @@ describe("learner wikilink canonicalization", () => {
   });
 
   test("leaves already-canonical path links untouched", () => {
-    const input = "[[Learning/3. How Spiking Neural Networks Learn/3.1 Surrogate Gradient Descent|x]]";
+    const input = "[[learning/3. How Spiking Neural Networks Learn/3.1 Surrogate Gradient Descent|x]]";
     const { markdown, rewritten } = canonicalizeLearnerWikilinks(input, MAP);
     assert.equal(markdown, input);
     assert.equal(rewritten, 0);
@@ -115,9 +115,9 @@ describe("learner wikilink canonicalization", () => {
 
   test("resolves the built-in Topic Overview / Learning Map pages", () => {
     const targets = buildLearningLinkTargets(MAP).map((t) => t.target);
-    assert.ok(targets.includes("Learning/Topic Overview"));
-    assert.ok(targets.includes("Learning/Learning Map"));
+    assert.ok(targets.includes("learning/Topic Overview"));
+    assert.ok(targets.includes("learning/Learning Map"));
     const { markdown } = canonicalizeLearnerWikilinks("Back to [[Topic Overview]].", MAP);
-    assert.match(markdown, /\[\[Learning\/Topic Overview\|Topic Overview\]\]/);
+    assert.match(markdown, /\[\[learning\/Topic Overview\|Topic Overview\]\]/);
   });
 });

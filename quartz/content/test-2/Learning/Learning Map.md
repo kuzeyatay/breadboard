@@ -1,14 +1,14 @@
 ---
 title: "Learning Map"
-date: "2026-07-04T11:40:26.920Z"
+date: "2026-07-04T14:23:52.404Z"
 knowledge_type: "learning-map"
 breadboardType: "learning_map"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr6acgil_5lgd28z"
-learningVersionId: "learning_mr6acgil_5lgd28z"
-sourceSetHash: "c61ec2b1ccff93dca7e48434460dc0548b460ac532c89e35405b09fede84a075"
+learningVersion: "learning_mr6g8y21_n13h82r"
+learningVersionId: "learning_mr6g8y21_n13h82r"
+sourceSetHash: "f68ebe1d1a3f48ec83767f9e72a680444a9b5b5d10a76f661704710ebdd8a849"
 ---
 
 # Learning Map
@@ -16,21 +16,21 @@ sourceSetHash: "c61ec2b1ccff93dca7e48434460dc0548b460ac532c89e35405b09fede84a075
 ## Section Order
 
 - 1. From Conventional Neural Networks to SNNs
-  - 1.1 [[Learning/1. From Conventional Neural Networks to SNNs/1.1 From Conventional Neural Networks to SNNs|From Conventional Neural Networks to SNNs]]
+  - 1.1 [[learning/1. From Conventional Neural Networks to SNNs/1.1 From Conventional Neural Networks to SNNs|From Conventional Neural Networks to SNNs]]
 - 2. What Spiking Neural Networks Are
-  - 2.1 [[Learning/2. What Spiking Neural Networks Are/2.1 What Spiking Neural Networks Are|What Spiking Neural Networks Are]]
+  - 2.1 [[learning/2. What Spiking Neural Networks Are/2.1 What Spiking Neural Networks Are|What Spiking Neural Networks Are]]
 - 3. Neuron Model: LIF
-  - 3.1 [[Learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|Neuron Model: LIF as Evidence]]
+  - 3.1 [[learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|Neuron Model: LIF as Evidence]]
 - 4. SNN Training Paradigms
-  - 4.1 [[Learning/4. SNN Training Paradigms/4.1 SNN Training Paradigms|SNN Training Paradigms]]
+  - 4.1 [[learning/4. SNN Training Paradigms/4.1 SNN Training Paradigms|SNN Training Paradigms]]
 - 5. Unified Multi-Metric Evaluation
-  - 5.1 [[Learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation|Unified Multi-Metric Evaluation]]
+  - 5.1 [[learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation|Unified Multi-Metric Evaluation]]
 - 6. Comparative Results Across Models and Metrics
-  - 6.1 [[Learning/6. Comparative Results Across Models and Metrics/6.1 Comparative Results Across Models and Metrics|Comparative Results Across Models and Metrics]]
+  - 6.1 [[learning/6. Comparative Results Across Models and Metrics/6.1 Comparative Results Across Models and Metrics|Comparative Results Across Models and Metrics]]
 - 7. What the Tradeoffs Suggest for Applications and Hardware Context
-  - 7.1 [[Learning/7. What the Tradeoffs Suggest for Applications and Hardware Context/7.1 What the Tradeoffs Suggest for Applications and Hardware Context|What the Tradeoffs Suggest for Applications and Hardware Context]]
+  - 7.1 [[learning/7. What the Tradeoffs Suggest for Applications and Hardware Context/7.1 What the Tradeoffs Suggest for Applications and Hardware Context|What the Tradeoffs Suggest for Applications and Hardware Context]]
 - 8. Open Challenges and What Remains Unresolved
-  - 8.1 [[Learning/8. Open Challenges and What Remains Unresolved/8.1 Open Challenges and What Remains Unresolved|Open Challenges and What Remains Unresolved]]
+  - 8.1 [[learning/8. Open Challenges and What Remains Unresolved/8.1 Open Challenges and What Remains Unresolved|Open Challenges and What Remains Unresolved]]
 
 ## Prerequisite Chain
 
