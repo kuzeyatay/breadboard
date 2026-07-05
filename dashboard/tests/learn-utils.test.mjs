@@ -244,6 +244,16 @@ describe("learn route and council wiring", () => {
     assert.doesNotMatch(learnSource, /What is the main idea to take away from/);
   });
 
+  test("learn generation retries scaffold/meta-instruction failures before failing", () => {
+    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+
+    assert.match(learnSource, /envPositiveInt\("LEARN_MAX_PAGE_ATTEMPTS", 2\)/);
+    assert.match(learnSource, /Final-prose rules \(hard requirements\)/);
+    assert.match(learnSource, /placeholderFailure/);
+    assert.match(learnSource, /scaffold\/meta-instruction text/);
+    assert.match(learnSource, /Replace placeholder\/meta-instruction text with finished learner-facing prose/);
+  });
+
   test("page generation is gated behind an explicit topic-map confirmation", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
 
