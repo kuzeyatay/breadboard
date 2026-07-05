@@ -307,6 +307,8 @@ describe("learn route and council wiring", () => {
     assert.doesNotMatch(workspaceSource, /Show council thinking/);
     assert.match(workspaceSource, /learnCancelBusy/);
     assert.match(workspaceSource, /disabled=\{learnCancelBusy\}/);
+    assert.match(workspaceSource, /Finished/);
+    assert.match(workspaceSource, /Finished generating lessons\. The garden has been refreshed\./);
     assert.doesNotMatch(workspaceSource, /async function handleCancelLearn\(\) \{\s*if \(learnBusy\) return;/);
   });
 

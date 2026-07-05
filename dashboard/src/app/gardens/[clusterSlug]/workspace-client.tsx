@@ -129,6 +129,15 @@ interface LearnJobInfo {
   error?: string;
 }
 
+interface LearnValidationReportInfo {
+  relativePath?: string;
+  url?: string;
+  markdown?: string;
+  truncated?: boolean;
+  accepted?: boolean;
+  generatedAt?: string;
+}
+
 interface LearnSubsectionInfo {
   title: string;
   purpose?: string;
@@ -161,6 +170,7 @@ interface LearnStatusResponse {
   hasTextbook?: boolean;
   sourceSetChanged?: boolean;
   buttonLabel?: string;
+  validationReport?: LearnValidationReportInfo | null;
   error?: string;
 }
 
@@ -2309,6 +2319,38 @@ export default function WorkspaceClient({
     const canClosePanel =
       !active && (status === "complete" || status === "failed" || status === "cancelled");
     const showPrimaryAction = !canClosePanel;
+    const statusLabel = active
+      ? "Learning"
+      : status === "complete"
+        ? "Finished"
+        : status === "failed"
+          ? "Failed"
+          : status === "cancelled"
+            ? "Stopped"
+            : status === "awaiting_confirmation"
+              ? "Review"
+              : null;
+    const statusClass =
+      status === "complete"
+        ? "border-emerald-800/70 bg-emerald-950/40 text-emerald-300"
+        : status === "failed"
+          ? "border-red-900/70 bg-red-950/40 text-red-300"
+          : status === "cancelled"
+            ? "border-amber-900/70 bg-amber-950/30 text-amber-300"
+            : "border-gray-700 bg-gray-900 text-gray-300";
+    const statusMessage = active
+      ? job?.currentStep || "Working"
+      : status === "complete"
+        ? job?.currentStep || "Lessons complete"
+        : status === "failed"
+          ? "Learn failed before lessons were finished."
+          : status === "cancelled"
+            ? job?.currentStep || "Learn stopped and generated files were cleaned up."
+            : status === "awaiting_confirmation"
+              ? "Confirm the section order to generate your lessons."
+              : learnState?.hasTextbook
+                ? "Refresh the generated lessons from the current sources."
+                : "Generate structured lessons from your sources.";
 
     if (!isOwner || (!learnState?.hasSources && status !== "failed")) return null;
     if (!shouldShowPanel) return null;
@@ -2319,21 +2361,22 @@ export default function WorkspaceClient({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <p className="text-sm font-semibold text-white">Learn</p>
+              {statusLabel ? (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className={`rounded-md border px-2 py-0.5 text-[10px] font-medium ${statusClass}`}
+                >
+                  {statusLabel}
+                </span>
+              ) : null}
               {learnState?.sourceSetChanged && (
                 <span className="rounded-md border border-amber-700/50 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
                   New sources
                 </span>
               )}
             </div>
-            <p className="mt-1 text-xs text-gray-500">
-              {active
-                ? job?.currentStep || "Working"
-                : status === "awaiting_confirmation"
-                  ? "Confirm the section order to generate your lessons."
-                  : learnState?.hasTextbook
-                    ? "Refresh the generated lessons from the current sources."
-                    : "Generate structured lessons from your sources."}
-            </p>
+            <p className="mt-1 text-xs text-gray-500">{statusMessage}</p>
             {job?.currentSectionTitle || job?.currentPageTitle ? (
               <p className="mt-1 truncate text-xs text-gray-600">
                 {[job.currentSectionTitle, job.currentPageTitle].filter(Boolean).join(" / ")}
@@ -2413,11 +2456,20 @@ export default function WorkspaceClient({
               <div
                 className={[
                   "h-full rounded-full transition-all",
-                  status === "failed" ? "bg-red-500" : "bg-white",
+                  status === "failed"
+                    ? "bg-red-500"
+                    : status === "complete"
+                      ? "bg-emerald-400"
+                      : "bg-white",
                 ].join(" ")}
                 style={{ width: `${displayProgress}%` }}
               />
             </div>
+            {status === "complete" ? (
+              <p className="mt-2 text-xs text-emerald-300">
+                Finished generating lessons. The garden has been refreshed.
+              </p>
+            ) : null}
             {status === "failed" && job?.error ? (
               <p className="mt-2 text-xs text-red-300">{job.error}</p>
             ) : null}
@@ -5380,6 +5432,7 @@ export default function WorkspaceClient({
           currentStep={learnErrorJob.currentStep}
           currentSectionTitle={learnErrorJob.currentSectionTitle}
           currentPageTitle={learnErrorJob.currentPageTitle}
+          validationReport={learnState?.validationReport}
           onDismiss={() => dismissLearnError(learnErrorJob)}
           onOpenPanel={() => {
             setLearnPanelOpen(true);

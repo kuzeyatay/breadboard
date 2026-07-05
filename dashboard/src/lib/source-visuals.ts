@@ -55,6 +55,13 @@ export interface SourceVisual {
 
 const LEDGER_RELATIVE_PATH = path.join(".breadboard", "source-visuals.json");
 const CROPPED_ASSETS_FOLDER = path.join("assets", "source-visuals");
+const DEFAULT_DETECTION_TIMEOUT_MS = 45_000;
+
+function sourceVisualDetectionTimeoutMs(): number {
+  const parsed = Number(process.env.SOURCE_VISUAL_DETECTION_TIMEOUT_MS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_DETECTION_TIMEOUT_MS;
+  return Math.max(5_000, Math.min(parsed, 180_000));
+}
 
 const TYPE_LETTER: Record<SourceVisualType, string> = {
   figure: "F",
@@ -64,6 +71,29 @@ const TYPE_LETTER: Record<SourceVisualType, string> = {
   equation: "E",
   full_page_fallback: "P",
 };
+
+function expandedCropBBox(
+  bbox: SourceVisualBBox,
+  type: SourceVisualType,
+): SourceVisualBBox {
+  if (type === "full_page_fallback") return bbox;
+  const minWidth =
+    type === "equation" ? 0.5 : type === "table" ? 0.55 : type === "graph" ? 0.5 : 0.42;
+  const minHeight =
+    type === "equation" ? 0.075 : type === "table" ? 0.12 : type === "graph" ? 0.14 : 0.1;
+  const padX = type === "equation" ? 0.035 : type === "table" ? 0.04 : 0.03;
+  const padY = type === "equation" ? 0.025 : type === "table" ? 0.035 : 0.03;
+  const width = Math.min(1, Math.max(bbox.width + padX * 2, minWidth));
+  const height = Math.min(1, Math.max(bbox.height + padY * 2, minHeight));
+  const centerX = bbox.x + bbox.width / 2;
+  const centerY = bbox.y + bbox.height / 2;
+  return {
+    x: Math.max(0, Math.min(1 - width, centerX - width / 2)),
+    y: Math.max(0, Math.min(1 - height, centerY - height / 2)),
+    width,
+    height,
+  };
+}
 
 const DETECTION_SYSTEM_PROMPT = `You identify the meaningful visuals on one page of an academic or educational document.
 Return ONLY a JSON array (no fence, no commentary). Each element:
@@ -152,6 +182,18 @@ function parseDetections(raw: string): Array<{
 
   const valid = new Set(["figure", "graph", "table", "equation", "diagram"]);
   const detections: Array<{ type: SourceVisualType; caption: string; bbox?: SourceVisualBBox }> = [];
+  const normalizeType = (type: SourceVisualType, caption: string): SourceVisualType => {
+    if (type !== "figure" && type !== "diagram") return type;
+    const lower = caption.toLowerCase();
+    if (
+      /\b(graph|plot|curve|chart|bar|axis|axes)\b/.test(lower) ||
+      /\bcomparison\b/.test(lower) ||
+      /\b(training loss|training accuracy|latency|energy consumption|spike count)\b/.test(lower)
+    ) {
+      return "graph";
+    }
+    return type;
+  };
   for (const item of parsed.slice(0, 12)) {
     if (!item || typeof item !== "object") continue;
     const record = item as Record<string, unknown>;
@@ -183,7 +225,7 @@ function parseDetections(raw: string): Array<{
         }
       }
     }
-    detections.push({ type, caption: caption.slice(0, 300), bbox });
+    detections.push({ type: normalizeType(type, caption), caption: caption.slice(0, 300), bbox });
   }
   return detections;
 }
@@ -194,23 +236,32 @@ async function detectVisualsOnPage(
   pngBuffer: Buffer,
 ): Promise<Array<{ type: SourceVisualType; caption: string; bbox?: SourceVisualBBox }>> {
   const dataUrl = `data:image/png;base64,${pngBuffer.toString("base64")}`;
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: DETECTION_SYSTEM_PROMPT },
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), sourceVisualDetectionTimeoutMs());
+  try {
+    const response = await client.chat.completions.create(
       {
-        role: "user",
-        content: [
-          { type: "image_url", image_url: { url: dataUrl } },
+        model,
+        messages: [
+          { role: "system", content: DETECTION_SYSTEM_PROMPT },
           {
-            type: "text",
-            text: "List the meaningful visuals on this page as the JSON array described. Return [] if there are none.",
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: dataUrl } },
+              {
+                type: "text",
+                text: "List the meaningful visuals on this page as the JSON array described. Return [] if there are none.",
+              },
+            ],
           },
         ],
       },
-    ],
-  });
-  return parseDetections(response.choices[0]?.message?.content ?? "[]");
+      { signal: controller.signal },
+    );
+    return parseDetections(response.choices[0]?.message?.content ?? "[]");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export interface ExtractSourceVisualsOptions {
@@ -303,7 +354,7 @@ export async function extractSourceVisuals(
       };
 
       if (detection.bbox) {
-        const cropped = cropPng(pngBuffer, detection.bbox);
+        const cropped = cropPng(pngBuffer, expandedCropBBox(detection.bbox, detection.type));
         if (cropped) {
           fs.mkdirSync(cropDir, { recursive: true });
           const fileName = `${slugify(

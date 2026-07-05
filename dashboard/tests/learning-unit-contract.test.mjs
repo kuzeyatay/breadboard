@@ -15,6 +15,7 @@ import {
   figurePlacementProblems,
   validateLearningUnitContracts,
   clusterDepthProblems,
+  dropIncompatibleInteractiveVisuals,
 } from "../src/lib/learning-unit-contract.ts";
 
 // A realistic set of learning units for an SNN source (used generically — the
@@ -161,15 +162,40 @@ describe("Learning Unit Contract — visual/unit compatibility (Fix 5)", () => {
     assert.equal(visualTypeCompatibleWithUnit("tradeoff_explorer", concept).ok, false);
   });
 
-  test("an unknown visual type needs an explicit unique concept + justification", () => {
+  test("an unknown visual type is rejected instead of becoming a mandatory contract", () => {
     const [withJustification] = normalizeLearningUnits([
       { id: "A", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_widget", uniqueConcept: "a real thing", whyStaticSourceFigureIsNotEnough: "because interaction is required", learnerManipulates: ["k"], expectedInsight: "z", sourceAnchors: [] } },
     ]);
-    assert.equal(visualTypeCompatibleWithUnit("custom_widget", withJustification).ok, true);
+    assert.equal(withJustification.interactiveVisual, undefined);
+    assert.equal(visualTypeCompatibleWithUnit("custom_widget", withJustification).ok, false);
     const [withoutJustification] = normalizeLearningUnits([
       { id: "B", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_widget", uniqueConcept: "", whyStaticSourceFigureIsNotEnough: "", learnerManipulates: [], expectedInsight: "", sourceAnchors: [] } },
     ]);
     assert.equal(visualTypeCompatibleWithUnit("custom_widget", withoutJustification).ok, false);
+  });
+
+  test("dropIncompatibleInteractiveVisuals removes unsupported visual contracts", () => {
+    const [unit] = normalizeLearningUnits([
+      { id: "A", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_type", uniqueConcept: "custom", whyStaticSourceFigureIsNotEnough: "needs an unsupported widget", learnerManipulates: ["x"], expectedInsight: "y", sourceAnchors: [] } },
+    ]);
+    const { units, dropped } = dropIncompatibleInteractiveVisuals([
+      {
+        ...unit,
+        interactiveVisual: {
+          id: "custom",
+          uniqueConcept: "custom",
+          visualType: "custom_type",
+          whyStaticSourceFigureIsNotEnough: "needs an unsupported widget",
+          learnerManipulates: ["x"],
+          expectedInsight: "y",
+          sourceAnchors: [],
+          duplicateSignature: "custom",
+        },
+      },
+    ]);
+    assert.equal(units[0].interactiveVisual, undefined);
+    assert.equal(dropped.length, 1);
+    assert.match(dropped[0], /custom_type/);
   });
 });
 
@@ -182,6 +208,33 @@ describe("Learning Unit Contract — source artifact assignment (Fix 3/8)", () =
     assert.equal(byId.get("S1.P9.T1").assignedLearningUnitId, "U11");
     assert.equal(byId.get("S1.P9.T1").placement, "inside_comparison");
     assert.ok(byId.get("S1.P6.E1").requiredInterpretation.length > 0);
+  });
+
+  test("dedupes duplicate source artifacts to one primary teaching unit", () => {
+    const units = normalizeLearningUnits([
+      {
+        id: "A",
+        role: "core_concept",
+        title: "What the table measures",
+        sourceTables: [{ id: "S1.P7.T1", teachingGoal: "Define table columns", rowsOrColumnsToExplain: ["accuracy"], placement: "inside_comparison" }],
+      },
+      {
+        id: "B",
+        role: "result_interpretation",
+        title: "Reading the result table",
+        sourceTables: [{ id: "S1.P7.T1", teachingGoal: "Interpret result patterns", rowsOrColumnsToExplain: ["accuracy"], placement: "inside_result_interpretation" }],
+      },
+      {
+        id: "C",
+        role: "limitation",
+        title: "Where the result does not generalize",
+        sourceTables: [{ id: "S1.P7.T1", teachingGoal: "Mention limitations", rowsOrColumnsToExplain: ["accuracy"], placement: "inside_comparison" }],
+      },
+    ]);
+    const assignments = assignSourceArtifacts(units);
+    assert.equal(assignments.filter((assignment) => assignment.sourceArtifactId === "S1.P7.T1").length, 1);
+    assert.equal(assignments[0].assignedLearningUnitId, "B");
+    assert.equal(assignments[0].placement, "inside_result_interpretation");
   });
 
   test("flags a result figure assigned to a definition unit", () => {

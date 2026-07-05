@@ -73,6 +73,14 @@ interface AssistantLearnState {
   hasSources?: boolean;
   hasTextbook?: boolean;
   buttonLabel?: string;
+  validationReport?: {
+    relativePath?: string;
+    url?: string;
+    markdown?: string;
+    truncated?: boolean;
+    accepted?: boolean;
+    generatedAt?: string;
+  } | null;
 }
 
 interface SavedPrompt {
@@ -1451,6 +1459,7 @@ export default function GardenAssistant({
           currentStep={learnErrorJob.currentStep}
           currentSectionTitle={learnErrorJob.currentSectionTitle}
           currentPageTitle={learnErrorJob.currentPageTitle}
+          validationReport={learnState?.validationReport}
           onDismiss={() => dismissLearnError(learnErrorJob)}
           onOpenPanel={() => {
             setChatOpen(true);
@@ -1478,6 +1487,7 @@ export default function GardenAssistant({
           currentStep={learnErrorJob.currentStep}
           currentSectionTitle={learnErrorJob.currentSectionTitle}
           currentPageTitle={learnErrorJob.currentPageTitle}
+          validationReport={learnState?.validationReport}
           onDismiss={() => dismissLearnError(learnErrorJob)}
           onOpenPanel={() => {
             setChatOpen(true);

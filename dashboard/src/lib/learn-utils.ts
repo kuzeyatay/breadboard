@@ -124,6 +124,25 @@ export interface FormulaGroundingEntry {
   sourceAnchor?: string;
 }
 
+/** Formula grounding metadata is for meaningful equations/metric definitions,
+ * not every numeric inline example. Plain numbers, percentages, and single
+ * variables can stay in prose without bloating frontmatter. */
+export function isGroundableFormula(expr: string): boolean {
+  const compacted = expr
+    .replace(/\\(?:left|right|,|;|:|!)/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+  if (!compacted) return false;
+  if (/^[+-]?\d+(?:\.\d+)?(?:\\?%)?$/.test(compacted)) return false;
+  if (/^[A-Za-z](?:_[A-Za-z0-9]+|\^[A-Za-z0-9]+)?$/.test(compacted)) return false;
+  if (/^(?:ms|s|j|w|hz|khz|mhz|v|a)$/i.test(compacted)) return false;
+  if (/\\frac|\\sum|\\prod|\\int|\\sqrt|\\Delta|\\tau|\\lambda|\\eta|\\theta/.test(expr)) return true;
+  if (/[=<>≤≥≈∝]/.test(expr)) return /[A-Za-z\\]/.test(expr);
+  if (/[+\-*/^]/.test(compacted) && /[A-Za-z\\]/.test(compacted) && compacted.length > 3) return true;
+  return false;
+}
+
 const RAW_VISUAL_PLACEHOLDER_RE =
   /\[(?:Interactive visual|Visual|Generated visual)\s*:\s*([^\[\]]+)\]/gi;
 

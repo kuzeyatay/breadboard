@@ -1,15 +1,14 @@
 // Breadboard garden finalizer.
 //
-// The Learn pipeline writes raw generation output (LLM prose + heuristic visual
-// assignment + planning notes) into the Quartz content directory. That raw tree
-// is NOT what should ship: it still contains internal-only folders, source
-// pages typed as learner pages, self-referential source wikilinks, stale
-// planning caveats that contradict the extracted anchors, semantically
-// misplaced source visuals, mis-grounded interactive visuals, index-based
-// formula grounding, over-broad tags, and repeated first-page motivation.
+// The Learn pipeline writes generated learning pages and planning artifacts into
+// the Quartz content directory. The finalizer is the deterministic export gate:
+// it cleans filesystem/path hygiene, normalizes links and stale caveats, writes
+// the validation report, and fails the artifact when the Learning Unit Contract
+// was not fulfilled. It does not invent semantic tags, source assignments,
+// interactive visual plans, or formula grounding after page writing.
 //
 // `finalizeGardenExport` is the deterministic export stage that runs after
-// generation and before publish. It repairs the on-disk tree so that what
+// generation and before publish. It verifies the on-disk tree so that what
 // Quartz sees is exactly what the acceptance validator
 // (scripts/validate-breadboard-garden.ts) accepts, writes
 // `.breadboard/validation-report.md`, and hard-fails when a critical invariant
@@ -21,6 +20,16 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import {
+  dedupeSourceArtifactAssignments,
+  isAtomicZettelHandle,
+  normalizeLearningUnits,
+  zettelHandlesForUnit,
+  type LearningUnitContract,
+  type SourceArtifactAssignment,
+  type SourceFigurePlacement,
+} from "./learning-unit-contract.ts";
+import { isGroundableFormula } from "./learn-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -139,6 +148,88 @@ function readJson<T>(filePath: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+interface LearningUnitContractArtifact {
+  units: LearningUnitContract[];
+  assignments: SourceArtifactAssignment[];
+  foundPath?: string;
+}
+
+const SOURCE_FIGURE_PLACEMENTS = new Set<SourceFigurePlacement>([
+  "inside_concept_explanation",
+  "after_formula_introduction",
+  "inside_result_interpretation",
+  "beside_worked_example",
+  "inside_comparison",
+  "not_used_with_reason",
+]);
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSourceArtifactAssignments(raw: unknown): SourceArtifactAssignment[] {
+  const record = asObject(raw);
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(record.sourceArtifactAssignments)
+      ? record.sourceArtifactAssignments
+      : Array.isArray(record.assignments)
+        ? record.assignments
+        : [];
+  const assignments: SourceArtifactAssignment[] = [];
+  for (const item of list) {
+    const row = asObject(item);
+    const sourceArtifactId = stringField(row.sourceArtifactId ?? row.sourceVisualId ?? row.figureId ?? row.id);
+    const assignedLearningUnitId = stringField(row.assignedLearningUnitId ?? row.learningUnitId ?? row.unitId);
+    if (!sourceArtifactId || !assignedLearningUnitId) continue;
+    const rawPlacement = stringField(row.placement).replace(/[\s-]+/g, "_") as SourceFigurePlacement;
+    assignments.push({
+      sourceArtifactId,
+      assignedLearningUnitId,
+      placement: SOURCE_FIGURE_PLACEMENTS.has(rawPlacement) ? rawPlacement : "inside_concept_explanation",
+      reason: stringField(row.reason),
+      requiredInterpretation: stringField(row.requiredInterpretation ?? row.interpretationGoal ?? row.goal),
+    });
+  }
+  return assignments;
+}
+
+function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifact {
+  const candidates = [
+    path.join(gardenDir, ".breadboard", "learning-unit-contract.json"),
+    path.join(gardenDir, ".breadboard", "planning", "learning-unit-contract.json"),
+  ];
+  for (const filePath of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      const units = normalizeLearningUnits(parsed);
+      const assignments = dedupeSourceArtifactAssignments(normalizeSourceArtifactAssignments(parsed), units);
+      if (units.length > 0) return { units, assignments, foundPath: filePath };
+    } catch {
+      // try next
+    }
+  }
+  return { units: [], assignments: [] };
+}
+
+function isSourceFigureId(id: string): boolean {
+  return /\.P\d+\.(?:F|G)\d+$/i.test(id);
+}
+
+function isSourceTableId(id: string): boolean {
+  return /\.P\d+\.T\d+$/i.test(id);
+}
+
+function isSourceFormulaId(id: string): boolean {
+  return /\.P\d+\.E\d+$/i.test(id);
 }
 
 function listMarkdown(dir: string, relDir: string, out: Array<{ abs: string; rel: string }>, opts: { includeDotBreadboard?: boolean } = {}): void {
@@ -308,6 +399,39 @@ interface LearnerPage {
 
 const IMAGE_RE = /!\[[^\]]*\]\(([^)]*)\)/g;
 const VISUAL_BLOCK_RE = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
+
+function embeddedVisualTypes(body: string): string[] {
+  const types: string[] = [];
+  let match: RegExpExecArray | null;
+  const re = new RegExp(VISUAL_BLOCK_RE.source, VISUAL_BLOCK_RE.flags);
+  while ((match = re.exec(body)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1] ?? "{}") as Record<string, unknown>;
+      if (typeof parsed.type === "string" && parsed.type.trim()) types.push(parsed.type.trim());
+    } catch {
+      // invalid JSON is caught by the external validator; ignore here
+    }
+  }
+  return types;
+}
+
+function formulaAnchorsFromFrontmatter(rawFm: string): string[] {
+  const anchors = new Set(fmGetArray(rawFm, "sourceFormulaAnchors"));
+  const lines = rawFm.split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^\s+sourceAnchor:\s*(.*)$/);
+    if (match) {
+      const value = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
+      if (value) anchors.add(value);
+    }
+    const textMatch = line.match(/^\s+-\s*text:\s*(.*)$/);
+    if (textMatch) {
+      const value = (textMatch[1] ?? "").trim().replace(/^["']|["']$/g, "");
+      if (value && !isGroundableFormula(value)) anchors.add(`trivial:${value}`);
+    }
+  }
+  return [...anchors];
+}
 
 // ---------------------------------------------------------------------------
 // Result
@@ -1544,30 +1668,80 @@ function writeFinalizeValidationReport({
 }): void {
   const bd = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(bd, { recursive: true });
-  const checks = collectFinalizeChecks({ gardenDir, report });
-  const accepted = checks.every((check) => check.status !== "FAIL");
-  const lines = [
-    "# Breadboard Validation Report",
-    "",
-    `Generated: ${new Date().toISOString()}`,
-    `Root: ${path.resolve(gardenDir)}`,
-    `Garden: ${gardenSlug}`,
-    `Source files: ${countSourcePages(gardenDir)}`,
-    `Page counts: learner=${countLearnerPages(gardenDir)}, sources=${countSourcePages(gardenDir)}`,
-    `Accepted: ${accepted ? "yes" : "no"}`,
-    "Produced by: dashboard/src/lib/garden-finalize.ts (finalizeGardenExport) + scripts/validate-breadboard-garden.ts",
-    "",
-    "## Checks",
-    "",
-  ];
-  for (const check of checks) {
-    lines.push(`- [${check.status}] ${check.name}`);
-    for (const problem of check.problems) lines.push(`  - ${problem}`);
+  const write = (checks: FinalizeCheck[]) => {
+    const accepted = checks.every((check) => check.status !== "FAIL");
+    const lines = [
+      "# Breadboard Validation Report",
+      "",
+      `Generated: ${new Date().toISOString()}`,
+      `Root: ${path.resolve(gardenDir)}`,
+      `Garden: ${gardenSlug}`,
+      `Source files: ${countSourcePages(gardenDir)}`,
+      `Page counts: learner=${countLearnerPages(gardenDir)}, sources=${countSourcePages(gardenDir)}`,
+      `Accepted: ${accepted ? "yes" : "no"}`,
+      "Produced by: dashboard/src/lib/garden-finalize.ts (finalizeGardenExport) + scripts/validate-breadboard-garden.ts",
+      "",
+      "## Export Tree",
+      "",
+      "See checks: exported tree, no source page typed as learner page.",
+      "",
+      "## Link Validation",
+      "",
+      "See the standalone validator's wikilink checks.",
+      "",
+      "## Learning Unit Contract Fulfillment",
+      "",
+      "See check: Learning Unit Contract fulfillment.",
+      "",
+      "## Zettelkasten Tags",
+      "",
+      "Tags must exactly match the unit contract's zettelNotes handles.",
+      "",
+      "## Source Coverage From Contract",
+      "",
+      "See check: Source Coverage follows the Learning Unit Contract.",
+      "",
+      "## Interactive Visual Fulfillment",
+      "",
+      "Planned interactive visuals must be embedded or intentionally omitted with a reason.",
+      "",
+      "## Interactive Visual Uniqueness",
+      "",
+      "See Learning Unit Contract validation and visual-index checks.",
+      "",
+      "## Formula Grounding",
+      "",
+      "Only meaningful formulas are grounded; trivial numbers and standalone percentages are rejected in formulas: metadata.",
+      "",
+      "## Source Crop Quality",
+      "",
+      "See check: source crop quality is acceptable.",
+      "",
+      "## Section Title Quality",
+      "",
+      "See check: section titles are learner-facing.",
+      "",
+      "## Final Acceptance",
+      "",
+      `Accepted: ${accepted ? "yes" : "no"}`,
+      "",
+      "## Checks",
+      "",
+    ];
+    for (const check of checks) {
+      lines.push(`- [${check.status}] ${check.name}`);
+      for (const problem of check.problems) lines.push(`  - ${problem}`);
+    }
+    lines.push("", "## Finalize Notes", "");
+    for (const note of report.notes.slice(0, 200)) lines.push(`- ${note}`);
+    fs.writeFileSync(path.join(bd, "validation-report.md"), `${lines.join("\n")}\n`, "utf-8");
+  };
+
+  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: false }));
+  write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true }));
+  if (!report.changed.includes(".breadboard/validation-report.md")) {
+    report.changed.push(".breadboard/validation-report.md");
   }
-  lines.push("", "## Finalize Notes", "");
-  for (const note of report.notes.slice(0, 200)) lines.push(`- ${note}`);
-  fs.writeFileSync(path.join(bd, "validation-report.md"), `${lines.join("\n")}\n`, "utf-8");
-  report.changed.push(".breadboard/validation-report.md");
 }
 
 interface FinalizeCheck {
@@ -1576,9 +1750,86 @@ interface FinalizeCheck {
   problems: string[];
 }
 
-function collectFinalizeChecks({ gardenDir, report }: { gardenDir: string; report: FinalizeReport }): FinalizeCheck[] {
+function assetPathForUrl(gardenDir: string, assetUrl: string): string | null {
+  const normalized = assetUrl.replace(/\\/g, "/").trim();
+  const gardenSlug = path.basename(gardenDir);
+  const prefix = `/${gardenSlug}/`;
+  const rel = normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized.replace(/^\/+/, "");
+  const resolved = path.resolve(gardenDir, rel);
+  const root = path.resolve(gardenDir);
+  return resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
+}
+
+function imageDimensions(filePath: string): { width: number; height: number } | null {
+  let buffer: Buffer;
+  try {
+    buffer = fs.readFileSync(filePath);
+  } catch {
+    return null;
+  }
+  if (buffer.length >= 24 && buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  return null;
+}
+
+function cropQualityProblems(gardenDir: string, visual: LedgerVisual): string[] {
+  const problems: string[] = [];
+  const id = visual.sourceVisualId;
+  const cropped = String(visual.croppedImagePath ?? "");
+  if (visual.usageStatus === "assigned" && !cropped) {
+    problems.push(`${id}: assigned visual has no croppedImagePath`);
+    return problems;
+  }
+  if (!cropped) return problems;
+  if (/-page-\d{2,}(?:-\d+)?\.(?:png|jpe?g|webp)$/i.test(cropped)) {
+    problems.push(`${id}: croppedImagePath looks like a full-page snapshot`);
+  }
+  const filePath = assetPathForUrl(gardenDir, cropped);
+  const dims = filePath ? imageDimensions(filePath) : null;
+  if (!dims) {
+    problems.push(`${id}: cannot read crop dimensions for ${cropped}`);
+  } else {
+    const type = String(visual.type ?? "");
+    const minWidth = type === "equation" ? 180 : type === "table" ? 260 : 160;
+    const minHeight = type === "equation" ? 48 : type === "table" ? 120 : 90;
+    if (dims.width < minWidth || dims.height < minHeight) {
+      problems.push(`${id}: crop too small (${dims.width}x${dims.height})`);
+    }
+  }
+  const bbox = asObject(visual.bbox);
+  const x = Number(bbox.x);
+  const y = Number(bbox.y);
+  const width = Number(bbox.width);
+  const height = Number(bbox.height);
+  if ([x, y, width, height].every(Number.isFinite)) {
+    const edge = 0.015;
+    if (x <= edge || y <= edge || x + width >= 1 - edge || y + height >= 1 - edge) {
+      problems.push(`${id}: detection bbox touches page edge and may be clipped`);
+    }
+  }
+  return problems;
+}
+
+function collectFinalizeChecks({
+  gardenDir,
+  report,
+  includeReportSelfCheck = true,
+}: {
+  gardenDir: string;
+  report: FinalizeReport;
+  includeReportSelfCheck?: boolean;
+}): FinalizeCheck[] {
   const checks: FinalizeCheck[] = [];
   const push = (name: string, problems: string[]) => checks.push({ name, status: problems.length ? "FAIL" : "PASS", problems });
+  const learnerPages = loadLearnerPages(gardenDir);
+  const contract = readLearningUnitContract(gardenDir);
+  const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
+  const pagesByUnit = new Map<string, LearnerPage>();
+  for (const page of learnerPages) {
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    if (unitId) pagesByUnit.set(unitId, page);
+  }
 
   // Export tree.
   const allowed = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
@@ -1606,7 +1857,122 @@ function collectFinalizeChecks({ gardenDir, report }: { gardenDir: string; repor
     .filter((entry) => entry.status === "intentionally_skipped" && (entry.embeddedAsImage || entry.usedAsInteractiveAnchor))
     .map((entry) => `${entry.id}: skipped but used`));
 
-  push("validation report present", fs.existsSync(path.join(gardenDir, ".breadboard", "validation-report.md")) ? [] : ["missing"]);
+  // Learning Unit Contract fulfillment.
+  const fulfillmentProblems: string[] = [];
+  if (learnerPages.length > 0 && contract.units.length === 0) {
+    fulfillmentProblems.push(".breadboard/learning-unit-contract.json missing or empty");
+  }
+  const knownHandles = new Set(contract.units.flatMap((unit) => zettelHandlesForUnit(unit)));
+  const assignmentsByUnit = new Map<string, SourceArtifactAssignment[]>();
+  for (const assignment of contract.assignments) {
+    const list = assignmentsByUnit.get(assignment.assignedLearningUnitId) ?? [];
+    list.push(assignment);
+    assignmentsByUnit.set(assignment.assignedLearningUnitId, list);
+  }
+  const useAssignedArtifacts = contract.assignments.length > 0;
+  const tagCounts = new Map<string, number>();
+  for (const page of learnerPages) {
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    const unit = unitId ? unitsById.get(unitId) : undefined;
+    if (!unit) {
+      fulfillmentProblems.push(`${page.rel}: missing or unknown learningUnitId "${unitId || "(missing)"}"`);
+      continue;
+    }
+    const tags = fmGetArray(page.rawFm, "tags");
+    for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+    const expectedTags = zettelHandlesForUnit(unit);
+    const missingTags = expectedTags.filter((tag) => !tags.includes(tag));
+    const extraTags = tags.filter((tag) => !expectedTags.includes(tag));
+    if (expectedTags.length === 0) fulfillmentProblems.push(`${page.rel}: unit ${unit.id} has no contract zettel handles`);
+    if (missingTags.length > 0 || extraTags.length > 0) {
+      fulfillmentProblems.push(`${page.rel}: tags must equal contract handles for ${unit.id}; missing [${missingTags.join(", ")}], extra [${extraTags.join(", ")}]`);
+    }
+    for (const tag of tags) {
+      if (!knownHandles.has(tag)) fulfillmentProblems.push(`${page.rel}: tag "${tag}" is not in the Learning Unit Contract`);
+      if (!isAtomicZettelHandle(tag) || tag.includes("/")) fulfillmentProblems.push(`${page.rel}: tag "${tag}" is not an atomic slash-free handle`);
+    }
+    const sourceVisualIds = fmGetArray(page.rawFm, "sourceVisualIds");
+    const formulaAnchors = formulaAnchorsFromFrontmatter(page.rawFm);
+    const assignedArtifacts = assignmentsByUnit.get(unit.id) ?? [];
+    const requiredFigures = useAssignedArtifacts
+      ? assignedArtifacts.map((assignment) => assignment.sourceArtifactId).filter(isSourceFigureId)
+      : unit.sourceFigures.filter((figure) => figure.placement !== "not_used_with_reason").map((figure) => figure.id);
+    const requiredFormulas = useAssignedArtifacts
+      ? assignedArtifacts.map((assignment) => assignment.sourceArtifactId).filter(isSourceFormulaId)
+      : unit.sourceFormulas.map((formula) => formula.id);
+    const requiredTables = useAssignedArtifacts
+      ? assignedArtifacts.map((assignment) => assignment.sourceArtifactId).filter(isSourceTableId)
+      : unit.sourceTables.map((table) => table.id);
+    for (const id of requiredFigures) {
+      if (!sourceVisualIds.includes(id)) fulfillmentProblems.push(`${page.rel}: missing contract source figure ${id}`);
+    }
+    for (const id of requiredTables) {
+      if (!sourceVisualIds.includes(id)) fulfillmentProblems.push(`${page.rel}: missing contract source table ${id}`);
+    }
+    for (const id of requiredFormulas) {
+      if (!formulaAnchors.includes(id)) fulfillmentProblems.push(`${page.rel}: missing contract source formula ${id}`);
+    }
+    if (unit.interactiveVisual) {
+      const types = embeddedVisualTypes(page.body);
+      const omitted = Boolean(fmGetScalar(page.rawFm, "interactiveVisualOmissionReason")) || /interactive visual intentionally omitted/i.test(page.body);
+      if (types.length === 0 && !omitted) {
+        fulfillmentProblems.push(`${page.rel}: unit ${unit.id} planned ${unit.interactiveVisual.visualType}, but no interactive visual was embedded`);
+      } else if (types.length > 0 && !types.some((type) => type.toLowerCase() === unit.interactiveVisual!.visualType.toLowerCase())) {
+        fulfillmentProblems.push(`${page.rel}: embedded visual type(s) [${types.join(", ")}] do not match contract type ${unit.interactiveVisual.visualType}`);
+      }
+    }
+    for (const formulaAnchor of formulaAnchors) {
+      if (formulaAnchor.startsWith("trivial:")) fulfillmentProblems.push(`${page.rel}: formula frontmatter tracks trivial math ${formulaAnchor.slice("trivial:".length)}`);
+    }
+  }
+  if (learnerPages.length >= 4) {
+    const maxAllowed = Math.ceil(learnerPages.length * 0.4);
+    for (const [tag, count] of tagCounts) {
+      if (count > maxAllowed) fulfillmentProblems.push(`tag "${tag}" appears on ${count}/${learnerPages.length} learner pages`);
+    }
+  }
+  for (const unit of contract.units) {
+    if (!pagesByUnit.has(unit.id)) fulfillmentProblems.push(`learning unit ${unit.id} has no generated learner page`);
+  }
+  push("Learning Unit Contract fulfillment", [...new Set(fulfillmentProblems)]);
+
+  // Source Coverage from contract.
+  const coverageProblems: string[] = [];
+  const coverage = fs.existsSync(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"))
+    ? fs.readFileSync(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"), "utf-8")
+    : "";
+  if (!coverage && contract.assignments.length > 0) coverageProblems.push(".breadboard/planning/Source Coverage.md missing");
+  if (/central to\s+\[\[/i.test(coverage)) coverageProblems.push("Source Coverage still uses heuristic 'central to [[page]]' assignments");
+  for (const assignment of contract.assignments) {
+    const escaped = assignment.sourceArtifactId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (coverage && !new RegExp(`${escaped}[^\\n]*assigned to ${assignment.assignedLearningUnitId}\\b`, "i").test(coverage)) {
+      coverageProblems.push(`${assignment.sourceArtifactId}: Source Coverage does not assign to contract unit ${assignment.assignedLearningUnitId}`);
+    }
+  }
+  push("Source Coverage follows the Learning Unit Contract", [...new Set(coverageProblems)]);
+
+  // Section title quality.
+  const titleProblems: string[] = [];
+  const sectionPages: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(path.join(gardenDir, "learning"), "learning", sectionPages);
+  for (const { abs, rel } of sectionPages.filter((page) => /\/_index\.md$/i.test(page.rel))) {
+    const { rawFrontmatter } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const title = fmGetScalar(rawFrontmatter, "title") || rel;
+    if (/This Topic/i.test(title)) titleProblems.push(`${rel}: title contains "This Topic"`);
+    if (/and the Mechanism Works|and it Is Measured|How It Learns or Changes|The Formal Description/i.test(title)) {
+      titleProblems.push(`${rel}: title exposes internal scaffold phrase "${title}"`);
+    }
+  }
+  push("section titles are learner-facing", titleProblems);
+
+  // Source crop quality.
+  const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
+  const cropProblems = ledger.flatMap((visual) => cropQualityProblems(gardenDir, visual));
+  push("source crop quality is acceptable", cropProblems);
+
+  if (includeReportSelfCheck) {
+    push("validation report present", fs.existsSync(path.join(gardenDir, ".breadboard", "validation-report.md")) ? [] : ["missing"]);
+  }
 
   return checks;
 }
@@ -1676,6 +2042,10 @@ function runCriticalGate({
   // Validation report present.
   if (!fs.existsSync(path.join(gardenDir, ".breadboard", "validation-report.md"))) {
     problems.push(".breadboard/validation-report.md missing");
+  }
+  for (const check of collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true })) {
+    if (check.status !== "FAIL") continue;
+    for (const problem of check.problems) problems.push(`${check.name}: ${problem}`);
   }
   report.criticalProblems.push(...[...new Set(problems)]);
 }

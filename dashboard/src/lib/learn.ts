@@ -22,6 +22,7 @@ import {
 import {
   assignSourceArtifacts,
   atomicZettelHandle,
+  dedupeSourceArtifactAssignments,
   dropIncompatibleInteractiveVisuals,
   isAtomicZettelHandle,
   learningMapFromUnits,
@@ -55,10 +56,9 @@ import {
   canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
   ensureQuestionBlock,
-  extractTagSeeds,
   fallbackLearningMapFromSources,
+  isGroundableFormula,
   normalizeLearningMapCandidate,
-  normalizeZettelTags,
   parseJsonCandidate,
   publicLearningVersionId,
   scrubAiisms,
@@ -143,6 +143,16 @@ export interface LearnStatusSnapshot {
   hasTextbook: boolean;
   sourceSetChanged: boolean;
   buttonLabel: string;
+  validationReport?: LearnValidationReport | null;
+}
+
+export interface LearnValidationReport {
+  relativePath: string;
+  url: string;
+  markdown: string;
+  truncated: boolean;
+  accepted?: boolean;
+  generatedAt?: string;
 }
 
 interface LearnJobRow {
@@ -211,9 +221,12 @@ type CouncilJsonResult = CouncilCallResult & { parsed: unknown | null };
 interface GeneratedPageRecord {
   title: string;
   relPath: string;
+  learningUnitId?: string;
   sourceAnchors: string[];
   visualIds: string[];
   sourceFigureIds: string[];
+  sourceFormulaIds: string[];
+  sourceTableIds: string[];
 }
 
 // --- Learn generation token-budget configuration ----------------------------
@@ -399,7 +412,7 @@ Return ONLY JSON with this shape:
       "interactiveVisual": {
         "id": "optional stable id",
         "uniqueConcept": "the exact concept interaction teaches",
-        "visualType": "lif_neuron | neural_coding | stdp_window | metric_calculator | training_curve | tradeoff_explorer | custom type",
+        "visualType": "lif_neuron | neural_coding | stdp_window | metric_calculator | training_curve | tradeoff_explorer",
         "whyStaticSourceFigureIsNotEnough": "why prose/source image is insufficient",
         "learnerManipulates": ["control names"],
         "expectedInsight": "what changes in the learner's understanding",
@@ -427,6 +440,7 @@ Contract rules:
 - Every important source figure, graph, table, displayed formula, result, example, limitation, or recommendation must be assigned to the one precise unit where it teaches best, or marked unused with a reason.
 - Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
 - Interactive visuals are optional. A unit has zero or one. Use one only when interaction teaches something static prose or a source figure cannot.
+- Do not invent custom visual types. If none of the listed interactive visual types fits, omit interactiveVisual for that unit.
 - Do not repeat interactive visual signatures. If a later unit needs a similar visual, link back conceptually or omit it.
 - Zettelkasten handles are atomic claim handles: lower-kebab-case, no slash namespaces, no broad single-word categories. Good: "accuracy-alone-hides-energy-and-latency-cost". Bad: "metric/accuracy", "latency", "snn".
 - First job: planning only. Do not generate final prose yet.`;
@@ -1637,9 +1651,58 @@ function isContractBackedLearningMap(map: StoredLearningMap | null | undefined):
 function sourceArtifactAssignmentsFromCoveragePlan(plan: unknown): SourceArtifactAssignment[] {
   const raw = planningRecord(plan).sourceArtifactAssignments;
   if (!Array.isArray(raw)) return [];
-  return raw
+  const assignments = raw
     .map((item) => (item && typeof item === "object" ? (item as SourceArtifactAssignment) : null))
     .filter((item): item is SourceArtifactAssignment => Boolean(item));
+  return dedupeSourceArtifactAssignments(assignments, learningUnitsFromCoveragePlan(plan));
+}
+
+function learningMapWithConfirmedUnitContracts(
+  learningMap: ProposedLearningMap,
+  units: LearningUnitContract[],
+): ProposedLearningMap {
+  const unitsById = new Map(units.map((unit) => [unit.id, unit]));
+  return {
+    ...learningMap,
+    sections: learningMap.sections.map((section) => ({
+      ...section,
+      subsections: section.subsections.map((subsection) => {
+        const unit = subsection.learningUnitId ? unitsById.get(subsection.learningUnitId) : undefined;
+        if (!unit) return subsection;
+        const interactiveVisuals = unit.interactiveVisual
+          ? [
+              {
+                concept: unit.interactiveVisual.uniqueConcept,
+                reason: unit.interactiveVisual.whyStaticSourceFigureIsNotEnough,
+              },
+            ]
+          : [];
+        return {
+          ...subsection,
+          sourceAnchors: unit.sourceAnchors,
+          conceptTags: zettelHandlesForUnit(unit),
+          sourceVisualIds: [...new Set([
+            ...unit.sourceFigures.filter((figure) => figure.placement !== "not_used_with_reason").map((figure) => figure.id),
+            ...unit.sourceFormulas.map((formula) => formula.id),
+            ...unit.sourceTables.map((table) => table.id),
+          ])],
+          interactiveVisuals,
+          learningUnitRole: unit.role,
+          learningQuestion: unit.learningQuestion,
+          prerequisiteConcepts: unit.prerequisiteConcepts,
+          newConcepts: unit.newConcepts,
+          mustNotRepeat: unit.mustNotRepeat,
+          expectedWordRange: unit.expectedWordRange,
+          sourceFigureContracts: unit.sourceFigures,
+          sourceFormulaContracts: unit.sourceFormulas,
+          sourceTableContracts: unit.sourceTables,
+          sourceArtifactAssignments: assignSourceArtifacts([unit]),
+          interactiveVisualContract: unit.interactiveVisual,
+          zettelNotes: unit.zettelNotes,
+        };
+      }),
+    })),
+  };
 }
 
 export async function runLearnPlanning({
@@ -2101,7 +2164,7 @@ function formulaGroundingEntries(
     .filter((figure) => figure.figureId)
     .map((figure) => ({ id: figure.figureId, caption: figure.caption ?? "" }));
   const captionById = new Map(sources.map((source) => [source.id, source.caption]));
-  return mathExpressions.map((expr) => {
+  return mathExpressions.filter((expr) => isGroundableFormula(expr.formula)).map((expr) => {
     const grounded = groundLearnerFormula(expr.formula, sources);
     if (grounded.groundingStatus === "source-anchored" && grounded.sourceAnchor) {
       return {
@@ -2118,6 +2181,52 @@ function formulaGroundingEntries(
         "Compact helper formula used to explain the lesson's mechanism; no direct source equation anchor is claimed.",
     };
   });
+}
+
+function sourceFormulaFiguresForSubsection(
+  context: LearnSourceContext,
+  subsection: LearningSubsectionPlan,
+): SourceFigure[] {
+  const existing = sourceFormulaFigures(context);
+  const byId = new Map(existing.map((figure) => [figure.figureId, figure]));
+  for (const formula of subsection.sourceFormulaContracts ?? []) {
+    if (!formula.id || byId.has(formula.id)) continue;
+    byId.set(formula.id, {
+      figureId: formula.id,
+      kind: "formula",
+      caption: [formula.teachingGoal, ...(formula.termsToDefine ?? [])].filter(Boolean).join("; "),
+      suggestedVisualUse: formula.placement,
+    });
+  }
+  return [...byId.values()];
+}
+
+function ensureContractFormulaGrounding(
+  entries: FormulaGroundingEntry[],
+  subsection: LearningSubsectionPlan,
+): FormulaGroundingEntry[] {
+  const anchors = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id).filter(Boolean);
+  if (anchors.length === 0) return entries;
+  const grounded = new Set(
+    entries
+      .filter((entry) => entry.groundingStatus === "source-anchored" && entry.sourceAnchor)
+      .map((entry) => entry.sourceAnchor as string),
+  );
+  const next = [...entries];
+  for (const formula of subsection.sourceFormulaContracts ?? []) {
+    if (!formula.id || grounded.has(formula.id)) continue;
+    const text = formula.termsToDefine?.length
+      ? `${formula.teachingGoal}: ${formula.termsToDefine.join(" + ")}`
+      : formula.teachingGoal;
+    next.push({
+      text,
+      groundingStatus: "source-anchored",
+      sourceAnchor: formula.id,
+      justification: `Required by the Learning Unit Contract source formula anchor ${formula.id}.`,
+    });
+    grounded.add(formula.id);
+  }
+  return next;
 }
 
 function renderLearningMapMarkdown(map: ProposedLearningMap): string {
@@ -2324,18 +2433,33 @@ function sourceCoverageMarkdown({
   unusedFigureReasons: Map<string, string>;
   sourceArtifactAssignments?: SourceArtifactAssignment[];
 }): string {
-  const usedFigures = new Set(generatedPages.flatMap((page) => page.sourceFigureIds));
-  const formulaFigures = sourceFormulaFigures(context);
-  const metricPage = generatedPages.find((page) =>
-    /metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/i.test(
-      `${page.title} ${page.relPath} ${page.sourceAnchors.join(" ")}`,
-    ),
+  const pageByUnit = new Map(
+    generatedPages
+      .filter((page) => page.learningUnitId)
+      .map((page) => [page.learningUnitId as string, page]),
   );
-  if (metricPage) {
-    for (const formula of formulaFigures) usedFigures.add(formula.figureId);
+  const assignedIds = new Set(sourceArtifactAssignments.map((assignment) => assignment.sourceArtifactId));
+  const usedFigures = new Set(generatedPages.flatMap((page) => page.sourceFigureIds));
+  const usedFormulas = new Set(generatedPages.flatMap((page) => page.sourceFormulaIds));
+  const usedTables = new Set(generatedPages.flatMap((page) => page.sourceTableIds));
+  const allFulfilledIds = new Set([...usedFigures, ...usedFormulas, ...usedTables]);
+  const formulaFigures = sourceFormulaFigures(context);
+  const assignmentByArtifact = new Map<string, SourceArtifactAssignment[]>();
+  for (const assignment of sourceArtifactAssignments) {
+    const list = assignmentByArtifact.get(assignment.sourceArtifactId) ?? [];
+    list.push(assignment);
+    assignmentByArtifact.set(assignment.sourceArtifactId, list);
   }
+  const statusForAssignment = (assignment: SourceArtifactAssignment): string => {
+    const page = pageByUnit.get(assignment.assignedLearningUnitId);
+    if (!page) return "missing: assigned unit has no generated page";
+    if (allFulfilledIds.has(assignment.sourceArtifactId)) return "fulfilled";
+    return "missing: assigned artifact not present in final page metadata";
+  };
   const lines = [
     "# Source Coverage",
+    "",
+    "Coverage is derived from the Learning Unit Contract artifact assignments and final page fulfillment only. It does not use title or keyword heuristics.",
     "",
     "## Sources Used",
     "",
@@ -2347,38 +2471,53 @@ function sourceCoverageMarkdown({
   for (const page of generatedPages) {
     lines.push(`- ${wikilinkForRelPath(page.relPath, page.title)}: ${page.sourceAnchors.join("; ") || "general source context"}`);
   }
+  lines.push("", "## Contract Artifact Fulfillment", "");
+  if (sourceArtifactAssignments.length > 0) {
+    for (const assignment of sourceArtifactAssignments) {
+      const page = pageByUnit.get(assignment.assignedLearningUnitId);
+      lines.push(
+        `- ${assignment.sourceArtifactId}: assigned to ${assignment.assignedLearningUnitId}${page ? ` (${wikilinkForRelPath(page.relPath, page.title)})` : ""}; ${statusForAssignment(assignment)}; placement=${assignment.placement}; ${assignment.requiredInterpretation || assignment.reason}`,
+      );
+    }
+  } else {
+    lines.push("- No source artifacts were assigned by the Learning Unit Contract.");
+  }
   lines.push("", "## Figures, Graphs, Tables, And Formula Displays Used", "");
   lines.push(
-    ...(context.sourceFigures.filter((figure) => usedFigures.has(figure.figureId)).length > 0
+    ...(context.sourceFigures.filter((figure) => allFulfilledIds.has(figure.figureId)).length > 0
       ? context.sourceFigures
-          .filter((figure) => usedFigures.has(figure.figureId))
+          .filter((figure) => allFulfilledIds.has(figure.figureId))
           .map((figure) => `- ${figure.figureId}: ${figure.caption ?? figure.kind}`)
       : ["- No source figures were used as explicit visual anchors."]),
   );
   if (formulaFigures.length > 0) {
     lines.push("", "## Formula Anchor Assignments", "");
     for (const formula of formulaFigures) {
-      lines.push(
-        `- ${formula.figureId}: ${metricPage ? `central to ${wikilinkForRelPath(metricPage.relPath, metricPage.title)}` : "central metric formula; no matching metric page was generated"}`,
-      );
-    }
-  }
-  if (sourceArtifactAssignments.length > 0) {
-    lines.push("", "## Learning Unit Artifact Assignments", "");
-    for (const assignment of sourceArtifactAssignments) {
-      lines.push(
-        `- ${assignment.sourceArtifactId}: ${assignment.assignedLearningUnitId} (${assignment.placement}) - ${assignment.requiredInterpretation || assignment.reason}`,
-      );
+      const assignments = assignmentByArtifact.get(formula.figureId) ?? [];
+      if (assignments.length === 0) {
+        lines.push(`- ${formula.figureId}: not assigned by the Learning Unit Contract`);
+        continue;
+      }
+      for (const assignment of assignments) {
+        const page = pageByUnit.get(assignment.assignedLearningUnitId);
+        lines.push(
+          `- ${formula.figureId}: assigned to ${assignment.assignedLearningUnitId}${page ? ` (${wikilinkForRelPath(page.relPath, page.title)})` : ""}; ${statusForAssignment(assignment)}`,
+        );
+      }
     }
   }
   lines.push("", "## Figures Not Used", "");
   lines.push(
-    ...(context.sourceFigures.filter((figure) => !usedFigures.has(figure.figureId)).length > 0
+    ...(context.sourceFigures.filter((figure) => !allFulfilledIds.has(figure.figureId)).length > 0
       ? context.sourceFigures
-          .filter((figure) => !usedFigures.has(figure.figureId))
+          .filter((figure) => !allFulfilledIds.has(figure.figureId))
           .map(
             (figure) =>
-              `- ${figure.figureId}: ${unusedFigureReasons.get(figure.figureId) ?? "Not central to the confirmed subsection order."}`,
+              `- ${figure.figureId}: ${
+                assignedIds.has(figure.figureId)
+                  ? "assigned by the Learning Unit Contract but not fulfilled in final page metadata"
+                  : unusedFigureReasons.get(figure.figureId) ?? "Not assigned by the Learning Unit Contract."
+              }`,
           )
       : ["- None."]),
   );
@@ -2389,6 +2528,36 @@ function sourceCoverageMarkdown({
 
 function clusterPath(contentPath: string, gardenId: string): string {
   return path.join(contentPath, gardenId);
+}
+
+export function getLearnValidationReport({
+  gardenId,
+  contentPath,
+  maxChars = 30_000,
+}: {
+  gardenId: string;
+  contentPath: string;
+  maxChars?: number;
+}): LearnValidationReport | null {
+  const reportRelPath = ".breadboard/validation-report.md";
+  const reportPath = path.join(clusterPath(contentPath, gardenId), reportRelPath);
+  let markdown: string;
+  try {
+    markdown = fs.readFileSync(reportPath, "utf-8");
+  } catch {
+    return null;
+  }
+  const generatedAt = markdown.match(/^Generated:\s*(.+)$/m)?.[1]?.trim();
+  const acceptedRaw = markdown.match(/^Accepted:\s*(yes|no)$/m)?.[1]?.trim().toLowerCase();
+  const truncated = markdown.length > maxChars;
+  return {
+    relativePath: reportRelPath,
+    url: `/api/gardens/${encodeURIComponent(gardenId)}/learn/validation-report`,
+    markdown: truncated ? `${markdown.slice(0, maxChars).replace(/\s+$/, "")}\n\n[report truncated in dialog]` : markdown,
+    truncated,
+    ...(acceptedRaw ? { accepted: acceptedRaw === "yes" } : {}),
+    ...(generatedAt ? { generatedAt } : {}),
+  };
 }
 
 function assertInsideCluster(clusterDir: string, filePath: string): void {
@@ -2682,6 +2851,20 @@ function bestParagraphIndex(paragraphs: string[], text: string): number {
   return bestIndex;
 }
 
+function isVisualSourceArtifactId(id: string): boolean {
+  return /\.P\d+\.(?:F|G|T)\d+$/i.test(id);
+}
+
+function assignedVisualArtifactIdsForUnit(
+  assignments: SourceArtifactAssignment[],
+  unitId: string | undefined,
+): string[] {
+  if (!unitId) return [];
+  return assignments
+    .filter((assignment) => assignment.assignedLearningUnitId === unitId && isVisualSourceArtifactId(assignment.sourceArtifactId))
+    .map((assignment) => assignment.sourceArtifactId);
+}
+
 /**
  * Stage 3 assignment for one page: the plan's sourceVisualsToEmbed wins; when
  * the plan named none, fall back to caption/token overlap so central visuals
@@ -2691,11 +2874,13 @@ function assignSourceVisualsForSubsection({
   visuals,
   subsection,
   claimed,
+  sourceArtifactAssignments = [],
 }: {
   visuals: SourceVisual[];
   subsection: LearningSubsectionPlan;
   section: LearningSectionPlan;
   claimed: Set<string>;
+  sourceArtifactAssignments?: SourceArtifactAssignment[];
 }): SourceVisual[] {
   const available = visuals.filter((visual) => {
     if (claimed.has(visual.sourceVisualId)) return false;
@@ -2705,7 +2890,9 @@ function assignSourceVisualsForSubsection({
     return Boolean(visual.croppedImagePath);
   });
 
-  const planned = (subsection.sourceVisualIds ?? [])
+  const primaryIds = assignedVisualArtifactIdsForUnit(sourceArtifactAssignments, subsection.learningUnitId);
+  const plannedIds = primaryIds.length > 0 ? primaryIds : (subsection.sourceVisualIds ?? []);
+  const planned = plannedIds
     .map((id) => available.find((visual) => visual.sourceVisualId === id))
     .filter((visual): visual is SourceVisual => Boolean(visual));
 
@@ -2714,7 +2901,9 @@ function assignSourceVisualsForSubsection({
   // Semantic assignment belongs to the Learning Unit Contract. If more than
   // the page cap was planned, keep the first planned items and let validation
   // reject the contract/page rather than silently broadening the page.
-  chosen = chosen.slice(0, MAX_VISUALS_PER_PAGE);
+  if (primaryIds.length === 0) {
+    chosen = chosen.slice(0, MAX_VISUALS_PER_PAGE);
+  }
   for (const visual of chosen) claimed.add(visual.sourceVisualId);
   return chosen;
 }
@@ -3420,6 +3609,7 @@ function buildPageDossier({
   scopeContract,
   sources,
   assignedVisuals,
+  sourceArtifactAssignments,
   sourceOnly,
 }: {
   gardenTitle: string;
@@ -3430,10 +3620,14 @@ function buildPageDossier({
   scopeContract: unknown;
   sources: LearnSourceSummary[];
   assignedVisuals: SourceVisual[];
+  sourceArtifactAssignments?: SourceArtifactAssignment[];
   sourceOnly: boolean;
 }): PageDossier {
   const subsectionTitle = sanitizeLearnerTitle(subsection.title);
   const keywords = fallbackKeywords(subsection, anchors);
+  const assignedArtifactsForUnit = subsection.learningUnitId && sourceArtifactAssignments
+    ? sourceArtifactAssignments.filter((assignment) => assignment.assignedLearningUnitId === subsection.learningUnitId)
+    : (subsection.sourceArtifactAssignments ?? []);
   for (const word of [sectionTitle, ...assignedVisuals.map((visual) => visual.caption)]
     .join(" ")
     .toLowerCase()
@@ -3457,7 +3651,7 @@ function buildPageDossier({
           sourceFigures: subsection.sourceFigureContracts,
           sourceFormulas: subsection.sourceFormulaContracts,
           sourceTables: subsection.sourceTableContracts,
-          sourceArtifactAssignments: subsection.sourceArtifactAssignments,
+          sourceArtifactAssignments: assignedArtifactsForUnit,
           interactiveVisual: subsection.interactiveVisualContract,
           zettelNotes: subsection.zettelNotes,
           mustNotRepeat: subsection.mustNotRepeat,
@@ -3567,10 +3761,15 @@ export async function runTextbookGeneration({
   const clusterDir = clusterPath(contentPath, gardenId);
   fs.mkdirSync(clusterDir, { recursive: true });
   const confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
+  const confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
+  map = {
+    ...map,
+    learningMap: learningMapWithConfirmedUnitContracts(map.learningMap, confirmedLearningUnits),
+  };
   writeLearningUnitContractArtifacts({
     clusterDir,
     units: confirmedLearningUnits,
-    assignments: sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan),
+    assignments: confirmedSourceArtifactAssignments,
     sourceSetHash: context.sourceSetHash,
   });
   // Version ids are learning_* so nothing named "textbook" can leak into a
@@ -3788,6 +3987,7 @@ export async function runTextbookGeneration({
           subsection,
           section,
           claimed: claimedVisualIds,
+          sourceArtifactAssignments: confirmedSourceArtifactAssignments,
         });
         const metricFormulaAnchorIds = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id);
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
@@ -3812,6 +4012,7 @@ export async function runTextbookGeneration({
           scopeContract: map.scopeContract,
           sources: context.sources,
           assignedVisuals,
+          sourceArtifactAssignments: confirmedSourceArtifactAssignments,
           sourceOnly,
         });
         // sourceContext carries small routing metadata only during page
@@ -4064,31 +4265,20 @@ export async function runTextbookGeneration({
         pageBody = visualized.markdown;
         throwIfLearnCancelled(job.id);
 
-        // Stage 7: 4-8 Zettelkasten concept-handle tags on learner pages only.
-        // Tags are grounded in the FINAL accepted body (never fallback/debug
-        // text) and gated by page relevance, so LIF/STDP/latency tags cannot
-        // land on a page that does not actually teach them.
+        // Stage 7: learner tags come only from the Learning Unit Contract's
+        // zettelNotes. Do not backfill from page text, source tags, topic tags,
+        // or generic semantic fallbacks; missing contract handles are a
+        // contract/validation failure rather than a reason to invent tags here.
         const plannedZettelHandles = (subsection.zettelNotes ?? [])
           .map((note) => atomicZettelHandle(note.handle || note.claim))
           .filter((handle) => handle && isAtomicZettelHandle(handle));
-        const zettelTags = normalizeZettelTags(
-          [
-            ...plannedZettelHandles,
-            ...subsection.conceptTags,
-            ...(plannedZettelHandles.length >= 4 ? [] : extractTagSeeds(pageBody)),
-          ],
-          subsectionTitle,
-          map.learningMap.title || context.gardenTitle,
-          {
-            title: subsectionTitle,
-            sectionTitle,
-            body: pageBody,
-            assignedVisualCaptions: assignedVisuals.map((visual) => visual.caption).filter(Boolean),
-          },
-        );
+        const zettelTags = [...new Set(plannedZettelHandles)];
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const pageMathExpressions = extractQuartzMath(normalizeQuartzMarkdown(pageBody));
-        const formulas = formulaGroundingEntries(pageMathExpressions, sourceFormulaFigures(context));
+        const formulas = ensureContractFormulaGrounding(
+          formulaGroundingEntries(pageMathExpressions, sourceFormulaFiguresForSubsection(context, subsection)),
+          subsection,
+        );
         const finalContent =
           buildLearningPageFrontmatter({
             gardenId,
@@ -4130,9 +4320,12 @@ export async function runTextbookGeneration({
         generatedPages.push({
           title: pageTitle,
           relPath: pageRelPath,
+          learningUnitId: subsection.learningUnitId,
           sourceAnchors: anchors,
           visualIds: visualized.visualIds,
           sourceFigureIds: assignedVisualIds,
+          sourceFormulaIds: metricFormulaAnchorIds,
+          sourceTableIds: (subsection.sourceTableContracts ?? []).map((table) => table.id),
         });
         appendLearnEvent(contentPath, gardenId, "learn_page_written", {
           jobId: job.id,
@@ -4197,7 +4390,7 @@ export async function runTextbookGeneration({
           context,
           generatedPages,
           unusedFigureReasons,
-          sourceArtifactAssignments: sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan),
+          sourceArtifactAssignments: confirmedSourceArtifactAssignments,
         }),
     });
 
@@ -4454,5 +4647,8 @@ export function getLearnStatusSnapshot({
       hasTextbook,
       sourceSetChanged,
     }),
+    validationReport: visibleJob?.status === "failed"
+      ? getLearnValidationReport({ gardenId, contentPath })
+      : null,
   };
 }

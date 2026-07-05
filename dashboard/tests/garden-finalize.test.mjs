@@ -196,8 +196,120 @@ describe("figure classification and page roles (E/F)", () => {
 // hygiene and writes the report, but semantic defects remain validation
 // failures owned by the Learning Unit Contract/page-generation path.
 // ---------------------------------------------------------------------------
-describe("finalize leaves semantic defects visible", () => {
-  test("validator fails before finalize; hygiene is repaired but semantic checks still fail", () => {
+describe("finalize gates semantic defects", () => {
+  test("uses the primary source-artifact assignment for contract fulfillment", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-luc-primary-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard");
+      fs.mkdirSync(path.join(bb, "planning"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "assets", "source-visuals"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "1. Foundations"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "2. Results"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2", gardenId: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", knowledge_type: "source-index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(dir, "sources", "source.md"), fm({ title: "Source", knowledge_type: "source-document", breadboardType: "source_document", internal: "true" }) + "# Source\n");
+      fs.writeFileSync(path.join(dir, "assets", "source-visuals", "table.png"), "PNG");
+      fs.writeFileSync(
+        path.join(bb, "source-visuals.json"),
+        JSON.stringify([
+          {
+            sourceVisualId: "S1.P7.T1",
+            sourceId: "source",
+            pageNumber: 7,
+            type: "table",
+            caption: "SNN performance summary table",
+            croppedImagePath: "/test-2/assets/source-visuals/table.png",
+            usageStatus: "assigned",
+            assignedPageId: "learning/2. Results/2.1 Reading the Result Table",
+            assignedSectionId: "learning/2. Results",
+          },
+        ], null, 2),
+      );
+      const learningUnits = [
+        {
+          id: "A",
+          role: "core_concept",
+          title: "What the metric columns mean",
+          learningQuestion: "What do the table columns mean?",
+          sourceAnchors: ["S1.P7"],
+          sourceFigures: [],
+          sourceFormulas: [],
+          sourceTables: [{ id: "S1.P7.T1", teachingGoal: "Define the table columns", rowsOrColumnsToExplain: ["accuracy"], placement: "inside_comparison" }],
+          zettelNotes: [{ handle: "metric-columns-name-what-is-being-measured", claim: "Metric columns name what is being measured." }],
+          mustNotRepeat: [],
+          expectedWordRange: [200, 400],
+        },
+        {
+          id: "B",
+          role: "result_interpretation",
+          title: "Reading the Result Table",
+          learningQuestion: "What pattern does the table show?",
+          sourceAnchors: ["S1.P7"],
+          sourceFigures: [],
+          sourceFormulas: [],
+          sourceTables: [{ id: "S1.P7.T1", teachingGoal: "Interpret the table pattern", rowsOrColumnsToExplain: ["accuracy"], placement: "inside_result_interpretation" }],
+          zettelNotes: [{ handle: "result-tables-turn-measurements-into-comparisons", claim: "Result tables turn measurements into comparisons." }],
+          mustNotRepeat: [],
+          expectedWordRange: [200, 400],
+        },
+      ];
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          sourceSetHash: "fixture",
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          learningUnits,
+          sourceArtifactAssignments: [
+            { sourceArtifactId: "S1.P7.T1", assignedLearningUnitId: "A", placement: "inside_comparison", reason: "mentioned in concept unit", requiredInterpretation: "define columns" },
+            { sourceArtifactId: "S1.P7.T1", assignedLearningUnitId: "B", placement: "inside_result_interpretation", reason: "primary result interpretation", requiredInterpretation: "interpret pattern" },
+          ],
+        }, null, 2),
+      );
+      fs.writeFileSync(path.join(dir, "learning", "1. Foundations", "_index.md"), fm({ title: "1. Foundations" }) + "# 1. Foundations\n");
+      fs.writeFileSync(path.join(dir, "learning", "2. Results", "_index.md"), fm({ title: "2. Results" }) + "# 2. Results\n");
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Foundations", "1.1 What the Metric Columns Mean.md"),
+        fm({
+          title: "1.1 What the Metric Columns Mean",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          gardenId: "test-2",
+          tags: ["metric-columns-name-what-is-being-measured"],
+          sourceAnchors: ["S1.P7"],
+          sourceVisualIds: [],
+          learningUnitId: "A",
+          generatedBy: "learn_button",
+        }) + `${FILLER("metric columns", "metric")}\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. Results", "2.1 Reading the Result Table.md"),
+        fm({
+          title: "2.1 Reading the Result Table",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          gardenId: "test-2",
+          tags: ["result-tables-turn-measurements-into-comparisons"],
+          sourceAnchors: ["S1.P7"],
+          sourceVisualIds: ["S1.P7.T1"],
+          learningUnitId: "B",
+          generatedBy: "learn_button",
+        }) +
+          `${FILLER("result table", "comparison")}\n\nThe table should be read row by row: it compares the same models across the same metric columns, so the useful pattern is the tradeoff between accuracy and cost.\n\n![SNN performance summary table](/test-2/assets/source-visuals/table.png)\n\nThe important point is that a result table turns isolated measurements into a comparison; each row only matters because the other rows expose the tradeoff.\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.ok(
+        !report.criticalProblems.some((problem) => /missing contract source table S1\.P7\.T1/.test(problem)),
+        report.criticalProblems.join(" | "),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("validator fails before finalize; hygiene is repaired and contract defects hard-fail", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-e2e-"));
     try {
       const dir = buildDefectiveGarden(root);
@@ -210,7 +322,10 @@ describe("finalize leaves semantic defects visible", () => {
       assert.ok(failedBefore.has(7), "check 7 (export tree) must fail before finalize");
 
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
-      assert.deepEqual(report.criticalProblems, [], `finalize must repair hygiene invariants: ${report.criticalProblems.join(" | ")}`);
+      assert.ok(
+        report.criticalProblems.some((problem) => /Learning Unit Contract fulfillment/.test(problem)),
+        `finalize must hard-fail contract defects: ${report.criticalProblems.join(" | ")}`,
+      );
 
       const after = runChecks(dir, "test-2");
       writeValidationReport(dir, "test-2", after);
@@ -221,6 +336,8 @@ describe("finalize leaves semantic defects visible", () => {
         failedAfter.some((result) => [8, 24, 31, 32].includes(result.id)),
         `semantic failures should remain after finalize: ${failedAfter.map((f) => `${f.id}. ${f.name}`).join(" | ")}`,
       );
+      const finalizerReport = fs.readFileSync(path.join(dir, ".breadboard", "validation-report.md"), "utf-8");
+      assert.match(finalizerReport, /^Accepted:\s+no$/m, "the finalizer report must not claim acceptance");
 
       // The exported artifact contains the validation report (K).
       assert.ok(

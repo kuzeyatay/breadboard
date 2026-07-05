@@ -10,6 +10,7 @@ import {
   buildStdpTimingWindowVisual,
   buildMetricTradeoffExplorerVisual,
 } from "../src/lib/visual-spec.ts";
+import { encodePng } from "../src/lib/png-crop.ts";
 import {
   assignSourceArtifacts,
   normalizeLearningUnits,
@@ -32,6 +33,16 @@ const LONG_PARAGRAPH = (topic) =>
   `Imagine a sensor watching a mostly still scene. ${topic} becomes necessary because a dense system keeps recomputing values even when nothing changes. `.repeat(
     45,
   );
+
+function fixturePng(width = 220, height = 120) {
+  return encodePng({
+    width,
+    height,
+    channels: 4,
+    colorType: 6,
+    pixels: Buffer.alloc(width * height * 4, 255),
+  });
+}
 
 function goodLesson({ title, tags, body, visualBlock, visualIds, imageUrl, sourceVisualIds, learningUnitId, learningUnitRole }) {
   return (
@@ -141,7 +152,7 @@ function buildGoodGarden(root) {
 
   // Cropped source figure asset + ledger.
   const imageUrl = "/snn-fixture/assets/source-visuals/snn-lif.png";
-  fs.writeFileSync(path.join(gardenDir, "assets", "source-visuals", "snn-lif.png"), "PNG");
+  fs.writeFileSync(path.join(gardenDir, "assets", "source-visuals", "snn-lif.png"), fixturePng());
   const ledger = [
     {
       sourceVisualId: "S1.P4.F1",
@@ -273,10 +284,7 @@ function buildGoodGarden(root) {
       rel: "learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
       title: "2.1 The Leaky Integrate-and-Fire Neuron",
       tags: [
-        "lif-neuron-threshold-reset",
-        "membrane-potential-threshold",
-        "threshold-firing-event",
-        "reset-follows-spike",
+        "lif-threshold-turns-accumulated-input-into-spikes",
       ],
       body: LONG_PARAGRAPH("The leaky integrate-and-fire neuron, membrane potential threshold, firing event, spike, and reset"),
       spec: specs.lif,
@@ -289,10 +297,7 @@ function buildGoodGarden(root) {
       rel: "learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md",
       title: "2.2 Encoding Information as Spike Trains",
       tags: [
-        "spike-rate-coding",
-        "spike-timing-information",
-        "spike-train-encoding",
-        "temporal-code-timing",
+        "spike-train-timing-changes-the-message",
       ],
       body: LONG_PARAGRAPH("Rate coding and temporal coding of spike trains and spike timing"),
       spec: specs.coding,
@@ -303,10 +308,7 @@ function buildGoodGarden(root) {
       rel: "learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md",
       title: "3.4 Spike-Timing Dependent Plasticity",
       tags: [
-        "stdp-local-timing-rule",
-        "synaptic-plasticity-window",
-        "spike-timing-window",
-        "temporal-credit-assignment",
+        "stdp-updates-weights-from-local-spike-timing",
       ],
       body: LONG_PARAGRAPH("Spike-timing dependent plasticity (STDP), temporal credit assignment, and synaptic plasticity across the timing window"),
       spec: specs.stdp,
@@ -317,10 +319,7 @@ function buildGoodGarden(root) {
       rel: "learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md",
       title: "4.1 Accuracy, Latency, and Energy",
       tags: [
-        "latency-to-decision",
-        "accuracy-per-energy",
-        "total-spike-count",
-        "model-family-comparison",
+        "accuracy-alone-hides-energy-and-latency-cost",
       ],
       body:
         LONG_PARAGRAPH("Accuracy, latency, energy and spike count as a tradeoff") +
@@ -399,6 +398,10 @@ function buildBadZipShapedGarden(root) {
 // ---------------------------------------------------------------------------
 
 describe("garden validator regression fixture", () => {
+  function checkById(results, id) {
+    return results.find((result) => result.id === id);
+  }
+
   test("a correctly generated SNN garden passes every hard check", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-good-"));
     try {
@@ -413,6 +416,83 @@ describe("garden validator regression fixture", () => {
       // Sanity: the optional-visual dedupe check actually ran (not skipped).
       const visualDedupe = results.find((r) => r.id === 16);
       assert.equal(visualDedupe.status, "PASS", "interactive visual signature check must run and pass");
+      const report = fs.readFileSync(path.join(dir, ".breadboard", "validation-report.md"), "utf-8");
+      assert.match(report, /^Accepted:\s+yes$/m);
+      assert.match(report, /## Learning Unit Contract Fulfillment/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("contract tag validation rejects broad fallback tags", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-tags-contract-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      const badTags = [
+        "spiking-neural-network",
+        "spiking-neural-networks",
+        "energy-efficiency",
+        "spike-count",
+        "continuous-activation",
+        "dense-computation",
+        "spike-timing",
+      ];
+      fs.writeFileSync(
+        pagePath,
+        fs.readFileSync(pagePath, "utf-8").replace(/^tags:\s*\[[^\]]*\]$/m, `tags: [${badTags.map((tag) => JSON.stringify(tag)).join(", ")}]`),
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 8);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /not present in the Learning Unit Contract|must equal Learning Unit Contract handles/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("contract visual fulfillment rejects a missing planned visual", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-missing-visual-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(
+        pagePath,
+        fs.readFileSync(pagePath, "utf-8").replace(/```breadboard-visual[\s\S]*?```\n\n?/g, ""),
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 23);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /planned tradeoff_explorer, but no interactive visual was embedded/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("section title, formula-noise, and crop-quality checks fail targeted defects", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-targeted-validation-"));
+    try {
+      const dir = buildGoodGarden(root);
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. Spiking Neurons", "_index.md"),
+        fm({
+          title: "Why This Topic Exists and the Mechanism Works",
+          knowledge_type: "learning-section",
+          breadboardType: "learning_section",
+          generated_by: "learn_button",
+          generatedBy: "learn_button",
+        }) + "# Bad\n",
+      );
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(
+        pagePath,
+        fs
+          .readFileSync(pagePath, "utf-8")
+          .replace(/^generatedBy:/m, 'formulas:\n  - text: "96%"\n    groundingStatus: "conceptual-helper"\n    justification: "bad trivial entry"\ngeneratedBy:'),
+      );
+      fs.writeFileSync(path.join(dir, "assets", "source-visuals", "snn-lif.png"), "PNG");
+      const results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 25).status, "FAIL");
+      assert.equal(checkById(results, 34).status, "FAIL");
+      assert.equal(checkById(results, 35).status, "FAIL");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

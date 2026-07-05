@@ -308,6 +308,21 @@
     <loc>https://localhost:8081/computer-architecture-2/</loc>
     <lastmod>2026-04-18T21:00:00.000Z</lastmod>
   </url><url>
+    <loc>https://localhost:8081/math-2/13-5-chain-rule-1781027979171</loc>
+    <lastmod>2026-06-09T17:59:39.171Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/after-13-7-gradiants-1781280160859</loc>
+    <lastmod>2026-06-12T16:02:40.859Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583</loc>
+    <lastmod>2026-05-16T15:44:08.583Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/communication-1/adding-dbm-values</loc>
     <lastmod>2026-04-26T07:24:06.018Z</lastmod>
   </url><url>
@@ -746,21 +761,6 @@
     <loc>https://localhost:8081/communication-1/</loc>
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/13-5-chain-rule-1781027979171</loc>
-    <lastmod>2026-06-09T17:59:39.171Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/after-13-7-gradiants-1781280160859</loc>
-    <lastmod>2026-06-12T16:02:40.859Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583</loc>
-    <lastmod>2026-05-16T15:44:08.583Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/public-library/</loc>
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
@@ -983,39 +983,6 @@
     <loc>https://localhost:8081/test-2/</loc>
     <lastmod>2026-07-04T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/canvas-quizzes/hard-questions-1781680403859</loc>
-    <lastmod>2026-06-17T07:13:23.859Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/canvas-quizzes/</loc>
-    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/notes/the-physical-channel-1782132376763</loc>
-    <lastmod>2026-06-22T12:46:16.763Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/notes/</loc>
-    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/sources/988929-english-3</loc>
-    <lastmod>2026-04-26T07:08:26.047Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/sources/988934-english-1</loc>
-    <lastmod>2026-04-26T07:12:08.116Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/sources/997203-english</loc>
-    <lastmod>2026-04-26T07:24:06.018Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/sources/communications-1-coursereader</loc>
-    <lastmod>2026-04-25T10:25:58.869Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/sources/digital-and-analog-communication-systems</loc>
-    <lastmod>2026-04-26T14:55:20.696Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/sources/topicmap</loc>
-    <lastmod>2026-04-26T07:58:41.833Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/communication-1/sources/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/math-2/notes/10-5-quadric-surfaces-1780665605317</loc>
     <lastmod>2026-06-05T13:20:05.317Z</lastmod>
   </url><url>
@@ -1115,9 +1082,6 @@
     <loc>https://localhost:8081/math-2/notes/</loc>
     <lastmod>2026-06-24T08:48:30.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/private-library/user-1/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/math-2/sources/5ezb0-sc-week2-1</loc>
     <lastmod>2026-06-04T10:51:05.730Z</lastmod>
   </url><url>
@@ -1192,9 +1156,6 @@
   </url><url>
     <loc>https://localhost:8081/math-2/sources/</loc>
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/private-library/user-2/</loc>
-    <lastmod>2026-04-19T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/1-oscillatory-motion-and-undamped-shm-foundations-1782370663514</loc>
     <lastmod>2026-06-25T06:57:43.514Z</lastmod>
@@ -1340,6 +1301,45 @@
     <loc>https://localhost:8081/physics-for-ee/sources/</loc>
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
+    <loc>https://localhost:8081/communication-1/canvas-quizzes/hard-questions-1781680403859</loc>
+    <lastmod>2026-06-17T07:13:23.859Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/canvas-quizzes/</loc>
+    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/notes/the-physical-channel-1782132376763</loc>
+    <lastmod>2026-06-22T12:46:16.763Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/notes/</loc>
+    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/988929-english-3</loc>
+    <lastmod>2026-04-26T07:08:26.047Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/988934-english-1</loc>
+    <lastmod>2026-04-26T07:12:08.116Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/997203-english</loc>
+    <lastmod>2026-04-26T07:24:06.018Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/communications-1-coursereader</loc>
+    <lastmod>2026-04-25T10:25:58.869Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/digital-and-analog-communication-systems</loc>
+    <lastmod>2026-04-26T14:55:20.696Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/topicmap</loc>
+    <lastmod>2026-04-26T07:58:41.833Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/private-library/user-1/</loc>
+    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/private-library/user-2/</loc>
+    <lastmod>2026-04-19T21:00:00.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/test/sources/983068-english-annotated</loc>
     <lastmod>2026-04-20T11:27:07.454Z</lastmod>
   </url><url>
@@ -1351,6 +1351,12 @@
   </url><url>
     <loc>https://localhost:8081/signals-and-systems/sources/</loc>
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/sources/2510-27379v1</loc>
+    <lastmod>2026-07-04T18:43:51.403Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/sources/</loc>
+    <lastmod>2026-07-04T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/10-2-10-3-motivation-baseband-and-bandpass-signals-and-up-down-conversion-1781956960173</loc>
     <lastmod>2026-06-20T12:02:40.173Z</lastmod>
@@ -1364,72 +1370,87 @@
     <loc>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/</loc>
     <lastmod>2026-06-24T08:48:30.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/sources/2510-27379v1</loc>
-    <lastmod>2026-07-04T18:43:51.403Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/sources/</loc>
-    <lastmod>2026-07-04T21:00:00.000Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/test-2/learning/</loc>
-    <lastmod>2026-07-05T10:06:47.431Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/Learning-Map</loc>
-    <lastmod>2026-07-05T10:06:47.442Z</lastmod>
+    <lastmod>2026-07-05T18:32:29.117Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/Topic-Overview</loc>
-    <lastmod>2026-07-05T10:06:47.437Z</lastmod>
+    <lastmod>2026-07-05T18:32:29.120Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/Learning-Map</loc>
+    <lastmod>2026-07-05T18:32:29.123Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.1-Why-Spiking-Neural-Networks-Exist</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.2-Asynchronous-Brain-Inspired-Computation</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.3-Sparse-Events-and-Energy-Efficiency</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.4-The-Leaky-Integrate-and-Fire-Neuron</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-The-Leaky-Integrate-and-Fire-Neuron</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.5-Encoding,-Excitation,-and-Lateral-Inhibition</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-Conceptual-Architecture-of-an-SNN</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Formal-Description/</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learns/</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Formal-Description/2.1-Accuracy-and-Latency</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learns/2.1-How-SNNs-Learn</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Formal-Description/2.2-Spike-Count-and-Energy</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learns/2.2-Surrogate-Gradient-Training</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-How-It-Learns-or-Changes-and-it-Is-Measured/</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learns/2.3-ANN-to-SNN-Conversion</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Formal-Description/2.3-Energy-Efficiency-and-Convergence-Time</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-How-It-Learns-or-Changes-and-it-Is-Measured/3.1-Three-Ways-SNNs-Learn</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learns/2.4-Spike-Timing-Dependent-Plasticity</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-How-It-Learns-or-Changes-and-it-Is-Measured/3.2-Unified-Evaluation-Across-Metrics</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.1-Accuracy-and-Latency-Metrics</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.2-Spike-Count-and-Energy-Metrics</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.1-Dense-Activations-and-Spike-Events</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.3-Convergence-Time</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.2-Accuracy-and-Energy-Tradeoffs</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.1-Conventional-Neural-Network-Limits</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.3-Latency-Tradeoffs-Across-SNN-Methods</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.2-Accuracy-and-Energy-Results</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.4-Spike-Count-as-an-Energy-Clue</loc>
-    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.3-Latency-Results</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.4-Energy-and-Spike-Count-Results</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/5.-Where-SNNs-Fits-and-What-Still-Blocks-It/</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.5-Training-Loss-and-Accuracy-Curves</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/5.-Where-SNNs-Fits-and-What-Still-Blocks-It/5.1-Choosing-an-SNN-Training-Strategy</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/5.-Where-SNNs-Fits-and-What-Still-Blocks-It/5.2-Neuromorphic-Hardware-for-SNNs</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/5.-Where-SNNs-Fits-and-What-Still-Blocks-It/5.3-SNN-Application-Domains</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/5.-Where-SNNs-Fits-and-What-Still-Blocks-It/5.4-Open-Challenges-in-SNNs</loc>
+    <lastmod>2026-07-05T18:31:16.555Z</lastmod>
   </url></urlset>

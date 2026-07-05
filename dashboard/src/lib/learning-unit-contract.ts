@@ -392,16 +392,23 @@ const VISUAL_TYPE_REQUIREMENTS: Record<string, VisualTypeRequirement> = {
   },
 };
 
+const SUPPORTED_INTERACTIVE_VISUAL_TYPES = new Set([
+  "lif_neuron",
+  "neural_coding",
+  "stdp_window",
+  "tradeoff_explorer",
+]);
+
 /**
  * Is this visual type justified by the learning unit? Returns an ok flag and a
- * reason when incompatible. Unknown visual types are allowed only when the unit
- * declares a concrete unique concept and why a static figure is not enough.
+ * reason when incompatible. Unsupported renderer types are rejected so the
+ * contract never requires a visual the page writer cannot embed.
  */
 export function visualTypeCompatibleWithUnit(
   visualType: string,
   unit: LearningUnitContract,
 ): { ok: boolean; reason?: string } {
-  const type = compact(visualType).toLowerCase();
+  const type = normalizeInteractiveVisualType(visualType);
   const req = VISUAL_TYPE_REQUIREMENTS[type];
   const conceptText = [
     unit.title,
@@ -414,15 +421,9 @@ export function visualTypeCompatibleWithUnit(
   const anchorText = (unit.interactiveVisual?.sourceAnchors ?? []).join(" ");
 
   if (!req) {
-    // Generic/unknown type: only allowed with an explicit unique concept and a
-    // static-is-not-enough justification, so it can't be forced by page role.
-    const visual = unit.interactiveVisual;
-    if (visual && compact(visual.uniqueConcept) && compact(visual.whyStaticSourceFigureIsNotEnough)) {
-      return { ok: true };
-    }
     return {
       ok: false,
-      reason: `visual type "${type}" is unknown and the unit gives no unique concept + static-is-not-enough justification`,
+      reason: `visual type "${type}" is not supported by an implemented interactive renderer`,
     };
   }
 
@@ -498,12 +499,24 @@ function normalizeTable(raw: unknown): SourceTableContract | null {
   };
 }
 
+function normalizeInteractiveVisualType(value: string): string {
+  const normalized = compact(value).toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "metric_calculator" || normalized === "metric_tradeoff_calculator") {
+    return "tradeoff_explorer";
+  }
+  if (normalized === "training_curve" || normalized === "training_curves" || normalized === "learning_curve") {
+    return "tradeoff_explorer";
+  }
+  return normalized;
+}
+
 function normalizeInteractiveVisual(raw: unknown): InteractiveVisualContract | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const record = raw as Record<string, unknown>;
-  const visualType = compact(record.visualType ?? record.type);
+  const visualType = normalizeInteractiveVisualType(compact(record.visualType ?? record.type));
   const uniqueConcept = compact(record.uniqueConcept ?? record.concept);
   if (!visualType && !uniqueConcept) return undefined;
+  if (!SUPPORTED_INTERACTIVE_VISUAL_TYPES.has(visualType)) return undefined;
   const learnerManipulates = asStringArray(record.learnerManipulates ?? record.controls ?? record.manipulates);
   const sourceAnchors = asStringArray(record.sourceAnchors ?? record.anchors);
   const expectedInsight = compact(record.expectedInsight ?? record.insight);
@@ -625,6 +638,29 @@ const RESULT_ROLES = new Set<LearningUnitRole>(["result_interpretation", "compar
 const DEFINITION_ROLES = new Set<LearningUnitRole>(["motivation", "core_concept"]);
 const FORMULA_ROLES = new Set<LearningUnitRole>(["formula", "metric"]);
 
+const ASSIGNMENT_ROLE_PRIORITY: Record<LearningUnitRole, number> = {
+  result_interpretation: 0,
+  comparison: 1,
+  metric: 2,
+  formula: 3,
+  worked_example: 4,
+  training_method: 5,
+  mechanism: 6,
+  core_concept: 7,
+  application: 8,
+  synthesis: 9,
+  limitation: 10,
+  motivation: 11,
+};
+
+const ASSIGNMENT_PLACEMENT_PRIORITY: Partial<Record<SourceFigurePlacement, number>> = {
+  inside_result_interpretation: 0,
+  inside_comparison: 1,
+  after_formula_introduction: 2,
+  beside_worked_example: 3,
+  inside_concept_explanation: 4,
+};
+
 function placementForArtifact(kind: SourceArtifactKind, role: LearningUnitRole): SourceFigurePlacement {
   if (kind === "table") return role === "result_interpretation" ? "inside_result_interpretation" : "inside_comparison";
   if (kind === "result") return "inside_result_interpretation";
@@ -633,6 +669,42 @@ function placementForArtifact(kind: SourceArtifactKind, role: LearningUnitRole):
   if (role === "comparison") return "inside_comparison";
   if (RESULT_ROLES.has(role)) return "inside_result_interpretation";
   return "inside_concept_explanation";
+}
+
+function assignmentScore(
+  assignment: SourceArtifactAssignment,
+  unitsById: Map<string, LearningUnitContract>,
+  order: number,
+): number {
+  const unit = unitsById.get(assignment.assignedLearningUnitId);
+  const placement = ASSIGNMENT_PLACEMENT_PRIORITY[assignment.placement] ?? 9;
+  const role = unit ? ASSIGNMENT_ROLE_PRIORITY[unit.role] : 99;
+  return placement * 1_000_000 + role * 1_000 + order;
+}
+
+/**
+ * A concrete source artifact is taught on one primary learner page. Units may
+ * mention the same table/figure/formula while planning, but the export contract
+ * needs one owner so the page writer, visual ledger, and finalizer do not ask
+ * multiple pages to embed the same source crop.
+ */
+export function dedupeSourceArtifactAssignments(
+  assignments: SourceArtifactAssignment[],
+  units: LearningUnitContract[] = [],
+): SourceArtifactAssignment[] {
+  const unitsById = new Map(units.map((unit) => [unit.id, unit]));
+  const bestByArtifact = new Map<string, { assignment: SourceArtifactAssignment; score: number }>();
+  assignments.forEach((assignment, order) => {
+    if (!assignment.sourceArtifactId || !assignment.assignedLearningUnitId) return;
+    const score = assignmentScore(assignment, unitsById, order);
+    const existing = bestByArtifact.get(assignment.sourceArtifactId);
+    if (!existing || score < existing.score) {
+      bestByArtifact.set(assignment.sourceArtifactId, { assignment, score });
+    }
+  });
+  return [...bestByArtifact.values()]
+    .sort((a, b) => a.score - b.score)
+    .map((entry) => entry.assignment);
 }
 
 /**
@@ -683,7 +755,7 @@ export function assignSourceArtifacts(units: LearningUnitContract[]): SourceArti
       push(table.id, placement, table.teachingGoal);
     }
   }
-  return assignments;
+  return dedupeSourceArtifactAssignments(assignments, units);
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +988,57 @@ function subsectionFromUnit(unit: LearningUnitContract): LearningSubsectionPlan 
   };
 }
 
+function topicLabel(topic: string): string {
+  const cleaned = compact(topic).replace(/\bLearning Garden\b/gi, "").trim();
+  if (!cleaned) return "the Topic";
+  if (/spiking neural networks|snns/i.test(cleaned)) return "SNNs";
+  return cleaned.replace(/^the\s+/i, "");
+}
+
+function titleCase(value: string): string {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word, index) => {
+      const lower = word.toLowerCase();
+      if (index > 0 && /^(and|or|the|a|an|to|of|in|for|with)$/.test(lower)) return lower;
+      return lower.replace(/^./, (ch) => ch.toUpperCase());
+    })
+    .join(" ");
+}
+
+function conceptFromUnits(units: LearningUnitContract[], fallback: string): string {
+  const concepts = units.flatMap((unit) => [...unit.newConcepts, unit.title]);
+  const candidate =
+    concepts
+      .map((item) => compact(item).replace(/^\d+(?:\.\d+)*\.?\s*/, ""))
+      .find((item) => item && !/^(why|how|what|when|where|the)\b/i.test(item)) ??
+    fallback;
+  return titleCase(candidate.replace(/\bSNNs\b/gi, "SNNs"));
+}
+
+function polishSectionTitle(cluster: SectionCluster, units: LearningUnitContract[], gardenTopic: string): string {
+  const topic = topicLabel(gardenTopic);
+  const roles = new Set(units.map((unit) => unit.role));
+  if (roles.has("motivation") && (roles.has("core_concept") || roles.has("mechanism"))) {
+    return /SNNs/i.test(topic) ? "Why SNNs Need Events" : `Why ${topic} Needs a New Mechanism`;
+  }
+  if (roles.has("core_concept") || roles.has("mechanism")) {
+    return `How ${conceptFromUnits(units, topic)} Works`;
+  }
+  if (roles.has("formula") || roles.has("metric") || roles.has("worked_example")) {
+    return /SNNs/i.test(topic) ? "The Metrics That Make SNNs Measurable" : `The Rules and Metrics Behind ${topic}`;
+  }
+  if (roles.has("training_method") && roles.has("metric")) return `Training and Measuring ${topic}`;
+  if (roles.has("training_method")) return `How ${topic} Learns`;
+  if (roles.has("result_interpretation") || roles.has("comparison")) return "What the Results Show";
+  if (roles.has("application") || roles.has("limitation") || roles.has("synthesis")) {
+    return `Where ${topic} Fits and What Still Blocks It`;
+  }
+  const first = conceptFromUnits(units, cluster.title);
+  return first === "This Topic" ? `Understanding ${topic}` : first;
+}
+
 /**
  * Build a ProposedLearningMap from learning units. Sections come from
  * clustering; subsections come one-per-unit. The map that reaches page
@@ -930,11 +1053,12 @@ export function learningMapFromUnits(
   const sections: LearningSectionPlan[] = clusters.map((cluster) => {
     const clusterUnits = cluster.unitIds.map((id) => byId.get(id)).filter(Boolean) as LearningUnitContract[];
     const sectionAnchors = [...new Set(clusterUnits.flatMap((unit) => unit.sourceAnchors))].slice(0, 8);
+    const sectionTitle = polishSectionTitle(cluster, clusterUnits, meta.title);
     return {
-      title: cluster.title,
+      title: sectionTitle,
       purpose: cluster.singleSubsectionReason
         ? cluster.singleSubsectionReason
-        : `Build up ${cluster.title.toLowerCase()} one step at a time.`,
+        : `Build up ${sectionTitle.toLowerCase()} one step at a time.`,
       sourceAnchors: sectionAnchors,
       subsections: clusterUnits.map(subsectionFromUnit),
     };
