@@ -1401,23 +1401,35 @@
     <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/2.-The-Formal-Description/2.1-Accuracy-and-Latency</loc>
-    <lastmod>2026-07-05T09:46:54.186Z</lastmod>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/2.-The-Formal-Description/2.2-Spike-Count-and-Energy</loc>
-    <lastmod>2026-07-05T09:46:54.186Z</lastmod>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/3.-How-It-Learns-or-Changes-and-it-Is-Measured/</loc>
-    <lastmod>2026-07-05T09:46:54.186Z</lastmod>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/2.-The-Formal-Description/2.3-Energy-Efficiency-and-Convergence-Time</loc>
-    <lastmod>2026-07-05T09:46:54.186Z</lastmod>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/3.-How-It-Learns-or-Changes-and-it-Is-Measured/3.1-Three-Ways-SNNs-Learn</loc>
-    <lastmod>2026-07-05T09:46:54.186Z</lastmod>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/3.-How-It-Learns-or-Changes-and-it-Is-Measured/3.2-Unified-Evaluation-Across-Metrics</loc>
-    <lastmod>2026-07-05T09:46:54.186Z</lastmod>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/</loc>
-    <lastmod>2026-07-05T09:46:54.186Z</lastmod>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.1-Dense-Activations-and-Spike-Events</loc>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.2-Accuracy-and-Energy-Tradeoffs</loc>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.3-Latency-Tradeoffs-Across-SNN-Methods</loc>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.4-Spike-Count-as-an-Energy-Clue</loc>
+    <lastmod>2026-07-05T10:05:07.703Z</lastmod>
   </url></urlset>
