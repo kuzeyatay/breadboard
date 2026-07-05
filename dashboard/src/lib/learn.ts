@@ -282,10 +282,10 @@ const LEARN_PLANNING_RETRY_COUNCIL_MODE = envCouncilMode(
   "direct_council",
 );
 /** Full-regeneration attempts per page. Clamped to [1, 2]: a failed page gets
- * one focused repair call, never repeated full regeneration. */
+ * one focused repair call, then one fresh rewrite if the repair still fails. */
 const MAX_PAGE_ATTEMPTS = Math.max(
   1,
-  Math.min(2, envPositiveInt("LEARN_MAX_PAGE_ATTEMPTS", 1)),
+  Math.min(2, envPositiveInt("LEARN_MAX_PAGE_ATTEMPTS", 2)),
 );
 const MAX_SNIPPETS_PER_PAGE = envPositiveInt("LEARN_MAX_SNIPPETS_PER_PAGE", 5);
 const MAX_CHARS_PER_SNIPPET = envPositiveInt("LEARN_MAX_CHARS_PER_SNIPPET", 1200);
@@ -456,11 +456,18 @@ Do not teach through contrastive negation (telling the learner what something is
 Weak: "A second limitation appears in how information is represented. Continuous activations carry information through changing numerical values."
 Strong: "Imagine a sensor watching a mostly still scene. A dense network keeps re-processing whole arrays of values even when nothing changes. A spiking system assumes silence is meaningful: when something changes, it sends a single event — a spike — at a particular time, and that timing is part of the message."`;
 
+const PLACEHOLDER_FREE_PROSE_RULES = `Final-prose rules (hard requirements):
+- Every line must be finished learner-facing prose, not a note about what someone should write later.
+- Never include scaffold commands such as insert, add the example here, write the details here, fill in, expand this later, TODO, placeholder, lorem ipsum, or to be written.
+- Never leave empty bullets, ellipsis-only bullets, bracketed instructions, or notes to yourself.
+- If a source detail is thin or missing, write the supported explanation plainly instead of describing what should be added later.`;
+
 const SUBSECTION_PROMPT = `Write one flowing lesson subsection for a Breadboard learning garden.
 Return Markdown body only, no frontmatter, no code fence around the whole page.
 ${LEARNER_VOICE_RULES}
 ${DEPTH_RULES}
 ${ANTI_AIISM_RULES}
+${PLACEHOLDER_FREE_PROSE_RULES}
 Mechanics:
 - One flowing lesson, not disconnected mini-sections; avoid over-segmentation and excessive headings.
 - Treat dossier.learningUnit as the contract for this page: answer its learningQuestion, introduce its newConcepts, respect mustNotRepeat, use only its planned source artifacts, and use its zettelNotes as conceptual anchors.
@@ -479,6 +486,7 @@ Return Markdown body only, no frontmatter.
 ${LEARNER_VOICE_RULES}
 ${DEPTH_RULES}
 ${ANTI_AIISM_RULES}
+${PLACEHOLDER_FREE_PROSE_RULES}
 Keep it one flowing lesson. Keep every embedded image where it is (or move it nearer the prose it supports) and make sure each image is interpreted, not just captioned. Keep any \`\`\`breadboard-visual block byte-for-byte unchanged. Remove any placeholder or self-instruction text. Keep or add 1-2 **Question.** / **Answer.** pairs.
 If source-only mode is true, do not add unsupported facts; say plainly when material is missing.`;
 
@@ -486,11 +494,13 @@ const SUBSECTION_REPAIR_PROMPT = `Repair one lesson page that failed specific ha
 Return Markdown body only, no frontmatter.
 ${LEARNER_VOICE_RULES}
 ${ANTI_AIISM_RULES}
+${PLACEHOLDER_FREE_PROSE_RULES}
 Task:
 - Fix ONLY the listed hard failures (failedProblems). Leave everything that already works untouched.
 - Preserve correct existing content: explanations, examples, formulas, structure, and the Question./Answer. section.
 - Do not restart from scratch unless the page is genuinely unusable.
 - If a failure says the page is too short, lacks a concrete example, or lacks a **Question.** / **Answer.** pair, add the missing depth in the same flowing, beginner-friendly voice: motivate before mechanism, define terms as they appear, put a concrete example right after the idea it illustrates, and keep at least ~700 words of real explanatory prose.
+- If failedProblems includes placeholder or empty-bullet-scaffold, replace the offending scaffold with finished explanatory sentences. Do not merely delete it unless the surrounding paragraph remains coherent and complete.
 - Rewrite any sentence that comments on "the paper", "the source", "source-derived", or similar document framing so it teaches the concept directly.
 - Keep every embedded image markdown where it is and keep any \`\`\`breadboard-visual block byte-for-byte unchanged.
 - Remove placeholder or self-instruction text.
@@ -3841,12 +3851,11 @@ export async function runTextbookGeneration({
           .map((visual) => sourceVisualEmbedUrl(visual))
           .filter((url): url is string => Boolean(url));
 
-        // Stage 4: one direct_council generation call, deterministic
-        // clean/scrub + visual embedding, then the local quality critic. A
-        // second model call happens ONLY when the deterministic gate hard-fails
-        // (one focused repair, never a full-council rewrite). If no attempt
-        // passes, the last draft is quarantined for debugging and the job
-        // fails. The deterministic emergency draft is never learner-facing.
+        // Stage 4: up to two direct_council generation calls. Each attempt gets
+        // deterministic clean/scrub + visual embedding, then the local quality
+        // critic. A hard-failing attempt gets one focused repair call. If no
+        // attempt passes, the last draft is quarantined for debugging and the
+        // job fails. The deterministic emergency draft is never learner-facing.
         let pageBody: string | null = null;
         let subsectionRunId: string | undefined;
         let revisionRunId: string | undefined;
@@ -3854,12 +3863,24 @@ export async function runTextbookGeneration({
         let lastAttemptBody = "";
 
         for (let attempt = 0; attempt < MAX_PAGE_ATTEMPTS; attempt += 1) {
+          const failedProblemCodes = (lastQuality?.problems ?? [])
+            .filter((problem) => problem.hard)
+            .map((problem) => problem.code);
+          const placeholderFailure = failedProblemCodes.some(
+            (code) => code === "placeholder" || code === "empty-bullet-scaffold",
+          );
           const retryNote =
             attempt === 0
               ? undefined
-              : `This is retry ${attempt}. The previous draft failed quality checks (${(lastQuality?.problems ?? [])
-                  .map((problem) => problem.code)
-                  .join(", ")}). Write a longer, deeper, fully-written lesson (at least 700 words) with a concrete example and a real Question./Answer. Teach the concept directly — never comment on "the paper" or "the source".`;
+              : [
+                  `This is retry ${attempt}. The previous draft failed hard quality checks (${failedProblemCodes.join(", ") || "unknown"}).`,
+                  placeholderFailure
+                    ? "The previous draft contained scaffold/meta-instruction text. Replace it with final learner-facing explanation; do not include notes about what to insert, add, fill in, expand, cover, or explain later."
+                    : "",
+                  'Write a longer, deeper, fully-written lesson (at least 700 words) with a concrete example and a real Question./Answer. Teach the concept directly; never comment on "the paper" or "the source".',
+                ]
+                  .filter(Boolean)
+                  .join(" ");
 
           let attemptBody: string | null = null;
           try {
@@ -3952,6 +3973,8 @@ export async function runTextbookGeneration({
                     "Preserve correct existing content.",
                     "Do not restart from scratch unless the page is unusable.",
                     "Keep the section flowing and beginner-friendly.",
+                    "Replace placeholder/meta-instruction text with finished learner-facing prose.",
+                    "Remove empty or ellipsis-only bullets instead of returning scaffold bullets.",
                     "Keep source-only constraints.",
                     "Keep assigned visuals embedded where relevant.",
                     "Return only the final markdown.",

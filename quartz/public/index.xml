@@ -33,38 +33,38 @@
     <title>1.1 Why Spiking Neural Networks Exist</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.1-Why-Spiking-Neural-Networks-Exist</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera watching a hallway at night. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera watching a quiet hallway. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:05:07 GMT</pubDate>
   </item><item>
     <title>1.2 Asynchronous Brain-Inspired Computation</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.2-Asynchronous-Brain-Inspired-Computation</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.2-Asynchronous-Brain-Inspired-Computation</guid>
-    <description><![CDATA[ A camera on a small battery-powered robot can spend most of its time staring at a hallway where nothing moves. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
+    <description><![CDATA[ A spike event already gives us a different way to imagine computation: instead of every neuron continuously sending a changing number forward, a neuron can stay quiet until it has something to report. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:05:07 GMT</pubDate>
   </item><item>
     <title>1.3 Sparse Events and Energy Efficiency</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.3-Sparse-Events-and-Energy-Efficiency</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.3-Sparse-Events-and-Energy-Efficiency</guid>
-    <description><![CDATA[ Sparse Events and Energy Efficiency Imagine a small camera on a battery-powered robot watching a quiet hallway. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
+    <description><![CDATA[ Sparse Events and Energy Efficiency Imagine the spike event from the previous idea as a tiny message sent through a network: a neuron stays quiet while its input is too weak, then emits a brief spike when its internal state reaches a firing threshold. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:05:07 GMT</pubDate>
   </item><item>
     <title>1.4 The Leaky Integrate-and-Fire Neuron</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.4-The-Leaky-Integrate-and-Fire-Neuron</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.4-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron You already have the basic picture of a spike as a brief event in time and a threshold as the level that decides when an event should happen. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron Once information is carried by spike events, a neuron needs a simple rule for deciding when an event should happen. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:05:07 GMT</pubDate>
   </item><item>
     <title>1.5 Encoding, Excitation, and Lateral Inhibition</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.5-Encoding,-Excitation,-and-Lateral-Inhibition</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.5-Encoding,-Excitation,-and-Lateral-Inhibition</guid>
-    <description><![CDATA[ Encoding, Excitation, and Lateral Inhibition Once a neuron layer can receive a spike train and fire when its accumulated input becomes strong enough, the next question is how a full spiking system turns ordinary data into that kind of activity. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
+    <description><![CDATA[ Encoding, Excitation, and Lateral Inhibition You have already seen how a spiking neuron can sit quietly while incoming spikes push its internal state upward, then fire when enough evidence has accumulated to cross a threshold. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:05:07 GMT</pubDate>
   </item><item>
     <title>2. The Formal Description</title>
     <link>https://localhost:8081/test-2/learning/2.-The-Formal-Description/</link>
     <guid>https://localhost:8081/test-2/learning/2.-The-Formal-Description/</guid>
     <description><![CDATA[ 2. The Formal Description Build up the formal description one step at a time. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
+    <pubDate>Sun, 05 Jul 2026 10:05:07 GMT</pubDate>
   </item>
     </channel>
   </rss>
