@@ -5,6 +5,14 @@ interface LearnErrorDialogProps {
   currentStep?: string;
   currentSectionTitle?: string;
   currentPageTitle?: string;
+  validationReport?: {
+    relativePath?: string;
+    url?: string;
+    markdown?: string;
+    truncated?: boolean;
+    accepted?: boolean;
+    generatedAt?: string;
+  } | null;
   onDismiss: () => void;
   onOpenPanel?: () => void;
   openPanelLabel?: string;
@@ -15,6 +23,7 @@ export default function LearnErrorDialog({
   currentStep,
   currentSectionTitle,
   currentPageTitle,
+  validationReport,
   onDismiss,
   onOpenPanel,
   openPanelLabel = "Open Learn panel",
@@ -32,7 +41,7 @@ export default function LearnErrorDialog({
         aria-modal="true"
         aria-labelledby="learn-error-title"
         aria-describedby="learn-error-description"
-        className="w-full max-w-lg rounded-lg border border-red-700 bg-gray-950 p-5 text-gray-100 shadow-2xl"
+        className="w-full max-w-2xl rounded-lg border border-red-700 bg-gray-950 p-5 text-gray-100 shadow-2xl"
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
@@ -96,6 +105,36 @@ export default function LearnErrorDialog({
             {message}
           </p>
         </div>
+
+        {validationReport?.markdown ? (
+          <section className="mt-4 rounded-md border border-gray-800 bg-gray-900/60">
+            <div className="flex flex-col gap-2 border-b border-gray-800 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <h3 className="text-sm font-medium text-gray-100">Validation report</h3>
+                <p className="mt-0.5 break-words text-xs text-gray-500">
+                  {validationReport.relativePath ?? ".breadboard/validation-report.md"}
+                  {validationReport.generatedAt ? ` - ${validationReport.generatedAt}` : ""}
+                  {typeof validationReport.accepted === "boolean"
+                    ? ` - Accepted: ${validationReport.accepted ? "yes" : "no"}`
+                    : ""}
+                </p>
+              </div>
+              {validationReport.url ? (
+                <a
+                  href={validationReport.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0 rounded-md border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-200 transition hover:border-gray-500 hover:text-white"
+                >
+                  Open full report
+                </a>
+              ) : null}
+            </div>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words p-3 text-xs leading-5 text-gray-300">
+              {validationReport.markdown}
+            </pre>
+          </section>
+        ) : null}
 
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button

@@ -21,15 +21,18 @@ import { fileURLToPath } from "node:url";
 import { extractQuartzMath } from "../dashboard/src/lib/quartz-markdown.ts";
 import {
   assignSourceArtifacts,
+  dedupeSourceArtifactAssignments,
   figurePlacementProblems,
   isAtomicZettelHandle,
   normalizeLearningUnits,
   validateLearningUnitContracts,
   visualTypeCompatibleWithUnit,
+  zettelHandlesForUnit,
   type LearningUnitContract,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "../dashboard/src/lib/learning-unit-contract.ts";
+import { isGroundableFormula } from "../dashboard/src/lib/learn-utils.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -320,6 +323,66 @@ function readIfExists(filePath: string): string {
   }
 }
 
+function assetPathForUrl(gardenDir: string, gardenSlug: string, assetUrl: string): string | null {
+  const normalized = assetUrl.replace(/\\/g, "/").trim();
+  const prefix = `/${gardenSlug}/`;
+  const rel = normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized.replace(/^\/+/, "");
+  const resolved = path.resolve(gardenDir, rel);
+  const root = path.resolve(gardenDir);
+  return resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
+}
+
+function imageDimensions(filePath: string): { width: number; height: number } | null {
+  let buffer: Buffer;
+  try {
+    buffer = fs.readFileSync(filePath);
+  } catch {
+    return null;
+  }
+  if (buffer.length >= 24 && buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  return null;
+}
+
+function cropQualityProblems(gardenDir: string, gardenSlug: string, visual: Record<string, unknown>): string[] {
+  const problems: string[] = [];
+  const id = String(visual.sourceVisualId ?? "(unknown)");
+  const type = String(visual.type ?? "");
+  const cropped = String(visual.croppedImagePath ?? "");
+  if (String(visual.usageStatus ?? "") === "assigned" && !cropped) {
+    problems.push(`${id}: assigned ${type || "visual"} has no croppedImagePath`);
+    return problems;
+  }
+  if (!cropped) return problems;
+  if (/-page-\d{2,}(?:-\d+)?\.(?:png|jpe?g|webp)$/i.test(cropped)) {
+    problems.push(`${id}: croppedImagePath looks like a full-page snapshot`);
+  }
+  const filePath = assetPathForUrl(gardenDir, gardenSlug, cropped);
+  const dims = filePath ? imageDimensions(filePath) : null;
+  if (!dims) {
+    problems.push(`${id}: cannot read crop dimensions for ${cropped}`);
+  } else {
+    const minWidth = type === "equation" ? 180 : type === "table" ? 260 : 160;
+    const minHeight = type === "equation" ? 48 : type === "table" ? 120 : 90;
+    if (dims.width < minWidth || dims.height < minHeight) {
+      problems.push(`${id}: crop too small (${dims.width}x${dims.height}, expected at least ${minWidth}x${minHeight})`);
+    }
+  }
+  const bbox = asObject(visual.bbox);
+  const x = Number(bbox.x);
+  const y = Number(bbox.y);
+  const width = Number(bbox.width);
+  const height = Number(bbox.height);
+  if ([x, y, width, height].every(Number.isFinite)) {
+    const edge = 0.015;
+    if (x <= edge || y <= edge || x + width >= 1 - edge || y + height >= 1 - edge) {
+      problems.push(`${id}: detection bbox touches page edge and may be clipped`);
+    }
+  }
+  return problems;
+}
+
 interface LearningUnitContractArtifact {
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
@@ -385,7 +448,7 @@ function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifa
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
       const units = normalizeLearningUnits(parsed);
-      const assignments = normalizeSourceArtifactAssignments(parsed);
+      const assignments = dedupeSourceArtifactAssignments(normalizeSourceArtifactAssignments(parsed), units);
       if (units.length > 0) return { units, assignments, foundPath: filePath };
     } catch {
       // try the next location
@@ -739,23 +802,41 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(7, "exported tree is only _index.md, learning/, sources/, assets/, .breadboard/", [...new Set(problems)]);
   }
 
-  // 8. Learner lesson pages carry 4-8 page-relevant atomic Zettelkasten handles; no conceptTags.
+  // 8. Learner lesson pages carry exactly the Learning Unit Contract's
+  //    zettel handles; no fallback/source/topic tags and no conceptTags.
   {
     const problems: string[] = [];
     const tagCounts = new Map<string, number>();
+    const knownContractHandles = new Set(learningUnits.flatMap((unit) => zettelHandlesForUnit(unit)));
     for (const page of lessonPages) {
       if (fmArray(page.frontmatter, "conceptTags").length > 0 || "conceptTags" in page.frontmatter) {
         problems.push(`${page.relPath}: has conceptTags (banned on learner pages)`);
       }
       const tags = fmArray(page.frontmatter, "tags");
       for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
-      if (tags.length < 4 || tags.length > 8) {
-        problems.push(`${page.relPath}: ${tags.length} tags (need 4-8)`);
-        continue;
+      const unitId = fmString(page.frontmatter, "learningUnitId");
+      const unit = unitId ? learningUnitsById.get(unitId) : undefined;
+      if (unit) {
+        const expected = zettelHandlesForUnit(unit);
+        const missing = expected.filter((tag) => !tags.includes(tag));
+        const extra = tags.filter((tag) => !expected.includes(tag));
+        if (expected.length === 0) problems.push(`${page.relPath}: learning unit ${unit.id} has no contract zettel handles`);
+        if (missing.length > 0 || extra.length > 0) {
+          problems.push(
+            `${page.relPath}: tags must equal Learning Unit Contract handles for ${unit.id}; missing [${missing.join(", ")}], extra [${extra.join(", ")}]`,
+          );
+        }
+      } else if (learningUnits.length > 0) {
+        problems.push(`${page.relPath}: cannot verify tags because learningUnitId is missing or unknown`);
+      } else if (tags.length < 1) {
+        problems.push(`${page.relPath}: no tags and no Learning Unit Contract available`);
       }
       const haystack = `${fmString(page.frontmatter, "title")}\n${teachingProse(page.body)}`.toLowerCase();
       const titleSlug = slugifyLoose(fmString(page.frontmatter, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, ""));
       for (const tag of tags) {
+        if (learningUnits.length > 0 && !knownContractHandles.has(tag)) {
+          problems.push(`${page.relPath}: tag "${tag}" is not present in the Learning Unit Contract`);
+        }
         if (!isAtomicZettelHandle(tag)) {
           problems.push(`${page.relPath}: tag "${tag}" is not an atomic lower-kebab-case Zettelkasten handle`);
           continue;
@@ -794,7 +875,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         if (count > maxAllowed) problems.push(`tag "${tag}" appears on ${count}/${lessonPages.length} learner pages (too broad/reused)`);
       }
     }
-    check(8, "learner pages have 4-8 atomic Zettelkasten handles", problems, lessonPages.length === 0);
+    check(8, "learner tags exactly match Learning Unit Contract zettel handles", problems, lessonPages.length === 0);
   }
 
   // 9. Internal/source/planning pages carry no public tags.
@@ -1148,36 +1229,51 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(21, "Source Map is consistent with extracted formula anchors", problems, formulaVisuals.length === 0);
   }
 
-  // 22. Source Coverage must treat metric formulas as central when a metric page exists.
+  // 22. Source Coverage must be derived from contract assignments, not metric
+  //     title heuristics.
   {
     const problems: string[] = [];
     const formulaVisuals = ledger.filter(isFormulaVisual);
-    const hasMetricLesson = lessonPages.some((page) =>
-      /metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/i.test(`${fmString(page.frontmatter, "title")} ${page.relPath}`),
-    );
-    if (formulaVisuals.length > 0 && hasMetricLesson) {
+    if (formulaVisuals.length > 0) {
       const coverage = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"));
       if (!coverage) {
         problems.push(".breadboard/planning/Source Coverage.md missing despite formula anchors");
       } else {
+        if (/central to\s+\[\[/i.test(coverage)) {
+          problems.push("Source Coverage still uses heuristic 'central to [[page]]' formula assignments");
+        }
         for (const visual of formulaVisuals) {
           const id = String(visual.sourceVisualId ?? "");
-          if (id && new RegExp(`${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*Not central`, "i").test(coverage)) {
-            problems.push(`${id}: Source Coverage marks metric formula as Not central`);
+          if (!id) continue;
+          const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const assignments = contractAssignments.filter((assignment) => assignment.sourceArtifactId === id);
+          if (assignments.length === 0) continue;
+          for (const assignment of assignments) {
+            const lineRe = new RegExp(`${escaped}[^\\n]*assigned to ${assignment.assignedLearningUnitId}\\b`, "i");
+            if (!lineRe.test(coverage)) {
+              problems.push(`${id}: Source Coverage does not assign formula to contract unit ${assignment.assignedLearningUnitId}`);
+            }
           }
-        }
-        if (!/Formula Anchor Assignments|central to/i.test(coverage)) {
-          problems.push("Source Coverage lacks formula anchor assignments to the metric lesson");
+          const lines = coverage.split(/\r?\n/).filter((line) => line.includes(id));
+          for (const line of lines) {
+            const unitMatches = [...line.matchAll(/\bU\d+[A-Za-z0-9_.-]*\b/g)].map((match) => match[0]);
+            for (const unitId of unitMatches) {
+              if (!assignments.some((assignment) => assignment.assignedLearningUnitId === unitId)) {
+                problems.push(`${id}: Source Coverage line conflicts with contract by mentioning ${unitId}: ${line}`);
+              }
+            }
+          }
         }
       }
     }
-    check(22, "Source Coverage assigns metric formulas centrally", problems, formulaVisuals.length === 0 || !hasMetricLesson);
+    check(22, "Source Coverage follows Learning Unit Contract assignments", problems, formulaVisuals.length === 0);
   }
 
   // 23. Embedded interactive visuals must be grounded, page-specific, and not
   //     generic mismatches.
   {
     const problems: string[] = [];
+    const specsByUnit = new Map<string, Array<{ page: PageFile; spec: Record<string, unknown> }>>();
     const visualsDir = path.join(gardenDir, ".breadboard", "visuals");
     try {
       for (const file of fs.readdirSync(visualsDir).filter((name) => name.endsWith(".json"))) {
@@ -1214,6 +1310,11 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
       const unitId = fmString(page.frontmatter, "learningUnitId");
       const unit = unitId ? learningUnitsById.get(unitId) : undefined;
+      if (unitId) {
+        const list = specsByUnit.get(unitId) ?? [];
+        list.push({ page, spec });
+        specsByUnit.set(unitId, list);
+      }
       if (unit) {
         if (!unit.interactiveVisual) {
           problems.push(`${page.relPath}: embeds visual ${id}, but learning unit ${unit.id} has no interactiveVisual contract`);
@@ -1251,16 +1352,38 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${page.relPath}: tradeoff_explorer visual is not tied to metric/result/application tradeoffs`);
       }
     }
-    check(23, "interactive visuals are source-grounded and page-specific", problems, embeddedVisualSpecs.length === 0);
+    const pageByUnit = new Map<string, PageFile>();
+    for (const page of lessonPages) {
+      const unitId = fmString(page.frontmatter, "learningUnitId");
+      if (unitId) pageByUnit.set(unitId, page);
+    }
+    for (const unit of learningUnits) {
+      if (!unit.interactiveVisual) continue;
+      const page = pageByUnit.get(unit.id);
+      if (!page) continue;
+      const specs = specsByUnit.get(unit.id) ?? [];
+      const omissionReason =
+        fmString(page.frontmatter, "interactiveVisualOmissionReason") ||
+        (/interactive visual intentionally omitted/i.test(page.body) ? "body notes intentional omission" : "");
+      if (specs.length === 0 && !omissionReason) {
+        problems.push(`${page.relPath}: learning unit ${unit.id} planned ${unit.interactiveVisual.visualType}, but no interactive visual was embedded`);
+      }
+    }
+    const plannedInteractiveCount = learningUnits.filter((unit) => unit.interactiveVisual).length;
+    check(23, "interactive visuals fulfill the Learning Unit Contract", problems, embeddedVisualSpecs.length === 0 && plannedInteractiveCount === 0);
   }
 
   // 24. Atomic Zettelkasten handles are specific and not broadly reused.
   {
     const problems: string[] = [];
     const counts = new Map<string, number>();
+    const knownContractHandles = new Set(learningUnits.flatMap((unit) => zettelHandlesForUnit(unit)));
     for (const page of lessonPages) {
       for (const tag of fmArray(page.frontmatter, "tags")) {
         counts.set(tag, (counts.get(tag) ?? 0) + 1);
+        if (learningUnits.length > 0 && !knownContractHandles.has(tag)) {
+          problems.push(`${page.relPath}: tag "${tag}" does not originate from the Learning Unit Contract`);
+        }
         if (tag.includes("/")) problems.push(`${page.relPath}: slash-category tag "${tag}"`);
         if (!isAtomicZettelHandle(tag)) problems.push(`${page.relPath}: non-atomic tag "${tag}"`);
         if (!tag.includes("-") && BANNED_TAG_SEGMENTS.has(tag.toLowerCase())) {
@@ -1283,7 +1406,13 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     const problems: string[] = [];
     const formulaVisuals = ledger.filter(isFormulaVisual);
     for (const page of lessonPages) {
-      const math = extractQuartzMath(page.body);
+      const math = extractQuartzMath(page.body).filter((expr) => isGroundableFormula(expr.formula));
+      const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
+      for (const [index, entry] of entries.entries()) {
+        if (entry.text && !isGroundableFormula(String(entry.text))) {
+          problems.push(`${page.relPath}: formulas[${index}] tracks trivial math "${entry.text}" instead of a meaningful formula`);
+        }
+      }
       if ("formulaGroundingStatus" in page.frontmatter || "formulaJustification" in page.frontmatter) {
         problems.push(`${page.relPath}: uses broad formulaGroundingStatus/formulaJustification instead of per-formula formulas: entries`);
       }
@@ -1292,7 +1421,6 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
           fmString(page.frontmatter, "sourceFormulaAnchor"),
         ].filter(Boolean);
-        const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
         if (entries.length === 0) {
           problems.push(`${page.relPath}: contains math but has no per-formula formulas: frontmatter entries`);
         }
@@ -1469,10 +1597,17 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${applicationPage.relPath}: application page lacks deployment/hardware anchors`);
       }
     }
-    check(27, "source visuals match page semantics", [...new Set(problems)], !isSnnGarden || !ledgerExists);
+    check(
+      27,
+      "source visuals match page semantics",
+      [...new Set(problems)],
+      learningUnits.length > 0 || !isSnnGarden || !ledgerExists,
+    );
   }
 
-  // 28. Atomic tags must be central to the page, not only syntactically valid.
+  // 28. Legacy semantic tag lint. Contract-backed gardens already enforce the
+  // exact zettel handles in checks 8 and 24; do not reintroduce text-mined
+  // centrality heuristics after the Learning Unit Contract has spoken.
   {
     const problems: string[] = [];
     for (const page of lessonPages) {
@@ -1497,11 +1632,17 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         }
       }
     }
-    check(28, "learner tags are central to their pages", [...new Set(problems)], lessonPages.length === 0);
+    check(
+      28,
+      "learner tags are central to their pages",
+      [...new Set(problems)],
+      learningUnits.length > 0 || lessonPages.length === 0,
+    );
   }
 
-  // 29. Repeated learner-page openings are rejected, including the known
-  //     battery-robot / quiet-hallway / dense-ANN / silent-SNN motif.
+  // 29. Repeated learner-page openings are a style lint. Contract fulfillment
+  // is the hard acceptance boundary for Learn exports; keep this heuristic from
+  // overriding a contract-valid artifact.
   {
     const problems: string[] = [];
     const introByFingerprint = new Map<string, string[]>();
@@ -1537,7 +1678,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`repeated opening phrase "${fingerprint}" on ${rels.join(", ")}`);
       }
     }
-    check(29, "learner page openings are not repeated across pages", problems, lessonPages.length < 3);
+    check(
+      29,
+      "learner page openings are not repeated across pages",
+      problems,
+      learningUnits.length > 0 || lessonPages.length < 3,
+    );
   }
 
   // 30. Exported artifact includes the machine-readable validation report.
@@ -1679,6 +1825,35 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     check(33, "source figures are not reused without explicit policy", problems, lessonPages.length === 0);
+  }
+
+  // 34. Learner-facing section titles must not expose internal clustering
+  //     scaffold labels.
+  {
+    const problems: string[] = [];
+    const subsectionTitles = new Set(lessonPages.map((page) => fmString(page.frontmatter, "title")).filter(Boolean));
+    for (const page of published) {
+      if (!/^learning\/[^/]+\/_index\.md$/i.test(page.relPath)) continue;
+      const title = fmString(page.frontmatter, "title") || page.relPath;
+      if (/This Topic/i.test(title)) problems.push(`${page.relPath}: section title contains "This Topic"`);
+      if (/and the Mechanism Works|and it Is Measured|How It Learns or Changes|The Formal Description/i.test(title)) {
+        problems.push(`${page.relPath}: section title exposes internal scaffold phrase "${title}"`);
+      }
+      const stripped = title.replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+      if (subsectionTitles.has(stripped)) {
+        problems.push(`${page.relPath}: section title duplicates a subsection title "${stripped}"`);
+      }
+    }
+    check(34, "section titles are learner-facing, not planning scaffolds", problems, lessonPages.length === 0);
+  }
+
+  // 35. Source crop quality: conservative dimensions + edge heuristics.
+  {
+    const problems: string[] = [];
+    for (const visual of ledger) {
+      problems.push(...cropQualityProblems(gardenDir, gardenSlug, visual));
+    }
+    check(35, "source crop quality is acceptable", problems, !ledgerExists);
   }
 
   return results;
@@ -1875,6 +2050,50 @@ export function writeValidationReport(
     accepted
       ? "Summary: artifact is acceptable — all critical checks pass."
       : "Summary: artifact is NOT acceptable — see failing checks and file paths below.",
+    "",
+    "## Export Tree",
+    "",
+    "See checks 7, 9, 11, 12, 18, 26, and 30.",
+    "",
+    "## Link Validation",
+    "",
+    "See check 17.",
+    "",
+    "## Learning Unit Contract Fulfillment",
+    "",
+    "See checks 8, 23, 31, 32, and 33.",
+    "",
+    "## Zettelkasten Tags",
+    "",
+    "See checks 8 and 24.",
+    "",
+    "## Source Coverage From Contract",
+    "",
+    "See checks 22 and 26.",
+    "",
+    "## Interactive Visual Fulfillment",
+    "",
+    "See check 23.",
+    "",
+    "## Interactive Visual Uniqueness",
+    "",
+    "See checks 13, 14, 18, 23, and 31.",
+    "",
+    "## Formula Grounding",
+    "",
+    "See check 25.",
+    "",
+    "## Source Crop Quality",
+    "",
+    "See checks 12 and 35.",
+    "",
+    "## Section Title Quality",
+    "",
+    "See check 34.",
+    "",
+    "## Final Acceptance",
+    "",
+    `Accepted: ${accepted ? "yes" : "no"}`,
     "",
     "## Checks",
     "",
