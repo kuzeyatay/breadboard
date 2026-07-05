@@ -1,66 +1,81 @@
 ---
 title: "Learning Map"
-date: "2026-07-04T15:46:32.365Z"
+date: "2026-07-05T10:06:47.442Z"
 knowledge_type: "learning-map"
 breadboardType: "learning_map"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr6jacb9_zeyl4kq"
-learningVersionId: "learning_mr6jacb9_zeyl4kq"
-sourceSetHash: "92ec0a3acc65ff353e12b51527dd716e69c61e6dab4755584941a46a11ac4286"
+learningVersion: "learning_mr7mkkjb_pfgiv3e"
+learningVersionId: "learning_mr7mkkjb_pfgiv3e"
+sourceSetHash: "8e71f44a59b63035e1361ca94770a071a583a8b63992e5135fb6b5aaf69e1614"
 ---
 
 # Learning Map
 
 ## Section Order
 
-- 1. From Conventional Neural Networks to SNNs
-  - 1.1 [[learning/1. From Conventional Neural Networks to SNNs/1.1 From Conventional Neural Networks to SNNs|From Conventional Neural Networks to SNNs]]
-- 2. What Spiking Neural Networks Are
-  - 2.1 [[learning/2. What Spiking Neural Networks Are/2.1 What Spiking Neural Networks Are|What Spiking Neural Networks Are]]
-- 3. Neuron Model: LIF
-  - 3.1 [[learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|Neuron Model: LIF]]
-- 4. SNN Training Paradigms
-  - 4.1 [[learning/4. SNN Training Paradigms/4.1 SNN Training Paradigms|SNN Training Paradigms]]
-- 5. Unified Multi-Metric Evaluation
-  - 5.1 [[learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation|Unified Multi-Metric Evaluation]]
-- 6. Comparative Results Across Models and Metrics
-  - 6.1 [[learning/6. Comparative Results Across Models and Metrics/6.1 Comparative Results Across Models and Metrics|Comparative Results Across Models and Metrics]]
-- 7. What the Tradeoffs Suggest for Applications and Hardware Context
-  - 7.1 [[learning/7. What the Tradeoffs Suggest for Applications and Hardware Context/7.1 What the Tradeoffs Suggest for Applications and Hardware Context|What the Tradeoffs Suggest for Applications and Hardware Context]]
-- 8. Open Challenges and What Remains Unresolved
-  - 8.1 [[learning/8. Open Challenges and What Remains Unresolved/8.1 Open Challenges and What Remains Unresolved|Open Challenges and What Remains Unresolved]]
+- 1. Why This Topic Exists and the Mechanism Works
+  - 1.1 [[learning/1. Why This Topic Exists and the Mechanism Works/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
+  - 1.2 [[learning/1. Why This Topic Exists and the Mechanism Works/1.2 Asynchronous Brain-Inspired Computation|Asynchronous Brain-Inspired Computation]]
+  - 1.3 [[learning/1. Why This Topic Exists and the Mechanism Works/1.3 Sparse Events and Energy Efficiency|Sparse Events and Energy Efficiency]]
+  - 1.4 [[learning/1. Why This Topic Exists and the Mechanism Works/1.4 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]]
+  - 1.5 [[learning/1. Why This Topic Exists and the Mechanism Works/1.5 Encoding, Excitation, and Lateral Inhibition|Encoding, Excitation, and Lateral Inhibition]]
+- 2. The Formal Description
+  - 2.1 [[learning/2. The Formal Description/2.1 Accuracy and Latency|Accuracy and Latency]]
+  - 2.2 [[learning/2. The Formal Description/2.2 Spike Count and Energy|Spike Count and Energy]]
+  - 2.3 [[learning/2. The Formal Description/2.3 Energy Efficiency and Convergence Time|Energy Efficiency and Convergence Time]]
+- 3. How It Learns or Changes and it Is Measured
+  - 3.1 [[learning/3. How It Learns or Changes and it Is Measured/3.1 Three Ways SNNs Learn|Three Ways SNNs Learn]]
+  - 3.2 [[learning/3. How It Learns or Changes and it Is Measured/3.2 Unified Evaluation Across Metrics|Unified Evaluation Across Metrics]]
+- 4. What the Results Show
+  - 4.1 [[learning/4. What the Results Show/4.1 Dense Activations and Spike Events|Dense Activations and Spike Events]]
+  - 4.2 [[learning/4. What the Results Show/4.2 Accuracy and Energy Tradeoffs|Accuracy and Energy Tradeoffs]]
+  - 4.3 [[learning/4. What the Results Show/4.3 Latency Tradeoffs Across SNN Methods|Latency Tradeoffs Across SNN Methods]]
+  - 4.4 [[learning/4. What the Results Show/4.4 Spike Count as an Energy Clue|Spike Count as an Energy Clue]]
+  - 4.5 [[learning/4. What the Results Show/4.5 Convergence and Learning Curves|Convergence and Learning Curves]]
+- 5. When to Use It, and Its Limits
+  - 5.1 [[learning/5. When to Use It, and Its Limits/5.1 Limits of Conventional Neural Architectures|Limits of Conventional Neural Architectures]]
+  - 5.2 [[learning/5. When to Use It, and Its Limits/5.2 Neuromorphic Hardware for Low-Power Spiking|Neuromorphic Hardware for Low-Power Spiking]]
+  - 5.3 [[learning/5. When to Use It, and Its Limits/5.3 Choosing an SNN Training Strategy|Choosing an SNN Training Strategy]]
+  - 5.4 [[learning/5. When to Use It, and Its Limits/5.4 Applications for Event-Driven Intelligence|Applications for Event-Driven Intelligence]]
+  - 5.5 [[learning/5. When to Use It, and Its Limits/5.5 Open Challenges for SNN Adoption|Open Challenges for SNN Adoption]]
 
 ## Prerequisite Chain
 
-- Start here -> From Conventional Neural Networks to SNNs
-- From Conventional Neural Networks to SNNs -> What Spiking Neural Networks Are
-- What Spiking Neural Networks Are -> Neuron Model: LIF
-- Neuron Model: LIF -> SNN Training Paradigms
-- SNN Training Paradigms -> Unified Multi-Metric Evaluation
-- Unified Multi-Metric Evaluation -> Comparative Results Across Models and Metrics
-- Comparative Results Across Models and Metrics -> What the Tradeoffs Suggest for Applications and Hardware Context
-- What the Tradeoffs Suggest for Applications and Hardware Context -> Open Challenges and What Remains Unresolved
+- Start here -> Why This Topic Exists and the Mechanism Works
+- Why This Topic Exists and the Mechanism Works -> The Formal Description
+- The Formal Description -> How It Learns or Changes and it Is Measured
+- How It Learns or Changes and it Is Measured -> What the Results Show
+- What the Results Show -> When to Use It, and Its Limits
 
 ## Trunk, Branch, Leaf Concepts
 
-- Trunk: From Conventional Neural Networks to SNNs
-  - Branch/leaf: From Conventional Neural Networks to SNNs
-- Trunk: What Spiking Neural Networks Are
-  - Branch/leaf: What Spiking Neural Networks Are
-- Trunk: Neuron Model: LIF
-  - Branch/leaf: Neuron Model: LIF
-- Trunk: SNN Training Paradigms
-  - Branch/leaf: SNN Training Paradigms
-- Trunk: Unified Multi-Metric Evaluation
-  - Branch/leaf: Unified Multi-Metric Evaluation
-- Trunk: Comparative Results Across Models and Metrics
-  - Branch/leaf: Comparative Results Across Models and Metrics
-- Trunk: What the Tradeoffs Suggest for Applications and Hardware Context
-  - Branch/leaf: What the Tradeoffs Suggest for Applications and Hardware Context
-- Trunk: Open Challenges and What Remains Unresolved
-  - Branch/leaf: Open Challenges and What Remains Unresolved
+- Trunk: Why This Topic Exists and the Mechanism Works
+  - Branch/leaf: Why Spiking Neural Networks Exist
+  - Branch/leaf: Asynchronous Brain-Inspired Computation
+  - Branch/leaf: Sparse Events and Energy Efficiency
+  - Branch/leaf: The Leaky Integrate-and-Fire Neuron
+  - Branch/leaf: Encoding, Excitation, and Lateral Inhibition
+- Trunk: The Formal Description
+  - Branch/leaf: Accuracy and Latency
+  - Branch/leaf: Spike Count and Energy
+  - Branch/leaf: Energy Efficiency and Convergence Time
+- Trunk: How It Learns or Changes and it Is Measured
+  - Branch/leaf: Three Ways SNNs Learn
+  - Branch/leaf: Unified Evaluation Across Metrics
+- Trunk: What the Results Show
+  - Branch/leaf: Dense Activations and Spike Events
+  - Branch/leaf: Accuracy and Energy Tradeoffs
+  - Branch/leaf: Latency Tradeoffs Across SNN Methods
+  - Branch/leaf: Spike Count as an Energy Clue
+  - Branch/leaf: Convergence and Learning Curves
+- Trunk: When to Use It, and Its Limits
+  - Branch/leaf: Limits of Conventional Neural Architectures
+  - Branch/leaf: Neuromorphic Hardware for Low-Power Spiking
+  - Branch/leaf: Choosing an SNN Training Strategy
+  - Branch/leaf: Applications for Event-Driven Intelligence
+  - Branch/leaf: Open Challenges for SNN Adoption
 
 ## Bridge Concepts
 
@@ -68,10 +83,7 @@ sourceSetHash: "92ec0a3acc65ff353e12b51527dd716e69c61e6dab4755584941a46a11ac4286
 
 ## Warnings
 
-- This map is intentionally section-level only; generated subtopics are not published yet, so subsection arrays are left empty.
-- Tables S1.P0.T1, S1.P0.T2, S1.P0.T3, S1.P0.T5, and S1.P0.T6 are usable as source-derived evidence, but OCR artifacts, missing captions, and missing surrounding explanation may limit certainty.
-- S1.P0.T4 appears duplicative of S1.P0.T3 and should not be treated as an independent latency result.
-- S1.P0.T6 is only safe to use as convergence-related evidence because the exact metric represented by its values is unclear in the provided OCR.
-- Only S1.P4.F1 is clearly a source-central figure for substantive teaching use; S1.P17.F1 through S1.P17.F17 appear to be placeholder page images and should not shape content.
-- MNIST and CIFAR-10 can be referenced only as source-named comparison datasets; the source does not provide enough verified methodology to expand them into a separate treatment.
-- Event-based versus static dataset analysis is deferred because the supplied material mentions that distinction but does not provide enough later detail for a full source-grounded explanation.
+- The provided source map includes extracted captions for formulas but not exact mathematical notation, so formula teaching should use caption-level definitions unless the full source text is later available.
+- Exact benchmark values from result tables and graphs should not be invented; only use reported statements such as surrogate-gradient SNNs approaching ANN accuracy within 1–2%, latency as low as 10 ms, convergence by about the 20th epoch, converted SNNs needing higher spike counts and longer simulation windows, and STDP energy as low as 5 mJ per inference.
+- Detailed LIF differential equations, biological neuron anatomy, implementation code, dataset preprocessing, and broad neuromorphic hardware surveys are outside the current source-supported scope.
+- Several source visuals are reused in synthesis units only as evidence for decision-making; primary interpretation should occur in their earlier dedicated units to avoid duplicate visual dumps.

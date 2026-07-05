@@ -192,11 +192,12 @@ describe("figure classification and page roles (E/F)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end: a defective garden fails the validator, then passes after
-// finalize (A, B, F, G, I, J, K together).
+// End-to-end: a defective garden fails the validator; finalize cleans export
+// hygiene and writes the report, but semantic defects remain validation
+// failures owned by the Learning Unit Contract/page-generation path.
 // ---------------------------------------------------------------------------
-describe("finalize turns a defective garden into a valid export", () => {
-  test("validator fails before finalize and passes after", () => {
+describe("finalize leaves semantic defects visible", () => {
+  test("validator fails before finalize; hygiene is repaired but semantic checks still fail", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-e2e-"));
     try {
       const dir = buildDefectiveGarden(root);
@@ -209,15 +210,16 @@ describe("finalize turns a defective garden into a valid export", () => {
       assert.ok(failedBefore.has(7), "check 7 (export tree) must fail before finalize");
 
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
-      assert.deepEqual(report.criticalProblems, [], `finalize must repair every critical invariant: ${report.criticalProblems.join(" | ")}`);
+      assert.deepEqual(report.criticalProblems, [], `finalize must repair hygiene invariants: ${report.criticalProblems.join(" | ")}`);
 
       const after = runChecks(dir, "test-2");
       writeValidationReport(dir, "test-2", after);
       const failedAfter = after.filter((r) => r.status === "FAIL");
-      assert.deepEqual(
-        failedAfter.map((f) => `${f.id}. ${f.name}: ${f.problems.join(" | ")}`),
-        [],
-        "no check may fail after finalize",
+      const afterById = new Map(after.map((result) => [result.id, result]));
+      assert.equal(afterById.get(7).status, "PASS", "finalize should still clean the exported filesystem shape");
+      assert.ok(
+        failedAfter.some((result) => [8, 24, 31, 32].includes(result.id)),
+        `semantic failures should remain after finalize: ${failedAfter.map((f) => `${f.id}. ${f.name}`).join(" | ")}`,
       );
 
       // The exported artifact contains the validation report (K).

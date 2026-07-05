@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order From Conventional Neural Networks to SNNs 1.1 From Conventional Neural Networks to SNNs What Spiking Neural Networks Are 2.1 What Spiking Neural Networks Are Neuron Model: LIF 3.1 Neuron Model: LIF SNN Training Paradigms 4.1 SNN Training Paradigms Unified Multi-Metric Eval... ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:46:32 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order Why This Topic Exists and the Mechanism Works 1.1 Why Spiking Neural Networks Exist 1.2 Asynchronous Brain-Inspired Computation 1.3 Sparse Events and Energy Efficiency 1.4 The Leaky Integrate-and-Fire Neuron 1.5 Encoding, Excitation, and Lateral Inhibition The Formal Descr... ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:06:47 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs Spiking Neural Networks, or SNNs, are neural networks built around discrete spike events rather than continuously active numerical signals. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:46:32 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks, or SNNs, are neural networks that compute with events. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:06:47 GMT</pubDate>
   </item><item>
-    <title>Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs</title>
+    <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks: Brain-Inspired Computing Through Unified Tradeoffs A source-only learning spine that follows the paper from its motivation for spiking neural networks, through the intuition of spike-based computation, the named LIF neuron model, the three compared training paradigms, the un... ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:46:32 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Learners will understand how spiking neural networks compute with event-driven spikes, why they are compared against conventional neural networks, how major SNN training strategies differ, and how to interpret accuracy, latency, energy, spike count, and convergence tradeoffs ... ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:06:47 GMT</pubDate>
   </item><item>
-    <title>1. From Conventional Neural Networks to SNNs</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Conventional-Neural-Networks-to-SNNs/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Conventional-Neural-Networks-to-SNNs/</guid>
-    <description><![CDATA[ 1. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:45:25 GMT</pubDate>
+    <title>1. Why This Topic Exists and the Mechanism Works</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/</guid>
+    <description><![CDATA[ 1. Why This Topic Exists and the Mechanism Works Build up why this topic exists and the mechanism works one step at a time. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 10:05:07 GMT</pubDate>
   </item><item>
-    <title>1.1 From Conventional Neural Networks to SNNs</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Conventional-Neural-Networks-to-SNNs/1.1-From-Conventional-Neural-Networks-to-SNNs</guid>
-    <description><![CDATA[ Imagine a small camera on a battery-powered drone watching a hallway. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:45:25 GMT</pubDate>
+    <title>1.1 Why Spiking Neural Networks Exist</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera watching a hallway at night. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
   </item><item>
-    <title>2. What Spiking Neural Networks Are</title>
-    <link>https://localhost:8081/test-2/learning/2.-What-Spiking-Neural-Networks-Are/</link>
-    <guid>https://localhost:8081/test-2/learning/2.-What-Spiking-Neural-Networks-Are/</guid>
-    <description><![CDATA[ 2. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:45:25 GMT</pubDate>
+    <title>1.2 Asynchronous Brain-Inspired Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.2-Asynchronous-Brain-Inspired-Computation</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.2-Asynchronous-Brain-Inspired-Computation</guid>
+    <description><![CDATA[ A camera on a small battery-powered robot can spend most of its time staring at a hallway where nothing moves. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
   </item><item>
-    <title>2.1 What Spiking Neural Networks Are</title>
-    <link>https://localhost:8081/test-2/learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</link>
-    <guid>https://localhost:8081/test-2/learning/2.-What-Spiking-Neural-Networks-Are/2.1-What-Spiking-Neural-Networks-Are</guid>
-    <description><![CDATA[ What Spiking Neural Networks Are Building on the motivation for sparse, event-driven computation, consider what a spiking neural network actually is: a network whose neurons communicate with discrete spikes in time rather than continuous activations. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:45:25 GMT</pubDate>
+    <title>1.3 Sparse Events and Energy Efficiency</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.3-Sparse-Events-and-Energy-Efficiency</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.3-Sparse-Events-and-Energy-Efficiency</guid>
+    <description><![CDATA[ Sparse Events and Energy Efficiency Imagine a small camera on a battery-powered robot watching a quiet hallway. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
   </item><item>
-    <title>3. Neuron Model: LIF</title>
-    <link>https://localhost:8081/test-2/learning/3.-Neuron-Model-LIF/</link>
-    <guid>https://localhost:8081/test-2/learning/3.-Neuron-Model-LIF/</guid>
-    <description><![CDATA[ 3. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:45:25 GMT</pubDate>
+    <title>1.4 The Leaky Integrate-and-Fire Neuron</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.4-The-Leaky-Integrate-and-Fire-Neuron</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.4-The-Leaky-Integrate-and-Fire-Neuron</guid>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron You already have the basic picture of a spike as a brief event in time and a threshold as the level that decides when an event should happen. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
   </item><item>
-    <title>3.1 Neuron Model: LIF</title>
-    <link>https://localhost:8081/test-2/learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</link>
-    <guid>https://localhost:8081/test-2/learning/3.-Neuron-Model-LIF/3.1-Neuron-Model-LIF-as-Evidence</guid>
-    <description><![CDATA[ Neuron Model: LIF Imagine a tiny motion sensor watching a quiet hallway. Most of the time, the scene barely changes. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:45:25 GMT</pubDate>
+    <title>1.5 Encoding, Excitation, and Lateral Inhibition</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.5-Encoding,-Excitation,-and-Lateral-Inhibition</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-This-Topic-Exists-and-the-Mechanism-Works/1.5-Encoding,-Excitation,-and-Lateral-Inhibition</guid>
+    <description><![CDATA[ Encoding, Excitation, and Lateral Inhibition Once a neuron layer can receive a spike train and fire when its accumulated input becomes strong enough, the next question is how a full spiking system turns ordinary data into that kind of activity. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
   </item><item>
-    <title>4. SNN Training Paradigms</title>
-    <link>https://localhost:8081/test-2/learning/4.-SNN-Training-Paradigms/</link>
-    <guid>https://localhost:8081/test-2/learning/4.-SNN-Training-Paradigms/</guid>
-    <description><![CDATA[ 4. ]]></description>
-    <pubDate>Sat, 04 Jul 2026 15:45:25 GMT</pubDate>
+    <title>2. The Formal Description</title>
+    <link>https://localhost:8081/test-2/learning/2.-The-Formal-Description/</link>
+    <guid>https://localhost:8081/test-2/learning/2.-The-Formal-Description/</guid>
+    <description><![CDATA[ 2. The Formal Description Build up the formal description one step at a time. ]]></description>
+    <pubDate>Sun, 05 Jul 2026 09:46:54 GMT</pubDate>
   </item>
     </channel>
   </rss>

@@ -19,6 +19,17 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractQuartzMath } from "../dashboard/src/lib/quartz-markdown.ts";
+import {
+  assignSourceArtifacts,
+  figurePlacementProblems,
+  isAtomicZettelHandle,
+  normalizeLearningUnits,
+  validateLearningUnitContracts,
+  visualTypeCompatibleWithUnit,
+  type LearningUnitContract,
+  type SourceArtifactAssignment,
+  type SourceFigurePlacement,
+} from "../dashboard/src/lib/learning-unit-contract.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -309,6 +320,80 @@ function readIfExists(filePath: string): string {
   }
 }
 
+interface LearningUnitContractArtifact {
+  units: LearningUnitContract[];
+  assignments: SourceArtifactAssignment[];
+  foundPath?: string;
+}
+
+const SOURCE_FIGURE_PLACEMENTS = new Set<SourceFigurePlacement>([
+  "inside_concept_explanation",
+  "after_formula_introduction",
+  "inside_result_interpretation",
+  "beside_worked_example",
+  "inside_comparison",
+  "not_used_with_reason",
+]);
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSourceArtifactAssignments(raw: unknown): SourceArtifactAssignment[] {
+  const record = asObject(raw);
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(record.sourceArtifactAssignments)
+      ? record.sourceArtifactAssignments
+      : Array.isArray(record.assignments)
+        ? record.assignments
+        : [];
+  const assignments: SourceArtifactAssignment[] = [];
+  for (const item of list) {
+    const row = asObject(item);
+    const sourceArtifactId = stringField(row.sourceArtifactId ?? row.sourceVisualId ?? row.figureId ?? row.id);
+    const assignedLearningUnitId = stringField(row.assignedLearningUnitId ?? row.learningUnitId ?? row.unitId);
+    if (!sourceArtifactId || !assignedLearningUnitId) continue;
+    const rawPlacement = stringField(row.placement).replace(/[\s-]+/g, "_") as SourceFigurePlacement;
+    const placement = SOURCE_FIGURE_PLACEMENTS.has(rawPlacement) ? rawPlacement : "inside_concept_explanation";
+    assignments.push({
+      sourceArtifactId,
+      assignedLearningUnitId,
+      placement,
+      reason: stringField(row.reason),
+      requiredInterpretation: stringField(row.requiredInterpretation ?? row.interpretationGoal ?? row.goal),
+      forbiddenSections: Array.isArray(row.forbiddenSections)
+        ? row.forbiddenSections.map((value) => stringField(value)).filter(Boolean)
+        : undefined,
+    });
+  }
+  return assignments;
+}
+
+function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifact {
+  const candidates = [
+    path.join(gardenDir, ".breadboard", "learning-unit-contract.json"),
+    path.join(gardenDir, ".breadboard", "planning", "learning-unit-contract.json"),
+  ];
+  for (const filePath of candidates) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      const units = normalizeLearningUnits(parsed);
+      const assignments = normalizeSourceArtifactAssignments(parsed);
+      if (units.length > 0) return { units, assignments, foundPath: filePath };
+    } catch {
+      // try the next location
+    }
+  }
+  return { units: [], assignments: [] };
+}
+
 function visualAnchorIds(spec: Record<string, unknown>): string[] {
   const raw = spec.sourceAnchors;
   if (!Array.isArray(raw)) return [];
@@ -487,6 +572,10 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     ledgerExists = false;
   }
   const realFigures = ledger.filter((v) => String(v.type ?? "") !== "full_page_fallback");
+  const learningUnitContract = readLearningUnitContract(gardenDir);
+  const learningUnits = learningUnitContract.units;
+  const contractAssignments = learningUnitContract.assignments;
+  const learningUnitsById = new Map(learningUnits.map((unit) => [unit.id, unit]));
 
   // Is this a visual-rich garden? A source note carries page snapshots and
   // references figures/tables.
@@ -650,7 +739,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(7, "exported tree is only _index.md, learning/, sources/, assets/, .breadboard/", [...new Set(problems)]);
   }
 
-  // 8. Learner lesson pages carry 3-7 page-relevant, namespaced Zettelkasten concept handles; no conceptTags.
+  // 8. Learner lesson pages carry 4-8 page-relevant atomic Zettelkasten handles; no conceptTags.
   {
     const problems: string[] = [];
     const tagCounts = new Map<string, number>();
@@ -660,35 +749,35 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
       const tags = fmArray(page.frontmatter, "tags");
       for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
-      if (tags.length < 3 || tags.length > 7) {
-        problems.push(`${page.relPath}: ${tags.length} tags (need 3-7)`);
+      if (tags.length < 4 || tags.length > 8) {
+        problems.push(`${page.relPath}: ${tags.length} tags (need 4-8)`);
         continue;
       }
       const haystack = `${fmString(page.frontmatter, "title")}\n${teachingProse(page.body)}`.toLowerCase();
       const titleSlug = slugifyLoose(fmString(page.frontmatter, "title").replace(/^\d+(?:\.\d+)*\.?\s*/, ""));
       for (const tag of tags) {
-        if (!/^[a-z0-9][a-z0-9/-]{1,78}[a-z0-9]$/.test(tag)) {
-          problems.push(`${page.relPath}: tag "${tag}" is not lower-case kebab-case`);
+        if (!isAtomicZettelHandle(tag)) {
+          problems.push(`${page.relPath}: tag "${tag}" is not an atomic lower-kebab-case Zettelkasten handle`);
           continue;
         }
-        if (!tag.includes("/")) {
-          problems.push(`${page.relPath}: tag "${tag}" is not namespaced (expected namespace/concept-handle)`);
+        if (tag.includes("/")) {
+          problems.push(`${page.relPath}: tag "${tag}" uses slash-category structure`);
         }
-        if (tag === titleSlug || tag.split("/").pop() === titleSlug) {
+        if (tag === titleSlug) {
           problems.push(`${page.relPath}: tag "${tag}" copies the page title slug`);
         }
         if (/\.(pdf|docx?|pptx?|xlsx?|txt|md|csv|zip)$/i.test(tag) || /\d{4,5}-\d{3,}/.test(tag)) {
           problems.push(`${page.relPath}: tag "${tag}" looks like a source filename/id`);
         }
-        const words = tag.split(/[/-]/).filter(Boolean);
-        const leaf = tag.split("/").pop() ?? tag;
+        const words = tag.split("-").filter(Boolean);
+        const leaf = tag;
         if (BANNED_TAG_SEGMENTS.has(tag.toLowerCase()) || words.every((word) => BANNED_TAG_SEGMENTS.has(word.toLowerCase()))) {
           problems.push(`${page.relPath}: tag "${tag}" contains a banned generic segment`);
         }
         if (!leaf.includes("-") && BANNED_TAG_SEGMENTS.has(leaf.toLowerCase())) {
           problems.push(`${page.relPath}: tag "${tag}" has a broad one-word leaf`);
         }
-        if (/^sn\//.test(tag)) problems.push(`${page.relPath}: tag "${tag}" uses typo root "sn/"`);
+        if (/^sn-/.test(tag)) problems.push(`${page.relPath}: tag "${tag}" uses typo root "sn"`);
         for (const rule of TAG_RELEVANCE_RULES) {
           if (!rule.appliesTo.test(tag)) continue;
           const bodyHits = countPattern(teachingProse(page.body), rule.evidence);
@@ -700,12 +789,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     if (lessonPages.length >= 4) {
-      const maxAllowed = Math.ceil(lessonPages.length * 0.6);
+      const maxAllowed = Math.ceil(lessonPages.length * 0.4);
       for (const [tag, count] of tagCounts) {
         if (count > maxAllowed) problems.push(`tag "${tag}" appears on ${count}/${lessonPages.length} learner pages (too broad/reused)`);
       }
     }
-    check(8, "learner pages have 3-7 namespaced zettel concept tags", problems, lessonPages.length === 0);
+    check(8, "learner pages have 4-8 atomic Zettelkasten handles", problems, lessonPages.length === 0);
   }
 
   // 9. Internal/source/planning pages carry no public tags.
@@ -807,8 +896,6 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 
     let interactiveCount = 0;
     const blockRe = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
-    const hardConceptProblems: string[] = [];
-
     for (const page of published) {
       const declared = fmArray(page.frontmatter, "visualIds");
       const embedded: string[] = [];
@@ -862,22 +949,10 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (/\[(?:Interactive visual|Visual|Generated visual)\s*:/i.test(page.body)) {
         contentProblems.push(`${page.relPath}: raw visual placeholder left in body`);
       }
-
-      // Hard-concept coverage: a lesson teaching a hard dynamic concept must
-      // ship an interactive visual (or record an explicit skip reason).
-      if (lessonPages.includes(page)) {
-        const pageText = `${fmString(page.frontmatter, "title")}\n${page.body}`;
-        const hard = HARD_CONCEPT_PATTERNS.find((c) => c.test.test(pageText));
-        const skipReason = fmString(page.frontmatter, "visualSkipReason");
-        const openChallengePage = /open challenges?|unresolved|limitations?|future work/i.test(pageText);
-        if (hard && embedded.length === 0 && !skipReason && !openChallengePage) {
-          hardConceptProblems.push(`${page.relPath}: teaches ${hard.label} but has no interactive visual`);
-        }
-      }
     }
 
     check(13, "interactive visual IDs consistent (frontmatter = block = spec file = index)", idProblems);
-    check(14, "interactive visuals are valid + hard concepts covered", [...contentProblems, ...hardConceptProblems]);
+    check(14, "interactive visuals are valid when present", contentProblems);
 
     // 15. Regenerate button rendered by the Quartz component for every block.
     const rendererPath = path.resolve(
@@ -894,13 +969,43 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     }
     check(15, "regenerate button rendered below every interactive visual", rendererProblems);
 
-    // 16. SNN gardens ship at least four interactive visuals.
+    // 16. Interactive visuals are optional, but duplicate signatures are not.
     {
       const problems: string[] = [];
-      if (isSnnGarden && interactiveCount < 4) {
-        problems.push(`only ${interactiveCount} interactive visual(s); an SNN garden needs at least 4`);
+      const bySignature = new Map<string, string[]>();
+      for (const { page, spec } of embeddedVisualSpecs) {
+        const controls = Array.isArray(spec.controls)
+          ? spec.controls
+              .map((control) => {
+                if (!control || typeof control !== "object") return "";
+                const record = control as Record<string, unknown>;
+                return [record.name, record.label, record.type, Array.isArray(record.options) ? record.options.join("|") : ""]
+                  .map((value) => String(value ?? "").toLowerCase())
+                  .join(":");
+              })
+              .sort()
+          : [];
+        const anchors = visualAnchorIds(spec).sort();
+        const concepts = Array.isArray(spec.conceptTargets)
+          ? spec.conceptTargets.map((item) => String(item).toLowerCase()).sort()
+          : [];
+        const key = [
+          String(spec.type ?? "").toLowerCase(),
+          controls.join("|"),
+          anchors.join("|"),
+          concepts.join("|"),
+          String(spec.pedagogicalPurpose ?? spec.caption ?? "").toLowerCase().replace(/\s+/g, " ").trim(),
+        ].join("::");
+        const pagesForKey = bySignature.get(key) ?? [];
+        pagesForKey.push(`${page.relPath}:${String(spec.id ?? "")}`);
+        bySignature.set(key, pagesForKey);
       }
-      check(16, "SNN garden has >= 4 interactive visuals", problems, !isSnnGarden);
+      for (const [signature, pagesForKey] of bySignature) {
+        if (pagesForKey.length > 1) {
+          problems.push(`duplicate interactive visual signature "${signature}" on ${pagesForKey.join(", ")}`);
+        }
+      }
+      check(16, "interactive visual signatures are unique", problems, embeddedVisualSpecs.length === 0);
     }
   }
 
@@ -1107,16 +1212,22 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           problems.push(`${page.relPath}: visual ${id} sourceAnchors [${anchorIds.join(", ")}] do not overlap page sourceAnchors/sourceVisualIds`);
         }
       }
+      const unitId = fmString(page.frontmatter, "learningUnitId");
+      const unit = unitId ? learningUnitsById.get(unitId) : undefined;
+      if (unit) {
+        if (!unit.interactiveVisual) {
+          problems.push(`${page.relPath}: embeds visual ${id}, but learning unit ${unit.id} has no interactiveVisual contract`);
+        } else {
+          if (String(unit.interactiveVisual.visualType ?? "").toLowerCase() !== type.toLowerCase()) {
+            problems.push(
+              `${page.relPath}: visual ${id} type ${type} does not match learning unit ${unit.id} contract type ${unit.interactiveVisual.visualType}`,
+            );
+          }
+          const compat = visualTypeCompatibleWithUnit(type, unit);
+          if (!compat.ok) problems.push(`${page.relPath}: visual ${id} incompatible with unit ${unit.id}: ${compat.reason}`);
+        }
+      }
       const pageText = `${page.relPath} ${fmString(page.frontmatter, "title")}`.toLowerCase();
-      if (/metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/.test(pageText) && type !== "tradeoff_explorer") {
-        problems.push(`${page.relPath}: metric/evaluation page uses ${type}; expected tradeoff_explorer`);
-      }
-      if (/comparative|results|model comparison|models-and-metrics/.test(pageText) && type !== "tradeoff_explorer") {
-        problems.push(`${page.relPath}: comparative/results page uses ${type}; expected tradeoff_explorer`);
-      }
-      if (/application|hardware|neuromorphic|deployment/.test(pageText) && type !== "tradeoff_explorer") {
-        problems.push(`${page.relPath}: application/hardware page uses ${type}; expected tradeoff_explorer`);
-      }
       if (/open challenges|unresolved|limitations|future work/.test(pageText)) {
         problems.push(`${page.relPath}: open-challenges page embeds visual ${id}; no generic interactive visual should be forced here`);
       }
@@ -1143,27 +1254,27 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(23, "interactive visuals are source-grounded and page-specific", problems, embeddedVisualSpecs.length === 0);
   }
 
-  // 24. Tag namespaces are specific and not broadly reused.
+  // 24. Atomic Zettelkasten handles are specific and not broadly reused.
   {
     const problems: string[] = [];
     const counts = new Map<string, number>();
     for (const page of lessonPages) {
       for (const tag of fmArray(page.frontmatter, "tags")) {
         counts.set(tag, (counts.get(tag) ?? 0) + 1);
-        const leaf = tag.split("/").pop() ?? tag;
-        if (!tag.includes("/")) problems.push(`${page.relPath}: unnamespaced tag "${tag}"`);
-        if (!leaf.includes("-") && BANNED_TAG_SEGMENTS.has(leaf.toLowerCase())) {
-          problems.push(`${page.relPath}: broad tag leaf "${tag}"`);
+        if (tag.includes("/")) problems.push(`${page.relPath}: slash-category tag "${tag}"`);
+        if (!isAtomicZettelHandle(tag)) problems.push(`${page.relPath}: non-atomic tag "${tag}"`);
+        if (!tag.includes("-") && BANNED_TAG_SEGMENTS.has(tag.toLowerCase())) {
+          problems.push(`${page.relPath}: broad tag "${tag}"`);
         }
       }
     }
     if (lessonPages.length >= 4) {
-      const maxAllowed = Math.ceil(lessonPages.length * 0.6);
+      const maxAllowed = Math.ceil(lessonPages.length * 0.4);
       for (const [tag, count] of counts) {
         if (count > maxAllowed) problems.push(`tag "${tag}" appears on ${count}/${lessonPages.length} learner pages`);
       }
     }
-    check(24, "learner tags are namespaced and specific", [...new Set(problems)], lessonPages.length === 0);
+    check(24, "learner tags are atomic and specific", [...new Set(problems)], lessonPages.length === 0);
   }
 
   // 25. Learner formulas must be explicitly grounded per formula, never with a
@@ -1361,7 +1472,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(27, "source visuals match page semantics", [...new Set(problems)], !isSnnGarden || !ledgerExists);
   }
 
-  // 28. Tags must be central to the page, not only namespaced.
+  // 28. Atomic tags must be central to the page, not only syntactically valid.
   {
     const problems: string[] = [];
     for (const page of lessonPages) {
@@ -1373,7 +1484,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           .split("-")
           .filter((word) => word.length >= 4 && !BANNED_TAG_SEGMENTS.has(word));
         if (distinctive.length > 0 && !distinctive.some((word) => haystack.includes(word))) {
-          problems.push(`${page.relPath}: tag "${tag}" is namespaced but not semantically central to the page`);
+          problems.push(`${page.relPath}: tag "${tag}" is syntactically valid but not semantically central to the page`);
         }
         if (/metric\/convergence-time-target-epoch/.test(tag) && !/metric|evaluation|convergence|training|results/.test(pageText)) {
           problems.push(`${page.relPath}: convergence-time tag belongs on metric/training/result pages`);
@@ -1444,6 +1555,130 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (!/^Accepted:\s+(?:yes|no)$/im.test(report)) problems.push("validation report missing accepted yes/no");
     }
     check(30, "validation report is exported", problems);
+  }
+
+  // 31. Every generated learner page must come from a persisted Learning Unit
+  //     Contract, and source artifact assignments must be decided there.
+  {
+    const problems: string[] = [];
+    if (lessonPages.length > 0 && learningUnits.length === 0) {
+      problems.push(".breadboard/learning-unit-contract.json missing or empty");
+    }
+    if (learningUnits.length > 0) {
+      if (!learningUnitContract.foundPath) problems.push("Learning Unit Contract path was not recorded");
+      problems.push(...validateLearningUnitContracts(learningUnits, { artifactCount: realFigures.length }));
+
+      const pageUnitIds = new Map<string, string[]>();
+      for (const page of lessonPages) {
+        const unitId = fmString(page.frontmatter, "learningUnitId");
+        if (!unitId) {
+          problems.push(`${page.relPath}: missing learningUnitId frontmatter`);
+          continue;
+        }
+        if (!learningUnitsById.has(unitId)) {
+          problems.push(`${page.relPath}: learningUnitId "${unitId}" is not in the Learning Unit Contract`);
+          continue;
+        }
+        const pagesForUnit = pageUnitIds.get(unitId) ?? [];
+        pagesForUnit.push(page.relPath);
+        pageUnitIds.set(unitId, pagesForUnit);
+      }
+      for (const [unitId, pagesForUnit] of pageUnitIds) {
+        if (pagesForUnit.length > 1) {
+          problems.push(`learning unit ${unitId} generated multiple learner pages: ${pagesForUnit.join(", ")}`);
+        }
+      }
+
+      const expectedAssignments = assignSourceArtifacts(learningUnits);
+      const contractAssignmentKeys = new Set(
+        contractAssignments.map((assignment) =>
+          `${assignment.sourceArtifactId}::${assignment.assignedLearningUnitId}::${assignment.placement}`,
+        ),
+      );
+      if (expectedAssignments.length > 0 && contractAssignments.length === 0) {
+        problems.push("Learning Unit Contract has source artifacts but no sourceArtifactAssignments ledger");
+      }
+      for (const assignment of expectedAssignments) {
+        const key = `${assignment.sourceArtifactId}::${assignment.assignedLearningUnitId}::${assignment.placement}`;
+        if (!contractAssignmentKeys.has(key)) {
+          problems.push(
+            `${assignment.sourceArtifactId}: sourceArtifactAssignments missing ${assignment.assignedLearningUnitId} / ${assignment.placement}`,
+          );
+        }
+      }
+      for (const assignment of contractAssignments) {
+        if (!learningUnitsById.has(assignment.assignedLearningUnitId)) {
+          problems.push(`${assignment.sourceArtifactId}: assigned to unknown learning unit ${assignment.assignedLearningUnitId}`);
+        }
+        if (!assignment.requiredInterpretation.trim()) {
+          problems.push(`${assignment.sourceArtifactId}: assignment lacks requiredInterpretation`);
+        }
+        if (!assignment.reason.trim()) {
+          problems.push(`${assignment.sourceArtifactId}: assignment lacks reason`);
+        }
+      }
+
+      const assignedContractIds = new Set(contractAssignments.map((assignment) => assignment.sourceArtifactId));
+      for (const visual of realFigures) {
+        if (String(visual.usageStatus ?? "") !== "assigned") continue;
+        const id = String(visual.sourceVisualId ?? "");
+        if (id && !assignedContractIds.has(id)) {
+          problems.push(`${id}: ledger assigns source artifact, but Learning Unit Contract has no assignment`);
+        }
+      }
+    }
+    check(31, "Learning Unit Contract exists and owns source assignments", [...new Set(problems)], lessonPages.length === 0);
+  }
+
+  // 32. Source figures are inline teaching material, never end-of-page dumps.
+  {
+    const problems: string[] = [];
+    for (const page of lessonPages) {
+      for (const problem of figurePlacementProblems(page.body)) {
+        problems.push(`${page.relPath}: ${problem}`);
+      }
+    }
+    check(32, "source figures are placed inline with interpretation", problems, lessonPages.length === 0);
+  }
+
+  // 33. A cropped source figure may appear on only one learner page unless a
+  //     future contract field explicitly marks the reuse as intentional.
+  {
+    const problems: string[] = [];
+    const ledgerByUrl = new Map<string, string>();
+    for (const visual of realFigures) {
+      const id = String(visual.sourceVisualId ?? "");
+      if (!id) continue;
+      for (const key of ["croppedImagePath", "pageImagePath"]) {
+        const url = String(visual[key] ?? "");
+        if (url) ledgerByUrl.set(url, id);
+      }
+    }
+    const pagesByArtifact = new Map<string, Set<string>>();
+    const addUse = (id: string, relPath: string) => {
+      if (!id) return;
+      const pagesForId = pagesByArtifact.get(id) ?? new Set<string>();
+      pagesForId.add(relPath);
+      pagesByArtifact.set(id, pagesForId);
+    };
+    for (const page of lessonPages) {
+      for (const id of fmArray(page.frontmatter, "sourceVisualIds")) addUse(id, page.relPath);
+      for (const match of page.body.matchAll(/!\[[^\]]*\]\(([^)]*source-visuals[^)]*)\)/gi)) {
+        const id = ledgerByUrl.get(match[1] ?? "");
+        if (id) addUse(id, page.relPath);
+      }
+    }
+    for (const [id, pagesForId] of pagesByArtifact) {
+      if (pagesForId.size <= 1) continue;
+      const assignments = contractAssignments.filter((assignment) => assignment.sourceArtifactId === id);
+      const explicitReuse = assignments.some((assignment) =>
+        /\breuse|revisit|shared intentionally\b/i.test(`${assignment.reason} ${assignment.requiredInterpretation}`),
+      );
+      if (!explicitReuse) {
+        problems.push(`${id}: reused on ${[...pagesForId].join(", ")} without explicit reuse metadata`);
+      }
+    }
+    check(33, "source figures are not reused without explicit policy", problems, lessonPages.length === 0);
   }
 
   return results;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urlparse, urlunparse
@@ -155,13 +156,28 @@ def start_upstream_raw_request(
         accept=("text/event-stream" if stream else "application/json"),
     )
 
+    # (connect, read) timeout. With stream=True a scalar timeout only bounds the
+    # time to the first byte, so a stalled upstream stream (a reasoning response
+    # that stops emitting events mid-flight) would hang until the *client's*
+    # timeout — which is exactly the multi-minute "Request timed out." planning
+    # failures. A per-read timeout aborts a stalled stream promptly; the backend
+    # emits reasoning/keepalive events far more often than this window, so it
+    # never trips on a healthy (if slow) generation.
+    try:
+        connect_timeout = float(os.getenv("CHATMOCK_UPSTREAM_CONNECT_TIMEOUT", "30"))
+    except (TypeError, ValueError):
+        connect_timeout = 30.0
+    try:
+        read_timeout = float(os.getenv("CHATMOCK_UPSTREAM_READ_TIMEOUT", "600"))
+    except (TypeError, ValueError):
+        read_timeout = 600.0
     try:
         upstream = requests.post(
             CHATGPT_RESPONSES_URL,
             headers=headers,
             json=responses_payload,
             stream=stream,
-            timeout=600,
+            timeout=(connect_timeout, read_timeout),
         )
     except requests.RequestException as e:
         resp = make_response(jsonify({"error": {"message": f"Upstream ChatGPT request failed: {e}"}}), 502)

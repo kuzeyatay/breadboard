@@ -9,6 +9,7 @@ import {
   normalizeLearningMapCandidate,
   normalizeZettelTags,
   sanitizeLearnerTitle,
+  validateLearningMapDepth,
   hasPlaceholderText,
   hasEmptyBulletScaffold,
   assessLessonQuality,
@@ -120,9 +121,10 @@ describe("learn utilities", () => {
     assert.ok(tags.length >= 4 && tags.length <= 8, `got ${tags.length} tags`);
     assert.ok(!tags.includes("motivation"), "drops generic 'motivation'");
     assert.ok(!tags.includes("energy"), "drops broad debris 'energy'");
-    assert.ok(tags.includes("snn/lif-neuron-threshold-reset"));
-    assert.ok(tags.includes("computational-neuroscience/membrane-potential-accumulation"));
-    assert.ok(tags.every((tag) => /^[a-z0-9][a-z0-9/-]*[a-z0-9]$/.test(tag)));
+    assert.ok(tags.includes("lif-neuron"));
+    assert.ok(tags.includes("membrane-potential"));
+    assert.ok(tags.every((tag) => /^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(tag)));
+    assert.ok(tags.every((tag) => !tag.includes("/")));
   });
 
   test("quality helpers flag placeholder + AI-ism prose", () => {
@@ -140,6 +142,25 @@ describe("learn utilities", () => {
     assert.equal(
       sanitizeLearnerTitle("Why the Source Turns from Conventional Neural Networks to SNNs"),
       "From Conventional Neural Networks to SNNs",
+    );
+  });
+
+  test("scrubs the banned commentary word 'evidence' from titles with verb agreement", () => {
+    // Planning-clustering titles that previously tripped the depth warning.
+    assert.equal(sanitizeLearnerTitle("Reading the Evidence"), "Reading the Results");
+    assert.equal(sanitizeLearnerTitle("What the Evidence Shows"), "What the Results Show");
+    assert.equal(sanitizeLearnerTitle("Neuron Model LIF as Evidence"), "Neuron Model LIF");
+    // A clean title is left untouched.
+    assert.equal(sanitizeLearnerTitle("Interpreting the Results"), "Interpreting the Results");
+    // The commentary gate must accept the scrubbed titles.
+    assert.deepEqual(
+      validateLearningMapDepth({
+        sections: [
+          { title: "How the Mechanism Works", subsections: [{ title: "Interpreting the Results" }, { title: "What the Results Show" }] },
+          { title: "What the Results Show", subsections: [{ title: "Reading the Results" }, { title: "Neuron Model LIF" }] },
+        ],
+      }),
+      [],
     );
   });
 
@@ -203,9 +224,14 @@ describe("learn route and council wiring", () => {
 
     assert.match(learnSource, /withCouncil/);
     assert.match(learnSource, /taskType: "source_map"/);
-    assert.match(learnSource, /taskType: "topic_map"/);
+    assert.match(learnSource, /taskType: "learning_spine"/);
     assert.match(learnSource, /taskType: "subsection_generation"/);
     assert.match(learnSource, /taskType: "full_page_revision"/);
+    assert.match(learnSource, /LEARN_PLANNING_COUNCIL_MODE/);
+    assert.match(learnSource, /isPlanningTimeoutError/);
+    assert.match(learnSource, /learn_source_map_fallback/);
+    assert.match(learnSource, /learn_scope_contract_fallback/);
+    assert.match(learnSource, /learn_learning_spine_fallback/);
     // Bad generation must fail the job, never degrade into a fallback learner
     // page. The old preparedFallback path is gone; pageBody starts null and a
     // failed page throws after quarantining the draft for debugging.
@@ -233,6 +259,63 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /&& autoConfirmTopicMap\)/);
     // Confirmation is a distinct exported step, not folded into planning.
     assert.match(learnSource, /export function confirmLearningMap/);
+    // Legacy confirmed/proposed maps without Learning Unit Contracts must not
+    // be exposed to generation/status.
+    assert.match(learnSource, /function isContractBackedLearningMap/);
+    assert.match(learnSource, /isContractBackedLearningMap\(latestConfirmed\)/);
+    assert.match(learnSource, /visibleJob/);
+  });
+
+  test("generate route replans when a posted confirmed map id is stale", () => {
+    const routeSource = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "src",
+        "app",
+        "api",
+        "gardens",
+        "[gardenId]",
+        "learn",
+        "generate",
+        "route.ts",
+      ),
+      "utf8",
+    );
+
+    assert.match(routeSource, /getLearnStatusSnapshot/);
+    assert.match(routeSource, /runLearnPlanning/);
+    assert.match(routeSource, /requestedMapId && requestedMapId !== status\.confirmedLearningMapId/);
+  });
+
+  test("learn panel hides raw council output and allows stop while busy", () => {
+    const workspaceSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+      "utf8",
+    );
+
+    assert.doesNotMatch(workspaceSource, /Show council output/);
+    assert.doesNotMatch(workspaceSource, /Show council thinking/);
+    assert.match(workspaceSource, /learnCancelBusy/);
+    assert.match(workspaceSource, /disabled=\{learnCancelBusy\}/);
+    assert.doesNotMatch(workspaceSource, /async function handleCancelLearn\(\) \{\s*if \(learnBusy\) return;/);
+  });
+
+  test("cancelling Learn rolls back generated learning artifacts", () => {
+    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const cancelRouteSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "learn", "cancel", "route.ts"),
+      "utf8",
+    );
+
+    assert.match(learnSource, /cleanupLearnArtifactsAfterCancel/);
+    assert.match(learnSource, /removeClusterPath\(clusterDir, LEARNING_ROOT/);
+    assert.match(learnSource, /removeClusterPath\(clusterDir, "Learning"/);
+    assert.match(learnSource, /DELETE FROM learn_maps WHERE garden_id = \?/);
+    assert.match(learnSource, /DELETE FROM learn_versions WHERE garden_id = \?/);
+    assert.match(learnSource, /\.breadboard\/learning-unit-contract\.json/);
+    assert.match(learnSource, /\.breadboard\/planning/);
+    assert.match(learnSource, /assets\/source-visuals/);
+    assert.match(cancelRouteSource, /await cancelLatestLearnJob/);
   });
 });
 

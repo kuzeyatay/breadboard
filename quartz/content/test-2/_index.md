@@ -1,17 +1,17 @@
 ---
 title: "test"
-date: "2026-07-04"
-description: "Learning garden with 1 source document, 8 lesson pages, and 39 graph links."
+date: "2026-07-05"
+description: "Learning garden with 1 source document, 0 lesson pages, and 2 graph links."
 knowledge_type: "cluster-index"
 ---
 
 ## Garden overview
 
-This learning garden is organized from 1 source document into a sequence of linked lessons. It currently contains 8 lesson pages, 39 graph links, and 26432 indexed words.
+This learning garden is organized from 1 source document into a sequence of linked lessons. It currently contains 0 lesson pages, 2 graph links, and 11479 indexed words.
 
 Start with the Topic Overview, then follow the numbered sections in order.
 
-Last updated: 2026-07-04.
+Last updated: 2026-07-05.
 
 ## Learning
 
@@ -23,14 +23,7 @@ Last updated: 2026-07-04.
 
 ## Reading Path
 
-1. [[learning/1. From Conventional Neural Networks to SNNs/1.1 From Conventional Neural Networks to SNNs|1.1 From Conventional Neural Networks to SNNs]]
-2. [[learning/2. What Spiking Neural Networks Are/2.1 What Spiking Neural Networks Are|2.1 What Spiking Neural Networks Are]]
-3. [[learning/3. Neuron Model LIF/3.1 Neuron Model LIF as Evidence|3.1 Neuron Model: LIF]]
-4. [[learning/4. SNN Training Paradigms/4.1 SNN Training Paradigms|4.1 SNN Training Paradigms]]
-5. [[learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation|5.1 Unified Multi-Metric Evaluation]]
-6. [[learning/6. Comparative Results Across Models and Metrics/6.1 Comparative Results Across Models and Metrics|6.1 Comparative Results Across Models and Metrics]]
-7. [[learning/7. What the Tradeoffs Suggest for Applications and Hardware Context/7.1 What the Tradeoffs Suggest for Applications and Hardware Context|7.1 What the Tradeoffs Suggest for Applications and Hardware Context]]
-8. [[learning/8. Open Challenges and What Remains Unresolved/8.1 Open Challenges and What Remains Unresolved|8.1 Open Challenges and What Remains Unresolved]]
+- No lessons yet.
 
 ## More Pages
 

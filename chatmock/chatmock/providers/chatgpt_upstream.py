@@ -78,6 +78,7 @@ class ChatGptUpstreamProvider:
             raise ProviderError(f"chatgpt upstream returned HTTP {upstream.status_code} for {model}")
 
         full_text = ""
+        reasoning_text = ""
         error_message: str | None = None
         try:
             for raw in upstream.iter_lines(decode_unicode=False):
@@ -98,6 +99,9 @@ class ChatGptUpstreamProvider:
                 kind = evt.get("type")
                 if kind == "response.output_text.delta":
                     full_text += evt.get("delta") or ""
+                elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+                    # The model's "thinking" trace, streamed alongside the answer.
+                    reasoning_text += evt.get("delta") or ""
                 elif kind == "response.failed":
                     error_message = (
                         (evt.get("response", {}) or {}).get("error", {}) or {}
@@ -112,4 +116,7 @@ class ChatGptUpstreamProvider:
 
         if error_message:
             raise ProviderError(f"chatgpt upstream failed for {model}: {error_message}")
+        # Expose the reasoning trace to the caller via the out-param.
+        if reasoning_text.strip():
+            call.reasoning_out = reasoning_text.strip()
         return full_text

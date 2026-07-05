@@ -10,6 +10,10 @@ import {
   buildStdpTimingWindowVisual,
   buildMetricTradeoffExplorerVisual,
 } from "../src/lib/visual-spec.ts";
+import {
+  assignSourceArtifacts,
+  normalizeLearningUnits,
+} from "../src/lib/learning-unit-contract.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture builder: a small but structurally-complete SNN garden on disk.
@@ -29,7 +33,7 @@ const LONG_PARAGRAPH = (topic) =>
     45,
   );
 
-function goodLesson({ title, tags, body, visualBlock, visualIds, imageUrl, sourceVisualIds }) {
+function goodLesson({ title, tags, body, visualBlock, visualIds, imageUrl, sourceVisualIds, learningUnitId, learningUnitRole }) {
   return (
     fm({
       title,
@@ -40,6 +44,8 @@ function goodLesson({ title, tags, body, visualBlock, visualIds, imageUrl, sourc
       tags,
       visualIds: visualIds ?? [],
       sourceVisualIds: sourceVisualIds ?? [],
+      learningUnitId,
+      learningUnitRole,
       learningVersion: "learning_abc",
       learningVersionId: "learning_abc",
     }) +
@@ -150,7 +156,90 @@ function buildGoodGarden(root) {
   ];
   fs.writeFileSync(path.join(bb, "source-visuals.json"), JSON.stringify(ledger, null, 2));
 
-  // Four interactive visuals across pages.
+  const learningUnits = normalizeLearningUnits([
+    {
+      id: "U1",
+      role: "motivation",
+      title: "Why event-driven computation matters",
+      learningQuestion: "Why do sparse spike events save work?",
+      zettelNotes: [{ handle: "event-driven-computation-saves-work-by-staying-silent", claim: "Event-driven computation saves work by staying silent." }],
+    },
+    {
+      id: "U2",
+      role: "core_concept",
+      title: "What a spike represents",
+      learningQuestion: "What information does a spike carry?",
+      newConcepts: ["spike event"],
+      zettelNotes: [{ handle: "spike-events-carry-information-through-timing", claim: "Spike events carry information through timing." }],
+    },
+    {
+      id: "U3",
+      role: "mechanism",
+      title: "The leaky integrate-and-fire neuron",
+      learningQuestion: "How does a LIF membrane potential reach threshold and reset?",
+      newConcepts: ["membrane potential", "threshold", "reset"],
+      sourceFigures: [{ id: "S1.P4.F1", placement: "inside_concept_explanation", mustBeDiscussedWith: "LIF neuron model", interpretationGoal: "Use the cropped source figure to identify the membrane, threshold, spike, and reset pieces." }],
+      interactiveVisual: { id: "v_lif", visualType: "lif_neuron", uniqueConcept: "membrane potential threshold reset", whyStaticSourceFigureIsNotEnough: "The learner must watch the potential climb, spike, and reset over time.", learnerManipulates: ["input current", "threshold"], expectedInsight: "threshold and input current control firing", sourceAnchors: ["S1.P4.F1"] },
+      zettelNotes: [{ handle: "lif-threshold-turns-accumulated-input-into-spikes", claim: "A LIF threshold turns accumulated input into spikes." }],
+    },
+    {
+      id: "U4",
+      role: "mechanism",
+      title: "Encoding information as spike trains",
+      learningQuestion: "How do rate and temporal coding differ?",
+      newConcepts: ["rate coding", "temporal coding"],
+      interactiveVisual: { id: "v_coding", visualType: "neural_coding", uniqueConcept: "rate coding versus temporal coding", whyStaticSourceFigureIsNotEnough: "The learner changes spike timing and sees the code change.", learnerManipulates: ["spike rate", "timing jitter"], expectedInsight: "rate and timing carry different information", sourceAnchors: [] },
+      zettelNotes: [{ handle: "spike-train-timing-changes-the-message", claim: "Spike train timing changes the message." }],
+    },
+    {
+      id: "U5",
+      role: "formula",
+      title: "The membrane update rule",
+      learningQuestion: "What formal rule describes membrane integration?",
+      zettelNotes: [{ handle: "membrane-update-rules-connect-input-leak-and-state", claim: "Membrane update rules connect input, leak, and state." }],
+    },
+    {
+      id: "U6",
+      role: "training_method",
+      title: "Spike-timing dependent plasticity",
+      learningQuestion: "How does STDP use pre/post timing?",
+      newConcepts: ["STDP", "plasticity"],
+      interactiveVisual: { id: "v_stdp", visualType: "stdp_window", uniqueConcept: "STDP pre and post timing window", whyStaticSourceFigureIsNotEnough: "The learner drags spike timing and sees the weight update sign change.", learnerManipulates: ["pre/post delay"], expectedInsight: "timing order changes synaptic weight direction", sourceAnchors: [] },
+      zettelNotes: [{ handle: "stdp-updates-weights-from-local-spike-timing", claim: "STDP updates weights from local spike timing." }],
+    },
+    {
+      id: "U7",
+      role: "metric",
+      title: "Accuracy latency and energy tradeoffs",
+      learningQuestion: "Why is accuracy alone not enough?",
+      newConcepts: ["latency", "energy", "spike count"],
+      interactiveVisual: { id: "v_tradeoff", visualType: "tradeoff_explorer", uniqueConcept: "accuracy energy latency tradeoff", whyStaticSourceFigureIsNotEnough: "The learner changes priorities and sees which metric dominates.", learnerManipulates: ["priority"], expectedInsight: "the best model depends on metric priorities", sourceAnchors: [] },
+      zettelNotes: [{ handle: "accuracy-alone-hides-energy-and-latency-cost", claim: "Accuracy alone hides energy and latency cost." }],
+    },
+    {
+      id: "U8",
+      role: "synthesis",
+      title: "Putting spikes mechanisms and metrics together",
+      learningQuestion: "How do spike timing, mechanisms, and metrics connect?",
+      zettelNotes: [{ handle: "event-driven-design-connects-timing-energy-and-accuracy", claim: "Event-driven design connects timing, energy, and accuracy." }],
+    },
+  ]);
+  fs.writeFileSync(
+    path.join(bb, "learning-unit-contract.json"),
+    JSON.stringify(
+      {
+        sourceSetHash: "fixture",
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        learningUnits,
+        sourceArtifactAssignments: assignSourceArtifacts(learningUnits),
+      },
+      null,
+      2,
+    ),
+  );
+
+  // Interactive visuals are optional, but these four pages deliberately carry
+  // distinct contract-backed visuals.
   const specs = {
     lif: enrichFixtureSpec(
       buildLifThresholdResetVisual("learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron"),
@@ -184,53 +273,61 @@ function buildGoodGarden(root) {
       rel: "learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
       title: "2.1 The Leaky Integrate-and-Fire Neuron",
       tags: [
-        "snn/lif-neuron-threshold-reset",
-        "computational-neuroscience/membrane-potential-accumulation",
-        "snn/threshold-firing-event",
-        "snn/reset-after-threshold-spike",
+        "lif-neuron-threshold-reset",
+        "membrane-potential-threshold",
+        "threshold-firing-event",
+        "reset-follows-spike",
       ],
-      body: LONG_PARAGRAPH("The leaky integrate-and-fire neuron and its membrane potential threshold"),
+      body: LONG_PARAGRAPH("The leaky integrate-and-fire neuron, membrane potential threshold, firing event, spike, and reset"),
       spec: specs.lif,
       imageUrl,
       sourceVisualIds: ["S1.P4.F1"],
+      learningUnitId: "U3",
+      learningUnitRole: "mechanism",
     },
     {
       rel: "learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains.md",
       title: "2.2 Encoding Information as Spike Trains",
       tags: [
-        "snn/spike-rate-coding",
-        "snn/spike-timing-as-information",
-        "snn/spike-train-encoding",
-        "snn/temporal-code-timing",
+        "spike-rate-coding",
+        "spike-timing-information",
+        "spike-train-encoding",
+        "temporal-code-timing",
       ],
       body: LONG_PARAGRAPH("Rate coding and temporal coding of spike trains and spike timing"),
       spec: specs.coding,
+      learningUnitId: "U4",
+      learningUnitRole: "mechanism",
     },
     {
       rel: "learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity.md",
       title: "3.4 Spike-Timing Dependent Plasticity",
       tags: [
-        "training/stdp-local-timing-rule",
-        "training/synaptic-plasticity-window",
-        "snn/spike-timing-window",
-        "training/temporal-credit-assignment",
+        "stdp-local-timing-rule",
+        "synaptic-plasticity-window",
+        "spike-timing-window",
+        "temporal-credit-assignment",
       ],
       body: LONG_PARAGRAPH("Spike-timing dependent plasticity (STDP), temporal credit assignment, and synaptic plasticity across the timing window"),
       spec: specs.stdp,
+      learningUnitId: "U6",
+      learningUnitRole: "training_method",
     },
     {
       rel: "learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy.md",
       title: "4.1 Accuracy, Latency, and Energy",
       tags: [
-        "metric/latency-to-decision",
-        "metric/accuracy-per-energy",
-        "metric/total-spike-count",
-        "metric/model-family-comparison",
+        "latency-to-decision",
+        "accuracy-per-energy",
+        "total-spike-count",
+        "model-family-comparison",
       ],
       body:
         LONG_PARAGRAPH("Accuracy, latency, energy and spike count as a tradeoff") +
         " latency latency spike count spike count energy energy trade-off across model families and model family comparison.",
       spec: specs.tradeoff,
+      learningUnitId: "U7",
+      learningUnitRole: "metric",
     },
   ];
   for (const page of pages) {
@@ -244,6 +341,8 @@ function buildGoodGarden(root) {
         visualIds: [page.spec.id],
         imageUrl: page.imageUrl,
         sourceVisualIds: page.sourceVisualIds,
+        learningUnitId: page.learningUnitId,
+        learningUnitRole: page.learningUnitRole,
       }),
     );
   }
@@ -311,9 +410,9 @@ describe("garden validator regression fixture", () => {
         [],
         "no check should fail on the good garden",
       );
-      // Sanity: the SNN-specific and visual checks actually ran (not all skipped).
-      const snn = results.find((r) => r.id === 16);
-      assert.equal(snn.status, "PASS", "SNN garden 4-visual check must run and pass");
+      // Sanity: the optional-visual dedupe check actually ran (not skipped).
+      const visualDedupe = results.find((r) => r.id === 16);
+      assert.equal(visualDedupe.status, "PASS", "interactive visual signature check must run and pass");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

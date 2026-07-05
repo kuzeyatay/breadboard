@@ -375,31 +375,11 @@ export function finalizeGardenExport({
   // --- Pass D: stale caveat sanitation (visible + planning) ------------------
   sanitizeStaleCaveatFiles(gardenDir, { laterPagesExist, formulaAnchorsExist }, report);
 
-  // --- Pass (title): strip source-commentary residue from learner titles -----
-  fixLearnerTitles(learnerPages, gardenDir, report);
-
-  // --- Pass E+F: reconcile + semantically place source visuals ---------------
-  const reconciliation = reconcileAndPlaceSourceVisuals({
-    gardenDir,
-    ledger,
-    ledgerPath,
-    learnerPages,
-    pagesByRole,
-    report,
-  });
-  report.reconciliation = reconciliation;
-
-  // --- Pass G: interactive visual grounding + type/anchor compatibility ------
-  repairInteractiveVisuals({ gardenDir, ledger, learnerPages, pagesByRole, report });
-
-  // --- Pass H: content-based formula grounding -------------------------------
-  regroundFormulas({ ledger, learnerPages, report });
-
-  // --- Pass I: tag centrality ------------------------------------------------
-  repairTags(learnerPages, gardenSlug, report);
-
-  // --- Pass J: cross-page repeated-motivation removal ------------------------
-  removeRepeatedMotivation(learnerPages, report);
+  // Semantic decisions are made by the Learning Unit Contract before page
+  // writing. The finalizer no longer assigns source figures, chooses
+  // interactive visual types, rewrites learner tags, regrounds formulas, or
+  // repairs repeated motivation after the fact. Those cases are validation
+  // failures, not hidden finalizer patches.
 
   // --- Persist learner-page edits --------------------------------------------
   for (const page of learnerPages) {

@@ -3,6 +3,17 @@ import {
   normalizeTopicTags as normalizeConceptTags,
   semanticTagsFromText as semanticConceptTagsFromText,
 } from "./tags.ts";
+import {
+  atomicZettelHandle,
+  isAtomicZettelHandle,
+  type InteractiveVisualContract,
+  type LearningUnitRole,
+  type SourceArtifactAssignment,
+  type SourceFigureContract,
+  type SourceFormulaContract,
+  type SourceTableContract,
+  type ZettelNote,
+} from "./learning-unit-contract.ts";
 
 export const LEARN_STATUSES = [
   "idle",
@@ -69,6 +80,20 @@ export interface LearningSubsectionPlan {
   sourceVisualIds: string[];
   /** Interactive visuals to create — only for genuinely hard concepts. */
   interactiveVisuals: InteractiveVisualPlan[];
+  /** Durable Learning Unit Contract metadata, when this subsection came from a unit. */
+  learningUnitId?: string;
+  learningUnitRole?: LearningUnitRole;
+  learningQuestion?: string;
+  prerequisiteConcepts?: string[];
+  newConcepts?: string[];
+  mustNotRepeat?: string[];
+  expectedWordRange?: [number, number];
+  sourceFigureContracts?: SourceFigureContract[];
+  sourceFormulaContracts?: SourceFormulaContract[];
+  sourceTableContracts?: SourceTableContract[];
+  sourceArtifactAssignments?: SourceArtifactAssignment[];
+  interactiveVisualContract?: InteractiveVisualContract;
+  zettelNotes?: ZettelNote[];
 }
 
 export interface LearningSectionPlan {
@@ -480,7 +505,6 @@ export const ZETTEL_TAG_BANLIST = new Set([
   "results", "comparison", "analysis", "study", "work", "field", "area",
 ]);
 
-/** Known typo/abbreviation roots to repair in the domain namespace segment. */
 const TAG_ROOT_FIXES: Record<string, string> = {
   sn: "snn",
   dl: "deep-learning",
@@ -491,37 +515,11 @@ const TAG_ROOT_FIXES: Record<string, string> = {
 
 /**
  * Concept → hierarchical tag lexicon. When a lesson body mentions one of these
- * durable concepts, we emit the exact clean tag (already namespaced), which is
+ * durable concepts, legacy helpers emitted a clean tag seed, which is
  * far more reliable than namespacing whatever noisy words the planner produced.
  * Ordered longest/most-specific first. General enough to be harmless on other
  * domains (it only fires on literal keyword matches).
  */
-const CONCEPT_TAG_LEXICON: Array<[RegExp, string]> = [
-  [/\bleaky integrate[- ]and[- ]fire\b|\blif neuron\b|\blif model\b/i, "snn/lif-neuron"],
-  [/\bmembrane potential\b/i, "computational-neuroscience/membrane-potential"],
-  [/\b(?:firing )?threshold\b|\bthreshold crossing\b/i, "snn/threshold-firing"],
-  [/\brefractory\b|\breset (?:potential|behavior)\b/i, "snn/reset-dynamics"],
-  [/\bspike[- ]timing[- ]dependent plasticity\b|\bstdp\b/i, "snn/stdp"],
-  [/\bsynaptic (?:plasticity|weight)\b/i, "learning-rules/synaptic-plasticity"],
-  [/\bspike timing\b/i, "computational-neuroscience/spike-timing"],
-  [/\bsurrogate gradient\b/i, "snn/surrogate-gradient-training"],
-  [/\bnon[- ]differentiab\w+\b/i, "optimization/non-differentiable-spikes"],
-  [/\bbackpropagation\b|\bbackprop\b/i, "deep-learning/backpropagation"],
-  [/\bann[- ]to[- ]snn\b|\bann to snn\b|\bconversion\b/i, "snn/ann-to-snn-conversion"],
-  [/\brate coding\b/i, "snn/rate-coding"],
-  [/\btemporal coding\b/i, "snn/temporal-coding"],
-  [/\bspike (?:coding|encoding)\b|\bencoding information as spikes\b/i, "snn/spike-coding"],
-  [/\bevent[- ]driven\b/i, "snn/event-driven-computation"],
-  [/\blateral inhibition\b/i, "computational-neuroscience/lateral-inhibition"],
-  [/\bneuromorphic\b|\bloihi\b|\btruenorth\b/i, "neuromorphic-computing/event-driven-hardware"],
-  [/\bedge (?:ai|device|computing)\b/i, "edge-ai/real-time-inference"],
-  [/\benergy (?:efficiency|per inference|consumption)\b/i, "edge-ai/energy-efficiency"],
-  [/\blatency\b|\bresponse time\b/i, "model-evaluation/latency"],
-  [/\bspike count\b/i, "model-evaluation/spike-count"],
-  [/\bconvergence\b/i, "model-evaluation/convergence"],
-  [/\bspiking neural network\b|\bsnns?\b/i, "snn/spiking-neural-networks"],
-];
-
 /** Pull clean concept-handle tag seeds from the final lesson body. */
 export function extractTagSeeds(body: string): string[] {
   return semanticConceptTagsFromText(body, 8, body);
@@ -567,6 +565,20 @@ export function sanitizeLearnerTitle(rawTitle: string): string {
     .replace(/\s*[-:–—]?\s*overview$/i, "")
     .replace(/\be-?textbook\b/gi, "learning garden")
     .replace(/\btextbook\b/gi, "learning garden");
+
+  // "Evidence" is a banned learner-title word (it frames the page as reading a
+  // document instead of teaching the concept). Rewrite to "results", keeping
+  // verb agreement ("the evidence shows" -> "the results show") and the
+  // original casing style.
+  const matchCase = (match: string, replacement: string): string =>
+    /^[A-Z]/.test(match)
+      ? replacement.replace(/(^|\s)([a-z])/g, (_m, space, letter) => `${space}${letter.toUpperCase()}`)
+      : replacement;
+  title = title
+    .replace(/\bevidence (shows|suggests|says|tells)\b/gi, (m, verb: string) =>
+      matchCase(m, `results ${verb.replace(/s$/, "")}`),
+    )
+    .replace(/\bevidence\b/gi, (m) => matchCase(m, "results"));
   title = compact(title.replace(/^[,:;\-\s]+|[,:;\-\s]+$/g, ""));
   return title || compact(rawTitle);
 }
@@ -745,51 +757,36 @@ export function normalizeZettelTags(
     relevance?.body ?? "",
     ...(relevance?.assignedVisualCaptions ?? []),
   ].join("\n");
-  const normalized = normalizeConceptTags(
-    rawTags,
-    grounding,
-    8,
-    grounding,
-    {
-      title: relevance?.title ?? topicHint,
-      content: grounding,
-      sourceTopics: [domainHint],
-    },
-  );
-  const relevant = relevance
-    ? normalized.filter((tag) => tagIsRelevantToPage(tag, relevance))
-    : normalized;
-  const namespaceAndDedupe = (tags: string[]): string[] => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const tag of tags) {
-      const namespaced = namespaceLearnerTag(tag, domainHint);
-      if (!namespaced || seen.has(namespaced)) continue;
-      seen.add(namespaced);
-      out.push(namespaced);
-      if (out.length >= 8) break;
-    }
-    return out;
-  };
-
-  const namespacedRelevant = namespaceAndDedupe(relevant);
-  if (namespacedRelevant.length >= 4) return namespacedRelevant;
-
+  const normalized = normalizeConceptTags(rawTags, grounding, 8, grounding, {
+    title: relevance?.title ?? topicHint,
+    content: grounding,
+    sourceTopics: [domainHint],
+  });
   const fallback = normalizeConceptTags(
-    [...relevant, ...semanticConceptTagsFromText(grounding, 8, grounding)],
+    [...normalized, ...semanticConceptTagsFromText(grounding, 8, grounding)],
     grounding,
     8,
     grounding,
     {
       title: relevance?.title ?? topicHint,
       content: grounding,
-      existingTags: relevant,
+      existingTags: normalized,
       sourceTopics: [domainHint],
     },
   );
-  return namespaceAndDedupe(
-    relevance ? fallback.filter((tag) => tagIsRelevantToPage(tag, relevance)) : fallback,
-  );
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const candidate of [...rawTags, ...normalized, ...fallback, ...semanticConceptTagsFromText(grounding, 8, grounding)]) {
+    const leaf = candidate.split("/").filter(Boolean).at(-1) ?? candidate;
+    const handle = atomicZettelHandle(leaf);
+    if (!handle || seen.has(handle) || !isAtomicZettelHandle(handle)) continue;
+    if (relevance && !tagIsRelevantToPage(handle, relevance)) continue;
+    seen.add(handle);
+    out.push(handle);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 /** Stored full-page snapshot assets look like "...-page-003.png". */
@@ -1061,13 +1058,13 @@ export function yamlFrontmatter(values: Record<string, FrontmatterValue>): strin
           if (Array.isArray(firstValue)) {
             lines.push(`  - ${firstKey}: [${firstValue.map((nested) => yamlScalar(nested)).join(", ")}]`);
           } else {
-            lines.push(`  - ${firstKey}: ${yamlScalar(firstValue)}`);
+            lines.push(`  - ${firstKey}: ${yamlScalar(firstValue as FrontmatterScalar)}`);
           }
           for (const [nestedKey, nestedValue] of entries.slice(1)) {
             if (Array.isArray(nestedValue)) {
               lines.push(`    ${nestedKey}: [${nestedValue.map((nested) => yamlScalar(nested)).join(", ")}]`);
             } else {
-              lines.push(`    ${nestedKey}: ${yamlScalar(nestedValue)}`);
+              lines.push(`    ${nestedKey}: ${yamlScalar(nestedValue as FrontmatterScalar)}`);
             }
           }
         }
@@ -1096,6 +1093,8 @@ export function buildLearningPageFrontmatter({
   sourceVisualIds,
   sourceFormulaAnchors,
   formulas,
+  learningUnitId,
+  learningUnitRole,
   learningVersionId,
   sourceSetHash,
   generatedAt,
@@ -1114,6 +1113,9 @@ export function buildLearningPageFrontmatter({
   /** Source formula anchors (S1.P6.E1 style) taught or referenced by this page. */
   sourceFormulaAnchors?: string[];
   formulas?: FormulaGroundingEntry[];
+  /** Learning Unit Contract breadcrumb for validation and provenance. */
+  learningUnitId?: string;
+  learningUnitRole?: LearningUnitRole;
   learningVersionId: string;
   sourceSetHash?: string;
   generatedAt: string;
@@ -1137,7 +1139,9 @@ export function buildLearningPageFrontmatter({
       sourceVisualIds && sourceVisualIds.length > 0 ? sourceVisualIds : undefined,
     sourceFormulaAnchors:
       sourceFormulaAnchors && sourceFormulaAnchors.length > 0 ? sourceFormulaAnchors : undefined,
-    formulas: formulas && formulas.length > 0 ? formulas : undefined,
+    formulas: formulas && formulas.length > 0 ? formulas.map((entry) => ({ ...entry })) : undefined,
+    learningUnitId,
+    learningUnitRole,
     generatedBy: "learn_button",
     generated_by: "learn_button",
     learningVersion: visibleVersionId,
