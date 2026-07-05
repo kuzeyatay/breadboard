@@ -19,7 +19,7 @@ export async function POST(
       );
     }
 
-    const job = cancelLatestLearnJob({ gardenId: cluster.slug, contentPath });
+    const job = await cancelLatestLearnJob({ gardenId: cluster.slug, contentPath });
     return NextResponse.json({ success: true, job });
   } catch (error) {
     return routeErrorResponse(error);

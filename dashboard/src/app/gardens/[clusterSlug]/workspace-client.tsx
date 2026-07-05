@@ -164,6 +164,24 @@ interface LearnStatusResponse {
   error?: string;
 }
 
+interface LearnCouncilDetail {
+  councilMode?: string;
+  taskType?: string;
+  reasoning?: string;
+  output?: string;
+  candidateReasonings?: string[];
+  error?: string;
+}
+
+interface LearnEventLine {
+  at: string;
+  type: string;
+  line: string;
+  jobId?: string;
+  councilRunId?: string;
+  detail?: LearnCouncilDetail | null;
+}
+
 interface MarkdownTagUpdateResult {
   slug: string;
   title: string;
@@ -794,9 +812,12 @@ export default function WorkspaceClient({
   // Learn pipeline
   const [learnState, setLearnState] = useState<LearnStatusResponse | null>(null);
   const [learnBusy, setLearnBusy] = useState(false);
+  const [learnCancelBusy, setLearnCancelBusy] = useState(false);
   const [learnPanelOpen, setLearnPanelOpen] = useState(false);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnIncludeSnapshots, setLearnIncludeSnapshots] = useState(false);
+  const [learnEvents, setLearnEvents] = useState<LearnEventLine[]>([]);
+  const learnEventsScrollRef = useRef<HTMLDivElement | null>(null);
   const [dismissedLearnErrorKeys, setDismissedLearnErrorKeys] = useState<
     string[]
   >(() => loadDismissedLearnErrorKeys());
@@ -916,14 +937,36 @@ export default function WorkspaceClient({
     void fetchLearnStatus();
   }, [fetchLearnStatus]);
 
+  const fetchLearnEvents = useCallback(async () => {
+    const jobId = learnState?.job?.id ?? "";
+    try {
+      const params = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/events${params}`,
+      );
+      const data = (await res.json().catch(() => ({}))) as { events?: LearnEventLine[] };
+      if (res.ok && Array.isArray(data.events)) setLearnEvents(data.events);
+    } catch {
+      // The activity log must never interrupt the workspace.
+    }
+  }, [clusterSlug, learnState?.job?.id]);
+
   useEffect(() => {
     const active = isLearnActive(learnState?.job?.status) || learnBusy;
     if (!active) return;
+    void fetchLearnEvents();
     const id = window.setInterval(() => {
       void fetchLearnStatus();
+      void fetchLearnEvents();
     }, 2000);
     return () => window.clearInterval(id);
-  }, [fetchLearnStatus, learnBusy, learnState?.job?.status]);
+  }, [fetchLearnStatus, fetchLearnEvents, learnBusy, learnState?.job?.status]);
+
+  // Keep the council activity log pinned to the newest line.
+  useEffect(() => {
+    const box = learnEventsScrollRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [learnEvents]);
 
   const fetchChatSessions = useCallback(async () => {
     try {
@@ -1827,11 +1870,16 @@ export default function WorkspaceClient({
     endpoint: "plan" | "confirm" | "generate" | "regenerate" | "cancel",
     body: Record<string, unknown> = {},
   ) {
-    if (endpoint !== "cancel") {
+    const isCancel = endpoint === "cancel";
+    if (!isCancel) {
       setLearnPanelOpen(true);
       setDismissedLearnErrorKeys(forgetDismissedLearnErrorsForGarden(clusterSlug));
     }
-    setLearnBusy(true);
+    if (isCancel) {
+      setLearnCancelBusy(true);
+    } else {
+      setLearnBusy(true);
+    }
     try {
       const res = await fetch(
         `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/${endpoint}`,
@@ -1864,11 +1912,26 @@ export default function WorkspaceClient({
         addToast("Learn job cancelled");
       }
     } catch (error) {
-      addToast(error instanceof Error ? error.message : "Learn action failed");
       await fetchLearnStatus();
+      const message = error instanceof Error ? error.message : "Learn action failed";
+      if (isCancel) {
+        addToast(message);
+      } else if (!/cancelled|canceled|stopped by the user/i.test(message)) {
+        addToast(message);
+      }
     } finally {
-      setLearnBusy(false);
+      if (isCancel) {
+        setLearnCancelBusy(false);
+      } else {
+        setLearnBusy(false);
+      }
     }
+  }
+
+  async function handleCancelLearn() {
+    const status = learnState?.job?.status;
+    if (learnCancelBusy || (!isLearnActive(status) && status !== "awaiting_confirmation")) return;
+    await postLearnAction("cancel");
   }
 
   async function handleLearnPrimary() {
@@ -1897,11 +1960,6 @@ export default function WorkspaceClient({
   async function handleRegenerateLearningMap() {
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
     await postLearnAction("plan");
-  }
-
-  async function handleCancelLearn() {
-    if (learnBusy) return;
-    await postLearnAction("cancel");
   }
 
   function dismissLearnError(job: LearnJobInfo) {
@@ -2315,24 +2373,26 @@ export default function WorkspaceClient({
                 {learnState?.buttonLabel ?? "Learn"}
               </button>
             )}
-            <button
-              type="button"
-              onClick={() =>
-                canClosePanel
-                  ? setLearnPanelOpen(false)
-                  : setLearnPanelOpen((value) => !value)
-              }
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
-              aria-label={
-                canClosePanel
-                  ? "Close Learn panel"
-                  : panelExpanded
-                    ? "Collapse Learn panel"
-                    : "Expand Learn panel"
-              }
-              title={canClosePanel ? "Close" : panelExpanded ? "Collapse" : "Expand"}
-            >
-              {canClosePanel ? (
+            {active && (
+              <button
+                type="button"
+                onClick={handleCancelLearn}
+                disabled={learnCancelBusy}
+                className="flex items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
+                title="Stop this Learn run"
+              >
+                {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
+                {learnCancelBusy ? "Stopping..." : "Stop"}
+              </button>
+            )}
+            {!active && status !== "awaiting_confirmation" && (
+              <button
+                type="button"
+                onClick={() => setLearnPanelOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
+                aria-label="Close Learn panel"
+                title="Close"
+              >
                 <svg
                   className="h-3.5 w-3.5"
                   fill="none"
@@ -2342,18 +2402,8 @@ export default function WorkspaceClient({
                 >
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
                 </svg>
-              ) : (
-                <svg
-                  className={`h-3.5 w-3.5 transition-transform ${panelExpanded ? "" : "rotate-180"}`}
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
-                </svg>
-              )}
-            </button>
+              </button>
+            )}
           </div>
         </div>
 
@@ -2371,6 +2421,41 @@ export default function WorkspaceClient({
             {status === "failed" && job?.error ? (
               <p className="mt-2 text-xs text-red-300">{job.error}</p>
             ) : null}
+          </div>
+        )}
+
+        {(active || (learnEvents.length > 0 && (status === "complete" || status === "failed"))) && (
+          <div className="mt-3">
+            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-600">
+              Council activity
+            </p>
+            <div
+              ref={learnEventsScrollRef}
+              className="max-h-40 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/80 px-3 py-2 font-mono text-[11px] leading-5 text-gray-400"
+            >
+              {learnEvents.length === 0 ? (
+                <p className="text-gray-600">Waiting for the first council event…</p>
+              ) : (
+                learnEvents.map((event, index) => {
+                  return (
+                    <div key={`${event.at}-${event.type}-${index}`}>
+                      <p
+                        className={
+                          /fallback|failed|timed out|rejected|dropped/i.test(event.line)
+                            ? "text-amber-400/90"
+                            : undefined
+                        }
+                      >
+                        <span className="text-gray-600">
+                          {event.at ? new Date(event.at).toLocaleTimeString() : "--:--:--"}
+                        </span>{" "}
+                        {event.line}
+                      </p>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         )}
 
@@ -2404,10 +2489,11 @@ export default function WorkspaceClient({
                 <button
                   type="button"
                   onClick={handleCancelLearn}
-                  disabled={learnBusy}
-                  className="rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={learnCancelBusy}
+                  className="flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300 disabled:cursor-wait disabled:opacity-60"
                 >
-                  Cancel
+                  {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
+                  {learnCancelBusy ? "Cancelling..." : "Cancel"}
                 </button>
               </div>
             </div>

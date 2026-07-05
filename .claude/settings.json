@@ -25,7 +25,17 @@
       "Bash(node --experimental-strip-types scripts/finalize-breadboard-garden.ts \"quartz/content/test-2\" test-2)",
       "Bash(echo \"exit\\(2nd finalize\\): $?\")",
       "Bash(git check-ignore *)",
-      "Bash(grep -A1 'E_{\\\\\\\\text{total}} = N' 'C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/broken-test-2/learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation.md')"
+      "Bash(grep -A1 'E_{\\\\\\\\text{total}} = N' 'C:/Users/20252082/AppData/Local/Temp/claude/c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard/0f848430-8de2-4b67-87b0-7ada69b60410/scratchpad/broken-test-2/learning/5. Unified Multi-Metric Evaluation/5.1 Unified Multi-Metric Evaluation.md')",
+      "Bash(node -e \"const p=require\\('openai/package.json'\\);console.log\\('openai version:',p.version\\)\")",
+      "Bash(grep -vi \"assert\\\\|//\")",
+      "Bash(node --test --experimental-strip-types tests/learn-utils.test.mjs)",
+      "Bash(grep -E \"evidence|tests [0-9]+$|pass [0-9]+$|fail [0-9]+$|not ok\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('chatmock/upstream.py'\\).read\\(\\)\\); print\\('upstream.py parses OK'\\)\")",
+      "Bash(node -e \"console.log\\(JSON.parse\\(require\\('fs'\\).readFileSync\\('node_modules/undici/package.json'\\)\\).version\\)\")",
+      "Bash(npm ls *)",
+      "Bash(npm install *)",
+      "Bash(node smoke-events.mjs)",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['chatmock/council/runtime.py','chatmock/providers/chatgpt_upstream.py','chatmock/providers/types.py']]; print\\('all parse OK'\\)\")"
     ],
     "additionalDirectories": [
       "\\tmp"

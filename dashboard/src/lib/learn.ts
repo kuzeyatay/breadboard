@@ -20,6 +20,20 @@ import {
   saveVisualSpec,
 } from "@/lib/visuals";
 import {
+  assignSourceArtifacts,
+  atomicZettelHandle,
+  dropIncompatibleInteractiveVisuals,
+  isAtomicZettelHandle,
+  learningMapFromUnits,
+  normalizeLearningUnits,
+  validateLearningUnitContracts,
+  visualTypeCompatibleWithUnit,
+  zettelHandlesForUnit,
+  type LearningUnitContract,
+  type SourceArtifactAssignment,
+  type SourceFigurePlacement,
+} from "@/lib/learning-unit-contract";
+import {
   IMPLEMENTED_VISUAL_TYPES,
   buildVisualBlock,
   validateVisualSpec,
@@ -192,6 +206,8 @@ interface CouncilCallResult {
   councilMode?: string;
 }
 
+type CouncilJsonResult = CouncilCallResult & { parsed: unknown | null };
+
 interface GeneratedPageRecord {
   title: string;
   relPath: string;
@@ -201,11 +217,9 @@ interface GeneratedPageRecord {
 }
 
 // --- Learn generation token-budget configuration ----------------------------
-// Expensive full-council reasoning is reserved for planning (source map,
-// scope contract, topic map / learning spine). Page writing and repair default
-// to a single direct_council call guarded by the deterministic quality gate,
-// and each page prompt receives a compact PageDossier instead of the whole
-// garden brain. Defaults are token-efficient; env vars can loosen them.
+// Planning, page writing, and repair use configurable council modes guarded by
+// deterministic quality gates. Defaults are token-efficient; env vars can
+// loosen them for slower, heavier reasoning when needed.
 
 const COUNCIL_MODE_VALUES: readonly CouncilMode[] = [
   "direct_council",
@@ -231,9 +245,40 @@ const LEARN_GENERATION_COUNCIL_MODE = envCouncilMode(
   "LEARN_GENERATION_COUNCIL_MODE",
   "direct_council",
 );
+/**
+ * Council mode for planning. `direct_council` is a single upstream model call
+ * per stage; `lite_council` fans out to three sequential calls (candidate →
+ * review → synthesis) and `full_council` to many. Planning runs THREE stages
+ * back to back (source map → scope contract → learning spine), so a fan-out
+ * mode multiplies upstream latency by ~3–9x and is the reason planning kept
+ * exceeding the request timeout. Default to the single-call path; raise the env
+ * var only when you deliberately want heavier planning deliberation.
+ */
+const LEARN_PLANNING_COUNCIL_MODE = envCouncilMode(
+  "LEARN_PLANNING_COUNCIL_MODE",
+  "direct_council",
+);
 /** Council mode for revision/repair calls. Never full_council by default. */
 const LEARN_REVISION_COUNCIL_MODE = envCouncilMode(
   "LEARN_REVISION_COUNCIL_MODE",
+  "direct_council",
+);
+/**
+ * Per-call planning timeout. A chatmock council request fans out to several
+ * upstream model calls (each allowed up to 10 minutes server-side), so the
+ * default OpenAI-client timeout of 10 minutes aborts planning calls that were
+ * still legitimately working — which is why "Request timed out." fallbacks
+ * fired on every Learn press. The client must outwait the council.
+ */
+const LEARN_PLANNING_TIMEOUT_MS = envPositiveInt(
+  "LEARN_PLANNING_TIMEOUT_MS",
+  25 * 60 * 1000,
+);
+/** Council mode for the retry after a planning timeout. A single-model call is
+ * far more likely to finish inside the window than another full fan-out, so
+ * the deterministic fallback is reached only when even that fails. */
+const LEARN_PLANNING_RETRY_COUNCIL_MODE = envCouncilMode(
+  "LEARN_PLANNING_RETRY_COUNCIL_MODE",
   "direct_council",
 );
 /** Full-regeneration attempts per page. Clamped to [1, 2]: a failed page gets
@@ -312,38 +357,79 @@ const SCOPE_CONTRACT_PROMPT = `You create the internal Scope Contract for a Brea
 Return ONLY JSON with included, excluded, background, deferred, sourceEmphasis, and caveats.
 The contract must protect source scope: no unsupported expansion, no disconnected topic cards, and no final Generated Subtopics pages.`;
 
-const TOPIC_MAP_PROMPT = `You create the Learning Spine / Topic Map for a Breadboard learning garden: a standalone sequence of lessons on the topic, grounded silently in the uploaded sources.
+const TOPIC_MAP_PROMPT = `You create the source-grounded Learning Unit Contract for a Breadboard learning garden. Learner pages are NOT planned as sections first. They are planned as 15-25 learning units, then Breadboard clusters those units into sections.
 Return ONLY JSON with this shape:
 {
   "title": "Topic title (the subject itself, e.g. 'Spiking Neural Networks')",
   "summary": "short description of what the learner will be able to do",
-  "sections": [
+  "learningUnits": [
     {
-      "title": "Section title",
-      "purpose": "why this section comes here",
-      "sourceAnchors": ["..."],
-      "subsections": [
+      "id": "U1",
+      "title": "One precise teaching step",
+      "role": "motivation | core_concept | mechanism | formula | worked_example | training_method | metric | result_interpretation | comparison | application | limitation | synthesis",
+      "learningQuestion": "one conceptual learner question this unit answers",
+      "prerequisiteConcepts": ["..."],
+      "newConcepts": ["..."],
+      "sourceAnchors": ["source anchor ids or source titles"],
+      "sourceFigures": [
         {
-          "title": "Subsection title",
-          "purpose": "what the learner does here",
-          "sourceAnchors": ["..."],
-          "sourceVisualsToEmbed": ["S1.P4.F1"],
-          "interactiveVisualsToCreate": [
-            { "concept": "membrane-potential-threshold-reset", "reason": "why interaction is genuinely needed" }
-          ],
-          "conceptTags": ["lif-neuron", "membrane-potential", "spike-threshold"]
+          "id": "S1.P4.F1",
+          "placement": "inside_concept_explanation | after_formula_introduction | inside_result_interpretation | beside_worked_example | inside_comparison | not_used_with_reason",
+          "mustBeDiscussedWith": "nearby idea or paragraph",
+          "interpretationGoal": "what the learner must notice",
+          "notUsedReason": "only when placement is not_used_with_reason"
         }
-      ]
+      ],
+      "sourceFormulas": [
+        {
+          "id": "S1.P6.E1",
+          "teachingGoal": "what the formula teaches",
+          "termsToDefine": ["symbol or term"],
+          "placement": "before_example | inside_metric_definition | inside_result_interpretation"
+        }
+      ],
+      "sourceTables": [
+        {
+          "id": "S1.P7.T1",
+          "teachingGoal": "what the comparison/result table teaches",
+          "rowsOrColumnsToExplain": ["row or column"],
+          "placement": "inside_comparison | inside_result_interpretation"
+        }
+      ],
+      "interactiveVisual": {
+        "id": "optional stable id",
+        "uniqueConcept": "the exact concept interaction teaches",
+        "visualType": "lif_neuron | neural_coding | stdp_window | metric_calculator | training_curve | tradeoff_explorer | custom type",
+        "whyStaticSourceFigureIsNotEnough": "why prose/source image is insufficient",
+        "learnerManipulates": ["control names"],
+        "expectedInsight": "what changes in the learner's understanding",
+        "sourceAnchors": ["supporting source anchor ids"],
+        "duplicateSignature": "stable dedupe key"
+      },
+      "zettelNotes": [
+        {
+          "handle": "atomic-lower-kebab-case-claim-handle",
+          "claim": "one reusable concept claim",
+          "connectedTo": ["other-note-handle"]
+        }
+      ],
+      "mustNotRepeat": ["motif, framing, or example already used"],
+      "expectedWordRange": [700, 1100]
     }
   ],
   "warnings": ["..."]
 }
 ${TITLE_RULES}
-Planning rules:
-- Every extracted source visual (given as sourceVisuals) must either appear in exactly one subsection's sourceVisualsToEmbed, or be omitted deliberately because it is not central.
-- interactiveVisualsToCreate is OPTIONAL and selective: only for genuinely hard concepts that need interaction (dynamic processes, tradeoffs, timing effects). Most subsections should have none. Never add one to introductions, conclusions, lists, or pages where a static source figure is enough.
-- conceptTags are reusable Zettelkasten concept handles, not SEO keywords, folder names, title summaries, or broad topic labels. Prefer ontology/concept tags over broad topic tags. Use 4-8 tags. Return only normalized lower-case kebab-case tags, e.g. "lif-neuron", "membrane-potential", "event-driven-processing", "energy-efficiency". Never generic words like paper, source, overview, model, test, coverage, learning, concept, introduction, section, or subsection.
-- First job: section names and order. Do not generate final prose yet.`;
+Contract rules:
+- Generate learningUnits first. Do not return a direct section/subsection map as the primary plan.
+- A unit is the smallest meaningful teaching step: one learner question, one conceptual move.
+- Normal source-rich gardens need 15-25 units; never produce an 8-section/1-subsection outline.
+- Every important source figure, graph, table, displayed formula, result, example, limitation, or recommendation must be assigned to the one precise unit where it teaches best, or marked unused with a reason.
+- Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
+- Interactive visuals are optional. A unit has zero or one. Use one only when interaction teaches something static prose or a source figure cannot.
+- Do not repeat interactive visual signatures. If a later unit needs a similar visual, link back conceptually or omit it.
+- Zettelkasten handles are atomic claim handles: lower-kebab-case, no slash namespaces, no broad single-word categories. Good: "accuracy-alone-hides-energy-and-latency-cost". Bad: "metric/accuracy", "latency", "snn".
+- First job: planning only. Do not generate final prose yet.`;
 
 const OVERVIEW_PROMPT = `Write the Topic Overview page: the first page a learner reads in this Breadboard learning garden.
 Return Markdown body only, no frontmatter.
@@ -377,7 +463,10 @@ ${DEPTH_RULES}
 ${ANTI_AIISM_RULES}
 Mechanics:
 - One flowing lesson, not disconnected mini-sections; avoid over-segmentation and excessive headings.
+- Treat dossier.learningUnit as the contract for this page: answer its learningQuestion, introduce its newConcepts, respect mustNotRepeat, use only its planned source artifacts, and use its zettelNotes as conceptual anchors.
+- The first paragraph must connect to prior ideas unless this is the first unit; later pages must not restart the whole motivation.
 - If assignedSourceVisuals are provided, embed EACH one inline exactly where it supports the prose using its provided markdown snippet, with an interpretation of what the figure shows directly beside it. Never dump images at the end and never repeat a caption without interpreting it.
+- Never create a generic "## Source Figures" section. Every source figure/table/formula belongs inside the explanation where the contract placed it.
 - Do NOT write any \`\`\`breadboard-visual code block yourself — interactive visuals are attached by the pipeline afterwards.
 - Never leave [Interactive visual: ...] or any bracketed placeholder, and never write instructions to yourself (e.g. "use the page 10 materials").
 - Include 1-2 real questions a learner would ask, using exactly:
@@ -589,6 +678,30 @@ function createLearnJob({
   return job;
 }
 
+/** Thrown when the user pressed Stop: the run aborts at the next checkpoint
+ * and the job stays "cancelled" instead of being marked failed. */
+export class LearnCancelledError extends Error {
+  constructor() {
+    super("Learn run stopped by the user.");
+    this.name = "LearnCancelledError";
+  }
+}
+
+function jobStatusById(jobId: string): LearnStatus | null {
+  ensureLearnTables();
+  const row = db
+    .prepare("SELECT * FROM learn_jobs WHERE id = ?")
+    .get(jobId) as LearnJobRow | undefined;
+  return row ? (row.status as LearnStatus) : null;
+}
+
+/** Cooperative cancellation checkpoint. The Stop button flips the job row to
+ * "cancelled"; long-running pipelines call this between model calls / pages so
+ * the run actually halts instead of finishing in the background. */
+function throwIfLearnCancelled(jobId: string): void {
+  if (jobStatusById(jobId) === "cancelled") throw new LearnCancelledError();
+}
+
 function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
   ensureLearnTables();
   const row = db
@@ -596,6 +709,11 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     .get(jobId) as LearnJobRow | undefined;
   if (!row) throw new Error(`Learn job ${jobId} not found`);
   const current = rowToJob(row)!;
+  // A cancelled job stays cancelled: progress updates from the still-unwinding
+  // pipeline must not resurrect it into an active status.
+  if (current.status === "cancelled" && updates.status !== "cancelled") {
+    return current;
+  }
   const next = { ...current, ...updates, updatedAt: nowIso() };
   db.prepare(
     `UPDATE learn_jobs
@@ -999,6 +1117,43 @@ function promptSources(context: LearnSourceContext): unknown {
   };
 }
 
+/** Body-free source context for downstream planning stages. The learning-spine
+ * call already receives the source map and scope contract (which digested the
+ * full text), so re-sending every 9k-char body only inflates the prompt and the
+ * upstream latency. Keep titles, excerpts, tags, and figure metadata. */
+function promptSourcesCompact(context: LearnSourceContext): unknown {
+  return {
+    gardenId: context.gardenId,
+    gardenTitle: context.gardenTitle,
+    sourceSetHash: context.sourceSetHash,
+    sources: context.sources.map((source) => ({
+      id: source.slug,
+      title: source.title,
+      relPath: source.relPath,
+      sourceType: source.sourceType,
+      tags: source.tags,
+      excerpt: truncate(source.excerpt || source.body, 1200),
+    })),
+    conceptNodes: context.conceptNodes.slice(0, 60),
+    sourceVisuals: context.sourceFigures.slice(0, 40).map((figure) => ({
+      sourceVisualId: figure.figureId,
+      sourceId: figure.sourceId,
+      page: figure.page,
+      kind: figure.kind,
+      caption: figure.caption,
+    })),
+  };
+}
+
+/** Compact a large planning JSON so it can ride into the next stage's prompt
+ * without dominating the token budget (the spine needs the shape, not every
+ * verbose field). */
+function compactPlanningPayload(value: unknown, maxLength = 6000): unknown {
+  const text = JSON.stringify(value ?? null);
+  if (text.length <= maxLength) return value;
+  return { truncatedJson: `${text.slice(0, maxLength)}…`, note: "compacted for prompt size" };
+}
+
 function fallbackSourceMap(context: LearnSourceContext): unknown {
   return {
     gardenId: context.gardenId,
@@ -1043,6 +1198,7 @@ async function callCouncilText({
   user,
   sourceContext,
   councilModeOverride,
+  timeoutMs,
 }: {
   client: OpenAI;
   model: string;
@@ -1053,6 +1209,9 @@ async function callCouncilText({
   user: string;
   sourceContext: unknown;
   councilModeOverride?: CouncilMode;
+  /** Per-request timeout override. When set, SDK-internal retries are disabled
+   * so the caller's own retry ladder controls what happens on a timeout. */
+  timeoutMs?: number;
 }): Promise<CouncilCallResult> {
   logPromptBudget(
     `${taskType}${pageId ? ` ${pageId}` : ""} (${councilModeOverride ?? "default"})`,
@@ -1077,6 +1236,7 @@ async function callCouncilText({
         councilModeOverride,
       },
     ),
+    timeoutMs ? { timeout: timeoutMs, maxRetries: 0 } : undefined,
   );
   const typed = response as typeof response & {
     councilRunId?: string;
@@ -1098,6 +1258,7 @@ async function callCouncilJson({
   user,
   sourceContext,
   councilModeOverride = "full_council",
+  timeoutMs,
 }: {
   client: OpenAI;
   model: string;
@@ -1107,7 +1268,8 @@ async function callCouncilJson({
   user: string;
   sourceContext: unknown;
   councilModeOverride?: CouncilMode;
-}): Promise<CouncilCallResult & { parsed: unknown | null }> {
+  timeoutMs?: number;
+}): Promise<CouncilJsonResult> {
   const result = await callCouncilText({
     client,
     model,
@@ -1117,16 +1279,240 @@ async function callCouncilJson({
     user,
     sourceContext,
     councilModeOverride,
+    timeoutMs,
   });
   return { ...result, parsed: parseJsonCandidate(result.content) };
+}
+
+/**
+ * Planning call with a timeout ladder: one attempt at the configured planning
+ * council mode with a generous timeout, then one retry at the (lighter, faster)
+ * retry mode. Only when BOTH time out does the error reach the caller, whose
+ * deterministic fallback is the genuine last resort — never the first response
+ * to a slow council.
+ */
+async function callPlanningJsonWithRetry({
+  client,
+  model,
+  taskType,
+  gardenId,
+  system,
+  user,
+  sourceContext,
+  contentPath,
+  jobId,
+}: {
+  client: OpenAI;
+  model: string;
+  taskType: CouncilTaskType;
+  gardenId: string;
+  system: string;
+  user: string;
+  sourceContext: unknown;
+  contentPath: string;
+  jobId: string;
+}): Promise<CouncilJsonResult> {
+  try {
+    return await callCouncilJson({
+      client,
+      model,
+      taskType,
+      gardenId,
+      system,
+      user,
+      sourceContext,
+      councilModeOverride: LEARN_PLANNING_COUNCIL_MODE,
+      timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if (!isPlanningTimeoutError(error)) throw error;
+    appendLearnEvent(contentPath, gardenId, "learn_planning_timeout_retry", {
+      jobId,
+      taskType,
+      error: errorMessage(error),
+      retryCouncilMode: LEARN_PLANNING_RETRY_COUNCIL_MODE,
+    });
+    return await callCouncilJson({
+      client,
+      model,
+      taskType,
+      gardenId,
+      system,
+      user,
+      sourceContext,
+      councilModeOverride: LEARN_PLANNING_RETRY_COUNCIL_MODE,
+      timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+    });
+  }
+}
+
+function errorMessage(error: unknown, fallback = "Request failed"): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return fallback;
+}
+
+function errorField(error: unknown, field: "name" | "code" | "status"): string {
+  if (!error || typeof error !== "object") return "";
+  const value = (error as Record<string, unknown>)[field];
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function isPlanningTimeoutError(error: unknown): boolean {
+  const haystack = [
+    errorMessage(error, ""),
+    errorField(error, "name"),
+    errorField(error, "code"),
+    errorField(error, "status"),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return /timeout|timed out|aborted|aborterror|etimedout|econnreset|socket hang up/.test(haystack);
+}
+
+function planningFallbackWarning(label: string, error: unknown): string {
+  return `${label} request timed out twice (${LEARN_PLANNING_COUNCIL_MODE} then ${LEARN_PLANNING_RETRY_COUNCIL_MODE}, ${Math.round(LEARN_PLANNING_TIMEOUT_MS / 60000)} min each: ${errorMessage(error)}). Used deterministic source-grounded planning fallback as the last resort.`;
+}
+
+function fallbackCouncilJsonResult(parsed: unknown, councilRunId: string): CouncilJsonResult {
+  return {
+    content: compactJson(parsed),
+    parsed,
+    councilRunId,
+    councilMode: "fallback",
+  };
+}
+
+function fallbackLearningSpinePlan(
+  context: LearnSourceContext,
+  sourceOnly: boolean,
+  warning: string,
+): Record<string, unknown> {
+  return {
+    title: sanitizeLearnerTitle(context.gardenTitle || context.sources[0]?.title || context.gardenId || "Learning Path"),
+    summary: `A source-grounded learning sequence generated from ${context.sources.length} uploaded source${context.sources.length === 1 ? "" : "s"}.`,
+    sourceOnly,
+    learningUnits: fallbackLearningUnitsFromContext(context),
+    warnings: [warning],
+  };
+}
+
+function importantSourceArtifactCount(context: LearnSourceContext): number {
+  return context.sourceFigures.filter((figure) => Boolean(figure.figureId)).length;
+}
+
+function planningString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function planningRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function sourceFigurePlacementForFallback(figure: SourceFigure): SourceFigurePlacement {
+  if (figure.kind === "formula") return "after_formula_introduction";
+  if (figure.kind === "table" || figure.kind === "graph") return "inside_result_interpretation";
+  return "inside_concept_explanation";
+}
+
+function makeFallbackZettel(title: string, claim: string): { handle: string; claim: string; connectedTo: string[] } {
+  return {
+    handle: atomicZettelHandle(claim || title),
+    claim: claim || title,
+    connectedTo: [],
+  };
+}
+
+function fallbackLearningUnitsFromContext(context: LearnSourceContext): LearningUnitContract[] {
+  const topic = sanitizeLearnerTitle(context.gardenTitle || context.sources[0]?.title || context.gardenId || "This Topic");
+  const sourceAnchors = context.sources.length > 0 ? context.sources.map((source) => source.title) : [topic];
+  const nowRange: [number, number] = [700, 1100];
+  const mk = (
+    id: string,
+    role: LearningUnitContract["role"],
+    title: string,
+    question: string,
+    claim: string,
+  ): LearningUnitContract => ({
+    id,
+    role,
+    title: sanitizeLearnerTitle(title),
+    learningQuestion: question,
+    prerequisiteConcepts: [],
+    newConcepts: [sanitizeLearnerTitle(title).toLowerCase()],
+    sourceAnchors,
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    zettelNotes: [makeFallbackZettel(title, claim)],
+    mustNotRepeat: [],
+    expectedWordRange: nowRange,
+  });
+
+  const units: LearningUnitContract[] = [
+    mk("U1", "motivation", `Why ${topic} Exists`, `What problem makes ${topic} worth learning?`, `${topic} exists because a practical problem needs a more precise way to reason about it.`),
+    mk("U2", "core_concept", `The Core Idea of ${topic}`, `What is the central idea?`, `${topic} has one central idea that organizes the rest of the learning path.`),
+    mk("U3", "mechanism", "The Main Mechanism", "How does the mechanism work step by step?", "A mechanism becomes understandable when each moving part is tied to its role."),
+    mk("U4", "worked_example", "A Concrete Worked Example", "How does the idea behave in a concrete case?", "A worked example turns an abstract mechanism into a traceable sequence."),
+    mk("U5", "formula", "The Formal Pieces", "Which formulas or formal definitions matter?", "Formal definitions are useful when every term is tied to what it measures."),
+    mk("U6", "training_method", "How It Learns or Changes", "What changes over time, and why?", "A changing system needs a rule that explains how state or behavior updates."),
+    mk("U7", "metric", "How It Is Measured", "Which measurements decide whether the method works?", "A measurement is meaningful only when its units and tradeoffs are explicit."),
+    mk("U8", "result_interpretation", "Interpreting the Results", "What should the learner notice in the results?", "A result teaches when the learner can name the pattern and its consequence."),
+    mk("U9", "comparison", "Comparing Alternatives", "How do competing methods differ?", "A comparison is useful when it separates definition, metric, and context."),
+    mk("U10", "application", "Where It Fits", "When is this useful in practice?", "A method fits an application when its strengths match the deployment constraints."),
+    mk("U11", "limitation", "Limits and Failure Modes", "Where does the approach stop working well?", "Limitations are part of the concept because they reveal the assumptions underneath."),
+    mk("U12", "synthesis", "Putting the Ideas Together", "How do the pieces connect into one mental model?", "A learning path becomes durable when motivation, mechanism, metric, evidence, and limits connect."),
+  ];
+
+  const byRole = new Map(units.map((unit) => [unit.role, unit]));
+  for (const figure of context.sourceFigures) {
+    if (!figure.figureId) continue;
+    const caption = figure.caption || figure.figureId;
+    if (figure.kind === "formula") {
+      byRole.get("formula")?.sourceFormulas.push({
+        id: figure.figureId,
+        teachingGoal: `Define and interpret ${caption}.`,
+        termsToDefine: [],
+        placement: "before_example",
+      });
+      continue;
+    }
+    if (figure.kind === "table") {
+      byRole.get("comparison")?.sourceTables.push({
+        id: figure.figureId,
+        teachingGoal: `Use ${caption} to compare the relevant rows or columns.`,
+        rowsOrColumnsToExplain: [],
+        placement: "inside_comparison",
+      });
+      continue;
+    }
+    const target =
+      figure.kind === "graph" || /result|accuracy|latency|energy|loss|curve|comparison/i.test(caption)
+        ? byRole.get("result_interpretation")
+        : byRole.get("mechanism");
+    target?.sourceFigures.push({
+      id: figure.figureId,
+      placement: sourceFigurePlacementForFallback(figure),
+      mustBeDiscussedWith: caption,
+      interpretationGoal: `Explain what ${caption} shows and why it matters for this learning step.`,
+    });
+  }
+
+  return units;
 }
 
 function sourceCoveragePlan(
   context: LearnSourceContext,
   learningMap: ProposedLearningMap,
+  learningUnits: LearningUnitContract[] = [],
+  sourceArtifactAssignments: SourceArtifactAssignment[] = [],
 ): unknown {
   return {
     sourceSetHash: context.sourceSetHash,
+    learningUnitContracts: learningUnits,
+    sourceArtifactAssignments,
     sources: context.sources.map((source) => ({
       id: source.slug,
       title: source.title,
@@ -1147,10 +1533,103 @@ function sourceCoveragePlan(
       sourceId: figure.sourceId,
       page: figure.page,
       kind: figure.kind,
-      assignedSubsection: "",
+      assignedLearningUnit:
+        sourceArtifactAssignments.find((assignment) => assignment.sourceArtifactId === figure.figureId)
+          ?.assignedLearningUnitId ?? "",
       suggestedVisualTreatment: figure.suggestedVisualUse ?? "source_figure_explainer",
     })),
   };
+}
+
+function writeLearningUnitContractArtifacts({
+  clusterDir,
+  units,
+  assignments,
+  sourceSetHash,
+}: {
+  clusterDir: string;
+  units: LearningUnitContract[];
+  assignments: SourceArtifactAssignment[];
+  sourceSetHash: string;
+}): void {
+  const bbDir = path.join(clusterDir, ".breadboard");
+  const planningDir = path.join(bbDir, "planning");
+  fs.mkdirSync(planningDir, { recursive: true });
+  const payload = {
+    sourceSetHash,
+    generatedAt: nowIso(),
+    learningUnits: units,
+    sourceArtifactAssignments: assignments,
+  };
+  fs.writeFileSync(path.join(bbDir, "learning-unit-contract.json"), JSON.stringify(payload, null, 2), "utf-8");
+  const lines = [
+    "# Learning Unit Contract",
+    "",
+    `Source set hash: ${sourceSetHash}`,
+    `Learning units: ${units.length}`,
+    `Source artifact assignments: ${assignments.length}`,
+    "",
+    "## Units",
+    "",
+  ];
+  for (const unit of units) {
+    lines.push(`- ${unit.id}: ${unit.title} (${unit.role})`);
+    lines.push(`  - Question: ${unit.learningQuestion || unit.title}`);
+    const artifacts = assignments
+      .filter((assignment) => assignment.assignedLearningUnitId === unit.id)
+      .map((assignment) => `${assignment.sourceArtifactId} -> ${assignment.placement}`);
+    if (artifacts.length > 0) lines.push(`  - Artifacts: ${artifacts.join(", ")}`);
+    if (unit.interactiveVisual) {
+      lines.push(`  - Interactive: ${unit.interactiveVisual.visualType} (${unit.interactiveVisual.uniqueConcept})`);
+    }
+    const handles = zettelHandlesForUnit(unit);
+    if (handles.length > 0) lines.push(`  - Zettel: ${handles.join(", ")}`);
+  }
+  fs.writeFileSync(path.join(planningDir, "Learning Unit Contract.md"), `${lines.join("\n")}\n`, "utf-8");
+}
+
+function learningUnitsFromCoveragePlan(plan: unknown): LearningUnitContract[] {
+  const record = planningRecord(plan);
+  return normalizeLearningUnits({ learningUnits: record.learningUnitContracts });
+}
+
+/** Unit titles become learner-visible page/section titles, so they get the
+ * same commentary scrub as every other learner title ("… as Evidence",
+ * "What the Evidence Shows", "… in this paper") before depth validation. */
+function sanitizeLearningUnitTitles(units: LearningUnitContract[]): LearningUnitContract[] {
+  return units.map((unit) => ({ ...unit, title: sanitizeLearnerTitle(unit.title) }));
+}
+
+/** Title scrub + drop of any incompatible optional interactive visual, so a
+ * single visual-type mismatch never rejects an otherwise-good model contract
+ * (which would force the deterministic fallback). */
+function sanitizeModelLearningUnits(
+  units: LearningUnitContract[],
+  contentPath: string,
+  gardenId: string,
+  jobId: string,
+): LearningUnitContract[] {
+  const titled = sanitizeLearningUnitTitles(units);
+  const { units: sanitized, dropped } = dropIncompatibleInteractiveVisuals(titled);
+  if (dropped.length > 0) {
+    appendLearnEvent(contentPath, gardenId, "learn_incompatible_visual_dropped", {
+      jobId,
+      dropped,
+    });
+  }
+  return sanitized;
+}
+
+function isContractBackedLearningMap(map: StoredLearningMap | null | undefined): map is StoredLearningMap {
+  return Boolean(map && learningUnitsFromCoveragePlan(map.coveragePlan).length > 0);
+}
+
+function sourceArtifactAssignmentsFromCoveragePlan(plan: unknown): SourceArtifactAssignment[] {
+  const raw = planningRecord(plan).sourceArtifactAssignments;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => (item && typeof item === "object" ? (item as SourceArtifactAssignment) : null))
+    .filter((item): item is SourceArtifactAssignment => Boolean(item));
 }
 
 export async function runLearnPlanning({
@@ -1208,24 +1687,43 @@ export async function runLearnPlanning({
       sourceIds: context.sources.map((source) => source.slug),
     });
 
-    // Planning keeps full_council reasoning, but the full context rides ONLY
-    // in the user message — sourceContext carries small routing metadata so
-    // the payload is not duplicated across every council candidate/critic.
+    // Planning sends the full context only in the user message; sourceContext
+    // carries small routing metadata so council candidates/critics do not
+    // duplicate the payload.
     const planningSourceMeta = {
       gardenId,
       sourceIds: context.sources.map((source) => source.slug),
       sourceSetHash: context.sourceSetHash,
     };
-    const sourceMapCall = await callCouncilJson({
-      client,
-      model,
-      taskType: "source_map",
-      gardenId,
-      system: SOURCE_MAP_PROMPT,
-      user: compactJson({ sourceOnly, sourceContext: promptSourceContext }),
-      sourceContext: { ...planningSourceMeta, taskType: "source_map" },
-      councilModeOverride: "full_council",
-    });
+    const planningWarnings: string[] = [];
+    throwIfLearnCancelled(job.id);
+    let sourceMapCall: CouncilJsonResult;
+    try {
+      sourceMapCall = await callPlanningJsonWithRetry({
+        client,
+        model,
+        taskType: "source_map",
+        gardenId,
+        system: SOURCE_MAP_PROMPT,
+        user: compactJson({ sourceOnly, sourceContext: promptSourceContext }),
+        sourceContext: { ...planningSourceMeta, taskType: "source_map" },
+        contentPath,
+        jobId: job.id,
+      });
+    } catch (error) {
+      if (!isPlanningTimeoutError(error)) throw error;
+      const warning = planningFallbackWarning("Source map", error);
+      planningWarnings.push(warning);
+      sourceMapCall = fallbackCouncilJsonResult(
+        fallbackSourceMap(context),
+        `fallback-source-map-${job.id}`,
+      );
+      appendLearnEvent(contentPath, gardenId, "learn_source_map_fallback", {
+        jobId: job.id,
+        error: errorMessage(error),
+      });
+    }
+    throwIfLearnCancelled(job.id);
     const sourceMap = sourceMapCall.parsed ?? fallbackSourceMap(context);
     appendLearnEvent(contentPath, gardenId, "learn_source_map_created", {
       jobId: job.id,
@@ -1237,16 +1735,40 @@ export async function runLearnPlanning({
       progressPercent: 35,
     });
 
-    const scopeCall = await callCouncilJson({
-      client,
-      model,
-      taskType: "scope_contract",
-      gardenId,
-      system: SCOPE_CONTRACT_PROMPT,
-      user: compactJson({ sourceOnly, sourceMap, sources: promptSourceContext }),
-      sourceContext: { ...planningSourceMeta, taskType: "scope_contract" },
-      councilModeOverride: "full_council",
-    });
+    throwIfLearnCancelled(job.id);
+    let scopeCall: CouncilJsonResult;
+    try {
+      scopeCall = await callPlanningJsonWithRetry({
+        client,
+        model,
+        taskType: "scope_contract",
+        gardenId,
+        system: SCOPE_CONTRACT_PROMPT,
+        // The scope contract reasons over the source map (already a digest of the
+        // full text), so it takes the compacted map + a body-free source context.
+        user: compactJson({
+          sourceOnly,
+          sourceMap: compactPlanningPayload(sourceMap),
+          sources: promptSourcesCompact(context),
+        }),
+        sourceContext: { ...planningSourceMeta, taskType: "scope_contract" },
+        contentPath,
+        jobId: job.id,
+      });
+    } catch (error) {
+      if (!isPlanningTimeoutError(error)) throw error;
+      const warning = planningFallbackWarning("Scope contract", error);
+      planningWarnings.push(warning);
+      scopeCall = fallbackCouncilJsonResult(
+        fallbackScopeContract(context, sourceOnly),
+        `fallback-scope-contract-${job.id}`,
+      );
+      appendLearnEvent(contentPath, gardenId, "learn_scope_contract_fallback", {
+        jobId: job.id,
+        error: errorMessage(error),
+      });
+    }
+    throwIfLearnCancelled(job.id);
     const scopeContract =
       scopeCall.parsed ?? fallbackScopeContract(context, sourceOnly);
     appendLearnEvent(contentPath, gardenId, "learn_scope_contract_created", {
@@ -1259,68 +1781,151 @@ export async function runLearnPlanning({
       progressPercent: 65,
     });
 
+    // The spine prompt is the largest and slowest: it already carries the source
+    // map + scope contract, so it uses the body-free compact source context and
+    // compacts oversized upstream JSON to keep the request small and fast.
+    const spineSourceContext = promptSourcesCompact(context);
     const topicMapUser = (deepenNote: string) =>
       compactJson({
         sourceOnly,
-        sourceMap,
-        scopeContract,
-        sources: promptSourceContext,
-        responseShape: "ProposedLearningMap JSON",
+        sourceMap: compactPlanningPayload(sourceMap),
+        scopeContract: compactPlanningPayload(scopeContract),
+        sources: spineSourceContext,
+        extractedSourceArtifacts: context.sourceFigures.map((figure) => ({
+          id: figure.figureId,
+          kind: figure.kind,
+          sourceId: figure.sourceId,
+          page: figure.page,
+          caption: figure.caption,
+          suggestedVisualUse: figure.suggestedVisualUse,
+        })),
+        responseShape: "LearningUnitContract JSON",
       }) + deepenNote;
 
-    let topicMapCall = await callCouncilJson({
-      client,
-      model,
-      taskType: "topic_map",
-      gardenId,
-      system: TOPIC_MAP_PROMPT,
-      user: topicMapUser(""),
-      sourceContext: { ...planningSourceMeta, taskType: "topic_map" },
-      councilModeOverride: "full_council",
-    });
-    let learningMap = normalizeLearningMapCandidate(topicMapCall.parsed, context, {
-      sourceOnly,
-      createdAt: nowIso(),
-    });
-
-    // The map must be a real learning spine (multiple subsections per section,
-    // standalone lesson titles), not the source's table of contents. Retry once
-    // with an explicit deepening instruction if the first draft is shallow.
-    let depthProblems = validateLearningMapDepth(learningMap, context);
-    if (depthProblems.length > 0) {
-      const deepenNote =
-        `\n\nThe previous learning map was too shallow or source-shaped (${depthProblems.join("; ")}). ` +
-        `Redesign it as a genuine learning spine: 4-6 sections, each with 3-4 subsections that teach one idea at a time in a motivated order. ` +
-        `Titles name the concept the learner will understand — never "source", "paper", "evidence", or a source's table of contents.`;
-      const retryCall = await callCouncilJson({
+    throwIfLearnCancelled(job.id);
+    let topicMapCall: CouncilJsonResult;
+    try {
+      topicMapCall = await callPlanningJsonWithRetry({
         client,
         model,
-        taskType: "topic_map",
+        taskType: "learning_spine",
         gardenId,
         system: TOPIC_MAP_PROMPT,
-        user: topicMapUser(deepenNote),
-        sourceContext: { ...planningSourceMeta, taskType: "topic_map" },
-        councilModeOverride: "full_council",
+        user: topicMapUser(""),
+        sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
+        contentPath,
+        jobId: job.id,
       });
-      const retryMap = normalizeLearningMapCandidate(retryCall.parsed, context, {
-        sourceOnly,
-        createdAt: nowIso(),
+    } catch (error) {
+      if (!isPlanningTimeoutError(error)) throw error;
+      const warning = planningFallbackWarning("Learning spine", error);
+      planningWarnings.push(warning);
+      topicMapCall = fallbackCouncilJsonResult(
+        fallbackLearningSpinePlan(context, sourceOnly, warning),
+        `fallback-learning-spine-${job.id}`,
+      );
+      appendLearnEvent(contentPath, gardenId, "learn_learning_spine_fallback", {
+        jobId: job.id,
+        error: errorMessage(error),
       });
-      const retryProblems = validateLearningMapDepth(retryMap, context);
-      // Keep whichever draft is structurally better.
-      if (retryProblems.length < depthProblems.length) {
-        topicMapCall = retryCall;
-        learningMap = retryMap;
-        depthProblems = retryProblems;
-      }
-      if (depthProblems.length > 0) {
-        learningMap.warnings = [
-          ...learningMap.warnings,
-          `Learning map depth warning: ${depthProblems.join("; ")}`,
-        ];
+    }
+    throwIfLearnCancelled(job.id);
+    const artifactCount = importantSourceArtifactCount(context);
+    let learningUnits = sanitizeModelLearningUnits(
+      normalizeLearningUnits(topicMapCall.parsed),
+      contentPath,
+      gardenId,
+      job.id,
+    );
+    let contractProblems =
+      learningUnits.length === 0
+        ? ["planner returned no learningUnits"]
+        : validateLearningUnitContracts(learningUnits, { artifactCount });
+
+    // The contract must be a real source-grounded learning plan, not a shallow
+    // section list. Retry once with explicit feedback before using the
+    // deterministic unit fallback.
+    if (contractProblems.length > 0) {
+      const deepenNote =
+        `\n\nThe previous Learning Unit Contract failed these hard planning checks: ${contractProblems.join("; ")}. ` +
+        `Regenerate the plan as 15-25 precise learningUnits. Assign every important figure/table/formula/result to a precise unit, keep interactive visuals optional and unique, and use slash-free atomic Zettelkasten handles. Do not return sections first.`;
+      try {
+        const retryCall = await callPlanningJsonWithRetry({
+          client,
+          model,
+          taskType: "learning_spine",
+          gardenId,
+          system: TOPIC_MAP_PROMPT,
+          user: topicMapUser(deepenNote),
+          sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
+          contentPath,
+          jobId: job.id,
+        });
+        const retryUnits = sanitizeModelLearningUnits(
+          normalizeLearningUnits(retryCall.parsed),
+          contentPath,
+          gardenId,
+          job.id,
+        );
+        const retryProblems =
+          retryUnits.length === 0
+            ? ["planner returned no learningUnits"]
+            : validateLearningUnitContracts(retryUnits, { artifactCount });
+        if (retryProblems.length < contractProblems.length) {
+          topicMapCall = retryCall;
+          learningUnits = retryUnits;
+          contractProblems = retryProblems;
+        }
+      } catch (error) {
+        if (!isPlanningTimeoutError(error)) throw error;
+        const warning = planningFallbackWarning("Learning spine retry", error);
+        planningWarnings.push(warning);
+        appendLearnEvent(contentPath, gardenId, "learn_learning_spine_retry_fallback", {
+          jobId: job.id,
+          error: errorMessage(error),
+          contractProblems,
+        });
       }
     }
-    const coveragePlan = sourceCoveragePlan(context, learningMap);
+
+    if (contractProblems.length > 0) {
+      planningWarnings.push(
+        `Model Learning Unit Contract rejected: ${contractProblems.join("; ")}. Used deterministic source-grounded unit fallback.`,
+      );
+      learningUnits = fallbackLearningUnitsFromContext(context);
+      contractProblems = validateLearningUnitContracts(learningUnits, { artifactCount });
+      if (contractProblems.length > 0) {
+        planningWarnings.push(`Fallback contract warnings: ${contractProblems.join("; ")}`);
+      }
+    }
+
+    throwIfLearnCancelled(job.id);
+    const planRecord = planningRecord(topicMapCall.parsed);
+    const sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
+    let learningMap = learningMapFromUnits(learningUnits, {
+      gardenId,
+      title: sanitizeLearnerTitle(planningString(planRecord.title, context.gardenTitle || gardenId)),
+      summary: planningString(
+        planRecord.summary,
+        `A source-grounded learning sequence generated from ${context.sources.length} uploaded source${context.sources.length === 1 ? "" : "s"}.`,
+      ),
+      sourceOnly,
+      createdAt: nowIso(),
+      warnings: Array.from(
+        new Set([
+          ...(Array.isArray(planRecord.warnings) ? planRecord.warnings.filter((item): item is string => typeof item === "string") : []),
+          ...planningWarnings,
+        ]),
+      ),
+    });
+    const depthProblems = validateLearningMapDepth(learningMap, context);
+    if (depthProblems.length > 0) {
+      learningMap = {
+        ...learningMap,
+        warnings: [...learningMap.warnings, `Learning spine depth warning: ${depthProblems.join("; ")}`],
+      };
+    }
+    const coveragePlan = sourceCoveragePlan(context, learningMap, learningUnits, sourceArtifactAssignments);
     const storedMap = insertLearnMap({
       gardenId,
       jobId: job.id,
@@ -1329,6 +1934,19 @@ export async function runLearnPlanning({
       learningMap,
       coveragePlan,
       sourceSetHash: context.sourceSetHash,
+    });
+    writeLearningUnitContractArtifacts({
+      clusterDir: clusterPath(contentPath, gardenId),
+      units: learningUnits,
+      assignments: sourceArtifactAssignments,
+      sourceSetHash: context.sourceSetHash,
+    });
+    appendLearnEvent(contentPath, gardenId, "learn_learning_unit_contract_created", {
+      jobId: job.id,
+      councilRunId: topicMapCall.councilRunId,
+      learningMapId: storedMap.id,
+      unitCount: learningUnits.length,
+      assignmentCount: sourceArtifactAssignments.length,
     });
     appendLearnEvent(contentPath, gardenId, "learn_learning_map_created", {
       jobId: job.id,
@@ -1349,6 +1967,17 @@ export async function runLearnPlanning({
     });
     return { job: nextJob, learningMap: storedMap };
   } catch (error) {
+    if (error instanceof LearnCancelledError) {
+      // The Stop button already flipped the job to cancelled; remove anything
+      // planning managed to write before the cancellation checkpoint fired.
+      try {
+        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath });
+      } catch {
+        // Cleanup is best-effort during unwind; the cancel endpoint reports its
+        // own cleanup errors when the user presses Stop.
+      }
+      throw error;
+    }
     const message = error instanceof Error ? error.message : "Learn planning failed";
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
       jobId: job.id,
@@ -1377,6 +2006,11 @@ export function confirmLearningMap({
     (learningMapId ? getLearnMapById(learningMapId) : null) ??
     getLatestProposedLearnMap(gardenId);
   if (!map) throw new Error("No proposed learning map found");
+  if (!isContractBackedLearningMap(map)) {
+    throw new Error(
+      "This learning map was created before Learning Unit Contracts existed. Run Learn again to draft a new source-grounded map.",
+    );
+  }
   const confirmedAt = nowIso();
   db.prepare(
     "UPDATE learn_maps SET status = 'confirmed', confirmed_at = ? WHERE id = ?",
@@ -1673,10 +2307,12 @@ function sourceCoverageMarkdown({
   context,
   generatedPages,
   unusedFigureReasons,
+  sourceArtifactAssignments = [],
 }: {
   context: LearnSourceContext;
   generatedPages: GeneratedPageRecord[];
   unusedFigureReasons: Map<string, string>;
+  sourceArtifactAssignments?: SourceArtifactAssignment[];
 }): string {
   const usedFigures = new Set(generatedPages.flatMap((page) => page.sourceFigureIds));
   const formulaFigures = sourceFormulaFigures(context);
@@ -1714,6 +2350,14 @@ function sourceCoverageMarkdown({
     for (const formula of formulaFigures) {
       lines.push(
         `- ${formula.figureId}: ${metricPage ? `central to ${wikilinkForRelPath(metricPage.relPath, metricPage.title)}` : "central metric formula; no matching metric page was generated"}`,
+      );
+    }
+  }
+  if (sourceArtifactAssignments.length > 0) {
+    lines.push("", "## Learning Unit Artifact Assignments", "");
+    for (const assignment of sourceArtifactAssignments) {
+      lines.push(
+        `- ${assignment.sourceArtifactId}: ${assignment.assignedLearningUnitId} (${assignment.placement}) - ${assignment.requiredInterpretation || assignment.reason}`,
       );
     }
   }
@@ -1783,6 +2427,219 @@ function writeMarkdownWithBackup({
   return { filePath, backedUpTo };
 }
 
+interface LearnCleanupResult {
+  removedPaths: string[];
+  restoredPaths: string[];
+  prunedVisualIds: string[];
+  deletedMaps: number;
+  deletedVersions: number;
+}
+
+function normalizeRelPath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function learnGeneratedMarkdown(content: string): boolean {
+  return (
+    /^generatedBy:\s*["']?learn_button["']?\s*$/im.test(content) ||
+    /^generated_by:\s*["']?learn_button["']?\s*$/im.test(content) ||
+    /^learningVersion(?:Id)?:\s*.+$/im.test(content) ||
+    /^breadboardType:\s*["']?learning_/im.test(content)
+  );
+}
+
+function removeClusterPath(clusterDir: string, relPath: string, removedPaths: string[]): void {
+  const normalized = normalizeRelPath(relPath);
+  if (!normalized) return;
+  const target = path.join(clusterDir, ...normalized.split("/"));
+  assertInsideCluster(clusterDir, target);
+  if (!fs.existsSync(target)) return;
+  fs.rmSync(target, { recursive: true, force: true });
+  removedPaths.push(normalized);
+}
+
+function removeEmptyParents(clusterDir: string, startDir: string): void {
+  let current = path.resolve(startDir);
+  const root = path.resolve(clusterDir);
+  while (current.startsWith(root + path.sep) && current !== root) {
+    try {
+      if (fs.readdirSync(current).length > 0) return;
+      fs.rmdirSync(current);
+    } catch {
+      return;
+    }
+    current = path.dirname(current);
+  }
+}
+
+function walkFiles(root: string): string[] {
+  const files: string[] = [];
+  if (!fs.existsSync(root)) return files;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...walkFiles(fullPath));
+    } else if (entry.isFile()) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+function restoreNonLearnBackups(clusterDir: string, restoredPaths: string[]): void {
+  const backupsRoot = path.join(clusterDir, ".breadboard", "backups");
+  if (!fs.existsSync(backupsRoot)) return;
+  const versionDirs = fs
+    .readdirSync(backupsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^learning/i.test(entry.name))
+    .map((entry) => path.join(backupsRoot, entry.name))
+    .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
+
+  const restoreByRelPath = new Map<string, string>();
+  for (const versionDir of versionDirs) {
+    for (const filePath of walkFiles(versionDir).filter((file) => file.toLowerCase().endsWith(".md"))) {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      if (learnGeneratedMarkdown(raw)) continue;
+      const relPath = normalizeRelPath(path.relative(versionDir, filePath));
+      restoreByRelPath.set(relPath, filePath);
+    }
+  }
+
+  for (const [relPath, backupPath] of restoreByRelPath) {
+    const target = path.join(clusterDir, ...relPath.split("/"));
+    assertInsideCluster(clusterDir, target);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(backupPath, target);
+    restoredPaths.push(relPath);
+  }
+}
+
+function removeLearnGeneratedMarkdown(clusterDir: string, removedPaths: string[]): void {
+  for (const filePath of walkFiles(clusterDir).filter((file) => file.toLowerCase().endsWith(".md"))) {
+    const relPath = normalizeRelPath(path.relative(clusterDir, filePath));
+    if (relPath.startsWith(".breadboard/")) continue;
+    if (relPath.startsWith("sources/")) continue;
+    let raw = "";
+    try {
+      raw = fs.readFileSync(filePath, "utf-8");
+    } catch {
+      continue;
+    }
+    if (!learnGeneratedMarkdown(raw)) continue;
+    fs.rmSync(filePath, { force: true });
+    removedPaths.push(relPath);
+    removeEmptyParents(clusterDir, path.dirname(filePath));
+  }
+}
+
+function cleanupLearnVisualArtifacts(clusterDir: string, removedPaths: string[]): string[] {
+  const bbDir = path.join(clusterDir, ".breadboard");
+  const indexPath = path.join(bbDir, "visual-index.json");
+  let index: Record<string, Record<string, unknown>> = {};
+  try {
+    index = JSON.parse(fs.readFileSync(indexPath, "utf-8")) as Record<string, Record<string, unknown>>;
+  } catch {
+    index = {};
+  }
+
+  const isLearnPage = (value: unknown): boolean => {
+    if (typeof value !== "string") return false;
+    const normalized = normalizeRelPath(value).replace(/\.md$/i, "").toLowerCase();
+    return normalized === LEARNING_ROOT || normalized.startsWith(`${LEARNING_ROOT}/`) || normalized.startsWith("learning/");
+  };
+
+  const prunedVisualIds: string[] = [];
+  const nextIndex: Record<string, Record<string, unknown>> = {};
+  for (const [id, entry] of Object.entries(index)) {
+    if (isLearnPage(entry.pageSlug) || isLearnPage(entry.pageId) || isLearnPage(entry.pagePath)) {
+      prunedVisualIds.push(id);
+    } else {
+      nextIndex[id] = entry;
+    }
+  }
+
+  const visualsDir = path.join(bbDir, "visuals");
+  for (const visualId of prunedVisualIds) {
+    removeClusterPath(clusterDir, `.breadboard/visuals/${visualId}.json`, removedPaths);
+  }
+  if (fs.existsSync(indexPath)) {
+    if (Object.keys(nextIndex).length > 0) {
+      fs.writeFileSync(indexPath, `${JSON.stringify(nextIndex, null, 2)}\n`, "utf-8");
+    } else {
+      removeClusterPath(clusterDir, ".breadboard/visual-index.json", removedPaths);
+    }
+  }
+  removeEmptyParents(clusterDir, visualsDir);
+  return prunedVisualIds;
+}
+
+function deleteLearnDatabaseState(gardenId: string): { deletedMaps: number; deletedVersions: number } {
+  ensureLearnTables();
+  const deletedVersions = db.prepare("DELETE FROM learn_versions WHERE garden_id = ?").run(gardenId).changes;
+  const deletedMaps = db.prepare("DELETE FROM learn_maps WHERE garden_id = ?").run(gardenId).changes;
+  return { deletedMaps, deletedVersions };
+}
+
+function cleanupLearnArtifacts({
+  gardenId,
+  contentPath,
+}: {
+  gardenId: string;
+  contentPath: string;
+}): LearnCleanupResult {
+  const clusterDir = clusterPath(contentPath, gardenId);
+  fs.mkdirSync(clusterDir, { recursive: true });
+  const removedPaths: string[] = [];
+  const restoredPaths: string[] = [];
+
+  removeClusterPath(clusterDir, LEARNING_ROOT, removedPaths);
+  removeClusterPath(clusterDir, "Learning", removedPaths);
+  removeLearnGeneratedMarkdown(clusterDir, removedPaths);
+  const prunedVisualIds = cleanupLearnVisualArtifacts(clusterDir, removedPaths);
+
+  for (const relPath of [
+    ".breadboard/learning-unit-contract.json",
+    ".breadboard/planning",
+    ".breadboard/debug/failed-pages",
+    ".breadboard/source-visuals.json",
+    "assets/source-visuals",
+  ]) {
+    removeClusterPath(clusterDir, relPath, removedPaths);
+  }
+  restoreNonLearnBackups(clusterDir, restoredPaths);
+  const backupRoot = path.join(clusterDir, ".breadboard", "backups");
+  if (fs.existsSync(backupRoot)) {
+    for (const entry of fs.readdirSync(backupRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && /^learning/i.test(entry.name)) {
+        removeClusterPath(clusterDir, `.breadboard/backups/${entry.name}`, removedPaths);
+      }
+    }
+    removeEmptyParents(clusterDir, backupRoot);
+  }
+
+  const { deletedMaps, deletedVersions } = deleteLearnDatabaseState(gardenId);
+  return {
+    removedPaths: Array.from(new Set(removedPaths)),
+    restoredPaths: Array.from(new Set(restoredPaths)),
+    prunedVisualIds,
+    deletedMaps,
+    deletedVersions,
+  };
+}
+
+async function cleanupLearnArtifactsAfterCancel({
+  gardenId,
+  contentPath,
+}: {
+  gardenId: string;
+  contentPath: string;
+}): Promise<LearnCleanupResult> {
+  const result = cleanupLearnArtifacts({ gardenId, contentPath });
+  refreshClusterIndex(contentPath, gardenId);
+  await publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`);
+  return result;
+}
+
 function textTokens(value: string): Set<string> {
   return new Set(
     value
@@ -1823,7 +2680,6 @@ function bestParagraphIndex(paragraphs: string[], text: string): number {
 function assignSourceVisualsForSubsection({
   visuals,
   subsection,
-  section,
   claimed,
 }: {
   visuals: SourceVisual[];
@@ -1843,50 +2699,12 @@ function assignSourceVisualsForSubsection({
     .map((id) => available.find((visual) => visual.sourceVisualId === id))
     .filter((visual): visual is SourceVisual => Boolean(visual));
 
-  const pageText = [
-    section.title,
-    section.purpose,
-    subsection.title,
-    subsection.purpose,
-    ...(subsection.sourceAnchors ?? []),
-    ...(section.sourceAnchors ?? []),
-    ...(subsection.conceptTags ?? []),
-  ].join(" ");
-
   let chosen = planned;
-  if (/metric|evaluation|accuracy|latency|energy|spike count|convergence/i.test(pageText)) {
-    const formulas = available.filter(
-      (visual) =>
-        visual.type === "equation" &&
-        /accuracy|latency|spike|energy|convergence/i.test(visual.caption),
-    );
-    chosen = [...chosen, ...formulas.filter((visual) => !chosen.includes(visual))];
-  }
-  if (/comparative|results|models and metrics|model comparison|tradeoff/i.test(pageText)) {
-    const comparisons = available.filter(
-      (visual) =>
-        (visual.type === "table" || visual.type === "graph") &&
-        /accuracy|latency|energy|spike|convergence|model/i.test(visual.caption),
-    );
-    chosen = [...chosen, ...comparisons.filter((visual) => !chosen.includes(visual))];
-  }
 
-  if (chosen.length === 0) {
-    const pageTokens = textTokens(pageText);
-    chosen = available
-      .filter((visual) => visual.type !== "full_page_fallback")
-      .map((visual) => ({ visual, score: tokenOverlap(pageTokens, textTokens(visual.caption)) }))
-      .filter((item) => item.score >= 2)
-      .sort((a, b) => b.score - a.score)
-      .map((item) => item.visual);
-  }
-
-  // Above the per-page cap, keep the most relevant (plan order first) and
-  // leave the rest unclaimed for later pages.
-  const cap = /metric|evaluation|comparative|results|tradeoff/i.test(pageText)
-    ? Math.max(MAX_VISUALS_PER_PAGE, 8)
-    : MAX_VISUALS_PER_PAGE;
-  chosen = chosen.slice(0, cap);
+  // Semantic assignment belongs to the Learning Unit Contract. If more than
+  // the page cap was planned, keep the first planned items and let validation
+  // reject the contract/page rather than silently broadening the page.
+  chosen = chosen.slice(0, MAX_VISUALS_PER_PAGE);
   for (const visual of chosen) claimed.add(visual.sourceVisualId);
   return chosen;
 }
@@ -2056,45 +2874,7 @@ function pageVisualIntent({
       reason: "This page discusses unresolved challenges rather than a concrete dynamic mechanism with a supported renderer.",
     };
   }
-
-  const metricPage = /metric|evaluation|accuracy|latency|energy|spike count|convergence/i.test(pageText);
-  const comparisonPage = /comparative|results|models and metrics|model comparison|trade[- ]?off/i.test(pageText);
-  const applicationPage = /application|hardware|neuromorphic|deployment|edge/i.test(pageText);
-  if (!metricPage && !comparisonPage && !applicationPage) {
-    return { spec: null, suppressGeneric: false };
-  }
-
-  const spec = buildDeterministicVisual("tradeoff_explorer", { gardenId, pageSlug });
-  if (!spec) return { spec: null, suppressGeneric: false };
-  if (metricPage) {
-    spec.title = "Metric calculator for SNN evaluation";
-    spec.conceptTargets = ["accuracy", "latency", "total spike count", "total energy", "energy efficiency", "convergence time"];
-    spec.pedagogicalPurpose =
-      "Let the learner change evaluation priorities while keeping the source metric formulas in view: accuracy is higher-better, while latency, spike count, energy, and convergence time are costs.";
-    spec.caption =
-      "Switch the priority to see how accuracy, latency, spike count, energy, and convergence change the preferred SNN family.";
-    spec.regenerationPrompt =
-      "Improve the metric calculator with clearer links from each slider choice to the source formulas for accuracy, latency, spike count, energy efficiency, and convergence.";
-  } else if (comparisonPage) {
-    spec.title = "Model tradeoff comparison explorer";
-    spec.conceptTargets = ["model comparison", "accuracy", "latency", "energy", "spike count"];
-    spec.pedagogicalPurpose =
-      "Let the learner compare model families under different deployment priorities instead of treating one metric as the whole result.";
-    spec.caption =
-      "Change the priority to see why the best model depends on whether accuracy, latency, or energy matters most.";
-    spec.regenerationPrompt =
-      "Improve the comparison explorer by aligning the model families and metric directions with the source comparison tables and graphs.";
-  } else {
-    spec.title = "Application constraint tradeoff selector";
-    spec.conceptTargets = ["neuromorphic deployment", "energy budget", "latency budget", "accuracy target", "hardware constraints"];
-    spec.pedagogicalPurpose =
-      "Let the learner choose an application priority and see how hardware and deployment constraints change the practical SNN choice.";
-    spec.caption =
-      "Choose the deployment priority to see how application constraints shift the preferred SNN approach.";
-    spec.regenerationPrompt =
-      "Improve the application tradeoff selector by making the hardware constraint and metric priority more explicit.";
-  }
-  return { spec, suppressGeneric: false };
+  return { spec: null, suppressGeneric: false };
 }
 
 /**
@@ -2256,25 +3036,45 @@ async function reconcileInteractiveVisuals({
     return { markdown: nextMarkdown, visualIds: keptIds };
   }
 
-  // 3) Decide which interactive visuals this page should get. The plan's
-  //    explicit requests come first; if the plan named none but the page
-  //    teaches a hard dynamic concept (LIF, coding, STDP, tradeoff), we add
-  //    that concept as an opportunity so it is never left without a visual.
-  const hardConcept = detectHardConcept(subsection, nextMarkdown);
-  const opportunities: Array<{ concept: string; reason: string; preferredType?: string }> = [
-    ...(subsection.interactiveVisuals ?? []).map((plan) => ({
-      concept: plan.concept,
-      reason: plan.reason,
-      preferredType: HARD_CONCEPTS.find((c) => c.test.test(`${plan.concept} ${plan.reason}`))?.visualType,
-    })),
-  ];
-  if (hardConcept && !opportunities.some((o) => o.preferredType === hardConcept.visualType)) {
-    opportunities.push({
-      concept: hardConcept.concept,
-      reason: hardConcept.reason,
-      preferredType: hardConcept.visualType,
-    });
+  // 3) Decide which interactive visual this page should get. Only the
+  //    Learning Unit Contract may request one; there is no page-role default
+  //    and no hard-concept auto-add.
+  const contractVisual = subsection.interactiveVisualContract;
+  if (contractVisual && subsection.learningUnitRole) {
+    const compatibilityUnit: LearningUnitContract = {
+      id: subsection.learningUnitId ?? pageSlug,
+      title: subsection.title,
+      role: subsection.learningUnitRole,
+      learningQuestion: subsection.learningQuestion ?? subsection.purpose,
+      prerequisiteConcepts: subsection.prerequisiteConcepts ?? [],
+      newConcepts: subsection.newConcepts ?? [],
+      sourceAnchors: subsection.sourceAnchors ?? [],
+      sourceFigures: subsection.sourceFigureContracts ?? [],
+      sourceFormulas: subsection.sourceFormulaContracts ?? [],
+      sourceTables: subsection.sourceTableContracts ?? [],
+      interactiveVisual: contractVisual,
+      zettelNotes: subsection.zettelNotes ?? [],
+      mustNotRepeat: subsection.mustNotRepeat ?? [],
+      expectedWordRange: subsection.expectedWordRange ?? [700, 1100],
+    };
+    const compat = visualTypeCompatibleWithUnit(contractVisual.visualType, compatibilityUnit);
+    if (!compat.ok) {
+      throw new Error(`Interactive visual "${contractVisual.visualType}" is incompatible with ${pageSlug}: ${compat.reason}`);
+    }
   }
+  const opportunities: Array<{ concept: string; reason: string; preferredType?: string }> = contractVisual
+    ? [
+        {
+          concept: contractVisual.uniqueConcept,
+          reason: contractVisual.whyStaticSourceFigureIsNotEnough,
+          preferredType: contractVisual.visualType,
+        },
+      ]
+    : (subsection.interactiveVisuals ?? []).map((plan) => ({
+        concept: plan.concept,
+        reason: plan.reason,
+        preferredType: HARD_CONCEPTS.find((c) => c.test.test(`${plan.concept} ${plan.reason}`))?.visualType,
+      }));
 
   const embedSpec = (spec: VisualSpec, near: string) => {
     recordVisual(spec);
@@ -2321,20 +3121,6 @@ async function reconcileInteractiveVisuals({
     } catch {
       // Model visual failed; a hard concept still gets its deterministic builder
       // below, other opportunities may simply produce no visual.
-    }
-  }
-
-  // 4) A page that teaches a hard dynamic concept must ship an interactive
-  //    visual. If nothing landed above, build the deterministic one; only if
-  //    even that fails do we hard-fail the page/job.
-  if (hardConcept && keptIds.length === 0) {
-    const built = buildDeterministicVisual(hardConcept.visualType, { gardenId, pageSlug });
-    if (built) {
-      embedSpec(built, `${hardConcept.concept} ${hardConcept.reason}`);
-    } else {
-      throw new Error(
-        `Interactive visual required for hard concept "${hardConcept.concept}" on ${pageSlug}, but none could be built.`,
-      );
     }
   }
 
@@ -2490,6 +3276,21 @@ type PageDossier = {
   subsectionTitle: string;
   subsectionPurpose?: string;
   learningGoal?: string;
+  learningUnit?: {
+    id?: string;
+    role?: string;
+    learningQuestion?: string;
+    prerequisiteConcepts?: string[];
+    newConcepts?: string[];
+    sourceFigures?: LearningSubsectionPlan["sourceFigureContracts"];
+    sourceFormulas?: LearningSubsectionPlan["sourceFormulaContracts"];
+    sourceTables?: LearningSubsectionPlan["sourceTableContracts"];
+    sourceArtifactAssignments?: SourceArtifactAssignment[];
+    interactiveVisual?: LearningSubsectionPlan["interactiveVisualContract"];
+    zettelNotes?: LearningSubsectionPlan["zettelNotes"];
+    mustNotRepeat?: string[];
+    expectedWordRange?: [number, number];
+  };
 
   mustCover: string[];
   avoid: string[];
@@ -2636,6 +3437,23 @@ function buildPageDossier({
     subsectionTitle,
     subsectionPurpose: subsection.purpose || undefined,
     learningGoal: sectionPurpose || undefined,
+    learningUnit: subsection.learningUnitId
+      ? {
+          id: subsection.learningUnitId,
+          role: subsection.learningUnitRole,
+          learningQuestion: subsection.learningQuestion,
+          prerequisiteConcepts: subsection.prerequisiteConcepts,
+          newConcepts: subsection.newConcepts,
+          sourceFigures: subsection.sourceFigureContracts,
+          sourceFormulas: subsection.sourceFormulaContracts,
+          sourceTables: subsection.sourceTableContracts,
+          sourceArtifactAssignments: subsection.sourceArtifactAssignments,
+          interactiveVisual: subsection.interactiveVisualContract,
+          zettelNotes: subsection.zettelNotes,
+          mustNotRepeat: subsection.mustNotRepeat,
+          expectedWordRange: subsection.expectedWordRange,
+        }
+      : undefined,
     mustCover: (subsection.conceptTags ?? [])
       .map((tag) => tag.split("/").at(-1)?.replace(/-/g, " ") ?? "")
       .filter(Boolean)
@@ -2722,6 +3540,11 @@ export async function runTextbookGeneration({
         "pass autoConfirmTopicMap:true only in noninteractive/test runs).",
     );
   }
+  if (!isContractBackedLearningMap(map)) {
+    throw new Error(
+      "This confirmed learning map was created before Learning Unit Contracts existed. Start Learn again to draft a new source-grounded learning map.",
+    );
+  }
 
   const context = collectLearnSourceContext(contentPath, gardenId);
   const job = createLearnJob({
@@ -2733,6 +3556,13 @@ export async function runTextbookGeneration({
   });
   const clusterDir = clusterPath(contentPath, gardenId);
   fs.mkdirSync(clusterDir, { recursive: true });
+  const confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
+  writeLearningUnitContractArtifacts({
+    clusterDir,
+    units: confirmedLearningUnits,
+    assignments: sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan),
+    sourceSetHash: context.sourceSetHash,
+  });
   // Version ids are learning_* so nothing named "textbook" can leak into a
   // visible file name, event, or frontmatter value.
   const textbookVersionId = makeId("learning");
@@ -2769,6 +3599,7 @@ export async function runTextbookGeneration({
       context,
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
+    throwIfLearnCancelled(job.id);
     updateLearnJob(job.id, {
       status: "generating_learning_pages",
       currentStep: "Writing overview pages",
@@ -2804,6 +3635,7 @@ export async function runTextbookGeneration({
     } catch {
       overviewBody = renderTopicOverviewFallback(map.learningMap, context);
     }
+    throwIfLearnCancelled(job.id);
 
     // The overview is LLM-authored and tends to emit loose title-based
     // wikilinks (`[[Section]]`, `[[Section#Subsection]]`) that do not resolve
@@ -2860,6 +3692,7 @@ export async function runTextbookGeneration({
     ];
 
     for (const page of learningRelPaths) {
+      throwIfLearnCancelled(job.id);
       writeMarkdownWithBackup({
         clusterDir,
         relPath: page.relPath,
@@ -2875,6 +3708,7 @@ export async function runTextbookGeneration({
       });
     }
     for (const page of internalPlanningPages) {
+      throwIfLearnCancelled(job.id);
       writeMarkdownWithBackup({
         clusterDir,
         relPath: page.relPath,
@@ -2903,6 +3737,7 @@ export async function runTextbookGeneration({
       const sectionTitle = sanitizeLearnerTitle(section.title);
       const sectionFolder = learningSectionFolder(sectionNumber, sectionTitle);
       const sectionIndexRelPath = `${sectionFolder}/_index.md`;
+      throwIfLearnCancelled(job.id);
       writeMarkdownWithBackup({
         clusterDir,
         relPath: sectionIndexRelPath,
@@ -2923,6 +3758,7 @@ export async function runTextbookGeneration({
       });
 
       for (let subsectionIndex = 0; subsectionIndex < section.subsections.length; subsectionIndex += 1) {
+        throwIfLearnCancelled(job.id);
         const subsection = section.subsections[subsectionIndex];
         const subsectionNumber = subsectionIndex + 1;
         const subsectionTitle = sanitizeLearnerTitle(subsection.title);
@@ -2943,11 +3779,7 @@ export async function runTextbookGeneration({
           section,
           claimed: claimedVisualIds,
         });
-        const metricFormulaAnchorIds = /metric|evaluation|accuracy|latency|energy|spike count|total spike|convergence/i.test(
-          `${sectionTitle} ${subsectionTitle} ${subsection.purpose} ${(subsection.conceptTags ?? []).join(" ")}`,
-        )
-          ? sourceFormulaFigures(context).map((figure) => figure.figureId)
-          : [];
+        const metricFormulaAnchorIds = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id);
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
         const interactiveSourceFigures =
           metricFormulaAnchorIds.length > 0
@@ -3150,6 +3982,7 @@ export async function runTextbookGeneration({
           }
         }
 
+        throwIfLearnCancelled(job.id);
         if (pageBody === null) {
           // Quarantine the last draft for a human to inspect, then fail the job.
           // No fallback learner page is ever written.
@@ -3206,13 +4039,21 @@ export async function runTextbookGeneration({
           sourceFigures: interactiveSourceFigures,
         });
         pageBody = visualized.markdown;
+        throwIfLearnCancelled(job.id);
 
         // Stage 7: 4-8 Zettelkasten concept-handle tags on learner pages only.
         // Tags are grounded in the FINAL accepted body (never fallback/debug
         // text) and gated by page relevance, so LIF/STDP/latency tags cannot
         // land on a page that does not actually teach them.
+        const plannedZettelHandles = (subsection.zettelNotes ?? [])
+          .map((note) => atomicZettelHandle(note.handle || note.claim))
+          .filter((handle) => handle && isAtomicZettelHandle(handle));
         const zettelTags = normalizeZettelTags(
-          [...subsection.conceptTags, ...extractTagSeeds(pageBody)],
+          [
+            ...plannedZettelHandles,
+            ...subsection.conceptTags,
+            ...(plannedZettelHandles.length >= 4 ? [] : extractTagSeeds(pageBody)),
+          ],
           subsectionTitle,
           map.learningMap.title || context.gardenTitle,
           {
@@ -3237,6 +4078,8 @@ export async function runTextbookGeneration({
             sourceVisualIds: assignedVisualIds,
             sourceFormulaAnchors: metricFormulaAnchorIds,
             formulas,
+            learningUnitId: subsection.learningUnitId,
+            learningUnitRole: subsection.learningUnitRole,
             learningVersionId: textbookVersionId,
             sourceSetHash: context.sourceSetHash,
             generatedAt,
@@ -3248,6 +4091,7 @@ export async function runTextbookGeneration({
           currentSectionTitle: sectionTitle,
           currentPageTitle: pageTitle,
         });
+        throwIfLearnCancelled(job.id);
         writeMarkdownWithBackup({
           clusterDir,
           relPath: pageRelPath,
@@ -3282,6 +4126,7 @@ export async function runTextbookGeneration({
     // from earlier runs linger. Rewrite it to exactly the interactive visuals
     // this run embedded, and delete orphan spec files, so the index never
     // advertises a visual no current page references.
+    throwIfLearnCancelled(job.id);
     {
       const liveVisualIds = new Set(generatedPages.flatMap((page) => page.visualIds));
       const pruned = pruneVisualArtifacts(contentPath, gardenId, liveVisualIds);
@@ -3312,6 +4157,7 @@ export async function runTextbookGeneration({
       }
     }
 
+    throwIfLearnCancelled(job.id);
     writeMarkdownWithBackup({
       clusterDir,
       relPath: ".breadboard/planning/Source Coverage.md",
@@ -3328,6 +4174,7 @@ export async function runTextbookGeneration({
           context,
           generatedPages,
           unusedFigureReasons,
+          sourceArtifactAssignments: sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan),
         }),
     });
 
@@ -3338,6 +4185,7 @@ export async function runTextbookGeneration({
       currentSectionTitle: undefined,
       currentPageTitle: undefined,
     });
+    throwIfLearnCancelled(job.id);
     refreshClusterIndex(contentPath, gardenId);
 
     // Stage 8 (deterministic export finalize + hard gate): repair the on-disk
@@ -3349,6 +4197,7 @@ export async function runTextbookGeneration({
     // repeated first-page motivation — and write .breadboard/validation-report.md.
     // Critical validation is a hard gate: a garden that cannot be repaired fails
     // the job rather than shipping a broken artifact.
+    throwIfLearnCancelled(job.id);
     const finalizeReport = finalizeGardenExport({ gardenDir: clusterDir, gardenSlug: gardenId });
     appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
       jobId: job.id,
@@ -3364,7 +4213,9 @@ export async function runTextbookGeneration({
       );
     }
 
+    throwIfLearnCancelled(job.id);
     await publishQuartzAfterMutation(`learn textbook generation in ${gardenId}`);
+    throwIfLearnCancelled(job.id);
 
     insertLearnVersion({
       id: textbookVersionId,
@@ -3396,6 +4247,17 @@ export async function runTextbookGeneration({
       pageCount: generatedPages.length,
     };
   } catch (error) {
+    if (error instanceof LearnCancelledError) {
+      // The Stop button already flipped the job to cancelled; sweep any
+      // partial Learn output that was written before the checkpoint fired.
+      try {
+        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath });
+      } catch {
+        // Cleanup is best-effort during unwind; the cancel endpoint reports its
+        // own cleanup errors when the user presses Stop.
+      }
+      throw error;
+    }
     const message = error instanceof Error ? error.message : "Lesson generation failed";
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
       jobId: job.id,
@@ -3459,22 +4321,36 @@ export async function runLearnPipeline({
   });
 }
 
-export function cancelLatestLearnJob({
+export async function cancelLatestLearnJob({
   gardenId,
   contentPath,
 }: {
   gardenId: string;
   contentPath: string;
-}): LearnJob | null {
+}): Promise<LearnJob | null> {
   const latest = getLatestLearnJob(gardenId);
-  if (!latest) return null;
-  const next = updateLearnJob(latest.id, {
-    status: "cancelled",
-    currentStep: "Cancelled",
-  });
-  appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
-    jobId: latest.id,
-  });
+  const next = latest
+    ? updateLearnJob(latest.id, {
+        status: "cancelled",
+        currentStep: "Cancelled and cleaned",
+        progressPercent: 0,
+        currentSectionTitle: undefined,
+        currentPageTitle: undefined,
+        proposedLearningMapId: undefined,
+        confirmedLearningMapId: undefined,
+        latestTextbookVersionId: undefined,
+      })
+    : null;
+  const cleanup = await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath });
+  if (latest) {
+    appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
+      jobId: latest.id,
+      removedPathCount: cleanup.removedPaths.length,
+      restoredPathCount: cleanup.restoredPaths.length,
+      deletedMaps: cleanup.deletedMaps,
+      deletedVersions: cleanup.deletedVersions,
+    });
+  }
   return next;
 }
 
@@ -3523,7 +4399,13 @@ export function getLearnStatusSnapshot({
   const latestProposed = latestJob?.proposedLearningMapId
     ? getLearnMapById(latestJob.proposedLearningMapId)
     : getLatestProposedLearnMap(gardenId);
-  const confirmedMap = getLatestConfirmedLearnMap(gardenId);
+  const contractProposed = isContractBackedLearningMap(latestProposed) ? latestProposed : null;
+  const visibleJob =
+    latestJob?.status === "awaiting_confirmation" && !contractProposed
+      ? null
+      : latestJob;
+  const latestConfirmed = getLatestConfirmedLearnMap(gardenId);
+  const confirmedMap = isContractBackedLearningMap(latestConfirmed) ? latestConfirmed : null;
   const latestVersion = getLatestLearnVersion(gardenId);
   const knowledge = scanClusterKnowledge(contentPath, gardenId);
   const hasTextbook = knowledge.stats.textbookPages > 0;
@@ -3531,10 +4413,10 @@ export function getLearnStatusSnapshot({
     Boolean(latestVersion) && latestVersion?.source_set_hash !== context.sourceSetHash;
 
   return {
-    job: latestJob,
+    job: visibleJob,
     proposedLearningMap:
-      latestJob?.status === "awaiting_confirmation" || latestProposed?.status === "proposed"
-        ? latestProposed?.learningMap ?? null
+      visibleJob?.status === "awaiting_confirmation" || contractProposed?.status === "proposed"
+        ? contractProposed?.learningMap ?? null
         : null,
     confirmedLearningMapId: confirmedMap?.id,
     latestTextbookVersionId: latestVersion?.id,
@@ -3543,7 +4425,7 @@ export function getLearnStatusSnapshot({
     hasTextbook,
     sourceSetChanged,
     buttonLabel: buttonLabelForSnapshot({
-      latestJob,
+      latestJob: visibleJob,
       confirmedMap,
       latestVersion,
       hasTextbook,

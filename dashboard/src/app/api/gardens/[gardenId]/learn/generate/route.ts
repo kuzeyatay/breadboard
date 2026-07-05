@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { runTextbookGeneration } from "@/lib/learn";
+import {
+  getLearnStatusSnapshot,
+  runLearnPlanning,
+  runTextbookGeneration,
+} from "@/lib/learn";
 import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
@@ -24,18 +28,38 @@ export async function POST(
     const body = await request.json().catch(() => ({}));
     const { baseURL } = resolveChatmockBaseUrl(request);
     const client = createChatmockClient(baseURL);
+    const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL;
+    const sourceOnly = body.sourceOnly !== false;
+    const includeSourceSnapshots = body.includeSourceSnapshots === true;
+    const requestedMapId =
+      typeof body.confirmedLearningMapId === "string" && body.confirmedLearningMapId.trim()
+        ? body.confirmedLearningMapId.trim()
+        : undefined;
+    const status = getLearnStatusSnapshot({
+      gardenId: cluster.slug,
+      contentPath,
+    });
+    if (!status.confirmedLearningMapId || (requestedMapId && requestedMapId !== status.confirmedLearningMapId)) {
+      const planning = await runLearnPlanning({
+        gardenId: cluster.slug,
+        userId,
+        client,
+        model,
+        contentPath,
+        sourceOnly,
+        includeSourceSnapshots,
+      });
+      return NextResponse.json({ success: true, planning });
+    }
     const generation = await runTextbookGeneration({
       gardenId: cluster.slug,
       userId,
       client,
       contentPath,
-      confirmedLearningMapId:
-        typeof body.confirmedLearningMapId === "string" && body.confirmedLearningMapId.trim()
-          ? body.confirmedLearningMapId.trim()
-          : undefined,
-      model: typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL,
-      sourceOnly: body.sourceOnly !== false,
-      includeSourceSnapshots: body.includeSourceSnapshots === true,
+      confirmedLearningMapId: status.confirmedLearningMapId,
+      model,
+      sourceOnly,
+      includeSourceSnapshots,
     });
 
     return NextResponse.json({ success: true, generation });

@@ -230,10 +230,49 @@ Rules:
 - Do not add weak or filler relationships just to increase count; every relationship should explain a real conceptual connection.
 - If the source has no durable knowledge, return topics: [] and an honest summary.`;
 
+// Node's built-in fetch aborts a request when response HEADERS have not
+// arrived within undici's default headersTimeout of 300s. A chatmock council
+// request only sends headers when the whole (multi-minute, reasoning-model)
+// answer is ready, so long planning calls were killed at exactly ~5 minutes
+// regardless of the OpenAI client's own `timeout` — surfacing as
+// "Request timed out." on every slow Learn run. Route the OpenAI client
+// through npm undici's fetch with header/body timeouts matched to the
+// client-side budget.
+const CHATMOCK_HEADERS_TIMEOUT_MS = (() => {
+  const value = Number(process.env.CHATMOCK_CLIENT_HEADERS_TIMEOUT_MS);
+  return Number.isFinite(value) && value >= 60_000 ? Math.floor(value) : 30 * 60 * 1000;
+})();
+
+let chatmockFetch: typeof fetch | undefined;
+function longHeaderTimeoutFetch(): typeof fetch | undefined {
+  if (chatmockFetch) return chatmockFetch;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Agent, fetch: undiciFetch } = require("undici") as {
+      Agent: new (options: Record<string, unknown>) => unknown;
+      fetch: typeof fetch;
+    };
+    const dispatcher = new Agent({
+      headersTimeout: CHATMOCK_HEADERS_TIMEOUT_MS,
+      bodyTimeout: CHATMOCK_HEADERS_TIMEOUT_MS,
+    });
+    chatmockFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      undiciFetch(input as Parameters<typeof fetch>[0], {
+        ...(init as object),
+        dispatcher,
+      } as never)) as typeof fetch;
+  } catch {
+    // undici unavailable: fall back to global fetch (300s header limit).
+    chatmockFetch = undefined;
+  }
+  return chatmockFetch;
+}
+
 export function createChatmockClient(baseURL?: string): OpenAI {
   return new OpenAI({
     baseURL: baseURL ?? process.env.OPENAI_BASE_URL,
     apiKey: process.env.OPENAI_API_KEY,
+    fetch: longHeaderTimeoutFetch(),
   });
 }
 
@@ -2862,7 +2901,12 @@ export function refreshClusterIndex(
         const relPath = `sources/${name}`;
         const sourcePath = path.join(sourcesDir, name);
         const parsed = parseMarkdownFile(fs.readFileSync(sourcePath, "utf-8"));
-        return `- ${wikilinkForRelPath(relPath, parsed.data.title || name.replace(/\.md$/i, ""))}`;
+        const title = typeof parsed.data.title === "string"
+          ? parsed.data.title
+          : Array.isArray(parsed.data.title) && typeof parsed.data.title[0] === "string"
+            ? parsed.data.title[0]
+            : name.replace(/\.md$/i, "");
+        return `- ${wikilinkForRelPath(relPath, title)}`;
       });
     fs.writeFileSync(
       path.join(sourcesDir, "_index.md"),
