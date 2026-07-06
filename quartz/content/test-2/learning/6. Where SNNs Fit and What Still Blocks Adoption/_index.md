@@ -1,0 +1,15 @@
+---
+title: "6. Where SNNs Fit and What Still Blocks Adoption"
+date: "2026-07-06T10:23:34.658Z"
+knowledge_type: "learning-section"
+breadboardType: "learning_section"
+gardenId: "test-2"
+generatedBy: "learn_button"
+generated_by: "learn_button"
+learningVersion: "learning_mr92o5c2_smvyt3k"
+sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5"
+---
+
+# 6. Where SNNs Fit and What Still Blocks Adoption
+
+Build up where snns fits and what still blocks it one step at a time.

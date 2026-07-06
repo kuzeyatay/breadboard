@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Sparse Event-Driven Computation 1.3 Temporal Dynamics in Spiking Computation 1.4 The Leaky Integrate-and-Fire Neuron 1.5 Lateral Inhibition in Spiking Architectures The Metrics That Make SNNs Measurable 2.1 Sur... ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:49:16 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 Sparse Events and Low-Power Computation 1.4 The Leaky Integrate-and-Fire Neuron 1.5 Input Encoding, Excitation, and Lateral Inhibition How SNNs Learn 2.1 How SNN... ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:24:52 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks are neural networks that communicate with spikes: brief, discrete events that happen at particular moments in time. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:49:16 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Spiking neural networks are neural networks that compute with events in time. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:24:52 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Learners will understand why spiking neural networks use event-driven spikes, how their neuron and architecture ideas work, how they are trained, and how to evaluate tradeoffs among accuracy, latency, energy, spike count, and convergence for deployment choices. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:49:15 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spiking neural networks compute with timed spike events, compare them with conventional artificial neural networks, interpret the source’s neuron model, architecture diagram, training strategies, evaluation metrics, benchmark results, and ... ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:24:52 GMT</pubDate>
   </item><item>
     <title>1. Why SNNs Need Events</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</guid>
     <description><![CDATA[ 1. Why SNNs Need Events Build up why snns need events one step at a time. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:46:27 GMT</pubDate>
+    <pubDate>Mon, 06 Jul 2026 10:23:34 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small robot watching a hallway through a camera while waiting for someone to walk by. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:46:27 GMT</pubDate>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera on a battery-powered robot watching a quiet hallway. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:23:34 GMT</pubDate>
   </item><item>
-    <title>1.2 Sparse Event-Driven Computation</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Sparse-Event-Driven-Computation</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Sparse-Event-Driven-Computation</guid>
-    <description><![CDATA[ Sparse Event-Driven Computation You already have the pieces for an event-based picture: information can arrive as discrete spike events, a spike train records those events over time, and dense computation keeps updating many values whether the input changed or stayed quiet. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:46:27 GMT</pubDate>
+    <title>1.2 Spikes, Timing, and Event-Driven Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</guid>
+    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation Now that a single spike event and a time step are familiar, imagine a small sound sensor listening for a hand clap in a quiet room. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:23:34 GMT</pubDate>
   </item><item>
-    <title>1.3 Temporal Dynamics in Spiking Computation</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Temporal-Dynamics-in-Spiking-Computation</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Temporal-Dynamics-in-Spiking-Computation</guid>
-    <description><![CDATA[ Temporal Dynamics in Spiking Computation Imagine a small gesture sensor watching a hand move through the air. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:46:27 GMT</pubDate>
+    <title>1.3 Sparse Events and Low-Power Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Sparse-Events-and-Low-Power-Computation</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Sparse-Events-and-Low-Power-Computation</guid>
+    <description><![CDATA[ Sparse Events and Low-Power Computation Imagine a small vision sensor on a robot watching a hallway. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:23:34 GMT</pubDate>
   </item><item>
     <title>1.4 The Leaky Integrate-and-Fire Neuron</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-The-Leaky-Integrate-and-Fire-Neuron</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron Imagine a stream of spike events arriving at a neuron one time step after another. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:46:27 GMT</pubDate>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A spike event gives an SNN a compact way to say, “something worth sending happened at this moment.” Once information is carried by events, a neuron needs a simple rule for deciding when silence should continue and when a new spike should be emitted. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:23:34 GMT</pubDate>
   </item><item>
-    <title>1.5 Lateral Inhibition in Spiking Architectures</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-Lateral-Inhibition-in-Spiking-Architectures</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-Lateral-Inhibition-in-Spiking-Architectures</guid>
-    <description><![CDATA[ A single spiking neuron can already turn accumulated input into an event: when its internal voltage reaches a firing threshold, it emits a spike. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:46:27 GMT</pubDate>
+    <title>1.5 Input Encoding, Excitation, and Lateral Inhibition</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-Input-Encoding,-Excitation,-and-Lateral-Inhibition</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-Input-Encoding,-Excitation,-and-Lateral-Inhibition</guid>
+    <description><![CDATA[ Earlier, a single spiking neuron turned accumulated input into a spike when its internal state became strong enough. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:23:34 GMT</pubDate>
   </item><item>
-    <title>2. The Metrics That Make SNNs Measurable</title>
-    <link>https://localhost:8081/test-2/learning/2.-The-Metrics-That-Make-SNNs-Measurable/</link>
-    <guid>https://localhost:8081/test-2/learning/2.-The-Metrics-That-Make-SNNs-Measurable/</guid>
-    <description><![CDATA[ 2. The Metrics That Make SNNs Measurable Build up the metrics that make snns measurable one step at a time. ]]></description>
-    <pubDate>Sun, 05 Jul 2026 20:46:27 GMT</pubDate>
+    <title>2. How SNNs Learn</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/</guid>
+    <description><![CDATA[ 2. How SNNs Learn Build up how snns learns one step at a time. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 10:23:34 GMT</pubDate>
   </item>
     </channel>
   </rss>

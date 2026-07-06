@@ -1,13 +1,13 @@
 ---
 title: "Learning Map"
-date: "2026-07-05T20:49:16.005Z"
+date: "2026-07-06T10:24:52.848Z"
 knowledge_type: "learning-map"
 breadboardType: "learning_map"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr89hbff_h9i6490"
-learningVersionId: "learning_mr89hbff_h9i6490"
+learningVersion: "learning_mr92o5c2_smvyt3k"
+learningVersionId: "learning_mr92o5c2_smvyt3k"
 sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5"
 ---
 
@@ -17,60 +17,74 @@ sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5
 
 - 1. Why SNNs Need Events
   - 1.1 [[learning/1. Why SNNs Need Events/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
-  - 1.2 [[learning/1. Why SNNs Need Events/1.2 Sparse Event-Driven Computation|Sparse Event-Driven Computation]]
-  - 1.3 [[learning/1. Why SNNs Need Events/1.3 Temporal Dynamics in Spiking Computation|Temporal Dynamics in Spiking Computation]]
+  - 1.2 [[learning/1. Why SNNs Need Events/1.2 Spikes, Timing, and Event-Driven Computation|Spikes, Timing, and Event-Driven Computation]]
+  - 1.3 [[learning/1. Why SNNs Need Events/1.3 Sparse Events and Low-Power Computation|Sparse Events and Low-Power Computation]]
   - 1.4 [[learning/1. Why SNNs Need Events/1.4 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]]
-  - 1.5 [[learning/1. Why SNNs Need Events/1.5 Lateral Inhibition in Spiking Architectures|Lateral Inhibition in Spiking Architectures]]
-- 2. The Metrics That Make SNNs Measurable
-  - 2.1 [[learning/2. The Metrics That Make SNNs Measurable/2.1 Surrogate-Gradient Training|Surrogate-Gradient Training]]
-  - 2.2 [[learning/2. The Metrics That Make SNNs Measurable/2.2 ANN-to-SNN Conversion|ANN-to-SNN Conversion]]
-  - 2.3 [[learning/2. The Metrics That Make SNNs Measurable/2.3 Spike-Timing Dependent Plasticity|Spike-Timing Dependent Plasticity]]
-  - 2.4 [[learning/2. The Metrics That Make SNNs Measurable/2.4 The Evaluation Metrics for SNNs|The Evaluation Metrics for SNNs]]
-- 3. What the Results Show
-  - 3.1 [[learning/3. What the Results Show/3.1 Continuous Activations and Discrete Spikes|Continuous Activations and Discrete Spikes]]
-  - 3.2 [[learning/3. What the Results Show/3.2 Accuracy and Energy Results|Accuracy and Energy Results]]
-  - 3.3 [[learning/3. What the Results Show/3.3 Latency Results|Latency Results]]
-  - 3.4 [[learning/3. What the Results Show/3.4 Energy and Spike Count Results|Energy and Spike Count Results]]
-  - 3.5 [[learning/3. What the Results Show/3.5 Convergence and Learning Curves|Convergence and Learning Curves]]
-- 4. Where SNNs Fits and What Still Blocks It
-  - 4.1 [[learning/4. Where SNNs Fits and What Still Blocks It/4.1 Limitations of Conventional Neural Architectures|Limitations of Conventional Neural Architectures]]
-  - 4.2 [[learning/4. Where SNNs Fits and What Still Blocks It/4.2 Neuromorphic Hardware for Low-Power SNNs|Neuromorphic Hardware for Low-Power SNNs]]
-  - 4.3 [[learning/4. Where SNNs Fits and What Still Blocks It/4.3 Application Areas for Spiking Neural Networks|Application Areas for Spiking Neural Networks]]
-  - 4.4 [[learning/4. Where SNNs Fits and What Still Blocks It/4.4 Choosing an SNN Training Strategy|Choosing an SNN Training Strategy]]
-  - 4.5 [[learning/4. Where SNNs Fits and What Still Blocks It/4.5 Open Challenges in Scalable SNNs|Open Challenges in Scalable SNNs]]
+  - 1.5 [[learning/1. Why SNNs Need Events/1.5 Input Encoding, Excitation, and Lateral Inhibition|Input Encoding, Excitation, and Lateral Inhibition]]
+- 2. How SNNs Learn
+  - 2.1 [[learning/2. How SNNs Learn/2.1 How SNNs Learn|How SNNs Learn]]
+  - 2.2 [[learning/2. How SNNs Learn/2.2 Surrogate Gradient Training|Surrogate Gradient Training]]
+  - 2.3 [[learning/2. How SNNs Learn/2.3 ANN-to-SNN Conversion|ANN-to-SNN Conversion]]
+  - 2.4 [[learning/2. How SNNs Learn/2.4 Spike-Timing Dependent Plasticity|Spike-Timing Dependent Plasticity]]
+- 3. The Metrics That Make SNNs Measurable
+  - 3.1 [[learning/3. The Metrics That Make SNNs Measurable/3.1 Accuracy as Correct Predictions|Accuracy as Correct Predictions]]
+  - 3.2 [[learning/3. The Metrics That Make SNNs Measurable/3.2 Latency as Decision Time|Latency as Decision Time]]
+  - 3.3 [[learning/3. The Metrics That Make SNNs Measurable/3.3 Spike Count as Computational Activity|Spike Count as Computational Activity]]
+  - 3.4 [[learning/3. The Metrics That Make SNNs Measurable/3.4 Energy and Normalized Energy Efficiency|Energy and Normalized Energy Efficiency]]
+  - 3.5 [[learning/3. The Metrics That Make SNNs Measurable/3.5 Convergence Time|Convergence Time]]
+- 4. What the Results Show
+  - 4.1 [[learning/4. What the Results Show/4.1 Continuous Activations and Spike Events|Continuous Activations and Spike Events]]
+  - 4.2 [[learning/4. What the Results Show/4.2 Accuracy, Energy, and Performance Tradeoffs|Accuracy, Energy, and Performance Tradeoffs]]
+  - 4.3 [[learning/4. What the Results Show/4.3 Latency Comparisons Across Models|Latency Comparisons Across Models]]
+- 5. What the Results Show
+  - 5.1 [[learning/5. What the Results Show/5.1 Energy Consumption and Spike Count Comparisons|Energy Consumption and Spike Count Comparisons]]
+  - 5.2 [[learning/5. What the Results Show/5.2 Training Loss and Convergence Behavior|Training Loss and Convergence Behavior]]
+  - 5.3 [[learning/5. What the Results Show/5.3 Training Accuracy Curves|Training Accuracy Curves]]
+- 6. Where SNNs Fit and What Still Blocks Adoption
+  - 6.1 [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.1 Choosing an SNN Training Strategy|Choosing an SNN Training Strategy]]
+  - 6.2 [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.2 Neuromorphic Hardware for SNNs|Neuromorphic Hardware for SNNs]]
+  - 6.3 [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.3 Open Challenges for SNNs|Open Challenges for SNNs]]
 
 ## Prerequisite Chain
 
 - Start here -> Why SNNs Need Events
-- Why SNNs Need Events -> The Metrics That Make SNNs Measurable
+- Why SNNs Need Events -> How SNNs Learn
+- How SNNs Learn -> The Metrics That Make SNNs Measurable
 - The Metrics That Make SNNs Measurable -> What the Results Show
-- What the Results Show -> Where SNNs Fits and What Still Blocks It
+- What the Results Show -> What the Results Show
+- What the Results Show -> Where SNNs Fit and What Still Blocks Adoption
 
 ## Trunk, Branch, Leaf Concepts
 
 - Trunk: Why SNNs Need Events
   - Branch/leaf: Why Spiking Neural Networks Exist
-  - Branch/leaf: Sparse Event-Driven Computation
-  - Branch/leaf: Temporal Dynamics in Spiking Computation
+  - Branch/leaf: Spikes, Timing, and Event-Driven Computation
+  - Branch/leaf: Sparse Events and Low-Power Computation
   - Branch/leaf: The Leaky Integrate-and-Fire Neuron
-  - Branch/leaf: Lateral Inhibition in Spiking Architectures
-- Trunk: The Metrics That Make SNNs Measurable
-  - Branch/leaf: Surrogate-Gradient Training
+  - Branch/leaf: Input Encoding, Excitation, and Lateral Inhibition
+- Trunk: How SNNs Learn
+  - Branch/leaf: How SNNs Learn
+  - Branch/leaf: Surrogate Gradient Training
   - Branch/leaf: ANN-to-SNN Conversion
   - Branch/leaf: Spike-Timing Dependent Plasticity
-  - Branch/leaf: The Evaluation Metrics for SNNs
+- Trunk: The Metrics That Make SNNs Measurable
+  - Branch/leaf: Accuracy as Correct Predictions
+  - Branch/leaf: Latency as Decision Time
+  - Branch/leaf: Spike Count as Computational Activity
+  - Branch/leaf: Energy and Normalized Energy Efficiency
+  - Branch/leaf: Convergence Time
 - Trunk: What the Results Show
-  - Branch/leaf: Continuous Activations and Discrete Spikes
-  - Branch/leaf: Accuracy and Energy Results
-  - Branch/leaf: Latency Results
-  - Branch/leaf: Energy and Spike Count Results
-  - Branch/leaf: Convergence and Learning Curves
-- Trunk: Where SNNs Fits and What Still Blocks It
-  - Branch/leaf: Limitations of Conventional Neural Architectures
-  - Branch/leaf: Neuromorphic Hardware for Low-Power SNNs
-  - Branch/leaf: Application Areas for Spiking Neural Networks
+  - Branch/leaf: Continuous Activations and Spike Events
+  - Branch/leaf: Accuracy, Energy, and Performance Tradeoffs
+  - Branch/leaf: Latency Comparisons Across Models
+- Trunk: What the Results Show
+  - Branch/leaf: Energy Consumption and Spike Count Comparisons
+  - Branch/leaf: Training Loss and Convergence Behavior
+  - Branch/leaf: Training Accuracy Curves
+- Trunk: Where SNNs Fit and What Still Blocks Adoption
   - Branch/leaf: Choosing an SNN Training Strategy
-  - Branch/leaf: Open Challenges in Scalable SNNs
+  - Branch/leaf: Neuromorphic Hardware for SNNs
+  - Branch/leaf: Open Challenges for SNNs
 
 ## Bridge Concepts
 
@@ -78,7 +92,7 @@ sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5
 
 ## Warnings
 
-- The provided source map is compacted, so formulas should be taught from the captions and standard explanatory notation only, without claiming exact displayed symbols unless the full page text is available.
-- Detailed numerical values beyond those explicitly present in the source map should not be invented; confirmed values include near-ANN accuracy within about 1-2%, latency as low as 10 ms, faster convergence by around epoch 20, and STDP energy as low as 5 mJ per inference.
-- All source-central visual artifacts are assigned to learning units: S1.P4.G1, S1.P4.F1, S1.P6.E1-S1.P6.E6, S1.P7.T1, S1.P7.G1, S1.P8.T1, S1.P8.G1, S1.P9.T1, S1.P9.G1, S1.P10.G1, S1.P10.T1, and S1.P11.G1.
-- No unit should expand into detailed neuroscience, neuromorphic chip surveys, implementation code, or unsupported benchmark comparisons unless additional sources are supplied.
+- The provided source map includes formula captions but not exact displayed notation for S1.P6.E1 through S1.P6.E6, so later prose should define the formulas from the captions without inventing unsupported symbols or coefficients.
+- The source map gives result trends and some example values, but not full table contents in this prompt; later generated pages should avoid inventing missing numeric entries.
+- Do not introduce unsupported neuron models, training algorithms, hardware internals, or detailed neuroscience beyond the scope contract.
+- All source visuals are assigned inline to the unit where they teach best; no generic source-figure dump should be created.

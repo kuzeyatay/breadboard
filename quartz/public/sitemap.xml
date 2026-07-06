@@ -768,7 +768,7 @@
     <lastmod>2026-04-19T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/</loc>
-    <lastmod>2026-07-04T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-05T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/signals-and-systems/aliasing-problem-solving-with-multiple-sinusoids</loc>
     <lastmod>2026-04-30T16:26:39.261Z</lastmod>
@@ -1347,7 +1347,7 @@
     <lastmod>2026-07-04T18:43:51.403Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/sources/</loc>
-    <lastmod>2026-07-04T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-05T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/signals-and-systems/sources/dsp-first-pearson-2017</loc>
     <lastmod>2026-05-15T09:20:46.791Z</lastmod>
@@ -1371,80 +1371,98 @@
     <lastmod>2026-06-24T08:48:30.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/Learning-Map</loc>
-    <lastmod>2026-07-05T20:49:16.005Z</lastmod>
+    <lastmod>2026-07-06T10:24:52.848Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/</loc>
-    <lastmod>2026-07-05T20:49:15.999Z</lastmod>
+    <lastmod>2026-07-06T10:24:52.843Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/Topic-Overview</loc>
-    <lastmod>2026-07-05T20:49:16.002Z</lastmod>
+    <lastmod>2026-07-06T10:24:52.846Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Sparse-Event-Driven-Computation</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Temporal-Dynamics-in-Spiking-Computation</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Sparse-Events-and-Low-Power-Computation</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-The-Leaky-Integrate-and-Fire-Neuron</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-Lateral-Inhibition-in-Spiking-Architectures</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-Input-Encoding,-Excitation,-and-Lateral-Inhibition</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Metrics-That-Make-SNNs-Measurable/</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Metrics-That-Make-SNNs-Measurable/2.1-Surrogate-Gradient-Training</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.1-How-SNNs-Learn</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Metrics-That-Make-SNNs-Measurable/2.2-ANN-to-SNN-Conversion</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.2-Surrogate-Gradient-Training</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Metrics-That-Make-SNNs-Measurable/2.3-Spike-Timing-Dependent-Plasticity</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.3-ANN-to-SNN-Conversion</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-The-Metrics-That-Make-SNNs-Measurable/2.4-The-Evaluation-Metrics-for-SNNs</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-What-the-Results-Show/</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.4-Spike-Timing-Dependent-Plasticity</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-What-the-Results-Show/3.1-Continuous-Activations-and-Discrete-Spikes</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.1-Accuracy-as-Correct-Predictions</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-What-the-Results-Show/3.2-Accuracy-and-Energy-Results</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.2-Latency-as-Decision-Time</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-What-the-Results-Show/3.3-Latency-Results</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.3-Spike-Count-as-Computational-Activity</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-What-the-Results-Show/3.4-Energy-and-Spike-Count-Results</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.4-Energy-and-Normalized-Energy-Efficiency</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Where-SNNs-Fits-and-What-Still-Blocks-It/</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-What-the-Results-Show/3.5-Convergence-and-Learning-Curves</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/3.-The-Metrics-That-Make-SNNs-Measurable/3.5-Convergence-Time</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Where-SNNs-Fits-and-What-Still-Blocks-It/4.1-Limitations-of-Conventional-Neural-Architectures</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.1-Continuous-Activations-and-Spike-Events</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Where-SNNs-Fits-and-What-Still-Blocks-It/4.2-Neuromorphic-Hardware-for-Low-Power-SNNs</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.2-Accuracy,-Energy,-and-Performance-Tradeoffs</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Where-SNNs-Fits-and-What-Still-Blocks-It/4.3-Application-Areas-for-Spiking-Neural-Networks</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/4.3-Latency-Comparisons-Across-Models</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Where-SNNs-Fits-and-What-Still-Blocks-It/4.4-Choosing-an-SNN-Training-Strategy</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/5.-What-the-Results-Show/</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Where-SNNs-Fits-and-What-Still-Blocks-It/4.5-Open-Challenges-in-Scalable-SNNs</loc>
-    <lastmod>2026-07-05T20:46:27.099Z</lastmod>
+    <loc>https://localhost:8081/test-2/learning/5.-What-the-Results-Show/5.1-Energy-Consumption-and-Spike-Count-Comparisons</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/5.-What-the-Results-Show/5.2-Training-Loss-and-Convergence-Behavior</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/5.-What-the-Results-Show/5.3-Training-Accuracy-Curves</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/6.-Where-SNNs-Fit-and-What-Still-Blocks-Adoption/</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/6.-Where-SNNs-Fit-and-What-Still-Blocks-Adoption/6.1-Choosing-an-SNN-Training-Strategy</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/6.-Where-SNNs-Fit-and-What-Still-Blocks-Adoption/6.2-Neuromorphic-Hardware-for-SNNs</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test-2/learning/6.-Where-SNNs-Fit-and-What-Still-Blocks-Adoption/6.3-Open-Challenges-for-SNNs</loc>
+    <lastmod>2026-07-06T10:23:34.658Z</lastmod>
   </url></urlset>

@@ -87,7 +87,7 @@ function enrichFixtureSpec(spec, { pageRel, sourceAnchors = [] }) {
   spec.outputs = [spec.caption ?? spec.pedagogicalPurpose];
   spec.sourceAnchors = sourceAnchors;
   if (sourceAnchors.length > 0) {
-    spec.sourceGroundingStatus = "source-anchored";
+    spec.sourceGroundingStatus = "source-grounded";
     spec.justification = "Fixture visual is anchored to the source figure assigned to this page.";
   } else {
     spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
@@ -192,7 +192,11 @@ function buildGoodGarden(root) {
       newConcepts: ["membrane potential", "threshold", "reset"],
       sourceFigures: [{ id: "S1.P4.F1", placement: "inside_concept_explanation", mustBeDiscussedWith: "LIF neuron model", interpretationGoal: "Use the cropped source figure to identify the membrane, threshold, spike, and reset pieces." }],
       interactiveVisual: { id: "v_lif", visualType: "lif_neuron", uniqueConcept: "membrane potential threshold reset", whyStaticSourceFigureIsNotEnough: "The learner must watch the potential climb, spike, and reset over time.", learnerManipulates: ["input current", "threshold"], expectedInsight: "threshold and input current control firing", sourceAnchors: ["S1.P4.F1"] },
-      zettelNotes: [{ handle: "lif-threshold-turns-accumulated-input-into-spikes", claim: "A LIF threshold turns accumulated input into spikes." }],
+      zettelNotes: [
+        { handle: "lif-threshold-turns-accumulated-input-into-spikes", claim: "A LIF threshold turns accumulated input into spikes." },
+        { handle: "membrane-reset-makes-spikes-discrete-events", claim: "Reset makes spikes discrete events." },
+        { handle: "input-current-controls-threshold-crossing-rate", claim: "Input current controls threshold crossing rate." },
+      ],
     },
     {
       id: "U4",
@@ -201,7 +205,11 @@ function buildGoodGarden(root) {
       learningQuestion: "How do rate and temporal coding differ?",
       newConcepts: ["rate coding", "temporal coding"],
       interactiveVisual: { id: "v_coding", visualType: "neural_coding", uniqueConcept: "rate coding versus temporal coding", whyStaticSourceFigureIsNotEnough: "The learner changes spike timing and sees the code change.", learnerManipulates: ["spike rate", "timing jitter"], expectedInsight: "rate and timing carry different information", sourceAnchors: [] },
-      zettelNotes: [{ handle: "spike-train-timing-changes-the-message", claim: "Spike train timing changes the message." }],
+      zettelNotes: [
+        { handle: "spike-train-timing-changes-the-message", claim: "Spike train timing changes the message." },
+        { handle: "rate-coding-uses-spike-count-as-signal", claim: "Rate coding uses spike count as a signal." },
+        { handle: "temporal-coding-moves-information-into-timing", claim: "Temporal coding moves information into timing." },
+      ],
     },
     {
       id: "U5",
@@ -217,7 +225,11 @@ function buildGoodGarden(root) {
       learningQuestion: "How does STDP use pre/post timing?",
       newConcepts: ["STDP", "plasticity"],
       interactiveVisual: { id: "v_stdp", visualType: "stdp_window", uniqueConcept: "STDP pre and post timing window", whyStaticSourceFigureIsNotEnough: "The learner drags spike timing and sees the weight update sign change.", learnerManipulates: ["pre/post delay"], expectedInsight: "timing order changes synaptic weight direction", sourceAnchors: [] },
-      zettelNotes: [{ handle: "stdp-updates-weights-from-local-spike-timing", claim: "STDP updates weights from local spike timing." }],
+      zettelNotes: [
+        { handle: "stdp-updates-weights-from-local-spike-timing", claim: "STDP updates weights from local spike timing." },
+        { handle: "pre-before-post-spikes-strengthen-connections", claim: "Pre-before-post spikes strengthen connections." },
+        { handle: "post-before-pre-spikes-weaken-connections", claim: "Post-before-pre spikes weaken connections." },
+      ],
     },
     {
       id: "U7",
@@ -226,7 +238,11 @@ function buildGoodGarden(root) {
       learningQuestion: "Why is accuracy alone not enough?",
       newConcepts: ["latency", "energy", "spike count"],
       interactiveVisual: { id: "v_tradeoff", visualType: "tradeoff_explorer", uniqueConcept: "accuracy energy latency tradeoff", whyStaticSourceFigureIsNotEnough: "The learner changes priorities and sees which metric dominates.", learnerManipulates: ["priority"], expectedInsight: "the best model depends on metric priorities", sourceAnchors: [] },
-      zettelNotes: [{ handle: "accuracy-alone-hides-energy-and-latency-cost", claim: "Accuracy alone hides energy and latency cost." }],
+      zettelNotes: [
+        { handle: "accuracy-alone-hides-energy-and-latency-cost", claim: "Accuracy alone hides energy and latency cost." },
+        { handle: "spike-count-connects-activity-to-hardware-cost", claim: "Spike count connects activity to hardware cost." },
+        { handle: "metric-priorities-change-which-model-wins", claim: "Metric priorities change which model wins." },
+      ],
     },
     {
       id: "U8",
@@ -349,6 +365,8 @@ function buildGoodGarden(root) {
       title: "2.1 The Leaky Integrate-and-Fire Neuron",
       tags: [
         "lif-threshold-turns-accumulated-input-into-spikes",
+        "membrane-reset-makes-spikes-discrete-events",
+        "input-current-controls-threshold-crossing-rate",
       ],
       body: LONG_PARAGRAPH("The leaky integrate-and-fire neuron, membrane potential threshold, firing event, spike, and reset"),
       spec: specs.lif,
@@ -362,6 +380,8 @@ function buildGoodGarden(root) {
       title: "2.2 Encoding Information as Spike Trains",
       tags: [
         "spike-train-timing-changes-the-message",
+        "rate-coding-uses-spike-count-as-signal",
+        "temporal-coding-moves-information-into-timing",
       ],
       body: LONG_PARAGRAPH("Rate coding and temporal coding of spike trains and spike timing"),
       spec: specs.coding,
@@ -373,6 +393,8 @@ function buildGoodGarden(root) {
       title: "3.4 Spike-Timing Dependent Plasticity",
       tags: [
         "stdp-updates-weights-from-local-spike-timing",
+        "pre-before-post-spikes-strengthen-connections",
+        "post-before-pre-spikes-weaken-connections",
       ],
       body: LONG_PARAGRAPH("Spike-timing dependent plasticity (STDP), temporal credit assignment, and synaptic plasticity across the timing window"),
       spec: specs.stdp,
@@ -384,6 +406,8 @@ function buildGoodGarden(root) {
       title: "4.1 Accuracy, Latency, and Energy",
       tags: [
         "accuracy-alone-hides-energy-and-latency-cost",
+        "spike-count-connects-activity-to-hardware-cost",
+        "metric-priorities-change-which-model-wins",
       ],
       body:
         LONG_PARAGRAPH("Accuracy, latency, energy and spike count as a tradeoff") +
@@ -550,13 +574,52 @@ describe("garden validator regression fixture", () => {
         pagePath,
         fs
           .readFileSync(pagePath, "utf-8")
-          .replace(/^generatedBy:/m, 'formulas:\n  - text: "96%"\n    groundingStatus: "conceptual-helper"\n    justification: "bad trivial entry"\ngeneratedBy:'),
+          .replace(/^tags:\s*\[[^\]]*\]$/m, 'tags: ["accuracy-alone-hides-energy-and-latency-cost"]')
+          .replace(/^generatedBy:/m, 'formulas:\n  - text: "Define accuracy as the fraction of predictions that are correct.: correct predictions + total predictions + classification accuracy"\n    groundingStatus: "source-anchored"\n    sourceAnchor: "S1.P6.E1"\n    justification: "bad prose entry"\ngeneratedBy:'),
       );
       fs.writeFileSync(path.join(dir, "assets", "source-visuals", "snn-lif.png"), "PNG");
       const results = runChecksWithReport(dir, "snn-fixture");
       assert.equal(checkById(results, 25).status, "FAIL");
       assert.equal(checkById(results, 34).status, "FAIL");
       assert.equal(checkById(results, 35).status, "FAIL");
+      assert.equal(checkById(results, 38).status, "FAIL");
+      assert.equal(checkById(results, 40).status, "FAIL");
+      assert.equal(checkById(results, 45).status, "FAIL");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("formula anchors with omitted crops pass when concept usage is split from crop status", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-split-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const ledgerPath = path.join(dir, ".breadboard", "source-visuals.json");
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+      ledger.push({
+        sourceVisualId: "S1.P6.E3",
+        sourceId: "snn",
+        pageNumber: 6,
+        type: "equation",
+        caption: "Total spike count summed over neurons and time steps",
+        usageStatus: "intentionally_skipped",
+        conceptUsage: "explained_as_text_formula",
+        cropStatus: "omitted_unreliable",
+        skipReason: "Central source formula is taught from source markdown and linked through sourceFormulaAnchors.",
+      });
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(
+        pagePath,
+        fs.readFileSync(pagePath, "utf-8").replace(
+          /^generatedBy:/m,
+          'sourceFormulaAnchors: ["S1.P6.E3"]\nformulas:\n  - text: "N_{\\\\text{spike count}} = \\\\sum_{n,t} s_n(t)"\n    groundingStatus: "source-derived"\n    sourceAnchor: "S1.P6.E3"\n    justification: "source-derived metric expression"\ngeneratedBy:',
+        ),
+      );
+
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 43);
+      assert.equal(result.status, "PASS", result.problems.join("\n"));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -1,12 +1,12 @@
 ---
 title: "1. Why SNNs Need Events"
-date: "2026-07-05T20:46:27.099Z"
+date: "2026-07-06T10:23:34.658Z"
 knowledge_type: "learning-section"
 breadboardType: "learning_section"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mr89hbff_h9i6490"
+learningVersion: "learning_mr92o5c2_smvyt3k"
 sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5"
 ---
 

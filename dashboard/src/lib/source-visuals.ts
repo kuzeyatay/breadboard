@@ -16,8 +16,8 @@
 import fs from "fs";
 import path from "path";
 import type OpenAI from "openai";
-import { cropPng } from "./png-crop";
-import { slugify } from "./tags";
+import { cropPng } from "./png-crop.ts";
+import { slugify } from "./tags.ts";
 
 export type SourceVisualType =
   | "figure"
@@ -28,6 +28,16 @@ export type SourceVisualType =
   | "full_page_fallback";
 
 export type SourceVisualUsageStatus = "unused" | "assigned" | "intentionally_skipped";
+export type SourceVisualConceptUsage =
+  | "embedded_as_crop"
+  | "explained_as_text_formula"
+  | "used_as_interactive_grounding"
+  | "intentionally_omitted";
+export type SourceVisualCropStatus =
+  | "embedded"
+  | "available_not_embedded"
+  | "omitted_unreliable"
+  | "missing";
 
 export interface SourceVisualBBox {
   x: number;
@@ -48,6 +58,8 @@ export interface SourceVisual {
   pageImagePath?: string;
   bbox?: SourceVisualBBox;
   usageStatus: SourceVisualUsageStatus;
+  conceptUsage?: SourceVisualConceptUsage;
+  cropStatus?: SourceVisualCropStatus;
   assignedPageId?: string;
   assignedSectionId?: string;
   skipReason?: string;
@@ -402,22 +414,41 @@ export function recordSourceVisualAssignments(
   gardenSlug: string,
   assignments: Map<string, { pageId: string; sectionId?: string }>,
   skipReasonForUnused: (visual: SourceVisual) => string,
+  options: { conceptAnchorIds?: Iterable<string> } = {},
 ): SourceVisual[] {
   const ledger = loadSourceVisuals(contentPath, gardenSlug);
+  const conceptAnchorIds = new Set(options.conceptAnchorIds ?? []);
   const next = ledger.map((visual): SourceVisual => {
     const assignment = assignments.get(visual.sourceVisualId);
     if (assignment) {
       return {
         ...visual,
         usageStatus: "assigned",
+        conceptUsage: "embedded_as_crop",
+        cropStatus: visual.croppedImagePath ? "embedded" : "available_not_embedded",
         assignedPageId: assignment.pageId,
         assignedSectionId: assignment.sectionId,
         skipReason: undefined,
       };
     }
+    const usedAsConceptAnchor = conceptAnchorIds.has(visual.sourceVisualId);
+    const conceptUsage: SourceVisualConceptUsage =
+      usedAsConceptAnchor && visual.type === "equation"
+        ? "explained_as_text_formula"
+        : usedAsConceptAnchor
+          ? "used_as_interactive_grounding"
+          : "intentionally_omitted";
+    const cropStatus: SourceVisualCropStatus =
+      conceptUsage === "explained_as_text_formula"
+        ? "omitted_unreliable"
+        : visual.croppedImagePath
+          ? "available_not_embedded"
+          : "missing";
     return {
       ...visual,
       usageStatus: "intentionally_skipped",
+      conceptUsage,
+      cropStatus,
       assignedPageId: undefined,
       assignedSectionId: undefined,
       skipReason: visual.skipReason ?? skipReasonForUnused(visual),

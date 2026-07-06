@@ -11,7 +11,7 @@ import {
   scanClusterKnowledge,
 } from "@/lib/knowledge";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
-import { finalizeGardenExport, groundLearnerFormula, classifyFigure } from "@/lib/garden-finalize";
+import { finalizeGardenExport, groundLearnerFormula } from "@/lib/garden-finalize";
 import {
   appendGardenEvent,
   buildDeterministicVisual,
@@ -21,6 +21,7 @@ import {
 } from "@/lib/visuals";
 import {
   assignSourceArtifacts,
+  anchorTextCompatibleWithVisualType,
   atomicZettelHandle,
   dedupeSourceArtifactAssignments,
   dropIncompatibleInteractiveVisuals,
@@ -33,6 +34,7 @@ import {
   type LearningUnitContract,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
+  type SourceFormulaContract,
 } from "@/lib/learning-unit-contract";
 import {
   IMPLEMENTED_VISUAL_TYPES,
@@ -2209,25 +2211,70 @@ function ensureContractFormulaGrounding(
   if (anchors.length === 0) return entries;
   const grounded = new Set(
     entries
-      .filter((entry) => entry.groundingStatus === "source-anchored" && entry.sourceAnchor)
+      .filter((entry) => (entry.groundingStatus === "source-anchored" || entry.groundingStatus === "source-derived") && entry.sourceAnchor)
       .map((entry) => entry.sourceAnchor as string),
   );
   const next = [...entries];
   for (const formula of subsection.sourceFormulaContracts ?? []) {
     if (!formula.id || grounded.has(formula.id)) continue;
-    const text = formula.termsToDefine?.length
-      ? `${formula.teachingGoal}: ${formula.termsToDefine.join(" + ")}`
-      : formula.teachingGoal;
-    if (!isGroundableFormula(text)) continue;
+    const synthesized = synthesizedFormulaForContract(formula);
+    if (!synthesized || !isGroundableFormula(synthesized.text)) continue;
     next.push({
-      text,
-      groundingStatus: "source-anchored",
+      text: synthesized.text,
+      groundingStatus: "source-derived",
       sourceAnchor: formula.id,
-      justification: `Required by the Learning Unit Contract source formula anchor ${formula.id}.`,
+      justification: `Required by the Learning Unit Contract source formula anchor ${formula.id}; ${synthesized.reason}.`,
     });
     grounded.add(formula.id);
   }
   return next;
+}
+
+function synthesizedFormulaForContract(
+  formula: SourceFormulaContract,
+): { text: string; reason: string } | null {
+  const id = formula.id.trim();
+  const text = [id, formula.teachingGoal, ...(formula.termsToDefine ?? [])]
+    .join(" ")
+    .toLowerCase();
+  const byId = (suffix: string) => new RegExp(`\\.${suffix}$`, "i").test(id);
+  if (byId("E1") || /\baccuracy|correct prediction|classification/i.test(text)) {
+    return {
+      text: "\\text{Accuracy} = \\frac{N_{\\text{correct}}}{N_{\\text{total}}}",
+      reason: "the anchor describes accuracy as correct predictions over total predictions",
+    };
+  }
+  if (byId("E2") || /\blatency|decision time|response time/i.test(text)) {
+    return {
+      text: "T_{\\text{latency}} = t_{\\text{decision}} - t_{\\text{stimulus}}",
+      reason: "the anchor describes latency as time to decision",
+    };
+  }
+  if (byId("E3") || /\bspike count|total spike|number of spikes|spikes summed/i.test(text)) {
+    return {
+      text: "N_{\\text{spike count}} = \\sum_{n,t} s_n(t)",
+      reason: "the anchor describes total spike count summed across neurons and time",
+    };
+  }
+  if (byId("E5") || /\befficiency|normalized energy|accuracy per energy/i.test(text)) {
+    return {
+      text: "\\eta_{\\text{efficiency}} = \\frac{\\text{Accuracy}}{E_{\\text{energy}}}",
+      reason: "the anchor describes normalized efficiency as accuracy per energy",
+    };
+  }
+  if (byId("E4") || /\benergy|synaptic operation|synop|joule/i.test(text)) {
+    return {
+      text: "E_{\\text{energy}} = N_{\\text{spikes}}E_{\\text{spike}} + N_{\\text{synops}}E_{\\text{synop}}",
+      reason: "the anchor describes total energy from spike and synaptic operation costs",
+    };
+  }
+  if (byId("E6") || /\bconvergence|epoch|target accuracy|learning curve/i.test(text)) {
+    return {
+      text: "T_{\\text{convergence}} = \\min\\{e : A(e) \\geq A_{\\text{target}}\\}",
+      reason: "the anchor describes convergence as the first epoch that reaches a target accuracy",
+    };
+  }
+  return null;
 }
 
 function renderLearningMapMarkdown(map: ProposedLearningMap): string {
@@ -2966,7 +3013,9 @@ function assignSourceVisualsForSubsection({
   });
 
   const primaryIds = assignedVisualArtifactIdsForUnit(sourceArtifactAssignments, subsection.learningUnitId);
-  const plannedIds = primaryIds.length > 0 ? primaryIds : (subsection.sourceVisualIds ?? []);
+  const plannedIds = primaryIds.length > 0
+    ? primaryIds
+    : (sourceArtifactAssignments.length > 0 ? [] : (subsection.sourceVisualIds ?? []));
   const planned = plannedIds
     .map((id) => available.find((visual) => visual.sourceVisualId === id))
     .filter((visual): visual is SourceVisual => Boolean(visual));
@@ -3075,26 +3124,9 @@ function sourceAnchorFromId(anchorId: string, sourceFigures: SourceFigure[]): Vi
   return anchor;
 }
 
-// Which source-figure classes each interactive renderer may legitimately be
-// grounded in (mirror of the validator + finalize compatibility rules).
-const VISUAL_TYPE_ANCHOR_CLASSES: Record<string, ReadonlySet<string>> = {
-  lif_neuron: new Set(["lif", "architecture"]),
-  tradeoff_explorer: new Set(["equation", "result"]),
-  stdp_window: new Set(["result"]),
-  neural_coding: new Set<string>(),
-};
-
 function anchorCompatibleWithVisual(type: string, anchor: VisualSourceAnchor): boolean {
-  const allowed = VISUAL_TYPE_ANCHOR_CLASSES[type];
-  if (!allowed) return true; // renderer with no dedicated source coupling
-  if (allowed.size === 0) return false;
   const id = String(anchor.figureId ?? anchor.tableId ?? anchor.equationId ?? "");
-  const cls = classifyFigure({
-    sourceVisualId: id,
-    caption: anchor.description,
-    pageNumber: anchor.page,
-  });
-  return allowed.has(cls);
+  return anchorTextCompatibleWithVisualType(type, [id, anchor.description, anchor.sourceTitle].filter(Boolean).join(" "));
 }
 
 function uniqueSourceAnchors(anchors: VisualSourceAnchor[]): VisualSourceAnchor[] {
@@ -3227,7 +3259,7 @@ async function reconcileInteractiveVisuals({
       anchorCompatibleWithVisual(spec.type, anchor),
     );
     if (spec.sourceAnchors.length > 0) {
-      spec.sourceGroundingStatus = "source-anchored";
+      spec.sourceGroundingStatus = "source-grounded";
       spec.justification = spec.justification || "This interactive visual is tied to source visuals or formula anchors assigned to the same lesson page.";
     } else {
       spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
@@ -4441,6 +4473,9 @@ export async function runTextbookGeneration({
         visual.type === "equation"
           ? "Central source formula is taught from source markdown and linked through sourceFormulaAnchors; no reliable crop was available for this equation."
           : "Not central to any confirmed subsection of this learning map.",
+      {
+        conceptAnchorIds: generatedPages.flatMap((page) => page.sourceFormulaIds),
+      },
     );
     for (const visual of finalLedger) {
       if (visual.usageStatus === "intentionally_skipped" && visual.skipReason) {

@@ -96,7 +96,7 @@ export interface VisualSpec {
   title: string
   subtitle?: string
   sourceAnchors: SourceAnchor[]
-  sourceGroundingStatus?: "source-anchored" | "conceptual-no-direct-source-figure"
+  sourceGroundingStatus?: "source-grounded" | "source-derived-conceptual" | "conceptual-no-direct-source-figure" | "source-anchored"
   justification?: string
   conceptTargets: string[]
   misconceptionTargets?: string[]
@@ -357,6 +357,8 @@ export function validateVisualSpec(input: unknown): VisualSpecValidation {
   if (updatedAt) spec.updatedAt = updatedAt
 
   const sourceGroundingStatus =
+    candidate.sourceGroundingStatus === "source-grounded" ||
+    candidate.sourceGroundingStatus === "source-derived-conceptual" ||
     candidate.sourceGroundingStatus === "source-anchored" ||
     candidate.sourceGroundingStatus === "conceptual-no-direct-source-figure"
       ? candidate.sourceGroundingStatus
