@@ -2158,6 +2158,13 @@ function learningSectionFolder(sectionNumber: number, title: string): string {
  * matches nothing is honestly labelled a conceptual helper instead of being
  * mapped to whatever source anchor happens to share its array index.
  */
+function normalizedFormulaForFrontmatter(text: string): string {
+  return text
+    .replace(/\\(?:text|mathrm|operatorname)\{([^}]*)\}/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function formulaGroundingEntries(
   mathExpressions: ReturnType<typeof extractQuartzMath>,
   sourceFormulaFigureList: SourceFigure[],
@@ -2171,14 +2178,21 @@ function formulaGroundingEntries(
     if (grounded.groundingStatus === "source-anchored" && grounded.sourceAnchor) {
       return {
         text: expr.formula,
+        normalizedText: normalizedFormulaForFrontmatter(expr.formula),
         groundingStatus: "source-anchored",
         sourceAnchor: grounded.sourceAnchor,
+        sourceAnchorTitle: captionById.get(grounded.sourceAnchor) ?? "source formula",
+        matchReason: "metric family and source formula caption match",
+        confidence: 0.9,
         justification: `Content matches source metric formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`,
       };
     }
     return {
       text: expr.formula,
+      normalizedText: normalizedFormulaForFrontmatter(expr.formula),
       groundingStatus: "conceptual-helper",
+      matchReason: "no matching source formula anchor",
+      confidence: 0.4,
       justification:
         "Compact helper formula used to explain the lesson's mechanism; no direct source equation anchor is claimed.",
     };
@@ -2221,8 +2235,12 @@ function ensureContractFormulaGrounding(
     if (!synthesized || !isGroundableFormula(synthesized.text)) continue;
     next.push({
       text: synthesized.text,
+      normalizedText: normalizedFormulaForFrontmatter(synthesized.text),
       groundingStatus: "source-derived",
       sourceAnchor: formula.id,
+      sourceAnchorTitle: formula.teachingGoal || formula.id,
+      matchReason: synthesized.reason,
+      confidence: 0.8,
       justification: `Required by the Learning Unit Contract source formula anchor ${formula.id}; ${synthesized.reason}.`,
     });
     grounded.add(formula.id);
@@ -2466,7 +2484,10 @@ function sanitizeSourceMapContradictions(
           "explicit metric formulas are present",
         )
         .replace(/formulas? (?:are|is) not present/gi, "formula anchors are present")
-        .replace(/caption-only/gi, "extracted formula anchor");
+        .replace(/formula captions but not exact[^.\n]*/gi, "source formula anchors and text-derived metric meanings are available")
+        .replace(/exact displayed notation[^.\n]*/gi, "source formula notation is handled through formula anchors or text fallback")
+        .replace(/standard explanatory notation only[^.\n]*/gi, "source-derived formula notation is recorded explicitly")
+        .replace(/captions only|caption-only|notation unavailable|mathematical notation not included/gi, "formula anchors and text fallback are available");
     }
     if (facts.hasTables) {
       next = next.replace(/tables? (?:are|is) not (?:present|available|detected)/gi, "tables are present in the extracted source anchors");
@@ -2533,10 +2554,12 @@ function sourceCoverageMarkdown({
     return "figure";
   };
   const coverageModes = new Map<string, string[]>([
-    ["Fully Embedded and Explained", []],
-    ["Explained Without Embedding", []],
+    ["Embedded Source Crops", []],
+    ["Explained as Text Formulas", []],
+    ["Explained in Prose", []],
     ["Used as Interactive Grounding", []],
     ["Referenced Again in Synthesis", []],
+    ["Crop Omitted With Text Fallback", []],
     ["Intentionally Omitted", []],
     ["Missing or Misplaced", []],
   ]);
@@ -2550,10 +2573,13 @@ function sourceCoverageMarkdown({
     const line = `- ${assignment.sourceArtifactId}: ${target}; placement=${assignment.placement}; ${assignment.requiredInterpretation || assignment.reason}`;
     if (!page || !allFulfilledIds.has(assignment.sourceArtifactId)) {
       addMode("Missing or Misplaced", line);
-    } else if (kind === "formula" || !usedFigures.has(assignment.sourceArtifactId)) {
-      addMode("Explained Without Embedding", line);
+    } else if (kind === "formula") {
+      addMode("Explained as Text Formulas", line);
+      addMode("Crop Omitted With Text Fallback", line);
+    } else if (usedFigures.has(assignment.sourceArtifactId) || usedTables.has(assignment.sourceArtifactId)) {
+      addMode("Embedded Source Crops", line);
     } else {
-      addMode("Fully Embedded and Explained", line);
+      addMode("Explained in Prose", line);
     }
   }
   for (const page of generatedPages) {
@@ -2598,20 +2624,10 @@ function sourceCoverageMarkdown({
   } else {
     lines.push("- No source artifacts were assigned by the Learning Unit Contract.");
   }
-  lines.push("", "## Source Coverage Modes", "");
   for (const [mode, entries] of coverageModes) {
-    lines.push(`### ${mode}`, "");
+    lines.push("", `## ${mode}`, "");
     lines.push(...(entries.length > 0 ? [...new Set(entries)] : ["- None."]));
-    lines.push("");
   }
-  lines.push("", "## Figures, Graphs, Tables, And Formula Displays Used", "");
-  lines.push(
-    ...(context.sourceFigures.filter((figure) => allFulfilledIds.has(figure.figureId)).length > 0
-      ? context.sourceFigures
-          .filter((figure) => allFulfilledIds.has(figure.figureId))
-          .map((figure) => `- ${figure.figureId}: ${figure.caption ?? figure.kind}`)
-      : ["- No source figures were used as explicit visual anchors."]),
-  );
   if (formulaFigures.length > 0) {
     lines.push("", "## Formula Anchor Assignments", "");
     for (const formula of formulaFigures) {
@@ -3133,12 +3149,158 @@ function uniqueSourceAnchors(anchors: VisualSourceAnchor[]): VisualSourceAnchor[
   const seen = new Set<string>();
   const out: VisualSourceAnchor[] = [];
   for (const anchor of anchors) {
-    const key = anchor.equationId ?? anchor.tableId ?? anchor.figureId ?? `${anchor.sourceId ?? ""}:${anchor.page ?? ""}:${anchor.description}`;
+    const key = anchor.equationId ?? anchor.tableId ?? anchor.figureId ?? anchor.textAnchorId ?? `${anchor.sourceId ?? ""}:${anchor.page ?? ""}:${anchor.description}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(anchor);
   }
   return out;
+}
+
+type MetricCalculatorFamily = "accuracy" | "latency" | "spike-count" | "energy" | "efficiency" | "convergence";
+
+const METRIC_CALCULATOR_FAMILIES: MetricCalculatorFamily[] = [
+  "accuracy",
+  "latency",
+  "spike-count",
+  "energy",
+  "efficiency",
+  "convergence",
+];
+
+const METRIC_CALCULATOR_LABELS: Record<MetricCalculatorFamily, string> = {
+  accuracy: "accuracy",
+  latency: "latency",
+  "spike-count": "spike count",
+  energy: "energy",
+  efficiency: "normalized efficiency",
+  convergence: "convergence time",
+};
+
+const METRIC_CALCULATOR_PATTERNS: Record<MetricCalculatorFamily, RegExp> = {
+  accuracy: /\baccuracy\b|\bcorrect predictions?\b|\.E1\b/i,
+  latency: /\blatency\b|\bdecision time\b|\.E2\b/i,
+  "spike-count": /\bspike[- ]?count\b|\btotal spikes?\b|\.E3\b/i,
+  energy: /\benergy\b|\benergy per spike\b|\.E4\b/i,
+  efficiency: /\befficien|\bnormalized\b|accuracy over energy|\.E5\b/i,
+  convergence: /\bconvergence\b|\btarget accuracy\b|\bepochs?\b|\.E6\b/i,
+};
+
+const METRIC_CALCULATOR_CONTROLS: Record<MetricCalculatorFamily, NonNullable<VisualSpec["controls"]>> = {
+  accuracy: [
+    { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
+    { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
+  ],
+  latency: [
+    { name: "decisionTime", label: "Decision time", type: "slider", min: 1, max: 100, step: 1, defaultValue: 24 },
+  ],
+  "spike-count": [
+    { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
+  ],
+  energy: [
+    { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
+    { name: "energyPerSpike", label: "Energy per spike", type: "slider", min: 0.0005, max: 0.01, step: 0.0005, defaultValue: 0.002 },
+  ],
+  efficiency: [
+    { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
+    { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
+    { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
+    { name: "energyPerSpike", label: "Energy per spike", type: "slider", min: 0.0005, max: 0.01, step: 0.0005, defaultValue: 0.002 },
+  ],
+  convergence: [
+    { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
+    { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
+    { name: "decisionTime", label: "Decision time", type: "slider", min: 1, max: 100, step: 1, defaultValue: 24 },
+  ],
+};
+
+function metricCalculatorFamiliesForSubsection(subsection: LearningSubsectionPlan): MetricCalculatorFamily[] {
+  const formulaText = (subsection.sourceFormulaContracts ?? [])
+    .map((formula) => [formula.id, formula.teachingGoal, ...(formula.termsToDefine ?? [])].join(" "))
+    .join(" ");
+  const text = [
+    subsection.title,
+    subsection.purpose,
+    subsection.learningQuestion,
+    ...(subsection.newConcepts ?? []),
+    ...(subsection.conceptTags ?? []),
+    ...(subsection.sourceAnchors ?? []),
+    formulaText,
+  ].join(" ");
+  return METRIC_CALCULATOR_FAMILIES.filter((family) => METRIC_CALCULATOR_PATTERNS[family].test(text));
+}
+
+function focusMetricCalculatorSpec(spec: VisualSpec, subsection: LearningSubsectionPlan): VisualSpec {
+  if (spec.type !== "metric_calculator") return spec;
+  const families = metricCalculatorFamiliesForSubsection(subsection);
+  if (families.length === 0) return spec;
+  const controlsByName = new Map<string, NonNullable<VisualSpec["controls"]>[number]>();
+  for (const family of families) {
+    for (const control of METRIC_CALCULATOR_CONTROLS[family]) {
+      controlsByName.set(control.name, { ...control });
+    }
+  }
+  const labels = families.map((family) => METRIC_CALCULATOR_LABELS[family]);
+  spec.controls = [...controlsByName.values()];
+  spec.inputs = spec.controls.map((control) => control.label.toLowerCase());
+  spec.outputs = labels;
+  spec.conceptTargets = labels;
+  spec.pedagogicalPurpose = `Let the learner manipulate inputs for ${labels.join(", ")} on this lesson instead of a generic all-metric calculator.`;
+  spec.caption = `This calculator focuses on ${labels.join(", ")} for this page.`;
+  spec.regenerationPrompt = `Regenerate this metric calculator so its controls and readouts focus only on ${labels.join(", ")}.`;
+  return spec;
+}
+
+function proseConceptForVisual(type: string): { label: string; pattern: RegExp } | null {
+  switch (type) {
+    case "lif_neuron":
+      return { label: "lif membrane threshold dynamics", pattern: /\blif\b|leaky integrate|integrate[- ]and[- ]fire|membrane potential.*threshold|threshold.*reset/i };
+    case "neural_coding":
+      return { label: "rate and temporal spike coding", pattern: /rate coding|temporal coding|spike trains? encode|encoding information/i };
+    case "stdp_window":
+      return { label: "spike timing dependent plasticity", pattern: /\bstdp\b|spike[- ]timing dependent plasticity|pre.*post.*(?:weight|synaptic)|synaptic plasticity/i };
+    case "tradeoff_explorer":
+      return { label: "metric tradeoff reasoning", pattern: /accuracy.*latency.*energy|latency.*energy.*accuracy|spike count.*energy|trade[- ]off/i };
+    case "metric_calculator":
+      return { label: "metric definition", pattern: /metric|formula|accuracy|latency|energy|spike count|convergence/i };
+    case "training_curve":
+      return { label: "training curve behavior", pattern: /training curve|learning curve|convergence|epoch|training loss|target accuracy/i };
+    default:
+      return null;
+  }
+}
+
+function sourceTextAnchorForVisual({
+  visualType,
+  sourceContext,
+}: {
+  visualType: string;
+  sourceContext: unknown;
+}): VisualSourceAnchor | null {
+  const concept = proseConceptForVisual(visualType);
+  if (!concept) return null;
+  const dossier = sourceContext && typeof sourceContext === "object" && "dossier" in sourceContext
+    ? (sourceContext as { dossier?: unknown }).dossier
+    : sourceContext;
+  const snippets = dossier && typeof dossier === "object" && Array.isArray((dossier as { relevantSourceSnippets?: unknown }).relevantSourceSnippets)
+    ? ((dossier as { relevantSourceSnippets: Array<Record<string, unknown>> }).relevantSourceSnippets)
+    : [];
+  for (const snippet of snippets) {
+    const excerpt = String(snippet.excerpt ?? "").replace(/\s+/g, " ").trim();
+    const title = String(snippet.title ?? "").trim();
+    const sourceId = String(snippet.sourceId ?? "").trim();
+    if (!excerpt || !concept.pattern.test(`${title} ${excerpt}`)) continue;
+    const sourcePart = safeLearnFileSegment(sourceId || "source", "source").replace(/\s+/g, "-").toLowerCase();
+    const conceptPart = safeLearnFileSegment(concept.label, "concept").replace(/\s+/g, "-").toLowerCase();
+    const anchor: VisualSourceAnchor = {
+      textAnchorId: `text-${sourcePart}-${conceptPart}`,
+      description: `Source prose explains ${concept.label}: ${excerpt.slice(0, 220)}`,
+    };
+    if (sourceId) anchor.sourceId = sourceId;
+    if (title) anchor.sourceTitle = title;
+    return anchor;
+  }
+  return null;
 }
 
 function visualAnchorIdsForPage({
@@ -3232,6 +3394,7 @@ async function reconcileInteractiveVisuals({
   const pageAnchorIds = visualAnchorIdsForPage({ subsection, sourceFigures });
 
   const enrichVisualSpec = (spec: VisualSpec): VisualSpec => {
+    spec = focusMetricCalculatorSpec(spec, subsection);
     spec.gardenId = gardenId;
     spec.pageId = pageSlug;
     spec.pagePath = pageRelPath;
@@ -3255,12 +3418,21 @@ async function reconcileInteractiveVisuals({
     // page, and a tradeoff explorer must ground in metric/result figures. This
     // prevents fake grounding where sourceAnchors is non-empty but semantically
     // wrong for the renderer.
-    spec.sourceAnchors = uniqueSourceAnchors([...existingAnchors, ...derivedAnchors]).filter((anchor) =>
+    const compatibleConcreteAnchors = uniqueSourceAnchors([...existingAnchors, ...derivedAnchors]).filter((anchor) =>
       anchorCompatibleWithVisual(spec.type, anchor),
     );
-    if (spec.sourceAnchors.length > 0) {
+    const proseAnchor = compatibleConcreteAnchors.length === 0
+      ? sourceTextAnchorForVisual({ visualType: spec.type, sourceContext })
+      : null;
+    spec.sourceAnchors = uniqueSourceAnchors(proseAnchor ? [...compatibleConcreteAnchors, proseAnchor] : compatibleConcreteAnchors);
+    if (compatibleConcreteAnchors.length > 0) {
       spec.sourceGroundingStatus = "source-grounded";
       spec.justification = spec.justification || "This interactive visual is tied to source visuals or formula anchors assigned to the same lesson page.";
+    } else if (proseAnchor) {
+      spec.sourceGroundingStatus = "source-derived-conceptual";
+      spec.justification =
+        spec.justification ||
+        "The source explains this concept in prose but does not provide a dedicated figure, so the visual is derived from the source text anchor.";
     } else {
       spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
       spec.justification =

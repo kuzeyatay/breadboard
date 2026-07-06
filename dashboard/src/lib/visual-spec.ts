@@ -61,6 +61,7 @@ export interface SourceAnchor {
   tableId?: string
   equationId?: string
   questionId?: string
+  textAnchorId?: string
   description: string
 }
 
@@ -196,6 +197,7 @@ function sanitizeSourceAnchors(value: unknown, errors: string[]): SourceAnchor[]
     const tableId = safeString(raw.tableId, "sourceAnchors.tableId", errors, 80)
     const equationId = safeString(raw.equationId, "sourceAnchors.equationId", errors, 80)
     const questionId = safeString(raw.questionId, "sourceAnchors.questionId", errors, 80)
+    const textAnchorId = safeString(raw.textAnchorId, "sourceAnchors.textAnchorId", errors, 120)
     const page = finiteNumber(raw.page)
     if (sourceId) anchor.sourceId = sourceId
     if (sourceTitle) anchor.sourceTitle = sourceTitle
@@ -203,6 +205,7 @@ function sanitizeSourceAnchors(value: unknown, errors: string[]): SourceAnchor[]
     if (tableId) anchor.tableId = tableId
     if (equationId) anchor.equationId = equationId
     if (questionId) anchor.questionId = questionId
+    if (textAnchorId) anchor.textAnchorId = textAnchorId
     if (page !== undefined) anchor.page = page
     anchors.push(anchor)
   }

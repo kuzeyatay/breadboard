@@ -29,9 +29,11 @@ export type SourceVisualType =
 
 export type SourceVisualUsageStatus = "unused" | "assigned" | "intentionally_skipped";
 export type SourceVisualConceptUsage =
-  | "embedded_as_crop"
+  | "embedded_and_explained"
   | "explained_as_text_formula"
+  | "explained_in_prose"
   | "used_as_interactive_grounding"
+  | "referenced_again"
   | "intentionally_omitted";
 export type SourceVisualCropStatus =
   | "embedded"
@@ -424,7 +426,7 @@ export function recordSourceVisualAssignments(
       return {
         ...visual,
         usageStatus: "assigned",
-        conceptUsage: "embedded_as_crop",
+        conceptUsage: "embedded_and_explained",
         cropStatus: visual.croppedImagePath ? "embedded" : "available_not_embedded",
         assignedPageId: assignment.pageId,
         assignedSectionId: assignment.sectionId,
@@ -446,7 +448,7 @@ export function recordSourceVisualAssignments(
           : "missing";
     return {
       ...visual,
-      usageStatus: "intentionally_skipped",
+      usageStatus: usedAsConceptAnchor ? "assigned" : "intentionally_skipped",
       conceptUsage,
       cropStatus,
       assignedPageId: undefined,

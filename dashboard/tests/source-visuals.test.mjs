@@ -32,7 +32,7 @@ test("recordSourceVisualAssignments splits formula concept usage from crop statu
       { conceptAnchorIds: ["S1.P6.E3"] },
     );
 
-    assert.equal(visual.usageStatus, "intentionally_skipped");
+    assert.equal(visual.usageStatus, "assigned");
     assert.equal(visual.conceptUsage, "explained_as_text_formula");
     assert.equal(visual.cropStatus, "omitted_unreliable");
   } finally {
