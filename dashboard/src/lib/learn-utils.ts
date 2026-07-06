@@ -119,7 +119,7 @@ type FrontmatterValue = FrontmatterScalar | string[] | FrontmatterObject[] | und
 
 export interface FormulaGroundingEntry {
   text: string;
-  groundingStatus: "source-anchored" | "conceptual-helper";
+  groundingStatus: "source-anchored" | "source-derived" | "conceptual-helper" | "unmatched";
   justification: string;
   sourceAnchor?: string;
 }
@@ -127,7 +127,15 @@ export interface FormulaGroundingEntry {
 /** Formula grounding metadata is for meaningful equations/metric definitions,
  * not every numeric inline example. Plain numbers, percentages, and single
  * variables can stay in prose without bloating frontmatter. */
-export function isGroundableFormula(expr: string): boolean {
+export function isFormulaExpression(expr: string): boolean {
+  const original = expr.trim();
+  if (!original) return false;
+  if (/^(?:define|show|teach|use|connect|explain|describe|introduce|compare|discuss|demonstrate|identify|interpret|summarize|calculate)\b/i.test(original)) {
+    return false;
+  }
+  if (/:\s*[A-Za-z][A-Za-z\s-]*(?:\s+\+\s+[A-Za-z][A-Za-z\s-]*){1,}\s*$/i.test(original)) {
+    return false;
+  }
   const compacted = expr
     .replace(/\\(?:left|right|,|;|:|!)/g, "")
     .replace(/[{}]/g, "")
@@ -137,10 +145,27 @@ export function isGroundableFormula(expr: string): boolean {
   if (/^[+-]?\d+(?:\.\d+)?(?:\\?%)?$/.test(compacted)) return false;
   if (/^[A-Za-z](?:_[A-Za-z0-9]+|\^[A-Za-z0-9]+)?$/.test(compacted)) return false;
   if (/^(?:ms|s|j|w|hz|khz|mhz|v|a)$/i.test(compacted)) return false;
-  if (/\\frac|\\sum|\\prod|\\int|\\sqrt|\\Delta|\\tau|\\lambda|\\eta|\\theta/.test(expr)) return true;
+  if (/\\(?:frac|sum|prod|int|sqrt|min|max|log|exp|Delta|tau|lambda|eta|theta|operatorname)\b/.test(expr)) return true;
+  if (/[=<>≤≥≈∝]/.test(expr) || /\\(?:geq|leq|neq|approx)\b/.test(expr)) {
+    return /[A-Za-z0-9\\]/.test(expr);
+  }
   if (/[=<>≤≥≈∝]/.test(expr)) return /[A-Za-z\\]/.test(expr);
-  if (/[+\-*/^]/.test(compacted) && /[A-Za-z\\]/.test(compacted) && compacted.length > 3) return true;
+  if (/[+\-*/^]/.test(compacted) && /[A-Za-z0-9\\]/.test(compacted) && compacted.length > 3) {
+    const parts = original
+      .split(/\s*[+\-*/^]\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const naturalLanguageBundle =
+      parts.length >= 2 &&
+      parts.every((part) => /^[A-Za-z][A-Za-z\s-]{2,}$/.test(part) && !/[\\_^0-9]/.test(part));
+    if (naturalLanguageBundle) return false;
+    return true;
+  }
   return false;
+}
+
+export function isGroundableFormula(expr: string): boolean {
+  return isFormulaExpression(expr);
 }
 
 const RAW_VISUAL_PLACEHOLDER_RE =
@@ -598,6 +623,25 @@ export function sanitizeLearnerTitle(rawTitle: string): string {
       matchCase(m, `results ${verb.replace(/s$/, "")}`),
     )
     .replace(/\bevidence\b/gi, (m) => matchCase(m, "results"));
+  const pluralVerbFixes: Record<string, string> = {
+    Fits: "Fit",
+    Learns: "Learn",
+    Uses: "Use",
+    Works: "Work",
+    Does: "Do",
+    Has: "Have",
+    Is: "Are",
+    Explains: "Explain",
+    Measures: "Measure",
+  };
+  title = title.replace(
+    /\b([A-Z]{2,}s|[A-Z][a-z]+s)\s+(Fits|Learns|Uses|Works|Does|Has|Is|Explains|Measures)\b/g,
+    (_match, subject: string, verb: string) => `${subject} ${pluralVerbFixes[verb] ?? verb}`,
+  );
+  title = title.replace(
+    /\bWhere\s+([A-Z]{2,}s|[A-Z][a-z]+s)\s+Fit\s+and\s+What\s+Still\s+Blocks\s+It\b/g,
+    "Where $1 Fit and What Still Blocks Adoption",
+  );
   title = compact(title.replace(/^[,:;\-\s]+|[,:;\-\s]+$/g, ""));
   return title || compact(rawTitle);
 }

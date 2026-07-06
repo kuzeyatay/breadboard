@@ -2,6 +2,8 @@ import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeLearningUnits,
+  sectionSemanticProfile,
+  sectionTitleGrammarProblems,
   clusterUnitsIntoSections,
   learningMapFromUnits,
   assignSourceArtifacts,
@@ -16,7 +18,9 @@ import {
   validateLearningUnitContracts,
   clusterDepthProblems,
   dropIncompatibleInteractiveVisuals,
+  interactiveVisualGroundingProblems,
 } from "../src/lib/learning-unit-contract.ts";
+import { sanitizeLearnerTitle } from "../src/lib/learn-utils.ts";
 
 // A realistic set of learning units for an SNN source (used generically — the
 // clustering/validation logic is domain-agnostic).
@@ -113,6 +117,25 @@ describe("Learning Unit Contract — atomic Zettelkasten handles (Fix 6/7)", () 
         assert.ok(!handle.includes("/"));
       }
     }
+  });
+
+  test("normalization tops up thin zettel plans to at least three atomic handles", () => {
+    const [unit] = normalizeLearningUnits([
+      {
+        id: "U-thin",
+        role: "metric",
+        title: "Spike Count as Computational Activity",
+        learningQuestion: "How does spike count measure activity cost?",
+        newConcepts: ["spike count"],
+        sourceAnchors: ["S1.P6.E3"],
+        zettelNotes: [
+          { handle: "spike-count-connects-activity-to-cost", claim: "Spike count connects activity to cost." },
+        ],
+      },
+    ]);
+    const handles = zettelHandlesForUnit(unit);
+    assert.ok(handles.length >= 3, `expected at least three handles, got ${handles.join(", ")}`);
+    assert.ok(handles.every(isAtomicZettelHandle));
   });
 });
 
@@ -329,5 +352,83 @@ describe("Learning Unit Contract — full-set validation (Fix 11)", () => {
     units[0].zettelNotes[0].handle = "metric/accuracy-per-energy";
     const problems = validateLearningUnitContracts(units);
     assert.ok(problems.some((p) => /slash namespace/.test(p) || /not an atomic concept handle/.test(p)));
+  });
+});
+
+describe("Learning Unit Contract - section semantics and grounding", () => {
+  test("flags training units grouped under a metrics-only section title", () => {
+    const units = normalizeLearningUnits([
+      { id: "T1", role: "training_method", title: "Surrogate-gradient training", learningQuestion: "How are spikes trained?" },
+      { id: "T2", role: "training_method", title: "ANN-to-SNN conversion", learningQuestion: "How is conversion trained?" },
+      { id: "M1", role: "metric", title: "Accuracy as a metric", learningQuestion: "How is accuracy measured?" },
+    ]);
+    const profile = sectionSemanticProfile({
+      sectionTitle: "The Metrics That Make SNNs Measurable",
+      units,
+    });
+    assert.equal(profile.titleMatchesUnits, false);
+    assert.match(profile.problems.join("\n"), /SECTION_SEMANTIC_MISMATCH/);
+    assert.match(profile.problems.join("\n"), /training units are grouped under a metrics-only title/);
+  });
+
+  test("accepts a mixed title that names learning and evaluation", () => {
+    const units = normalizeLearningUnits([
+      { id: "T1", role: "training_method", title: "Surrogate-gradient training", learningQuestion: "How are spikes trained?" },
+      { id: "M1", role: "metric", title: "Accuracy as a metric", learningQuestion: "How is accuracy measured?" },
+    ]);
+    const profile = sectionSemanticProfile({
+      sectionTitle: "How SNNs Learn and Are Evaluated",
+      units,
+    });
+    assert.equal(profile.problems.length, 0, profile.problems.join("\n"));
+  });
+
+  test("allows an introductory why-title to introduce core SNN mechanisms", () => {
+    const units = normalizeLearningUnits([
+      { id: "M1", role: "mechanism", title: "Spikes, Timing, and Event-Driven Computation", learningQuestion: "How do spike events carry information?", newConcepts: ["spike events"] },
+      { id: "M2", role: "mechanism", title: "The Leaky Integrate-and-Fire Neuron", learningQuestion: "How does the membrane potential produce spikes?", newConcepts: ["LIF neuron"] },
+    ]);
+    const profile = sectionSemanticProfile({
+      sectionTitle: "1. Why SNNs Need Events",
+      units,
+    });
+    assert.equal(profile.problems.length, 0, profile.problems.join("\n"));
+  });
+
+  test("title sanitizer fixes plural subject verb agreement before rendering", () => {
+    assert.equal(sanitizeLearnerTitle("How SNNs Learns"), "How SNNs Learn");
+    assert.equal(
+      sanitizeLearnerTitle("Where SNNs Fits and What Still Blocks It"),
+      "Where SNNs Fit and What Still Blocks Adoption",
+    );
+  });
+
+  test("flags generic plural-subject singular-verb title grammar", () => {
+    assert.match(sectionTitleGrammarProblems("How SNNs Learns").join("\n"), /SNNs.*Learn/);
+    assert.match(sectionTitleGrammarProblems("Where LLMs Uses Tools").join("\n"), /LLMs.*Use/);
+    assert.match(sectionTitleGrammarProblems("Why CNNs Fits Edge Devices").join("\n"), /CNNs.*Fit/);
+    assert.match(sectionTitleGrammarProblems("How Agents Uses Memory").join("\n"), /Agents.*Use/);
+  });
+
+  test("rejects mechanism visuals grounded only in result-table text", () => {
+    const problems = interactiveVisualGroundingProblems({
+      visualType: "stdp_window",
+      sourceAnchors: ["S1.P9.T1"],
+      sourceAnchorText: "Latency and energy result table for model performance",
+      status: "source-grounded",
+      justification: "uses table",
+    });
+    assert.match(problems.join("\n"), /semantically incompatible|mechanism visual/);
+  });
+
+  test("accepts honest conceptual visuals with explicit justification", () => {
+    const problems = interactiveVisualGroundingProblems({
+      visualType: "stdp_window",
+      sourceAnchors: [],
+      sourceAnchorText: "",
+      status: "conceptual-no-direct-source-figure",
+      justification: "The source discusses STDP timing in prose but provides no timing-window figure, so the visual teaches the timing relationship conceptually.",
+    });
+    assert.deepEqual(problems, []);
   });
 });

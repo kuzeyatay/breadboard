@@ -271,6 +271,99 @@ export function zettelHandlesForUnit(unit: LearningUnitContract): string[] {
   return handles;
 }
 
+const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
+  motivation: [
+    "{concept} explains why the topic matters",
+    "{concept} turns a broad problem into a learning need",
+  ],
+  core_concept: [
+    "{concept} defines the lesson's central idea",
+    "{concept} connects vocabulary to mechanism",
+  ],
+  mechanism: [
+    "{concept} connects mechanism to behavior",
+    "{concept} explains how the system changes state",
+  ],
+  formula: [
+    "{concept} turns the idea into a mathematical relationship",
+    "{concept} defines the variables learners must track",
+  ],
+  worked_example: [
+    "{concept} shows the method in a concrete case",
+    "{concept} links procedure to interpretation",
+  ],
+  training_method: [
+    "{concept} defines a training tradeoff",
+    "{concept} links learning rule to model behavior",
+  ],
+  metric: [
+    "{concept} turns behavior into a measurable signal",
+    "{concept} separates performance from cost",
+  ],
+  result_interpretation: [
+    "{concept} explains what the reported result supports",
+    "{concept} keeps evidence tied to metric context",
+  ],
+  comparison: [
+    "{concept} supports comparison across alternatives",
+    "{concept} prevents a single metric from choosing the winner",
+  ],
+  application: [
+    "{concept} shapes deployment constraints",
+    "{concept} connects capability to use case fit",
+  ],
+  limitation: [
+    "{concept} marks what the method still cannot prove",
+    "{concept} keeps claims bounded by source limits",
+  ],
+  synthesis: [
+    "{concept} connects earlier ideas into one model",
+    "{concept} turns separate lessons into a usable framework",
+  ],
+};
+
+function primaryZettelConcept(unit: LearningUnitContract): string {
+  const candidate =
+    [...unit.newConcepts, unit.title, unit.learningQuestion]
+      .map((value) => compact(value).replace(/^\d+(?:\.\d+)*\.?\s*/, ""))
+      .find((value) => value && !/^(why|how|what|where|when|the)\b/i.test(value)) ??
+    unit.title ??
+    "the concept";
+  return candidate.replace(/\s+/g, " ").trim() || "the concept";
+}
+
+function generatedZettelNote(unit: LearningUnitContract, claimTemplate: string): ZettelNote | null {
+  const concept = primaryZettelConcept(unit);
+  const claim = claimTemplate.replace("{concept}", concept);
+  const handle = atomicZettelHandle(claim);
+  if (!isAtomicZettelHandle(handle)) return null;
+  return {
+    handle,
+    claim,
+    connectedTo: [...new Set([...unit.prerequisiteConcepts, ...unit.newConcepts, ...unit.sourceAnchors].filter(Boolean))].slice(0, 5),
+  };
+}
+
+function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
+  const notes = [...(unit.zettelNotes ?? [])];
+  const seen = new Set(zettelHandlesForUnit({ ...unit, zettelNotes: notes }));
+  const templates = [
+    ...(ROLE_ZETTEL_CLAIMS[unit.role] ?? []),
+    "{concept} anchors the lesson's source evidence",
+    "{concept} connects learner question to source anchors",
+  ];
+  for (const template of templates) {
+    if (seen.size >= 3) break;
+    const note = generatedZettelNote(unit, template);
+    if (!note) continue;
+    const handle = atomicZettelHandle(note.handle || note.claim);
+    if (!handle || seen.has(handle)) continue;
+    seen.add(handle);
+    notes.push(note);
+  }
+  return notes.slice(0, 6);
+}
+
 /** Every atomic handle used across the whole garden, with its per-unit count. */
 export function zettelHandleFrequency(units: LearningUnitContract[]): Map<string, number> {
   const counts = new Map<string, number>();
@@ -280,6 +373,300 @@ export function zettelHandleFrequency(units: LearningUnitContract[]): Map<string
     }
   }
   return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Section semantic coherence and title polish
+// ---------------------------------------------------------------------------
+
+export type SectionRoleFamily =
+  | "motivation"
+  | "mechanism"
+  | "training_method"
+  | "metric"
+  | "comparison"
+  | "application"
+  | "synthesis";
+
+export interface SectionSemanticProfile {
+  sectionTitle: string;
+  sectionRole?: string;
+  subsectionRoles: string[];
+  subsectionTitles: string[];
+  dominantConcepts: string[];
+  outlierUnits: string[];
+  titleMatchesUnits: boolean;
+  problems: string[];
+}
+
+export interface SectionSemanticInput {
+  sectionTitle: string;
+  units: LearningUnitContract[];
+  subsectionTitles?: string[];
+}
+
+function unitRoleFamily(role: LearningUnitRole): SectionRoleFamily {
+  switch (role) {
+    case "motivation":
+      return "motivation";
+    case "training_method":
+      return "training_method";
+    case "metric":
+    case "result_interpretation":
+      return "metric";
+    case "comparison":
+      return "comparison";
+    case "application":
+    case "limitation":
+      return "application";
+    case "synthesis":
+      return "synthesis";
+    default:
+      return "mechanism";
+  }
+}
+
+const TITLE_ROLE_HINTS: Array<[SectionRoleFamily, RegExp]> = [
+  ["motivation", /\bwhy\b|\bexist\b|\bmotivat|\bneed\b|\bpurpose\b/i],
+  ["mechanism", /\bmechanism|\bworks?\b|\bspike event|\bneuron|\blif\b|\bmembrane|\bthreshold|\breset|\bcoding|\barchitecture|\bdynamics|\bformal|\bformula/i],
+  ["training_method", /\blearn(?:s|ing)?\b|\btrain(?:s|ing|ed)?\b|\bsurrogate\b|\bgradient\b|\bstdp\b|\bplasticity\b|\bconversion\b|\bann[- ]to[- ]snn\b|\bmethod\b|\bstrategy\b/i],
+  ["metric", /\bmetric|\bmeasur|\bevaluat|\baccuracy\b|\blatency\b|\benergy\b|\bspike count\b|\bconvergence\b|\bperformance\b|\bresult|\bscore/i],
+  ["comparison", /\bcompar|\btrade[- ]?off|\bversus\b|\bvs\b|\bmodel families\b|\bresults show\b/i],
+  ["application", /\bapplication|\bdeploy|\bhardware|\bneuromorphic|\bwhere\b|\bfit\b|\badoption\b|\bblocks?\b|\bchallenge|\blimitation|\bfuture|\bunresolved/i],
+  ["synthesis", /\btogether\b|\bunified\b|\bbig picture\b|\bconnect|\boverview\b|\bframework\b/i],
+];
+
+export function sectionRoleFamilyForUnitRole(role: LearningUnitRole): SectionRoleFamily {
+  return unitRoleFamily(role);
+}
+
+export function sectionTitleRoleHints(title: string): SectionRoleFamily[] {
+  const clean = compact(title).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+  const roles: SectionRoleFamily[] = [];
+  for (const [role, pattern] of TITLE_ROLE_HINTS) {
+    if (pattern.test(clean) && !roles.includes(role)) roles.push(role);
+  }
+  return roles;
+}
+
+function semanticProblem(sectionTitle: string, dominantRoles: string[], problem: string, suggestedFix: string): string {
+  return `SECTION_SEMANTIC_MISMATCH section="${sectionTitle}" dominantRoles=[${dominantRoles.map((role) => `"${role}"`).join(", ")}] problem="${problem}" suggestedFix="${suggestedFix}"`;
+}
+
+function importantSectionFamilies(families: SectionRoleFamily[]): SectionRoleFamily[] {
+  const important = families.filter((role) => role !== "motivation" && role !== "synthesis");
+  return important.length > 0 ? important : families;
+}
+
+export function sectionSemanticProfile(input: SectionSemanticInput): SectionSemanticProfile {
+  const sectionTitle = compact(input.sectionTitle);
+  const units = input.units ?? [];
+  const subsectionTitles = input.subsectionTitles?.length
+    ? input.subsectionTitles.map(compact).filter(Boolean)
+    : units.map((unit) => compact(unit.title)).filter(Boolean);
+  const subsectionRoles = units.map((unit) => unit.role);
+  const familyCounts = new Map<SectionRoleFamily, number>();
+  for (const unit of units) {
+    const family = unitRoleFamily(unit.role);
+    familyCounts.set(family, (familyCounts.get(family) ?? 0) + 1);
+  }
+  const families = [...familyCounts.keys()];
+  const importantFamilies = importantSectionFamilies(families);
+  const maxCount = Math.max(0, ...[...familyCounts.values()]);
+  const dominantFamilies = [...familyCounts.entries()]
+    .filter(([, count]) => count === maxCount)
+    .map(([role]) => role);
+  const titleHints = sectionTitleRoleHints(sectionTitle);
+  const titleAcknowledgesMixed =
+    titleHints.length >= 2 ||
+    /\b(?:and|or|from .+ to|through|across|pipeline|framework|strategy|trade[- ]?off|unified)\b/i.test(sectionTitle);
+  const dominantConcepts = [
+    ...new Set(
+      units
+        .flatMap((unit) => [...(unit.newConcepts ?? []), unit.title])
+        .map((value) => compact(value).toLowerCase())
+        .filter(Boolean),
+    ),
+  ].slice(0, 8);
+  const dominantRoleLabels = importantFamilies.length ? importantFamilies : dominantFamilies;
+  const problems: string[] = [];
+
+  if (units.length > 0 && titleHints.length > 0) {
+    const titleHas = (role: SectionRoleFamily) => titleHints.includes(role);
+    const unitHas = (role: SectionRoleFamily) => families.includes(role);
+    const titleMetricOnly = (titleHas("metric") || titleHas("comparison")) && !titleHas("training_method") && !titleAcknowledgesMixed;
+    const titleTrainingOnly = titleHas("training_method") && !titleHas("metric") && !titleHas("comparison") && !titleAcknowledgesMixed;
+    const titleMechanismOnly = titleHas("mechanism") && !titleHas("application") && !titleAcknowledgesMixed;
+    if (unitHas("training_method") && titleMetricOnly) {
+      problems.push(semanticProblem(sectionTitle, dominantRoleLabels, "training units are grouped under a metrics-only title", "split section or retitle to include training and evaluation"));
+    }
+    if ((unitHas("metric") || unitHas("comparison")) && titleTrainingOnly) {
+      problems.push(semanticProblem(sectionTitle, dominantRoleLabels, "metric/evaluation units are grouped under a training-only title", "split section or retitle to include training and evaluation"));
+    }
+    if (unitHas("application") && titleMechanismOnly) {
+      problems.push(semanticProblem(sectionTitle, dominantRoleLabels, "application or limitation units sit under a mechanism/formula title", "split section or retitle to include applications and limitations"));
+    }
+    const motivationTitleIntroducesMechanism =
+      importantFamilies.length === 1 &&
+      importantFamilies[0] === "mechanism" &&
+      titleHas("motivation") &&
+      !titleHas("metric") &&
+      !titleHas("comparison") &&
+      !titleHas("training_method") &&
+      /\b(?:snn|spik|event|neuron|network|computation|compute)\b/i.test(
+        [sectionTitle, ...subsectionTitles, ...dominantConcepts].join(" "),
+      );
+    const missing = importantFamilies.filter((role) => !titleHints.includes(role));
+    if (importantFamilies.length >= 2 && missing.length > 0 && !titleAcknowledgesMixed) {
+      problems.push(semanticProblem(sectionTitle, dominantRoleLabels, `mixed section title omits ${missing.join(", ")} role(s)`, "split the section or use a title that names the mixed purpose"));
+    }
+    if (importantFamilies.length === 1 && !titleHints.includes(importantFamilies[0]) && !motivationTitleIntroducesMechanism) {
+      problems.push(semanticProblem(sectionTitle, dominantRoleLabels, `title vocabulary points to ${titleHints.join(", ")} but units are ${importantFamilies[0]}`, "retitle the section to match the unit role"));
+    }
+  }
+
+  const outlierUnits = units
+    .filter((unit) => {
+      const family = unitRoleFamily(unit.role);
+      return importantFamilies.length > 1 && (familyCounts.get(family) ?? 0) === 1 && !titleHints.includes(family);
+    })
+    .map((unit) => `${unit.id}:${unit.title}`);
+
+  return {
+    sectionTitle,
+    sectionRole: titleHints.join("+") || dominantFamilies.join("+") || undefined,
+    subsectionRoles,
+    subsectionTitles,
+    dominantConcepts,
+    outlierUnits,
+    titleMatchesUnits: problems.length === 0,
+    problems,
+  };
+}
+
+export function sectionSemanticProfiles(inputs: SectionSemanticInput[]): SectionSemanticProfile[] {
+  return inputs.map(sectionSemanticProfile);
+}
+
+const PLURAL_VERB_FIXES: Record<string, string> = {
+  Fits: "Fit",
+  Learns: "Learn",
+  Uses: "Use",
+  Works: "Work",
+  Does: "Do",
+  Has: "Have",
+  Is: "Are",
+  Explains: "Explain",
+  Measures: "Measure",
+};
+
+export function sectionTitleGrammarProblems(title: string, subsectionTitles: string[] = []): string[] {
+  const problems: string[] = [];
+  const clean = compact(title).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+  for (const match of clean.matchAll(/\b([A-Z]{2,}s|[A-Z][a-z]+s)\s+(Fits|Learns|Uses|Works|Does|Has|Is|Explains|Measures)\b/g)) {
+    const subject = match[1] ?? "";
+    const verb = match[2] ?? "";
+    problems.push(`section title grammar: plural subject "${subject}" should use "${PLURAL_VERB_FIXES[verb] ?? verb}", not "${verb}"`);
+  }
+  if (/Where\s+\S+s\s+Fit[s]?\s+and\s+What\s+Still\s+Blocks\s+It/i.test(clean)) {
+    problems.push('section title grammar: awkward pronoun mismatch; prefer "what still blocks adoption" or "what still blocks them"');
+  }
+  if (/This Topic|and the Mechanism Works|and it Is Measured|How It Learns or Changes|The Formal Description|The Formal Pieces/i.test(clean)) {
+    problems.push(`section title exposes planning scaffold phrasing: "${clean}"`);
+  }
+  if (/\b(?:Learning Unit|Contract|Planning|Subsection|Source[- ]grounded|Role:|Unit\s+\d+)\b/i.test(clean)) {
+    problems.push(`section title exposes internal planning language: "${clean}"`);
+  }
+  const normalizedTitle = slugLike(clean);
+  const duplicated = subsectionTitles
+    .map((sub) => compact(sub).replace(/^\d+(?:\.\d+)*\.?\s*/, ""))
+    .filter((sub) => slugLike(sub) === normalizedTitle);
+  if (duplicated.length > 0 && subsectionTitles.length <= 1) {
+    problems.push(`section title duplicates its only subsection title: "${clean}"`);
+  }
+  return problems;
+}
+
+function slugLike(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// ---------------------------------------------------------------------------
+// Interactive visual source-grounding semantics
+// ---------------------------------------------------------------------------
+
+export type InteractiveVisualGroundingStatus =
+  | "source-grounded"
+  | "source-derived-conceptual"
+  | "conceptual-no-direct-source-figure"
+  | "source-anchored";
+
+export interface InteractiveVisualGroundingCheckInput {
+  visualType: string;
+  sourceAnchors: string[];
+  sourceAnchorText: string;
+  status?: string;
+  justification?: string;
+  conceptText?: string;
+}
+
+const VISUAL_ANCHOR_REQUIREMENTS: Record<string, RegExp> = {
+  lif_neuron: /\blif\b|leaky|membrane potential|threshold|reset|leak|neuron (?:model|dynamics)|integrate[- ]and[- ]fire/i,
+  stdp_window: /\bstdp\b|spike[- ]timing|pre.*post|post.*pre|plasticity|local learning|hebbian|timing window/i,
+  metric_calculator: /metric|formula|accuracy|latency|energy|efficien|spike count|convergence|rate|score|normaliz|equation/i,
+  training_curve: /loss|accuracy curve|convergence|epoch|target|training|learning curve/i,
+  tradeoff_explorer: /trade[- ]?off|compar|versus|vs\b|accuracy|latency|energy|spike count|metric|result|performance|deployment|budget|model/i,
+  neural_coding: /spike|spiking|timing|temporal|rate cod|firing rate|encoding|coding|event[- ]driven/i,
+};
+
+const MECHANISM_VISUAL_TYPES = new Set(["lif_neuron", "stdp_window", "neural_coding"]);
+const RESULT_ONLY_ANCHOR_RE = /\b(?:result|results|latency|energy|accuracy|performance|comparison|table|training loss|curve|benchmark)\b/i;
+
+export function anchorTextCompatibleWithVisualType(visualType: string, anchorText: string): boolean {
+  const type = normalizeInteractiveVisualType(visualType);
+  const text = compact(anchorText);
+  if (!text) return false;
+  const requirement = VISUAL_ANCHOR_REQUIREMENTS[type];
+  if (!requirement) return true;
+  if (!requirement.test(text)) return false;
+  if (MECHANISM_VISUAL_TYPES.has(type) && RESULT_ONLY_ANCHOR_RE.test(text) && !requirement.test(text.replace(RESULT_ONLY_ANCHOR_RE, ""))) {
+    return false;
+  }
+  return true;
+}
+
+export function interactiveVisualGroundingProblems(input: InteractiveVisualGroundingCheckInput): string[] {
+  const problems: string[] = [];
+  const type = normalizeInteractiveVisualType(input.visualType);
+  const anchors = input.sourceAnchors.filter(Boolean);
+  const status = compact(input.status ?? "");
+  const justification = compact(input.justification ?? "");
+  const anchorText = compact(input.sourceAnchorText);
+  const isGroundedStatus = status === "source-grounded" || status === "source-anchored";
+  const isConceptualStatus = status === "source-derived-conceptual" || status === "conceptual-no-direct-source-figure";
+
+  if (!isGroundedStatus && !isConceptualStatus) {
+    problems.push(`visual ${type}: invalid sourceGroundingStatus "${status || "(missing)"}"`);
+  }
+  if (anchors.length === 0) {
+    if (!isConceptualStatus || justification.length < 30) {
+      problems.push(`visual ${type}: no source anchors and no explicit conceptual grounding justification`);
+    }
+    return problems;
+  }
+  if (!anchorTextCompatibleWithVisualType(type, anchorText)) {
+    problems.push(`visual ${type}: source anchors [${anchors.join(", ")}] are semantically incompatible with this visual type`);
+  }
+  if (MECHANISM_VISUAL_TYPES.has(type) && RESULT_ONLY_ANCHOR_RE.test(anchorText) && !VISUAL_ANCHOR_REQUIREMENTS[type]?.test(anchorText)) {
+    problems.push(`visual ${type}: result/table/metric anchors cannot ground a mechanism visual`);
+  }
+  if (status === "conceptual-no-direct-source-figure") {
+    problems.push(`visual ${type}: conceptual-no-direct-source-figure must not carry source anchors`);
+  }
+  if (status === "source-derived-conceptual" && justification.length < 30) {
+    problems.push(`visual ${type}: source-derived-conceptual grounding needs a specific justification`);
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------
@@ -604,7 +991,7 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
     id = id.replace(/[^A-Za-z0-9_.-]/g, "-");
     while (usedIds.has(id)) id = `${id}x`;
     usedIds.add(id);
-    units.push({
+    const unit: LearningUnitContract = {
       id,
       title,
       role: asRole(record.role),
@@ -619,7 +1006,8 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
       zettelNotes: asArray(record.zettelNotes).map(normalizeZettelNote).filter(Boolean) as ZettelNote[],
       mustNotRepeat: asStringArray(record.mustNotRepeat ?? record.avoid),
       expectedWordRange: normalizeWordRange(record.expectedWordRange ?? record.wordRange),
-    });
+    };
+    units.push({ ...unit, zettelNotes: expandZettelNotesForUnit(unit) });
   });
   return units;
 }

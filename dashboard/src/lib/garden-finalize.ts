@@ -21,15 +21,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  anchorTextCompatibleWithVisualType,
   dedupeSourceArtifactAssignments,
+  interactiveVisualGroundingProblems,
   isAtomicZettelHandle,
   normalizeLearningUnits,
+  sectionSemanticProfiles,
+  sectionTitleGrammarProblems,
   zettelHandlesForUnit,
   type LearningUnitContract,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
-import { isGroundableFormula } from "./learn-utils.ts";
+import { isFormulaExpression, isGroundableFormula } from "./learn-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -98,7 +102,7 @@ function fmSetArray(rawFm: string, key: string, values: string[]): string {
 
 export interface FinalizeFormulaEntry {
   text: string;
-  groundingStatus: "source-anchored" | "conceptual-helper";
+  groundingStatus: "source-anchored" | "source-derived" | "conceptual-helper" | "unmatched";
   justification: string;
   sourceAnchor?: string;
 }
@@ -496,6 +500,45 @@ function formulaEntrySourceAnchors(rawFm: string): string[] {
     if (value) anchors.add(value);
   }
   return [...anchors];
+}
+
+interface ParsedFormulaEntry {
+  text?: string;
+  groundingStatus?: string;
+  justification?: string;
+  sourceAnchor?: string;
+}
+
+function unquoteYamlScalar(value: string): string {
+  return value.trim().replace(/^["']|["']$/g, "");
+}
+
+function formulaEntriesFromFrontmatter(rawFm: string): ParsedFormulaEntry[] {
+  const entries: ParsedFormulaEntry[] = [];
+  const lines = rawFm.split(/\r?\n/);
+  let inFormulas = false;
+  let current: ParsedFormulaEntry | null = null;
+  for (const line of lines) {
+    if (!inFormulas) {
+      const start = line.match(/^formulas:\s*(.*)$/);
+      if (!start) continue;
+      inFormulas = true;
+      continue;
+    }
+    if (/^\S[^:]*:\s*/.test(line)) break;
+    const first = line.match(/^\s*-\s*([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (first) {
+      current = {};
+      current[first[1] as keyof ParsedFormulaEntry] = unquoteYamlScalar(first[2] ?? "");
+      entries.push(current);
+      continue;
+    }
+    const nested = line.match(/^\s{4,}([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (nested && current) {
+      current[nested[1] as keyof ParsedFormulaEntry] = unquoteYamlScalar(nested[2] ?? "");
+    }
+  }
+  return entries.filter((entry) => Object.values(entry).some((value) => String(value ?? "").trim()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1308,7 +1351,9 @@ function repairInteractiveVisuals({
       // so an application page never claims a metric formula anchor.
       else if (role === "comparison" || role === "application") pool = pool.filter((visual) => classifyFigure(visual) === "result");
     }
-    return pool;
+    return pool.filter((visual) =>
+      anchorTextCompatibleWithVisualType(type, [visual.sourceVisualId, visual.caption, visual.type].filter(Boolean).join(" ")),
+    );
   };
 
   const anchorObject = (visual: LedgerVisual): Record<string, unknown> => {
@@ -1368,7 +1413,7 @@ function repairInteractiveVisuals({
       const frontmatterIds: string[] = [];
       if (newAnchors.length > 0) {
         spec.sourceAnchors = newAnchors;
-        spec.sourceGroundingStatus = "source-anchored";
+        spec.sourceGroundingStatus = "source-grounded";
         spec.justification = "Anchored to type-compatible source visuals assigned to this lesson's evidence.";
         for (const anchor of newAnchors) {
           const anchorId = String(anchor.equationId ?? anchor.tableId ?? anchor.figureId ?? "");
@@ -1844,13 +1889,33 @@ function writeFinalizeValidationReport({
       "",
       "See check: Learning Unit Contract fulfillment.",
       "",
+      "## Section Semantic Coherence",
+      "",
+      "Section titles must match the roles and concepts of their generated learner pages.",
+      "",
+      "## Section Title Grammar",
+      "",
+      "Section and subsection titles must be learner-facing, grammatical, and free of planning scaffold phrasing.",
+      "",
+      "## Interactive Visual Grounding",
+      "",
+      "Interactive visuals must use semantically compatible source anchors or honest conceptual grounding.",
+      "",
       "## Source Map Consistency",
       "",
       "Source Map caveats must not contradict extracted figures, tables, formulas, or later source pages.",
       "",
+      "## Source Map Caveat Reconciliation",
+      "",
+      "Visible/planning caveats about missing formulas, tables, figures, or later pages must be reconciled against extracted evidence.",
+      "",
       "## Source Coverage Modes",
       "",
       "Source Coverage must classify each important anchor as embedded, explained, reused, omitted, missing, or misplaced.",
+      "",
+      "## Source Anchor Usage vs Crop Status",
+      "",
+      "Concept/formula usage is tracked separately from whether a crop was embedded, omitted, or replaced by text fallback.",
       "",
       "## Interactive Visual Fulfillment",
       "",
@@ -1864,13 +1929,29 @@ function writeFinalizeValidationReport({
       "",
       "Only meaningful formulas are grounded; trivial numbers and standalone percentages are rejected in formulas: metadata.",
       "",
+      "## Formula Expression Validation",
+      "",
+      "The formulas: frontmatter block may contain mathematical expressions only, not teaching goals or keyword bundles.",
+      "",
+      "## Formula Source Matching",
+      "",
+      "Source-anchored and source-derived formulas must match the source formula/metric anchor they claim.",
+      "",
       "## Source Crop Quality",
       "",
       "See check: source crop quality is acceptable.",
       "",
+      "## Crop Quality and Fallbacks",
+      "",
+      "Crop omissions must be reported as text/formula fallbacks rather than accepted crops.",
+      "",
       "## Zettelkasten Tags",
       "",
       "Tags must exactly match the unit contract's zettelNotes handles.",
+      "",
+      "## Zettelkasten Tag Density",
+      "",
+      "Substantial learner pages need 3-6 contract-backed atomic Zettelkasten handles.",
       "",
       "## Section Title Quality",
       "",
@@ -1904,13 +1985,22 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Link Resolution",
   "Semantic Navigation",
   "Learning Unit Contract Fulfillment",
+  "Section Semantic Coherence",
+  "Section Title Grammar",
+  "Interactive Visual Grounding",
   "Source Map Consistency",
+  "Source Map Caveat Reconciliation",
   "Source Coverage Modes",
+  "Source Anchor Usage vs Crop Status",
   "Formula Grounding",
+  "Formula Expression Validation",
+  "Formula Source Matching",
   "Interactive Visual Fulfillment",
   "Final Interactive Visual Uniqueness",
   "Source Crop Quality",
+  "Crop Quality and Fallbacks",
   "Zettelkasten Tags",
+  "Zettelkasten Tag Density",
   "Section Title Quality",
   "Final Acceptance",
 ];
@@ -2030,6 +2120,140 @@ function semanticNavigationProblems(gardenDir: string): string[] {
     if (!target.startsWith("sources/")) problems.push(`sources/_index.md links outside sources/: [[${target}]]`);
   }
   return [...new Set(problems)];
+}
+
+function sectionSemanticInputs(
+  gardenDir: string,
+  learnerPages: LearnerPage[],
+  unitsById: Map<string, LearningUnitContract>,
+): Array<{ rel: string; sectionTitle: string; units: LearningUnitContract[]; subsectionTitles: string[] }> {
+  const bySection = new Map<string, { pages: LearnerPage[]; units: LearningUnitContract[] }>();
+  for (const page of learnerPages) {
+    const parts = page.rel.split("/");
+    if (parts.length < 3) continue;
+    const rel = parts.slice(0, 2).join("/");
+    const entry = bySection.get(rel) ?? { pages: [], units: [] };
+    entry.pages.push(page);
+    const unit = unitsById.get(fmGetScalar(page.rawFm, "learningUnitId"));
+    if (unit) entry.units.push(unit);
+    bySection.set(rel, entry);
+  }
+  const inputs: Array<{ rel: string; sectionTitle: string; units: LearningUnitContract[]; subsectionTitles: string[] }> = [];
+  for (const [rel, entry] of bySection) {
+    const indexPath = path.join(gardenDir, ...rel.split("/"), "_index.md");
+    const title = fs.existsSync(indexPath)
+      ? fmGetScalar(parseFrontmatter(fs.readFileSync(indexPath, "utf-8")).rawFrontmatter, "title")
+      : rel.split("/").pop() ?? rel;
+    inputs.push({
+      rel,
+      sectionTitle: title || rel,
+      units: entry.units,
+      subsectionTitles: entry.pages.map((page) => page.title),
+    });
+  }
+  return inputs;
+}
+
+function idsUsedByLearners(learnerPages: LearnerPage[]): Set<string> {
+  const ids = new Set<string>();
+  for (const page of learnerPages) {
+    for (const id of fmGetArray(page.rawFm, "sourceVisualIds")) ids.add(id);
+    for (const id of fmGetArray(page.rawFm, "sourceAnchors")) ids.add(id);
+    for (const id of formulaAnchorsFromFrontmatter(page.rawFm)) {
+      if (!id.startsWith("trivial:")) ids.add(id);
+    }
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      for (const id of visualSpecAnchorIds(spec)) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function anchorTextForVisualIds(ledger: LedgerVisual[], ids: string[], spec: Record<string, unknown>): string {
+  const ledgerText = ids
+    .map((id) => ledger.find((visual) => visual.sourceVisualId === id))
+    .filter((visual): visual is LedgerVisual => Boolean(visual))
+    .map((visual) => [visual.sourceVisualId, visual.type, visual.caption].filter(Boolean).join(" "));
+  const specAnchorText = Array.isArray(spec.sourceAnchors)
+    ? spec.sourceAnchors.map((anchor) => {
+        if (!anchor || typeof anchor !== "object") return "";
+        const record = anchor as Record<string, unknown>;
+        return [record.figureId, record.tableId, record.equationId, record.description, record.sourceTitle].filter(Boolean).join(" ");
+      })
+    : [];
+  return [...ledgerText, ...specAnchorText].join(" ");
+}
+
+function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): string[] {
+  const problems: string[] = [];
+  const docs = [
+    [".breadboard/planning/Source Map.md", path.join(gardenDir, ".breadboard", "planning", "Source Map.md")],
+    [".breadboard/planning/Source Coverage.md", path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md")],
+    ["learning/Learning Map.md", path.join(gardenDir, "learning", "Learning Map.md")],
+    ["learning/Topic Overview.md", path.join(gardenDir, "learning", "Topic Overview.md")],
+  ] as const;
+  const hasFormulaAnchors = ledger.some((visual) => classifyFigure(visual) === "equation");
+  const hasTables = ledger.some((visual) => String(visual.type ?? "") === "table" || /\.T\d+$/i.test(visual.sourceVisualId));
+  const hasFigures = ledger.some((visual) => classifyFigure(visual) !== "equation" && String(visual.type ?? "") !== "table" && !/\.T\d+$/i.test(visual.sourceVisualId));
+  const hasLaterPages = sourcesHaveLaterPages(gardenDir) || ledger.some((visual) => Number(visual.pageNumber ?? 0) > 2);
+  for (const [label, filePath] of docs) {
+    if (!fs.existsSync(filePath)) continue;
+    const text = fs.readFileSync(filePath, "utf-8");
+    if (hasFormulaAnchors && /explicit mathematical definitions are not present|formal mathematical definitions are not present|formulas? (?:are|is) not present|formula exact text unavailable|caption-only/i.test(text)) {
+      problems.push(`${label}: stale caveat says formulas/definitions are unavailable despite formula anchors`);
+    }
+    if (hasTables && /tables? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
+      problems.push(`${label}: stale caveat says tables are unavailable despite table anchors`);
+    }
+    if (hasFigures && /figures? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
+      problems.push(`${label}: stale caveat says figures are unavailable despite figure anchors`);
+    }
+    if (hasLaterPages && /truncated after page\s*2|later (?:pages?|sections?) (?:are|is)?\s*(?:not available|unavailable)|must not be inferred beyond/i.test(text)) {
+      problems.push(`${label}: stale caveat says later pages are unavailable despite later anchors/pages`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function sourceAnchorUsageVsCropStatusProblems(ledger: LedgerVisual[], learnerPages: LearnerPage[]): string[] {
+  const usedIds = idsUsedByLearners(learnerPages);
+  const problems: string[] = [];
+  const hasSplitFallback = (conceptUsage: string, cropStatus: string): boolean =>
+    Boolean(cropStatus) &&
+    /^(?:explained_as_text_formula|explained_without_embedding|used_as_interactive_grounding|referenced_again)$/i.test(conceptUsage);
+  for (const visual of ledger) {
+    const id = visual.sourceVisualId;
+    const usageStatus = String(visual.usageStatus ?? "");
+    const conceptUsage = String(visual.conceptUsage ?? "");
+    const cropStatus = String(visual.cropStatus ?? "");
+    if (usedIds.has(id) && /^(?:intentionally_skipped|skipped|unused)$/i.test(usageStatus) && !hasSplitFallback(conceptUsage, cropStatus)) {
+      problems.push(`${id}: usageStatus=${usageStatus} but the anchor is used by learner pages; split conceptUsage from cropStatus`);
+    }
+    if ((conceptUsage || cropStatus) && (!conceptUsage || !cropStatus)) {
+      problems.push(`${id}: source usage ledger must include both conceptUsage and cropStatus when either is present`);
+    }
+    if (cropStatus === "omitted_unreliable" && /^(?:intentionally_omitted|missing)$/i.test(conceptUsage)) {
+      problems.push(`${id}: unreliable crop omission is recorded as concept omission`);
+    }
+  }
+  return problems;
+}
+
+function cropFallbackProblems(ledger: LedgerVisual[], learnerPages: LearnerPage[]): string[] {
+  const usedIds = idsUsedByLearners(learnerPages);
+  const problems: string[] = [];
+  for (const visual of ledger) {
+    const id = visual.sourceVisualId;
+    const cropStatus = String(visual.cropStatus ?? "");
+    const conceptUsage = String(visual.conceptUsage ?? "");
+    if (cropStatus === "omitted_unreliable" && !/explained_|used_as_interactive_grounding|referenced_again/.test(conceptUsage)) {
+      problems.push(`${id}: crop omitted as unreliable without text/formula/interactive fallback`);
+    }
+    if (!String(visual.croppedImagePath ?? "") && usedIds.has(id) && classifyFigure(visual) !== "equation" && cropStatus !== "omitted_unreliable") {
+      problems.push(`${id}: non-formula anchor is used without a crop or explicit omitted_unreliable fallback`);
+    }
+  }
+  return problems;
 }
 
 function collectFinalizeChecks({
@@ -2160,13 +2384,61 @@ function collectFinalizeChecks({
   }
   push("Learning Unit Contract fulfillment", [...new Set(fulfillmentProblems)]);
 
+  // Section semantic coherence and grammar.
+  const sectionInputs = sectionSemanticInputs(gardenDir, learnerPages, unitsById);
+  const profiles = sectionSemanticProfiles(sectionInputs.map((section) => ({
+    sectionTitle: section.sectionTitle,
+    units: section.units,
+    subsectionTitles: section.subsectionTitles,
+  })));
+  const sectionProblems: string[] = [];
+  for (const [index, profile] of profiles.entries()) {
+    for (const problem of profile.problems) sectionProblems.push(`${sectionInputs[index]?.rel ?? profile.sectionTitle}: ${problem}`);
+  }
+  push("Section semantic coherence", sectionProblems);
+
+  const titleGrammarProblems: string[] = [];
+  for (const section of sectionInputs) {
+    for (const problem of sectionTitleGrammarProblems(section.sectionTitle, section.subsectionTitles)) {
+      titleGrammarProblems.push(`${section.rel}: ${problem}`);
+    }
+  }
+  for (const page of learnerPages) {
+    for (const problem of sectionTitleGrammarProblems(page.title)) {
+      titleGrammarProblems.push(`${page.rel}: ${problem}`);
+    }
+  }
+  push("Section title grammar", titleGrammarProblems);
+
+  // Interactive visual grounding.
+  const visualGroundingProblems: string[] = [];
+  for (const page of learnerPages) {
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      const ids = visualSpecAnchorIds(spec);
+      const problems = interactiveVisualGroundingProblems({
+        visualType: String(spec.type ?? ""),
+        sourceAnchors: ids,
+        sourceAnchorText: anchorTextForVisualIds(ledger, ids, spec),
+        status: String(spec.sourceGroundingStatus ?? ""),
+        justification: String(spec.justification ?? ""),
+        conceptText: [page.title, spec.title, spec.caption, spec.pedagogicalPurpose, spec.learningGoal].filter(Boolean).join(" "),
+      });
+      for (const problem of problems) visualGroundingProblems.push(`${page.rel}: ${problem}`);
+    }
+  }
+  push("Interactive visual grounding", visualGroundingProblems);
+
   // Formula grounding.
   const formulaGroundingProblems: string[] = [];
+  const formulaExpressionProblems: string[] = [];
+  const formulaSourceProblems: string[] = [];
+  const sourceFormulaCaptions = ledger
+    .filter((visual) => classifyFigure(visual) === "equation")
+    .map((visual) => ({ id: visual.sourceVisualId, caption: String(visual.caption ?? "") }));
   for (const page of learnerPages) {
     const declared = fmGetArray(page.rawFm, "sourceFormulaAnchors");
-    if (declared.length === 0) continue;
     const grounded = formulaEntrySourceAnchors(page.rawFm);
-    if (grounded.length === 0) {
+    if (declared.length > 0 && grounded.length === 0) {
       formulaGroundingProblems.push(`${page.rel}: has sourceFormulaAnchors but no source-anchored formulas: entry`);
     }
     for (const anchor of declared) {
@@ -2174,8 +2446,37 @@ function collectFinalizeChecks({
         formulaGroundingProblems.push(`${page.rel}: sourceFormulaAnchors includes ${anchor}, but no formulas: entry is grounded to it`);
       }
     }
+    for (const [index, entry] of formulaEntriesFromFrontmatter(page.rawFm).entries()) {
+      const label = `${page.rel}: formulas[${index}]`;
+      const text = String(entry.text ?? "");
+      const status = String(entry.groundingStatus ?? "");
+      if (!text.trim()) {
+        formulaExpressionProblems.push(`${label} missing text`);
+        continue;
+      }
+      if (!isFormulaExpression(text)) {
+        formulaExpressionProblems.push(`${label} is prose/keyword bundle, not a mathematical expression: "${text}"`);
+      }
+      if (!/^(source-anchored|source-derived|conceptual-helper|unmatched)$/.test(status)) {
+        formulaExpressionProblems.push(`${label} has invalid groundingStatus "${status || "(missing)"}"`);
+      }
+      if ((status === "source-anchored" || status === "source-derived") && !String(entry.sourceAnchor ?? "").trim()) {
+        formulaSourceProblems.push(`${label} is ${status} but lacks sourceAnchor`);
+      }
+      const match: ReturnType<typeof groundLearnerFormula> = isFormulaExpression(text)
+        ? groundLearnerFormula(text, sourceFormulaCaptions)
+        : { groundingStatus: "conceptual-helper" };
+      if ((status === "conceptual-helper" || status === "unmatched") && match.groundingStatus === "source-anchored") {
+        formulaSourceProblems.push(`${label} matches source formula ${match.sourceAnchor} but is marked ${status}`);
+      }
+      if ((status === "source-anchored" || status === "source-derived") && entry.sourceAnchor && match.groundingStatus === "source-anchored" && match.sourceAnchor !== entry.sourceAnchor) {
+        formulaSourceProblems.push(`${label} is grounded to ${entry.sourceAnchor}, but content matches ${match.sourceAnchor}`);
+      }
+    }
   }
   push("Formula grounding", formulaGroundingProblems);
+  push("Formula expression validation", formulaExpressionProblems);
+  push("Formula source matching", formulaSourceProblems);
 
   // Source Coverage from contract.
   const coverageProblems: string[] = [];
@@ -2205,6 +2506,7 @@ function collectFinalizeChecks({
     }
   }
   push("Source Coverage follows the Learning Unit Contract", [...new Set(coverageProblems)]);
+  push("Source anchor usage vs crop status", sourceAnchorUsageVsCropStatusProblems(ledger, learnerPages));
 
   // Source Map consistency.
   const sourceMapProblems: string[] = [];
@@ -2233,6 +2535,7 @@ function collectFinalizeChecks({
     }
   }
   push("Source Map is consistent with extracted anchors", sourceMapProblems);
+  push("Source Map caveat reconciliation", sourceMapCaveatProblems(gardenDir, ledger));
 
   // Final interactive visual uniqueness after rendered blocks are on disk.
   const visualUniquenessProblems: string[] = [];
@@ -2269,6 +2572,21 @@ function collectFinalizeChecks({
   // Source crop quality.
   const cropProblems = ledger.flatMap((visual) => cropQualityProblems(gardenDir, visual));
   push("source crop quality is acceptable", cropProblems);
+  push("Crop quality and fallbacks", cropFallbackProblems(ledger, learnerPages));
+
+  // Zettelkasten density.
+  const densityProblems: string[] = [];
+  for (const page of learnerPages) {
+    const words = teachingProseLite(page.body).split(/\s+/).filter((word) => /[a-z0-9]/i.test(word)).length;
+    if (words < 700) continue;
+    const tags = fmGetArray(page.rawFm, "tags");
+    if (tags.length < 3) densityProblems.push(`${page.rel}: substantial page has ${tags.length} tag(s), expected 3-6 contract-backed handles`);
+    if (tags.length > 6) densityProblems.push(`${page.rel}: substantial page has ${tags.length} tags, expected no more than 6`);
+    const unit = unitsById.get(fmGetScalar(page.rawFm, "learningUnitId"));
+    const contractHandles = unit ? zettelHandlesForUnit(unit) : [];
+    if (unit && contractHandles.length < 3) densityProblems.push(`${page.rel}: learning unit ${unit.id} has only ${contractHandles.length} contract zettel handle(s)`);
+  }
+  push("Zettelkasten tag density", densityProblems);
 
   if (includeReportSelfCheck) {
     const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
