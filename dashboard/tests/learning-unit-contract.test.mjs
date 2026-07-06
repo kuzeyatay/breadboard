@@ -383,6 +383,61 @@ describe("Learning Unit Contract - section semantics and grounding", () => {
     assert.equal(profile.problems.length, 0, profile.problems.join("\n"));
   });
 
+  test("generated mixed training/metric and comparison/metric section titles name both roles", () => {
+    const trainingMetricUnits = normalizeLearningUnits([
+      { id: "T1", role: "training_method", title: "Surrogate-gradient training", learningQuestion: "How are spikes trained?" },
+      { id: "M1", role: "metric", title: "Accuracy and latency", learningQuestion: "How are SNNs evaluated?" },
+    ]);
+    const trainingMetricMap = learningMapFromUnits(trainingMetricUnits, {
+      gardenId: "g",
+      title: "Spiking Neural Networks",
+      summary: "s",
+      sourceOnly: true,
+      createdAt: "2026-07-04T00:00:00Z",
+    });
+    assert.match(trainingMetricMap.sections[0].title, /learn.*evaluat/i);
+    assert.equal(
+      sectionSemanticProfile({ sectionTitle: trainingMetricMap.sections[0].title, units: trainingMetricUnits }).problems.length,
+      0,
+    );
+
+    const comparisonMetricUnits = normalizeLearningUnits([
+      { id: "M1", role: "metric", title: "Accuracy and latency", learningQuestion: "How are SNNs evaluated?" },
+      { id: "C1", role: "comparison", title: "ANN versus SNN results", learningQuestion: "How do the model families compare?" },
+    ]);
+    const comparisonMetricMap = learningMapFromUnits(comparisonMetricUnits, {
+      gardenId: "g",
+      title: "Spiking Neural Networks",
+      summary: "s",
+      sourceOnly: true,
+      createdAt: "2026-07-04T00:00:00Z",
+    });
+    assert.match(comparisonMetricMap.sections[0].title, /metrics?.*results?.*compar/i);
+    assert.equal(
+      sectionSemanticProfile({ sectionTitle: comparisonMetricMap.sections[0].title, units: comparisonMetricUnits }).problems.length,
+      0,
+    );
+  });
+
+  test("generated result-interpretation-only sections use metric vocabulary", () => {
+    const units = normalizeLearningUnits([
+      { id: "R1", role: "result_interpretation", title: "Latency comparisons across models", learningQuestion: "What does the latency result mean?" },
+      { id: "R2", role: "result_interpretation", title: "Energy and spike count comparisons", learningQuestion: "What does the energy result mean?" },
+    ]);
+    const map = learningMapFromUnits(units, {
+      gardenId: "g",
+      title: "Spiking Neural Networks",
+      summary: "s",
+      sourceOnly: true,
+      createdAt: "2026-07-04T00:00:00Z",
+    });
+    assert.match(map.sections[0].title, /metrics?.*measurable/i);
+    assert.equal(
+      sectionSemanticProfile({ sectionTitle: map.sections[0].title, units }).problems.length,
+      0,
+    );
+  });
+
   test("allows an introductory why-title to introduce core SNN mechanisms", () => {
     const units = normalizeLearningUnits([
       { id: "M1", role: "mechanism", title: "Spikes, Timing, and Event-Driven Computation", learningQuestion: "How do spike events carry information?", newConcepts: ["spike events"] },

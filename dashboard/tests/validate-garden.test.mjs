@@ -119,6 +119,33 @@ function buildGoodGarden(root) {
       "4. [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]\n",
   );
   fs.writeFileSync(
+    path.join(gardenDir, "learning", "_index.md"),
+    fm({ title: "Learning", knowledge_type: "learning-index", breadboardType: "learning_index" }) +
+      "# Learning\n\n## Sections\n\n" +
+      "- [[learning/2. Spiking Neurons/_index|2. Spiking Neurons]]\n" +
+      "  - [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]\n" +
+      "  - [[learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains|2.2 Encoding Information as Spike Trains]]\n" +
+      "- [[learning/3. How SNNs Learn/_index|3. How SNNs Learn]]\n" +
+      "  - [[learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity|3.4 Spike-Timing Dependent Plasticity]]\n" +
+      "- [[learning/4. Evaluating SNNs/_index|4. Evaluating SNNs]]\n" +
+      "  - [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "learning", "2. Spiking Neurons", "_index.md"),
+    fm({ title: "2. Spiking Neurons", knowledge_type: "learning-section", breadboardType: "learning_section" }) +
+      "# 2. Spiking Neurons\n\n- [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]\n- [[learning/2. Spiking Neurons/2.2 Encoding Information as Spike Trains|2.2 Encoding Information as Spike Trains]]\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "learning", "3. How SNNs Learn", "_index.md"),
+    fm({ title: "3. How SNNs Learn", knowledge_type: "learning-section", breadboardType: "learning_section" }) +
+      "# 3. How SNNs Learn\n\n- [[learning/3. How SNNs Learn/3.4 Spike-Timing Dependent Plasticity|3.4 Spike-Timing Dependent Plasticity]]\n",
+  );
+  fs.writeFileSync(
+    path.join(gardenDir, "learning", "4. Evaluating SNNs", "_index.md"),
+    fm({ title: "4. Evaluating SNNs", knowledge_type: "learning-section", breadboardType: "learning_section" }) +
+      "# 4. Evaluating SNNs\n\n- [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]\n",
+  );
+  fs.writeFileSync(
     path.join(gardenDir, "learning", "Topic Overview.md"),
     fm({ title: "Topic Overview", knowledge_type: "topic-overview", breadboardType: "topic_overview" }) +
       "# Topic Overview\n\n## Reading Order\n\n" +
@@ -300,29 +327,35 @@ function buildGoodGarden(root) {
       "",
       "- S1.P4.F1: assigned to U3 ([[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]); fulfilled; placement=inside_concept_explanation; Use the cropped source figure to identify the membrane, threshold, spike, and reset pieces.",
       "",
-      "## Source Coverage Modes",
-      "",
-      "### Fully Embedded and Explained",
+      "## Embedded Source Crops",
       "",
       "- S1.P4.F1: [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]; placement=inside_concept_explanation; Use the cropped source figure to identify the membrane, threshold, spike, and reset pieces.",
       "",
-      "### Explained Without Embedding",
+      "## Explained as Text Formulas",
       "",
       "- None.",
       "",
-      "### Used as Interactive Grounding",
+      "## Explained in Prose",
+      "",
+      "- None.",
+      "",
+      "## Used as Interactive Grounding",
       "",
       "- S1.P4.F1: [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]; interactive visualIds=v_lif",
       "",
-      "### Referenced Again in Synthesis",
+      "## Referenced Again in Synthesis",
       "",
       "- None.",
       "",
-      "### Intentionally Omitted",
+      "## Crop Omitted With Text Fallback",
       "",
       "- None.",
       "",
-      "### Missing or Misplaced",
+      "## Intentionally Omitted",
+      "",
+      "- None.",
+      "",
+      "## Missing or Misplaced",
       "",
       "- None.",
       "",
@@ -602,12 +635,51 @@ describe("garden validator regression fixture", () => {
         pageNumber: 6,
         type: "equation",
         caption: "Total spike count summed over neurons and time steps",
-        usageStatus: "intentionally_skipped",
+        usageStatus: "assigned",
         conceptUsage: "explained_as_text_formula",
         cropStatus: "omitted_unreliable",
         skipReason: "Central source formula is taught from source markdown and linked through sourceFormulaAnchors.",
       });
       fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "planning", "Source Coverage.md"),
+        [
+          "# Source Coverage",
+          "",
+          "## Embedded Source Crops",
+          "",
+          "- S1.P4.F1: [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]",
+          "",
+          "## Explained as Text Formulas",
+          "",
+          "- S1.P6.E3: [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]",
+          "",
+          "## Explained in Prose",
+          "",
+          "- None.",
+          "",
+          "## Used as Interactive Grounding",
+          "",
+          "- S1.P4.F1: [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]",
+          "",
+          "## Referenced Again in Synthesis",
+          "",
+          "- None.",
+          "",
+          "## Crop Omitted With Text Fallback",
+          "",
+          "- S1.P6.E3: [[learning/4. Evaluating SNNs/4.1 Accuracy, Latency, and Energy|4.1 Accuracy, Latency, and Energy]]",
+          "",
+          "## Intentionally Omitted",
+          "",
+          "- None.",
+          "",
+          "## Missing or Misplaced",
+          "",
+          "- None.",
+          "",
+        ].join("\n"),
+      );
 
       const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
       fs.writeFileSync(
@@ -620,6 +692,205 @@ describe("garden validator regression fixture", () => {
 
       const result = checkById(runChecksWithReport(dir, "snn-fixture"), 43);
       assert.equal(result.status, "PASS", result.problems.join("\n"));
+      const coverage = checkById(runChecksWithReport(dir, "snn-fixture"), 49);
+      assert.equal(coverage.status, "PASS", coverage.problems.join("\n"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("duplicate section titles, wrong numbered links, and map self-edges fail semantic navigation checks", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-section-semantics-"));
+    try {
+      const dir = buildGoodGarden(root);
+      fs.writeFileSync(
+        path.join(dir, "learning", "3. How SNNs Learn", "_index.md"),
+        fm({ title: "3. Evaluating SNNs", knowledge_type: "learning-section", breadboardType: "learning_section" }) + "# 3. Evaluating SNNs\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "_index.md"),
+        fs.readFileSync(path.join(dir, "learning", "_index.md"), "utf-8").replace(
+          "[[learning/2. Spiking Neurons/_index|2. Spiking Neurons]]",
+          "[[learning/3. How SNNs Learn/_index|2. Spiking Neurons]]",
+        ),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "Learning Map.md"),
+        fm({ title: "Learning Map", knowledge_type: "learning-map", breadboardType: "learning_map" }) +
+          "# Learning Map\n\n- Spiking Neurons -> 2. Spiking Neurons\n",
+      );
+      const results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 46).status, "FAIL");
+      assert.equal(checkById(results, 47).status, "FAIL");
+      assert.equal(checkById(results, 48).status, "FAIL");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("stale formula caveats and formula meaning mismatches fail", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-semantics-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const ledgerPath = path.join(dir, ".breadboard", "source-visuals.json");
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+      ledger.push(
+        {
+          sourceVisualId: "S1.P6.E1",
+          sourceId: "snn",
+          pageNumber: 6,
+          type: "equation",
+          caption: "Accuracy as correct predictions over total predictions",
+          exactText: "\\text{Accuracy}=N_{correct}/N_{total}",
+          usageStatus: "assigned",
+        },
+        {
+          sourceVisualId: "S1.P10.E6",
+          sourceId: "snn",
+          pageNumber: 10,
+          type: "equation",
+          caption: "Convergence time as the first epoch reaching target accuracy",
+          exactText: "T_{conv}=min{e:A(e)>=A_target}",
+          usageStatus: "assigned",
+        },
+      );
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "planning", "Source Map.md"),
+        "# Source Map\n\nFormula captions but not exact displayed notation are available.\n",
+      );
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(
+        pagePath,
+        fs.readFileSync(pagePath, "utf-8").replace(
+          /^generatedBy:/m,
+          'sourceFormulaAnchors: ["S1.P6.E1", "S1.P10.E6"]\nformulas:\n  - text: "\\\\text{Accuracy} = \\\\frac{N_{\\\\text{correct}}}{N_{\\\\text{total}}}"\n    groundingStatus: "source-anchored"\n    sourceAnchor: "S1.P10.E6"\n    justification: "wrong anchor on purpose"\ngeneratedBy:',
+        ),
+      );
+      const results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 42).status, "FAIL");
+      assert.equal(checkById(results, 41).status, "FAIL");
+      assert.match(checkById(results, 41).problems.join("\n"), /accuracy|convergence|does not match/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("source-derived formulas marked conceptual-helper and contradictory usage ledgers fail", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-status-semantics-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const ledgerPath = path.join(dir, ".breadboard", "source-visuals.json");
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+      ledger.push({
+        sourceVisualId: "S1.P6.E1",
+        sourceId: "snn",
+        pageNumber: 6,
+        type: "equation",
+        caption: "Accuracy as correct predictions over total predictions",
+        usageStatus: "intentionally_skipped",
+        conceptUsage: "explained_as_text_formula",
+        cropStatus: "omitted_unreliable",
+      });
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(
+        pagePath,
+        fs.readFileSync(pagePath, "utf-8").replace(
+          /^generatedBy:/m,
+          'formulas:\n  - text: "\\\\text{Accuracy} = \\\\frac{N_{\\\\text{correct}}}{N_{\\\\text{total}}}"\n    groundingStatus: "conceptual-helper"\n    justification: "incorrectly marked helper"\ngeneratedBy:',
+        ),
+      );
+      const results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 41).status, "FAIL");
+      assert.equal(checkById(results, 43).status, "FAIL");
+      assert.match(checkById(results, 43).problems.join("\n"), /contradicts conceptUsage/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Source Coverage rejects embedded overclaims for omitted formula crops", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-coverage-semantics-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const ledgerPath = path.join(dir, ".breadboard", "source-visuals.json");
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+      ledger.push({
+        sourceVisualId: "S1.P6.E3",
+        sourceId: "snn",
+        pageNumber: 6,
+        type: "equation",
+        caption: "Total spike count summed over neurons and time steps",
+        usageStatus: "assigned",
+        conceptUsage: "explained_as_text_formula",
+        cropStatus: "omitted_unreliable",
+      });
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "planning", "Source Coverage.md"),
+        "# Source Coverage\n\n## Embedded Source Crops\n\n- S1.P6.E3: formula display used\n\n## Figures, Graphs, Tables, And Formula Displays Used\n\n- S1.P6.E3\n",
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 49);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /Embedded Source Crops|legacy heading|Explained as Text Formulas/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("concept visuals need source text anchors when matching source prose exists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-text-anchor-"));
+    try {
+      const dir = buildGoodGarden(root);
+      fs.writeFileSync(
+        path.join(dir, "sources", "snn.md"),
+        fm({
+          title: "Spiking Neural Networks Review",
+          knowledge_type: "source-document",
+          breadboardType: "source_document",
+          internal: "true",
+          source_images: ["/snn-fixture/assets/snn-page-004.png"],
+        }) +
+          "Spike-timing dependent plasticity, or STDP, changes synaptic weight based on pre-before-post and post-before-pre spike timing.\n",
+      );
+      let results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 50).status, "FAIL");
+
+      const pagePath = path.join(dir, "learning", "3. How SNNs Learn", "3.4 Spike-Timing Dependent Plasticity.md");
+      const content = fs.readFileSync(pagePath, "utf-8");
+      const next = content.replace(/```breadboard-visual\n([\s\S]*?)\n```/, (_, json) => {
+        const spec = JSON.parse(json);
+        spec.sourceGroundingStatus = "source-derived-conceptual";
+        spec.sourceAnchors = [
+          {
+            sourceId: "snn",
+            textAnchorId: "text-snn-spike-timing-dependent-plasticity",
+            description: "Source prose explains STDP timing-dependent weight changes.",
+          },
+        ];
+        spec.justification = "The source explains STDP in prose but does not provide a dedicated figure.";
+        return "```breadboard-visual\n" + JSON.stringify(spec, null, 2) + "\n```";
+      });
+      fs.writeFileSync(pagePath, next);
+      results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 50).status, "PASS", checkById(results, 50).problems.join("\n"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("scaffold-like Zettelkasten handles fail handle quality", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-zettel-quality-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const contractPath = path.join(dir, ".breadboard", "learning-unit-contract.json");
+      const contract = JSON.parse(fs.readFileSync(contractPath, "utf-8"));
+      contract.learningUnits.find((unit) => unit.id === "U3").zettelNotes[0].handle = "turns-a-broad-problem";
+      fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 51);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /planner scaffolding|scaffold-like/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

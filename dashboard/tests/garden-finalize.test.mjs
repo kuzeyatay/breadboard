@@ -196,6 +196,332 @@ describe("learner navigation semantic repair", () => {
   });
 });
 
+describe("finalize deterministic visual repairs", () => {
+  test("adds source text anchors to conceptual visuals when source prose contains the concept", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-visual-text-anchor-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard", "visuals"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "1. Why SNNs Need Events"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(
+        path.join(dir, "sources", "source.md"),
+        fm({ title: "Source Paper", breadboardType: "source_document", sourceId: "source" }) +
+          "Rate coding represents stimulus strength through spike count, while temporal coding represents information through first-spike timing and spike trains encode signals over time.\n",
+      );
+      fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      const spec = {
+        id: "vis-coding",
+        type: "neural_coding",
+        title: "Rate coding vs temporal coding",
+        sourceAnchors: [],
+        sourceGroundingStatus: "conceptual-no-direct-source-figure",
+        justification: "No direct figure was assigned.",
+        conceptTargets: ["rate coding", "temporal coding"],
+        pedagogicalPurpose: "Compare spike count and spike timing codes.",
+        props: { strength: 0.6 },
+        controls: [{ name: "strength", label: "Stimulus strength", type: "slider", min: 0, max: 1, step: 0.1, defaultValue: 0.6 }],
+        inputs: ["stimulus strength"],
+        outputs: ["rate and temporal spike trains"],
+        caption: "Compare rate and temporal coding.",
+        regenerationPrompt: "Improve this coding visual.",
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      fs.writeFileSync(path.join(dir, ".breadboard", "visuals", "vis-coding.json"), JSON.stringify(spec, null, 2));
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "1.2 Spikes, Timing, and Event-Driven Computation.md"),
+        fm({
+          title: "1.2 Spikes, Timing, and Event-Driven Computation",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          visualIds: ["vis-coding"],
+          generatedBy: "learn_button",
+        }) + `${FILLER("rate and temporal spike coding", "basic_def")}\n\n${block(spec)}\n`,
+      );
+
+      finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      const out = fs.readFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "1.2 Spikes, Timing, and Event-Driven Computation.md"),
+        "utf-8",
+      );
+      assert.match(out, /sourceGroundingStatus": "source-derived-conceptual"/);
+      assert.match(out, /text-source-rate-and-temporal-spike-coding/);
+      assert.match(out, /sourceAnchors: \["text-source-rate-and-temporal-spike-coding"\]/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("focuses duplicate metric calculators by page metric family before validation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-metric-focus-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard", "visuals"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "2. Metrics"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      const metricSpec = (id) => ({
+        id,
+        type: "metric_calculator",
+        title: "SNN metric calculator",
+        sourceAnchors: [],
+        conceptTargets: ["accuracy", "latency", "spike count", "energy", "normalized efficiency"],
+        pedagogicalPurpose: "Let the learner manipulate metric inputs directly and see how accuracy, latency, spike count, energy, and normalized efficiency change.",
+        props: { correct: 920, total: 1000, decisionTime: 24, spikeCount: 180, energyPerSpike: 0.002 },
+        controls: [
+          { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
+          { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
+          { name: "decisionTime", label: "Decision time", type: "slider", min: 1, max: 100, step: 1, defaultValue: 24 },
+          { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
+          { name: "energyPerSpike", label: "Energy per spike", type: "slider", min: 0.0005, max: 0.01, step: 0.0005, defaultValue: 0.002 },
+        ],
+        inputs: ["correct predictions", "total predictions", "decision time", "spike count", "energy per spike"],
+        outputs: ["accuracy", "latency", "energy estimate", "normalized efficiency"],
+        caption: "Generic all-metric calculator.",
+        regenerationPrompt: "Improve this metric calculator.",
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const a = metricSpec("vis-a");
+      const b = metricSpec("vis-b");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visuals", "vis-a.json"), JSON.stringify(a, null, 2));
+      fs.writeFileSync(path.join(dir, ".breadboard", "visuals", "vis-b.json"), JSON.stringify(b, null, 2));
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. Metrics", "2.2 Accuracy and Latency.md"),
+        fm({ title: "2.2 Accuracy and Latency", knowledge_type: "learning-page", breadboardType: "learning_page", visualIds: ["vis-a"], generatedBy: "learn_button" }) +
+          `${FILLER("accuracy and latency", "metric")}\n\n${block(a)}\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. Metrics", "2.3 Spike Count and Energy.md"),
+        fm({ title: "2.3 Spike Count and Energy", knowledge_type: "learning-page", breadboardType: "learning_page", visualIds: ["vis-b"], generatedBy: "learn_button" }) +
+          `${FILLER("spike count and energy", "metric")}\n\n${block(b)}\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /Final interactive visual uniqueness/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const pageA = fs.readFileSync(path.join(dir, "learning", "2. Metrics", "2.2 Accuracy and Latency.md"), "utf-8");
+      const pageB = fs.readFileSync(path.join(dir, "learning", "2. Metrics", "2.3 Spike Count and Energy.md"), "utf-8");
+      assert.match(pageA, /"outputs": \[\s+"accuracy",\s+"latency"\s+\]/);
+      assert.match(pageB, /"outputs": \[\s+"spike count",\s+"energy"\s+\]/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("regrounds stale formula metadata to the matching source formula", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-reground-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "2. Metrics"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "source-visuals.json"),
+        JSON.stringify([
+          { sourceVisualId: "S1.P6.E3", type: "equation", caption: "Total spike count summed over neurons and time steps" },
+          { sourceVisualId: "S1.P6.E6", type: "equation", caption: "Convergence time as epoch reaching target accuracy" },
+        ], null, 2),
+      );
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. Metrics", "2.3 Spike Count and Energy.md"),
+        [
+          "---",
+          'title: "2.3 Spike Count and Energy"',
+          'knowledge_type: "learning-page"',
+          'breadboardType: "learning_page"',
+          'sourceFormulaAnchors: ["S1.P6.E6"]',
+          "formulas:",
+          '  - text: "N_{\\\\mathrm{spk}} = \\\\sum_{i,t} s_{i,t}"',
+          '    groundingStatus: "source-anchored"',
+          '    justification: "stale wrong anchor"',
+          '    sourceAnchor: "S1.P6.E6"',
+          'generatedBy: "learn_button"',
+          "---",
+          "",
+          FILLER("spike count and energy", "metric"),
+          "",
+          "The symbol $x$ is only a local variable and should not become formula metadata.",
+          "",
+          "$$N_{\\mathrm{spk}} = \\sum_{i,t} s_{i,t}$$",
+          "",
+        ].join("\n"),
+      );
+
+      finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      const out = fs.readFileSync(path.join(dir, "learning", "2. Metrics", "2.3 Spike Count and Energy.md"), "utf-8");
+      assert.match(out, /sourceFormulaAnchors: \["S1\.P6\.E3"\]/);
+      assert.match(out, /sourceAnchor: "S1\.P6\.E3"/);
+      assert.doesNotMatch(out, /sourceFormulaAnchors: \["S1\.P6\.E6"\]/);
+      assert.doesNotMatch(out, /text: "x"/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retitles mixed-role sections before semantic validation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-section-retitle-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard");
+      fs.mkdirSync(bb, { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          learningUnits: [
+            { id: "T", role: "training_method", title: "Surrogate training", learningQuestion: "How are spikes trained?", zettelNotes: [{ handle: "surrogate-training-defines-a-learning-method", claim: "Surrogate training defines a learning method." }] },
+            { id: "M", role: "metric", title: "Accuracy metric", learningQuestion: "How is accuracy measured?", zettelNotes: [{ handle: "accuracy-metric-measures-model-performance", claim: "Accuracy metric measures model performance." }] },
+          ],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "_index.md"),
+        fm({ title: "2. The Metrics That Make SNNs Measurable", breadboardType: "textbook_section" }) +
+          "# 2. The Metrics That Make SNNs Measurable\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "2.1 Surrogate Training.md"),
+        fm({ title: "2.1 Surrogate Training", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "T", generatedBy: "learn_button", tags: ["surrogate-training-defines-a-learning-method"] }) +
+          `${FILLER("surrogate training", "training")}\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "2.2 Accuracy Metric.md"),
+        fm({ title: "2.2 Accuracy Metric", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "M", generatedBy: "learn_button", tags: ["accuracy-metric-measures-model-performance"] }) +
+          `${FILLER("accuracy metric", "metric")}\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "_index.md"), "utf-8");
+      assert.match(sectionIndex, /title: "2\. How SNNs Learn and Are Evaluated"/);
+      assert.match(sectionIndex, /^# 2\. How SNNs Learn and Are Evaluated$/m);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retitles formula-only metric sections as formal descriptions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formal-retitle-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard");
+      fs.mkdirSync(bb, { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          learningUnits: [
+            { id: "F", role: "formula", title: "Decision latency equation", learningQuestion: "How is latency defined?", zettelNotes: [{ handle: "decision-latency-records-the-source-relationship-mathematically", claim: "Decision latency records the timing relationship mathematically." }] },
+          ],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "_index.md"),
+        fm({ title: "2. The Metrics That Make SNNs Measurable", breadboardType: "textbook_section" }) +
+          "# 2. The Metrics That Make SNNs Measurable\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "2.2 Decision Latency.md"),
+        fm({ title: "2.2 Decision Latency", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "F", generatedBy: "learn_button", tags: ["decision-latency-records-the-source-relationship-mathematically"] }) +
+          `${FILLER("decision latency", "metric")}\n\n$$L = t_{\\text{decision}} - t_{\\text{stimulus}}$$\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "_index.md"), "utf-8");
+      assert.match(sectionIndex, /title: "2\. How the Formula Works"/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retitles metric-only sections that were named like result comparisons", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-metric-retitle-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard");
+      fs.mkdirSync(bb, { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "5. What the Results Show"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          learningUnits: [
+            { id: "M1", role: "metric", title: "Accuracy and energy tradeoffs", learningQuestion: "How do the metrics relate?", zettelNotes: [{ handle: "accuracy-energy-tradeoff-makes-results-measurable", claim: "Accuracy and energy make the result measurable." }] },
+            { id: "M2", role: "result_interpretation", title: "Latency comparisons across models", learningQuestion: "What does the latency result mean?", zettelNotes: [{ handle: "latency-result-measures-decision-speed", claim: "Latency results measure decision speed." }] },
+          ],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "5. What the Results Show", "_index.md"),
+        fm({ title: "5. What the Results Show", breadboardType: "textbook_section" }) +
+          "# 5. What the Results Show\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "5. What the Results Show", "5.1 Accuracy and Energy Tradeoffs Across Models.md"),
+        fm({ title: "5.1 Accuracy and Energy Tradeoffs Across Models", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "M1", generatedBy: "learn_button", tags: ["accuracy-energy-tradeoff-makes-results-measurable"] }) +
+          `${FILLER("accuracy and energy tradeoffs", "metric")}\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "5. What the Results Show", "5.2 Latency Comparisons Across Models.md"),
+        fm({ title: "5.2 Latency Comparisons Across Models", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "M2", generatedBy: "learn_button", tags: ["latency-result-measures-decision-speed"] }) +
+          `${FILLER("latency comparison", "metric")}\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "5. What the Results Show", "_index.md"), "utf-8");
+      assert.match(sectionIndex, /title: "5\. The Metrics That Make SNNs Measurable"/);
+      assert.match(sectionIndex, /^# 5\. The Metrics That Make SNNs Measurable$/m);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("content-based formula grounding (H)", () => {
   test("accuracy fraction is anchored to the accuracy formula E1", () => {
     const grounded = groundLearnerFormula("\\text{Accuracy}=\\frac{920}{1000}=0.92=92\\%", SOURCE_FORMULAS);

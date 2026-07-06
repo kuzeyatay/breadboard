@@ -273,36 +273,36 @@ export function zettelHandlesForUnit(unit: LearningUnitContract): string[] {
 
 const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
   motivation: [
-    "{concept} explains why the topic matters",
-    "{concept} turns a broad problem into a learning need",
+    "{concept} identifies the source problem behind the lesson",
+    "{concept} makes the motivation concrete in the source",
   ],
   core_concept: [
-    "{concept} defines the lesson's central idea",
-    "{concept} connects vocabulary to mechanism",
+    "{concept} names the durable idea learners reuse",
+    "{concept} links the named idea to source behavior",
   ],
   mechanism: [
-    "{concept} connects mechanism to behavior",
-    "{concept} explains how the system changes state",
+    "{concept} changes behavior through a specific mechanism",
+    "{concept} makes the state change observable",
   ],
   formula: [
-    "{concept} turns the idea into a mathematical relationship",
-    "{concept} defines the variables learners must track",
+    "{concept} records the source relationship mathematically",
+    "{concept} fixes which variables carry the claim",
   ],
   worked_example: [
-    "{concept} shows the method in a concrete case",
-    "{concept} links procedure to interpretation",
+    "{concept} tests the method on a concrete case",
+    "{concept} ties the procedure to the observed result",
   ],
   training_method: [
     "{concept} defines a training tradeoff",
-    "{concept} links learning rule to model behavior",
+    "{concept} changes model behavior through its learning rule",
   ],
   metric: [
-    "{concept} turns behavior into a measurable signal",
-    "{concept} separates performance from cost",
+    "{concept} makes the source behavior measurable",
+    "{concept} separates model quality from deployment cost",
   ],
   result_interpretation: [
-    "{concept} explains what the reported result supports",
-    "{concept} keeps evidence tied to metric context",
+    "{concept} states what the reported result supports",
+    "{concept} keeps the result tied to its metric context",
   ],
   comparison: [
     "{concept} supports comparison across alternatives",
@@ -313,12 +313,12 @@ const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
     "{concept} connects capability to use case fit",
   ],
   limitation: [
-    "{concept} marks what the method still cannot prove",
+    "{concept} marks the limit of the source claim",
     "{concept} keeps claims bounded by source limits",
   ],
   synthesis: [
     "{concept} connects earlier ideas into one model",
-    "{concept} turns separate lessons into a usable framework",
+    "{concept} combines separate lessons into one decision",
   ],
 };
 
@@ -349,8 +349,8 @@ function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
   const seen = new Set(zettelHandlesForUnit({ ...unit, zettelNotes: notes }));
   const templates = [
     ...(ROLE_ZETTEL_CLAIMS[unit.role] ?? []),
-    "{concept} anchors the lesson's source evidence",
-    "{concept} connects learner question to source anchors",
+    "{concept} anchors the lesson to source details",
+    "{concept} answers the learner question with source evidence",
   ];
   for (const template of templates) {
     if (seen.size >= 3) break;
@@ -362,6 +362,37 @@ function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
     notes.push(note);
   }
   return notes.slice(0, 6);
+}
+
+const SCAFFOLD_ZETTEL_PATTERNS: RegExp[] = [
+  /\bturns-a-broad-problem\b/i,
+  /\bconnects-vocabulary\b/i,
+  /\bexplains-how\b/i,
+  /\bintroduces-the-topic\b/i,
+  /\bsets-up\b/i,
+  /\bbridges-to\b/i,
+  /\bhelps-understand\b/i,
+  /\bdefines-the-lesson-s-central-idea\b/i,
+  /\banchors-the-lesson-s-source-evidence\b/i,
+  /\bconnects-learner-question-to-source-anchors\b/i,
+  /\bexplains-why-the-topic-matters\b/i,
+  /\bturns-separate-lessons\b/i,
+];
+
+export function scaffoldLikeZettelHandle(handle: string): boolean {
+  const normalized = atomicZettelHandle(handle);
+  return SCAFFOLD_ZETTEL_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+export function zettelHandleQualityProblems(unit: LearningUnitContract): string[] {
+  const problems: string[] = [];
+  for (const note of unit.zettelNotes ?? []) {
+    const handle = atomicZettelHandle(note.handle || note.claim);
+    if (handle && scaffoldLikeZettelHandle(handle)) {
+      problems.push(`unit "${unit.id}": zettel handle "${handle}" sounds like planner scaffolding, not a reusable source-specific claim`);
+    }
+  }
+  return problems;
 }
 
 /** Every atomic handle used across the whole garden, with its per-unit count. */
@@ -430,8 +461,8 @@ const TITLE_ROLE_HINTS: Array<[SectionRoleFamily, RegExp]> = [
   ["motivation", /\bwhy\b|\bexist\b|\bmotivat|\bneed\b|\bpurpose\b/i],
   ["mechanism", /\bmechanism|\bworks?\b|\bspike event|\bneuron|\blif\b|\bmembrane|\bthreshold|\breset|\bcoding|\barchitecture|\bdynamics|\bformal|\bformula/i],
   ["training_method", /\blearn(?:s|ing)?\b|\btrain(?:s|ing|ed)?\b|\bsurrogate\b|\bgradient\b|\bstdp\b|\bplasticity\b|\bconversion\b|\bann[- ]to[- ]snn\b|\bmethod\b|\bstrategy\b/i],
-  ["metric", /\bmetric|\bmeasur|\bevaluat|\baccuracy\b|\blatency\b|\benergy\b|\bspike count\b|\bconvergence\b|\bperformance\b|\bresult|\bscore/i],
-  ["comparison", /\bcompar|\btrade[- ]?off|\bversus\b|\bvs\b|\bmodel families\b|\bresults show\b/i],
+  ["metric", /\bmetric|\bmeasur|\bevaluat|\baccuracy\b|\blatency\b|\benergy\b|\bspike count\b|\bconvergence\b|\bperformance\b|\bscore/i],
+  ["comparison", /\bcompar|\btrade[- ]?off|\bversus\b|\bvs\b|\bmodel families\b|\bresults?\b|\bresults show\b/i],
   ["application", /\bapplication|\bdeploy|\bhardware|\bneuromorphic|\bwhere\b|\bfit\b|\badoption\b|\bblocks?\b|\bchallenge|\blimitation|\bfuture|\bunresolved/i],
   ["synthesis", /\btogether\b|\bunified\b|\bbig picture\b|\bconnect|\boverview\b|\bframework\b/i],
 ];
@@ -589,6 +620,31 @@ export function sectionTitleGrammarProblems(title: string, subsectionTitles: str
 
 function slugLike(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+export function normalizedSectionTitleKey(title: string): string {
+  return slugLike(compact(title).replace(/^\d+(?:\.\d+)*\.?\s*/, ""));
+}
+
+export function sectionTitleUniquenessProblems(sections: Array<{ rel?: string; title: string }>): string[] {
+  const problems: string[] = [];
+  const byTitle = new Map<string, Array<{ rel?: string; title: string; index: number }>>();
+  sections.forEach((section, index) => {
+    const key = normalizedSectionTitleKey(section.title);
+    if (!key) return;
+    const list = byTitle.get(key) ?? [];
+    list.push({ ...section, index });
+    byTitle.set(key, list);
+  });
+  for (const [key, list] of byTitle) {
+    if (list.length <= 1) continue;
+    const locations = list.map((item) => item.rel ?? item.title).join(", ");
+    const adjacent = list.some((item, index) => index > 0 && item.index === list[index - 1].index + 1);
+    problems.push(
+      `SECTION_TITLE_DUPLICATE normalized="${key}" sections=[${locations}]${adjacent ? " adjacent=true" : ""}`,
+    );
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,23 +1462,107 @@ function conceptFromUnits(units: LearningUnitContract[], fallback: string): stri
 function polishSectionTitle(cluster: SectionCluster, units: LearningUnitContract[], gardenTopic: string): string {
   const topic = topicLabel(gardenTopic);
   const roles = new Set(units.map((unit) => unit.role));
+  const hasFormulaRole = roles.has("formula") || roles.has("worked_example");
+  const hasMetricRole = roles.has("metric") || roles.has("result_interpretation");
+  const hasTrainingRole = roles.has("training_method");
+  const hasComparisonRole = roles.has("comparison");
   if (roles.has("motivation") && (roles.has("core_concept") || roles.has("mechanism"))) {
     return /SNNs/i.test(topic) ? "Why SNNs Need Events" : `Why ${topic} Needs a New Mechanism`;
   }
+  if (hasTrainingRole && hasMetricRole) return /SNNs/i.test(topic) ? "How SNNs Learn and Are Evaluated" : `How ${topic} Learns and Is Evaluated`;
+  if (hasTrainingRole && hasFormulaRole) return "Training Methods and Formal Rules";
+  if (hasComparisonRole && hasMetricRole) return "Metrics and Results Compared";
+  if (hasComparisonRole && hasFormulaRole) return "Formulas and Results Compared";
+  if (hasComparisonRole && hasTrainingRole) return "Training Methods and Results Compared";
   if (roles.has("core_concept") || roles.has("mechanism")) {
     return `How ${conceptFromUnits(units, topic)} Works`;
   }
-  if (roles.has("formula") || roles.has("metric") || roles.has("worked_example")) {
+  if (hasFormulaRole && hasMetricRole) {
+    return /SNNs/i.test(topic) ? "The Formulas and Metrics Behind SNNs" : `The Formulas and Metrics Behind ${topic}`;
+  }
+  if (hasFormulaRole) return "How the Formula Works";
+  if (hasMetricRole) {
     return /SNNs/i.test(topic) ? "The Metrics That Make SNNs Measurable" : `The Rules and Metrics Behind ${topic}`;
   }
-  if (roles.has("training_method") && roles.has("metric")) return `Training and Measuring ${topic}`;
-  if (roles.has("training_method")) return `How ${topic} Learns`;
-  if (roles.has("result_interpretation") || roles.has("comparison")) return "What the Results Show";
+  if (hasTrainingRole) return `How ${topic} Learns`;
+  if (hasComparisonRole) return "What the Results Show";
   if (roles.has("application") || roles.has("limitation") || roles.has("synthesis")) {
     return `Where ${topic} Fits and What Still Blocks It`;
   }
   const first = conceptFromUnits(units, cluster.title);
   return first === "This Topic" ? `Understanding ${topic}` : first;
+}
+
+const SECTION_CONCEPT_STOPWORDS = new Set([
+  "what", "why", "how", "where", "the", "and", "or", "as", "with", "for", "from",
+  "result", "results", "show", "reading", "using", "source", "lesson", "overview",
+  "metric", "metrics", "snn", "snns", "neural", "network", "networks",
+]);
+
+function compactConceptTitle(value: string): string {
+  const cleaned = compact(value)
+    .replace(/^\d+(?:\.\d+)*\.?\s*/, "")
+    .replace(/\b(?:reading|understanding|using|interpreting|results?|comparisons?|across models)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const words = cleaned.split(/\s+/).filter((word) => {
+    const key = word.toLowerCase().replace(/[^a-z0-9]/g, "");
+    return key.length > 1 && !SECTION_CONCEPT_STOPWORDS.has(key);
+  });
+  return titleCase(words.slice(0, 5).join(" "));
+}
+
+function disambiguatedSectionTitle(units: LearningUnitContract[], fallback: string): string {
+  const roles = new Set(units.map((unit) => unit.role));
+  const candidates = [
+    ...units.flatMap((unit) => unit.newConcepts),
+    ...units.map((unit) => unit.title),
+  ]
+    .map(compactConceptTitle)
+    .filter(Boolean);
+  const unique = [...new Set(candidates)].slice(0, 3);
+  const stem = unique.length > 0 ? unique.join(", ") : compactConceptTitle(fallback) || "Focused";
+  const hasFormulaRole = roles.has("formula") || roles.has("worked_example");
+  const hasMetricRole = roles.has("metric") || roles.has("result_interpretation");
+  const hasComparisonRole = roles.has("comparison");
+  if (roles.has("training_method") && hasFormulaRole) return `${stem} Training and Formal Rules`;
+  if (roles.has("training_method") && hasMetricRole) return `${stem} Training and Evaluation`;
+  if (hasComparisonRole && hasFormulaRole) return `${stem} Formulas and Results`;
+  if (hasComparisonRole && hasMetricRole) return `${stem} Metrics and Results`;
+  if (hasComparisonRole) return `${stem} Results`;
+  if (hasFormulaRole) return `${stem} Formula Mechanics`;
+  if (hasMetricRole) return `${stem} Metrics`;
+  if (roles.has("training_method")) return `${stem} Training Methods`;
+  if (roles.has("application") || roles.has("limitation")) return `${stem} Applications and Limits`;
+  return stem;
+}
+
+function disambiguateDuplicateSectionTitles(
+  sections: LearningSectionPlan[],
+  clusters: SectionCluster[],
+  byId: Map<string, LearningUnitContract>,
+): LearningSectionPlan[] {
+  const groups = new Map<string, number[]>();
+  sections.forEach((section, index) => {
+    const key = normalizedSectionTitleKey(section.title);
+    const list = groups.get(key) ?? [];
+    list.push(index);
+    groups.set(key, list);
+  });
+  const next = [...sections];
+  for (const indexes of groups.values()) {
+    if (indexes.length <= 1) continue;
+    for (const index of indexes) {
+      const clusterUnits = clusters[index].unitIds.map((id) => byId.get(id)).filter(Boolean) as LearningUnitContract[];
+      const title = disambiguatedSectionTitle(clusterUnits, next[index].title);
+      next[index] = {
+        ...next[index],
+        title,
+        purpose: `Build up ${title.toLowerCase()} one step at a time.`,
+      };
+    }
+  }
+  return next;
 }
 
 /**
@@ -1436,7 +1576,7 @@ export function learningMapFromUnits(
 ): ProposedLearningMap {
   const byId = new Map(units.map((unit) => [unit.id, unit]));
   const clusters = clusterUnitsIntoSections(units);
-  const sections: LearningSectionPlan[] = clusters.map((cluster) => {
+  const rawSections: LearningSectionPlan[] = clusters.map((cluster) => {
     const clusterUnits = cluster.unitIds.map((id) => byId.get(id)).filter(Boolean) as LearningUnitContract[];
     const sectionAnchors = [...new Set(clusterUnits.flatMap((unit) => unit.sourceAnchors))].slice(0, 8);
     const sectionTitle = polishSectionTitle(cluster, clusterUnits, meta.title);
@@ -1449,6 +1589,7 @@ export function learningMapFromUnits(
       subsections: clusterUnits.map(subsectionFromUnit),
     };
   });
+  const sections = disambiguateDuplicateSectionTitles(rawSections, clusters, byId);
   return {
     gardenId: meta.gardenId,
     title: meta.title,
@@ -1595,6 +1736,7 @@ export function validateLearningUnitContracts(
   // Zettelkasten quality (Fix 6 / Fix 7).
   const handleFreq = zettelHandleFrequency(units);
   for (const unit of units) {
+    problems.push(...zettelHandleQualityProblems(unit));
     for (const note of unit.zettelNotes) {
       if (note.handle.includes("/")) problems.push(`unit "${unit.id}": zettel handle "${note.handle}" uses a slash namespace`);
       if (!isAtomicZettelHandle(note.handle)) {

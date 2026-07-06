@@ -119,9 +119,13 @@ type FrontmatterValue = FrontmatterScalar | string[] | FrontmatterObject[] | und
 
 export interface FormulaGroundingEntry {
   text: string;
+  normalizedText?: string;
   groundingStatus: "source-anchored" | "source-derived" | "conceptual-helper" | "unmatched";
   justification: string;
   sourceAnchor?: string;
+  sourceAnchorTitle?: string;
+  matchReason?: string;
+  confidence?: number;
 }
 
 /** Formula grounding metadata is for meaningful equations/metric definitions,
@@ -166,6 +170,55 @@ export function isFormulaExpression(expr: string): boolean {
 
 export function isGroundableFormula(expr: string): boolean {
   return isFormulaExpression(expr);
+}
+
+export type FormulaMetricFamily =
+  | "accuracy"
+  | "latency"
+  | "spike-count"
+  | "energy"
+  | "efficiency"
+  | "convergence";
+
+const FORMULA_FAMILY_PATTERNS: Array<[FormulaMetricFamily, RegExp]> = [
+  ["convergence", /\bconverg|\bepochs?\b|\btarget accuracy\b|\btarget\b|t_\{?\\?text\{?conv|t_\{?conv|a\(e\)|\ba_\{?e\}?|\ba_\{?target\}?|arg\s*min|\\arg\s*min|\\min\s*\\?\{/i],
+  ["efficiency", /\befficien|\baccuracy per energy\b|normalized energy|\\eta|eta/i],
+  ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|cost/i],
+  ["spike-count", /\bspike[- ]?count\b|\btotal spikes?\b|\bnumber of spikes?\b|\bspikes?\b|n_\{?\\?text\{?(?:spike|spk)|n_\{?(?:spikes?|spk)\}?|n[_\s]*(?:spikes?|spk)|\\sum(?:_\{?[^}\s]*\}?|\s)*(?:s[_\{]|\bspikes?\b)|s_\{?[a-z](?:,[a-z])?\}?|s_n\(t\)|time ?steps?/i],
+  ["latency", /\blatency\b|\bdelay\b|\bdecision time\b|\bresponse time\b|t_\{?\\?text\{?(?:latency|decision|stimulus)|t_\{?(?:decision|stimulus)/i],
+  ["accuracy", /\baccuracy\b|\bclassification\b|\bcorrect predictions?\b|\bn_\{?\\?text\{?correct|n_\{?correct|n_\{?\\?text\{?total|n_\{?total|correct\s*\/\s*total/i],
+];
+
+export function formulaMetricFamily(text: string): FormulaMetricFamily | null {
+  const normalized = text
+    .replace(/\\\\+/g, "\\")
+    .replace(/\\mathrm\{([^}]*)\}/g, "$1")
+    .replace(/\\operatorname\{([^}]*)\}/g, "$1")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  for (const [family, pattern] of FORMULA_FAMILY_PATTERNS) {
+    if (pattern.test(normalized)) return family;
+  }
+  if (/%|\\%/.test(text) && /\\frac|\//.test(text)) return "accuracy";
+  return null;
+}
+
+export function formulaMeaningMatch(
+  formulaText: string,
+  sourceText: string,
+): { ok: boolean; formulaFamily: FormulaMetricFamily | null; sourceFamily: FormulaMetricFamily | null; reason: string } {
+  const formulaFamily = formulaMetricFamily(formulaText);
+  const sourceFamily = formulaMetricFamily(sourceText);
+  if (!sourceFamily) {
+    return { ok: true, formulaFamily, sourceFamily, reason: "source anchor has no recognized metric family" };
+  }
+  if (!formulaFamily) {
+    return { ok: false, formulaFamily, sourceFamily, reason: `formula has no recognized metric family but source is ${sourceFamily}` };
+  }
+  if (formulaFamily !== sourceFamily) {
+    return { ok: false, formulaFamily, sourceFamily, reason: `formula family ${formulaFamily} does not match source family ${sourceFamily}` };
+  }
+  return { ok: true, formulaFamily, sourceFamily, reason: `formula and source both match ${sourceFamily}` };
 }
 
 const RAW_VISUAL_PLACEHOLDER_RE =

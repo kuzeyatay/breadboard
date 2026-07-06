@@ -6,6 +6,7 @@ import {
   buildLearningPageFrontmatter,
   containsRawVisualPlaceholder,
   fallbackLearningMapFromSources,
+  formulaMetricFamily,
   normalizeLearningMapCandidate,
   normalizeZettelTags,
   sanitizeLearnerTitle,
@@ -191,6 +192,15 @@ describe("learn utilities", () => {
     assert.equal(textbookSectionFolder(1, "Simple Harmonic Motion"), "1. Simple Harmonic Motion");
     assert.equal(textbookPageFileName(1, 1, "Restoring Force"), "1.1 Restoring Force.md");
     assert.equal(textbookSectionFolder(2, "Generated Subtopics"), "2. Generated Subtopics");
+  });
+
+  test("recognizes compact spike-count and convergence formula notation", () => {
+    assert.equal(formulaMetricFamily("N_{\\mathrm{spk}} = \\sum_{i,t} s_{i,t}"), "spike-count");
+    assert.equal(formulaMetricFamily("e^* = \\operatorname{argmin}_e \\{ A_e \\ge A_{target} \\}"), "convergence");
+    assert.equal(formulaMetricFamily("\\eta_E = \\frac{A}{E}"), "efficiency");
+    assert.equal(formulaMetricFamily("E_{\\text{total}} = E_{\\text{spike}}S_{\\text{total}} + E_{\\text{syn}}O_{\\text{syn}}"), "energy");
+    assert.equal(formulaMetricFamily("E_{\\\\text{total}} = E_{\\\\text{spike}}S_{\\\\text{total}} + E_{\\\\text{syn}}O_{\\\\text{syn}}"), "energy");
+    assert.equal(formulaMetricFamily("L = t_{\\text{decision}} - t_{\\text{stimulus}}"), "latency");
   });
 });
 
