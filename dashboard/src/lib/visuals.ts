@@ -176,6 +176,8 @@ const IMPLEMENTED_PROPS_GUIDE = `Prop contracts for the interactive types (these
 - neural_coding (rate coding vs temporal coding for one stimulus): { "strength": 0.6, "mode": "both" } — controls: strength (slider 0..1), mode (select: rate|temporal|both).
 - stdp_window (spike-timing-dependent plasticity Δw vs Δt): { "aPlus": 1, "aMinus": 1, "tauPlus": 20, "tauMinus": 20, "deltaT": 8 } — controls: deltaT (slider, e.g. -60..60), aPlus, aMinus (sliders).
 - tradeoff_explorer (accuracy/latency/energy tradeoff across model families): { "models": [ {"label": "ANN", "accuracy": 0.99, "latency": 0.9, "energy": 0.95}, {"label": "Converted SNN", "accuracy": 0.95, "latency": 0.6, "energy": 0.45}, {"label": "Surrogate-gradient SNN", "accuracy": 0.96, "latency": 0.45, "energy": 0.4}, {"label": "STDP SNN", "accuracy": 0.86, "latency": 0.35, "energy": 0.2} ], "priority": "balanced" } — accuracy is 0..1 higher-better; latency and energy are 0..1 lower-better (cost). Control: priority (select: accuracy|latency|energy|balanced).
+- metric_calculator (direct metric input/output calculator): { "correct": 920, "total": 1000, "stimulusTime": 0, "decisionTime": 24, "spikeCount": 180, "energyPerSpike": 0.002 } -- controls: correct, total, decisionTime, spikeCount, energyPerSpike (sliders).
+- training_curve (loss/accuracy/convergence curve): { "learningRate": 0.35, "noise": 0.08, "threshold": 0.9, "epochs": 30 } -- controls: learningRate, noise, threshold, epochs (sliders).
 Controls bind by "name" to a prop key (e.g. a slider named "amplitude" drives props.amplitude).`;
 
 const VISUAL_SPEC_SYSTEM_PROMPT =

@@ -137,6 +137,65 @@ describe("stale caveat sanitation (D)", () => {
 // ---------------------------------------------------------------------------
 // H. Content-based formula grounding — the exact bad mappings from the spec.
 // ---------------------------------------------------------------------------
+describe("learner navigation semantic repair", () => {
+  test("rewrites source-index links with section labels back to learning section indexes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-semantic-nav-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "1. Why SNNs Need Events"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "_index.md"),
+        fm({ title: "test-2", knowledge_type: "cluster-index" }) +
+          "# test-2\n\n## Learning\n\n- [[learning/_index|Learning]]\n\n## Sources\n\n- [[sources/_index|Sources]]\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "_index.md"),
+        fm({ title: "Learning", knowledge_type: "learning-index", breadboardType: "learning_index" }) +
+          "# Learning\n\n## Sections\n\n- [[sources/_index|1. Why SNNs Need Events]]\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "Topic Overview.md"),
+        fm({ title: "Topic Overview", knowledge_type: "topic-overview", breadboardType: "topic_overview" }) +
+          "# Topic Overview\n\nBegin with [[sources/_index|Why SNNs Need Events]]. Then ignore [[sources/_index|Sources]].\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "Learning Map.md"),
+        fm({ title: "Learning Map", knowledge_type: "learning-map", breadboardType: "learning_map" }) +
+          "# Learning Map\n\n- [[learning/1. Why SNNs Need Events/_index|Why SNNs Need Events]]\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "_index.md"),
+        fm({ title: "1. Why SNNs Need Events", knowledge_type: "textbook-section", breadboardType: "textbook_section" }) +
+          "# 1. Why SNNs Need Events\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "sources", "_index.md"),
+        fm({ title: "Sources", knowledge_type: "source-index", breadboardType: "source_index" }) + "# Sources\n",
+      );
+      fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /semantic navigation/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const index = fs.readFileSync(path.join(dir, "learning", "_index.md"), "utf-8");
+      assert.match(index, /\[\[learning\/1\. Why SNNs Need Events\/_index\|1\. Why SNNs Need Events\]\]/);
+      const rootIndex = fs.readFileSync(path.join(dir, "_index.md"), "utf-8");
+      assert.match(rootIndex, /\[\[learning\/_index\|Learning\]\]/);
+      const overview = fs.readFileSync(path.join(dir, "learning", "Topic Overview.md"), "utf-8");
+      assert.match(overview, /\[\[learning\/1\. Why SNNs Need Events\/_index\|Why SNNs Need Events\]\]/);
+      assert.doesNotMatch(overview, /\[\[sources\/_index/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("content-based formula grounding (H)", () => {
   test("accuracy fraction is anchored to the accuracy formula E1", () => {
     const grounded = groundLearnerFormula("\\text{Accuracy}=\\frac{920}{1000}=0.92=92\\%", SOURCE_FORMULAS);

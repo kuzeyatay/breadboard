@@ -624,6 +624,96 @@ function renderStdpWindow(figure: HTMLElement, state: Dict): void {
   )
 }
 
+function renderMetricCalculator(figure: HTMLElement, state: Dict): void {
+  const correct = Math.max(0, num(state.correct, 920))
+  const total = Math.max(1, num(state.total, 1000))
+  const stimulusTime = num(state.stimulusTime, 0)
+  const decisionTime = Math.max(stimulusTime, num(state.decisionTime, 24))
+  const spikeCount = Math.max(0, num(state.spikeCount, 180))
+  const energyPerSpike = Math.max(0.0001, num(state.energyPerSpike, 0.002))
+  const accuracy = Math.min(1, correct / total)
+  const latency = decisionTime - stimulusTime
+  const energy = spikeCount * energyPerSpike
+  const normalizedEfficiency = energy > 0 ? accuracy / energy : accuracy
+  const values = [
+    { label: "Accuracy", value: accuracy, display: `${(accuracy * 100).toFixed(1)}%`, better: "higher" },
+    { label: "Latency", value: Math.min(1, latency / 100), display: `${latency.toFixed(0)} ms`, better: "lower" },
+    { label: "Energy", value: Math.min(1, energy), display: energy.toFixed(3), better: "lower" },
+    { label: "Efficiency", value: Math.min(1, normalizedEfficiency / 10), display: normalizedEfficiency.toFixed(2), better: "higher" },
+  ]
+
+  figure.textContent = ""
+  const grid = el("div", "bv-metric-grid")
+  for (const item of values) {
+    const card = el("div", "bv-metric-card")
+    card.appendChild(el("span", "bv-metric-label", item.label))
+    card.appendChild(el("strong", "bv-metric-value", item.display))
+    const bar = el("span", "bv-metric-bar")
+    const fill = el("span", "bv-metric-fill")
+    fill.style.width = `${Math.max(4, Math.min(100, item.value * 100))}%`
+    fill.style.background = item.better === "higher" ? COLORS.a : COLORS.c
+    bar.appendChild(fill)
+    card.appendChild(bar)
+    grid.appendChild(card)
+  }
+  figure.appendChild(grid)
+  figure.appendChild(
+    el(
+      "p",
+      "bv-readout",
+      `This input set gives ${(accuracy * 100).toFixed(1)}% accuracy, ${latency.toFixed(0)} ms latency, ` +
+        `${spikeCount.toFixed(0)} spikes, and ${energy.toFixed(3)} estimated energy. ` +
+        `Changing spike count can improve energy even when accuracy barely changes.`,
+    ),
+  )
+}
+
+function renderTrainingCurve(figure: HTMLElement, state: Dict): void {
+  const learningRate = Math.max(0.01, num(state.learningRate, 0.35))
+  const noise = Math.max(0, num(state.noise, 0.08))
+  const threshold = Math.min(0.99, Math.max(0.5, num(state.threshold, 0.9)))
+  const epochs = Math.max(8, Math.round(num(state.epochs, 30)))
+  const accAt = (epoch: number) => {
+    const base = 0.45 + 0.52 * (1 - Math.exp((-learningRate * epoch) / 5))
+    const wobble = noise * 0.08 * Math.sin(epoch * 1.7)
+    return Math.min(0.99, Math.max(0, base - wobble))
+  }
+  const lossAt = (epoch: number) => {
+    const base = 1.2 * Math.exp((-learningRate * epoch) / 4) + 0.12
+    const wobble = noise * 0.08 * Math.cos(epoch * 1.3)
+    return Math.max(0.02, base + wobble)
+  }
+  let convergenceEpoch = epochs
+  for (let epoch = 0; epoch <= epochs; epoch++) {
+    if (accAt(epoch) >= threshold) {
+      convergenceEpoch = epoch
+      break
+    }
+  }
+  drawPlot(figure, {
+    xMin: 0,
+    xMax: epochs,
+    yMin: 0,
+    yMax: 1.25,
+    markerX: convergenceEpoch,
+    xLabel: "epoch",
+    series: [
+      { fn: (x) => accAt(x), color: COLORS.a, label: "accuracy" },
+      { fn: (x) => lossAt(x), color: COLORS.c, label: "loss", dash: "5 4" },
+      { fn: () => threshold, color: COLORS.d, label: "target", dash: "2 3" },
+    ],
+  })
+  figure.appendChild(
+    el(
+      "p",
+      "bv-readout",
+      accAt(convergenceEpoch) >= threshold
+        ? `The accuracy curve first reaches the target near epoch ${convergenceEpoch}.`
+        : `The accuracy curve does not reach the target inside ${epochs} epochs.`,
+    ),
+  )
+}
+
 interface TradeoffModel {
   label: string
   accuracy: number // 0..1, higher better
@@ -730,6 +820,8 @@ const RENDERERS: Record<string, Renderer> = {
   lif_neuron: renderLifNeuron,
   neural_coding: renderNeuralCoding,
   stdp_window: renderStdpWindow,
+  metric_calculator: renderMetricCalculator,
+  training_curve: renderTrainingCurve,
   tradeoff_explorer: renderTradeoffExplorer,
 }
 
