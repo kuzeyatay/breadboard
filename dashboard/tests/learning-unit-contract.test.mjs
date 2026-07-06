@@ -162,6 +162,45 @@ describe("Learning Unit Contract — visual/unit compatibility (Fix 5)", () => {
     assert.equal(visualTypeCompatibleWithUnit("tradeoff_explorer", concept).ok, false);
   });
 
+  test("metric and training aliases keep their concrete renderer types", () => {
+    const [metric, training] = normalizeLearningUnits([
+      {
+        id: "M",
+        role: "metric",
+        title: "Metric formula calculator",
+        learningQuestion: "How do accuracy, latency, spike count, and energy become measurable metrics?",
+        interactiveVisual: {
+          visualType: "metric_tradeoff_calculator",
+          uniqueConcept: "direct metric calculator",
+          whyStaticSourceFigureIsNotEnough: "the learner changes metric inputs and watches outputs update",
+          learnerManipulates: ["correct", "spike count"],
+          expectedInsight: "accuracy and energy respond to different inputs",
+          sourceAnchors: ["S1.P6.E1"],
+        },
+      },
+      {
+        id: "T",
+        role: "result_interpretation",
+        title: "Training convergence curve",
+        learningQuestion: "How does convergence over epochs show learning speed?",
+        interactiveVisual: {
+          visualType: "training_curves",
+          uniqueConcept: "training loss and accuracy curves",
+          whyStaticSourceFigureIsNotEnough: "the learner changes target accuracy and watches convergence time move",
+          learnerManipulates: ["learning rate", "target accuracy"],
+          expectedInsight: "higher targets can delay convergence",
+          sourceAnchors: ["S1.P11.G1"],
+        },
+      },
+    ]);
+    assert.equal(metric.interactiveVisual.visualType, "metric_calculator");
+    assert.equal(training.interactiveVisual.visualType, "training_curve");
+    assert.equal(visualTypeCompatibleWithUnit("metric_calculator", metric).ok, true);
+    assert.equal(visualTypeCompatibleWithUnit("training_curve", training).ok, true);
+    assert.notEqual(metric.interactiveVisual.visualType, "tradeoff_explorer");
+    assert.notEqual(training.interactiveVisual.visualType, "tradeoff_explorer");
+  });
+
   test("an unknown visual type is rejected instead of becoming a mandatory contract", () => {
     const [withJustification] = normalizeLearningUnits([
       { id: "A", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_widget", uniqueConcept: "a real thing", whyStaticSourceFigureIsNotEnough: "because interaction is required", learnerManipulates: ["k"], expectedInsight: "z", sourceAnchors: [] } },

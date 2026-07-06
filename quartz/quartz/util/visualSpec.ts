@@ -25,6 +25,8 @@ export const VISUAL_TYPES = [
   "lif_neuron",
   "neural_coding",
   "stdp_window",
+  "metric_calculator",
+  "training_curve",
   "tradeoff_explorer",
   "source_figure_explainer",
   "formula_derivation",
@@ -46,6 +48,8 @@ export const IMPLEMENTED_VISUAL_TYPES = [
   "lif_neuron",
   "neural_coding",
   "stdp_window",
+  "metric_calculator",
+  "training_curve",
   "tradeoff_explorer",
 ] as const
 

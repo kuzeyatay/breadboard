@@ -117,7 +117,7 @@ const NO_TAG_KNOWLEDGE_TYPES = new Set([
 const INTERACTIVE_VISUAL_TYPES = new Set([
   "function_plot", "linked_time_plots", "mass_spring", "energy_exchange",
   "resonance_curve", "lif_neuron", "neural_coding", "stdp_window",
-  "tradeoff_explorer",
+  "metric_calculator", "training_curve", "tradeoff_explorer",
 ]);
 
 // Hard dynamic concepts: a lesson that teaches one must ship an interactive
@@ -126,6 +126,8 @@ const HARD_CONCEPT_PATTERNS: Array<{ label: string; test: RegExp }> = [
   { label: "LIF dynamics", test: /\bleaky integrate[- ]and[- ]fire\b|\blif neuron\b|\bmembrane potential\b|\bfiring threshold\b|\brefractory\b/i },
   { label: "spike coding", test: /\brate coding\b|\btemporal coding\b|\bfirst[- ]spike latency\b/i },
   { label: "STDP", test: /\bspike[- ]timing[- ]dependent plasticity\b|\bstdp\b/i },
+  { label: "metric calculator", test: /\baccuracy\b|\blatency\b|\benergy\b|\bspike count\b|\bnormalized efficiency\b/i },
+  { label: "training curve", test: /\btraining loss\b|\baccuracy curve\b|\bconvergence\b|\bepoch\b/i },
   { label: "metric tradeoff", test: /\btrade[- ]?off\b|\benergy per inference\b|\bspike count\b/i },
 ];
 
@@ -590,6 +592,22 @@ interface CheckResult {
   status: "PASS" | "FAIL" | "SKIP";
   problems: string[];
 }
+
+const REQUIRED_VALIDATION_REPORT_SECTIONS = [
+  "Export Tree",
+  "Link Resolution",
+  "Semantic Navigation",
+  "Learning Unit Contract Fulfillment",
+  "Source Map Consistency",
+  "Source Coverage Modes",
+  "Formula Grounding",
+  "Interactive Visual Fulfillment",
+  "Final Interactive Visual Uniqueness",
+  "Source Crop Quality",
+  "Zettelkasten Tags",
+  "Section Title Quality",
+  "Final Acceptance",
+];
 
 export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] {
   if (!fs.existsSync(gardenDir)) {
@@ -1070,9 +1088,17 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         const concepts = Array.isArray(spec.conceptTargets)
           ? spec.conceptTargets.map((item) => String(item).toLowerCase()).sort()
           : [];
+        const inputs = Array.isArray(spec.inputs)
+          ? spec.inputs.map((item) => String(item).toLowerCase()).sort()
+          : [];
+        const outputs = Array.isArray(spec.outputs)
+          ? spec.outputs.map((item) => String(item).toLowerCase()).sort()
+          : [];
         const key = [
           String(spec.type ?? "").toLowerCase(),
           controls.join("|"),
+          inputs.join("|"),
+          outputs.join("|"),
           anchors.join("|"),
           concepts.join("|"),
           String(spec.pedagogicalPurpose ?? spec.caption ?? "").toLowerCase().replace(/\s+/g, " ").trim(),
@@ -1086,7 +1112,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           problems.push(`duplicate interactive visual signature "${signature}" on ${pagesForKey.join(", ")}`);
         }
       }
-      check(16, "interactive visual signatures are unique", problems, embeddedVisualSpecs.length === 0);
+      check(16, "final interactive visual signatures are unique", problems, embeddedVisualSpecs.length === 0);
     }
   }
 
@@ -1180,7 +1206,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         if (!base.startsWith("learning/")) {
           problems.push(`_index.md Reading Path links outside learning/: [[${rawTarget}]]`);
         }
-        if (/source|conversion|2510-27379|future-of-brain-inspired-computing/i.test(base)) {
+        if (/^sources\//i.test(base) || /2510-27379|future-of-brain-inspired-computing/i.test(base)) {
           problems.push(`_index.md Reading Path contains stale source-conversion target: [[${rawTarget}]]`);
         }
       }
@@ -1209,24 +1235,36 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(20, "root index exposes live learning/sources navigation", [...new Set(problems)]);
   }
 
-  // 21. Source Map must not contradict extracted formula anchors.
+  // 21. Source Map must not contradict extracted anchors.
   {
     const problems: string[] = [];
     const formulaVisuals = ledger.filter(isFormulaVisual);
-    if (formulaVisuals.length > 0) {
+    const tableVisuals = ledger.filter((visual) => String(visual.type ?? "") === "table" || /^S\d+\.P\d+\.T\d+$/i.test(String(visual.sourceVisualId ?? "")));
+    const figureVisuals = realFigures.filter((visual) => !isFormulaVisual(visual) && String(visual.type ?? "") !== "table");
+    const laterPagesExist = realFigures.some((visual) => Number(visual.page ?? 0) > 2);
+    if (formulaVisuals.length > 0 || tableVisuals.length > 0 || figureVisuals.length > 0 || laterPagesExist) {
       const sourceMap = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"));
       if (!sourceMap) {
-        problems.push(".breadboard/planning/Source Map.md missing despite formula anchors");
+        problems.push(".breadboard/planning/Source Map.md missing despite extracted anchors");
       } else {
         if (/explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only/i.test(sourceMap)) {
           problems.push("Source Map says formulas are absent/caption-only even though formula anchors exist");
         }
-        if (!/Formula Coverage|explicit metric formulas|formula anchors? (?:are )?present/i.test(sourceMap)) {
+        if (tableVisuals.length > 0 && /tables? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
+          problems.push("Source Map says tables are absent even though table anchors exist");
+        }
+        if (figureVisuals.length > 0 && /figures? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
+          problems.push("Source Map says figures are absent even though figure anchors exist");
+        }
+        if (laterPagesExist && /truncated after page\s*2|later sections? (?:are|is)? ?(?:not available|unavailable)/i.test(sourceMap)) {
+          problems.push("Source Map contains stale caveats about later source pages");
+        }
+        if (formulaVisuals.length > 0 && !/Formula Coverage|explicit metric formulas|formula anchors? (?:are )?present/i.test(sourceMap)) {
           problems.push("Source Map does not explicitly acknowledge formula coverage");
         }
       }
     }
-    check(21, "Source Map is consistent with extracted formula anchors", problems, formulaVisuals.length === 0);
+    check(21, "Source Map is consistent with extracted anchors", problems, formulaVisuals.length === 0 && tableVisuals.length === 0 && figureVisuals.length === 0 && !laterPagesExist);
   }
 
   // 22. Source Coverage must be derived from contract assignments, not metric
@@ -1234,13 +1272,28 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   {
     const problems: string[] = [];
     const formulaVisuals = ledger.filter(isFormulaVisual);
-    if (formulaVisuals.length > 0) {
+    const requiresCoverage = formulaVisuals.length > 0 || contractAssignments.length > 0 || realFigures.length > 0;
+    if (requiresCoverage) {
       const coverage = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"));
       if (!coverage) {
-        problems.push(".breadboard/planning/Source Coverage.md missing despite formula anchors");
+        problems.push(".breadboard/planning/Source Coverage.md missing despite source anchors or contract assignments");
       } else {
         if (/central to\s+\[\[/i.test(coverage)) {
           problems.push("Source Coverage still uses heuristic 'central to [[page]]' formula assignments");
+        }
+        const requiredModeHeadings = [
+          "Fully Embedded and Explained",
+          "Explained Without Embedding",
+          "Used as Interactive Grounding",
+          "Referenced Again in Synthesis",
+          "Intentionally Omitted",
+          "Missing or Misplaced",
+        ];
+        for (const heading of requiredModeHeadings) {
+          const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (!new RegExp(`^###\\s+${escaped}\\s*$`, "m").test(coverage)) {
+            problems.push(`Source Coverage missing mode section "${heading}"`);
+          }
         }
         for (const visual of formulaVisuals) {
           const id = String(visual.sourceVisualId ?? "");
@@ -1266,7 +1319,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         }
       }
     }
-    check(22, "Source Coverage follows Learning Unit Contract assignments", problems, formulaVisuals.length === 0);
+    check(22, "Source Coverage follows Learning Unit Contract assignments and usage modes", problems, !requiresCoverage);
   }
 
   // 23. Embedded interactive visuals must be grounded, page-specific, and not
@@ -1416,6 +1469,19 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if ("formulaGroundingStatus" in page.frontmatter || "formulaJustification" in page.frontmatter) {
         problems.push(`${page.relPath}: uses broad formulaGroundingStatus/formulaJustification instead of per-formula formulas: entries`);
       }
+      const declaredFormulaAnchors = [
+        ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
+        fmString(page.frontmatter, "sourceFormulaAnchor"),
+      ].filter(Boolean);
+      const declaredSourceAnchoredEntries = entries.filter((entry) => entry.groundingStatus === "source-anchored");
+      if (declaredFormulaAnchors.length > 0 && declaredSourceAnchoredEntries.length === 0) {
+        problems.push(`${page.relPath}: has sourceFormulaAnchors but no source-anchored formula entry`);
+      }
+      for (const anchor of declaredFormulaAnchors) {
+        if (!declaredSourceAnchoredEntries.some((entry) => entry.sourceAnchor === anchor)) {
+          problems.push(`${page.relPath}: sourceFormulaAnchors includes ${anchor}, but no formulas: entry is grounded to it`);
+        }
+      }
       if (math.length > 0) {
         const formulaAnchors = [
           ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
@@ -1451,9 +1517,6 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
               );
             }
           }
-        }
-        if (formulaAnchors.length > 0 && sourceAnchoredEntries.length === 0) {
-          problems.push(`${page.relPath}: has sourceFormulaAnchors but no source-anchored formula entry`);
         }
       }
       if (
@@ -1699,6 +1762,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (!/^Page counts:\s+/m.test(report)) problems.push("validation report missing page counts");
       if (!/\[(?:PASS|FAIL|SKIP)\]/.test(report)) problems.push("validation report missing check statuses");
       if (!/^Accepted:\s+(?:yes|no)$/im.test(report)) problems.push("validation report missing accepted yes/no");
+      for (const section of REQUIRED_VALIDATION_REPORT_SECTIONS) {
+        const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (!new RegExp(`^##\\s+${escaped}\\s*$`, "m").test(report)) {
+          problems.push(`validation report missing section "${section}"`);
+        }
+      }
     }
     check(30, "validation report is exported", problems);
   }
@@ -1856,6 +1925,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(35, "source crop quality is acceptable", problems, !ledgerExists);
   }
 
+  // 36. Semantic navigation: learning navigation stays in learning/, source
+  // navigation stays in sources/.
+  {
+    check(36, "semantic navigation links point to the expected page family", semanticNavigationProblems(gardenDir));
+  }
+
   return results;
 }
 
@@ -1978,6 +2053,58 @@ function validateInternalWikilinks(pages: PageFile[], published: PageFile[]): st
   return [...new Set(problems)];
 }
 
+function wikilinkTargets(markdown: string): string[] {
+  const targets: string[] = [];
+  let match: RegExpExecArray | null;
+  const re = new RegExp(WIKILINK_RE.source, WIKILINK_RE.flags);
+  while ((match = re.exec(markdown)) !== null) {
+    if (match[1] === "!") continue;
+    const inner = match[2];
+    const rawTarget = (inner.includes("|") ? inner.slice(0, inner.indexOf("|")) : inner).trim();
+    const base = rawTarget.split("#")[0].replace(/^\//, "").replace(/\.md$/i, "").trim();
+    if (base) targets.push(base);
+  }
+  return targets;
+}
+
+function markdownSection(markdown: string, heading: string): string {
+  const re = new RegExp(`^##\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "im");
+  const match = re.exec(markdown);
+  if (!match) return "";
+  const rest = markdown.slice((match.index ?? 0) + match[0].length);
+  const next = rest.search(/^##\s+/m);
+  return next >= 0 ? rest.slice(0, next) : rest;
+}
+
+function semanticNavigationProblems(gardenDir: string): string[] {
+  const problems: string[] = [];
+  const readBody = (relPath: string): string => {
+    const abs = path.join(gardenDir, ...relPath.split("/"));
+    if (!fs.existsSync(abs)) return "";
+    return splitFrontmatter(fs.readFileSync(abs, "utf-8")).body;
+  };
+  const root = readBody("_index.md");
+  for (const target of wikilinkTargets(markdownSection(root, "Learning"))) {
+    if (!target.startsWith("learning/")) problems.push(`_index.md Learning section links outside learning/: [[${target}]]`);
+  }
+  for (const target of wikilinkTargets(markdownSection(root, "Sources"))) {
+    if (!target.startsWith("sources/")) problems.push(`_index.md Sources section links outside sources/: [[${target}]]`);
+  }
+  for (const rel of ["learning/_index.md", "learning/Learning Map.md", "learning/Topic Overview.md"]) {
+    const body = readBody(rel);
+    if (!body) continue;
+    for (const target of wikilinkTargets(body)) {
+      if (target.startsWith("sources/")) problems.push(`${rel}: learner navigation links directly to source document [[${target}]]`);
+      if (!target.startsWith("learning/")) problems.push(`${rel}: learner navigation link leaves learning/: [[${target}]]`);
+    }
+  }
+  const sourceIndex = readBody("sources/_index.md");
+  for (const target of wikilinkTargets(sourceIndex)) {
+    if (!target.startsWith("sources/")) problems.push(`sources/_index.md links outside sources/: [[${target}]]`);
+  }
+  return [...new Set(problems)];
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -2055,37 +2182,45 @@ export function writeValidationReport(
     "",
     "See checks 7, 9, 11, 12, 18, 26, and 30.",
     "",
-    "## Link Validation",
+    "## Link Resolution",
     "",
     "See check 17.",
+    "",
+    "## Semantic Navigation",
+    "",
+    "See checks 20 and 36.",
     "",
     "## Learning Unit Contract Fulfillment",
     "",
     "See checks 8, 23, 31, 32, and 33.",
     "",
-    "## Zettelkasten Tags",
+    "## Source Map Consistency",
     "",
-    "See checks 8 and 24.",
+    "See check 21.",
     "",
-    "## Source Coverage From Contract",
+    "## Source Coverage Modes",
     "",
     "See checks 22 and 26.",
-    "",
-    "## Interactive Visual Fulfillment",
-    "",
-    "See check 23.",
-    "",
-    "## Interactive Visual Uniqueness",
-    "",
-    "See checks 13, 14, 18, 23, and 31.",
     "",
     "## Formula Grounding",
     "",
     "See check 25.",
     "",
+    "## Interactive Visual Fulfillment",
+    "",
+    "See check 23.",
+    "",
+    "## Final Interactive Visual Uniqueness",
+    "",
+    "See checks 13, 14, 18, 23, and 31.",
+    "",
     "## Source Crop Quality",
     "",
     "See checks 12 and 35.",
+    "",
+    "## Zettelkasten Tags",
+    "",
+    "See checks 8 and 24.",
     "",
     "## Section Title Quality",
     "",

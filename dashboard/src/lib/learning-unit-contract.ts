@@ -396,6 +396,8 @@ const SUPPORTED_INTERACTIVE_VISUAL_TYPES = new Set([
   "lif_neuron",
   "neural_coding",
   "stdp_window",
+  "metric_calculator",
+  "training_curve",
   "tradeoff_explorer",
 ]);
 
@@ -501,12 +503,8 @@ function normalizeTable(raw: unknown): SourceTableContract | null {
 
 function normalizeInteractiveVisualType(value: string): string {
   const normalized = compact(value).toLowerCase().replace(/[\s-]+/g, "_");
-  if (normalized === "metric_calculator" || normalized === "metric_tradeoff_calculator") {
-    return "tradeoff_explorer";
-  }
-  if (normalized === "training_curve" || normalized === "training_curves" || normalized === "learning_curve") {
-    return "tradeoff_explorer";
-  }
+  if (normalized === "metric_tradeoff_calculator") return "metric_calculator";
+  if (normalized === "training_curves" || normalized === "learning_curve") return "training_curve";
   return normalized;
 }
 

@@ -100,6 +100,7 @@ function buildGoodGarden(root) {
   const gardenDir = path.join(root, "snn-fixture");
   const bb = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(path.join(bb, "visuals"), { recursive: true });
+  fs.mkdirSync(path.join(bb, "planning"), { recursive: true });
   fs.mkdirSync(path.join(gardenDir, "assets", "source-visuals"), { recursive: true });
   fs.mkdirSync(path.join(gardenDir, "sources"), { recursive: true });
   fs.mkdirSync(path.join(gardenDir, "learning", "2. Spiking Neurons"), { recursive: true });
@@ -235,6 +236,7 @@ function buildGoodGarden(root) {
       zettelNotes: [{ handle: "event-driven-design-connects-timing-energy-and-accuracy", claim: "Event-driven design connects timing, energy, and accuracy." }],
     },
   ]);
+  const sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
   fs.writeFileSync(
     path.join(bb, "learning-unit-contract.json"),
     JSON.stringify(
@@ -242,11 +244,73 @@ function buildGoodGarden(root) {
         sourceSetHash: "fixture",
         generatedAt: "2026-01-01T00:00:00.000Z",
         learningUnits,
-        sourceArtifactAssignments: assignSourceArtifacts(learningUnits),
+        sourceArtifactAssignments,
       },
       null,
       2,
     ),
+  );
+  fs.writeFileSync(
+    path.join(bb, "planning", "Source Map.md"),
+    [
+      "# Source Map",
+      "",
+      "## Relevant Sources Found",
+      "",
+      "- [[sources/snn|Spiking Neural Networks Review]]",
+      "",
+      "## Source Figures, Graphs, Tables, And Formula Displays",
+      "",
+      "- S1.P4.F1: LIF neuron model (figure), page 4",
+      "",
+      "## Council Source Map",
+      "",
+      "Figures are present in the extracted source anchors.",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    path.join(bb, "planning", "Source Coverage.md"),
+    [
+      "# Source Coverage",
+      "",
+      "Coverage is derived from the Learning Unit Contract artifact assignments and final page fulfillment only. It does not use title or keyword heuristics.",
+      "",
+      "## Sources Used",
+      "",
+      "- Spiking Neural Networks Review (snn)",
+      "",
+      "## Contract Artifact Fulfillment",
+      "",
+      "- S1.P4.F1: assigned to U3 ([[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]); fulfilled; placement=inside_concept_explanation; Use the cropped source figure to identify the membrane, threshold, spike, and reset pieces.",
+      "",
+      "## Source Coverage Modes",
+      "",
+      "### Fully Embedded and Explained",
+      "",
+      "- S1.P4.F1: [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]; placement=inside_concept_explanation; Use the cropped source figure to identify the membrane, threshold, spike, and reset pieces.",
+      "",
+      "### Explained Without Embedding",
+      "",
+      "- None.",
+      "",
+      "### Used as Interactive Grounding",
+      "",
+      "- S1.P4.F1: [[learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron|2.1 The Leaky Integrate-and-Fire Neuron]]; interactive visualIds=v_lif",
+      "",
+      "### Referenced Again in Synthesis",
+      "",
+      "- None.",
+      "",
+      "### Intentionally Omitted",
+      "",
+      "- None.",
+      "",
+      "### Missing or Misplaced",
+      "",
+      "- None.",
+      "",
+    ].join("\n"),
   );
 
   // Interactive visuals are optional, but these four pages deliberately carry

@@ -15,6 +15,8 @@ import {
   buildLifThresholdResetVisual,
   buildRateVsTemporalCodingVisual,
   buildStdpTimingWindowVisual,
+  buildMetricCalculatorVisual,
+  buildTrainingCurveVisual,
   buildMetricTradeoffExplorerVisual,
   buildDeterministicVisual,
   validateVisualSpec,
@@ -126,6 +128,8 @@ describe("deterministic interactive visual builders", () => {
     ["lif_neuron", buildLifThresholdResetVisual],
     ["neural_coding", buildRateVsTemporalCodingVisual],
     ["stdp_window", buildStdpTimingWindowVisual],
+    ["metric_calculator", buildMetricCalculatorVisual],
+    ["training_curve", buildTrainingCurveVisual],
     ["tradeoff_explorer", buildMetricTradeoffExplorerVisual],
   ];
 

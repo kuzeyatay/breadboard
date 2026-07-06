@@ -26,6 +26,8 @@ export const VISUAL_TYPES = [
   "lif_neuron",
   "neural_coding",
   "stdp_window",
+  "metric_calculator",
+  "training_curve",
   "tradeoff_explorer",
   "source_figure_explainer",
   "formula_derivation",
@@ -46,6 +48,8 @@ export const IMPLEMENTED_VISUAL_TYPES = [
   "lif_neuron",
   "neural_coding",
   "stdp_window",
+  "metric_calculator",
+  "training_curve",
   "tradeoff_explorer",
 ] as const
 
@@ -527,6 +531,8 @@ export type HardConceptKind =
   | "lif_neuron"
   | "neural_coding"
   | "stdp_window"
+  | "metric_calculator"
+  | "training_curve"
   | "tradeoff_explorer"
 
 /**
@@ -645,6 +651,64 @@ export function buildStdpTimingWindowVisual(pageSlug?: string): VisualSpec {
 }
 
 /** Accuracy / latency / energy / spike-count tradeoff across model families. */
+export function buildMetricCalculatorVisual(pageSlug?: string): VisualSpec {
+  return baseSpec(deterministicVisualId(pageSlug, "metric"), "metric_calculator", {
+    title: "SNN metric calculator",
+    conceptTargets: ["accuracy", "latency", "spike count", "energy", "normalized efficiency"],
+    pedagogicalPurpose:
+      "Let the learner manipulate metric inputs directly and see how accuracy, latency, spike count, energy, and normalized efficiency change.",
+    props: {
+      correct: 920,
+      total: 1000,
+      stimulusTime: 0,
+      decisionTime: 24,
+      spikeCount: 180,
+      energyPerSpike: 0.002,
+    },
+    controls: [
+      { name: "correct", label: "Correct predictions", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 920 },
+      { name: "total", label: "Total predictions", type: "slider", min: 100, max: 2000, step: 50, defaultValue: 1000 },
+      { name: "decisionTime", label: "Decision time", type: "slider", min: 1, max: 100, step: 1, defaultValue: 24 },
+      { name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 },
+      { name: "energyPerSpike", label: "Energy per spike", type: "slider", min: 0.0005, max: 0.01, step: 0.0005, defaultValue: 0.002 },
+    ],
+    inputs: ["correct predictions", "total predictions", "decision time", "spike count", "energy per spike"],
+    outputs: ["accuracy", "latency", "energy estimate", "normalized efficiency"],
+    caption:
+      "Change the raw inputs to see why accuracy alone is not enough: lower spikes and latency can matter even when accuracy stays similar.",
+    regenerationPrompt:
+      "Improve the metric calculator: keep the raw inputs visible and show accuracy, latency, energy, and normalized efficiency as separate outputs.",
+  })
+}
+
+export function buildTrainingCurveVisual(pageSlug?: string): VisualSpec {
+  return baseSpec(deterministicVisualId(pageSlug, "curve"), "training_curve", {
+    title: "Training convergence curve explorer",
+    conceptTargets: ["training loss", "accuracy curve", "epochs", "convergence threshold"],
+    pedagogicalPurpose:
+      "Let the learner change learning rate and threshold and see how loss decreases, accuracy rises, and convergence time changes across epochs.",
+    props: {
+      learningRate: 0.35,
+      noise: 0.08,
+      threshold: 0.9,
+      epochs: 30,
+    },
+    controls: [
+      { name: "learningRate", label: "Learning rate", type: "slider", min: 0.05, max: 0.8, step: 0.01, defaultValue: 0.35 },
+      { name: "noise", label: "Training noise", type: "slider", min: 0, max: 0.3, step: 0.01, defaultValue: 0.08 },
+      { name: "threshold", label: "Target accuracy", type: "slider", min: 0.6, max: 0.99, step: 0.01, defaultValue: 0.9 },
+      { name: "epochs", label: "Epoch window", type: "slider", min: 8, max: 60, step: 1, defaultValue: 30 },
+    ],
+    inputs: ["learning rate", "training noise", "target accuracy", "epoch window"],
+    outputs: ["loss curve", "accuracy curve", "first epoch meeting the target"],
+    caption:
+      "Raise the target or add noise to see convergence take longer even when the final trend still improves.",
+    regenerationPrompt:
+      "Improve the training curve: make loss, accuracy, and the first target-reaching epoch visually distinct.",
+  })
+}
+
+/** Accuracy / latency / energy / spike-count tradeoff across model families. */
 export function buildMetricTradeoffExplorerVisual(pageSlug?: string): VisualSpec {
   return baseSpec(deterministicVisualId(pageSlug, "tradeoff"), "tradeoff_explorer", {
     title: "Accuracy, latency, energy, and spike-count tradeoff explorer",
@@ -680,6 +744,8 @@ const HARD_CONCEPT_BUILDERS: Record<HardConceptKind, (pageSlug?: string) => Visu
   lif_neuron: buildLifThresholdResetVisual,
   neural_coding: buildRateVsTemporalCodingVisual,
   stdp_window: buildStdpTimingWindowVisual,
+  metric_calculator: buildMetricCalculatorVisual,
+  training_curve: buildTrainingCurveVisual,
   tradeoff_explorer: buildMetricTradeoffExplorerVisual,
 }
 

@@ -415,6 +415,60 @@ function embeddedVisualTypes(body: string): string[] {
   return types;
 }
 
+function embeddedVisualSpecs(body: string): Array<Record<string, unknown>> {
+  const specs: Array<Record<string, unknown>> = [];
+  let match: RegExpExecArray | null;
+  const re = new RegExp(VISUAL_BLOCK_RE.source, VISUAL_BLOCK_RE.flags);
+  while ((match = re.exec(body)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1] ?? "{}");
+      if (parsed && typeof parsed === "object") specs.push(parsed as Record<string, unknown>);
+    } catch {
+      // invalid JSON is caught by the standalone validator
+    }
+  }
+  return specs;
+}
+
+function visualSpecAnchorIds(spec: Record<string, unknown>): string[] {
+  const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors : [];
+  const ids: string[] = [];
+  for (const anchor of anchors) {
+    if (!anchor || typeof anchor !== "object") continue;
+    const record = anchor as Record<string, unknown>;
+    for (const key of ["figureId", "tableId", "equationId", "questionId"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) ids.push(value.trim());
+    }
+  }
+  return [...new Set(ids)];
+}
+
+function visualSignature(spec: Record<string, unknown>): string {
+  const controls = Array.isArray(spec.controls)
+    ? spec.controls
+        .map((control) => {
+          if (!control || typeof control !== "object") return "";
+          const record = control as Record<string, unknown>;
+          return [record.name, record.label, record.type, Array.isArray(record.options) ? record.options.join("|") : ""]
+            .map((value) => String(value ?? "").toLowerCase())
+            .join(":");
+        })
+        .sort()
+    : [];
+  const list = (value: unknown) =>
+    Array.isArray(value) ? value.map((item) => String(item).toLowerCase().trim()).filter(Boolean).sort() : [];
+  return [
+    String(spec.type ?? "").toLowerCase(),
+    controls.join("|"),
+    list(spec.inputs).join("|"),
+    list(spec.outputs).join("|"),
+    visualSpecAnchorIds(spec).sort().join("|"),
+    list(spec.conceptTargets).join("|"),
+    String(spec.pedagogicalPurpose ?? spec.caption ?? "").toLowerCase().replace(/\s+/g, " ").trim(),
+  ].join("::");
+}
+
 function formulaAnchorsFromFrontmatter(rawFm: string): string[] {
   const anchors = new Set(fmGetArray(rawFm, "sourceFormulaAnchors"));
   const lines = rawFm.split(/\r?\n/);
@@ -429,6 +483,17 @@ function formulaAnchorsFromFrontmatter(rawFm: string): string[] {
       const value = (textMatch[1] ?? "").trim().replace(/^["']|["']$/g, "");
       if (value && !isGroundableFormula(value)) anchors.add(`trivial:${value}`);
     }
+  }
+  return [...anchors];
+}
+
+function formulaEntrySourceAnchors(rawFm: string): string[] {
+  const anchors = new Set<string>();
+  for (const line of rawFm.split(/\r?\n/)) {
+    const match = line.match(/^\s+sourceAnchor:\s*(.*)$/);
+    if (!match) continue;
+    const value = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
+    if (value) anchors.add(value);
   }
   return [...anchors];
 }
@@ -498,6 +563,7 @@ export function finalizeGardenExport({
 
   // --- Pass D: stale caveat sanitation (visible + planning) ------------------
   sanitizeStaleCaveatFiles(gardenDir, { laterPagesExist, formulaAnchorsExist }, report);
+  repairLearnerNavigationSourceLinks(gardenDir, report);
 
   // Semantic decisions are made by the Learning Unit Contract before page
   // writing. The finalizer no longer assigns source figures, chooses
@@ -891,6 +957,87 @@ function sanitizeStaleCaveatFiles(
       fs.writeFileSync(file, hadFrontmatter ? joinFrontmatter(rawFrontmatter, nextBody) : nextBody, "utf-8");
       const rel = path.relative(gardenDir, file).replace(/\\/g, "/");
       if (!report.changed.includes(rel)) report.changed.push(rel);
+    }
+  }
+}
+
+function learnerSectionTargets(gardenDir: string): Map<string, string> {
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/^\s*\d+(?:\.\d+)*\.?\s*/, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+/g, " ");
+  const targets = new Map<string, string>();
+  const learningDir = path.join(gardenDir, "learning");
+  if (!fs.existsSync(learningDir)) return targets;
+  for (const entry of fs.readdirSync(learningDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const indexPath = path.join(learningDir, entry.name, "_index.md");
+    if (!fs.existsSync(indexPath)) continue;
+    const title = entry.name.replace(/^\s*(\d+)\.\s*/, "");
+    const relTarget = `learning/${entry.name}/_index`;
+    for (const label of [entry.name, title]) {
+      const key = normalize(label);
+      if (key) targets.set(key, relTarget);
+    }
+  }
+  return targets;
+}
+
+function repairLearnerNavigationSourceLinks(gardenDir: string, report: FinalizeReport): void {
+  const sectionTargets = learnerSectionTargets(gardenDir);
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/^\s*\d+(?:\.\d+)*\.?\s*/, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+/g, " ");
+  const files = [
+    path.join(gardenDir, "learning", "_index.md"),
+    path.join(gardenDir, "learning", "Topic Overview.md"),
+    path.join(gardenDir, "learning", "Learning Map.md"),
+  ];
+  for (const file of files) {
+    if (!fs.existsSync(file)) continue;
+    const content = fs.readFileSync(file, "utf-8");
+    const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
+    const nextBody = body.replace(/\[\[(sources\/[^\]|#]+(?:#[^\]|]+)?)(?:\|([^\]]+))?\]\]/gi, (whole, target: string, alias?: string) => {
+      const label = String(alias ?? "").trim();
+      const targetBase = target.split("#")[0].replace(/\.md$/i, "");
+      const replacementLabel = label || targetBase.split("/").pop() || "Sources";
+      if (targetBase.toLowerCase() === "sources/_index") {
+        const sectionTarget = sectionTargets.get(normalize(replacementLabel));
+        if (sectionTarget) return `[[${sectionTarget}|${replacementLabel}]]`;
+      }
+      return replacementLabel;
+    });
+    if (nextBody !== body) {
+      fs.writeFileSync(file, hadFrontmatter ? joinFrontmatter(rawFrontmatter, nextBody) : nextBody, "utf-8");
+      const rel = path.relative(gardenDir, file).replace(/\\/g, "/");
+      if (!report.changed.includes(rel)) report.changed.push(rel);
+      report.notes.push(`repaired learner navigation source links in ${rel}`);
+    }
+  }
+
+  const rootFile = path.join(gardenDir, "_index.md");
+  if (fs.existsSync(rootFile)) {
+    const content = fs.readFileSync(rootFile, "utf-8");
+    const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
+    const nextBody = body.replace(/\[\[sources\/_index(?:\.md)?(?:#[^\]|]+)?\|([^\]]+)\]\]/gi, (whole, alias: string) => {
+      const label = String(alias ?? "").trim();
+      if (/^sources$/i.test(label)) return whole;
+      if (/^learning$/i.test(label)) return `[[learning/_index|${label}]]`;
+      const sectionTarget = sectionTargets.get(normalize(label));
+      if (sectionTarget) return `[[${sectionTarget}|${label}]]`;
+      return label || whole;
+    });
+    if (nextBody !== body) {
+      fs.writeFileSync(rootFile, hadFrontmatter ? joinFrontmatter(rawFrontmatter, nextBody) : nextBody, "utf-8");
+      if (!report.changed.includes("_index.md")) report.changed.push("_index.md");
+      report.notes.push("repaired root learning navigation source links");
     }
   }
 }
@@ -1685,29 +1832,33 @@ function writeFinalizeValidationReport({
       "",
       "See checks: exported tree, no source page typed as learner page.",
       "",
-      "## Link Validation",
+      "## Link Resolution",
       "",
       "See the standalone validator's wikilink checks.",
+      "",
+      "## Semantic Navigation",
+      "",
+      "Root, learning, source, overview, and learning-map links must point to the expected page family.",
       "",
       "## Learning Unit Contract Fulfillment",
       "",
       "See check: Learning Unit Contract fulfillment.",
       "",
-      "## Zettelkasten Tags",
+      "## Source Map Consistency",
       "",
-      "Tags must exactly match the unit contract's zettelNotes handles.",
+      "Source Map caveats must not contradict extracted figures, tables, formulas, or later source pages.",
       "",
-      "## Source Coverage From Contract",
+      "## Source Coverage Modes",
       "",
-      "See check: Source Coverage follows the Learning Unit Contract.",
+      "Source Coverage must classify each important anchor as embedded, explained, reused, omitted, missing, or misplaced.",
       "",
       "## Interactive Visual Fulfillment",
       "",
       "Planned interactive visuals must be embedded or intentionally omitted with a reason.",
       "",
-      "## Interactive Visual Uniqueness",
+      "## Final Interactive Visual Uniqueness",
       "",
-      "See Learning Unit Contract validation and visual-index checks.",
+      "Rendered interactive visuals must be page-specific and non-duplicative after final block normalization.",
       "",
       "## Formula Grounding",
       "",
@@ -1716,6 +1867,10 @@ function writeFinalizeValidationReport({
       "## Source Crop Quality",
       "",
       "See check: source crop quality is acceptable.",
+      "",
+      "## Zettelkasten Tags",
+      "",
+      "Tags must exactly match the unit contract's zettelNotes handles.",
       "",
       "## Section Title Quality",
       "",
@@ -1743,6 +1898,22 @@ function writeFinalizeValidationReport({
     report.changed.push(".breadboard/validation-report.md");
   }
 }
+
+const REQUIRED_VALIDATION_REPORT_SECTIONS = [
+  "Export Tree",
+  "Link Resolution",
+  "Semantic Navigation",
+  "Learning Unit Contract Fulfillment",
+  "Source Map Consistency",
+  "Source Coverage Modes",
+  "Formula Grounding",
+  "Interactive Visual Fulfillment",
+  "Final Interactive Visual Uniqueness",
+  "Source Crop Quality",
+  "Zettelkasten Tags",
+  "Section Title Quality",
+  "Final Acceptance",
+];
 
 interface FinalizeCheck {
   name: string;
@@ -1811,6 +1982,56 @@ function cropQualityProblems(gardenDir: string, visual: LedgerVisual): string[] 
   return problems;
 }
 
+function wikilinkTargets(markdown: string): string[] {
+  const targets: string[] = [];
+  for (const match of markdown.matchAll(/(!?)\[\[([^\]]+?)\]\]/g)) {
+    if (match[1] === "!") continue;
+    const inner = match[2] ?? "";
+    const raw = (inner.includes("|") ? inner.slice(0, inner.indexOf("|")) : inner).trim();
+    const base = raw.split("#")[0].replace(/^\//, "").replace(/\.md$/i, "").trim();
+    if (base) targets.push(base);
+  }
+  return targets;
+}
+
+function markdownSection(markdown: string, heading: string): string {
+  const re = new RegExp(`^##\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "im");
+  const match = re.exec(markdown);
+  if (!match) return "";
+  const start = (match.index ?? 0) + match[0].length;
+  const rest = markdown.slice(start);
+  const next = rest.search(/^##\s+/m);
+  return next >= 0 ? rest.slice(0, next) : rest;
+}
+
+function semanticNavigationProblems(gardenDir: string): string[] {
+  const problems: string[] = [];
+  const read = (rel: string) => {
+    const file = path.join(gardenDir, ...rel.split("/"));
+    return fs.existsSync(file) ? parseFrontmatter(fs.readFileSync(file, "utf-8")).body : "";
+  };
+  const root = read("_index.md");
+  for (const target of wikilinkTargets(markdownSection(root, "Learning"))) {
+    if (!target.startsWith("learning/")) problems.push(`_index.md Learning section links outside learning/: [[${target}]]`);
+  }
+  for (const target of wikilinkTargets(markdownSection(root, "Sources"))) {
+    if (!target.startsWith("sources/")) problems.push(`_index.md Sources section links outside sources/: [[${target}]]`);
+  }
+  for (const rel of ["learning/_index.md", "learning/Learning Map.md", "learning/Topic Overview.md"]) {
+    const body = read(rel);
+    if (!body) continue;
+    for (const target of wikilinkTargets(body)) {
+      if (target.startsWith("sources/")) problems.push(`${rel}: learner navigation links directly to source document [[${target}]]`);
+      if (!target.startsWith("learning/")) problems.push(`${rel}: learner navigation link leaves learning/: [[${target}]]`);
+    }
+  }
+  const sourceIndex = read("sources/_index.md");
+  for (const target of wikilinkTargets(sourceIndex)) {
+    if (!target.startsWith("sources/")) problems.push(`sources/_index.md links outside sources/: [[${target}]]`);
+  }
+  return [...new Set(problems)];
+}
+
 function collectFinalizeChecks({
   gardenDir,
   report,
@@ -1830,6 +2051,7 @@ function collectFinalizeChecks({
     const unitId = fmGetScalar(page.rawFm, "learningUnitId");
     if (unitId) pagesByUnit.set(unitId, page);
   }
+  const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
 
   // Export tree.
   const allowed = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
@@ -1839,6 +2061,8 @@ function collectFinalizeChecks({
   }
   if (!fs.existsSync(path.join(gardenDir, "sources", "_index.md"))) treeProblems.push("sources/_index.md missing");
   push("exported tree only _index.md/learning/sources/assets/.breadboard", treeProblems);
+
+  push("semantic navigation links point to the expected page family", semanticNavigationProblems(gardenDir));
 
   // Source pages not typed as learner pages.
   const typingProblems: string[] = [];
@@ -1936,6 +2160,23 @@ function collectFinalizeChecks({
   }
   push("Learning Unit Contract fulfillment", [...new Set(fulfillmentProblems)]);
 
+  // Formula grounding.
+  const formulaGroundingProblems: string[] = [];
+  for (const page of learnerPages) {
+    const declared = fmGetArray(page.rawFm, "sourceFormulaAnchors");
+    if (declared.length === 0) continue;
+    const grounded = formulaEntrySourceAnchors(page.rawFm);
+    if (grounded.length === 0) {
+      formulaGroundingProblems.push(`${page.rel}: has sourceFormulaAnchors but no source-anchored formulas: entry`);
+    }
+    for (const anchor of declared) {
+      if (!grounded.includes(anchor)) {
+        formulaGroundingProblems.push(`${page.rel}: sourceFormulaAnchors includes ${anchor}, but no formulas: entry is grounded to it`);
+      }
+    }
+  }
+  push("Formula grounding", formulaGroundingProblems);
+
   // Source Coverage from contract.
   const coverageProblems: string[] = [];
   const coverage = fs.existsSync(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"))
@@ -1943,6 +2184,20 @@ function collectFinalizeChecks({
     : "";
   if (!coverage && contract.assignments.length > 0) coverageProblems.push(".breadboard/planning/Source Coverage.md missing");
   if (/central to\s+\[\[/i.test(coverage)) coverageProblems.push("Source Coverage still uses heuristic 'central to [[page]]' assignments");
+  if (coverage) {
+    for (const heading of [
+      "Fully Embedded and Explained",
+      "Explained Without Embedding",
+      "Used as Interactive Grounding",
+      "Referenced Again in Synthesis",
+      "Intentionally Omitted",
+      "Missing or Misplaced",
+    ]) {
+      if (!new RegExp(`^###\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m").test(coverage)) {
+        coverageProblems.push(`Source Coverage missing mode section "${heading}"`);
+      }
+    }
+  }
   for (const assignment of contract.assignments) {
     const escaped = assignment.sourceArtifactId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (coverage && !new RegExp(`${escaped}[^\\n]*assigned to ${assignment.assignedLearningUnitId}\\b`, "i").test(coverage)) {
@@ -1950,6 +2205,52 @@ function collectFinalizeChecks({
     }
   }
   push("Source Coverage follows the Learning Unit Contract", [...new Set(coverageProblems)]);
+
+  // Source Map consistency.
+  const sourceMapProblems: string[] = [];
+  const sourceMap = fs.existsSync(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"))
+    ? fs.readFileSync(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"), "utf-8")
+    : "";
+  const hasFormulaAnchors = ledger.some((visual) => classifyFigure(visual) === "equation");
+  const hasTables = ledger.some((visual) => String(visual.type ?? "") === "table" || /^S\d+\.P\d+\.T\d+$/i.test(String(visual.sourceVisualId ?? "")));
+  const hasFigures = ledger.some((visual) => classifyFigure(visual) !== "equation" && String(visual.type ?? "") !== "table" && !/^S\d+\.P\d+\.T\d+$/i.test(String(visual.sourceVisualId ?? "")));
+  const hasLaterPages = sourcesHaveLaterPages(gardenDir);
+  if (!sourceMap && (hasFormulaAnchors || hasTables || hasFigures || hasLaterPages)) {
+    sourceMapProblems.push(".breadboard/planning/Source Map.md missing");
+  }
+  if (sourceMap) {
+    if (hasFormulaAnchors && /explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only/i.test(sourceMap)) {
+      sourceMapProblems.push("Source Map says formulas are absent/caption-only even though formula anchors exist");
+    }
+    if (hasTables && /tables? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
+      sourceMapProblems.push("Source Map says tables are absent even though table anchors exist");
+    }
+    if (hasFigures && /figures? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
+      sourceMapProblems.push("Source Map says figures are absent even though figure anchors exist");
+    }
+    if (hasLaterPages && /truncated after page\s*2|later sections? (?:are|is)? ?(?:not available|unavailable)/i.test(sourceMap)) {
+      sourceMapProblems.push("Source Map contains stale caveats about later source pages");
+    }
+  }
+  push("Source Map is consistent with extracted anchors", sourceMapProblems);
+
+  // Final interactive visual uniqueness after rendered blocks are on disk.
+  const visualUniquenessProblems: string[] = [];
+  const bySignature = new Map<string, string[]>();
+  for (const page of learnerPages) {
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      const signature = visualSignature(spec);
+      const list = bySignature.get(signature) ?? [];
+      list.push(`${page.rel}:${String(spec.id ?? "(missing id)")}`);
+      bySignature.set(signature, list);
+    }
+  }
+  for (const [signature, pagesForSignature] of bySignature) {
+    if (pagesForSignature.length > 1) {
+      visualUniquenessProblems.push(`duplicate final interactive visual signature "${signature}" on ${pagesForSignature.join(", ")}`);
+    }
+  }
+  push("Final interactive visual uniqueness", visualUniquenessProblems);
 
   // Section title quality.
   const titleProblems: string[] = [];
@@ -1966,12 +2267,23 @@ function collectFinalizeChecks({
   push("section titles are learner-facing", titleProblems);
 
   // Source crop quality.
-  const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
   const cropProblems = ledger.flatMap((visual) => cropQualityProblems(gardenDir, visual));
   push("source crop quality is acceptable", cropProblems);
 
   if (includeReportSelfCheck) {
-    push("validation report present", fs.existsSync(path.join(gardenDir, ".breadboard", "validation-report.md")) ? [] : ["missing"]);
+    const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
+    const reportProblems: string[] = [];
+    const validationReport = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf-8") : "";
+    if (!validationReport) {
+      reportProblems.push("missing");
+    } else {
+      for (const section of REQUIRED_VALIDATION_REPORT_SECTIONS) {
+        if (!new RegExp(`^##\\s+${section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m").test(validationReport)) {
+          reportProblems.push(`missing section "${section}"`);
+        }
+      }
+    }
+    push("validation report contains required sections", reportProblems);
   }
 
   return checks;

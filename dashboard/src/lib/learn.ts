@@ -2218,6 +2218,7 @@ function ensureContractFormulaGrounding(
     const text = formula.termsToDefine?.length
       ? `${formula.teachingGoal}: ${formula.termsToDefine.join(" + ")}`
       : formula.teachingGoal;
+    if (!isGroundableFormula(text)) continue;
     next.push({
       text,
       groundingStatus: "source-anchored",
@@ -2348,6 +2349,12 @@ function renderTopicOverviewFallback(map: ProposedLearningMap, context: LearnSou
 
 function sourceMapMarkdown(sourceMap: unknown, context: LearnSourceContext): string {
   const formulas = sourceFormulaFigures(context);
+  const sourceMapFacts = {
+    hasFormulas: formulas.length > 0,
+    hasTables: context.sourceFigures.some((figure) => figure.kind === "table" || /\.T\d+$/i.test(figure.figureId)),
+    hasFigures: context.sourceFigures.some((figure) => figure.kind !== "formula" && !/\.E\d+$/i.test(figure.figureId)),
+    hasLaterPages: context.sourceFigures.some((figure) => Number(figure.page) > 2),
+  };
   const formulaAcknowledgement =
     formulas.length > 0
       ? [
@@ -2360,7 +2367,7 @@ function sourceMapMarkdown(sourceMap: unknown, context: LearnSourceContext): str
           "",
         ]
       : [];
-  const renderedSourceMap = sanitizeFormulaContradictions(sourceMap, formulas.length > 0);
+  const renderedSourceMap = sanitizeSourceMapContradictions(sourceMap, sourceMapFacts);
   return [
     "# Source Map",
     "",
@@ -2395,27 +2402,44 @@ function sourceFormulaFigures(context: LearnSourceContext): SourceFigure[] {
   );
 }
 
-function sanitizeFormulaContradictions(value: unknown, hasFormulas: boolean): unknown {
-  if (!hasFormulas) return value;
+function sanitizeSourceMapContradictions(
+  value: unknown,
+  facts: { hasFormulas: boolean; hasTables: boolean; hasFigures: boolean; hasLaterPages: boolean },
+): unknown {
   if (typeof value === "string") {
-    return value
-      .replace(
-        /explicit mathematical definitions are not present[^.]*\./gi,
-        "explicit metric formulas are present in the extracted source anchors.",
-      )
-      .replace(
-        /explicit mathematical definitions are not present/gi,
-        "explicit metric formulas are present",
-      )
-      .replace(/formulas? (?:are|is) not present/gi, "formula anchors are present")
-      .replace(/caption-only/gi, "extracted formula anchor");
+    let next = value;
+    if (facts.hasFormulas) {
+      next = next
+        .replace(
+          /explicit mathematical definitions are not present[^.]*\./gi,
+          "explicit metric formulas are present in the extracted source anchors.",
+        )
+        .replace(
+          /explicit mathematical definitions are not present/gi,
+          "explicit metric formulas are present",
+        )
+        .replace(/formulas? (?:are|is) not present/gi, "formula anchors are present")
+        .replace(/caption-only/gi, "extracted formula anchor");
+    }
+    if (facts.hasTables) {
+      next = next.replace(/tables? (?:are|is) not (?:present|available|detected)/gi, "tables are present in the extracted source anchors");
+    }
+    if (facts.hasFigures) {
+      next = next.replace(/figures? (?:are|is) not (?:present|available|detected)/gi, "figures are present in the extracted source anchors");
+    }
+    if (facts.hasLaterPages) {
+      next = next
+        .replace(/truncated after page\s*2[^.\n]*/gi, "later source pages are available in the extracted anchors")
+        .replace(/later sections? (?:are|is)? ?(?:not available|unavailable)[^.\n]*/gi, "later sections are available through source anchors");
+    }
+    return next;
   }
-  if (Array.isArray(value)) return value.map((item) => sanitizeFormulaContradictions(item, hasFormulas));
+  if (Array.isArray(value)) return value.map((item) => sanitizeSourceMapContradictions(item, facts));
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, item]) => [
         key,
-        sanitizeFormulaContradictions(item, hasFormulas),
+        sanitizeSourceMapContradictions(item, facts),
       ]),
     );
   }
@@ -2456,6 +2480,51 @@ function sourceCoverageMarkdown({
     if (allFulfilledIds.has(assignment.sourceArtifactId)) return "fulfilled";
     return "missing: assigned artifact not present in final page metadata";
   };
+  const sourceArtifactKind = (id: string): "formula" | "table" | "figure" => {
+    if (/\.E\d+$/i.test(id)) return "formula";
+    if (/\.T\d+$/i.test(id)) return "table";
+    return "figure";
+  };
+  const coverageModes = new Map<string, string[]>([
+    ["Fully Embedded and Explained", []],
+    ["Explained Without Embedding", []],
+    ["Used as Interactive Grounding", []],
+    ["Referenced Again in Synthesis", []],
+    ["Intentionally Omitted", []],
+    ["Missing or Misplaced", []],
+  ]);
+  const addMode = (mode: string, line: string) => {
+    coverageModes.get(mode)?.push(line);
+  };
+  for (const assignment of sourceArtifactAssignments) {
+    const page = pageByUnit.get(assignment.assignedLearningUnitId);
+    const target = page ? wikilinkForRelPath(page.relPath, page.title) : `unit ${assignment.assignedLearningUnitId}`;
+    const kind = sourceArtifactKind(assignment.sourceArtifactId);
+    const line = `- ${assignment.sourceArtifactId}: ${target}; placement=${assignment.placement}; ${assignment.requiredInterpretation || assignment.reason}`;
+    if (!page || !allFulfilledIds.has(assignment.sourceArtifactId)) {
+      addMode("Missing or Misplaced", line);
+    } else if (kind === "formula" || !usedFigures.has(assignment.sourceArtifactId)) {
+      addMode("Explained Without Embedding", line);
+    } else {
+      addMode("Fully Embedded and Explained", line);
+    }
+  }
+  for (const page of generatedPages) {
+    if (page.visualIds.length === 0) continue;
+    const anchors = [...page.sourceFigureIds, ...page.sourceFormulaIds, ...page.sourceTableIds];
+    for (const id of anchors) {
+      addMode("Used as Interactive Grounding", `- ${id}: ${wikilinkForRelPath(page.relPath, page.title)}; interactive visualIds=${page.visualIds.join(", ")}`);
+    }
+  }
+  for (const page of generatedPages.filter((page) => /synthesis/i.test(page.title))) {
+    const anchors = [...page.sourceFigureIds, ...page.sourceFormulaIds, ...page.sourceTableIds];
+    for (const id of anchors) {
+      addMode("Referenced Again in Synthesis", `- ${id}: ${wikilinkForRelPath(page.relPath, page.title)}`);
+    }
+  }
+  for (const figure of context.sourceFigures.filter((figure) => !allFulfilledIds.has(figure.figureId) && !assignedIds.has(figure.figureId))) {
+    addMode("Intentionally Omitted", `- ${figure.figureId}: ${unusedFigureReasons.get(figure.figureId) ?? "Not assigned by the Learning Unit Contract."}`);
+  }
   const lines = [
     "# Source Coverage",
     "",
@@ -2481,6 +2550,12 @@ function sourceCoverageMarkdown({
     }
   } else {
     lines.push("- No source artifacts were assigned by the Learning Unit Contract.");
+  }
+  lines.push("", "## Source Coverage Modes", "");
+  for (const [mode, entries] of coverageModes) {
+    lines.push(`### ${mode}`, "");
+    lines.push(...(entries.length > 0 ? [...new Set(entries)] : ["- None."]));
+    lines.push("");
   }
   lines.push("", "## Figures, Graphs, Tables, And Formula Displays Used", "");
   lines.push(
