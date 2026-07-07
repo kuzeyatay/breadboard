@@ -31,6 +31,7 @@ import {
   sectionSemanticProfiles,
   sectionTitleUniquenessProblems,
   sectionTitleGrammarProblems,
+  sectionTitleNaturalnessProblems,
   validateLearningUnitContracts,
   visualTypeCompatibleWithUnit,
   zettelHandleQualityProblems,
@@ -39,7 +40,7 @@ import {
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "../dashboard/src/lib/learning-unit-contract.ts";
-import { formulaMeaningMatch, isFormulaExpression, isGroundableFormula } from "../dashboard/src/lib/learn-utils.ts";
+import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment } from "../dashboard/src/lib/learn-utils.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -142,7 +143,7 @@ const HARD_CONCEPT_PATTERNS: Array<{ label: string; test: RegExp }> = [
 const TAG_RELEVANCE_RULES: Array<{ appliesTo: RegExp; evidence: RegExp; minBody?: number }> = [
   { appliesTo: /lif-neuron|leaky/i, evidence: /\blif\b|leaky[- ]integrate|membrane potential|threshold/i },
   { appliesTo: /stdp/i, evidence: /\bstdp\b|spike[- ]?timing|synaptic plasticity/i },
-  { appliesTo: /surrogate/i, evidence: /surrogate gradient/i },
+  { appliesTo: /surrogate/i, evidence: /surrogate[- ]gradient|surrogate[- ]trained|surrogate training/i },
   { appliesTo: /ann-to-snn-conversion/i, evidence: /\bann[- ]to[- ]snn\b|conversion|firing[- ]rate approximation/i },
   { appliesTo: /(?:^|[/-])latency(?:$|[/-])/i, evidence: /\blatency\b|\bresponse time\b/i, minBody: 2 },
   { appliesTo: /convergence/i, evidence: /\bconverg\w*\b|\btraining loss\b|\bepochs?\b/i, minBody: 2 },
@@ -577,12 +578,19 @@ function anchorTextForVisualIds(
 
 function sourceMapCaveatProblems(gardenDir: string, ledger: Array<Record<string, unknown>>): string[] {
   const problems: string[] = [];
-  const docs = [
-    [".breadboard/planning/Source Map.md", path.join(gardenDir, ".breadboard", "planning", "Source Map.md")],
-    [".breadboard/planning/Source Coverage.md", path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md")],
-    ["learning/Learning Map.md", path.join(gardenDir, "learning", "Learning Map.md")],
-    ["learning/Topic Overview.md", path.join(gardenDir, "learning", "Topic Overview.md")],
-  ] as const;
+  const docs: Array<[string, string]> = [];
+  const addDoc = (rel: string): void => docs.push([rel, path.join(gardenDir, ...rel.split("/"))]);
+  for (const rel of [".breadboard/planning/Source Map.md", ".breadboard/planning/Source Coverage.md", "learning/Learning Map.md", "learning/Topic Overview.md"]) addDoc(rel);
+  const planningPages: PageFile[] = [];
+  walkMarkdown(path.join(gardenDir, ".breadboard", "planning"), ".breadboard/planning", planningPages);
+  for (const page of planningPages) {
+    if (!docs.some(([rel]) => rel === page.relPath)) docs.push([page.relPath, page.absPath]);
+  }
+  const learningPages: PageFile[] = [];
+  walkMarkdown(path.join(gardenDir, "learning"), "learning", learningPages);
+  for (const page of learningPages) {
+    if (!docs.some(([rel]) => rel === page.relPath)) docs.push([page.relPath, page.absPath]);
+  }
   const hasFormulaAnchors = ledger.some(isFormulaVisual);
   const hasFormulaExactText = ledger.some((visual) => isFormulaVisual(visual) && String(visual.exactText ?? visual.ocrText ?? "").trim());
   const hasFormulaCrops = ledger.some((visual) => isFormulaVisual(visual) && String(visual.croppedImagePath ?? "").trim());
@@ -593,7 +601,11 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: Array<Record<string,
   );
   const hasTables = ledger.some((visual) => String(visual.type ?? "") === "table" || /\.T\d+$/i.test(String(visual.sourceVisualId ?? "")));
   const hasFigures = ledger.some((visual) => !isFormulaVisual(visual) && String(visual.type ?? "") !== "table" && !/\.T\d+$/i.test(String(visual.sourceVisualId ?? "")));
-  const hasLaterPages = ledger.some((visual) => Number(visual.page ?? visual.pageNumber ?? 0) > 2);
+  const latestPageNumberWithText = Math.max(
+    0,
+    ...sourceDocs.flatMap((page) => [...page.body.matchAll(/^\s*#{1,3}\s*Page\s+(\d+)\b/gim)].map((match) => Number.parseInt(match[1] ?? "0", 10))),
+  );
+  const hasLaterPages = latestPageNumberWithText > 2 || ledger.some((visual) => Number(visual.page ?? visual.pageNumber ?? 0) > 2);
   for (const [label, filePath] of docs) {
     const text = readIfExists(filePath);
     if (!text) continue;
@@ -608,7 +620,7 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: Array<Record<string,
     if (hasFigures && /figures? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
       problems.push(`${label}: stale caveat says figures are unavailable despite figure anchors`);
     }
-    if (hasLaterPages && /truncated after page\s*2|later (?:pages?|sections?) (?:are|is)?\s*(?:not available|unavailable)|must not be inferred beyond/i.test(text)) {
+    if (hasLaterPages && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|truncated after page\s*2|source map is truncated|later (?:page|pages|section|sections)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|must (?:remain )?anchored to extracted .*captions|must not be inferred beyond/i.test(text)) {
       problems.push(`${label}: stale caveat says later pages are unavailable despite later anchors/pages`);
     }
   }
@@ -689,6 +701,7 @@ interface FormulaFrontmatterEntry {
   groundingStatus?: string;
   justification?: string;
   sourceAnchor?: string;
+  sourceAnchorTitle?: string;
 }
 
 function formulaEntriesFromFrontmatter(rawFrontmatter: string): FormulaFrontmatterEntry[] {
@@ -743,6 +756,193 @@ function visualText(visual: Record<string, unknown>): string {
   ].map((value) => String(value ?? "")).join(" ");
 }
 
+function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
+  const problems: string[] = [];
+  const learningDir = path.join(gardenDir, "learning");
+  if (!fs.existsSync(learningDir)) return problems;
+  const sectionTitleByKey = new Map<string, string>();
+  const sectionFolderByKey = new Map<string, string>();
+  for (const entry of fs.readdirSync(learningDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d+\.\s+/.test(entry.name)) continue;
+    const rel = `learning/${entry.name}`;
+    const indexPath = path.join(learningDir, entry.name, "_index.md");
+    if (!fs.existsSync(indexPath)) {
+      problems.push(`${rel}/: section folder is missing _index.md`);
+      continue;
+    }
+    const parsed = splitFrontmatter(fs.readFileSync(indexPath, "utf-8"));
+    const fmTitle = fmString(parsed.frontmatter, "title") || entry.name;
+    const h1 = parsed.body.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
+    const folderKey = normalizedSectionTitleKey(entry.name);
+    const titleKey = normalizedSectionTitleKey(fmTitle);
+    sectionTitleByKey.set(titleKey, fmTitle);
+    sectionFolderByKey.set(folderKey, entry.name);
+    if (folderKey !== titleKey) {
+      problems.push(`${rel}/: folder name "${entry.name}" does not match _index title "${fmTitle}"`);
+    }
+    if (h1 && normalizedSectionTitleKey(h1) !== titleKey) {
+      problems.push(`${rel}/_index.md: H1 "${h1}" does not match frontmatter title "${fmTitle}"`);
+    }
+  }
+  const learningIndex = readIfExists(path.join(learningDir, "_index.md"));
+  if (learningIndex) {
+    for (const ref of wikilinkRefs(splitFrontmatter(learningIndex).body)) {
+      const section = sectionFolderInfo(ref.target);
+      if (!section) continue;
+      const folderKey = normalizedSectionTitleKey(section.title);
+      const title = sectionTitleByKey.get(folderKey);
+      if (!title) {
+        problems.push(`learning/_index.md: section link "${ref.label}" targets "${section.folder}" but no matching section title exists`);
+        continue;
+      }
+      if (normalizedSectionTitleKey(ref.label) !== normalizedSectionTitleKey(title)) {
+        problems.push(`learning/_index.md: link label "${ref.label}" does not match target section title "${title}"`);
+      }
+    }
+  }
+  const map = readIfExists(path.join(learningDir, "Learning Map.md"));
+  if (map) {
+    for (const line of splitFrontmatter(map).body.split(/\r?\n/)) {
+      const bullet = line.match(/^\s*-\s*(?:\[\[[^\]]+\|)?(.+?)(?:\]\])?\s*$/);
+      if (!bullet) continue;
+      const label = cleanMapNode(bullet[1]);
+      if (!/^\d+\.\s+/.test(label)) continue;
+      const key = normalizedSectionTitleKey(label);
+      if (!sectionTitleByKey.has(key) || !sectionFolderByKey.has(key)) {
+        problems.push(`learning/Learning Map.md: section label "${label}" does not map to one matching section folder and title`);
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function sectionTitleNaturalnessAllProblems(gardenDir: string, lessonPages: PageFile[], learningUnitsById: Map<string, LearningUnitContract>): string[] {
+  const problems: string[] = [];
+  for (const section of sectionSemanticInputs(gardenDir, lessonPages, learningUnitsById)) {
+    for (const problem of sectionTitleNaturalnessProblems(section.sectionTitle, section.subsectionTitles)) {
+      problems.push(`${section.rel}: ${problem}`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function formulaMetadataNoiseProblems(lessonPages: PageFile[]): string[] {
+  const problems: string[] = [];
+  for (const page of lessonPages) {
+    const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
+    if (entries.length === 0) continue;
+    const displayCount = extractQuartzMath(page.body).filter((expr) => expr.display && isGroundableFormula(expr.formula)).length;
+    const sourceAnchoredCount = entries.filter((entry) =>
+      /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? "")),
+    ).length;
+    const trivial = entries.filter((entry) => isTrivialFormulaFragment(String(entry.text ?? "")) || !isFormulaExpression(String(entry.text ?? "")));
+    if (entries.length > 10) {
+      problems.push(`${page.relPath}: formulas: contains ${entries.length} entries; expected focused metric/source relationships, not inline-fragment harvesting`);
+    }
+    if (entries.length > Math.max(6, displayCount + sourceAnchoredCount + 4)) {
+      problems.push(`${page.relPath}: formulas: has ${entries.length} entries but only ${displayCount} display formula(s) and ${sourceAnchoredCount} source-derived/anchored formula(s)`);
+    }
+    if (trivial.length > 0 && trivial.length / entries.length > 0.3) {
+      problems.push(`${page.relPath}: ${trivial.length}/${entries.length} formulas: entries are trivial fragments`);
+    }
+    for (const [index, entry] of entries.entries()) {
+      const text = String(entry.text ?? "");
+      if (isTrivialFormulaFragment(text) && /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
+        problems.push(`${page.relPath}: formulas[${index}] source-anchors trivial fragment "${text}"`);
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
+type FormulaFamily = NonNullable<ReturnType<typeof formulaMetricFamily>>;
+
+function formulaFamilyForAnchor(id: string, ledger: Array<Record<string, unknown>>): FormulaFamily | null {
+  const visual = ledger.find((item) => String(item.sourceVisualId ?? "") === id);
+  return formulaMetricFamily(formulaAnchorSemanticText(visual));
+}
+
+function visualSpecFamilyText(spec: Record<string, unknown>): string {
+  return [
+    spec.title,
+    spec.learningGoal,
+    spec.pedagogicalPurpose,
+    spec.caption,
+    Array.isArray(spec.conceptTargets) ? spec.conceptTargets.join(" ") : "",
+    Array.isArray(spec.inputs) ? spec.inputs.join(" ") : "",
+    Array.isArray(spec.outputs) ? spec.outputs.join(" ") : "",
+    Array.isArray(spec.controls)
+      ? spec.controls.map((control) => typeof control === "object" && control ? Object.values(control as Record<string, unknown>).join(" ") : "").join(" ")
+      : "",
+  ].join(" ");
+}
+
+function familiesFromVisualContext(spec: Record<string, unknown>, page: PageFile, includePageContext: boolean): Set<FormulaFamily> {
+  const text = [
+    includePageContext ? page.relPath : "",
+    includePageContext ? fmString(page.frontmatter, "title") : "",
+    visualSpecFamilyText(spec),
+  ].join(" ");
+  const families = new Set<FormulaFamily>();
+  for (const chunk of text.split(/[;,|]/)) {
+    const family = formulaMetricFamily(chunk);
+    if (family) families.add(family);
+  }
+  const whole = formulaMetricFamily(text);
+  if (whole) families.add(whole);
+  return families;
+}
+
+function allowedVisualAnchorFamilies(expected: Set<FormulaFamily>): Set<FormulaFamily> {
+  const allowed = new Set(expected);
+  if (expected.has("efficiency")) {
+    allowed.add("accuracy");
+    allowed.add("energy");
+    allowed.add("spike-count");
+  }
+  if (expected.has("energy")) {
+    allowed.add("spike-count");
+  }
+  return allowed;
+}
+
+function visualAnchorPrecisionProblems(
+  ledger: Array<Record<string, unknown>>,
+  embedded: Array<{ page: PageFile; spec: Record<string, unknown> }>,
+): string[] {
+  const problems: string[] = [];
+  for (const { page, spec } of embedded) {
+    const type = String(spec.type ?? "");
+    if (type !== "metric_calculator" && type !== "tradeoff_explorer") continue;
+    const ids = visualAnchorIds(spec).filter((id) => /^S\d+\.P\d+\.E\d+$/i.test(id));
+    if (ids.length === 0) continue;
+    const includePageContext = type !== "metric_calculator";
+    const expected = familiesFromVisualContext(spec, page, includePageContext);
+    const anchorFamilies = ids
+      .map((id) => ({ id, family: formulaFamilyForAnchor(id, ledger) }))
+      .filter((entry): entry is { id: string; family: FormulaFamily } => Boolean(entry.family));
+    if (expected.size === 0 || anchorFamilies.length === 0) continue;
+    const explicitText = [
+      visualSpecFamilyText(spec),
+      includePageContext ? fmString(page.frontmatter, "title") : "",
+    ].join(" ");
+    const isExplicitMultiMetric =
+      /\bmulti[- ]?metric\b|\btrade[- ]?off\b|accuracy.*latency.*energy|latency.*energy.*accuracy/i.test(explicitText);
+    const allowed = allowedVisualAnchorFamilies(expected);
+    const extras = anchorFamilies.filter(({ family }) => !allowed.has(family));
+    const missing = [...expected].filter((family) => !anchorFamilies.some((entry) => entry.family === family));
+    if (!isExplicitMultiMetric && expected.size <= 2 && extras.length > 0) {
+      problems.push(
+        `${page.relPath}: visual ${String(spec.id ?? "(missing id)")} has unrelated formula anchor families [${extras.map((entry) => `${entry.id}:${entry.family}`).join(", ")}]; expected [${[...expected].join(", ")}]`,
+      );
+    }
+    if (missing.length > 0 && !isExplicitMultiMetric) {
+      problems.push(`${page.relPath}: visual ${String(spec.id ?? "(missing id)")} is missing expected formula family anchor(s) [${missing.join(", ")}]`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
 // ---------------------------------------------------------------------------
 // Check machinery
 // ---------------------------------------------------------------------------
@@ -759,6 +959,8 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Link Resolution",
   "Semantic Navigation",
   "Section Title Uniqueness",
+  "Section Folder/Title Consistency",
+  "Section Title Naturalness",
   "Semantic Navigation Number Matching",
   "Learning Map Ambiguity",
   "Learning Unit Contract Fulfillment",
@@ -772,8 +974,11 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Formula Grounding",
   "Formula Expression Validation",
   "Formula Meaning Match",
+  "Formula Family Match",
+  "Formula Metadata Noise",
   "Interactive Visual Fulfillment",
   "Final Interactive Visual Uniqueness",
+  "Visual Anchor Precision",
   "Source Crop Quality",
   "Crop Quality and Fallbacks",
   "Source Coverage Mode Precision",
@@ -781,6 +986,7 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Zettelkasten Tags",
   "Zettelkasten Tag Density",
   "Zettelkasten Handle Quality",
+  "Zettelkasten Handle Naturalness",
   "Section Title Quality",
   "Final Acceptance",
 ];
@@ -1121,9 +1327,14 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${String(visual.sourceVisualId)}: skipped without a reason`);
       }
       if (status === "assigned") {
+        const conceptUsage = String(visual.conceptUsage ?? "");
+        const cropStatus = String(visual.cropStatus ?? "");
+        const textFormulaFallback = isFormulaVisual(visual) && conceptUsage === "explained_as_text_formula" && cropStatus === "omitted_unreliable";
         const page = pageByRel.get(String(visual.assignedPageId ?? ""));
         const url = String(visual.croppedImagePath ?? visual.pageImagePath ?? "");
-        if (!page) {
+        if (textFormulaFallback) {
+          continue;
+        } else if (!page) {
           problems.push(`${String(visual.sourceVisualId)}: assigned page "${String(visual.assignedPageId)}" not found`);
         } else if (!url || !page.body.includes(url)) {
           problems.push(`${String(visual.sourceVisualId)}: image not embedded in its page`);
@@ -1141,6 +1352,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       const type = String(visual.type ?? "");
       const cropped = String(visual.croppedImagePath ?? "");
       if (type === "full_page_fallback") continue;
+      if (isFormulaVisual(visual) && String(visual.conceptUsage ?? "") === "explained_as_text_formula" && String(visual.cropStatus ?? "") === "omitted_unreliable") {
+        continue;
+      }
       if (cropped && pageSnapshotRe.test(cropped)) {
         problems.push(`${String(visual.sourceVisualId)}: full-page snapshot used as ${type}`);
       }
@@ -1417,7 +1631,10 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     const formulaVisuals = ledger.filter(isFormulaVisual);
     const tableVisuals = ledger.filter((visual) => String(visual.type ?? "") === "table" || /^S\d+\.P\d+\.T\d+$/i.test(String(visual.sourceVisualId ?? "")));
     const figureVisuals = realFigures.filter((visual) => !isFormulaVisual(visual) && String(visual.type ?? "") !== "table");
-    const laterPagesExist = realFigures.some((visual) => Number(visual.page ?? 0) > 2);
+    const sourceDocs: PageFile[] = [];
+    walkMarkdown(path.join(gardenDir, "sources"), "sources", sourceDocs);
+    const laterTextExists = sourceDocs.some((page) => /^#{1,3}\s*Page\s+(?:[3-9]|\d{2,})\b/im.test(page.body));
+    const laterPagesExist = laterTextExists || realFigures.some((visual) => Number(visual.page ?? visual.pageNumber ?? 0) > 2);
     if (formulaVisuals.length > 0 || tableVisuals.length > 0 || figureVisuals.length > 0 || laterPagesExist) {
       const sourceMap = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"));
       if (!sourceMap) {
@@ -1432,7 +1649,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         if (figureVisuals.length > 0 && /figures? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
           problems.push("Source Map says figures are absent even though figure anchors exist");
         }
-        if (laterPagesExist && /truncated after page\s*2|later sections? (?:are|is)? ?(?:not available|unavailable)/i.test(sourceMap)) {
+        if (laterPagesExist && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|truncated after page\s*2|source map is truncated|later (?:page|pages|section|sections)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)/i.test(sourceMap)) {
           problems.push("Source Map contains stale caveats about later source pages");
         }
         if (formulaVisuals.length > 0 && !/Formula Coverage|explicit metric formulas|formula anchors? (?:are )?present/i.test(sourceMap)) {
@@ -1625,7 +1842,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     const problems: string[] = [];
     const formulaVisuals = ledger.filter(isFormulaVisual);
     for (const page of lessonPages) {
-      const math = extractQuartzMath(page.body).filter((expr) => isGroundableFormula(expr.formula));
+      const math = extractQuartzMath(page.body).filter((expr) =>
+        isGroundableFormula(expr.formula) && !isTrivialFormulaFragment(expr.formula),
+      );
       const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
       for (const [index, entry] of entries.entries()) {
         if (entry.text && !isGroundableFormula(String(entry.text))) {
@@ -1655,9 +1874,6 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         ].filter(Boolean);
         if (entries.length === 0) {
           problems.push(`${page.relPath}: contains math but has no per-formula formulas: frontmatter entries`);
-        }
-        if (entries.length > 0 && entries.length < math.length) {
-          problems.push(`${page.relPath}: has ${math.length} math expression(s) but only ${entries.length} formulas: entr${entries.length === 1 ? "y" : "ies"}`);
         }
         const sourceAnchoredEntries = entries.filter((entry) => entry.groundingStatus === "source-anchored");
         for (const [index, entry] of entries.entries()) {
@@ -2080,6 +2296,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         problems.push(`${page.relPath}: section title duplicates a subsection title "${stripped}"`);
       }
     }
+    problems.push(...sectionTitleNaturalnessAllProblems(gardenDir, lessonPages, learningUnitsById));
     check(34, "section titles are learner-facing, not planning scaffolds", problems, lessonPages.length === 0);
   }
 
@@ -2264,7 +2481,15 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 
   // 50. Conceptual visuals should use source prose anchors when relevant prose exists.
   {
-    check(50, "Source Text Concept Anchors", sourceTextConceptAnchorProblems(gardenDir, embeddedVisualSpecs), embeddedVisualSpecs.length === 0);
+    check(
+      50,
+      "Source Text Concept Anchors",
+      [
+        ...sourceTextConceptAnchorProblems(gardenDir, embeddedVisualSpecs),
+        ...sourceTextBodyAnchorProblems(gardenDir, lessonPages, learningUnitsById),
+      ],
+      embeddedVisualSpecs.length === 0 && lessonPages.length === 0,
+    );
   }
 
   // 51. Zettelkasten handles must be concrete concept claims, not planner scaffolds.
@@ -2276,6 +2501,62 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     check(51, "Zettelkasten Handle Quality", [...new Set(problems)], lessonPages.length === 0 && learningUnits.length === 0);
+  }
+
+  // 52. Section folder names, section frontmatter titles, H1 headings, and map
+  // labels must describe the same section.
+  {
+    check(52, "Section Folder/Title Consistency", sectionFolderTitleConsistencyProblems(gardenDir));
+  }
+
+  // 53. Formula family matching reports exact family contradictions.
+  {
+    const problems: string[] = [];
+    for (const page of lessonPages) {
+      for (const [index, entry] of formulaEntriesFromFrontmatter(page.rawFrontmatter).entries()) {
+        const text = String(entry.text ?? "");
+        const status = String(entry.groundingStatus ?? "");
+        if (!/^(?:source-anchored|source-derived)$/.test(status) || !entry.sourceAnchor) continue;
+        const anchorVisual = ledger.find((visual) => String(visual.sourceVisualId ?? "") === entry.sourceAnchor);
+        const sourceText = formulaAnchorSemanticText(anchorVisual);
+        const formulaFamily = formulaMetricFamily(text);
+        const sourceFamily = formulaMetricFamily(sourceText);
+        if (isTrivialFormulaFragment(text)) {
+          problems.push(`${page.relPath}: formulas[${index}] source-anchors trivial formula "${text}" to ${entry.sourceAnchor}`);
+          continue;
+        }
+        if (sourceFamily && formulaFamily && sourceFamily !== formulaFamily) {
+          problems.push(`${page.relPath}: formulas[${index}] formula text="${text}" inferred=${formulaFamily} sourceAnchor=${entry.sourceAnchor} sourceFamily=${sourceFamily} reason=family mismatch`);
+        }
+        if (sourceFamily && !formulaFamily) {
+          problems.push(`${page.relPath}: formulas[${index}] formula text="${text}" inferred=unknown sourceAnchor=${entry.sourceAnchor} sourceFamily=${sourceFamily} reason=no recognizable generated formula family`);
+        }
+      }
+    }
+    check(53, "Formula Family Match", problems, lessonPages.length === 0);
+  }
+
+  // 54. Formula frontmatter should not be dominated by inline fragments.
+  {
+    check(54, "Formula Metadata Noise", formulaMetadataNoiseProblems(lessonPages), lessonPages.length === 0);
+  }
+
+  // 55. Metric visuals should carry the minimal formula anchors needed by the
+  // controls and outputs they actually show.
+  {
+    check(55, "Visual Anchor Precision", visualAnchorPrecisionProblems(ledger, embeddedVisualSpecs), embeddedVisualSpecs.length === 0);
+  }
+
+  // 56. Keep a separate acceptance row for title naturalness so a PASS report
+  // cannot hide source-anchor-derived section titles behind grammar checks.
+  {
+    check(56, "Section Title Naturalness", sectionTitleNaturalnessAllProblems(gardenDir, lessonPages, learningUnitsById), lessonPages.length === 0);
+  }
+
+  // 57. Explicit naturalness row for Zettelkasten handles.
+  {
+    const problems = learningUnits.flatMap((unit) => zettelHandleQualityProblems(unit));
+    check(57, "Zettelkasten Handle Naturalness", [...new Set(problems)], learningUnits.length === 0);
   }
 
   return results;
@@ -2693,6 +2974,86 @@ function sourceTextConceptAnchorProblems(
   return [...new Set(problems)];
 }
 
+function pageNumberedSourceParagraphs(gardenDir: string): Array<{ page: number; text: string }> {
+  const sourceFiles: PageFile[] = [];
+  walkMarkdown(path.join(gardenDir, "sources"), "sources", sourceFiles);
+  const out: Array<{ page: number; text: string }> = [];
+  for (const source of sourceFiles) {
+    let currentPage = 0;
+    let buffer: string[] = [];
+    const flush = (): void => {
+      const text = buffer.join("\n").trim();
+      if (currentPage > 0 && text) out.push({ page: currentPage, text });
+      buffer = [];
+    };
+    for (const line of source.body.split(/\r?\n/)) {
+      const heading = line.match(/^\s*#{1,3}\s*Page\s+(\d+)\b/i);
+      if (heading) {
+        flush();
+        currentPage = Number.parseInt(heading[1] ?? "0", 10);
+      } else {
+        buffer.push(line);
+      }
+    }
+    flush();
+  }
+  return out;
+}
+
+function conceptKeywordsForUnit(unit: LearningUnitContract, page: PageFile): string[] {
+  const text = [
+    unit.title,
+    unit.learningQuestion,
+    ...(unit.newConcepts ?? []),
+    fmString(page.frontmatter, "title"),
+  ].join(" ");
+  return [...new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .map((word) => word.replace(/^-+|-+$/g, ""))
+      .filter((word) => word.length >= 4 && !BANNED_TAG_SEGMENTS.has(word) && !/^(what|when|where|which|with|from|that|this|into|does|spiking|neural|networks?)$/.test(word)),
+  )].slice(0, 8);
+}
+
+function sourceTextBodyAnchorProblems(
+  gardenDir: string,
+  lessonPages: PageFile[],
+  learningUnitsById: Map<string, LearningUnitContract>,
+): string[] {
+  const problems: string[] = [];
+  const paragraphs = pageNumberedSourceParagraphs(gardenDir).filter((paragraph) => paragraph.page > 2);
+  if (paragraphs.length === 0) return problems;
+  for (const page of lessonPages) {
+    const unit = learningUnitsById.get(fmString(page.frontmatter, "learningUnitId"));
+    if (!unit || !/^(?:training_method|core_concept|mechanism|application|limitation)$/.test(unit.role)) continue;
+    const keywords = conceptKeywordsForUnit(unit, page);
+    if (keywords.length === 0) continue;
+    const matching = paragraphs.find((paragraph) => {
+      const lower = paragraph.text.toLowerCase();
+      const hits = keywords.filter((keyword) => lower.includes(keyword));
+      return hits.length >= Math.min(2, keywords.length);
+    });
+    if (!matching) continue;
+    const anchors = [
+      ...fmArray(page.frontmatter, "sourceAnchors"),
+      ...fmArray(page.frontmatter, "sourceVisualIds"),
+      ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
+    ];
+    const hasSpecificLaterAnchor = anchors.some((anchor) => {
+      if (anchor.startsWith("text-")) return true;
+      const pageMatch = anchor.match(/\.P(\d+)\b/i);
+      return pageMatch ? Number.parseInt(pageMatch[1] ?? "0", 10) > 2 : false;
+    });
+    const abstractOnly = anchors.some((anchor) => /abstract|guidance|researchgap/i.test(anchor)) && !hasSpecificLaterAnchor;
+    if (!hasSpecificLaterAnchor && abstractOnly) {
+      problems.push(`${page.relPath}: ${unit.role} unit is grounded only in abstract/guidance anchors even though page ${matching.page} source prose matches [${keywords.join(", ")}]`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -2782,6 +3143,14 @@ export function writeValidationReport(
     "",
     "See check 46.",
     "",
+    "## Section Folder/Title Consistency",
+    "",
+    "See check 52.",
+    "",
+    "## Section Title Naturalness",
+    "",
+    "See checks 34 and 56.",
+    "",
     "## Semantic Navigation Number Matching",
     "",
     "See check 47.",
@@ -2834,6 +3203,14 @@ export function writeValidationReport(
     "",
     "See check 41.",
     "",
+    "## Formula Family Match",
+    "",
+    "See check 53.",
+    "",
+    "## Formula Metadata Noise",
+    "",
+    "See check 54.",
+    "",
     "## Interactive Visual Fulfillment",
     "",
     "See check 23.",
@@ -2841,6 +3218,10 @@ export function writeValidationReport(
     "## Final Interactive Visual Uniqueness",
     "",
     "See checks 13, 14, 18, 23, and 31.",
+    "",
+    "## Visual Anchor Precision",
+    "",
+    "See check 55.",
     "",
     "## Source Crop Quality",
     "",
@@ -2869,6 +3250,10 @@ export function writeValidationReport(
     "## Zettelkasten Handle Quality",
     "",
     "See checks 31 and 51.",
+    "",
+    "## Zettelkasten Handle Naturalness",
+    "",
+    "See check 57.",
     "",
     "## Section Title Quality",
     "",

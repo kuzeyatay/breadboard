@@ -9,7 +9,7 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 Excitation, Inhibition, and Winner-Take-All Competition Accuracy Formula, Correct Prediction Count, Total Prediction Coun... ]]></description>
+    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 Excitation, Inhibition, and Winner-Take-All Competition Measuring Accuracy, Latency, and Spike Count 2.1 Accuracy as Corr... ]]></description>
     <pubDate>Mon, 06 Jul 2026 19:54:23 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
@@ -23,12 +23,6 @@
     <guid>https://localhost:8081/test-2/learning/</guid>
     <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spiking neural networks compute with timed events, interpret their neuron and network mechanisms, evaluate them with deployment metrics, compare major training strategies, and choose an SNN approach for latency-, energy-, or accuracy-const... ]]></description>
     <pubDate>Mon, 06 Jul 2026 19:54:23 GMT</pubDate>
-  </item><item>
-    <title>1. Why SNNs Need Events</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</guid>
-    <description><![CDATA[ 1. Why SNNs Need Events Build up why snns need events one step at a time. ]]></description>
-    <pubDate>Mon, 06 Jul 2026 19:53:32 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</link>
@@ -54,16 +48,22 @@
     <description><![CDATA[ Excitation, Inhibition, and Winner-Take-All Competition A single spiking neuron can already do something useful: it can collect incoming spike events, let its membrane potential rise, and fire when the accumulated evidence crosses a threshold. ]]></description>
     <pubDate>Mon, 06 Jul 2026 19:53:32 GMT</pubDate>
   </item><item>
-    <title>2. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics</title>
-    <link>https://localhost:8081/test-2/learning/2.-Accuracy-Formula,-Correct-Prediction-Count,-Total-Prediction-Count-Formula-Mechanics/</link>
-    <guid>https://localhost:8081/test-2/learning/2.-Accuracy-Formula,-Correct-Prediction-Count,-Total-Prediction-Count-Formula-Mechanics/</guid>
-    <description><![CDATA[ 2. ]]></description>
+    <title>1. Why SNNs Need Events</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</guid>
+    <description><![CDATA[ 1. Why SNNs Need Events Build up why snns need events one step at a time. ]]></description>
     <pubDate>Mon, 06 Jul 2026 19:53:32 GMT</pubDate>
   </item><item>
     <title>2.1 Accuracy as Correct Decisions</title>
-    <link>https://localhost:8081/test-2/learning/2.-Accuracy-Formula,-Correct-Prediction-Count,-Total-Prediction-Count-Formula-Mechanics/2.1-Accuracy-as-Correct-Decisions</link>
-    <guid>https://localhost:8081/test-2/learning/2.-Accuracy-Formula,-Correct-Prediction-Count,-Total-Prediction-Count-Formula-Mechanics/2.1-Accuracy-as-Correct-Decisions</guid>
+    <link>https://localhost:8081/test-2/learning/2.-Measuring-Accuracy,-Latency,-and-Spike-Count/2.1-Accuracy-as-Correct-Decisions</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Measuring-Accuracy,-Latency,-and-Spike-Count/2.1-Accuracy-as-Correct-Decisions</guid>
     <description><![CDATA[ After you already know what a prediction is, accuracy gives you a compact way to judge a model’s decisions across many prediction attempts. ]]></description>
+    <pubDate>Mon, 06 Jul 2026 19:53:32 GMT</pubDate>
+  </item><item>
+    <title>2.2 Latency as Time to Decision</title>
+    <link>https://localhost:8081/test-2/learning/2.-Measuring-Accuracy,-Latency,-and-Spike-Count/2.2-Latency-as-Time-to-Decision</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Measuring-Accuracy,-Latency,-and-Spike-Count/2.2-Latency-as-Time-to-Decision</guid>
+    <description><![CDATA[ After tracking whether an SNN makes the correct decision, the natural follow-up is how quickly that decision appears. ]]></description>
     <pubDate>Mon, 06 Jul 2026 19:53:32 GMT</pubDate>
   </item>
     </channel>

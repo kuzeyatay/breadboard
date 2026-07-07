@@ -39,7 +39,7 @@ Only then compare training strategies. Surrogate-gradient SNNs are useful when n
 
 ## Recommended Reading Order
 
-1. [[learning/1. Why SNNs Need Events/_index|Why SNNs Need Events]]
+1. [[learning/1. Why SNNs Need Events/_index|1. Why SNNs Need Events]]
    Begin here if you want the motivation. This section explains why dense synchronous computation can be a poor fit for low-power temporal tasks, and why SNNs are best understood as a different tradeoff space rather than a universal replacement for ANNs.
 
 2. [[learning/1. Why SNNs Need Events/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
@@ -54,31 +54,31 @@ Only then compare training strategies. Surrogate-gradient SNNs are useful when n
 5. [[learning/1. Why SNNs Need Events/1.4 Excitation, Inhibition, and Winner-Take-All Competition|Excitation, Inhibition, and Winner-Take-All Competition]]
    Move from isolated neurons to network decisions, including excitatory populations, inhibitory populations, lateral inhibition, and winner-take-all behavior.
 
-6. [[learning/2. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics/_index|Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics]]
+6. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics
    Learn how correctness is measured before mixing accuracy with cost metrics.
 
-7. [[learning/2. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics/2.1 Accuracy as Correct Decisions|Accuracy as Correct Decisions]]
+7. [[learning/2. Measuring Accuracy, Latency, and Spike Count/2.1 Accuracy as Correct Decisions|Accuracy as Correct Decisions]]
    See why accuracy is a fraction of correct predictions over total predictions, and why it does not measure speed or energy.
 
-8. [[learning/2. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics/2.2 Latency as Time to Decision|Latency as Time to Decision]]
+8. [[learning/2. Measuring Accuracy, Latency, and Spike Count/2.2 Latency as Time to Decision|Latency as Time to Decision]]
    Learn latency as the elapsed time between stimulus arrival and model decision.
 
-9. [[learning/2. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics/2.3 Spike Count as Computational Activity|Spike Count as Computational Activity]]
+9. [[learning/2. Measuring Accuracy, Latency, and Spike Count/2.3 Spike Count as Computational Activity|Spike Count as Computational Activity]]
    Learn why counting spikes helps estimate how much event-driven activity the network performs.
 
-10. [[learning/3. Total Energy, Spike Cost, Synaptic Operation Cost Formula Mechanics/_index|Total Energy, Spike Cost, Synaptic Operation Cost Formula Mechanics]]
+10. Total Energy, Spike Cost, Synaptic Operation Cost Formula Mechanics
     Extend spike activity into energy per inference.
 
-11. [[learning/3. Total Energy, Spike Cost, Synaptic Operation Cost Formula Mechanics/3.1 Energy per Inference|Energy per Inference]]
+11. [[learning/3. Measuring Energy, Efficiency, and Convergence/3.1 Energy per Inference|Energy per Inference]]
     Learn how total energy combines spike-event costs and synaptic-operation costs.
 
-12. [[learning/3. Total Energy, Spike Cost, Synaptic Operation Cost Formula Mechanics/3.2 Normalized Energy Efficiency|Normalized Energy Efficiency]]
+12. [[learning/3. Measuring Energy, Efficiency, and Convergence/3.2 Normalized Energy Efficiency|Normalized Energy Efficiency]]
     Learn why accuracy per joule is different from highest accuracy or lowest energy alone.
 
-13. [[learning/3. Total Energy, Spike Cost, Synaptic Operation Cost Formula Mechanics/3.3 Convergence Time|Convergence Time]]
+13. [[learning/3. Measuring Energy, Efficiency, and Convergence/3.3 Convergence Time|Convergence Time]]
     Learn how training speed is measured by the earliest epoch at which a model reaches a target accuracy.
 
-14. [[learning/4. How SNNs Learn and Are Evaluated/_index|How SNNs Learn and Are Evaluated]]
+14. [[learning/4. How SNNs Learn and Are Evaluated/_index|4. How SNNs Learn and Are Evaluated]]
     Use this section to compare the major SNN training approaches.
 
 15. [[learning/4. How SNNs Learn and Are Evaluated/4.1 Surrogate-Gradient Training|Surrogate-Gradient Training]]
@@ -93,25 +93,25 @@ Only then compare training strategies. Surrogate-gradient SNNs are useful when n
 18. [[learning/4. How SNNs Learn and Are Evaluated/4.4 Why Accuracy Is Not Enough|Why Accuracy Is Not Enough]]
     Use this as the turning point from single-metric evaluation to deployment-aware comparison.
 
-19. [[learning/5. What the Results Show/_index|What the Results Show]]
+19. What the Results Show
     Interpret the reported model comparisons across accuracy, energy, latency, spike count, training loss, and training accuracy.
 
-20. [[learning/5. What the Results Show/5.1 Accuracy and Energy Tradeoffs Across Models|Accuracy and Energy Tradeoffs Across Models]]
+20. [[learning/5. The Metrics That Make SNNs Measurable/5.1 Accuracy and Energy Tradeoffs Across Models|Accuracy and Energy Tradeoffs Across Models]]
     Learn why model rankings change when accuracy and energy are considered together.
 
-21. [[learning/5. What the Results Show/5.2 Latency Comparisons Across Models|Latency Comparisons Across Models]]
+21. [[learning/5. The Metrics That Make SNNs Measurable/5.2 Latency Comparisons Across Models|Latency Comparisons Across Models]]
     Learn which SNN approach is favored when fast decisions matter most.
 
-22. [[learning/5. What the Results Show/5.3 Energy and Spike Count Comparisons|Energy and Spike Count Comparisons]]
+22. [[learning/5. The Metrics That Make SNNs Measurable/5.3 Energy and Spike Count Comparisons|Energy and Spike Count Comparisons]]
     Learn how spike count and energy expose costs that accuracy can hide.
 
-23. [[learning/5. What the Results Show/5.4 Training Loss Across Epochs|Training Loss Across Epochs]]
+23. [[learning/5. The Metrics That Make SNNs Measurable/5.4 Training Loss Across Epochs|Training Loss Across Epochs]]
     Learn how convergence appears as a curve over epochs rather than a single final score.
 
-24. [[learning/5. What the Results Show/5.5 Training Accuracy Across Epochs|Training Accuracy Across Epochs]]
+24. [[learning/5. The Metrics That Make SNNs Measurable/5.5 Training Accuracy Across Epochs|Training Accuracy Across Epochs]]
     Learn how accuracy curves clarify fast convergence, including the reported surrogate-gradient convergence around 20 epochs.
 
-25. [[learning/6. Where SNNs Fit and What Still Blocks Adoption/_index|Where SNNs Fit and What Still Blocks Adoption]]
+25. [[learning/6. Where SNNs Fit and What Still Blocks Adoption/_index|6. Where SNNs Fit and What Still Blocks Adoption]]
     Finish with applications, hardware context, strategy choice, and limitations.
 
 26. [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.1 Neuromorphic Hardware for Spiking Computation|Neuromorphic Hardware for Spiking Computation]]

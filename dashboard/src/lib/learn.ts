@@ -59,7 +59,9 @@ import {
   containsRawVisualPlaceholder,
   ensureQuestionBlock,
   fallbackLearningMapFromSources,
+  formulaMetricFamily,
   isGroundableFormula,
+  isTrivialFormulaFragment,
   normalizeLearningMapCandidate,
   parseJsonCandidate,
   publicLearningVersionId,
@@ -2173,10 +2175,10 @@ function formulaGroundingEntries(
     .filter((figure) => figure.figureId)
     .map((figure) => ({ id: figure.figureId, caption: figure.caption ?? "" }));
   const captionById = new Map(sources.map((source) => [source.id, source.caption]));
-  return mathExpressions.filter((expr) => isGroundableFormula(expr.formula)).map((expr) => {
+  return mathExpressions.filter((expr) => isGroundableFormula(expr.formula) && !isTrivialFormulaFragment(expr.formula)).flatMap((expr): FormulaGroundingEntry[] => {
     const grounded = groundLearnerFormula(expr.formula, sources);
     if (grounded.groundingStatus === "source-anchored" && grounded.sourceAnchor) {
-      return {
+      return [{
         text: expr.formula,
         normalizedText: normalizedFormulaForFrontmatter(expr.formula),
         groundingStatus: "source-anchored",
@@ -2185,9 +2187,10 @@ function formulaGroundingEntries(
         matchReason: "metric family and source formula caption match",
         confidence: 0.9,
         justification: `Content matches source metric formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`,
-      };
+      }];
     }
-    return {
+    if (!formulaMetricFamily(expr.formula)) return [];
+    return [{
       text: expr.formula,
       normalizedText: normalizedFormulaForFrontmatter(expr.formula),
       groundingStatus: "conceptual-helper",
@@ -2195,7 +2198,7 @@ function formulaGroundingEntries(
       confidence: 0.4,
       justification:
         "Compact helper formula used to explain the lesson's mechanism; no direct source equation anchor is claimed.",
-    };
+    }];
   });
 }
 
@@ -3251,6 +3254,35 @@ function focusMetricCalculatorSpec(spec: VisualSpec, subsection: LearningSubsect
   return spec;
 }
 
+function formulaFamilyForVisualSourceAnchor(anchor: VisualSourceAnchor): string | null {
+  return formulaMetricFamily([anchor.equationId, anchor.description, anchor.sourceTitle].filter(Boolean).join(" "));
+}
+
+function filterMetricCalculatorAnchors(spec: VisualSpec): VisualSpec {
+  if (spec.type !== "metric_calculator" || !spec.sourceAnchors || spec.sourceAnchors.length === 0) return spec;
+  const labels = [
+    ...(spec.outputs ?? []),
+    ...(spec.conceptTargets ?? []),
+    spec.title,
+    spec.caption,
+    spec.pedagogicalPurpose,
+  ].join(" ");
+  const expected = new Set(
+    METRIC_CALCULATOR_FAMILIES.filter((family) => METRIC_CALCULATOR_PATTERNS[family].test(labels)),
+  );
+  if (expected.size === 0) return spec;
+  if (expected.has("efficiency")) {
+    expected.add("accuracy");
+    expected.add("energy");
+  }
+  if (expected.has("energy")) expected.add("spike-count");
+  spec.sourceAnchors = spec.sourceAnchors.filter((anchor) => {
+    const family = formulaFamilyForVisualSourceAnchor(anchor);
+    return !family || expected.has(family as MetricCalculatorFamily);
+  });
+  return spec;
+}
+
 function proseConceptForVisual(type: string): { label: string; pattern: RegExp } | null {
   switch (type) {
     case "lif_neuron":
@@ -3425,6 +3457,7 @@ async function reconcileInteractiveVisuals({
       ? sourceTextAnchorForVisual({ visualType: spec.type, sourceContext })
       : null;
     spec.sourceAnchors = uniqueSourceAnchors(proseAnchor ? [...compatibleConcreteAnchors, proseAnchor] : compatibleConcreteAnchors);
+    spec = filterMetricCalculatorAnchors(spec);
     if (compatibleConcreteAnchors.length > 0) {
       spec.sourceGroundingStatus = "source-grounded";
       spec.justification = spec.justification || "This interactive visual is tied to source visuals or formula anchors assigned to the same lesson page.";

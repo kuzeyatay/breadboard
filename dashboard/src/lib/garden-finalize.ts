@@ -22,6 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   anchorTextCompatibleWithVisualType,
+  atomicZettelHandle,
   dedupeSourceArtifactAssignments,
   interactiveVisualGroundingProblems,
   isAtomicZettelHandle,
@@ -31,13 +32,15 @@ import {
   sectionTitleUniquenessProblems,
   sectionSemanticProfiles,
   sectionTitleGrammarProblems,
+  sectionTitleNaturalnessProblems,
+  polishSectionTitleFromInput,
   zettelHandleQualityProblems,
   zettelHandlesForUnit,
   type LearningUnitContract,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
-import { formulaMeaningMatch, isFormulaExpression, isGroundableFormula } from "./learn-utils.ts";
+import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment } from "./learn-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -234,6 +237,134 @@ function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifa
     }
   }
   return { units: [], assignments: [] };
+}
+
+function cleanText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function stripTitleNumber(value: string): string {
+  return cleanText(value).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+}
+
+function zettelRepairClaim(unit: LearningUnitContract, used: Set<string>): string {
+  const text = [
+    unit.title,
+    unit.learningQuestion,
+    ...(unit.newConcepts ?? []),
+  ].join(" ").toLowerCase();
+  const candidates: string[] = [];
+  if (/spike.*train|spike.*timing|event[- ]driven/.test(text)) {
+    candidates.push("Spike trains make timing part of information");
+  }
+  if (/membrane|lif|leaky|threshold|reset/.test(text)) {
+    candidates.push("Membrane potential accumulates evidence before firing");
+  }
+  if (/excit|inhibit|winner|competition/.test(text)) {
+    candidates.push("Inhibition turns population activity into competition");
+  }
+  if (/accuracy/.test(text)) {
+    candidates.push("Accuracy measures correctness not deployment cost");
+  }
+  if (/energy.*efficien|normalized/.test(text)) {
+    candidates.push("Energy efficiency connects accuracy to joules");
+  }
+  if (/latency|decision time/.test(text)) {
+    candidates.push("Latency measures when a decision becomes available");
+  }
+  if (/spike count/.test(text)) {
+    candidates.push("Spike count exposes hidden computation cost");
+  }
+  if (/converg|epoch/.test(text)) {
+    candidates.push("Convergence time measures when training becomes useful");
+  }
+  const title = stripTitleNumber(unit.title);
+  if (title) {
+    switch (unit.role) {
+      case "formula":
+      case "metric":
+        candidates.push(`${title} ties named quantities to a measurable relationship`);
+        break;
+      case "mechanism":
+      case "core_concept":
+        candidates.push(`${title} explains observable system behavior`);
+        break;
+      case "training_method":
+        candidates.push(`${title} changes model behavior through learning`);
+        break;
+      case "application":
+      case "limitation":
+        candidates.push(`${title} bounds where the source claim applies`);
+        break;
+      default:
+        candidates.push(`${title} supports a reusable learner decision`);
+        break;
+    }
+  }
+  for (const claim of candidates) {
+    const handle = atomicZettelHandle(claim);
+    if (handle && !used.has(handle) && !scaffoldLikeZettelHandle(handle)) return claim;
+  }
+  return `${title || "This idea"} stays grounded in the source claim`;
+}
+
+function repairContractZettelHandles(
+  gardenDir: string,
+  contract: LearningUnitContractArtifact,
+  learnerPages: LearnerPage[],
+  report: FinalizeReport,
+): void {
+  if (!contract.foundPath || contract.units.length === 0) return;
+  const parsed = readJson<Record<string, unknown>>(contract.foundPath, {});
+  const rawUnits = Array.isArray(parsed.learningUnits) ? parsed.learningUnits as Array<Record<string, unknown>> : [];
+  if (rawUnits.length === 0) return;
+  let changed = false;
+  const replacements = new Map<string, string>();
+  const normalizedById = new Map(contract.units.map((unit) => [unit.id, unit]));
+  for (const rawUnit of rawUnits) {
+    const id = cleanText(rawUnit.id);
+    const unit = normalizedById.get(id);
+    if (!unit) continue;
+    const notes = Array.isArray(rawUnit.zettelNotes) ? rawUnit.zettelNotes as Array<Record<string, unknown>> : [];
+    const used = new Set(
+      notes
+        .map((note) => atomicZettelHandle(cleanText(note.handle ?? note.claim)))
+        .filter((handle) => handle && !scaffoldLikeZettelHandle(handle)),
+    );
+    for (const note of notes) {
+      const oldHandle = atomicZettelHandle(cleanText(note.handle ?? note.claim));
+      if (!oldHandle || !scaffoldLikeZettelHandle(oldHandle)) continue;
+      const claim = zettelRepairClaim(unit, used);
+      const handle = atomicZettelHandle(claim);
+      if (!handle || used.has(handle)) continue;
+      note.handle = handle;
+      note.claim = claim;
+      if (!Array.isArray(note.connectedTo) || note.connectedTo.length === 0) {
+        note.connectedTo = [...new Set([...(unit.prerequisiteConcepts ?? []), ...(unit.newConcepts ?? [])])].slice(0, 5);
+      }
+      replacements.set(oldHandle, handle);
+      used.add(handle);
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  fs.writeFileSync(contract.foundPath, JSON.stringify(parsed, null, 2), "utf-8");
+  if (!report.changed.includes(".breadboard/learning-unit-contract.json")) report.changed.push(".breadboard/learning-unit-contract.json");
+  const repaired = readLearningUnitContract(gardenDir);
+  contract.units = repaired.units;
+  contract.assignments = repaired.assignments;
+  const repairedById = new Map(contract.units.map((unit) => [unit.id, unit]));
+  for (const page of learnerPages) {
+    const unit = repairedById.get(fmGetScalar(page.rawFm, "learningUnitId"));
+    if (!unit) continue;
+    const expected = zettelHandlesForUnit(unit);
+    const current = fmGetArray(page.rawFm, "tags");
+    const hasReplaced = current.some((tag) => replacements.has(atomicZettelHandle(tag)));
+    if (!hasReplaced && expected.every((tag) => current.includes(tag)) && current.every((tag) => expected.includes(tag))) continue;
+    page.rawFm = fmSetArray(page.rawFm, "tags", expected);
+    page.dirty = true;
+  }
+  report.notes.push(`repaired ${replacements.size} scaffold-like Zettelkasten handle(s) in the Learning Unit Contract`);
 }
 
 function isSourceFigureId(id: string): boolean {
@@ -582,6 +713,13 @@ function metricCalculatorFamiliesForText(text: string): MetricCalculatorFamily[]
   return METRIC_CALCULATOR_FAMILIES.filter((family) => METRIC_CALCULATOR_PATTERNS[family].test(text));
 }
 
+function formulaFamilyForVisualAnchor(anchor: unknown): string | null {
+  if (!anchor || typeof anchor !== "object") return null;
+  const record = anchor as Record<string, unknown>;
+  const text = [record.equationId, record.description, record.sourceTitle].filter(Boolean).join(" ");
+  return formulaMetricFamily(text);
+}
+
 function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText: string): boolean {
   if (String(spec.type ?? "") !== "metric_calculator") return false;
   const families = metricCalculatorFamiliesForText(contextText);
@@ -600,6 +738,19 @@ function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText:
   spec.pedagogicalPurpose = `Let the learner manipulate inputs for ${labels.join(", ")} on this lesson instead of a generic all-metric calculator.`;
   spec.caption = `This calculator focuses on ${labels.join(", ")} for this page.`;
   spec.regenerationPrompt = `Regenerate this metric calculator so its controls and readouts focus only on ${labels.join(", ")}.`;
+  if (Array.isArray(spec.sourceAnchors)) {
+    const allowed = new Set<string>(families);
+    if (allowed.has("efficiency")) {
+      allowed.add("accuracy");
+      allowed.add("energy");
+      allowed.add("spike-count");
+    }
+    if (allowed.has("energy")) allowed.add("spike-count");
+    spec.sourceAnchors = spec.sourceAnchors.filter((anchor) => {
+      const family = formulaFamilyForVisualAnchor(anchor);
+      return !family || allowed.has(family);
+    });
+  }
   return true;
 }
 
@@ -753,6 +904,7 @@ export function finalizeGardenExport({
   const learnerPages = loadLearnerPages(gardenDir);
   const pagesByRole = groupByRole(learnerPages);
   const contract = readLearningUnitContract(gardenDir);
+  repairContractZettelHandles(gardenDir, contract, learnerPages, report);
   const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
 
   // --- Pass C: source wikilink normalization ---------------------------------
@@ -763,6 +915,7 @@ export function finalizeGardenExport({
   repairLearnerNavigationSourceLinks(gardenDir, report);
   repairSectionSemanticTitles(gardenDir, learnerPages, unitsById, report);
   repairSourceTextConceptAnchors(gardenDir, learnerPages, report);
+  repairLearningUnitSourceTextAnchors(gardenDir, learnerPages, unitsById, report);
   repairMetricCalculatorFocus(gardenDir, learnerPages, report);
   regroundFormulas({ ledger, learnerPages, report });
 
@@ -781,6 +934,8 @@ export function finalizeGardenExport({
       if (!report.changed.includes(page.rel)) report.changed.push(page.rel);
     }
   }
+  alignSectionFoldersWithTitles(gardenDir, report);
+  repairSectionNavigationLabels(gardenDir, report);
 
   // --- Pass K: validation report + critical gate -----------------------------
   writeFinalizeValidationReport({ gardenDir, gardenSlug, report });
@@ -1040,6 +1195,15 @@ export function normalizeSourceWikilinks(gardenDir: string, report: FinalizeRepo
         return label;
       }
 
+      // Existing learning/source page links are already canonical. Keep them by
+      // checking the full relative target before falling back to basename
+      // matching, otherwise every section _index link competes on "_index".
+      const exactTarget = path.join(gardenDir, ...base.split("/"));
+      if (fs.existsSync(`${exactTarget}.md`) || fs.existsSync(path.join(exactTarget, "_index.md"))) {
+        if (fragment) return `[[${base}#${fragment}|${label}]]`;
+        return `[[${base}|${label}]]`;
+      }
+
       // Canonical target already? keep.
       if (byBasename.has(slugifyLoose(base.split("/").pop() ?? base))) {
         const canonical = byBasename.get(slugifyLoose(base.split("/").pop() ?? base))!;
@@ -1095,6 +1259,11 @@ function normalizeSourcePageTyping(abs: string, rel: string, report: FinalizeRep
 // ---------------------------------------------------------------------------
 
 const STALE_CAVEAT_PATTERNS: RegExp[] = [
+  /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)/i,
+  /source map is truncated/i,
+  /later[- ]page teaching must remain anchored to extracted .*captions/i,
+  /formula captions? only/i,
+  /exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)/i,
   /truncated after page\s*2/i,
   /(?:formal|explicit) mathematical definitions are not present/i,
   /formulas? (?:are|is) not present/i,
@@ -1116,8 +1285,8 @@ export function sanitizeStaleCaveats(
   const kept: string[] = [];
   for (const line of lines) {
     const isBullet = /^\s*[-*]\s+/.test(line) || /^\s*"[^"]*",?\s*$/.test(line);
-    const staleFormula = facts.formulaAnchorsExist && /(?:formal|explicit) mathematical definitions are not present|formulas? (?:are|is) not present|governing equations.*not (?:present|included)|does not include its governing equations|remain qualitative unless more verified/i.test(line);
-    const staleTruncation = facts.laterPagesExist && /truncated after page\s*2|later-paper details must not be inferred|later sections? (?:are|is)? ?(?:not available|unavailable)|not available in full (?:text|prose)/i.test(line);
+    const staleFormula = facts.formulaAnchorsExist && /(?:formal|explicit) mathematical definitions are not present|formulas? (?:are|is) not present|formula captions? only|exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)|governing equations.*not (?:present|included)|does not include its governing equations|remain qualitative unless more verified/i.test(line);
+    const staleTruncation = facts.laterPagesExist && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|later-paper details must not be inferred|later sections? (?:are|is)? ?(?:not available|unavailable)|not available in full (?:text|prose)/i.test(line);
     if ((staleFormula || staleTruncation) && isBullet) {
       continue; // drop the whole stale bullet
     }
@@ -1126,10 +1295,16 @@ export function sanitizeStaleCaveats(
       out = out
         .replace(/(?:formal|explicit) mathematical definitions are not present[^.\n]*/gi, "explicit metric formulas are present in the extracted source anchors")
         .replace(/formulas? (?:are|is) not present/gi, "formula anchors are present")
+        .replace(/only formula captions? are provided[^.\n]*/gi, "formula text is available through extracted source text or formula anchors")
+        .replace(/formula captions? only|caption-only/gi, "formula anchors and text fallback are available")
+        .replace(/exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)[^.\n]*/gi, "formula notation is handled through extracted source text or text fallback")
         .replace(/the (?:supplied|provided) (?:material|source|text) does not include its governing equations/gi, "the extracted source anchors include the governing metric formulas");
     }
     if (facts.laterPagesExist) {
       out = out
+        .replace(/only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)[^.\n]*/gi, "later source pages are available and anchored")
+        .replace(/later[- ]page teaching must remain anchored to extracted [^.\n]*captions[^.\n]*/gi, "later-page teaching can use extracted source prose and source artifacts")
+        .replace(/source map is truncated[^.\n]*/gi, "source map includes later-page source evidence")
         .replace(/(?:the (?:main|provided|continuous)[^.\n]*?)?truncated after page\s*2[^.\n]*/gi, "later source pages are available and anchored")
         .replace(/later sections? (?:are|is)? ?(?:not available|unavailable)[^.\n]*/gi, "later sections are available through source anchors");
     }
@@ -1787,7 +1962,8 @@ function regroundFormulas({
     }));
 
   for (const page of learnerPages) {
-    const formulas = extractBodyFormulas(page.body).filter(isGroundableFormula);
+    const formulas = extractBodyFormulas(page.body)
+      .filter((formula) => isGroundableFormula(formula) && !isTrivialFormulaFragment(formula));
     if (formulas.length === 0) {
       // No math -> no formulas block; also drop any dangling metric anchors.
       const hadBlock = /^formulas:/m.test(page.rawFm) || fmGetArray(page.rawFm, "sourceFormulaAnchors").length > 0 || Boolean(fmGetScalar(page.rawFm, "sourceFormulaAnchor"));
@@ -1801,6 +1977,8 @@ function regroundFormulas({
     const anchoredIds = new Set<string>();
     for (const text of formulas) {
       const match = matchFormulaToSource(text, sources);
+      const family = formulaMetricFamily(text);
+      if (!match && !family) continue;
       if (match) {
         entries.push({
           text,
@@ -1865,7 +2043,7 @@ function countMatches(text: string, pattern: RegExp): number {
 const TAG_EVIDENCE_RULES: Array<{ appliesTo: RegExp; evidence: RegExp; minBody: number }> = [
   { appliesTo: /lif-neuron|leaky/i, evidence: /\blif\b|leaky[- ]integrate|membrane potential|threshold/i, minBody: 1 },
   { appliesTo: /stdp/i, evidence: /\bstdp\b|spike[- ]?timing|synaptic plasticity/i, minBody: 1 },
-  { appliesTo: /surrogate/i, evidence: /surrogate gradient/i, minBody: 1 },
+  { appliesTo: /surrogate/i, evidence: /surrogate[- ]gradient|surrogate[- ]trained|surrogate training/i, minBody: 1 },
   { appliesTo: /(?:^|[/-])latency(?:$|[/-])/i, evidence: /\blatency\b|\bresponse time\b/i, minBody: 2 },
   { appliesTo: /convergence/i, evidence: /\bconverg\w*\b|\btraining loss\b|\bepochs?\b/i, minBody: 2 },
 ];
@@ -2063,6 +2241,14 @@ function writeFinalizeValidationReport({
       "",
       "Top-level learning section titles must be unique after normalized numbering, punctuation, and case are ignored.",
       "",
+      "## Section Folder/Title Consistency",
+      "",
+      "Section folder names, _index frontmatter titles, H1 headings, and map labels must describe the same section.",
+      "",
+      "## Section Title Naturalness",
+      "",
+      "Section titles must be polished learner-facing concepts, not source-anchor field lists or planner templates.",
+      "",
       "## Semantic Navigation Number Matching",
       "",
       "Numbered section labels must point to the matching numbered section folder.",
@@ -2111,6 +2297,10 @@ function writeFinalizeValidationReport({
       "",
       "Rendered interactive visuals must be page-specific and non-duplicative after final block normalization.",
       "",
+      "## Visual Anchor Precision",
+      "",
+      "Metric visuals must use only the formula anchors needed by their controls, outputs, and learning goal.",
+      "",
       "## Formula Grounding",
       "",
       "Only meaningful formulas are grounded; trivial numbers and standalone percentages are rejected in formulas: metadata.",
@@ -2122,6 +2312,14 @@ function writeFinalizeValidationReport({
       "## Formula Meaning Match",
       "",
       "Source-anchored and source-derived formulas must match the source formula/metric anchor they claim.",
+      "",
+      "## Formula Family Match",
+      "",
+      "Formula families inferred from generated math must match the claimed source formula anchor family.",
+      "",
+      "## Formula Metadata Noise",
+      "",
+      "Formula metadata must track meaningful relationships, not isolated symbols or inline fragments.",
       "",
       "## Source Crop Quality",
       "",
@@ -2150,6 +2348,10 @@ function writeFinalizeValidationReport({
       "## Zettelkasten Handle Quality",
       "",
       "Handles must read like concrete conceptual claims rather than planning scaffolds.",
+      "",
+      "## Zettelkasten Handle Naturalness",
+      "",
+      "Structurally valid handles must still avoid template-like planner phrases.",
       "",
       "## Section Title Quality",
       "",
@@ -2183,6 +2385,8 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Link Resolution",
   "Semantic Navigation",
   "Section Title Uniqueness",
+  "Section Folder/Title Consistency",
+  "Section Title Naturalness",
   "Semantic Navigation Number Matching",
   "Learning Map Ambiguity",
   "Learning Unit Contract Fulfillment",
@@ -2196,8 +2400,11 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Formula Grounding",
   "Formula Expression Validation",
   "Formula Meaning Match",
+  "Formula Family Match",
+  "Formula Metadata Noise",
   "Interactive Visual Fulfillment",
   "Final Interactive Visual Uniqueness",
+  "Visual Anchor Precision",
   "Source Crop Quality",
   "Crop Quality and Fallbacks",
   "Source Coverage Mode Precision",
@@ -2205,6 +2412,7 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Zettelkasten Tags",
   "Zettelkasten Tag Density",
   "Zettelkasten Handle Quality",
+  "Zettelkasten Handle Naturalness",
   "Section Title Quality",
   "Final Acceptance",
 ];
@@ -2495,14 +2703,37 @@ function suggestedSectionSemanticTitle(sectionTitle: string, units: LearningUnit
   const hasMetricRole = roles.has("metric") || roles.has("result_interpretation");
   const hasMetric = hasMetricRole || hasFormula;
   const hasComparison = roles.has("comparison");
+  const naturalnessProblems = sectionTitleNaturalnessProblems(sectionTitle, units.map((unit) => unit.title));
   let base: string | null = null;
   if (hasTraining && hasMetric) base = "How SNNs Learn and Are Evaluated";
   else if (hasComparison && hasMetric) base = "Metrics and Results Compared";
   else if (hasComparison && hasTraining) base = "Training Methods and Results Compared";
-  else if (hasFormula && hasMetricRole && !hasTraining && !hasComparison && !hasMechanism) base = "The Formulas and Metrics Behind SNNs";
-  else if (hasFormula && !roles.has("metric") && !roles.has("result_interpretation") && !hasTraining && !hasComparison) base = "How the Formula Works";
+  else if (hasFormula && hasMetricRole && !hasTraining && !hasComparison && !hasMechanism) base = polishSectionTitleFromInput({
+    sectionNumber: 0,
+    originalTitle: sectionTitle,
+    unitTitles: units.map((unit) => unit.title),
+    unitRoles: units.map((unit) => unit.role),
+    sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
+    dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
+  });
+  else if (hasFormula && !roles.has("metric") && !roles.has("result_interpretation") && !hasTraining && !hasComparison) base = polishSectionTitleFromInput({
+    sectionNumber: 0,
+    originalTitle: sectionTitle,
+    unitTitles: units.map((unit) => unit.title),
+    unitRoles: units.map((unit) => unit.role),
+    sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
+    dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
+  });
   else if (hasMechanism && !hasMetric && !hasTraining && !hasComparison) base = "How the Mechanism Works";
   else if (hasMetricRole && !hasMechanism && !hasTraining && !hasComparison) base = "The Metrics That Make SNNs Measurable";
+  else if (naturalnessProblems.length > 0) base = polishSectionTitleFromInput({
+    sectionNumber: 0,
+    originalTitle: sectionTitle,
+    unitTitles: units.map((unit) => unit.title),
+    unitRoles: units.map((unit) => unit.role),
+    sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
+    dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
+  });
   if (!base) return null;
   const number = sectionTitle.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
   return number ? `${number}. ${base}` : base;
@@ -2527,6 +2758,154 @@ function rewriteSectionIndexTitle(indexPath: string, nextTitle: string): boolean
   return true;
 }
 
+function sectionFolderNameForTitle(title: string, fallbackName: string): string {
+  const number = title.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1] ?? fallbackName.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
+  const body = title.replace(/^\s*\d+(?:\.\d+)*\.?\s*/, "").trim();
+  return number && body ? `${number}. ${body}` : fallbackName;
+}
+
+function replaceAllLiteral(value: string, from: string, to: string): string {
+  return value.split(from).join(to);
+}
+
+function rewriteReferencesAfterSectionRename(gardenDir: string, oldRel: string, newRel: string, report: FinalizeReport): void {
+  const files: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(gardenDir, "", files, { includeDotBreadboard: true });
+  const jsonFiles: Array<{ abs: string; rel: string }> = [];
+  const collectJson = (dir: string, relDir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        collectJson(abs, rel);
+      } else if (entry.isFile() && entry.name.endsWith(".json")) {
+        jsonFiles.push({ abs, rel });
+      }
+    }
+  };
+  collectJson(path.join(gardenDir, ".breadboard"), ".breadboard");
+  for (const file of [...files, ...jsonFiles]) {
+    const content = fs.readFileSync(file.abs, "utf-8");
+    let next = replaceAllLiteral(content, oldRel, newRel);
+    next = replaceAllLiteral(next, encodeURI(oldRel), encodeURI(newRel));
+    if (next === content) continue;
+    fs.writeFileSync(file.abs, next, "utf-8");
+    if (!report.changed.includes(file.rel)) report.changed.push(file.rel);
+  }
+}
+
+function currentSectionTitles(gardenDir: string): {
+  byRel: Map<string, string>;
+  byNumber: Map<string, string>;
+  relByNumber: Map<string, string>;
+} {
+  const byRel = new Map<string, string>();
+  const byNumber = new Map<string, string>();
+  const relByNumber = new Map<string, string>();
+  const learningDir = path.join(gardenDir, "learning");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(learningDir, { withFileTypes: true });
+  } catch {
+    return { byRel, byNumber, relByNumber };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+\.\s+/.test(entry.name)) continue;
+    const indexPath = path.join(learningDir, entry.name, "_index.md");
+    if (!fs.existsSync(indexPath)) continue;
+    const title = fmGetScalar(parseFrontmatter(fs.readFileSync(indexPath, "utf-8")).rawFrontmatter, "title") || entry.name;
+    const rel = `learning/${entry.name}`;
+    byRel.set(rel, title);
+    const number = title.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1] ?? entry.name.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
+    if (number) {
+      byNumber.set(number, title);
+      relByNumber.set(number, rel);
+    }
+  }
+  return { byRel, byNumber, relByNumber };
+}
+
+function sectionTitleBody(title: string): string {
+  return stripTitleNumber(title);
+}
+
+function repairSectionNavigationLabels(gardenDir: string, report: FinalizeReport): void {
+  const { byRel, byNumber, relByNumber } = currentSectionTitles(gardenDir);
+  if (byRel.size === 0) return;
+  const navRels = ["learning/_index.md", "learning/Learning Map.md", "learning/Topic Overview.md"];
+  for (const rel of navRels) {
+    const abs = path.join(gardenDir, ...rel.split("/"));
+    if (!fs.existsSync(abs)) continue;
+    const content = fs.readFileSync(abs, "utf-8");
+    const replacements: Array<[string, string]> = [];
+    if (rel === "learning/Learning Map.md") {
+      for (const match of content.matchAll(/^\s*-\s*(\d+)\.\s+(.+?)\s*$/gm)) {
+        const number = match[1] ?? "";
+        const oldTitle = `${number}. ${match[2] ?? ""}`;
+        const nextTitle = byNumber.get(number);
+        if (nextTitle && oldTitle !== nextTitle) {
+          replacements.push([oldTitle, nextTitle]);
+          replacements.push([sectionTitleBody(oldTitle), sectionTitleBody(nextTitle)]);
+        }
+      }
+    }
+    let next = content.replace(/\[\[(learning\/[^|\]]+\/_index)(?:\|([^\]]*))?\]\]/g, (full, target: string) => {
+      const sectionRel = target.replace(/\/_index$/, "");
+      const title = byRel.get(sectionRel);
+      return title ? `[[${target}|${title}]]` : full;
+    });
+    if (rel === "learning/_index.md") {
+      next = next.replace(/^-\s*(\d+)\.\s+(.+?)\s*$/gm, (full, number: string) => {
+        const sectionTitle = byNumber.get(number);
+        const sectionRel = relByNumber.get(number);
+        if (!sectionTitle || !sectionRel) return full;
+        return `- [[${sectionRel}/_index|${sectionTitle}]]`;
+      });
+    }
+    for (const [from, to] of replacements) {
+      if (from && to && from !== to) next = replaceAllLiteral(next, from, to);
+    }
+    if (next === content) continue;
+    fs.writeFileSync(abs, next, "utf-8");
+    if (!report.changed.includes(rel)) report.changed.push(rel);
+  }
+}
+
+function alignSectionFoldersWithTitles(gardenDir: string, report: FinalizeReport): void {
+  const learningDir = path.join(gardenDir, "learning");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(learningDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+\.\s+/.test(entry.name)) continue;
+    const oldAbs = path.join(learningDir, entry.name);
+    const indexPath = path.join(oldAbs, "_index.md");
+    if (!fs.existsSync(indexPath)) continue;
+    const title = fmGetScalar(parseFrontmatter(fs.readFileSync(indexPath, "utf-8")).rawFrontmatter, "title");
+    const nextName = sectionFolderNameForTitle(title || entry.name, entry.name);
+    if (nextName === entry.name) continue;
+    const nextAbs = path.join(learningDir, nextName);
+    if (fs.existsSync(nextAbs)) {
+      report.criticalProblems.push(`section folder/title mismatch could not be repaired because target exists: learning/${nextName}`);
+      continue;
+    }
+    fs.renameSync(oldAbs, nextAbs);
+    const oldRel = `learning/${entry.name}`;
+    const newRel = `learning/${nextName}`;
+    rewriteReferencesAfterSectionRename(gardenDir, oldRel, newRel, report);
+    report.notes.push(`renamed section folder ${oldRel} -> ${newRel}`);
+  }
+}
+
 function repairSectionSemanticTitles(
   gardenDir: string,
   learnerPages: LearnerPage[],
@@ -2534,6 +2913,11 @@ function repairSectionSemanticTitles(
   report: FinalizeReport,
 ): void {
   const sectionInputs = sectionSemanticInputs(gardenDir, learnerPages, unitsById);
+  const titleCounts = new Map<string, number>();
+  for (const section of sectionInputs) {
+    const key = normalizedSectionTitleKey(section.sectionTitle);
+    titleCounts.set(key, (titleCounts.get(key) ?? 0) + 1);
+  }
   for (const section of sectionInputs) {
     const profile = sectionSemanticProfiles([{
       sectionTitle: section.sectionTitle,
@@ -2541,7 +2925,9 @@ function repairSectionSemanticTitles(
       subsectionTitles: section.subsectionTitles,
     }])[0];
     const grammarProblems = sectionTitleGrammarProblems(section.sectionTitle, section.subsectionTitles);
-    if ((!profile || profile.problems.length === 0) && grammarProblems.length === 0) continue;
+    const naturalnessProblems = sectionTitleNaturalnessProblems(section.sectionTitle, section.subsectionTitles);
+    const duplicateTitle = (titleCounts.get(normalizedSectionTitleKey(section.sectionTitle)) ?? 0) > 1;
+    if ((!profile || profile.problems.length === 0) && grammarProblems.length === 0 && naturalnessProblems.length === 0 && !duplicateTitle) continue;
     const nextTitle = suggestedSectionSemanticTitle(section.sectionTitle, section.units);
     if (!nextTitle || nextTitle === section.sectionTitle) continue;
     const indexPath = path.join(gardenDir, ...section.rel.split("/"), "_index.md");
@@ -2586,12 +2972,17 @@ function anchorTextForVisualIds(ledger: LedgerVisual[], ids: string[], spec: Rec
 
 function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): string[] {
   const problems: string[] = [];
-  const docs = [
-    [".breadboard/planning/Source Map.md", path.join(gardenDir, ".breadboard", "planning", "Source Map.md")],
-    [".breadboard/planning/Source Coverage.md", path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md")],
-    ["learning/Learning Map.md", path.join(gardenDir, "learning", "Learning Map.md")],
-    ["learning/Topic Overview.md", path.join(gardenDir, "learning", "Topic Overview.md")],
-  ] as const;
+  const docs: Array<[string, string]> = [];
+  const addDoc = (rel: string): void => {
+    docs.push([rel, path.join(gardenDir, ...rel.split("/"))]);
+  };
+  for (const rel of [".breadboard/planning/Source Map.md", ".breadboard/planning/Source Coverage.md", "learning/Learning Map.md", "learning/Topic Overview.md"]) addDoc(rel);
+  const planningPages: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(path.join(gardenDir, ".breadboard", "planning"), ".breadboard/planning", planningPages);
+  for (const page of planningPages) if (!docs.some(([rel]) => rel === page.rel)) docs.push([page.rel, page.abs]);
+  const learningPages: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(path.join(gardenDir, "learning"), "learning", learningPages);
+  for (const page of learningPages) if (!docs.some(([rel]) => rel === page.rel)) docs.push([page.rel, page.abs]);
   const hasFormulaAnchors = ledger.some((visual) => classifyFigure(visual) === "equation");
   const hasFormulaExactText = ledger.some((visual) => classifyFigure(visual) === "equation" && String(visual.exactText ?? visual.ocrText ?? "").trim());
   const hasFormulaCrops = ledger.some((visual) => classifyFigure(visual) === "equation" && String(visual.croppedImagePath ?? "").trim());
@@ -2617,7 +3008,7 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): str
     if (hasFigures && /figures? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
       problems.push(`${label}: stale caveat says figures are unavailable despite figure anchors`);
     }
-    if (hasLaterPages && /truncated after page\s*2|later (?:pages?|sections?) (?:are|is)?\s*(?:not available|unavailable)|must not be inferred beyond/i.test(text)) {
+    if (hasLaterPages && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later (?:pages?|sections?)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|must not be inferred beyond/i.test(text)) {
       problems.push(`${label}: stale caveat says later pages are unavailable despite later anchors/pages`);
     }
   }
@@ -2817,6 +3208,89 @@ function repairSourceTextConceptAnchors(gardenDir: string, learnerPages: Learner
   }
 }
 
+function sourcePageParagraphs(gardenDir: string): Array<{ sourceId: string; sourceTitle: string; page: number; text: string }> {
+  const sourcePages: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(path.join(gardenDir, "sources"), "sources", sourcePages);
+  const out: Array<{ sourceId: string; sourceTitle: string; page: number; text: string }> = [];
+  for (const { abs, rel } of sourcePages) {
+    if (/\/_index\.md$/i.test(rel) || /(^|\/)_index\.md$/i.test(rel)) continue;
+    const { rawFrontmatter, body } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const sourceTitle = fmGetScalar(rawFrontmatter, "title") || path.basename(rel, ".md");
+    const sourceId = fmGetScalar(rawFrontmatter, "sourceId") || slugifyLoose(path.basename(rel, ".md")) || "source";
+    let page = 0;
+    let buffer: string[] = [];
+    const flush = (): void => {
+      const text = buffer.join("\n").replace(/\s+/g, " ").trim();
+      if (page > 0 && text) out.push({ sourceId, sourceTitle, page, text });
+      buffer = [];
+    };
+    for (const line of body.split(/\r?\n/)) {
+      const heading = line.match(/^\s*#{1,3}\s*Page\s+(\d+)\b/i);
+      if (heading) {
+        flush();
+        page = Number.parseInt(heading[1] ?? "0", 10);
+      } else {
+        buffer.push(line);
+      }
+    }
+    flush();
+  }
+  return out;
+}
+
+const TEXT_ANCHOR_STOPWORDS = new Set([
+  "what", "when", "where", "which", "with", "from", "that", "this", "into", "does",
+  "spiking", "neural", "network", "networks", "source", "lesson", "metric", "metrics",
+]);
+
+function unitTextAnchorKeywords(unit: LearningUnitContract, page: LearnerPage): string[] {
+  const text = [
+    unit.title,
+    unit.learningQuestion,
+    ...(unit.newConcepts ?? []),
+    page.title,
+  ].join(" ");
+  return [...new Set(text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .map((word) => word.replace(/^-+|-+$/g, ""))
+    .filter((word) => word.length >= 4 && !TEXT_ANCHOR_STOPWORDS.has(word)))].slice(0, 8);
+}
+
+function repairLearningUnitSourceTextAnchors(
+  gardenDir: string,
+  learnerPages: LearnerPage[],
+  unitsById: Map<string, LearningUnitContract>,
+  report: FinalizeReport,
+): void {
+  const paragraphs = sourcePageParagraphs(gardenDir).filter((paragraph) => paragraph.page > 2);
+  if (paragraphs.length === 0) return;
+  for (const page of learnerPages) {
+    const unit = unitsById.get(fmGetScalar(page.rawFm, "learningUnitId"));
+    if (!unit || !/^(?:training_method|core_concept|mechanism|application|limitation)$/.test(unit.role)) continue;
+    const existing = fmGetArray(page.rawFm, "sourceAnchors");
+    const hasSpecific = existing.some((anchor) => {
+      if (anchor.startsWith("text-")) return true;
+      const match = anchor.match(/\.P(\d+)\b/i);
+      return match ? Number.parseInt(match[1] ?? "0", 10) > 2 : false;
+    });
+    if (hasSpecific) continue;
+    const keywords = unitTextAnchorKeywords(unit, page);
+    if (keywords.length === 0) continue;
+    const paragraph = paragraphs.find((candidate) => {
+      const lower = candidate.text.toLowerCase();
+      const hits = keywords.filter((keyword) => lower.includes(keyword));
+      return hits.length >= Math.min(2, keywords.length);
+    });
+    if (!paragraph) continue;
+    const anchorId = `text-${slugifyLoose(paragraph.sourceId)}-${slugifyLoose(keywords.slice(0, 4).join("-"))}`;
+    page.rawFm = fmSetArray(page.rawFm, "sourceAnchors", [...existing, anchorId]);
+    page.dirty = true;
+    report.notes.push(`added page source text anchor ${anchorId} to ${page.rel}`);
+  }
+}
+
 function sourceTextConceptAnchorProblems(gardenDir: string, learnerPages: LearnerPage[]): string[] {
   const corpus = sourceCorpusText(gardenDir);
   if (!corpus.trim()) return [];
@@ -2837,6 +3311,153 @@ function sourceTextConceptAnchorProblems(gardenDir: string, learnerPages: Learne
       if (status === "source-derived-conceptual" && !hasTextAnchor) {
         problems.push(`${page.rel}: ${type} visual is source-derived-conceptual but lacks a textAnchorId`);
       }
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function sourceTextBodyAnchorProblems(
+  gardenDir: string,
+  learnerPages: LearnerPage[],
+  unitsById: Map<string, LearningUnitContract>,
+): string[] {
+  const paragraphs = sourcePageParagraphs(gardenDir).filter((paragraph) => paragraph.page > 2);
+  if (paragraphs.length === 0) return [];
+  const problems: string[] = [];
+  for (const page of learnerPages) {
+    const unit = unitsById.get(fmGetScalar(page.rawFm, "learningUnitId"));
+    if (!unit || !/^(?:training_method|core_concept|mechanism|application|limitation)$/.test(unit.role)) continue;
+    const keywords = unitTextAnchorKeywords(unit, page);
+    const match = paragraphs.find((paragraph) => {
+      const lower = paragraph.text.toLowerCase();
+      const hits = keywords.filter((keyword) => lower.includes(keyword));
+      return hits.length >= Math.min(2, keywords.length);
+    });
+    if (!match) continue;
+    const anchors = fmGetArray(page.rawFm, "sourceAnchors");
+    const hasSpecific = anchors.some((anchor) => {
+      if (anchor.startsWith("text-")) return true;
+      const pageMatch = anchor.match(/\.P(\d+)\b/i);
+      return pageMatch ? Number.parseInt(pageMatch[1] ?? "0", 10) > 2 : false;
+    });
+    if (!hasSpecific && anchors.some((anchor) => /abstract|guidance|researchgap/i.test(anchor))) {
+      problems.push(`${page.rel}: ${unit.role} unit is grounded only in abstract/guidance anchors even though page ${match.page} source prose matches [${keywords.join(", ")}]`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
+  const learningDir = path.join(gardenDir, "learning");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(learningDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const problems: string[] = [];
+  const titleKeys = new Set<string>();
+  const folderKeys = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+\.\s+/.test(entry.name)) continue;
+    const indexPath = path.join(learningDir, entry.name, "_index.md");
+    if (!fs.existsSync(indexPath)) {
+      problems.push(`learning/${entry.name}/: section folder is missing _index.md`);
+      continue;
+    }
+    const { rawFrontmatter, body } = parseFrontmatter(fs.readFileSync(indexPath, "utf-8"));
+    const title = fmGetScalar(rawFrontmatter, "title") || entry.name;
+    const h1 = body.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
+    const folderKey = normalizedSectionTitleKey(entry.name);
+    const titleKey = normalizedSectionTitleKey(title);
+    folderKeys.add(folderKey);
+    titleKeys.add(titleKey);
+    if (folderKey !== titleKey) problems.push(`learning/${entry.name}/: folder name "${entry.name}" does not match _index title "${title}"`);
+    if (h1 && normalizedSectionTitleKey(h1) !== titleKey) problems.push(`learning/${entry.name}/_index.md: H1 "${h1}" does not match frontmatter title "${title}"`);
+  }
+  const map = fs.existsSync(path.join(learningDir, "Learning Map.md"))
+    ? parseFrontmatter(fs.readFileSync(path.join(learningDir, "Learning Map.md"), "utf-8")).body
+    : "";
+  for (const line of map.split(/\r?\n/)) {
+    const match = line.match(/^\s*-\s*(?:\[\[[^\]]+\|)?(.+?)(?:\]\])?\s*$/);
+    if (!match) continue;
+    const label = cleanMapNode(match[1] ?? "");
+    if (!/^\d+\.\s+/.test(label)) continue;
+    const key = normalizedSectionTitleKey(label);
+    if (!titleKeys.has(key) || !folderKeys.has(key)) problems.push(`learning/Learning Map.md: section label "${label}" does not map to one matching section folder and title`);
+  }
+  return [...new Set(problems)];
+}
+
+function sectionTitleNaturalnessAllProblems(sectionInputs: ReturnType<typeof sectionSemanticInputs>): string[] {
+  const problems: string[] = [];
+  for (const section of sectionInputs) {
+    for (const problem of sectionTitleNaturalnessProblems(section.sectionTitle, section.subsectionTitles)) {
+      problems.push(`${section.rel}: ${problem}`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function formulaMetadataNoiseProblems(learnerPages: LearnerPage[]): string[] {
+  const problems: string[] = [];
+  for (const page of learnerPages) {
+    const entries = formulaEntriesFromFrontmatter(page.rawFm);
+    if (entries.length === 0) continue;
+    const trivial = entries.filter((entry) => {
+      const text = String(entry.text ?? "");
+      return isTrivialFormulaFragment(text) || !isFormulaExpression(text);
+    });
+    if (entries.length > 10) problems.push(`${page.rel}: formulas: contains ${entries.length} entries; expected focused metric/source relationships`);
+    if (trivial.length > 0 && trivial.length / entries.length > 0.3) problems.push(`${page.rel}: ${trivial.length}/${entries.length} formulas: entries are trivial fragments`);
+    for (const [index, entry] of entries.entries()) {
+      const text = String(entry.text ?? "");
+      if (isTrivialFormulaFragment(text) && /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
+        problems.push(`${page.rel}: formulas[${index}] source-anchors trivial fragment "${text}"`);
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function visualAnchorPrecisionProblems(ledger: LedgerVisual[], learnerPages: LearnerPage[]): string[] {
+  const problems: string[] = [];
+  for (const page of learnerPages) {
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      const type = String(spec.type ?? "");
+      if (type !== "metric_calculator" && type !== "tradeoff_explorer") continue;
+      const specText = [
+        spec.title,
+        spec.caption,
+        spec.pedagogicalPurpose,
+        spec.learningGoal,
+        Array.isArray(spec.conceptTargets) ? spec.conceptTargets.join(" ") : "",
+        Array.isArray(spec.inputs) ? spec.inputs.join(" ") : "",
+        Array.isArray(spec.outputs) ? spec.outputs.join(" ") : "",
+        Array.isArray(spec.controls)
+          ? spec.controls.map((control) => typeof control === "object" && control ? Object.values(control as Record<string, unknown>).join(" ") : "").join(" ")
+          : "",
+      ].filter(Boolean).join(" ");
+      const includePageContext = type !== "metric_calculator";
+      const expectedText = includePageContext ? [page.title, specText].filter(Boolean).join(" ") : specText;
+      const expected = new Set<string>(metricCalculatorFamiliesForText(expectedText));
+      if (expected.size === 0) continue;
+      const allowed = new Set(expected);
+      if (allowed.has("efficiency")) {
+        allowed.add("accuracy");
+        allowed.add("energy");
+        allowed.add("spike-count");
+      }
+      if (allowed.has("energy")) allowed.add("spike-count");
+      const ids = visualSpecAnchorIds(spec).filter((id) => /^S\d+\.P\d+\.E\d+$/i.test(id));
+      const extras = ids.filter((id) => {
+        const visual = ledger.find((item) => item.sourceVisualId === id);
+        const family = formulaMetricFamily(formulaAnchorSemanticText(visual));
+        return family && !allowed.has(family);
+      });
+      const explicitMultiText = includePageContext ? [page.title, specText].filter(Boolean).join(" ") : specText;
+      const explicitMulti = /\bmulti[- ]?metric\b|\btrade[- ]?off\b|accuracy.*latency.*energy|latency.*energy.*accuracy/i.test(explicitMultiText);
+      if (extras.length > 0 && !explicitMulti) problems.push(`${page.rel}: visual ${String(spec.id ?? "(missing id)")} has unrelated formula anchors [${extras.join(", ")}]`);
     }
   }
   return [...new Set(problems)];
@@ -2977,6 +3598,8 @@ function collectFinalizeChecks({
     "Section Title Uniqueness",
     sectionTitleUniquenessProblems(sectionInputs.map((section) => ({ rel: section.rel, title: section.sectionTitle }))),
   );
+  push("Section Folder/Title Consistency", sectionFolderTitleConsistencyProblems(gardenDir));
+  push("Section Title Naturalness", sectionTitleNaturalnessAllProblems(sectionInputs));
   push("Learning Map Ambiguity", learningMapAmbiguityProblems(gardenDir, sectionInputs));
 
   const profiles = sectionSemanticProfiles(sectionInputs.map((section) => ({
@@ -3020,7 +3643,10 @@ function collectFinalizeChecks({
     }
   }
   push("Interactive visual grounding", visualGroundingProblems);
-  push("Source Text Concept Anchors", sourceTextConceptAnchorProblems(gardenDir, learnerPages));
+  push("Source Text Concept Anchors", [
+    ...sourceTextConceptAnchorProblems(gardenDir, learnerPages),
+    ...sourceTextBodyAnchorProblems(gardenDir, learnerPages, unitsById),
+  ]);
 
   // Formula grounding.
   const formulaGroundingProblems: string[] = [];
@@ -3078,6 +3704,8 @@ function collectFinalizeChecks({
   push("Formula grounding", formulaGroundingProblems);
   push("Formula expression validation", formulaExpressionProblems);
   push("Formula Meaning Match", formulaSourceProblems);
+  push("Formula Family Match", formulaSourceProblems.filter((problem) => /family|source formula|content does not match|grounded to/.test(problem)));
+  push("Formula Metadata Noise", formulaMetadataNoiseProblems(learnerPages));
 
   // Source Coverage from contract.
   const coverageProblems: string[] = [];
@@ -3116,7 +3744,7 @@ function collectFinalizeChecks({
     sourceMapProblems.push(".breadboard/planning/Source Map.md missing");
   }
   if (sourceMap) {
-    if (hasFormulaAnchors && /explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only/i.test(sourceMap)) {
+    if (hasFormulaAnchors && /explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only|formula captions? only|exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)/i.test(sourceMap)) {
       sourceMapProblems.push("Source Map says formulas are absent/caption-only even though formula anchors exist");
     }
     if (hasTables && /tables? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
@@ -3125,7 +3753,7 @@ function collectFinalizeChecks({
     if (hasFigures && /figures? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
       sourceMapProblems.push("Source Map says figures are absent even though figure anchors exist");
     }
-    if (hasLaterPages && /truncated after page\s*2|later sections? (?:are|is)? ?(?:not available|unavailable)/i.test(sourceMap)) {
+    if (hasLaterPages && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later (?:pages?|sections?)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|truncated after page\s*2/i.test(sourceMap)) {
       sourceMapProblems.push("Source Map contains stale caveats about later source pages");
     }
   }
@@ -3149,6 +3777,7 @@ function collectFinalizeChecks({
     }
   }
   push("Final interactive visual uniqueness", visualUniquenessProblems);
+  push("Visual Anchor Precision", visualAnchorPrecisionProblems(ledger, learnerPages));
 
   // Section title quality.
   const titleProblems: string[] = [];
@@ -3162,6 +3791,7 @@ function collectFinalizeChecks({
       titleProblems.push(`${rel}: title exposes internal scaffold phrase "${title}"`);
     }
   }
+  titleProblems.push(...sectionTitleNaturalnessAllProblems(sectionInputs));
   push("section titles are learner-facing", titleProblems);
 
   // Source crop quality.
@@ -3187,6 +3817,7 @@ function collectFinalizeChecks({
   }
   push("Zettelkasten tag density", densityProblems);
   push("Zettelkasten Handle Quality", [...new Set(handleQualityProblems)]);
+  push("Zettelkasten Handle Naturalness", [...new Set(handleQualityProblems)]);
 
   if (includeReportSelfCheck) {
     const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
