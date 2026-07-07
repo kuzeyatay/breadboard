@@ -623,6 +623,186 @@ describe("garden validator regression fixture", () => {
     }
   });
 
+  test("semantic contradictions in titles, formulas, visuals, and source anchors fail explicitly", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-semantic-tightening-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const ledgerPath = path.join(dir, ".breadboard", "source-visuals.json");
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+      ledger.push(
+        {
+          sourceVisualId: "S1.P6.E1",
+          sourceId: "snn",
+          pageNumber: 6,
+          type: "equation",
+          caption: "Accuracy as correct predictions over total predictions",
+          exactText: "\\text{Accuracy}=N_{correct}/N_{total}",
+          usageStatus: "assigned",
+        },
+        {
+          sourceVisualId: "S1.P6.E2",
+          sourceId: "snn",
+          pageNumber: 6,
+          type: "equation",
+          caption: "Latency as decision time",
+          exactText: "L=t_{decision}-t_{start}",
+          usageStatus: "assigned",
+        },
+        {
+          sourceVisualId: "S1.P6.E3",
+          sourceId: "snn",
+          pageNumber: 6,
+          type: "equation",
+          caption: "Spike count summed across neurons and time",
+          exactText: "N_{spikes}=\\sum_{i,t}s_i(t)",
+          usageStatus: "assigned",
+        },
+        {
+          sourceVisualId: "S1.P6.E4",
+          sourceId: "snn",
+          pageNumber: 6,
+          type: "equation",
+          caption: "Total energy combines spike and synaptic operation costs",
+          exactText: "E=N_{spikes}E_{spike}+N_{ops}E_{op}",
+          usageStatus: "assigned",
+        },
+        {
+          sourceVisualId: "S1.P6.E5",
+          sourceId: "snn",
+          pageNumber: 6,
+          type: "equation",
+          caption: "Normalized energy efficiency divides accuracy by energy",
+          exactText: "\\eta=A/E",
+          usageStatus: "assigned",
+        },
+        {
+          sourceVisualId: "S1.P10.E6",
+          sourceId: "snn",
+          pageNumber: 10,
+          type: "equation",
+          caption: "Convergence time as the first epoch reaching target accuracy",
+          exactText: "T_{conv}=\\min\\{e:A(e)\\ge A_{target}\\}",
+          usageStatus: "assigned",
+        },
+      );
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+
+      fs.writeFileSync(
+        path.join(dir, "sources", "snn.md"),
+        fm({
+          title: "Spiking Neural Networks Review",
+          knowledge_type: "source-document",
+          breadboardType: "source_document",
+          internal: "true",
+          source_images: ["/snn-fixture/assets/snn-page-004.png"],
+        }) +
+          "# Page 1\n\nIntroductory abstract text.\n\n" +
+          "# Page 6\n\nAccuracy, latency, spike count, total energy, and normalized energy efficiency are defined with exact formulas in the source text.\n\n" +
+          "# Page 8\n\nSpike-timing dependent plasticity changes synaptic weight based on pre-before-post and post-before-pre spike timing.\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "planning", "Source Map.md"),
+        [
+          "# Source Map",
+          "",
+          "Only pages 1-2 are available in full-text form.",
+          "Later-page teaching must remain anchored to extracted figure, table, graph, and formula captions.",
+          "Only formula captions are provided; exact mathematical notation and variable definitions are not visible.",
+          "",
+        ].join("\n"),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. Spiking Neurons", "_index.md"),
+        fm({
+          title: "2. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics",
+          knowledge_type: "learning-section",
+          breadboardType: "learning_section",
+        }) + "# 2. Accuracy Formula, Correct Prediction Count, Total Prediction Count Formula Mechanics\n",
+      );
+
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      let page = fs.readFileSync(pagePath, "utf-8").replace(
+        /^generatedBy:/m,
+        [
+          'sourceFormulaAnchors: ["S1.P6.E1", "S1.P6.E5", "S1.P10.E6"]',
+          "formulas:",
+          '  - text: "\\\\text{spike occurs when } V(t) \\\\geq \\\\theta"',
+          '    groundingStatus: "source-anchored"',
+          '    sourceAnchor: "S1.P6.E5"',
+          '    justification: "wrong threshold-to-efficiency anchor"',
+          '  - text: "\\\\text{Accuracy}=\\\\frac{N_{correct}}{N_{total}}"',
+          '    groundingStatus: "source-anchored"',
+          '    sourceAnchor: "S1.P10.E6"',
+          '    justification: "wrong accuracy-to-convergence anchor"',
+          '  - text: "\\\\theta"',
+          '    groundingStatus: "source-anchored"',
+          '    sourceAnchor: "S1.P6.E5"',
+          '    justification: "bad single-symbol anchor"',
+          '  - text: "s_i(t)=1"',
+          '    groundingStatus: "conceptual-helper"',
+          '  - text: "s_i(t)=0"',
+          '    groundingStatus: "conceptual-helper"',
+          '  - text: "t=1"',
+          '    groundingStatus: "conceptual-helper"',
+          '  - text: "t=2"',
+          '    groundingStatus: "conceptual-helper"',
+          '  - text: "\\\\sum_{i=1}^{N}"',
+          '    groundingStatus: "conceptual-helper"',
+          '  - text: "\\\\min"',
+          '    groundingStatus: "conceptual-helper"',
+          "generatedBy:",
+        ].join("\n"),
+      );
+      page = page.replace(/```breadboard-visual\n([\s\S]*?)\n```/, (_, json) => {
+        const spec = JSON.parse(json);
+        spec.type = "metric_calculator";
+        spec.title = "Accuracy calculator";
+        spec.learningGoal = "Let learners change correct and total predictions to see accuracy.";
+        spec.pedagogicalPurpose = "Let the learner compute accuracy from correct and total prediction counts.";
+        spec.caption = "Accuracy from correct and total predictions.";
+        spec.conceptTargets = ["accuracy"];
+        spec.controls = [];
+        spec.inputs = ["correct predictions", "total predictions"];
+        spec.outputs = ["accuracy"];
+        spec.sourceAnchors = [
+          { equationId: "S1.P6.E1", sourceTitle: "Accuracy as correct predictions over total predictions" },
+          { equationId: "S1.P6.E2", sourceTitle: "Latency as decision time" },
+          { equationId: "S1.P6.E3", sourceTitle: "Spike count summed across neurons and time" },
+          { equationId: "S1.P6.E4", sourceTitle: "Total energy combines spike and synaptic operation costs" },
+          { equationId: "S1.P6.E5", sourceTitle: "Normalized energy efficiency divides accuracy by energy" },
+          { equationId: "S1.P10.E6", sourceTitle: "Convergence time as the first epoch reaching target accuracy" },
+        ];
+        return "```breadboard-visual\n" + JSON.stringify(spec, null, 2) + "\n```";
+      });
+      fs.writeFileSync(pagePath, page);
+
+      const stdpPath = path.join(dir, "learning", "3. How SNNs Learn", "3.4 Spike-Timing Dependent Plasticity.md");
+      fs.writeFileSync(
+        stdpPath,
+        fs.readFileSync(stdpPath, "utf-8").replace(/^generatedBy:/m, 'sourceAnchors: ["abstract-guidance"]\ngeneratedBy:'),
+      );
+      const contractPath = path.join(dir, ".breadboard", "learning-unit-contract.json");
+      const contract = JSON.parse(fs.readFileSync(contractPath, "utf-8"));
+      contract.learningUnits.find((unit) => unit.id === "U3").zettelNotes[0].handle = "spike-train-names-the-durable-idea-learners-reuse";
+      fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
+
+      const results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 42).status, "FAIL");
+      assert.equal(checkById(results, 50).status, "FAIL");
+      assert.equal(checkById(results, 51).status, "FAIL");
+      assert.equal(checkById(results, 52).status, "FAIL");
+      assert.equal(checkById(results, 53).status, "FAIL");
+      assert.equal(checkById(results, 54).status, "FAIL");
+      assert.equal(checkById(results, 55).status, "FAIL");
+      assert.equal(checkById(results, 56).status, "FAIL");
+      assert.equal(checkById(results, 57).status, "FAIL");
+      assert.match(checkById(results, 53).problems.join("\n"), /threshold|Accuracy|sourceFamily/);
+      assert.match(checkById(results, 55).problems.join("\n"), /unrelated formula anchor families/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("formula anchors with omitted crops pass when concept usage is split from crop status", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-split-"));
     try {

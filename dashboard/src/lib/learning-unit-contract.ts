@@ -277,16 +277,16 @@ const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
     "{concept} makes the motivation concrete in the source",
   ],
   core_concept: [
-    "{concept} names the durable idea learners reuse",
+    "{concept} carries a reusable source-backed distinction",
     "{concept} links the named idea to source behavior",
   ],
   mechanism: [
-    "{concept} changes behavior through a specific mechanism",
+    "{concept} turns inputs into observable system behavior",
     "{concept} makes the state change observable",
   ],
   formula: [
     "{concept} records the source relationship mathematically",
-    "{concept} fixes which variables carry the claim",
+    "{concept} ties named quantities to a measurable relationship",
   ],
   worked_example: [
     "{concept} tests the method on a concrete case",
@@ -349,8 +349,8 @@ function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
   const seen = new Set(zettelHandlesForUnit({ ...unit, zettelNotes: notes }));
   const templates = [
     ...(ROLE_ZETTEL_CLAIMS[unit.role] ?? []),
-    "{concept} anchors the lesson to source details",
-    "{concept} answers the learner question with source evidence",
+    "{concept} keeps the explanation tied to observable details",
+    "{concept} supports a reusable learner decision",
   ];
   for (const template of templates) {
     if (seen.size >= 3) break;
@@ -365,6 +365,10 @@ function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
 }
 
 const SCAFFOLD_ZETTEL_PATTERNS: RegExp[] = [
+  /\bnames-the-durable-idea\b/i,
+  /\blearners-reuse\b/i,
+  /\bchanges-behavior-through-a-specific-mechanism\b/i,
+  /\bfixes-which-variables-carry-the-claim\b/i,
   /\bturns-a-broad-problem\b/i,
   /\bconnects-vocabulary\b/i,
   /\bexplains-how\b/i,
@@ -430,6 +434,15 @@ export interface SectionSemanticProfile {
   problems: string[];
 }
 
+export interface SectionTitlePolishInput {
+  sectionNumber: number;
+  originalTitle: string;
+  unitTitles: string[];
+  unitRoles: string[];
+  sourceAnchorTitles: string[];
+  dominantLearnerQuestion: string;
+}
+
 export interface SectionSemanticInput {
   sectionTitle: string;
   units: LearningUnitContract[];
@@ -442,6 +455,9 @@ function unitRoleFamily(role: LearningUnitRole): SectionRoleFamily {
       return "motivation";
     case "training_method":
       return "training_method";
+    case "formula":
+    case "worked_example":
+      return "metric";
     case "metric":
     case "result_interpretation":
       return "metric";
@@ -614,6 +630,53 @@ export function sectionTitleGrammarProblems(title: string, subsectionTitles: str
     .filter((sub) => slugLike(sub) === normalizedTitle);
   if (duplicated.length > 0 && subsectionTitles.length <= 1) {
     problems.push(`section title duplicates its only subsection title: "${clean}"`);
+  }
+  return problems;
+}
+
+const SECTION_TITLE_SCAFFOLD_PATTERNS: RegExp[] = [
+  /\bFormula Mechanics\b/i,
+  /\bConcept Mechanics\b/i,
+  /\bCorrect Prediction Count\b/i,
+  /\bTotal Prediction Count\b/i,
+  /\bSpike Cost\b/i,
+  /\bSynaptic Operation Cost\b/i,
+  /\bChanges Behavior Through a Specific Mechanism\b/i,
+  /\bNames the Durable Idea\b/i,
+  /\bFixes Which Variables Carry the Claim\b/i,
+  /\bConnects Vocabulary to Mechanism\b/i,
+  /\bExplains How the System Changes State\b/i,
+  /\bSets Up the Next\b/i,
+  /\bIntroduces the Topic\b/i,
+  /\bMeasuring the Core Quantities\b/i,
+];
+
+export function sectionTitleNaturalnessProblems(title: string, subsectionTitles: string[] = []): string[] {
+  const problems: string[] = [];
+  const clean = compact(title).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+  for (const pattern of SECTION_TITLE_SCAFFOLD_PATTERNS) {
+    if (pattern.test(clean)) {
+      problems.push(`section title exposes source-anchor or planner wording: "${clean}"`);
+      break;
+    }
+  }
+  const commaParts = clean.split(",").map((part) => part.trim()).filter(Boolean);
+  if (
+    commaParts.length >= 3 &&
+    !/^(?:Measuring|Comparing|Reading|Choosing|How)\b/i.test(clean) &&
+    /\b(?:formula|count|cost|prediction|operation|variable|anchor|field|synaptic|spike)\b/i.test(clean)
+  ) {
+    problems.push(`section title looks like a comma-separated source-anchor field list: "${clean}"`);
+  }
+  if (clean.length > 82 && commaParts.length >= 2) {
+    problems.push(`section title is too long and list-like for learner navigation: "${clean}"`);
+  }
+  const normalizedTitle = slugLike(clean);
+  for (const sub of subsectionTitles) {
+    const subTitle = compact(sub).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+    if (normalizedTitle && slugLike(subTitle) === normalizedTitle && subsectionTitles.length <= 1) {
+      problems.push(`section title duplicates its only subsection title: "${clean}"`);
+    }
   }
   return problems;
 }
@@ -1459,6 +1522,57 @@ function conceptFromUnits(units: LearningUnitContract[], fallback: string): stri
   return titleCase(candidate.replace(/\bSNNs\b/gi, "SNNs"));
 }
 
+function titleFamilyFlags(text: string): Set<string> {
+  const lower = compact(text).toLowerCase();
+  const out = new Set<string>();
+  if (/\baccuracy\b|\bcorrect prediction/.test(lower)) out.add("accuracy");
+  if (/\blatency\b|\bdecision time\b|\bresponse time\b/.test(lower)) out.add("latency");
+  if (/\bspike count\b|\bspikes?\b/.test(lower)) out.add("spikes");
+  if (/\benergy\b|\bjoules?\b|\bpower\b/.test(lower)) out.add("energy");
+  if (/\befficien|\baccuracy per energy\b|\bnormalized\b/.test(lower)) out.add("efficiency");
+  if (/\bconverg|\bepochs?\b|\btarget accuracy\b/.test(lower)) out.add("convergence");
+  if (/\bthreshold\b|\bmembrane potential\b|\bfiring\b/.test(lower)) out.add("threshold");
+  return out;
+}
+
+export function polishSectionTitleFromInput(input: SectionTitlePolishInput): string {
+  const roles = new Set(input.unitRoles.map((role) => compact(role)));
+  const text = [
+    input.originalTitle,
+    ...input.unitTitles,
+    ...input.sourceAnchorTitles,
+    input.dominantLearnerQuestion,
+  ].join(" ");
+  const families = titleFamilyFlags(text);
+  const hasFormula = roles.has("formula") || roles.has("worked_example");
+  const hasMetric = roles.has("metric") || roles.has("result_interpretation");
+  const hasTraining = roles.has("training_method");
+  const hasComparison = roles.has("comparison");
+  const prefix = input.sectionNumber > 0 ? `${input.sectionNumber}. ` : "";
+  let body = compact(input.originalTitle).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+  if (hasFormula || hasMetric) {
+    const firstGroup = ["accuracy", "latency"].filter((family) => families.has(family));
+    const hasSpikeCost = families.has("spikes");
+    const hasDeploymentCost = families.has("energy") || families.has("efficiency") || families.has("convergence");
+    const secondGroup = ["energy", "spikes", "efficiency", "convergence"].filter((family) => families.has(family));
+    if (firstGroup.length > 0 && hasSpikeCost && !hasDeploymentCost) body = "Measuring Accuracy, Latency, and Spike Count";
+    else if (firstGroup.length === 2 && secondGroup.length === 0) body = "Measuring Accuracy and Latency";
+    else if (firstGroup.length === 1 && firstGroup[0] === "accuracy" && secondGroup.length === 0) body = "Measuring Accuracy";
+    else if (firstGroup.length === 1 && firstGroup[0] === "latency" && secondGroup.length === 0) body = "Measuring Decision Latency";
+    else if (families.has("convergence") && (families.has("energy") || families.has("efficiency"))) body = "Measuring Energy, Efficiency, and Convergence";
+    else if (secondGroup.length > 0 && !families.has("accuracy") && !families.has("latency")) body = "Measuring Energy, Spikes, and Efficiency";
+    else if (firstGroup.length > 0 && secondGroup.length > 0) body = "How Metrics Connect to Deployment Cost";
+    else if (families.has("threshold")) body = "How Threshold Rules Create Spikes";
+    else body = "Measuring the Core Quantities";
+  } else if (hasTraining && hasComparison) {
+    body = "Training Methods and Results Compared";
+  } else if (hasTraining) {
+    body = "How the Method Learns";
+  }
+  if (sectionTitleNaturalnessProblems(body).length > 0) body = "Measuring the Core Quantities";
+  return `${prefix}${body}`;
+}
+
 function polishSectionTitle(cluster: SectionCluster, units: LearningUnitContract[], gardenTopic: string): string {
   const topic = topicLabel(gardenTopic);
   const roles = new Set(units.map((unit) => unit.role));
@@ -1478,9 +1592,25 @@ function polishSectionTitle(cluster: SectionCluster, units: LearningUnitContract
     return `How ${conceptFromUnits(units, topic)} Works`;
   }
   if (hasFormulaRole && hasMetricRole) {
-    return /SNNs/i.test(topic) ? "The Formulas and Metrics Behind SNNs" : `The Formulas and Metrics Behind ${topic}`;
+    return polishSectionTitleFromInput({
+      sectionNumber: 0,
+      originalTitle: cluster.title,
+      unitTitles: units.map((unit) => unit.title),
+      unitRoles: units.map((unit) => unit.role),
+      sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
+      dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
+    });
   }
-  if (hasFormulaRole) return "How the Formula Works";
+  if (hasFormulaRole) {
+    return polishSectionTitleFromInput({
+      sectionNumber: 0,
+      originalTitle: cluster.title,
+      unitTitles: units.map((unit) => unit.title),
+      unitRoles: units.map((unit) => unit.role),
+      sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
+      dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
+    });
+  }
   if (hasMetricRole) {
     return /SNNs/i.test(topic) ? "The Metrics That Make SNNs Measurable" : `The Rules and Metrics Behind ${topic}`;
   }
@@ -1530,7 +1660,16 @@ function disambiguatedSectionTitle(units: LearningUnitContract[], fallback: stri
   if (hasComparisonRole && hasFormulaRole) return `${stem} Formulas and Results`;
   if (hasComparisonRole && hasMetricRole) return `${stem} Metrics and Results`;
   if (hasComparisonRole) return `${stem} Results`;
-  if (hasFormulaRole) return `${stem} Formula Mechanics`;
+  if (hasFormulaRole) {
+    return polishSectionTitleFromInput({
+      sectionNumber: 0,
+      originalTitle: fallback,
+      unitTitles: units.map((unit) => unit.title),
+      unitRoles: units.map((unit) => unit.role),
+      sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
+      dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
+    }).replace(/^\d+\.\s*/, "");
+  }
   if (hasMetricRole) return `${stem} Metrics`;
   if (roles.has("training_method")) return `${stem} Training Methods`;
   if (roles.has("application") || roles.has("limitation")) return `${stem} Applications and Limits`;

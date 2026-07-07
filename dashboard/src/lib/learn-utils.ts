@@ -147,7 +147,7 @@ export function isFormulaExpression(expr: string): boolean {
     .trim();
   if (!compacted) return false;
   if (/^[+-]?\d+(?:\.\d+)?(?:\\?%)?$/.test(compacted)) return false;
-  if (/^[A-Za-z](?:_[A-Za-z0-9]+|\^[A-Za-z0-9]+)?$/.test(compacted)) return false;
+  if (isTrivialFormulaFragment(expr)) return false;
   if (/^(?:ms|s|j|w|hz|khz|mhz|v|a)$/i.test(compacted)) return false;
   if (/\\(?:frac|sum|prod|int|sqrt|min|max|log|exp|Delta|tau|lambda|eta|theta|operatorname)\b/.test(expr)) return true;
   if (/[=<>≤≥≈∝]/.test(expr) || /\\(?:geq|leq|neq|approx)\b/.test(expr)) {
@@ -178,9 +178,17 @@ export type FormulaMetricFamily =
   | "spike-count"
   | "energy"
   | "efficiency"
-  | "convergence";
+  | "convergence"
+  | "threshold"
+  | "probability"
+  | "loss"
+  | "gradient";
 
 const FORMULA_FAMILY_PATTERNS: Array<[FormulaMetricFamily, RegExp]> = [
+  ["threshold", /\bthreshold\b|\bmembrane potential\b|\bspike occurs\b|v\(t\)|v_t|\\theta|theta|\\vartheta|>=\s*theta|\\geq\s*\\?theta/i],
+  ["gradient", /\bgradient\b|\\nabla|d\s*L\s*\/\s*d|\\partial|surrogate/i],
+  ["loss", /\bloss\b|\\mathcal\{?L\}?|mse|cross[- ]?entropy|\\ell\b/i],
+  ["probability", /\bprobab|\bp\(|p_\{?i\}?|softmax|\\sigma\(|\\Pr\b/i],
   ["convergence", /\bconverg|\bepochs?\b|\btarget accuracy\b|\btarget\b|t_\{?\\?text\{?conv|t_\{?conv|a\(e\)|\ba_\{?e\}?|\ba_\{?target\}?|arg\s*min|\\arg\s*min|\\min\s*\\?\{/i],
   ["efficiency", /\befficien|\baccuracy per energy\b|normalized energy|\\eta|eta/i],
   ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|cost/i],
@@ -201,6 +209,22 @@ export function formulaMetricFamily(text: string): FormulaMetricFamily | null {
   }
   if (/%|\\%/.test(text) && /\\frac|\//.test(text)) return "accuracy";
   return null;
+}
+
+export function isTrivialFormulaFragment(expr: string): boolean {
+  const compacted = expr
+    .trim()
+    .replace(/\\(?:left|right|,|;|:|!)/g, "")
+    .replace(/\s+/g, "")
+    .replace(/\\mathrm\{([^}]*)\}/g, "$1")
+    .replace(/\\operatorname\{([^}]*)\}/g, "$1");
+  if (!compacted) return true;
+  if (/^[A-Za-z](?:_\{?[A-Za-z0-9]+\}?|\^\{?[A-Za-z0-9]+\}?|\([A-Za-z0-9]+\))?$/.test(compacted)) return true;
+  if (/^\\(?:theta|vartheta|tau|lambda|Delta|eta)$/.test(compacted)) return true;
+  if (/^\\(?:min|max|sum|prod|int)(?:[_^]\{?[^}]*\}?)*$/.test(compacted)) return true;
+  if (/^[A-Za-z](?:_\{?[A-Za-z0-9]+\}?|\([A-Za-z0-9]+\))?=\d+(?:\.\d+)?$/.test(compacted)) return true;
+  if (/^s_\{?i\}?\(t\)=[01]$|^s_i\(t\)=[01]$/i.test(compacted)) return true;
+  return false;
 }
 
 export function formulaMeaningMatch(

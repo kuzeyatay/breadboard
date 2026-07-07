@@ -188,7 +188,7 @@ describe("learner navigation semantic repair", () => {
       const rootIndex = fs.readFileSync(path.join(dir, "_index.md"), "utf-8");
       assert.match(rootIndex, /\[\[learning\/_index\|Learning\]\]/);
       const overview = fs.readFileSync(path.join(dir, "learning", "Topic Overview.md"), "utf-8");
-      assert.match(overview, /\[\[learning\/1\. Why SNNs Need Events\/_index\|Why SNNs Need Events\]\]/);
+      assert.match(overview, /\[\[learning\/1\. Why SNNs Need Events\/_index\|1\. Why SNNs Need Events\]\]/);
       assert.doesNotMatch(overview, /\[\[sources\/_index/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -416,7 +416,7 @@ describe("finalize deterministic visual repairs", () => {
         false,
         report.criticalProblems.join(" | "),
       );
-      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "_index.md"), "utf-8");
+      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. How SNNs Learn and Are Evaluated", "_index.md"), "utf-8");
       assert.match(sectionIndex, /title: "2\. How SNNs Learn and Are Evaluated"/);
       assert.match(sectionIndex, /^# 2\. How SNNs Learn and Are Evaluated$/m);
     } finally {
@@ -430,7 +430,7 @@ describe("finalize deterministic visual repairs", () => {
       const dir = path.join(root, "test-2");
       const bb = path.join(dir, ".breadboard");
       fs.mkdirSync(bb, { recursive: true });
-      fs.mkdirSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "2. Decision Latency Formula Mechanics"), { recursive: true });
       fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
       fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
       fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
@@ -446,12 +446,12 @@ describe("finalize deterministic visual repairs", () => {
         }, null, 2),
       );
       fs.writeFileSync(
-        path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "_index.md"),
-        fm({ title: "2. The Metrics That Make SNNs Measurable", breadboardType: "textbook_section" }) +
-          "# 2. The Metrics That Make SNNs Measurable\n",
+        path.join(dir, "learning", "2. Decision Latency Formula Mechanics", "_index.md"),
+        fm({ title: "2. Decision Latency Formula Mechanics", breadboardType: "textbook_section" }) +
+          "# 2. Decision Latency Formula Mechanics\n",
       );
       fs.writeFileSync(
-        path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "2.2 Decision Latency.md"),
+        path.join(dir, "learning", "2. Decision Latency Formula Mechanics", "2.2 Decision Latency.md"),
         fm({ title: "2.2 Decision Latency", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "F", generatedBy: "learn_button", tags: ["decision-latency-records-the-source-relationship-mathematically"] }) +
           `${FILLER("decision latency", "metric")}\n\n$$L = t_{\\text{decision}} - t_{\\text{stimulus}}$$\n`,
       );
@@ -462,8 +462,8 @@ describe("finalize deterministic visual repairs", () => {
         false,
         report.criticalProblems.join(" | "),
       );
-      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable", "_index.md"), "utf-8");
-      assert.match(sectionIndex, /title: "2\. How the Formula Works"/);
+      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. Measuring Decision Latency", "_index.md"), "utf-8");
+      assert.match(sectionIndex, /title: "2\. Measuring Decision Latency"/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -513,7 +513,7 @@ describe("finalize deterministic visual repairs", () => {
         false,
         report.criticalProblems.join(" | "),
       );
-      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "5. What the Results Show", "_index.md"), "utf-8");
+      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "5. The Metrics That Make SNNs Measurable", "_index.md"), "utf-8");
       assert.match(sectionIndex, /title: "5\. The Metrics That Make SNNs Measurable"/);
       assert.match(sectionIndex, /^# 5\. The Metrics That Make SNNs Measurable$/m);
     } finally {
