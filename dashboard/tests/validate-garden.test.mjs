@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runChecks, writeValidationReport } from "../../scripts/validate-breadboard-garden.ts";
+import { runChecks, validationAccepted, writeValidationReport } from "../../scripts/validate-breadboard-garden.ts";
 import {
   buildLifThresholdResetVisual,
   buildRateVsTemporalCodingVisual,
@@ -523,6 +523,31 @@ describe("garden validator regression fixture", () => {
     return results.find((result) => result.id === id);
   }
 
+  test("skip checks with problems block acceptance", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-skip-problems-"));
+    try {
+      const dir = path.join(root, "garden");
+      fs.mkdirSync(dir, { recursive: true });
+      const results = [
+        {
+          id: 99,
+          name: "bad skip",
+          status: "SKIP",
+          severity: "skip",
+          problems: ["actionable problem hidden in a skipped check"],
+          acceptanceBlocking: false,
+        },
+      ];
+      assert.equal(validationAccepted(results), false);
+      writeValidationReport(dir, "garden", results);
+      const report = fs.readFileSync(path.join(dir, ".breadboard", "validation-report.md"), "utf-8");
+      assert.match(report, /^Accepted:\s+no$/m);
+      assert.match(report, /internal validator error: check "bad skip" was marked SKIP/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a correctly generated SNN garden passes every hard check", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-good-"));
     try {
@@ -540,6 +565,81 @@ describe("garden validator regression fixture", () => {
       const report = fs.readFileSync(path.join(dir, ".breadboard", "validation-report.md"), "utf-8");
       assert.match(report, /^Accepted:\s+yes$/m);
       assert.match(report, /## Learning Unit Contract Fulfillment/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("repeated opening motifs are not skipped when a contract exists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-repeated-openings-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const motif = "A battery-powered robot moves through a quiet hallway while a dense ANN keeps recomputing every frame. ";
+      const targets = [
+        path.join(dir, "learning", "2. Spiking Neurons", "2.1 The Leaky Integrate-and-Fire Neuron.md"),
+        path.join(dir, "learning", "2. Spiking Neurons", "2.2 Encoding Information as Spike Trains.md"),
+        path.join(dir, "learning", "3. How SNNs Learn", "3.4 Spike-Timing Dependent Plasticity.md"),
+      ];
+      for (const target of targets) {
+        fs.writeFileSync(target, fs.readFileSync(target, "utf-8").replace("Imagine a sensor watching a mostly still scene. ", motif));
+      }
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 29);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /repeated battery\/quiet-hallway\/dense-ANN intro motif/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("result interpretation sections fail metrics-only titles", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-result-title-"));
+    try {
+      const dir = buildGoodGarden(root);
+      fs.writeFileSync(
+        path.join(dir, "learning", "4. Evaluating SNNs", "_index.md"),
+        fm({ title: "4. The Metrics That Make SNNs Measurable", knowledge_type: "learning-section", breadboardType: "learning_section" }) +
+          "# 4. The Metrics That Make SNNs Measurable\n",
+      );
+      const contractPath = path.join(dir, ".breadboard", "learning-unit-contract.json");
+      const contract = JSON.parse(fs.readFileSync(contractPath, "utf-8"));
+      contract.learningUnits.find((unit) => unit.id === "U7").role = "result_interpretation";
+      fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
+
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 37);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /title vocabulary points to metric but units are comparison|SECTION_SEMANTIC_MISMATCH/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("worked examples cannot satisfy source formula definitions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-worked-example-formula-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const ledgerPath = path.join(dir, ".breadboard", "source-visuals.json");
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+      ledger.push({
+        sourceVisualId: "S1.P6.E2",
+        sourceId: "snn",
+        pageNumber: 6,
+        type: "equation",
+        caption: "Latency as decision time minus stimulus time",
+        exactText: "L=t_{decision}-t_0",
+        usageStatus: "assigned",
+      });
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(
+        pagePath,
+        fs.readFileSync(pagePath, "utf-8").replace(
+          /^generatedBy:/m,
+          'sourceFormulaAnchors: ["S1.P6.E2"]\nformulas:\n  - kind: "source_definition"\n    text: "108 - 100 = 8"\n    groundingStatus: "source-anchored"\n    sourceAnchor: "S1.P6.E2"\n    justification: "badly treating an arithmetic example as the source formula"\ngeneratedBy:',
+        ),
+      );
+      const results = runChecksWithReport(dir, "snn-fixture");
+      assert.equal(checkById(results, 25).status, "FAIL");
+      assert.match(checkById(results, 25).problems.join("\n"), /worked-example arithmetic|worked example/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

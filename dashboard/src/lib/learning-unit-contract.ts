@@ -273,36 +273,36 @@ export function zettelHandlesForUnit(unit: LearningUnitContract): string[] {
 
 const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
   motivation: [
-    "{concept} identifies the source problem behind the lesson",
-    "{concept} makes the motivation concrete in the source",
+    "{concept} creates the need for event-driven computation",
+    "{concept} explains why dense recomputation wastes work",
   ],
   core_concept: [
-    "{concept} carries a reusable source-backed distinction",
-    "{concept} links the named idea to source behavior",
+    "{concept} makes timing part of the representation",
+    "{concept} separates spike events from continuous activations",
   ],
   mechanism: [
-    "{concept} turns inputs into observable system behavior",
-    "{concept} makes the state change observable",
+    "{concept} turns accumulated input into a discrete event",
+    "{concept} makes state changes visible through spikes",
   ],
   formula: [
-    "{concept} records the source relationship mathematically",
-    "{concept} ties named quantities to a measurable relationship",
+    "{concept} defines which quantities change the metric",
+    "{concept} links variables to a measurable claim",
   ],
   worked_example: [
-    "{concept} tests the method on a concrete case",
-    "{concept} ties the procedure to the observed result",
+    "{concept} shows the calculation path on one case",
+    "{concept} turns an abstract rule into traceable steps",
   ],
   training_method: [
     "{concept} defines a training tradeoff",
-    "{concept} changes model behavior through its learning rule",
+    "{concept} changes model behavior through weight updates",
   ],
   metric: [
     "{concept} makes the source behavior measurable",
     "{concept} separates model quality from deployment cost",
   ],
   result_interpretation: [
-    "{concept} states what the reported result supports",
-    "{concept} keeps the result tied to its metric context",
+    "{concept} shows how reported values support a comparison",
+    "{concept} links the result to the metric that produced it",
   ],
   comparison: [
     "{concept} supports comparison across alternatives",
@@ -349,8 +349,8 @@ function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
   const seen = new Set(zettelHandlesForUnit({ ...unit, zettelNotes: notes }));
   const templates = [
     ...(ROLE_ZETTEL_CLAIMS[unit.role] ?? []),
-    "{concept} keeps the explanation tied to observable details",
-    "{concept} supports a reusable learner decision",
+    "{concept} stays testable through observable details",
+    "{concept} changes which decision a learner should make",
   ];
   for (const template of templates) {
     if (seen.size >= 3) break;
@@ -367,6 +367,10 @@ function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
 const SCAFFOLD_ZETTEL_PATTERNS: RegExp[] = [
   /\bnames-the-durable-idea\b/i,
   /\blearners-reuse\b/i,
+  /\bidentifies-the-source-problem\b/i,
+  /\brecords-the-source-relationship\b/i,
+  /\bstates-what-the-reported-result-supports\b/i,
+  /\bkeeps-the-result-tied\b/i,
   /\bchanges-behavior-through-a-specific-mechanism\b/i,
   /\bfixes-which-variables-carry-the-claim\b/i,
   /\bturns-a-broad-problem\b/i,
@@ -459,8 +463,9 @@ function unitRoleFamily(role: LearningUnitRole): SectionRoleFamily {
     case "worked_example":
       return "metric";
     case "metric":
-    case "result_interpretation":
       return "metric";
+    case "result_interpretation":
+      return "comparison";
     case "comparison":
       return "comparison";
     case "application":
@@ -1545,9 +1550,9 @@ export function polishSectionTitleFromInput(input: SectionTitlePolishInput): str
   ].join(" ");
   const families = titleFamilyFlags(text);
   const hasFormula = roles.has("formula") || roles.has("worked_example");
-  const hasMetric = roles.has("metric") || roles.has("result_interpretation");
+  const hasMetric = roles.has("metric");
   const hasTraining = roles.has("training_method");
-  const hasComparison = roles.has("comparison");
+  const hasComparison = roles.has("comparison") || roles.has("result_interpretation");
   const prefix = input.sectionNumber > 0 ? `${input.sectionNumber}. ` : "";
   let body = compact(input.originalTitle).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
   if (hasFormula || hasMetric) {
@@ -1577,9 +1582,9 @@ function polishSectionTitle(cluster: SectionCluster, units: LearningUnitContract
   const topic = topicLabel(gardenTopic);
   const roles = new Set(units.map((unit) => unit.role));
   const hasFormulaRole = roles.has("formula") || roles.has("worked_example");
-  const hasMetricRole = roles.has("metric") || roles.has("result_interpretation");
+  const hasMetricRole = roles.has("metric");
   const hasTrainingRole = roles.has("training_method");
-  const hasComparisonRole = roles.has("comparison");
+  const hasComparisonRole = roles.has("comparison") || roles.has("result_interpretation");
   if (roles.has("motivation") && (roles.has("core_concept") || roles.has("mechanism"))) {
     return /SNNs/i.test(topic) ? "Why SNNs Need Events" : `Why ${topic} Needs a New Mechanism`;
   }
@@ -1614,6 +1619,7 @@ function polishSectionTitle(cluster: SectionCluster, units: LearningUnitContract
   if (hasMetricRole) {
     return /SNNs/i.test(topic) ? "The Metrics That Make SNNs Measurable" : `The Rules and Metrics Behind ${topic}`;
   }
+  if (roles.has("result_interpretation")) return "What the Results Show";
   if (hasTrainingRole) return `How ${topic} Learns`;
   if (hasComparisonRole) return "What the Results Show";
   if (roles.has("application") || roles.has("limitation") || roles.has("synthesis")) {
@@ -1653,8 +1659,8 @@ function disambiguatedSectionTitle(units: LearningUnitContract[], fallback: stri
   const unique = [...new Set(candidates)].slice(0, 3);
   const stem = unique.length > 0 ? unique.join(", ") : compactConceptTitle(fallback) || "Focused";
   const hasFormulaRole = roles.has("formula") || roles.has("worked_example");
-  const hasMetricRole = roles.has("metric") || roles.has("result_interpretation");
-  const hasComparisonRole = roles.has("comparison");
+  const hasMetricRole = roles.has("metric");
+  const hasComparisonRole = roles.has("comparison") || roles.has("result_interpretation");
   if (roles.has("training_method") && hasFormulaRole) return `${stem} Training and Formal Rules`;
   if (roles.has("training_method") && hasMetricRole) return `${stem} Training and Evaluation`;
   if (hasComparisonRole && hasFormulaRole) return `${stem} Formulas and Results`;

@@ -40,7 +40,7 @@ import {
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "../dashboard/src/lib/learning-unit-contract.ts";
-import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment } from "../dashboard/src/lib/learn-utils.ts";
+import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula } from "../dashboard/src/lib/learn-utils.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -485,6 +485,12 @@ function visualAnchorIds(spec: Record<string, unknown>): string[] {
   return [...new Set(ids)];
 }
 
+function visualAnchorRecords(spec: Record<string, unknown>): Array<Record<string, unknown>> {
+  const raw = spec.sourceAnchors;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
+}
+
 function embeddedVisualSpecsFromBody(body: string): Array<Record<string, unknown>> {
   const specs: Array<Record<string, unknown>> = [];
   const blockRe = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
@@ -697,6 +703,7 @@ function unquoteYamlScalar(value: string): string {
 }
 
 interface FormulaFrontmatterEntry {
+  kind?: string;
   text?: string;
   groundingStatus?: string;
   justification?: string;
@@ -744,6 +751,15 @@ function formulaEntriesFromFrontmatter(rawFrontmatter: string): FormulaFrontmatt
     }
   }
   return entries.filter((entry) => Object.values(entry).some((value) => String(value ?? "").trim()));
+}
+
+function formulaEntryKind(entry: FormulaFrontmatterEntry): string {
+  const explicit = String(entry.kind ?? "").trim();
+  if (explicit) return explicit;
+  if (isWorkedExampleFormula(String(entry.text ?? ""))) return "worked_example";
+  if (entry.groundingStatus === "source-anchored") return "source_definition";
+  if (entry.groundingStatus === "source-derived") return "source_derived_definition";
+  return "conceptual_helper";
 }
 
 function visualText(visual: Record<string, unknown>): string {
@@ -832,23 +848,32 @@ function formulaMetadataNoiseProblems(lessonPages: PageFile[]): string[] {
     const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
     if (entries.length === 0) continue;
     const displayCount = extractQuartzMath(page.body).filter((expr) => expr.display && isGroundableFormula(expr.formula)).length;
-    const sourceAnchoredCount = entries.filter((entry) =>
-      /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? "")),
-    ).length;
+    const sourceDefinitionCount = entries.filter((entry) => {
+      const kind = formulaEntryKind(entry);
+      return kind === "source_definition" || kind === "source_derived_definition";
+    }).length;
+    const workedExampleCount = entries.filter((entry) => formulaEntryKind(entry) === "worked_example").length;
     const trivial = entries.filter((entry) => isTrivialFormulaFragment(String(entry.text ?? "")) || !isFormulaExpression(String(entry.text ?? "")));
     if (entries.length > 10) {
       problems.push(`${page.relPath}: formulas: contains ${entries.length} entries; expected focused metric/source relationships, not inline-fragment harvesting`);
     }
-    if (entries.length > Math.max(6, displayCount + sourceAnchoredCount + 4)) {
-      problems.push(`${page.relPath}: formulas: has ${entries.length} entries but only ${displayCount} display formula(s) and ${sourceAnchoredCount} source-derived/anchored formula(s)`);
+    if (entries.length > Math.max(6, displayCount + sourceDefinitionCount + 4)) {
+      problems.push(`${page.relPath}: formulas: has ${entries.length} entries but only ${displayCount} display formula(s) and ${sourceDefinitionCount} source definition formula(s)`);
+    }
+    if (workedExampleCount > Math.max(2, sourceDefinitionCount * 2 + 1)) {
+      problems.push(`${page.relPath}: formulas: has ${workedExampleCount} worked example(s) but only ${sourceDefinitionCount} source definition formula(s)`);
     }
     if (trivial.length > 0 && trivial.length / entries.length > 0.3) {
       problems.push(`${page.relPath}: ${trivial.length}/${entries.length} formulas: entries are trivial fragments`);
     }
     for (const [index, entry] of entries.entries()) {
       const text = String(entry.text ?? "");
+      const kind = formulaEntryKind(entry);
       if (isTrivialFormulaFragment(text) && /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
         problems.push(`${page.relPath}: formulas[${index}] source-anchors trivial fragment "${text}"`);
+      }
+      if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(text)) {
+        problems.push(`${page.relPath}: formulas[${index}] stores worked-example arithmetic as ${kind}`);
       }
     }
   }
@@ -916,6 +941,23 @@ function visualAnchorPrecisionProblems(
     if (type !== "metric_calculator" && type !== "tradeoff_explorer") continue;
     const ids = visualAnchorIds(spec).filter((id) => /^S\d+\.P\d+\.E\d+$/i.test(id));
     if (ids.length === 0) continue;
+    const formulaAnchorRecords = visualAnchorRecords(spec).filter((anchor) => {
+      const id = String(anchor.equationId ?? "").trim();
+      return /^S\d+\.P\d+\.E\d+$/i.test(id);
+    });
+    if (formulaAnchorRecords.length > 1) {
+      for (const anchor of formulaAnchorRecords) {
+        const id = String(anchor.equationId ?? "").trim();
+        const role = String(anchor.role ?? "").trim();
+        const reason = String(anchor.reason ?? "").trim();
+        if (!/^(input|output_formula|comparison_basis|context)$/.test(role)) {
+          problems.push(`${page.relPath}: visual ${String(spec.id ?? "(missing id)")} anchor ${id} lacks a valid role`);
+        }
+        if (reason.length < 12) {
+          problems.push(`${page.relPath}: visual ${String(spec.id ?? "(missing id)")} anchor ${id} lacks a specific role reason`);
+        }
+      }
+    }
     const includePageContext = type !== "metric_calculator";
     const expected = familiesFromVisualContext(spec, page, includePageContext);
     const anchorFamilies = ids
@@ -943,15 +985,51 @@ function visualAnchorPrecisionProblems(
   return [...new Set(problems)];
 }
 
+function repairLogConsistencyProblems(gardenDir: string, lessonPages: PageFile[]): string[] {
+  const logPath = path.join(gardenDir, ".breadboard", "repair-log.json");
+  const repairedPagesWithFm = lessonPages.filter((page) => fmString(page.frontmatter, "lastSemanticRepairAt"));
+  if (!fs.existsSync(logPath)) {
+    return repairedPagesWithFm.map((page) => `${page.relPath}: has semantic repair provenance but .breadboard/repair-log.json is missing`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  } catch {
+    return [".breadboard/repair-log.json is not valid JSON"];
+  }
+  const record = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  const repairs = Array.isArray(record.repairs) ? record.repairs as Array<Record<string, unknown>> : [];
+  const problems: string[] = [];
+  for (const repair of repairs) {
+    const pagePath = String(repair.pagePath ?? "(unknown page)");
+    const result = String(repair.result ?? "");
+    if (result === "unresolved") problems.push(`${pagePath}: repair log result is unresolved`);
+    const unresolved = Array.isArray(repair.unresolvedValidationErrors) ? repair.unresolvedValidationErrors : [];
+    for (const error of unresolved) problems.push(`${pagePath}: unresolved repair validation error: ${String(error)}`);
+  }
+  const repairedPages = new Set(repairs.map((repair) => String(repair.pagePath ?? "")));
+  for (const page of repairedPagesWithFm) {
+    if (!repairedPages.has(page.relPath)) problems.push(`${page.relPath}: has lastSemanticRepairAt but no matching repair-log entry`);
+    if (!fmString(page.frontmatter, "generatedFromUnitId")) problems.push(`${page.relPath}: semantic repair provenance missing generatedFromUnitId`);
+    if (!fmString(page.frontmatter, "semanticRepairReason")) problems.push(`${page.relPath}: semantic repair provenance missing semanticRepairReason`);
+  }
+  return [...new Set(problems)];
+}
+
 // ---------------------------------------------------------------------------
 // Check machinery
 // ---------------------------------------------------------------------------
 
-interface CheckResult {
+export type ValidationSeverity = "pass" | "warn" | "fail" | "skip";
+
+export interface CheckResult {
   id: number;
   name: string;
-  status: "PASS" | "FAIL" | "SKIP";
+  status: "PASS" | "WARN" | "FAIL" | "SKIP";
+  severity?: ValidationSeverity;
   problems: string[];
+  reason?: string;
+  acceptanceBlocking?: boolean;
 }
 
 const REQUIRED_VALIDATION_REPORT_SECTIONS = [
@@ -979,6 +1057,7 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Interactive Visual Fulfillment",
   "Final Interactive Visual Uniqueness",
   "Visual Anchor Precision",
+  "Repetition and Opening Flow",
   "Source Crop Quality",
   "Crop Quality and Fallbacks",
   "Source Coverage Mode Precision",
@@ -987,9 +1066,65 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Zettelkasten Tag Density",
   "Zettelkasten Handle Quality",
   "Zettelkasten Handle Naturalness",
+  "Repair Provenance",
   "Section Title Quality",
+  "Acceptance Decision",
   "Final Acceptance",
 ];
+
+function statusFromSeverity(severity: ValidationSeverity): CheckResult["status"] {
+  switch (severity) {
+    case "pass":
+      return "PASS";
+    case "warn":
+      return "WARN";
+    case "fail":
+      return "FAIL";
+    case "skip":
+      return "SKIP";
+  }
+}
+
+function severityFromStatus(status: CheckResult["status"] | undefined, problems: string[]): ValidationSeverity {
+  if (status === "WARN") return "warn";
+  if (status === "FAIL") return "fail";
+  if (status === "SKIP") return "skip";
+  if (status === "PASS") return "pass";
+  return problems.length > 0 ? "fail" : "pass";
+}
+
+function normalizeCheckResult(result: CheckResult): CheckResult {
+  const problems = [...(result.problems ?? [])];
+  let severity = result.severity ?? severityFromStatus(result.status, problems);
+  let status = result.status ?? statusFromSeverity(severity);
+  if (severity === "skip" && problems.length > 0) {
+    severity = "fail";
+    status = "FAIL";
+    problems.unshift(`internal validator error: check "${result.name}" was marked SKIP but found ${problems.length} problem(s)`);
+  } else if (severity === "pass" && problems.length > 0) {
+    severity = "fail";
+    status = "FAIL";
+    problems.unshift(`internal validator error: check "${result.name}" was marked PASS but found ${problems.length} problem(s)`);
+  } else {
+    status = statusFromSeverity(severity);
+  }
+  return {
+    ...result,
+    status,
+    severity,
+    problems,
+    acceptanceBlocking: severity === "fail" ? true : Boolean(result.acceptanceBlocking),
+  };
+}
+
+export function validationAccepted(results: CheckResult[]): boolean {
+  return results.map(normalizeCheckResult).every((result) => {
+    if (result.severity === "fail") return false;
+    if (result.severity === "warn" && result.acceptanceBlocking) return false;
+    if (result.severity === "skip" && result.problems.length > 0) return false;
+    return true;
+  });
+}
 
 export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] {
   if (!fs.existsSync(gardenDir)) {
@@ -1012,13 +1147,26 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   });
 
   const results: CheckResult[] = [];
-  const check = (id: number, name: string, problems: string[], skip = false) => {
-    results.push({
+  const check = (
+    id: number,
+    name: string,
+    problems: string[],
+    skip = false,
+    options: { severity?: ValidationSeverity; reason?: string; acceptanceBlocking?: boolean } = {},
+  ) => {
+    let severity: ValidationSeverity;
+    if (skip) severity = "skip";
+    else if (options.severity) severity = options.severity;
+    else severity = problems.length === 0 ? "pass" : "fail";
+    results.push(normalizeCheckResult({
       id,
       name,
-      status: skip ? "SKIP" : problems.length === 0 ? "PASS" : "FAIL",
+      status: statusFromSeverity(severity),
+      severity,
       problems,
-    });
+      reason: options.reason ?? (skip ? "not applicable" : undefined),
+      acceptanceBlocking: options.acceptanceBlocking,
+    }));
   };
 
   // Ledger.
@@ -1847,8 +1995,16 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       );
       const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
       for (const [index, entry] of entries.entries()) {
+        const label = `${page.relPath}: formulas[${index}]`;
+        const kind = formulaEntryKind(entry);
         if (entry.text && !isGroundableFormula(String(entry.text))) {
           problems.push(`${page.relPath}: formulas[${index}] tracks trivial math "${entry.text}" instead of a meaningful formula`);
+        }
+        if (kind === "worked_example" && /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
+          problems.push(`${label} is a worked example but is marked ${entry.groundingStatus}; worked examples may reference source formulas but cannot satisfy source definitions`);
+        }
+        if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(String(entry.text ?? ""))) {
+          problems.push(`${label} is numeric worked-example arithmetic but is marked ${kind}`);
         }
       }
       if ("formulaGroundingStatus" in page.frontmatter || "formulaJustification" in page.frontmatter) {
@@ -1858,31 +2014,39 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
         fmString(page.frontmatter, "sourceFormulaAnchor"),
       ].filter(Boolean);
-      const declaredSourceAnchoredEntries = entries.filter((entry) => entry.groundingStatus === "source-anchored" || entry.groundingStatus === "source-derived");
+      const declaredSourceAnchoredEntries = entries.filter((entry) => {
+        const kind = formulaEntryKind(entry);
+        return kind === "source_definition" || kind === "source_derived_definition";
+      });
       if (declaredFormulaAnchors.length > 0 && declaredSourceAnchoredEntries.length === 0) {
-        problems.push(`${page.relPath}: has sourceFormulaAnchors but no source-anchored formula entry`);
+        problems.push(`${page.relPath}: has sourceFormulaAnchors but no source definition formula entry`);
       }
       for (const anchor of declaredFormulaAnchors) {
         if (!declaredSourceAnchoredEntries.some((entry) => entry.sourceAnchor === anchor)) {
-          problems.push(`${page.relPath}: sourceFormulaAnchors includes ${anchor}, but no formulas: entry is grounded to it`);
+          problems.push(`${page.relPath}: sourceFormulaAnchors includes ${anchor}, but no source definition formulas: entry is grounded to it`);
         }
       }
       if (math.length > 0) {
-        const formulaAnchors = [
-          ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
-          fmString(page.frontmatter, "sourceFormulaAnchor"),
-        ].filter(Boolean);
         if (entries.length === 0) {
           problems.push(`${page.relPath}: contains math but has no per-formula formulas: frontmatter entries`);
         }
-        const sourceAnchoredEntries = entries.filter((entry) => entry.groundingStatus === "source-anchored");
         for (const [index, entry] of entries.entries()) {
           const label = `${page.relPath}: formulas[${index}]`;
+          const kind = formulaEntryKind(entry);
           if (!String(entry.text ?? "").trim()) problems.push(`${label} missing text`);
           if (!/^(source-anchored|source-derived|conceptual-helper|unmatched)$/.test(String(entry.groundingStatus ?? ""))) {
             problems.push(`${label} has invalid groundingStatus "${entry.groundingStatus ?? ""}"`);
           }
+          if (!/^(source_definition|source_derived_definition|worked_example|conceptual_helper)$/.test(kind)) {
+            problems.push(`${label} has invalid kind "${kind || "(missing)"}"`);
+          }
           if (!String(entry.justification ?? "").trim()) problems.push(`${label} missing justification`);
+          if (kind === "worked_example" && /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
+            problems.push(`${label} is a worked example but is marked ${entry.groundingStatus}; worked examples may reference source formulas but cannot satisfy source definitions`);
+          }
+          if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(String(entry.text ?? ""))) {
+            problems.push(`${label} is numeric worked-example arithmetic but is marked ${kind}`);
+          }
           if ((entry.groundingStatus === "source-anchored" || entry.groundingStatus === "source-derived") && !String(entry.sourceAnchor ?? "").trim()) {
             problems.push(`${label} is ${entry.groundingStatus} but lacks sourceAnchor`);
           }
@@ -1974,6 +2138,26 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   {
     const problems: string[] = [];
     const pageById = new Map(lessonPages.map((page) => [page.relPath.replace(/\.md$/i, ""), page]));
+    const pageUnitById = new Map(lessonPages.map((page) => [page.relPath.replace(/\.md$/i, ""), fmString(page.frontmatter, "learningUnitId")]));
+    if (learningUnits.length > 0) {
+      const contractUnitByArtifact = new Map<string, string>();
+      for (const assignment of contractAssignments) {
+        if (assignment.sourceArtifactId) contractUnitByArtifact.set(assignment.sourceArtifactId, assignment.assignedLearningUnitId);
+      }
+      for (const visual of ledger) {
+        if (String(visual.usageStatus ?? "") !== "assigned") continue;
+        const id = String(visual.sourceVisualId ?? "");
+        const assignedPageId = String(visual.assignedPageId ?? "");
+        if (!id || !assignedPageId) continue;
+        const expectedUnit = contractUnitByArtifact.get(id);
+        if (!expectedUnit) continue;
+        const actualUnit = pageUnitById.get(assignedPageId);
+        if (actualUnit && actualUnit !== expectedUnit) {
+          problems.push(`${id}: ledger assigns to ${assignedPageId} (${actualUnit}), but Learning Unit Contract assigns it to ${expectedUnit}`);
+        }
+      }
+      check(27, "source visuals match page semantics", [...new Set(problems)], !isSnnGarden || !ledgerExists);
+    } else {
     const idsForPage = (page: PageFile): Set<string> =>
       new Set([
         ...fmArray(page.frontmatter, "sourceVisualIds"),
@@ -2047,8 +2231,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       27,
       "source visuals match page semantics",
       [...new Set(problems)],
-      learningUnits.length > 0 || !isSnnGarden || !ledgerExists,
+      !isSnnGarden || !ledgerExists,
     );
+    }
   }
 
   // 28. Legacy semantic tag lint. Contract-backed gardens already enforce the
@@ -2056,6 +2241,13 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   // centrality heuristics after the Learning Unit Contract has spoken.
   {
     const problems: string[] = [];
+    if (learningUnits.length > 0 || lessonPages.length === 0) {
+      check(28, "learner tags are central to their pages", [], true, {
+        reason: learningUnits.length > 0
+          ? "contract-backed gardens enforce exact Zettelkasten handles in checks 8, 24, 45, 51, and 57"
+          : "no learner pages",
+      });
+    } else {
     for (const page of lessonPages) {
       const haystack = `${fmString(page.frontmatter, "title")} ${teachingProse(page.body)}`.toLowerCase();
       const pageText = `${page.relPath} ${fmString(page.frontmatter, "title")}`.toLowerCase();
@@ -2082,13 +2274,14 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       28,
       "learner tags are central to their pages",
       [...new Set(problems)],
-      learningUnits.length > 0 || lessonPages.length === 0,
+      false,
     );
+    }
   }
 
-  // 29. Repeated learner-page openings are a style lint. Contract fulfillment
-  // is the hard acceptance boundary for Learn exports; keep this heuristic from
-  // overriding a contract-valid artifact.
+  // 29. Repeated learner-page openings must be callbacks, not restarted
+  // motivation frames. A Learning Unit Contract gives us better context; it is
+  // not an exemption.
   {
     const problems: string[] = [];
     const introByFingerprint = new Map<string, string[]>();
@@ -2128,7 +2321,8 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       29,
       "learner page openings are not repeated across pages",
       problems,
-      learningUnits.length > 0 || lessonPages.length < 3,
+      lessonPages.length < 3,
+      { reason: "fewer than three learner pages" },
     );
   }
 
@@ -2143,7 +2337,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (!/^Generated:\s+/m.test(report)) problems.push("validation report missing timestamp");
       if (!/^Root:\s+/m.test(report)) problems.push("validation report missing root");
       if (!/^Page counts:\s+/m.test(report)) problems.push("validation report missing page counts");
-      if (!/\[(?:PASS|FAIL|SKIP)\]/.test(report)) problems.push("validation report missing check statuses");
+      if (!/\[(?:PASS|WARN|FAIL|SKIP)\]/.test(report)) problems.push("validation report missing check statuses");
       if (!/^Accepted:\s+(?:yes|no)$/im.test(report)) problems.push("validation report missing accepted yes/no");
       for (const section of REQUIRED_VALIDATION_REPORT_SECTIONS) {
         const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2374,6 +2568,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     for (const page of lessonPages) {
       for (const [index, entry] of formulaEntriesFromFrontmatter(page.rawFrontmatter).entries()) {
         const text = String(entry.text ?? "");
+        const kind = formulaEntryKind(entry);
         if (!text.trim()) {
           problems.push(`${page.relPath}: formulas[${index}] missing text`);
         } else if (!isFormulaExpression(text)) {
@@ -2381,6 +2576,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         }
         if (!/^(source-anchored|source-derived|conceptual-helper|unmatched)$/.test(String(entry.groundingStatus ?? ""))) {
           problems.push(`${page.relPath}: formulas[${index}] has invalid groundingStatus "${entry.groundingStatus ?? ""}"`);
+        }
+        if (!/^(source_definition|source_derived_definition|worked_example|conceptual_helper)$/.test(kind)) {
+          problems.push(`${page.relPath}: formulas[${index}] has invalid kind "${kind || "(missing)"}"`);
         }
       }
     }
@@ -2398,7 +2596,14 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       for (const [index, entry] of formulaEntriesFromFrontmatter(page.rawFrontmatter).entries()) {
         const text = String(entry.text ?? "");
         const status = String(entry.groundingStatus ?? "");
+        const kind = formulaEntryKind(entry);
         if (!isFormulaExpression(text)) continue;
+        if (kind === "worked_example") {
+          if (/^(source-anchored|source-derived)$/.test(status)) {
+            problems.push(`${page.relPath}: formulas[${index}] is a worked example but is marked ${status}`);
+          }
+          continue;
+        }
         const matchingSource = sources.find((source) => source.text && formulaMeaningMatch(text, source.text).ok);
         if ((status === "conceptual-helper" || status === "unmatched") && matchingSource) {
           problems.push(`${page.relPath}: formulas[${index}] matches source formula ${matchingSource.id} but is marked ${status}`);
@@ -2516,6 +2721,13 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       for (const [index, entry] of formulaEntriesFromFrontmatter(page.rawFrontmatter).entries()) {
         const text = String(entry.text ?? "");
         const status = String(entry.groundingStatus ?? "");
+        const kind = formulaEntryKind(entry);
+        if (kind === "worked_example") {
+          if (/^(?:source-anchored|source-derived)$/.test(status)) {
+            problems.push(`${page.relPath}: formulas[${index}] worked example is marked ${status}; source definition anchors need kind=source_definition/source_derived_definition`);
+          }
+          continue;
+        }
         if (!/^(?:source-anchored|source-derived)$/.test(status) || !entry.sourceAnchor) continue;
         const anchorVisual = ledger.find((visual) => String(visual.sourceVisualId ?? "") === entry.sourceAnchor);
         const sourceText = formulaAnchorSemanticText(anchorVisual);
@@ -2557,6 +2769,11 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   {
     const problems = learningUnits.flatMap((unit) => zettelHandleQualityProblems(unit));
     check(57, "Zettelkasten Handle Naturalness", [...new Set(problems)], learningUnits.length === 0);
+  }
+
+  // 58. Semantic repairs must be traceable and resolved.
+  {
+    check(58, "Repair Provenance", repairLogConsistencyProblems(gardenDir, lessonPages), lessonPages.length === 0);
   }
 
   return results;
@@ -3098,7 +3315,8 @@ export function writeValidationReport(
   const reportDir = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(reportDir, { recursive: true });
   const counts = pageCountsForReport(gardenDir);
-  const accepted = results.every((result) => result.status !== "FAIL");
+  const normalizedResults = results.map(normalizeCheckResult);
+  const accepted = validationAccepted(normalizedResults);
   const sourceFiles: string[] = [];
   {
     const allPages: PageFile[] = [];
@@ -3108,9 +3326,14 @@ export function writeValidationReport(
       if (file && !sourceFiles.includes(file)) sourceFiles.push(file);
     }
   }
-  const passCount = results.filter((r) => r.status === "PASS").length;
-  const failCount = results.filter((r) => r.status === "FAIL").length;
-  const skipCount = results.filter((r) => r.status === "SKIP").length;
+  const passCount = normalizedResults.filter((r) => r.status === "PASS").length;
+  const warnCount = normalizedResults.filter((r) => r.status === "WARN").length;
+  const failCount = normalizedResults.filter((r) => r.status === "FAIL").length;
+  const skipCount = normalizedResults.filter((r) => r.status === "SKIP").length;
+  const blockingFailures = normalizedResults.filter((r) => r.status === "FAIL");
+  const blockingWarnings = normalizedResults.filter((r) => r.status === "WARN" && r.acceptanceBlocking);
+  const nonBlockingWarnings = normalizedResults.filter((r) => r.status === "WARN" && !r.acceptanceBlocking);
+  const skipped = normalizedResults.filter((r) => r.status === "SKIP");
   const lines = [
     "# Breadboard Validation Report",
     "",
@@ -3119,7 +3342,7 @@ export function writeValidationReport(
     `Garden: ${gardenSlug}`,
     `Source files: ${sourceFiles.length > 0 ? sourceFiles.join(", ") : "(none detected)"}`,
     `Page counts: total=${counts.total}, published=${counts.published}, learner=${counts.learner}, sources=${counts.sources}`,
-    `Check results: ${passCount} PASS, ${failCount} FAIL, ${skipCount} SKIP`,
+    `Check results: ${passCount} PASS, ${warnCount} WARN, ${failCount} FAIL, ${skipCount} SKIP`,
     `Accepted: ${accepted ? "yes" : "no"}`,
     `Produced by: scripts/validate-breadboard-garden.ts (runChecks + writeValidationReport), also run as the pipeline's export gate via dashboard/src/lib/garden-finalize.ts`,
     "",
@@ -3223,6 +3446,10 @@ export function writeValidationReport(
     "",
     "See check 55.",
     "",
+    "## Repetition and Opening Flow",
+    "",
+    "See check 29.",
+    "",
     "## Source Crop Quality",
     "",
     "See checks 12, 35, and 44.",
@@ -3255,9 +3482,37 @@ export function writeValidationReport(
     "",
     "See check 57.",
     "",
+    "## Repair Provenance",
+    "",
+    "See check 58.",
+    "",
     "## Section Title Quality",
     "",
     "See check 34.",
+    "",
+    "## Acceptance Decision",
+    "",
+    `Accepted: ${accepted ? "yes" : "no"}`,
+    "",
+    "Blocking failures:",
+    ...(blockingFailures.length > 0
+      ? blockingFailures.map((result) => `- ${result.id}. ${result.name}: ${result.problems[0] ?? "failed"}`)
+      : ["- None."]),
+    "",
+    "Blocking warnings:",
+    ...(blockingWarnings.length > 0
+      ? blockingWarnings.map((result) => `- ${result.id}. ${result.name}: ${result.problems[0] ?? "warning"}`)
+      : ["- None."]),
+    "",
+    "Non-blocking warnings:",
+    ...(nonBlockingWarnings.length > 0
+      ? nonBlockingWarnings.map((result) => `- ${result.id}. ${result.name}: ${result.problems[0] ?? "warning"}`)
+      : ["- None."]),
+    "",
+    "Skipped as not applicable:",
+    ...(skipped.length > 0
+      ? skipped.map((result) => `- ${result.id}. ${result.name}${result.reason ? ` (${result.reason})` : ""}`)
+      : ["- None."]),
     "",
     "## Final Acceptance",
     "",
@@ -3266,8 +3521,10 @@ export function writeValidationReport(
     "## Checks",
     "",
   ];
-  for (const result of results) {
+  for (const result of normalizedResults) {
     lines.push(`- [${result.status}] ${result.id}. ${result.name}`);
+    if (result.status === "SKIP" && result.reason) lines.push(`  - Reason: ${result.reason}`);
+    if (result.status === "WARN" && result.acceptanceBlocking) lines.push("  - Acceptance blocking: yes");
     for (const problem of result.problems) lines.push(`  - ${problem}`);
   }
   fs.writeFileSync(path.join(reportDir, "validation-report.md"), `${lines.join("\n")}\n`, "utf-8");
@@ -3302,8 +3559,9 @@ function main(): void {
     writeValidationReport(dir, slug, results);
     results = runChecks(dir, slug);
     writeValidationReport(dir, slug, results);
-    for (const result of results) {
-      const badge = result.status === "PASS" ? "PASS" : result.status === "SKIP" ? "SKIP" : "FAIL";
+    const normalized = results.map(normalizeCheckResult);
+    for (const result of normalized) {
+      const badge = result.status;
       console.log(`[${badge}] ${result.id}. ${result.name}`);
       for (const problem of result.problems.slice(0, 12)) {
         console.log(`       - ${problem}`);
@@ -3311,8 +3569,8 @@ function main(): void {
       if (result.problems.length > 12) {
         console.log(`       ... and ${result.problems.length - 12} more`);
       }
-      if (result.status === "FAIL") anyFailure = true;
     }
+    if (!validationAccepted(normalized)) anyFailure = true;
   }
 
   process.exit(anyFailure ? 1 : 0);

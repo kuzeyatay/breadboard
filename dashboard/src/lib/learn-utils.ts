@@ -118,6 +118,7 @@ type FrontmatterObject = Record<string, FrontmatterScalar | string[] | undefined
 type FrontmatterValue = FrontmatterScalar | string[] | FrontmatterObject[] | undefined | null;
 
 export interface FormulaGroundingEntry {
+  kind?: FormulaRecordKind;
   text: string;
   normalizedText?: string;
   groundingStatus: "source-anchored" | "source-derived" | "conceptual-helper" | "unmatched";
@@ -126,6 +127,38 @@ export interface FormulaGroundingEntry {
   sourceAnchorTitle?: string;
   matchReason?: string;
   confidence?: number;
+}
+
+export type FormulaRecordKind =
+  | "source_definition"
+  | "source_derived_definition"
+  | "worked_example"
+  | "conceptual_helper";
+
+export function formulaRecordKindForGroundingStatus(status: string | undefined): FormulaRecordKind {
+  switch (status) {
+    case "source-anchored":
+      return "source_definition";
+    case "source-derived":
+      return "source_derived_definition";
+    default:
+      return "conceptual_helper";
+  }
+}
+
+export function isWorkedExampleFormula(expr: string): boolean {
+  const compacted = expr
+    .replace(/\\(?:text|mathrm|operatorname)\{([^}]*)\}/g, "$1")
+    .replace(/\\(?:left|right|,|;|:|!)/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+  if (!compacted || !/[=+\-*/]/.test(compacted)) return false;
+  const withoutUnits = compacted.replace(/\b(?:ms|s|j|w|hz|khz|mhz|v|a|spikes?|epochs?)\b/gi, "");
+  const alpha = withoutUnits.match(/[A-Za-z]/g) ?? [];
+  const digits = compacted.match(/\d/g) ?? [];
+  if (digits.length < 2) return false;
+  return alpha.length <= 1 || digits.length >= alpha.length * 3;
 }
 
 /** Formula grounding metadata is for meaningful equations/metric definitions,
@@ -1282,6 +1315,7 @@ export function buildLearningPageFrontmatter({
     formulas: formulas && formulas.length > 0 ? formulas.map((entry) => ({ ...entry })) : undefined,
     learningUnitId,
     learningUnitRole,
+    generatedFromUnitId: learningUnitId,
     generatedBy: "learn_button",
     generated_by: "learn_button",
     learningVersion: visibleVersionId,

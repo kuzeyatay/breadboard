@@ -19,6 +19,7 @@
 // garden.
 
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import {
   anchorTextCompatibleWithVisualType,
@@ -40,7 +41,8 @@ import {
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
-import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment } from "./learn-utils.ts";
+import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula } from "./learn-utils.ts";
+import type { SourceAnchor } from "./visual-spec.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -108,6 +110,7 @@ function fmSetArray(rawFm: string, key: string, values: string[]): string {
 }
 
 export interface FinalizeFormulaEntry {
+  kind?: "source_definition" | "source_derived_definition" | "worked_example" | "conceptual_helper";
   text: string;
   normalizedText?: string;
   groundingStatus: "source-anchored" | "source-derived" | "conceptual-helper" | "unmatched";
@@ -123,7 +126,8 @@ export interface FinalizeFormulaEntry {
 function serializeFormulas(entries: FinalizeFormulaEntry[]): string {
   const lines: string[] = ["formulas:"];
   for (const entry of entries) {
-    lines.push(`  - text: ${jsonScalar(entry.text)}`);
+    lines.push(`  - kind: ${jsonScalar(entry.kind ?? "conceptual_helper")}`);
+    lines.push(`    text: ${jsonScalar(entry.text)}`);
     if (entry.normalizedText) lines.push(`    normalizedText: ${jsonScalar(entry.normalizedText)}`);
     lines.push(`    groundingStatus: ${jsonScalar(entry.groundingStatus)}`);
     lines.push(`    justification: ${jsonScalar(entry.justification)}`);
@@ -173,6 +177,118 @@ interface LearningUnitContractArtifact {
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
   foundPath?: string;
+}
+
+export type FinalizerAction =
+  | { kind: "mechanical_fix"; description: string; filePath: string }
+  | { kind: "semantic_failure"; description: string; unitId?: string; pagePath?: string; repairPrompt: string };
+
+export type UnitRepairFailureType =
+  | "repeated_opening"
+  | "formula_grounding"
+  | "visual_grounding"
+  | "zettelkasten_handle"
+  | "section_semantics"
+  | "contract_fulfillment"
+  | "semantic_navigation"
+  | "source_text_anchor"
+  | "unknown_semantic_failure";
+
+export interface UnitRepairRequest {
+  unitId: string;
+  pagePath: string;
+  sectionPath: string;
+  failureTypes: string[];
+  validationErrors: string[];
+  learningUnitContract: LearningUnitContract;
+  previousUnitSummary?: string;
+  nextUnitSummary?: string;
+  sourceAnchors: SourceAnchor[];
+  currentPageMarkdown: string;
+  requiredChanges: string[];
+  repairPrompt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Repair executor abstraction
+// ---------------------------------------------------------------------------
+//
+// A repair can be produced by a model (single-page regeneration from the
+// UnitRepairRequest) or by the built-in deterministic transforms. The
+// deterministic transforms remain the always-available safe fallback; the model
+// executor is an INJECTED dependency so this module stays LLM-free and
+// filesystem-only by default. Callers (learn.ts) wire a real model executor;
+// tests wire a fake one.
+
+export type RepairExecutorKind = "model" | "deterministic";
+export type RepairExecutorMode = "model" | "deterministic" | "model_with_deterministic_fallback";
+
+/** A model-produced candidate for a single page. `markdown` is the full revised
+ * page (frontmatter + body). Visual specs and a contract-handle patch are
+ * optional side outputs; both are scope-checked before anything is written. */
+export interface RepairCandidate {
+  markdown: string;
+  visualSpecs?: Array<{ id: string; spec: Record<string, unknown> }>;
+  contractHandlePatch?: { unitId: string; handles: string[] };
+  notes?: string[];
+}
+
+/** Injected model executor: given a UnitRepairRequest, return a candidate page
+ * (or null when it declines). May be async (real LLM) or sync (test fake). */
+export type ModelRepairExecutor = (
+  request: UnitRepairRequest,
+) => Promise<RepairCandidate | null> | RepairCandidate | null;
+
+export interface RepairExecutionResult {
+  unitId: string;
+  pagePath: string;
+  executor: RepairExecutorKind;
+  changedFiles: string[];
+  success: boolean;
+  validationErrorsBefore: string[];
+  validationErrorsAfter: string[];
+  notes?: string[];
+}
+
+export interface UnitRepairLogEntry {
+  unitId: string;
+  pagePath: string;
+  sectionPath: string;
+  failureTypes: string[];
+  validationErrors: string[];
+  requiredChanges: string[];
+  repairType: "contract_driven_revision";
+  changedFiles: string[];
+  result: "resolved" | "unresolved" | "not_applicable";
+  unresolvedValidationErrors: string[];
+  repairedAt: string;
+  // Executor provenance — never hide fallback behavior.
+  executorAttempted: RepairExecutorKind[];
+  executorUsed: RepairExecutorKind | "none";
+  modelFailureReason?: string;
+}
+
+export interface FinalArtifactVerification {
+  checkedAt: string;
+  accepted: boolean;
+  mutatedFiles: string[];
+  validationFailures: string[];
+  unresolvedRepairFailures: string[];
+  validationReportAccepted: boolean;
+}
+
+export interface LearningUnitRepairRunReport {
+  requestedAt: string;
+  gardenSlug: string;
+  repairExecutorMode: RepairExecutorMode;
+  requests: UnitRepairRequest[];
+  repairs: UnitRepairLogEntry[];
+  executions: RepairExecutionResult[];
+  changedFiles: string[];
+  semanticFinalizerActions: FinalizerAction[];
+  firstValidationFailures: string[];
+  finalValidationFailures: string[];
+  finalVerification?: FinalArtifactVerification;
 }
 
 const SOURCE_FIGURE_PLACEMENTS = new Set<SourceFigurePlacement>([
@@ -241,6 +357,10 @@ function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifa
 
 function cleanText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function stripTitleNumber(value: string): string {
@@ -365,6 +485,54 @@ function repairContractZettelHandles(
     page.dirty = true;
   }
   report.notes.push(`repaired ${replacements.size} scaffold-like Zettelkasten handle(s) in the Learning Unit Contract`);
+}
+
+function synchronizeContractZettelHandles(
+  gardenDir: string,
+  contract: LearningUnitContractArtifact,
+  learnerPages: LearnerPage[],
+  report: FinalizeReport,
+): void {
+  if (!contract.foundPath || contract.units.length === 0) return;
+  const parsed = readJson<Record<string, unknown>>(contract.foundPath, {});
+  const rawUnits = Array.isArray(parsed.learningUnits) ? parsed.learningUnits as Array<Record<string, unknown>> : [];
+  if (rawUnits.length === 0) return;
+  const normalizedById = new Map(contract.units.map((unit) => [unit.id, unit]));
+  let changedContract = false;
+  for (const rawUnit of rawUnits) {
+    const id = cleanText(rawUnit.id);
+    const normalized = normalizedById.get(id);
+    if (!normalized) continue;
+    const expectedNotes = normalized.zettelNotes ?? [];
+    const currentNotes = Array.isArray(rawUnit.zettelNotes) ? rawUnit.zettelNotes as Array<Record<string, unknown>> : [];
+    const currentHandles = currentNotes.map((note) => atomicZettelHandle(cleanText(note.handle ?? note.claim))).filter(Boolean);
+    const expectedHandles = zettelHandlesForUnit(normalized);
+    if (expectedHandles.length === 0 || arraysEqual(currentHandles, expectedHandles)) continue;
+    rawUnit.zettelNotes = expectedNotes.map((note) => ({
+      handle: note.handle,
+      claim: note.claim,
+      connectedTo: note.connectedTo ?? [],
+    }));
+    changedContract = true;
+  }
+  if (changedContract) {
+    fs.writeFileSync(contract.foundPath, JSON.stringify(parsed, null, 2), "utf-8");
+    if (!report.changed.includes(".breadboard/learning-unit-contract.json")) report.changed.push(".breadboard/learning-unit-contract.json");
+    const repaired = readLearningUnitContract(gardenDir);
+    contract.units = repaired.units;
+    contract.assignments = repaired.assignments;
+    report.notes.push("synchronized expanded Zettelkasten handles into the Learning Unit Contract");
+  }
+  const repairedById = new Map(contract.units.map((unit) => [unit.id, unit]));
+  for (const page of learnerPages) {
+    const unit = repairedById.get(fmGetScalar(page.rawFm, "learningUnitId"));
+    if (!unit) continue;
+    const expected = zettelHandlesForUnit(unit);
+    const current = fmGetArray(page.rawFm, "tags");
+    if (expected.length === 0 || arraysEqual(current, expected)) continue;
+    page.rawFm = fmSetArray(page.rawFm, "tags", expected);
+    page.dirty = true;
+  }
 }
 
 function isSourceFigureId(id: string): boolean {
@@ -591,6 +759,11 @@ function visualSpecAnchorIds(spec: Record<string, unknown>): string[] {
   return [...new Set(ids)];
 }
 
+function visualSpecAnchorRecords(spec: Record<string, unknown>): Array<Record<string, unknown>> {
+  const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors : [];
+  return anchors.filter((anchor): anchor is Record<string, unknown> => Boolean(anchor) && typeof anchor === "object");
+}
+
 function visualSignature(spec: Record<string, unknown>): string {
   const controls = Array.isArray(spec.controls)
     ? spec.controls
@@ -720,6 +893,12 @@ function formulaFamilyForVisualAnchor(anchor: unknown): string | null {
   return formulaMetricFamily(text);
 }
 
+function roleForMetricAnchorFamily(family: string | null, targetFamilies: Set<string>): "input" | "output_formula" | "comparison_basis" | "context" {
+  if (family && targetFamilies.has(family)) return "output_formula";
+  if (family === "accuracy" || family === "energy" || family === "spike-count") return "input";
+  return "context";
+}
+
 function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText: string): boolean {
   if (String(spec.type ?? "") !== "metric_calculator") return false;
   const families = metricCalculatorFamiliesForText(contextText);
@@ -731,6 +910,7 @@ function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText:
     }
   }
   const labels = families.map((family) => METRIC_CALCULATOR_LABELS[family]);
+  spec.title = labels.length === 1 ? `${labels[0]} Calculator` : `${labels.join(" and ")} Calculator`;
   spec.controls = [...controlsByName.values()];
   spec.inputs = [...controlsByName.values()].map((control) => String(control.label ?? "").toLowerCase()).filter(Boolean);
   spec.outputs = labels;
@@ -749,6 +929,20 @@ function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText:
     spec.sourceAnchors = spec.sourceAnchors.filter((anchor) => {
       const family = formulaFamilyForVisualAnchor(anchor);
       return !family || allowed.has(family);
+    }).map((anchor) => {
+      if (!anchor || typeof anchor !== "object") return anchor;
+      const record = { ...(anchor as Record<string, unknown>) };
+      const family = formulaFamilyForVisualAnchor(record);
+      const role = roleForMetricAnchorFamily(family, new Set(families));
+      record.role = record.role ?? role;
+      record.reason = record.reason ?? (
+        role === "output_formula"
+          ? `This is the metric formula the calculator teaches for ${family ?? labels.join(", ")}.`
+          : role === "input"
+            ? `This formula supplies an input needed to compute ${labels.join(", ")}.`
+            : `This source anchor provides context for ${labels.join(", ")}.`
+      );
+      return record;
     });
   }
   return true;
@@ -796,16 +990,17 @@ function formulaAnchorsFromFrontmatter(rawFm: string): string[] {
 
 function formulaEntrySourceAnchors(rawFm: string): string[] {
   const anchors = new Set<string>();
-  for (const line of rawFm.split(/\r?\n/)) {
-    const match = line.match(/^\s+sourceAnchor:\s*(.*)$/);
-    if (!match) continue;
-    const value = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
+  for (const entry of formulaEntriesFromFrontmatter(rawFm)) {
+    const kind = formulaEntryKind(entry);
+    if (kind === "worked_example" || kind === "conceptual_helper") continue;
+    const value = String(entry.sourceAnchor ?? "").trim();
     if (value) anchors.add(value);
   }
   return [...anchors];
 }
 
 interface ParsedFormulaEntry {
+  kind?: string;
   text?: string;
   groundingStatus?: string;
   justification?: string;
@@ -844,6 +1039,15 @@ function formulaEntriesFromFrontmatter(rawFm: string): ParsedFormulaEntry[] {
   return entries.filter((entry) => Object.values(entry).some((value) => String(value ?? "").trim()));
 }
 
+function formulaEntryKind(entry: ParsedFormulaEntry): string {
+  const kind = String(entry.kind ?? "").trim();
+  if (kind) return kind;
+  if (isWorkedExampleFormula(String(entry.text ?? ""))) return "worked_example";
+  if (entry.groundingStatus === "source-anchored") return "source_definition";
+  if (entry.groundingStatus === "source-derived") return "source_derived_definition";
+  return "conceptual_helper";
+}
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
@@ -852,6 +1056,7 @@ export interface FinalizeReport {
   changed: string[];
   removed: string[];
   notes: string[];
+  actions?: FinalizerAction[];
   reconciliation: ReconciledAnchorUsage[];
   criticalProblems: string[];
 }
@@ -881,6 +1086,7 @@ export function finalizeGardenExport({
     changed: [],
     removed: [],
     notes: [],
+    actions: [],
     reconciliation: [],
     criticalProblems: [],
   };
@@ -902,10 +1108,6 @@ export function finalizeGardenExport({
 
   // --- Load learner pages ----------------------------------------------------
   const learnerPages = loadLearnerPages(gardenDir);
-  const pagesByRole = groupByRole(learnerPages);
-  const contract = readLearningUnitContract(gardenDir);
-  repairContractZettelHandles(gardenDir, contract, learnerPages, report);
-  const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
 
   // --- Pass C: source wikilink normalization ---------------------------------
   normalizeSourceWikilinks(gardenDir, report);
@@ -913,19 +1115,11 @@ export function finalizeGardenExport({
   // --- Pass D: stale caveat sanitation (visible + planning) ------------------
   sanitizeStaleCaveatFiles(gardenDir, { laterPagesExist, formulaAnchorsExist }, report);
   repairLearnerNavigationSourceLinks(gardenDir, report);
-  repairSectionSemanticTitles(gardenDir, learnerPages, unitsById, report);
-  repairSourceTextConceptAnchors(gardenDir, learnerPages, report);
-  repairLearningUnitSourceTextAnchors(gardenDir, learnerPages, unitsById, report);
-  repairMetricCalculatorFocus(gardenDir, learnerPages, report);
-  regroundFormulas({ ledger, learnerPages, report });
 
-  // Semantic decisions are made by the Learning Unit Contract before page
-  // writing. The finalizer only performs deterministic metadata repairs that
-  // preserve the page's content: learner navigation links, prose-backed visual
-  // grounding, page-specific visual spec focus, and formula metadata
-  // regrounding. It still does not assign source figures, choose visual
-  // renderer types, rewrite learner tags, or repair repeated motivation after
-  // the fact.
+  // Semantic decisions are made by the Learning Unit Contract repair loop before
+  // finalization. The finalizer only performs deterministic export hygiene:
+  // filesystem cleanup, source/link normalization, stale-caveat removal,
+  // path/label alignment, validation reporting, and hard gating.
 
   // --- Persist learner-page edits --------------------------------------------
   for (const page of learnerPages) {
@@ -939,7 +1133,7 @@ export function finalizeGardenExport({
 
   // --- Pass K: validation report + critical gate -----------------------------
   writeFinalizeValidationReport({ gardenDir, gardenSlug, report });
-  runCriticalGate({ gardenDir, ledgerPath, report });
+  runCriticalGate({ gardenDir, report });
 
   return report;
 }
@@ -1050,12 +1244,965 @@ function loadLearnerPages(gardenDir: string): LearnerPage[] {
   return pages;
 }
 
-function groupByRole(pages: LearnerPage[]): Map<PageRole, LearnerPage> {
-  const byRole = new Map<PageRole, LearnerPage>();
-  for (const page of pages) {
-    if (!byRole.has(page.role)) byRole.set(page.role, page);
+// ---------------------------------------------------------------------------
+// Learning Unit Contract repair loop
+// ---------------------------------------------------------------------------
+
+function emptyFinalizeReport(): FinalizeReport {
+  return {
+    changed: [],
+    removed: [],
+    notes: [],
+    actions: [],
+    reconciliation: [],
+    criticalProblems: [],
+  };
+}
+
+function semanticFailureType(checkName: string): UnitRepairFailureType | null {
+  const name = checkName.toLowerCase();
+  if (name.includes("repetition") || name.includes("opening")) return "repeated_opening";
+  if (name.includes("formula")) return "formula_grounding";
+  if (name.includes("visual") && !name.includes("source crop")) return "visual_grounding";
+  if (name.includes("source text concept")) return "source_text_anchor";
+  if (name.includes("zettelkasten")) return "zettelkasten_handle";
+  if (name.includes("section")) return "section_semantics";
+  if (name.includes("contract")) return "contract_fulfillment";
+  if (name.includes("semantic navigation")) return "semantic_navigation";
+  return null;
+}
+
+function shouldRouteToUnitRepair(checkName: string): boolean {
+  const type = semanticFailureType(checkName);
+  if (!type) return false;
+  // Link normalization is finalizer hygiene. The semantic repair loop owns page
+  // substance, not the mechanical target family of overview/index links.
+  if (type === "semantic_navigation") return false;
+  return true;
+}
+
+function fallbackUnitForPage(page: LearnerPage): LearningUnitContract {
+  const title = page.title || path.basename(page.rel, ".md");
+  return {
+    id: fmGetScalar(page.rawFm, "learningUnitId") || page.pageId,
+    title,
+    role: (fmGetScalar(page.rawFm, "learningUnitRole") || "core_concept") as LearningUnitContract["role"],
+    learningQuestion: `What should a learner understand from ${title}?`,
+    prerequisiteConcepts: [],
+    newConcepts: [],
+    sourceAnchors: fmGetArray(page.rawFm, "sourceAnchors"),
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    zettelNotes: fmGetArray(page.rawFm, "tags").map((tag) => ({
+      handle: tag,
+      claim: tag.replace(/-/g, " "),
+      connectedTo: [],
+    })),
+    mustNotRepeat: [],
+    expectedWordRange: [700, 1100],
+  };
+}
+
+function pageSummary(page: LearnerPage, unit?: LearningUnitContract): string {
+  const words = teachingProseLite(page.body).split(/\s+/).filter(Boolean).slice(0, 32).join(" ");
+  return [(unit?.id ?? fmGetScalar(page.rawFm, "learningUnitId")) || page.pageId, page.title, unit?.learningQuestion, words]
+    .filter(Boolean)
+    .join(" — ");
+}
+
+function sourceAnchorFromIdForRepair(anchorId: string): SourceAnchor | null {
+  const id = anchorId.trim();
+  if (!id) return null;
+  const anchor: SourceAnchor = { description: id };
+  if (/^text-/i.test(id)) {
+    anchor.textAnchorId = id;
+  } else if (/\.E\d+$/i.test(id)) {
+    anchor.equationId = id;
+  } else if (/\.T\d+$/i.test(id)) {
+    anchor.tableId = id;
+  } else if (/^S\d+\.P\d+\.[A-Z]\d+$/i.test(id)) {
+    anchor.figureId = id;
+  } else {
+    anchor.questionId = id;
   }
-  return byRole;
+  const page = id.match(/\.P(\d+)\./i)?.[1];
+  if (page) anchor.page = Number.parseInt(page, 10);
+  return anchor;
+}
+
+function sourceAnchorsForRepair(page: LearnerPage): SourceAnchor[] {
+  const anchors: SourceAnchor[] = [];
+  const add = (anchor: SourceAnchor | null) => {
+    if (!anchor) return;
+    const key = anchor.textAnchorId ?? anchor.equationId ?? anchor.tableId ?? anchor.figureId ?? anchor.questionId ?? anchor.description;
+    if (anchors.some((existing) =>
+      (existing.textAnchorId ?? existing.equationId ?? existing.tableId ?? existing.figureId ?? existing.questionId ?? existing.description) === key
+    )) return;
+    anchors.push(anchor);
+  };
+  for (const id of [
+    ...fmGetArray(page.rawFm, "sourceAnchors"),
+    ...fmGetArray(page.rawFm, "sourceVisualIds"),
+    ...formulaAnchorsFromFrontmatter(page.rawFm).filter((id) => !id.startsWith("trivial:")),
+  ]) add(sourceAnchorFromIdForRepair(id));
+  for (const spec of embeddedVisualSpecs(page.body)) {
+    for (const record of visualSpecAnchorRecords(spec)) {
+      const anchor: SourceAnchor = {
+        description: String(record.description ?? record.figureId ?? record.tableId ?? record.equationId ?? record.textAnchorId ?? "visual anchor"),
+      };
+      if (typeof record.sourceId === "string") anchor.sourceId = record.sourceId;
+      if (typeof record.sourceTitle === "string") anchor.sourceTitle = record.sourceTitle;
+      if (typeof record.page === "number") anchor.page = record.page;
+      if (typeof record.figureId === "string") anchor.figureId = record.figureId;
+      if (typeof record.tableId === "string") anchor.tableId = record.tableId;
+      if (typeof record.equationId === "string") anchor.equationId = record.equationId;
+      if (typeof record.questionId === "string") anchor.questionId = record.questionId;
+      if (typeof record.textAnchorId === "string") anchor.textAnchorId = record.textAnchorId;
+      if (record.role === "input" || record.role === "output_formula" || record.role === "comparison_basis" || record.role === "context") {
+        anchor.role = record.role;
+      }
+      if (typeof record.reason === "string") anchor.reason = record.reason;
+      add(anchor);
+    }
+  }
+  return anchors;
+}
+
+function repairRequiredChanges(type: UnitRepairFailureType, problem: string): string[] {
+  switch (type) {
+    case "repeated_opening":
+      return [
+        "Rewrite only the opening 2-4 paragraphs so this page continues from prior units instead of restarting the global motivation.",
+        "Keep required source anchors, formulas, tables, figures, visual blocks, and contract-backed Zettelkasten handles in place.",
+      ];
+    case "formula_grounding":
+      return [
+        "Revise the page/formula metadata so source definitions, derived definitions, worked examples, and conceptual helpers agree with the body.",
+        "Use the exact source formula anchor text and do not satisfy a source formula requirement with a worked example.",
+      ];
+    case "visual_grounding":
+      return [
+        "Regenerate the visual plan from the Learning Unit Contract using minimal compatible anchors and explicit source-anchor roles/reasons.",
+        "Update the page block, visual spec artifact, visual index, and source coverage consistently.",
+      ];
+    case "source_text_anchor":
+      return [
+        "Attach a source prose concept anchor when the source explains the visualized concept without a dedicated figure.",
+        "If no direct anchor exists, keep conceptual-no-direct-source-figure with a precise justification.",
+      ];
+    case "zettelkasten_handle":
+      return [
+        "Repair LearningUnitContract.zettelNotes handles first, then update page tags from the contract.",
+        "Ensure the page prose supports the repaired atomic handles rather than adding fallback generic tags.",
+      ];
+    case "section_semantics":
+      return [
+        "Retitle or split the section according to the roles in the Learning Unit Contract.",
+        "Keep canonical page paths coherent with section title, _index frontmatter, H1, and navigation labels.",
+      ];
+    case "contract_fulfillment":
+      return [
+        "Fulfill the page's Learning Unit Contract exactly: required source anchors, source figures/tables/formulas, visual type, and zettel handles.",
+        "Do not broaden the page with unrelated source assignments.",
+      ];
+    default:
+      return [`Resolve the semantic validation failure: ${problem}`];
+  }
+}
+
+function repairPromptForRequest(request: Omit<UnitRepairRequest, "repairPrompt">): string {
+  return [
+    `Rewrite only ${request.pagePath} for Learning Unit ${request.unitId}.`,
+    `Canonical section path: ${request.sectionPath}.`,
+    `Failure types: ${request.failureTypes.join(", ")}.`,
+    "Validation errors:",
+    ...request.validationErrors.map((error) => `- ${error}`),
+    "Required changes:",
+    ...request.requiredChanges.map((change) => `- ${change}`),
+    "Preserve the canonical file path, frontmatter schema, source anchor requirements, intended visual block, contract-backed Zettelkasten handles, and flow from previous/next units.",
+  ].join("\n");
+}
+
+function contractVersionForUnit(unit: LearningUnitContract): string {
+  return crypto.createHash("sha1").update(JSON.stringify(unit)).digest("hex").slice(0, 12);
+}
+
+function pageSectionPath(page: LearnerPage): string {
+  return page.rel.split("/").slice(0, 2).join("/");
+}
+
+function extractUnitIdFromProblem(problem: string): string | null {
+  return problem.match(/unit\s+"?([A-Za-z0-9_-]+)"?/i)?.[1] ?? null;
+}
+
+function pagesForProblem({
+  problem,
+  checkName,
+  learnerPages,
+  sectionInputs,
+}: {
+  problem: string;
+  checkName: string;
+  learnerPages: LearnerPage[];
+  sectionInputs: Array<{ rel: string; sectionTitle: string; units: LearningUnitContract[]; subsectionTitles: string[] }>;
+}): LearnerPage[] {
+  const pages = learnerPages.filter((page) => problem.includes(page.rel));
+  if (pages.length > 0) return pages;
+
+  const unitId = extractUnitIdFromProblem(problem);
+  if (unitId) {
+    const byUnit = learnerPages.filter((page) => fmGetScalar(page.rawFm, "learningUnitId") === unitId);
+    if (byUnit.length > 0) return byUnit;
+  }
+
+  const section = sectionInputs.find((candidate) => problem.includes(candidate.rel) || problem.includes(candidate.sectionTitle));
+  if (section) {
+    return learnerPages.filter((page) => page.rel.startsWith(`${section.rel}/`));
+  }
+
+  if (/tag ".+" appears on \d+\//i.test(problem) || /duplicate final interactive visual signature/i.test(problem)) {
+    return learnerPages.filter((page) => problem.includes(page.rel));
+  }
+
+  // Some section-title checks only carry the check name. Route to all pages in
+  // the section if exactly one section is implicated by the check family.
+  if (/section/i.test(checkName) && sectionInputs.length === 1) {
+    return learnerPages.filter((page) => page.rel.startsWith(`${sectionInputs[0].rel}/`));
+  }
+
+  return [];
+}
+
+function collectUnitRepairRequests({
+  gardenDir,
+  checks,
+}: {
+  gardenDir: string;
+  checks: FinalizeCheck[];
+}): UnitRepairRequest[] {
+  const learnerPages = loadLearnerPages(gardenDir);
+  const contract = readLearningUnitContract(gardenDir);
+  const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
+  const sectionInputs = sectionSemanticInputs(gardenDir, learnerPages, unitsById);
+  const sortedPages = [...learnerPages].sort((a, b) => a.pageId.localeCompare(b.pageId));
+  const requestMap = new Map<string, Omit<UnitRepairRequest, "repairPrompt">>();
+
+  for (const check of checks.filter((item) => item.status === "FAIL" && shouldRouteToUnitRepair(item.name))) {
+    const type = semanticFailureType(check.name) ?? "unknown_semantic_failure";
+    for (const problem of check.problems) {
+      const targets = pagesForProblem({ problem, checkName: check.name, learnerPages, sectionInputs });
+      for (const page of targets) {
+        const unitId = fmGetScalar(page.rawFm, "learningUnitId") || page.pageId;
+        const unit = unitsById.get(unitId) ?? fallbackUnitForPage(page);
+        const key = `${page.rel}::${check.name}`;
+        const index = sortedPages.findIndex((candidate) => candidate.rel === page.rel);
+        const previous = index > 0 ? sortedPages[index - 1] : undefined;
+        const next = index >= 0 && index + 1 < sortedPages.length ? sortedPages[index + 1] : undefined;
+        const previousUnit = previous ? unitsById.get(fmGetScalar(previous.rawFm, "learningUnitId")) : undefined;
+        const nextUnit = next ? unitsById.get(fmGetScalar(next.rawFm, "learningUnitId")) : undefined;
+        const existing = requestMap.get(key);
+        if (existing) {
+          existing.validationErrors.push(`${check.name}: ${problem}`);
+          if (!existing.failureTypes.includes(type)) existing.failureTypes.push(type);
+          existing.requiredChanges.push(...repairRequiredChanges(type, problem));
+          existing.requiredChanges = [...new Set(existing.requiredChanges)];
+          continue;
+        }
+        requestMap.set(key, {
+          unitId: unit.id,
+          pagePath: page.rel,
+          sectionPath: pageSectionPath(page),
+          failureTypes: [type],
+          validationErrors: [`${check.name}: ${problem}`],
+          learningUnitContract: unit,
+          previousUnitSummary: previous ? pageSummary(previous, previousUnit) : undefined,
+          nextUnitSummary: next ? pageSummary(next, nextUnit) : undefined,
+          sourceAnchors: sourceAnchorsForRepair(page),
+          currentPageMarkdown: joinFrontmatter(page.rawFm, page.body),
+          requiredChanges: repairRequiredChanges(type, problem),
+        });
+      }
+    }
+  }
+
+  return [...requestMap.values()].map((request) => ({
+    ...request,
+    repairPrompt: repairPromptForRequest(request),
+  })).sort((a, b) => `${a.pagePath}:${a.failureTypes.join(",")}`.localeCompare(`${b.pagePath}:${b.failureTypes.join(",")}`));
+}
+
+function semanticFailureActionsForRequests(requests: UnitRepairRequest[]): FinalizerAction[] {
+  return requests.map((request) => ({
+    kind: "semantic_failure",
+    description: `${request.failureTypes.join(", ")} on ${request.pagePath}`,
+    unitId: request.unitId,
+    pagePath: request.pagePath,
+    repairPrompt: request.repairPrompt,
+  }));
+}
+
+/** Stable id for a page repair, so page metadata and the repair log can be
+ * cross-referenced. */
+function repairRequestId(request: UnitRepairRequest): string {
+  return crypto
+    .createHash("sha1")
+    .update(`${request.pagePath}::${request.unitId}::${[...new Set(request.failureTypes)].sort().join(",")}`)
+    .digest("hex")
+    .slice(0, 12);
+}
+
+/** Serialize/replace the nested `lastSemanticRepair:` block. Kept alongside the
+ * flat provenance keys (generatedFromUnitId/lastSemanticRepairAt/
+ * semanticRepairReason) that the validators already read, so this block is
+ * purely additive structured metadata that also records WHICH executor ran. */
+function fmSetLastSemanticRepair(
+  rawFm: string,
+  value: { repairedAt: string; repairType: RepairExecutorKind; failureTypes: string[]; repairRequestId: string },
+): string {
+  const lines = rawFm.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^lastSemanticRepair:\s*/.test(line));
+  let stripped = rawFm;
+  if (start >= 0) {
+    let end = start + 1;
+    while (end < lines.length && /^\s+/.test(lines[end])) end += 1;
+    stripped = [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+  }
+  const block = [
+    "lastSemanticRepair:",
+    `  repairedAt: ${jsonScalar(value.repairedAt)}`,
+    `  repairType: ${jsonScalar(value.repairType)}`,
+    `  repairRequestId: ${jsonScalar(value.repairRequestId)}`,
+    "  failureTypes:",
+    ...value.failureTypes.map((type) => `    - ${jsonScalar(type)}`),
+  ].join("\n");
+  const strippedLines = stripped.split(/\r?\n/);
+  const anchorIndex = strippedLines.findIndex((line) => /^generatedBy:/.test(line));
+  if (anchorIndex >= 0) {
+    strippedLines.splice(anchorIndex, 0, block);
+    return strippedLines.join("\n");
+  }
+  return `${stripped.replace(/\s+$/, "")}\n${block}`;
+}
+
+function markSemanticRepairProvenance(
+  page: LearnerPage,
+  request: UnitRepairRequest,
+  repairedAt: string,
+  repairType: RepairExecutorKind,
+): void {
+  const failureTypes = [...new Set(request.failureTypes)];
+  page.rawFm = fmSetScalar(page.rawFm, "generatedFromUnitId", request.unitId);
+  page.rawFm = fmSetScalar(page.rawFm, "contractVersion", contractVersionForUnit(request.learningUnitContract));
+  page.rawFm = fmSetScalar(page.rawFm, "lastSemanticRepairAt", repairedAt);
+  page.rawFm = fmSetScalar(page.rawFm, "semanticRepairReason", failureTypes.join(", "));
+  page.rawFm = fmSetLastSemanticRepair(page.rawFm, {
+    repairedAt,
+    repairType,
+    failureTypes,
+    repairRequestId: repairRequestId(request),
+  });
+  page.dirty = true;
+}
+
+function validationFailuresFromChecks(checks: FinalizeCheck[]): string[] {
+  return checks
+    .filter((check) => check.status === "FAIL")
+    .flatMap((check) => check.problems.length > 0
+      ? check.problems.map((problem) => `${check.name}: ${problem}`)
+      : [`${check.name}: failed`]);
+}
+
+// Meta bookkeeping checks that validate the repair log / finalizer boundary
+// rather than a page's semantic substance. They cannot be used to decide
+// whether a page repair "resolved" its defect: at the point the repair loop
+// re-runs checks to grade itself, `.breadboard/repair-log.json` has not been
+// written yet, so "Repair Provenance" always reports the just-marked pages as
+// "provenance but log missing". These are guaranteed-transient and are enforced
+// for real by the finalizer's critical gate once the log exists.
+const REPAIR_BOOKKEEPING_CHECKS = new Set(["Repair Provenance", "Finalizer semantic boundary"]);
+
+function unresolvedErrorsForRequest(checks: FinalizeCheck[], request: UnitRepairRequest): string[] {
+  return validationFailuresFromChecks(checks.filter((check) => !REPAIR_BOOKKEEPING_CHECKS.has(check.name))).filter((failure) =>
+    failure.includes(request.pagePath) ||
+    failure.includes(request.sectionPath) ||
+    failure.includes(`unit "${request.unitId}"`) ||
+    failure.includes(`unit ${request.unitId}`),
+  );
+}
+
+function writeDirtyLearnerPages(learnerPages: LearnerPage[], report: FinalizeReport): void {
+  for (const page of learnerPages) {
+    if (!page.dirty) continue;
+    fs.writeFileSync(page.abs, joinFrontmatter(page.rawFm, page.body), "utf-8");
+    if (!report.changed.includes(page.rel)) report.changed.push(page.rel);
+  }
+}
+
+function repairLogPath(gardenDir: string): string {
+  return path.join(gardenDir, ".breadboard", "repair-log.json");
+}
+
+function repairReportPath(gardenDir: string): string {
+  return path.join(gardenDir, ".breadboard", "repair-report.md");
+}
+
+function writeRepairArtifacts(gardenDir: string, report: LearningUnitRepairRunReport): void {
+  const bd = path.join(gardenDir, ".breadboard");
+  fs.mkdirSync(bd, { recursive: true });
+  fs.writeFileSync(repairLogPath(gardenDir), `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+
+  const lines = [
+    "# Breadboard Repair Report",
+    "",
+    `Generated: ${new Date().toISOString()}`,
+    `Garden: ${report.gardenSlug}`,
+    "",
+    `Repair executor mode: ${report.repairExecutorMode}`,
+    "",
+    "## Repaired Units",
+    "",
+    "| Unit | Page | Failure | Executor Used | Executor Attempted | Result |",
+    "|---|---|---|---|---|---|",
+    ...(report.repairs.length > 0
+      ? report.repairs.map((entry) =>
+          `| ${entry.unitId} | ${entry.pagePath} | ${entry.failureTypes.join(", ")} | ${entry.executorUsed} | ${entry.executorAttempted.join(", ") || "none"} | ${entry.result} |`,
+        )
+      : ["| None | None | None | None | None | not_applicable |"]),
+    "",
+    "## Executor Provenance",
+    "",
+    ...(report.repairs.length > 0
+      ? report.repairs.flatMap((entry) => [
+          `- ${entry.pagePath}: attempted [${entry.executorAttempted.join(", ") || "none"}], used ${entry.executorUsed}${entry.modelFailureReason ? ` (model fell back: ${entry.modelFailureReason})` : ""}`,
+        ])
+      : ["- None."]),
+    "",
+    "## Repair Requests",
+    "",
+    ...(report.requests.length > 0
+      ? report.requests.flatMap((request) => [
+          `### ${request.unitId}: ${request.pagePath}`,
+          "",
+          `Failure types: ${request.failureTypes.join(", ")}`,
+          "",
+          "Validation errors:",
+          ...request.validationErrors.map((error) => `- ${error}`),
+          "",
+          "Required changes:",
+          ...request.requiredChanges.map((change) => `- ${change}`),
+          "",
+        ])
+      : ["- None.", ""]),
+    "## Semantic Finalizer Actions",
+    "",
+    ...(report.semanticFinalizerActions.length > 0
+      ? report.semanticFinalizerActions.map((action) =>
+          action.kind === "semantic_failure"
+            ? `- Routed to repair: ${action.description}`
+            : `- Mechanical: ${action.description} (${action.filePath})`,
+        )
+      : ["- None."]),
+    "",
+    "## Final Verification",
+    "",
+    `Accepted: ${report.finalVerification?.accepted ? "yes" : "no"}`,
+    `No-mutation check: ${report.finalVerification ? (report.finalVerification.mutatedFiles.length === 0 ? "pass" : "fail") : "not run"}`,
+    "Validation failures:",
+    ...(report.finalVerification?.validationFailures.length
+      ? report.finalVerification.validationFailures.map((failure) => `- ${failure}`)
+      : ["- None."]),
+    "Unresolved semantic failures:",
+    ...(report.finalVerification?.unresolvedRepairFailures.length
+      ? report.finalVerification.unresolvedRepairFailures.map((failure) => `- ${failure}`)
+      : ["- None."]),
+    "Mutated during verification:",
+    ...(report.finalVerification?.mutatedFiles.length
+      ? report.finalVerification.mutatedFiles.map((file) => `- ${file}`)
+      : ["- None."]),
+    "",
+  ];
+  fs.writeFileSync(repairReportPath(gardenDir), `${lines.join("\n")}\n`, "utf-8");
+}
+
+function readRepairRunReport(gardenDir: string): LearningUnitRepairRunReport | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(repairLogPath(gardenDir), "utf-8"));
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.repairs)) {
+      return parsed as LearningUnitRepairRunReport;
+    }
+  } catch {
+    // no repair run yet
+  }
+  return null;
+}
+
+function mergeRequestsForPage(pageRequests: UnitRepairRequest[]): UnitRepairRequest {
+  return {
+    ...pageRequests[0],
+    failureTypes: [...new Set(pageRequests.flatMap((request) => request.failureTypes))],
+    validationErrors: [...new Set(pageRequests.flatMap((request) => request.validationErrors))],
+    requiredChanges: [...new Set(pageRequests.flatMap((request) => request.requiredChanges))],
+  };
+}
+
+/** Visual spec ids a repaired page is allowed to touch: those declared in
+ * frontmatter visualIds plus any already embedded in the page body. A model
+ * candidate that writes any other spec id is out of scope. */
+function pageAllowedVisualIds(page: LearnerPage): Set<string> {
+  const ids = new Set<string>(fmGetArray(page.rawFm, "visualIds"));
+  for (const spec of embeddedVisualSpecs(page.body)) {
+    const id = String(spec.id ?? "").trim();
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+/** Scope violations that disqualify a model candidate before anything is
+ * written: missing/renamed frontmatter, wrong unit, or edits to files the page
+ * does not own. This is what makes "candidate changes unsupported files" fail. */
+function repairCandidateScopeProblems(page: LearnerPage, request: UnitRepairRequest, candidate: RepairCandidate): string[] {
+  const problems: string[] = [];
+  const parsed = parseFrontmatter(candidate.markdown);
+  if (!parsed.hadFrontmatter) {
+    problems.push("candidate markdown has no frontmatter");
+    return problems;
+  }
+  const candidateUnitId = fmGetScalar(parsed.rawFrontmatter, "learningUnitId");
+  const currentUnitId = fmGetScalar(page.rawFm, "learningUnitId");
+  if (currentUnitId && candidateUnitId && candidateUnitId !== currentUnitId) {
+    problems.push(`candidate changed learningUnitId ${currentUnitId} -> ${candidateUnitId}`);
+  }
+  const allowedVisualIds = pageAllowedVisualIds(page);
+  for (const entry of candidate.visualSpecs ?? []) {
+    if (!allowedVisualIds.has(entry.id)) {
+      problems.push(`candidate writes unsupported visual spec ${entry.id} not owned by ${request.pagePath}`);
+    }
+  }
+  if (candidate.contractHandlePatch && candidate.contractHandlePatch.unitId !== request.unitId) {
+    problems.push(`candidate patches unsupported contract unit ${candidate.contractHandlePatch.unitId} (request unit ${request.unitId})`);
+  }
+  return problems;
+}
+
+function snapshotFilesForRevert(absPaths: string[]): Map<string, Buffer | null> {
+  const snap = new Map<string, Buffer | null>();
+  for (const abs of absPaths) snap.set(abs, fs.existsSync(abs) ? fs.readFileSync(abs) : null);
+  return snap;
+}
+
+function restoreFilesFromSnapshot(snap: Map<string, Buffer | null>): void {
+  for (const [abs, buf] of snap) {
+    if (buf === null) fs.rmSync(abs, { force: true });
+    else fs.writeFileSync(abs, buf);
+  }
+}
+
+/** Write a model candidate to disk (page markdown + owned visual specs +
+ * optional contract-handle patch), returning the changed rel paths and a
+ * `restore` closure that reverts every touched file to its pre-write bytes. */
+function applyRepairCandidate(
+  gardenDir: string,
+  page: LearnerPage,
+  candidate: RepairCandidate,
+  contractPath: string | undefined,
+): { changedFiles: string[]; restore: () => void } {
+  const touched: string[] = [page.abs];
+  for (const entry of candidate.visualSpecs ?? []) {
+    touched.push(path.join(gardenDir, ".breadboard", "visuals", `${entry.id}.json`));
+  }
+  if (candidate.contractHandlePatch && contractPath) touched.push(contractPath);
+  const snap = snapshotFilesForRevert(touched);
+
+  const changedFiles: string[] = [];
+  const relOf = (abs: string) => path.relative(gardenDir, abs).replace(/\\/g, "/");
+
+  fs.writeFileSync(page.abs, candidate.markdown, "utf-8");
+  changedFiles.push(page.rel);
+
+  for (const entry of candidate.visualSpecs ?? []) {
+    const target = path.join(gardenDir, ".breadboard", "visuals", `${entry.id}.json`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `${JSON.stringify(entry.spec, null, 2)}\n`, "utf-8");
+    changedFiles.push(relOf(target));
+  }
+
+  if (candidate.contractHandlePatch && contractPath) {
+    const parsed = readJson<Record<string, unknown>>(contractPath, {});
+    const rawUnits = Array.isArray(parsed.learningUnits) ? (parsed.learningUnits as Array<Record<string, unknown>>) : [];
+    const unit = rawUnits.find((raw) => cleanText(raw.id) === candidate.contractHandlePatch!.unitId);
+    if (unit) {
+      unit.zettelNotes = candidate.contractHandlePatch.handles.map((handle) => ({
+        handle: atomicZettelHandle(handle),
+        claim: handle.replace(/-/g, " "),
+        connectedTo: [],
+      }));
+      fs.writeFileSync(contractPath, JSON.stringify(parsed, null, 2), "utf-8");
+      changedFiles.push(relOf(contractPath));
+    }
+  }
+
+  return { changedFiles, restore: () => restoreFilesFromSnapshot(snap) };
+}
+
+/** Persist a rejected model candidate + reasons under
+ * .breadboard/debug/failed-repairs/ so failures are never silently dropped. */
+function dumpFailedRepair(gardenDir: string, request: UnitRepairRequest, candidate: RepairCandidate | null, reasons: string[]): string {
+  const dir = path.join(gardenDir, ".breadboard", "debug", "failed-repairs");
+  fs.mkdirSync(dir, { recursive: true });
+  const slug = `${slugifyLoose(request.pagePath.replace(/\.md$/i, ""))}-${repairRequestId(request)}`;
+  const rel = `.breadboard/debug/failed-repairs/${slug}.md`;
+  const lines = [
+    `# Rejected model repair candidate`,
+    "",
+    `Page: ${request.pagePath}`,
+    `Unit: ${request.unitId}`,
+    `Failure types: ${request.failureTypes.join(", ")}`,
+    `Rejected at: ${new Date().toISOString()}`,
+    "",
+    "## Rejection reasons",
+    "",
+    ...(reasons.length ? reasons.map((reason) => `- ${reason}`) : ["- (none recorded)"]),
+    "",
+    "## Candidate markdown",
+    "",
+    "````markdown",
+    candidate?.markdown ?? "(model returned no candidate)",
+    "````",
+    "",
+  ];
+  if (candidate?.visualSpecs?.length) {
+    lines.push("## Candidate visual specs", "", "```json", JSON.stringify(candidate.visualSpecs, null, 2), "```", "");
+  }
+  if (candidate?.contractHandlePatch) {
+    lines.push("## Candidate contract patch", "", "```json", JSON.stringify(candidate.contractHandlePatch, null, 2), "```", "");
+  }
+  fs.writeFileSync(path.join(gardenDir, ...rel.split("/")), `${lines.join("\n")}\n`, "utf-8");
+  return rel;
+}
+
+interface ModelRepairAttempt {
+  success: boolean;
+  changedFiles: string[];
+  validationErrorsAfter: string[];
+  modelFailureReason?: string;
+  notes: string[];
+}
+
+/** Try one model repair for a single page: call the executor, scope-check the
+ * candidate, apply it, validate it against the same checks that grade the
+ * request, and keep it only if the page's failures are cleared. On any failure
+ * the candidate is reverted and dumped to failed-repairs/. */
+async function tryModelRepairForPage({
+  gardenDir,
+  request,
+  modelRepair,
+  repairReport,
+  contractPath,
+}: {
+  gardenDir: string;
+  request: UnitRepairRequest;
+  modelRepair: ModelRepairExecutor;
+  repairReport: FinalizeReport;
+  contractPath: string | undefined;
+}): Promise<ModelRepairAttempt> {
+  const page = loadLearnerPages(gardenDir).find((candidate) => candidate.rel === request.pagePath);
+  if (!page) {
+    return { success: false, changedFiles: [], validationErrorsAfter: [], modelFailureReason: "page not found on disk", notes: [] };
+  }
+
+  let candidate: RepairCandidate | null;
+  try {
+    candidate = await modelRepair(request);
+  } catch (error) {
+    return {
+      success: false,
+      changedFiles: [],
+      validationErrorsAfter: [],
+      modelFailureReason: `model executor error: ${error instanceof Error ? error.message : String(error)}`,
+      notes: [],
+    };
+  }
+  if (!candidate || typeof candidate.markdown !== "string" || !candidate.markdown.trim()) {
+    return { success: false, changedFiles: [], validationErrorsAfter: [], modelFailureReason: "model returned no candidate", notes: [] };
+  }
+
+  const scopeProblems = repairCandidateScopeProblems(page, request, candidate);
+  if (scopeProblems.length > 0) {
+    const dumped = dumpFailedRepair(gardenDir, request, candidate, scopeProblems);
+    return {
+      success: false,
+      changedFiles: [],
+      validationErrorsAfter: scopeProblems,
+      modelFailureReason: `candidate out of scope: ${scopeProblems.join("; ")}`,
+      notes: [`rejected candidate saved to ${dumped}`],
+    };
+  }
+
+  const applied = applyRepairCandidate(gardenDir, page, candidate, contractPath);
+  const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
+  const problems = unresolvedErrorsForRequest(checks, request);
+  if (problems.length > 0) {
+    const dumped = dumpFailedRepair(gardenDir, request, candidate, problems);
+    applied.restore();
+    return {
+      success: false,
+      changedFiles: [],
+      validationErrorsAfter: problems,
+      modelFailureReason: `candidate failed validation: ${problems.slice(0, 3).join("; ")}`,
+      notes: [`rejected candidate saved to ${dumped}`],
+    };
+  }
+
+  for (const file of applied.changedFiles) {
+    if (!repairReport.changed.includes(file)) repairReport.changed.push(file);
+  }
+  return { success: true, changedFiles: applied.changedFiles, validationErrorsAfter: [], notes: candidate.notes ?? [] };
+}
+
+export async function repairLearningUnitsFromContract({
+  gardenDir,
+  gardenSlug,
+  repairExecutor = "deterministic",
+  modelRepair,
+}: {
+  gardenDir: string;
+  gardenSlug: string;
+  /** Which executor(s) to use. Defaults to deterministic (safe, LLM-free). */
+  repairExecutor?: RepairExecutorMode;
+  /** Injected model executor. Required for the "model" modes; ignored otherwise. */
+  modelRepair?: ModelRepairExecutor;
+}): Promise<LearningUnitRepairRunReport> {
+  const requestedAt = new Date().toISOString();
+  const reportForChecks = emptyFinalizeReport();
+  const firstChecks = collectFinalizeChecks({ gardenDir, report: reportForChecks, includeReportSelfCheck: false });
+  const requests = collectUnitRepairRequests({ gardenDir, checks: firstChecks });
+  const repairReport = emptyFinalizeReport();
+  const changedBefore = new Set(repairReport.changed);
+  const repairedAt = new Date().toISOString();
+
+  const wantModel = (repairExecutor === "model" || repairExecutor === "model_with_deterministic_fallback") && typeof modelRepair === "function";
+  const allowDeterministic = repairExecutor === "deterministic" || repairExecutor === "model_with_deterministic_fallback";
+
+  const requestByPage = new Map<string, UnitRepairRequest[]>();
+  for (const request of requests) {
+    const list = requestByPage.get(request.pagePath) ?? [];
+    list.push(request);
+    requestByPage.set(request.pagePath, list);
+  }
+
+  // executor bookkeeping, keyed by page path.
+  const modelRepairedPaths = new Set<string>();
+  const executions: RepairExecutionResult[] = [];
+  const attemptedByPage = new Map<string, RepairExecutorKind[]>();
+  const usedByPage = new Map<string, RepairExecutorKind>();
+  const modelFailureByPage = new Map<string, string>();
+  const repairedPaths = new Set<string>();
+
+  if (requests.length > 0) {
+    const bd = path.join(gardenDir, ".breadboard");
+    const ledgerPath = path.join(bd, "source-visuals.json");
+    const contractPath = readLearningUnitContract(gardenDir).foundPath;
+
+    // --- Phase 1: model-backed single-page repair -----------------------------
+    if (wantModel && typeof modelRepair === "function") {
+      for (const [pagePath, pageRequests] of requestByPage) {
+        const merged = mergeRequestsForPage(pageRequests);
+        attemptedByPage.set(pagePath, ["model"]);
+        const attempt = await tryModelRepairForPage({ gardenDir, request: merged, modelRepair, repairReport, contractPath });
+        executions.push({
+          unitId: merged.unitId,
+          pagePath,
+          executor: "model",
+          changedFiles: attempt.changedFiles,
+          success: attempt.success,
+          validationErrorsBefore: merged.validationErrors,
+          validationErrorsAfter: attempt.validationErrorsAfter,
+          notes: attempt.notes,
+        });
+        if (attempt.success) {
+          modelRepairedPaths.add(pagePath);
+          repairedPaths.add(pagePath);
+          usedByPage.set(pagePath, "model");
+        } else if (attempt.modelFailureReason) {
+          modelFailureByPage.set(pagePath, attempt.modelFailureReason);
+        }
+      }
+    }
+
+    // --- Phase 2: deterministic repair (fallback / default) -------------------
+    // Runs over pages the model did NOT already repair, so a validated model
+    // page is never clobbered. Section-structure passes run over the full tree
+    // because they only touch _index files, not learner-page bodies.
+    if (allowDeterministic) {
+      const ledger = readJson<LedgerVisual[]>(ledgerPath, []);
+      const allPages = loadLearnerPages(gardenDir);
+      const deterministicPages = allPages.filter((page) => !modelRepairedPaths.has(page.rel));
+      const contract = readLearningUnitContract(gardenDir);
+
+      repairContractZettelHandles(gardenDir, contract, deterministicPages, repairReport);
+      synchronizeContractZettelHandles(gardenDir, contract, deterministicPages, repairReport);
+      const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
+      repairSectionSemanticTitles(gardenDir, allPages, unitsById, repairReport);
+      repairSourceTextConceptAnchors(gardenDir, deterministicPages, repairReport);
+      repairLearningUnitSourceTextAnchors(gardenDir, deterministicPages, unitsById, repairReport);
+      repairMetricCalculatorFocus(gardenDir, deterministicPages, repairReport);
+      regroundFormulas({ ledger, learnerPages: deterministicPages, report: repairReport });
+      removeRepeatedMotivation(deterministicPages, repairReport);
+      writeDirtyLearnerPages(deterministicPages, repairReport);
+      alignSectionFoldersWithTitles(gardenDir, repairReport);
+      repairSectionNavigationLabels(gardenDir, repairReport);
+
+      for (const pagePath of requestByPage.keys()) {
+        if (modelRepairedPaths.has(pagePath)) continue;
+        attemptedByPage.set(pagePath, [...(attemptedByPage.get(pagePath) ?? []), "deterministic"]);
+        usedByPage.set(pagePath, "deterministic");
+        repairedPaths.add(pagePath);
+      }
+    }
+
+    // --- Provenance: only pages that actually got a repair executor applied ----
+    const finalPages = loadLearnerPages(gardenDir);
+    for (const page of finalPages) {
+      if (!repairedPaths.has(page.rel)) continue;
+      const merged = mergeRequestsForPage(requestByPage.get(page.rel)!);
+      markSemanticRepairProvenance(page, merged, repairedAt, usedByPage.get(page.rel) ?? "deterministic");
+    }
+    writeDirtyLearnerPages(finalPages, repairReport);
+  }
+
+  const finalChecks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
+  const changedFiles = [...new Set(repairReport.changed.filter((file) => !changedBefore.has(file)))].sort();
+  const repairs: UnitRepairLogEntry[] = requests.map((request) => {
+    const unresolved = unresolvedErrorsForRequest(finalChecks, request);
+    return {
+      unitId: request.unitId,
+      pagePath: request.pagePath,
+      sectionPath: request.sectionPath,
+      failureTypes: request.failureTypes,
+      validationErrors: request.validationErrors,
+      requiredChanges: request.requiredChanges,
+      repairType: "contract_driven_revision",
+      changedFiles: changedFiles.filter((file) => file === request.pagePath || file.startsWith(`${request.sectionPath}/`) || file.startsWith(".breadboard/")),
+      result: unresolved.length === 0 ? "resolved" : "unresolved",
+      unresolvedValidationErrors: unresolved,
+      repairedAt,
+      executorAttempted: attemptedByPage.get(request.pagePath) ?? [],
+      executorUsed: usedByPage.get(request.pagePath) ?? "none",
+      modelFailureReason: modelFailureByPage.get(request.pagePath),
+    };
+  });
+  const runReport: LearningUnitRepairRunReport = {
+    requestedAt,
+    gardenSlug,
+    repairExecutorMode: repairExecutor,
+    requests,
+    repairs,
+    executions,
+    changedFiles,
+    semanticFinalizerActions: semanticFailureActionsForRequests(requests),
+    firstValidationFailures: validationFailuresFromChecks(firstChecks),
+    finalValidationFailures: validationFailuresFromChecks(finalChecks),
+  };
+  writeRepairArtifacts(gardenDir, runReport);
+  return runReport;
+}
+
+function collectAllFiles(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, relDir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(abs, rel);
+      else if (entry.isFile()) out.push(rel.replace(/\\/g, "/"));
+    }
+  };
+  walk(root, "");
+  return out.sort();
+}
+
+function snapshotFiles(root: string): Map<string, string> {
+  const snapshot = new Map<string, string>();
+  for (const rel of collectAllFiles(root)) {
+    const abs = path.join(root, ...rel.split("/"));
+    const hash = crypto.createHash("sha1").update(fs.readFileSync(abs)).digest("hex");
+    snapshot.set(rel, hash);
+  }
+  return snapshot;
+}
+
+function changedBetweenSnapshots(before: Map<string, string>, after: Map<string, string>): string[] {
+  const keys = new Set([...before.keys(), ...after.keys()]);
+  const changed: string[] = [];
+  for (const key of keys) {
+    if (before.get(key) !== after.get(key)) changed.push(key);
+  }
+  return changed.sort();
+}
+
+function validationReportAccepted(gardenDir: string): boolean {
+  const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
+  if (!fs.existsSync(reportPath)) return false;
+  return /^Accepted:\s+yes\s*$/m.test(fs.readFileSync(reportPath, "utf-8"));
+}
+
+export function verifyFinalArtifactNoMutation({
+  gardenDir,
+  gardenSlug,
+  updateRepairReport = true,
+}: {
+  gardenDir: string;
+  gardenSlug: string;
+  updateRepairReport?: boolean;
+}): FinalArtifactVerification {
+  const before = snapshotFiles(gardenDir);
+  const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: true });
+  const repairRun = readRepairRunReport(gardenDir);
+  const unresolvedRepairFailures = repairRun
+    ? repairRun.repairs
+        .filter((entry) => entry.result === "unresolved" || entry.unresolvedValidationErrors.length > 0)
+        .flatMap((entry) => entry.unresolvedValidationErrors.length > 0
+          ? entry.unresolvedValidationErrors.map((failure) => `${entry.pagePath}: ${failure}`)
+          : [`${entry.pagePath}: unresolved ${entry.failureTypes.join(", ")}`])
+    : [];
+  const after = snapshotFiles(gardenDir);
+  const validationFailures = validationFailuresFromChecks(checks);
+  const verification: FinalArtifactVerification = {
+    checkedAt: new Date().toISOString(),
+    accepted: validationFailures.length === 0 && unresolvedRepairFailures.length === 0 && validationReportAccepted(gardenDir),
+    mutatedFiles: changedBetweenSnapshots(before, after),
+    validationFailures,
+    unresolvedRepairFailures,
+    validationReportAccepted: validationReportAccepted(gardenDir),
+  };
+  verification.accepted = verification.accepted && verification.mutatedFiles.length === 0;
+
+  if (updateRepairReport) {
+    const existing: LearningUnitRepairRunReport = repairRun ?? {
+      requestedAt: new Date().toISOString(),
+      gardenSlug,
+      repairExecutorMode: "deterministic",
+      requests: [],
+      repairs: [],
+      executions: [],
+      changedFiles: [],
+      semanticFinalizerActions: [],
+      firstValidationFailures: [],
+      finalValidationFailures: validationFailures,
+    };
+    existing.finalVerification = verification;
+    existing.finalValidationFailures = validationFailures;
+    writeRepairArtifacts(gardenDir, existing);
+  }
+
+  return verification;
 }
 
 // ---------------------------------------------------------------------------
@@ -1978,21 +3125,26 @@ function regroundFormulas({
     for (const text of formulas) {
       const match = matchFormulaToSource(text, sources);
       const family = formulaMetricFamily(text);
+      const workedExample = isWorkedExampleFormula(text);
       if (!match && !family) continue;
       if (match) {
         entries.push({
+          kind: workedExample ? "worked_example" : "source_definition",
           text,
           normalizedText: normalizeFormulaText(text),
-          groundingStatus: "source-anchored",
-          justification: `Content matches source metric formula ${match.id} (${match.caption}).`,
+          groundingStatus: workedExample ? "conceptual-helper" : "source-anchored",
+          justification: workedExample
+            ? `Worked example applying source formula ${match.id} (${match.caption}).`
+            : `Content matches source metric formula ${match.id} (${match.caption}).`,
           sourceAnchor: match.id,
           sourceAnchorTitle: match.caption,
           matchReason: "metric family and source formula anchor text match",
           confidence: 0.9,
         });
-        anchoredIds.add(match.id);
+        if (!workedExample) anchoredIds.add(match.id);
       } else {
         entries.push({
+          kind: workedExample ? "worked_example" : "conceptual_helper",
           text,
           normalizedText: normalizeFormulaText(text),
           groundingStatus: "conceptual-helper",
@@ -2003,9 +3155,14 @@ function regroundFormulas({
         });
       }
     }
-    page.rawFm = fmSetFormulas(page.rawFm, entries);
-    page.rawFm = fmSetArray(page.rawFm, "sourceFormulaAnchors", [...anchoredIds]);
-    page.rawFm = removeKeyLine(page.rawFm, "sourceFormulaAnchor");
+    // Only mark the page dirty when regrounding actually changes the formula
+    // metadata. Re-serializing identical grounding must not report the page as
+    // repaired, so repair-log.json changedFiles stays limited to real edits.
+    let nextFm = fmSetFormulas(page.rawFm, entries);
+    nextFm = fmSetArray(nextFm, "sourceFormulaAnchors", [...anchoredIds]);
+    nextFm = removeKeyLine(nextFm, "sourceFormulaAnchor");
+    if (nextFm === page.rawFm) continue;
+    page.rawFm = nextFm;
     page.dirty = true;
     report.notes.push(`reground ${entries.length} formula(s) on ${page.rel} (${anchoredIds.size} source-anchored)`);
   }
@@ -2145,8 +3302,10 @@ function tagCentralityScore(tag: string, page: LearnerPage): number {
 // ---------------------------------------------------------------------------
 
 const MOTIF_RE = /battery-powered robot|battery-powered drone|quiet hallway|dense ann|silent snn|small camera (?:on|watching)|small vision system for a battery/i;
+const REPEATED_TRANSITION_RE = /the motivation is already in place,?\s+so this page starts from the previous concepts and develops/i;
 
 const ROLE_TRANSITION: Partial<Record<PageRole, string>> = {
+  intro: "The opening motivation is established, so this page moves from the broad efficiency problem to the next idea in the learning path. Focus on what changes in the representation, the mechanism, or the metric, and how that change affects the way spiking networks compute.",
   lif: "Event-driven sparsity explains why spiking networks can be efficient. The next question is mechanical: what does a single spiking neuron actually do to turn incoming current into a spike? Consider the membrane of one neuron as it integrates input, leaks charge, and fires when it crosses a threshold.",
   training: "Now that event-driven sparsity is established, efficiency only pays off if the network can be trained to fire useful spikes at useful times. Consider a network whose connection weights must be adjusted so that input spike patterns lead to correct decisions.",
   metric: "Now that event-driven sparsity has been established, the next question is how to measure whether it actually helps. A single accuracy number hides the costs that make spiking networks worthwhile, so evaluation has to weigh several quantities at once. Consider comparing two models that reach similar accuracy at very different energy and latency costs.",
@@ -2154,13 +3313,14 @@ const ROLE_TRANSITION: Partial<Record<PageRole, string>> = {
   application: "The measured tradeoffs only matter when they meet a real deployment. Consider an edge device that must hit an accuracy target inside a fixed energy and latency budget, and how that constraint selects one spiking approach over another.",
   challenges: "The tradeoffs so far assume clean measurements and stable hardware. Consider what is still unresolved once spiking networks leave controlled benchmarks: hardware standardization, scalable training, and reproducible evaluation.",
   basic_def: "Building on the motivation for sparse, event-driven computation, consider what a spiking neural network actually is: a network whose neurons communicate with discrete spikes in time rather than continuous activations.",
+  generic: "The motivation is already in place, so this page starts from the previous concepts and develops the next source-grounded claim. Focus on the specific mechanism, metric, result, or limitation this lesson adds to the learning path.",
 };
 
 function removeRepeatedMotivation(pages: LearnerPage[], report: FinalizeReport): void {
   let motifSeen = false;
   for (const page of pages) {
     const intro = page.body.replace(/^#.*$/gm, " ").split(/\s+/).filter(Boolean).slice(0, 80).join(" ");
-    const hasMotif = MOTIF_RE.test(intro);
+    const hasMotif = MOTIF_RE.test(intro) || REPEATED_TRANSITION_RE.test(intro);
     if (!hasMotif) continue;
     if (!motifSeen && page.sectionNumber <= 2) {
       // Allow the first early page to establish the framing.
@@ -2168,23 +3328,58 @@ function removeRepeatedMotivation(pages: LearnerPage[], report: FinalizeReport):
       continue;
     }
     motifSeen = true;
-    const transition = ROLE_TRANSITION[page.role];
+    const titlePhrase = page.title.replace(/^\d+(?:\.\d+)*\.?\s*/, "").trim().toLowerCase();
+    const pageSpecificTransition =
+      `The motivation is already in place, so this page develops ${titlePhrase || "the next source-grounded idea"} from the previous concepts. Focus on the specific mechanism, metric, result, or limitation this lesson adds to the learning path.`;
+    const transition = page.role === "generic" ? pageSpecificTransition : (ROLE_TRANSITION[page.role] ?? pageSpecificTransition);
     if (!transition) continue;
     // Replace the first prose paragraph (which carries the motif) with a
     // forward transition that builds on prior pages.
     const paragraphs = page.body.replace(/^\n+/, "").split(/\n{2,}/);
-    let firstProse = paragraphs.findIndex((paragraph) => {
+    let targetParagraph = paragraphs.findIndex((paragraph, index) => {
+      if (index > 4) return false;
+      return MOTIF_RE.test(paragraph) || REPEATED_TRANSITION_RE.test(paragraph);
+    });
+    if (targetParagraph < 0) {
+      targetParagraph = paragraphs.findIndex((paragraph) => {
       const trimmed = paragraph.trim();
       return trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("!") && !trimmed.startsWith("```");
-    });
-    if (firstProse < 0) firstProse = 0;
-    if (MOTIF_RE.test(paragraphs[firstProse] ?? "")) {
-      paragraphs[firstProse] = transition;
+      });
+    }
+    if (targetParagraph < 0) targetParagraph = 0;
+    if (MOTIF_RE.test(paragraphs[targetParagraph] ?? "") || REPEATED_TRANSITION_RE.test(paragraphs[targetParagraph] ?? "") || MOTIF_RE.test(intro) || REPEATED_TRANSITION_RE.test(intro)) {
+      paragraphs[targetParagraph] = transition;
       page.body = paragraphs.join("\n\n");
       page.dirty = true;
       report.notes.push(`replaced repeated first-page motivation on ${page.rel}`);
     }
   }
+}
+
+function repeatedOpeningProblems(pages: LearnerPage[]): string[] {
+  const problems: string[] = [];
+  const motifPages: string[] = [];
+  const introByFingerprint = new Map<string, string[]>();
+  for (const page of pages) {
+    const intro = teachingProseLite(page.body).split(/\s+/).filter(Boolean).slice(0, 80).join(" ").toLowerCase();
+    if (MOTIF_RE.test(intro)) motifPages.push(page.rel);
+    const fingerprint = intro
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 16)
+      .join(" ");
+    if (fingerprint.split(" ").length >= 12) {
+      const rels = introByFingerprint.get(fingerprint) ?? [];
+      rels.push(page.rel);
+      introByFingerprint.set(fingerprint, rels);
+    }
+  }
+  if (motifPages.length > 1) problems.push(`repeated battery/quiet-hallway/dense-ANN intro motif on ${motifPages.join(", ")}`);
+  for (const [fingerprint, rels] of introByFingerprint) {
+    if (rels.length >= 3) problems.push(`repeated opening phrase "${fingerprint}" on ${rels.join(", ")}`);
+  }
+  return [...new Set(problems)];
 }
 
 // ---------------------------------------------------------------------------
@@ -2214,6 +3409,8 @@ function writeFinalizeValidationReport({
   fs.mkdirSync(bd, { recursive: true });
   const write = (checks: FinalizeCheck[]) => {
     const accepted = checks.every((check) => check.status !== "FAIL");
+    const passCount = checks.filter((check) => check.status === "PASS").length;
+    const failCount = checks.filter((check) => check.status === "FAIL").length;
     const lines = [
       "# Breadboard Validation Report",
       "",
@@ -2222,6 +3419,7 @@ function writeFinalizeValidationReport({
       `Garden: ${gardenSlug}`,
       `Source files: ${countSourcePages(gardenDir)}`,
       `Page counts: learner=${countLearnerPages(gardenDir)}, sources=${countSourcePages(gardenDir)}`,
+      `Check results: ${passCount} PASS, 0 WARN, ${failCount} FAIL, 0 SKIP`,
       `Accepted: ${accepted ? "yes" : "no"}`,
       "Produced by: dashboard/src/lib/garden-finalize.ts (finalizeGardenExport) + scripts/validate-breadboard-garden.ts",
       "",
@@ -2301,6 +3499,10 @@ function writeFinalizeValidationReport({
       "",
       "Metric visuals must use only the formula anchors needed by their controls, outputs, and learning goal.",
       "",
+      "## Repetition and Opening Flow",
+      "",
+      "Repeated learner openings must be callbacks, not restarted motivation frames.",
+      "",
       "## Formula Grounding",
       "",
       "Only meaningful formulas are grounded; trivial numbers and standalone percentages are rejected in formulas: metadata.",
@@ -2353,9 +3555,28 @@ function writeFinalizeValidationReport({
       "",
       "Structurally valid handles must still avoid template-like planner phrases.",
       "",
+      "## Repair Provenance",
+      "",
+      "Semantic repairs must be recorded in .breadboard/repair-log.json and finalizer semantic actions must remain empty.",
+      "",
       "## Section Title Quality",
       "",
       "See check: section titles are learner-facing.",
+      "",
+      "## Acceptance Decision",
+      "",
+      `Accepted: ${accepted ? "yes" : "no"}`,
+      "",
+      "Blocking failures:",
+      ...(checks.filter((check) => check.status === "FAIL").length > 0
+        ? checks.filter((check) => check.status === "FAIL").map((check) => `- ${check.name}: ${check.problems[0] ?? "failed"}`)
+        : ["- None."]),
+      "",
+      "Non-blocking warnings:",
+      "- None.",
+      "",
+      "Skipped as not applicable:",
+      "- None.",
       "",
       "## Final Acceptance",
       "",
@@ -2405,6 +3626,7 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Interactive Visual Fulfillment",
   "Final Interactive Visual Uniqueness",
   "Visual Anchor Precision",
+  "Repetition and Opening Flow",
   "Source Crop Quality",
   "Crop Quality and Fallbacks",
   "Source Coverage Mode Precision",
@@ -2413,7 +3635,9 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Zettelkasten Tag Density",
   "Zettelkasten Handle Quality",
   "Zettelkasten Handle Naturalness",
+  "Repair Provenance",
   "Section Title Quality",
+  "Acceptance Decision",
   "Final Acceptance",
 ];
 
@@ -2700,9 +3924,9 @@ function suggestedSectionSemanticTitle(sectionTitle: string, units: LearningUnit
   const hasFormula = roles.has("formula") || roles.has("worked_example");
   const hasMechanism = roles.has("core_concept") || roles.has("mechanism");
   const hasTraining = roles.has("training_method");
-  const hasMetricRole = roles.has("metric") || roles.has("result_interpretation");
+  const hasMetricRole = roles.has("metric");
   const hasMetric = hasMetricRole || hasFormula;
-  const hasComparison = roles.has("comparison");
+  const hasComparison = roles.has("comparison") || roles.has("result_interpretation");
   const naturalnessProblems = sectionTitleNaturalnessProblems(sectionTitle, units.map((unit) => unit.title));
   let base: string | null = null;
   if (hasTraining && hasMetric) base = "How SNNs Learn and Are Evaluated";
@@ -2726,6 +3950,7 @@ function suggestedSectionSemanticTitle(sectionTitle: string, units: LearningUnit
   });
   else if (hasMechanism && !hasMetric && !hasTraining && !hasComparison) base = "How the Mechanism Works";
   else if (hasMetricRole && !hasMechanism && !hasTraining && !hasComparison) base = "The Metrics That Make SNNs Measurable";
+  else if (roles.has("result_interpretation") && !hasMetricRole && !hasMechanism && !hasTraining) base = "What the Results Show";
   else if (naturalnessProblems.length > 0) base = polishSectionTitleFromInput({
     sectionNumber: 0,
     originalTitle: sectionTitle,
@@ -3404,16 +4629,28 @@ function formulaMetadataNoiseProblems(learnerPages: LearnerPage[]): string[] {
   for (const page of learnerPages) {
     const entries = formulaEntriesFromFrontmatter(page.rawFm);
     if (entries.length === 0) continue;
+    const sourceDefinitionCount = entries.filter((entry) => {
+      const kind = formulaEntryKind(entry);
+      return kind === "source_definition" || kind === "source_derived_definition";
+    }).length;
+    const workedExampleCount = entries.filter((entry) => formulaEntryKind(entry) === "worked_example").length;
     const trivial = entries.filter((entry) => {
       const text = String(entry.text ?? "");
       return isTrivialFormulaFragment(text) || !isFormulaExpression(text);
     });
     if (entries.length > 10) problems.push(`${page.rel}: formulas: contains ${entries.length} entries; expected focused metric/source relationships`);
+    if (workedExampleCount > Math.max(2, sourceDefinitionCount * 2 + 1)) {
+      problems.push(`${page.rel}: formulas: has ${workedExampleCount} worked example(s) but only ${sourceDefinitionCount} source definition formula(s)`);
+    }
     if (trivial.length > 0 && trivial.length / entries.length > 0.3) problems.push(`${page.rel}: ${trivial.length}/${entries.length} formulas: entries are trivial fragments`);
     for (const [index, entry] of entries.entries()) {
       const text = String(entry.text ?? "");
+      const kind = formulaEntryKind(entry);
       if (isTrivialFormulaFragment(text) && /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
         problems.push(`${page.rel}: formulas[${index}] source-anchors trivial fragment "${text}"`);
+      }
+      if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(text)) {
+        problems.push(`${page.rel}: formulas[${index}] stores worked-example arithmetic as ${kind}`);
       }
     }
   }
@@ -3450,6 +4687,16 @@ function visualAnchorPrecisionProblems(ledger: LedgerVisual[], learnerPages: Lea
       }
       if (allowed.has("energy")) allowed.add("spike-count");
       const ids = visualSpecAnchorIds(spec).filter((id) => /^S\d+\.P\d+\.E\d+$/i.test(id));
+      const formulaAnchorRecords = visualSpecAnchorRecords(spec).filter((anchor) => /^S\d+\.P\d+\.E\d+$/i.test(String(anchor.equationId ?? "")));
+      if (formulaAnchorRecords.length > 1) {
+        for (const anchor of formulaAnchorRecords) {
+          const id = String(anchor.equationId ?? "").trim();
+          const role = String(anchor.role ?? "").trim();
+          const reason = String(anchor.reason ?? "").trim();
+          if (!/^(input|output_formula|comparison_basis|context)$/.test(role)) problems.push(`${page.rel}: visual ${String(spec.id ?? "(missing id)")} anchor ${id} lacks a valid role`);
+          if (reason.length < 12) problems.push(`${page.rel}: visual ${String(spec.id ?? "(missing id)")} anchor ${id} lacks a specific role reason`);
+        }
+      }
       const extras = ids.filter((id) => {
         const visual = ledger.find((item) => item.sourceVisualId === id);
         const family = formulaMetricFamily(formulaAnchorSemanticText(visual));
@@ -3461,6 +4708,51 @@ function visualAnchorPrecisionProblems(ledger: LedgerVisual[], learnerPages: Lea
     }
   }
   return [...new Set(problems)];
+}
+
+function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPage[]): string[] {
+  const problems: string[] = [];
+  const run = readRepairRunReport(gardenDir);
+  if (!run) {
+    for (const page of learnerPages) {
+      if (fmGetScalar(page.rawFm, "lastSemanticRepairAt")) {
+        problems.push(`${page.rel}: has semantic repair provenance but .breadboard/repair-log.json is missing`);
+      }
+    }
+    return problems;
+  }
+  for (const entry of run.repairs ?? []) {
+    if (entry.result === "unresolved") {
+      problems.push(`${entry.pagePath}: repair log has unresolved ${entry.failureTypes.join(", ")}`);
+    }
+    for (const error of entry.unresolvedValidationErrors ?? []) {
+      problems.push(`${entry.pagePath}: unresolved repair validation error: ${error}`);
+    }
+  }
+  const repairedPages = new Set((run.repairs ?? []).map((entry) => entry.pagePath));
+  for (const page of learnerPages) {
+    if (!fmGetScalar(page.rawFm, "lastSemanticRepairAt")) continue;
+    if (!repairedPages.has(page.rel)) {
+      problems.push(`${page.rel}: has lastSemanticRepairAt but no matching repair-log entry`);
+    }
+    if (!fmGetScalar(page.rawFm, "generatedFromUnitId")) {
+      problems.push(`${page.rel}: semantic repair provenance missing generatedFromUnitId`);
+    }
+    if (!fmGetScalar(page.rawFm, "semanticRepairReason")) {
+      problems.push(`${page.rel}: semantic repair provenance missing semanticRepairReason`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function finalizerBoundaryProblems(report: FinalizeReport): string[] {
+  const problems: string[] = [];
+  for (const action of report.actions ?? []) {
+    if (action.kind === "semantic_failure") {
+      problems.push(`${action.pagePath ?? action.unitId ?? "(unknown)"}: semantic failure reached finalizer instead of the Learning Unit repair loop`);
+    }
+  }
+  return problems;
 }
 
 function collectFinalizeChecks({
@@ -3512,6 +4804,8 @@ function collectFinalizeChecks({
   push("reconciliation has no contradictory anchor usage", report.reconciliation
     .filter((entry) => entry.status === "intentionally_skipped" && (entry.embeddedAsImage || entry.usedAsInteractiveAnchor))
     .map((entry) => `${entry.id}: skipped but used`));
+  push("Finalizer semantic boundary", finalizerBoundaryProblems(report));
+  push("Repair Provenance", repairLogConsistencyProblems(gardenDir, learnerPages));
 
   // Learning Unit Contract fulfillment.
   const fulfillmentProblems: string[] = [];
@@ -3659,17 +4953,18 @@ function collectFinalizeChecks({
     const declared = fmGetArray(page.rawFm, "sourceFormulaAnchors");
     const grounded = formulaEntrySourceAnchors(page.rawFm);
     if (declared.length > 0 && grounded.length === 0) {
-      formulaGroundingProblems.push(`${page.rel}: has sourceFormulaAnchors but no source-anchored formulas: entry`);
+      formulaGroundingProblems.push(`${page.rel}: has sourceFormulaAnchors but no source definition formulas: entry`);
     }
     for (const anchor of declared) {
       if (!grounded.includes(anchor)) {
-        formulaGroundingProblems.push(`${page.rel}: sourceFormulaAnchors includes ${anchor}, but no formulas: entry is grounded to it`);
+        formulaGroundingProblems.push(`${page.rel}: sourceFormulaAnchors includes ${anchor}, but no source definition formulas: entry is grounded to it`);
       }
     }
     for (const [index, entry] of formulaEntriesFromFrontmatter(page.rawFm).entries()) {
       const label = `${page.rel}: formulas[${index}]`;
       const text = String(entry.text ?? "");
       const status = String(entry.groundingStatus ?? "");
+      const kind = formulaEntryKind(entry);
       if (!text.trim()) {
         formulaExpressionProblems.push(`${label} missing text`);
         continue;
@@ -3679,6 +4974,15 @@ function collectFinalizeChecks({
       }
       if (!/^(source-anchored|source-derived|conceptual-helper|unmatched)$/.test(status)) {
         formulaExpressionProblems.push(`${label} has invalid groundingStatus "${status || "(missing)"}"`);
+      }
+      if (!/^(source_definition|source_derived_definition|worked_example|conceptual_helper)$/.test(kind)) {
+        formulaExpressionProblems.push(`${label} has invalid kind "${kind || "(missing)"}"`);
+      }
+      if (kind === "worked_example" && /^(source-anchored|source-derived)$/.test(status)) {
+        formulaSourceProblems.push(`${label} is a worked example but is marked ${status}; worked examples may reference source formulas but cannot satisfy source definitions`);
+      }
+      if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(text)) {
+        formulaSourceProblems.push(`${label} is numeric worked-example arithmetic but is marked ${kind}`);
       }
       if ((status === "source-anchored" || status === "source-derived") && !String(entry.sourceAnchor ?? "").trim()) {
         formulaSourceProblems.push(`${label} is ${status} but lacks sourceAnchor`);
@@ -3778,6 +5082,7 @@ function collectFinalizeChecks({
   }
   push("Final interactive visual uniqueness", visualUniquenessProblems);
   push("Visual Anchor Precision", visualAnchorPrecisionProblems(ledger, learnerPages));
+  push("Repetition and Opening Flow", repeatedOpeningProblems(learnerPages));
 
   // Section title quality.
   const titleProblems: string[] = [];
@@ -3840,11 +5145,9 @@ function collectFinalizeChecks({
 
 function runCriticalGate({
   gardenDir,
-  ledgerPath,
   report,
 }: {
   gardenDir: string;
-  ledgerPath: string;
   report: FinalizeReport;
 }): void {
   const problems: string[] = [];

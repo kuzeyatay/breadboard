@@ -11804,6 +11804,8 @@ function sanitizeSourceAnchors(value, errors) {
     const tableId = safeString(raw.tableId, "sourceAnchors.tableId", errors, 80);
     const equationId = safeString(raw.equationId, "sourceAnchors.equationId", errors, 80);
     const questionId = safeString(raw.questionId, "sourceAnchors.questionId", errors, 80);
+    const roleRaw = safeString(raw.role, "sourceAnchors.role", errors, 40);
+    const reason = safeString(raw.reason, "sourceAnchors.reason", errors, 500);
     const page = finiteNumber(raw.page);
     if (sourceId) anchor.sourceId = sourceId;
     if (sourceTitle) anchor.sourceTitle = sourceTitle;
@@ -11811,6 +11813,8 @@ function sanitizeSourceAnchors(value, errors) {
     if (tableId) anchor.tableId = tableId;
     if (equationId) anchor.equationId = equationId;
     if (questionId) anchor.questionId = questionId;
+    if (roleRaw && /^(input|output_formula|comparison_basis|context)$/.test(roleRaw)) anchor.role = roleRaw;
+    if (reason) anchor.reason = reason;
     if (page !== void 0) anchor.page = page;
     anchors.push(anchor);
   }
