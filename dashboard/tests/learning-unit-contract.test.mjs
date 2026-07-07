@@ -419,7 +419,7 @@ describe("Learning Unit Contract - section semantics and grounding", () => {
     );
   });
 
-  test("generated result-interpretation-only sections use metric vocabulary", () => {
+  test("generated result-interpretation-only sections use results vocabulary", () => {
     const units = normalizeLearningUnits([
       { id: "R1", role: "result_interpretation", title: "Latency comparisons across models", learningQuestion: "What does the latency result mean?" },
       { id: "R2", role: "result_interpretation", title: "Energy and spike count comparisons", learningQuestion: "What does the energy result mean?" },
@@ -431,7 +431,7 @@ describe("Learning Unit Contract - section semantics and grounding", () => {
       sourceOnly: true,
       createdAt: "2026-07-04T00:00:00Z",
     });
-    assert.match(map.sections[0].title, /metrics?.*measurable/i);
+    assert.match(map.sections[0].title, /results?/i);
     assert.equal(
       sectionSemanticProfile({ sectionTitle: map.sections[0].title, units }).problems.length,
       0,

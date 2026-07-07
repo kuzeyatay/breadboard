@@ -62,6 +62,8 @@ export interface SourceAnchor {
   equationId?: string
   questionId?: string
   textAnchorId?: string
+  role?: "input" | "output_formula" | "comparison_basis" | "context"
+  reason?: string
   description: string
 }
 
@@ -198,6 +200,8 @@ function sanitizeSourceAnchors(value: unknown, errors: string[]): SourceAnchor[]
     const equationId = safeString(raw.equationId, "sourceAnchors.equationId", errors, 80)
     const questionId = safeString(raw.questionId, "sourceAnchors.questionId", errors, 80)
     const textAnchorId = safeString(raw.textAnchorId, "sourceAnchors.textAnchorId", errors, 120)
+    const roleRaw = safeString(raw.role, "sourceAnchors.role", errors, 40)
+    const reason = safeString(raw.reason, "sourceAnchors.reason", errors, 500)
     const page = finiteNumber(raw.page)
     if (sourceId) anchor.sourceId = sourceId
     if (sourceTitle) anchor.sourceTitle = sourceTitle
@@ -206,6 +210,8 @@ function sanitizeSourceAnchors(value: unknown, errors: string[]): SourceAnchor[]
     if (equationId) anchor.equationId = equationId
     if (questionId) anchor.questionId = questionId
     if (textAnchorId) anchor.textAnchorId = textAnchorId
+    if (roleRaw && /^(input|output_formula|comparison_basis|context)$/.test(roleRaw)) anchor.role = roleRaw as SourceAnchor["role"]
+    if (reason) anchor.reason = reason
     if (page !== undefined) anchor.page = page
     anchors.push(anchor)
   }

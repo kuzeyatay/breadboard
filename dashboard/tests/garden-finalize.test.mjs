@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   finalizeGardenExport,
+  repairLearningUnitsFromContract,
+  verifyFinalArtifactNoMutation,
   classifyFigure,
   pageRole,
   normalizeSourceWikilinks,
@@ -196,8 +198,8 @@ describe("learner navigation semantic repair", () => {
   });
 });
 
-describe("finalize deterministic visual repairs", () => {
-  test("adds source text anchors to conceptual visuals when source prose contains the concept", () => {
+describe("contract-driven semantic repair loop", () => {
+  test("adds source text anchors to conceptual visuals when source prose contains the concept", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-visual-text-anchor-"));
     try {
       const dir = path.join(root, "test-2");
@@ -243,6 +245,7 @@ describe("finalize deterministic visual repairs", () => {
         }) + `${FILLER("rate and temporal spike coding", "basic_def")}\n\n${block(spec)}\n`,
       );
 
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       const out = fs.readFileSync(
         path.join(dir, "learning", "1. Why SNNs Need Events", "1.2 Spikes, Timing, and Event-Driven Computation.md"),
@@ -256,7 +259,7 @@ describe("finalize deterministic visual repairs", () => {
     }
   });
 
-  test("focuses duplicate metric calculators by page metric family before validation", () => {
+  test("focuses duplicate metric calculators by page metric family before validation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-metric-focus-"));
     try {
       const dir = path.join(root, "test-2");
@@ -304,6 +307,7 @@ describe("finalize deterministic visual repairs", () => {
           `${FILLER("spike count and energy", "metric")}\n\n${block(b)}\n`,
       );
 
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       assert.equal(
         report.criticalProblems.some((problem) => /Final interactive visual uniqueness/.test(problem)),
@@ -319,7 +323,7 @@ describe("finalize deterministic visual repairs", () => {
     }
   });
 
-  test("regrounds stale formula metadata to the matching source formula", () => {
+  test("regrounds stale formula metadata to the matching source formula", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-reground-"));
     try {
       const dir = path.join(root, "test-2");
@@ -361,6 +365,7 @@ describe("finalize deterministic visual repairs", () => {
         ].join("\n"),
       );
 
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       const out = fs.readFileSync(path.join(dir, "learning", "2. Metrics", "2.3 Spike Count and Energy.md"), "utf-8");
       assert.match(out, /sourceFormulaAnchors: \["S1\.P6\.E3"\]/);
@@ -372,7 +377,7 @@ describe("finalize deterministic visual repairs", () => {
     }
   });
 
-  test("retitles mixed-role sections before semantic validation", () => {
+  test("retitles mixed-role sections before semantic validation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-section-retitle-"));
     try {
       const dir = path.join(root, "test-2");
@@ -410,6 +415,7 @@ describe("finalize deterministic visual repairs", () => {
           `${FILLER("accuracy metric", "metric")}\n`,
       );
 
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       assert.equal(
         report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
@@ -424,7 +430,7 @@ describe("finalize deterministic visual repairs", () => {
     }
   });
 
-  test("retitles formula-only metric sections as formal descriptions", () => {
+  test("retitles formula-only metric sections as formal descriptions", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formal-retitle-"));
     try {
       const dir = path.join(root, "test-2");
@@ -456,6 +462,7 @@ describe("finalize deterministic visual repairs", () => {
           `${FILLER("decision latency", "metric")}\n\n$$L = t_{\\text{decision}} - t_{\\text{stimulus}}$$\n`,
       );
 
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       assert.equal(
         report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
@@ -469,7 +476,7 @@ describe("finalize deterministic visual repairs", () => {
     }
   });
 
-  test("retitles metric-only sections that were named like result comparisons", () => {
+  test("retitles mixed metric/result sections with mixed-purpose titles", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-metric-retitle-"));
     try {
       const dir = path.join(root, "test-2");
@@ -507,15 +514,21 @@ describe("finalize deterministic visual repairs", () => {
           `${FILLER("latency comparison", "metric")}\n`,
       );
 
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      const verification = verifyFinalArtifactNoMutation({ gardenDir: dir, gardenSlug: "test-2" });
       assert.equal(
         report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
         false,
         report.criticalProblems.join(" | "),
       );
-      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "5. The Metrics That Make SNNs Measurable", "_index.md"), "utf-8");
-      assert.match(sectionIndex, /title: "5\. The Metrics That Make SNNs Measurable"/);
-      assert.match(sectionIndex, /^# 5\. The Metrics That Make SNNs Measurable$/m);
+      assert.deepEqual(verification.mutatedFiles, []);
+      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "5. Metrics and Results Compared", "_index.md"), "utf-8");
+      assert.match(sectionIndex, /title: "5\. Metrics and Results Compared"/);
+      assert.match(sectionIndex, /^# 5\. Metrics and Results Compared$/m);
+      const repairReport = fs.readFileSync(path.join(dir, ".breadboard", "repair-report.md"), "utf-8");
+      assert.match(repairReport, /## Final Verification/);
+      assert.match(repairReport, /No-mutation check: pass/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

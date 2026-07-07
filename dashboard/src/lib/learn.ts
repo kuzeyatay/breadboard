@@ -11,7 +11,14 @@ import {
   scanClusterKnowledge,
 } from "@/lib/knowledge";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
-import { finalizeGardenExport, groundLearnerFormula } from "@/lib/garden-finalize";
+import {
+  finalizeGardenExport,
+  groundLearnerFormula,
+  repairLearningUnitsFromContract,
+  verifyFinalArtifactNoMutation,
+  type RepairExecutorMode,
+} from "@/lib/garden-finalize";
+import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
 import {
   appendGardenEvent,
   buildDeterministicVisual,
@@ -62,6 +69,7 @@ import {
   formulaMetricFamily,
   isGroundableFormula,
   isTrivialFormulaFragment,
+  isWorkedExampleFormula,
   normalizeLearningMapCandidate,
   parseJsonCandidate,
   publicLearningVersionId,
@@ -2178,19 +2186,24 @@ function formulaGroundingEntries(
   return mathExpressions.filter((expr) => isGroundableFormula(expr.formula) && !isTrivialFormulaFragment(expr.formula)).flatMap((expr): FormulaGroundingEntry[] => {
     const grounded = groundLearnerFormula(expr.formula, sources);
     if (grounded.groundingStatus === "source-anchored" && grounded.sourceAnchor) {
+      const workedExample = isWorkedExampleFormula(expr.formula);
       return [{
+        kind: workedExample ? "worked_example" : "source_definition",
         text: expr.formula,
         normalizedText: normalizedFormulaForFrontmatter(expr.formula),
-        groundingStatus: "source-anchored",
+        groundingStatus: workedExample ? "conceptual-helper" : "source-anchored",
         sourceAnchor: grounded.sourceAnchor,
         sourceAnchorTitle: captionById.get(grounded.sourceAnchor) ?? "source formula",
         matchReason: "metric family and source formula caption match",
         confidence: 0.9,
-        justification: `Content matches source metric formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`,
+        justification: workedExample
+          ? `Worked example applying source formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`
+          : `Content matches source metric formula ${grounded.sourceAnchor} (${captionById.get(grounded.sourceAnchor) ?? "source formula"}).`,
       }];
     }
     if (!formulaMetricFamily(expr.formula)) return [];
     return [{
+      kind: isWorkedExampleFormula(expr.formula) ? "worked_example" : "conceptual_helper",
       text: expr.formula,
       normalizedText: normalizedFormulaForFrontmatter(expr.formula),
       groundingStatus: "conceptual-helper",
@@ -2237,6 +2250,7 @@ function ensureContractFormulaGrounding(
     const synthesized = synthesizedFormulaForContract(formula);
     if (!synthesized || !isGroundableFormula(synthesized.text)) continue;
     next.push({
+      kind: "source_derived_definition",
       text: synthesized.text,
       normalizedText: normalizedFormulaForFrontmatter(synthesized.text),
       groundingStatus: "source-derived",
@@ -3244,6 +3258,7 @@ function focusMetricCalculatorSpec(spec: VisualSpec, subsection: LearningSubsect
     }
   }
   const labels = families.map((family) => METRIC_CALCULATOR_LABELS[family]);
+  spec.title = labels.length === 1 ? `${labels[0]} Calculator` : `${labels.join(" and ")} Calculator`;
   spec.controls = [...controlsByName.values()];
   spec.inputs = spec.controls.map((control) => control.label.toLowerCase());
   spec.outputs = labels;
@@ -3256,6 +3271,12 @@ function focusMetricCalculatorSpec(spec: VisualSpec, subsection: LearningSubsect
 
 function formulaFamilyForVisualSourceAnchor(anchor: VisualSourceAnchor): string | null {
   return formulaMetricFamily([anchor.equationId, anchor.description, anchor.sourceTitle].filter(Boolean).join(" "));
+}
+
+function roleForMetricAnchorFamily(family: string | null, targetFamilies: Set<string>): "input" | "output_formula" | "comparison_basis" | "context" {
+  if (family && targetFamilies.has(family)) return "output_formula";
+  if (family === "accuracy" || family === "energy" || family === "spike-count") return "input";
+  return "context";
 }
 
 function filterMetricCalculatorAnchors(spec: VisualSpec): VisualSpec {
@@ -3279,6 +3300,20 @@ function filterMetricCalculatorAnchors(spec: VisualSpec): VisualSpec {
   spec.sourceAnchors = spec.sourceAnchors.filter((anchor) => {
     const family = formulaFamilyForVisualSourceAnchor(anchor);
     return !family || expected.has(family as MetricCalculatorFamily);
+  }).map((anchor) => {
+    const family = formulaFamilyForVisualSourceAnchor(anchor);
+    const role = roleForMetricAnchorFamily(family, new Set(METRIC_CALCULATOR_FAMILIES.filter((candidate) => METRIC_CALCULATOR_PATTERNS[candidate].test(labels))));
+    return {
+      ...anchor,
+      role: anchor.role ?? role,
+      reason: anchor.reason ?? (
+        role === "output_formula"
+          ? `This is the metric formula the calculator teaches for ${family ?? "the target metric"}.`
+          : role === "input"
+            ? `This formula supplies an input needed to compute ${spec.outputs?.join(", ") || "the target metric"}.`
+            : `This source anchor provides context for ${spec.outputs?.join(", ") || "the target metric"}.`
+      ),
+    };
   });
   return spec;
 }
@@ -3698,7 +3733,7 @@ function debugFailedSubsectionDraft({
     "",
     snnFraming,
     "",
-    `${concepts} For example, compare two systems that receive mostly unchanged input over time. A dense continuous system still tends to move values through many layers on each update. An event-driven system can let silence mean “nothing important changed” and spend work only when a spike occurs. That example gives the transition a practical meaning: the representation is tied to cost, timing, and the kind of hardware that can run the computation efficiently.`,
+    `${concepts} For example, compare two systems that receive mostly unchanged input over time. A dense continuous system still tends to move values through many layers on each update. An event-driven system can let silence mean "nothing important changed" and spend work only when a spike occurs. That example gives the transition a practical meaning: the representation is tied to cost, timing, and the kind of hardware that can run the computation efficiently.`,
     "",
     visuals,
     "",
@@ -3828,7 +3863,7 @@ type PageDossier = {
 /** Blocks worth quoting: formulas, definitions, examples, figure/table talk. */
 function snippetLooksHighValue(text: string): boolean {
   return (
-    /[=≈≤≥∑∫]/.test(text) ||
+    /[=\u2248\u2264\u2265\u2211\u222b]/.test(text) ||
     /\b(defin\w*|formula|equation|for example|for instance|figure|table|means that|is called)\b/i.test(text)
   );
 }
@@ -4719,15 +4754,45 @@ export async function runTextbookGeneration({
     throwIfLearnCancelled(job.id);
     refreshClusterIndex(contentPath, gardenId);
 
-    // Stage 8 (deterministic export finalize + hard gate): repair the on-disk
-    // tree so what Quartz publishes is exactly what the acceptance validator
-    // accepts — clean export tree, source pages typed as sources (never learner
-    // pages), resolvable source wikilinks, no stale caveats that contradict the
-    // extracted anchors, semantically-placed source visuals, type-compatible
-    // interactive grounding, content-based formula grounding, central tags, no
-    // repeated first-page motivation — and write .breadboard/validation-report.md.
-    // Critical validation is a hard gate: a garden that cannot be repaired fails
-    // the job rather than shipping a broken artifact.
+    updateLearnJob(job.id, {
+      status: "building_navigation",
+      currentStep: "Repairing semantic lesson issues",
+      progressPercent: 96,
+      currentSectionTitle: undefined,
+      currentPageTitle: undefined,
+    });
+    throwIfLearnCancelled(job.id);
+    // The repair loop is deterministic by default. Production can opt into
+    // model-backed single-page repair (with deterministic fallback) via
+    // BREADBOARD_REPAIR_EXECUTOR; the deterministic transforms always remain the
+    // safe fallback so an unavailable/failed model never blocks the artifact.
+    const repairExecutorMode = ((): RepairExecutorMode => {
+      const raw = (process.env.BREADBOARD_REPAIR_EXECUTOR ?? "").trim();
+      return raw === "model" || raw === "model_with_deterministic_fallback" ? raw : "deterministic";
+    })();
+    const repairRun = await repairLearningUnitsFromContract({
+      gardenDir: clusterDir,
+      gardenSlug: gardenId,
+      repairExecutor: repairExecutorMode,
+      modelRepair:
+        repairExecutorMode === "deterministic"
+          ? undefined
+          : createOpenAIRepairExecutor({ client, model, gardenId, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
+    });
+    appendLearnEvent(contentPath, gardenId, "learn_semantic_repair_completed", {
+      jobId: job.id,
+      textbookVersionId,
+      repairExecutorMode,
+      requestCount: repairRun.requests.length,
+      repairCount: repairRun.repairs.length,
+      modelRepairCount: repairRun.repairs.filter((entry) => entry.executorUsed === "model").length,
+      unresolvedCount: repairRun.repairs.filter((entry) => entry.result === "unresolved").length,
+      changedFiles: repairRun.changedFiles,
+    });
+
+    // Stage 8b (deterministic export finalize + hard gate): clean and validate
+    // the on-disk tree exactly as Quartz will see it. Semantic content repair
+    // belongs to the Learning Unit repair loop above.
     throwIfLearnCancelled(job.id);
     const finalizeReport = finalizeGardenExport({ gardenDir: clusterDir, gardenSlug: gardenId });
     appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
@@ -4737,10 +4802,30 @@ export async function runTextbookGeneration({
       changedCount: finalizeReport.changed.length,
       criticalProblems: finalizeReport.criticalProblems,
     });
+    const verification = verifyFinalArtifactNoMutation({ gardenDir: clusterDir, gardenSlug: gardenId });
+    appendLearnEvent(contentPath, gardenId, "learn_final_artifact_verified", {
+      jobId: job.id,
+      textbookVersionId,
+      accepted: verification.accepted,
+      mutatedFiles: verification.mutatedFiles,
+      validationFailures: verification.validationFailures,
+      unresolvedRepairFailures: verification.unresolvedRepairFailures,
+    });
     if (finalizeReport.criticalProblems.length > 0) {
       throw new Error(
         `Export finalize failed critical validation for ${gardenId}: ${finalizeReport.criticalProblems.join("; ")}. ` +
-          "The garden was not published. See .breadboard/validation-report.md.",
+          "The garden was not published. See .breadboard/validation-report.md and .breadboard/repair-report.md.",
+      );
+    }
+    if (!verification.accepted) {
+      throw new Error(
+        `Export verification failed for ${gardenId}: ${
+          [
+            ...verification.validationFailures,
+            ...verification.unresolvedRepairFailures,
+            ...verification.mutatedFiles.map((file) => `mutated during verification: ${file}`),
+          ].join("; ") || "final artifact was not accepted"
+        }. The garden was not published. See .breadboard/validation-report.md and .breadboard/repair-report.md.`,
       );
     }
 
