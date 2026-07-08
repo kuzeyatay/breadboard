@@ -3194,6 +3194,13 @@ const METRIC_CALCULATOR_LABELS: Record<MetricCalculatorFamily, string> = {
   convergence: "convergence time",
 };
 
+function titleCaseMetricLabel(label: string): string {
+  return label
+    .split(/\s+/)
+    .map((word) => word.toUpperCase() === word ? word : `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
 const METRIC_CALCULATOR_PATTERNS: Record<MetricCalculatorFamily, RegExp> = {
   accuracy: /\baccuracy\b|\bcorrect predictions?\b|\.E1\b/i,
   latency: /\blatency\b|\bdecision time\b|\.E2\b/i,
@@ -3258,13 +3265,14 @@ function focusMetricCalculatorSpec(spec: VisualSpec, subsection: LearningSubsect
     }
   }
   const labels = families.map((family) => METRIC_CALCULATOR_LABELS[family]);
-  spec.title = labels.length === 1 ? `${labels[0]} Calculator` : `${labels.join(" and ")} Calculator`;
+  const titleLabels = labels.map(titleCaseMetricLabel);
+  spec.title = titleLabels.length === 1 ? `${titleLabels[0]} Calculator` : `${titleLabels.join(" and ")} Calculator`;
   spec.controls = [...controlsByName.values()];
   spec.inputs = spec.controls.map((control) => control.label.toLowerCase());
   spec.outputs = labels;
   spec.conceptTargets = labels;
-  spec.pedagogicalPurpose = `Let the learner manipulate inputs for ${labels.join(", ")} on this lesson instead of a generic all-metric calculator.`;
-  spec.caption = `This calculator focuses on ${labels.join(", ")} for this page.`;
+  spec.pedagogicalPurpose = `Let the learner manipulate inputs for ${labels.join(", ")} and observe how the selected metric responds.`;
+  spec.caption = `Adjust the controls to see how ${labels.join(", ")} changes with the chosen inputs.`;
   spec.regenerationPrompt = `Regenerate this metric calculator so its controls and readouts focus only on ${labels.join(", ")}.`;
   return spec;
 }
@@ -3488,24 +3496,34 @@ async function reconcileInteractiveVisuals({
     const compatibleConcreteAnchors = uniqueSourceAnchors([...existingAnchors, ...derivedAnchors]).filter((anchor) =>
       anchorCompatibleWithVisual(spec.type, anchor),
     );
-    const proseAnchor = compatibleConcreteAnchors.length === 0
-      ? sourceTextAnchorForVisual({ visualType: spec.type, sourceContext })
-      : null;
-    spec.sourceAnchors = uniqueSourceAnchors(proseAnchor ? [...compatibleConcreteAnchors, proseAnchor] : compatibleConcreteAnchors);
+    // Apply the metric-calculator anchor filter BEFORE deciding the grounding
+    // status. That filter can strip anchors that pass the generic compatibility
+    // gate but do not match this calculator's metric families, so the status
+    // must reflect the anchors that actually survive onto the spec — never a
+    // pre-filter set. Deciding "source-grounded" from the pre-filter list is
+    // exactly what produced a metric_calculator claiming grounding with an empty
+    // sourceAnchors array.
+    spec.sourceAnchors = uniqueSourceAnchors(compatibleConcreteAnchors);
     spec = filterMetricCalculatorAnchors(spec);
-    if (compatibleConcreteAnchors.length > 0) {
+    const survivingConcreteAnchors = spec.sourceAnchors ?? [];
+    if (survivingConcreteAnchors.length > 0) {
       spec.sourceGroundingStatus = "source-grounded";
       spec.justification = spec.justification || "This interactive visual is tied to source visuals or formula anchors assigned to the same lesson page.";
-    } else if (proseAnchor) {
-      spec.sourceGroundingStatus = "source-derived-conceptual";
-      spec.justification =
-        spec.justification ||
-        "The source explains this concept in prose but does not provide a dedicated figure, so the visual is derived from the source text anchor.";
     } else {
-      spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
-      spec.justification =
-        spec.justification ||
-        "This visual teaches a dynamic concept discussed on the page; no directly matching source figure was assigned to this lesson.";
+      const proseAnchor = sourceTextAnchorForVisual({ visualType: spec.type, sourceContext });
+      if (proseAnchor) {
+        spec.sourceAnchors = uniqueSourceAnchors([proseAnchor]);
+        spec.sourceGroundingStatus = "source-derived-conceptual";
+        spec.justification =
+          spec.justification ||
+          "The source explains this concept in prose but does not provide a dedicated figure, so the visual is derived from the source text anchor.";
+      } else {
+        spec.sourceAnchors = [];
+        spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
+        spec.justification =
+          spec.justification ||
+          "This visual teaches a dynamic concept discussed on the page; no directly matching source figure was assigned to this lesson.";
+      }
     }
     return spec;
   };
@@ -4762,13 +4780,13 @@ export async function runTextbookGeneration({
       currentPageTitle: undefined,
     });
     throwIfLearnCancelled(job.id);
-    // The repair loop is deterministic by default. Production can opt into
-    // model-backed single-page repair (with deterministic fallback) via
-    // BREADBOARD_REPAIR_EXECUTOR; the deterministic transforms always remain the
-    // safe fallback so an unavailable/failed model never blocks the artifact.
+    // The Learn button prefers model-backed prose repair with deterministic
+    // fallback. BREADBOARD_REPAIR_EXECUTOR can still force deterministic/model
+    // modes for local debugging and tests.
     const repairExecutorMode = ((): RepairExecutorMode => {
       const raw = (process.env.BREADBOARD_REPAIR_EXECUTOR ?? "").trim();
-      return raw === "model" || raw === "model_with_deterministic_fallback" ? raw : "deterministic";
+      if (raw === "model" || raw === "model_with_deterministic_fallback" || raw === "deterministic") return raw;
+      return "model_with_deterministic_fallback";
     })();
     const repairRun = await repairLearningUnitsFromContract({
       gardenDir: clusterDir,

@@ -11804,6 +11804,13 @@ function sanitizeSourceAnchors(value, errors) {
     const tableId = safeString(raw.tableId, "sourceAnchors.tableId", errors, 80);
     const equationId = safeString(raw.equationId, "sourceAnchors.equationId", errors, 80);
     const questionId = safeString(raw.questionId, "sourceAnchors.questionId", errors, 80);
+    const textAnchorId = safeString(raw.textAnchorId, "sourceAnchors.textAnchorId", errors, 120);
+    const kindRaw = safeString(raw.kind, "sourceAnchors.kind", errors, 40);
+    const title = safeString(raw.title, "sourceAnchors.title", errors, 300);
+    const exactText = safeString(raw.exactText, "sourceAnchors.exactText", errors, 1e3);
+    const semanticSummary = safeString(raw.semanticSummary, "sourceAnchors.semanticSummary", errors, 1e3);
+    const conceptKeywords = Array.isArray(raw.conceptKeywords) ? raw.conceptKeywords.map((item) => safeString(item, "sourceAnchors.conceptKeywords", errors, 80)).filter((item) => Boolean(item)).slice(0, 12) : [];
+    const confidence = finiteNumber(raw.confidence);
     const roleRaw = safeString(raw.role, "sourceAnchors.role", errors, 40);
     const reason = safeString(raw.reason, "sourceAnchors.reason", errors, 500);
     const page = finiteNumber(raw.page);
@@ -11813,6 +11820,13 @@ function sanitizeSourceAnchors(value, errors) {
     if (tableId) anchor.tableId = tableId;
     if (equationId) anchor.equationId = equationId;
     if (questionId) anchor.questionId = questionId;
+    if (textAnchorId) anchor.textAnchorId = textAnchorId;
+    if (kindRaw && /^(definition|mechanism|method|limitation|application|recommendation|comparison|result_interpretation|concept)$/.test(kindRaw)) anchor.kind = kindRaw;
+    if (title) anchor.title = title;
+    if (exactText) anchor.exactText = exactText;
+    if (semanticSummary) anchor.semanticSummary = semanticSummary;
+    if (conceptKeywords.length > 0) anchor.conceptKeywords = conceptKeywords;
+    if (confidence !== void 0) anchor.confidence = Math.max(0, Math.min(1, confidence));
     if (roleRaw && /^(input|output_formula|comparison_basis|context)$/.test(roleRaw)) anchor.role = roleRaw;
     if (reason) anchor.reason = reason;
     if (page !== void 0) anchor.page = page;

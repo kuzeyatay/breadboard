@@ -62,9 +62,27 @@ export interface SourceAnchor {
   equationId?: string
   questionId?: string
   textAnchorId?: string
+  kind?: "definition" | "mechanism" | "method" | "limitation" | "application" | "recommendation" | "comparison" | "result_interpretation" | "concept"
+  title?: string
+  exactText?: string
+  semanticSummary?: string
+  conceptKeywords?: string[]
+  confidence?: number
   role?: "input" | "output_formula" | "comparison_basis" | "context"
   reason?: string
   description: string
+}
+
+export interface SourceTextConceptAnchor {
+  id: string
+  sourceId: string
+  page?: number
+  kind: NonNullable<SourceAnchor["kind"]>
+  title: string
+  exactText?: string
+  semanticSummary: string
+  conceptKeywords: string[]
+  confidence: number
 }
 
 export interface FormulaRef {
@@ -200,6 +218,14 @@ function sanitizeSourceAnchors(value: unknown, errors: string[]): SourceAnchor[]
     const equationId = safeString(raw.equationId, "sourceAnchors.equationId", errors, 80)
     const questionId = safeString(raw.questionId, "sourceAnchors.questionId", errors, 80)
     const textAnchorId = safeString(raw.textAnchorId, "sourceAnchors.textAnchorId", errors, 120)
+    const kindRaw = safeString(raw.kind, "sourceAnchors.kind", errors, 40)
+    const title = safeString(raw.title, "sourceAnchors.title", errors, 300)
+    const exactText = safeString(raw.exactText, "sourceAnchors.exactText", errors, 1000)
+    const semanticSummary = safeString(raw.semanticSummary, "sourceAnchors.semanticSummary", errors, 1000)
+    const conceptKeywords = Array.isArray(raw.conceptKeywords)
+      ? raw.conceptKeywords.map((item) => safeString(item, "sourceAnchors.conceptKeywords", errors, 80)).filter((item): item is string => Boolean(item)).slice(0, 12)
+      : []
+    const confidence = finiteNumber(raw.confidence)
     const roleRaw = safeString(raw.role, "sourceAnchors.role", errors, 40)
     const reason = safeString(raw.reason, "sourceAnchors.reason", errors, 500)
     const page = finiteNumber(raw.page)
@@ -210,6 +236,12 @@ function sanitizeSourceAnchors(value: unknown, errors: string[]): SourceAnchor[]
     if (equationId) anchor.equationId = equationId
     if (questionId) anchor.questionId = questionId
     if (textAnchorId) anchor.textAnchorId = textAnchorId
+    if (kindRaw && /^(definition|mechanism|method|limitation|application|recommendation|comparison|result_interpretation|concept)$/.test(kindRaw)) anchor.kind = kindRaw as SourceAnchor["kind"]
+    if (title) anchor.title = title
+    if (exactText) anchor.exactText = exactText
+    if (semanticSummary) anchor.semanticSummary = semanticSummary
+    if (conceptKeywords.length > 0) anchor.conceptKeywords = conceptKeywords
+    if (confidence !== undefined) anchor.confidence = Math.max(0, Math.min(1, confidence))
     if (roleRaw && /^(input|output_formula|comparison_basis|context)$/.test(roleRaw)) anchor.role = roleRaw as SourceAnchor["role"]
     if (reason) anchor.reason = reason
     if (page !== undefined) anchor.page = page
@@ -664,7 +696,7 @@ export function buildStdpTimingWindowVisual(pageSlug?: string): VisualSpec {
 /** Accuracy / latency / energy / spike-count tradeoff across model families. */
 export function buildMetricCalculatorVisual(pageSlug?: string): VisualSpec {
   return baseSpec(deterministicVisualId(pageSlug, "metric"), "metric_calculator", {
-    title: "SNN metric calculator",
+    title: "Accuracy, Latency, and Energy Calculator",
     conceptTargets: ["accuracy", "latency", "spike count", "energy", "normalized efficiency"],
     pedagogicalPurpose:
       "Let the learner manipulate metric inputs directly and see how accuracy, latency, spike count, energy, and normalized efficiency change.",
@@ -686,7 +718,7 @@ export function buildMetricCalculatorVisual(pageSlug?: string): VisualSpec {
     inputs: ["correct predictions", "total predictions", "decision time", "spike count", "energy per spike"],
     outputs: ["accuracy", "latency", "energy estimate", "normalized efficiency"],
     caption:
-      "Change the raw inputs to see why accuracy alone is not enough: lower spikes and latency can matter even when accuracy stays similar.",
+      "Adjust the raw inputs to see how accuracy, latency, spike count, energy, and normalized efficiency respond together.",
     regenerationPrompt:
       "Improve the metric calculator: keep the raw inputs visible and show accuracy, latency, energy, and normalized efficiency as separate outputs.",
   })

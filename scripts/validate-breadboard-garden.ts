@@ -515,6 +515,154 @@ function pageSourceIds(page: PageFile): Set<string> {
   ].filter(Boolean));
 }
 
+const LEARNER_SCAFFOLD_PROSE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
+  { label: "The motivation is already in place", pattern: /\bThe motivation is already in place\b/i },
+  { label: "Focus on the specific mechanism", pattern: /\bFocus on the specific mechanism\b/i },
+  { label: "this lesson adds to the learning path", pattern: /\bthis lesson adds to the learning path\b/i },
+  { label: "the previous concepts", pattern: /\bthe previous concepts\b/i },
+  { label: "the specific mechanism, metric, result, or limitation", pattern: /\bthe specific mechanism,\s*metric,\s*result,\s*or limitation\b/i },
+  { label: "this page develops how", pattern: /\bthis page develops how\b/i },
+  { label: "Build up [topic] one step at a time", pattern: /\bBuild up\b[^.\n]{0,120}\bone step at a time\b/i },
+];
+
+function learnerFacingScaffoldProseProblems(lessonPages: PageFile[]): string[] {
+  const problems: string[] = [];
+  for (const page of lessonPages) {
+    const prose = teachingProse(page.body);
+    for (const { label, pattern } of LEARNER_SCAFFOLD_PROSE_PATTERNS) {
+      if (pattern.test(prose)) problems.push(`${page.relPath}: contains repair scaffold prose "${label}"`);
+    }
+    if (/\bsnns\b/.test(prose)) problems.push(`${page.relPath}: uses lowercase acronym "snns"`);
+    if (/\bSNNs\s+learns\b/i.test(prose)) problems.push(`${page.relPath}: contains grammar error "SNNs learns"`);
+  }
+  return [...new Set(problems)];
+}
+
+function sectionIndexProseQualityProblems(gardenDir: string): string[] {
+  const pages: PageFile[] = [];
+  walkMarkdown(path.join(gardenDir, "learning"), "learning", pages);
+  const problems: string[] = [];
+  for (const page of pages.filter((entry) => /\/_index\.md$/i.test(entry.relPath))) {
+    const prose = teachingProse(page.body);
+    if (/\bBuild up\b[^.\n]{0,120}\bone step at a time\b/i.test(prose)) {
+      problems.push(`${page.relPath}: contains generic "Build up ... one step at a time" scaffold prose`);
+    }
+    if (/\bsnns\b/.test(prose)) problems.push(`${page.relPath}: uses lowercase acronym "snns"`);
+    if (/\bSNNs\s+learns\b/i.test(prose)) problems.push(`${page.relPath}: contains grammar error "SNNs learns"`);
+    if (/\bThis section is part of the confirmed Breadboard learning map\b/i.test(prose)) {
+      problems.push(`${page.relPath}: exposes learning-map scaffold prose`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function visualTitleCaptionQualityProblems(embeddedVisualSpecs: Array<{ page: PageFile; spec: Record<string, unknown> }>): string[] {
+  const problems: string[] = [];
+  for (const { page, spec } of embeddedVisualSpecs) {
+    const id = String(spec.id ?? "(missing id)");
+    const title = String(spec.title ?? "").trim();
+    const caption = String(spec.caption ?? "").trim();
+    if (!title) problems.push(`${page.relPath}: visual ${id} missing title`);
+    if (/^[a-z]/.test(title)) problems.push(`${page.relPath}: visual ${id} title starts lowercase: "${title}"`);
+    if (/^SNN metric calculator$/i.test(title)) problems.push(`${page.relPath}: visual ${id} uses generic title "${title}"`);
+    if (/\b(?:metric_calculator|tradeoff_explorer|lif_neuron|neural_coding|stdp_window)\b/i.test(`${title} ${caption}`)) {
+      problems.push(`${page.relPath}: visual ${id} exposes internal visual type in title/caption`);
+    }
+    if (/^Generic all-metric calculator\.?$/i.test(caption)) problems.push(`${page.relPath}: visual ${id} caption is generic`);
+  }
+  return [...new Set(problems)];
+}
+
+function readSourceAnchorLedger(gardenDir: string): Array<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(gardenDir, ".breadboard", "source-anchors.json"), "utf-8"));
+    if (Array.isArray(parsed)) return parsed.filter((item) => item && typeof item === "object") as Array<Record<string, unknown>>;
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).sourceTextConceptAnchors)) {
+      return (parsed as Record<string, unknown>).sourceTextConceptAnchors as Array<Record<string, unknown>>;
+    }
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as Record<string, unknown>).anchors)) {
+      return (parsed as Record<string, unknown>).anchors as Array<Record<string, unknown>>;
+    }
+  } catch {
+    // Missing ledger is reported only when text anchors are used.
+  }
+  return [];
+}
+
+function pageLevelSourceAnchorIds(page: PageFile): string[] {
+  return [...new Set([
+    ...fmArray(page.frontmatter, "sourceAnchors"),
+    ...fmArray(page.frontmatter, "sourceVisualIds"),
+    ...fmArray(page.frontmatter, "sourceFormulaAnchors"),
+    fmString(page.frontmatter, "sourceFormulaAnchor"),
+  ].filter(Boolean))];
+}
+
+function textAnchorIdsFromPagesAndVisuals(lessonPages: PageFile[], embeddedVisualSpecs: Array<{ page: PageFile; spec: Record<string, unknown> }>): Map<string, string[]> {
+  const byId = new Map<string, string[]>();
+  const add = (id: string, rel: string): void => {
+    if (!/^text-/i.test(id)) return;
+    const refs = byId.get(id) ?? [];
+    refs.push(rel);
+    byId.set(id, refs);
+  };
+  for (const page of lessonPages) for (const id of pageLevelSourceAnchorIds(page)) add(id, page.relPath);
+  for (const { page, spec } of embeddedVisualSpecs) {
+    const visualId = String(spec.id ?? "(visual)");
+    for (const id of visualAnchorIds(spec)) add(id, `${page.relPath}#${visualId}`);
+  }
+  return byId;
+}
+
+function sourceAnchorLedgerProblems(gardenDir: string, lessonPages: PageFile[], embeddedVisualSpecs: Array<{ page: PageFile; spec: Record<string, unknown> }>): string[] {
+  const used = textAnchorIdsFromPagesAndVisuals(lessonPages, embeddedVisualSpecs);
+  if (used.size === 0) return [];
+  const ledger = readSourceAnchorLedger(gardenDir);
+  const known = new Map(ledger.map((anchor) => [String(anchor.id ?? anchor.textAnchorId ?? ""), anchor]));
+  const problems: string[] = [];
+  if (ledger.length === 0) problems.push(".breadboard/source-anchors.json missing or empty while text anchors are used");
+  for (const [id, refs] of used) {
+    const anchor = known.get(id);
+    if (!anchor) {
+      problems.push(`${[...new Set(refs)].join(", ")}: text anchor ${id} is not registered in .breadboard/source-anchors.json`);
+      continue;
+    }
+    if (!String(anchor.semanticSummary ?? anchor.description ?? "").trim()) problems.push(`${id}: source-anchor ledger entry missing semanticSummary`);
+    if (!Array.isArray(anchor.conceptKeywords) || anchor.conceptKeywords.length === 0) problems.push(`${id}: source-anchor ledger entry missing conceptKeywords`);
+  }
+  return [...new Set(problems)];
+}
+
+function contractPageSourceAnchorSynchronizationProblems(
+  lessonPages: PageFile[],
+  learningUnitsById: Map<string, LearningUnitContract>,
+): string[] {
+  const problems: string[] = [];
+  for (const page of lessonPages) {
+    const unit = learningUnitsById.get(fmString(page.frontmatter, "learningUnitId"));
+    if (!unit) continue;
+    const contractAnchors = new Set([
+      ...(unit.sourceAnchors ?? []),
+      ...(unit.sourceFigures ?? []).map((figure) => figure.id),
+      ...(unit.sourceFormulas ?? []).map((formula) => formula.id),
+      ...(unit.sourceTables ?? []).map((table) => table.id),
+      ...(unit.interactiveVisual?.sourceAnchors ?? []),
+    ]);
+    const pageAnchors = pageLevelSourceAnchorIds(page).filter((id) => /^text-/i.test(id) || /^S\d+\.P\d+\.[A-Z]\d+$/i.test(id));
+    for (const id of pageAnchors) {
+      if (!contractAnchors.has(id)) problems.push(`${page.relPath}: page source anchor ${id} is not present in Learning Unit Contract unit ${unit.id}`);
+    }
+    if (pageAnchors.some((id) => /^text-/i.test(id))) {
+      for (const id of unit.sourceAnchors ?? []) {
+        if (/abstract|guidance|researchgap/i.test(id) && !pageAnchors.includes(id)) {
+          problems.push(`${page.relPath}: unit ${unit.id} still keeps broad source anchor ${id} after specific text-anchor repair`);
+        }
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
 function sectionSemanticInputs(
   gardenDir: string,
   lessonPages: PageFile[],
@@ -586,7 +734,18 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: Array<Record<string,
   const problems: string[] = [];
   const docs: Array<[string, string]> = [];
   const addDoc = (rel: string): void => docs.push([rel, path.join(gardenDir, ...rel.split("/"))]);
-  for (const rel of [".breadboard/planning/Source Map.md", ".breadboard/planning/Source Coverage.md", "learning/Learning Map.md", "learning/Topic Overview.md"]) addDoc(rel);
+  // The generated validation-report.md / repair-report.md are intentionally NOT
+  // scanned: they echo the detector's own problem text, so scanning them makes a
+  // reported caveat into a new self-referential caveat. Kept in sync with
+  // garden-finalize.ts sourceMapCaveatProblems().
+  for (const rel of [
+    ".breadboard/planning/Source Map.md",
+    ".breadboard/planning/Scope Contract.md",
+    ".breadboard/planning/Learning Map.md",
+    ".breadboard/planning/Source Coverage.md",
+    "learning/Learning Map.md",
+    "learning/Topic Overview.md",
+  ]) addDoc(rel);
   const planningPages: PageFile[] = [];
   walkMarkdown(path.join(gardenDir, ".breadboard", "planning"), ".breadboard/planning", planningPages);
   for (const page of planningPages) {
@@ -616,7 +775,7 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: Array<Record<string,
     const text = readIfExists(filePath);
     if (!text) continue;
     const staleFormulaCaveat =
-      /explicit mathematical definitions are not present|formal mathematical definitions are not present|formulas? (?:are|is) not present|formula exact text unavailable|caption-only|formula captions but not exact|exact displayed notation|standard explanatory notation only|captions only|notation unavailable|mathematical notation not included/i;
+      /explicit mathematical definitions are not present|formal mathematical definitions are not present|formulas? (?:are|is) not present|formula exact text unavailable|caption-only|formula captions but not exact|formula captions but exact notation unavailable|exact displayed notation|exact mathematical notation (?:and variable definitions )?(?:are )?not provided|variable definitions are not provided|formula terms are not fully available|standard explanatory notation only|captions only|notation unavailable|mathematical notation not included/i;
     if ((hasFormulaAnchors || hasFormulaExactText || hasFormulaCrops || hasFormulaMarkdown) && staleFormulaCaveat.test(text)) {
       problems.push(`${label}: stale caveat says formulas/definitions are unavailable despite formula anchors`);
     }
@@ -626,7 +785,7 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: Array<Record<string,
     if (hasFigures && /figures? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
       problems.push(`${label}: stale caveat says figures are unavailable despite figure anchors`);
     }
-    if (hasLaterPages && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|truncated after page\s*2|source map is truncated|later (?:page|pages|section|sections)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|must (?:remain )?anchored to extracted .*captions|must not be inferred beyond/i.test(text)) {
+    if (hasLaterPages && /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|truncated after page\s*2|source map is truncated|later (?:page|pages|section|sections)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|later[- ]page content unavailable|must (?:remain )?anchored to extracted .*captions|provided excerpt only|not fully available in supplied context|must not be inferred beyond/i.test(text)) {
       problems.push(`${label}: stale caveat says later pages are unavailable despite later anchors/pages`);
     }
   }
@@ -887,6 +1046,29 @@ function formulaFamilyForAnchor(id: string, ledger: Array<Record<string, unknown
   return formulaMetricFamily(formulaAnchorSemanticText(visual));
 }
 
+const VISUAL_FORMULA_FAMILY_HINTS: Array<[FormulaFamily, RegExp]> = [
+  ["accuracy", /\baccuracy\b|\bcorrect predictions?\b/i],
+  ["latency", /\blatency\b|\bdecision time\b|\bresponse time\b/i],
+  ["spike-count", /\bspike[- ]?count\b|\btotal spikes?\b|\bnumber of spikes?\b/i],
+  ["energy", /\benergy\b|\bjoules?\b|\bsynaptic\b|\bsynops?\b/i],
+  ["efficiency", /\befficien|\bnormalized\b|accuracy over energy/i],
+  ["convergence", /\bconverg|\bepochs?\b|\btarget accuracy\b/i],
+];
+
+function formulaFamiliesFromVisualText(text: string): Set<FormulaFamily> {
+  const families = new Set<FormulaFamily>();
+  for (const [family, pattern] of VISUAL_FORMULA_FAMILY_HINTS) {
+    if (pattern.test(text)) families.add(family);
+  }
+  for (const chunk of text.split(/[;,|/&+]|\band\b/i)) {
+    const family = formulaMetricFamily(chunk);
+    if (family) families.add(family);
+  }
+  const whole = formulaMetricFamily(text);
+  if (whole) families.add(whole);
+  return families;
+}
+
 function visualSpecFamilyText(spec: Record<string, unknown>): string {
   return [
     spec.title,
@@ -908,14 +1090,7 @@ function familiesFromVisualContext(spec: Record<string, unknown>, page: PageFile
     includePageContext ? fmString(page.frontmatter, "title") : "",
     visualSpecFamilyText(spec),
   ].join(" ");
-  const families = new Set<FormulaFamily>();
-  for (const chunk of text.split(/[;,|]/)) {
-    const family = formulaMetricFamily(chunk);
-    if (family) families.add(family);
-  }
-  const whole = formulaMetricFamily(text);
-  if (whole) families.add(whole);
-  return families;
+  return formulaFamiliesFromVisualText(text);
 }
 
 function allowedVisualAnchorFamilies(expected: Set<FormulaFamily>): Set<FormulaFamily> {
@@ -1000,12 +1175,49 @@ function repairLogConsistencyProblems(gardenDir: string, lessonPages: PageFile[]
   const record = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
   const repairs = Array.isArray(record.repairs) ? record.repairs as Array<Record<string, unknown>> : [];
   const problems: string[] = [];
+  const pageByRel = new Map(lessonPages.map((page) => [page.relPath, page]));
+  const allowedChangedFile = (repair: Record<string, unknown>, file: string): boolean => {
+    const pagePath = String(repair.pagePath ?? "");
+    const sectionPath = String(repair.sectionPath ?? "");
+    const failureTypes = Array.isArray(repair.failureTypes) ? repair.failureTypes.map(String) : [];
+    if (file === pagePath) return true;
+    if (file === `${sectionPath}/_index.md`) return true;
+    if (failureTypes.includes("section_semantics") && (file === "learning/_index.md" || file === "learning/Learning Map.md")) return true;
+    if (failureTypes.some((type) => ["zettelkasten_handle", "zettelkasten_handle_support", "contract_fulfillment", "source_text_anchor"].includes(type)) && file === ".breadboard/learning-unit-contract.json") return true;
+    if (failureTypes.includes("source_text_anchor") && file === ".breadboard/source-anchors.json") return true;
+    if (failureTypes.some((type) => ["visual_grounding", "source_text_anchor"].includes(type)) && file === ".breadboard/planning/Source Coverage.md") return true;
+    if (file.startsWith(".breadboard/visuals/")) {
+      const page = pageByRel.get(pagePath);
+      if (!page) return false;
+      const visualId = file.match(/^\.breadboard\/visuals\/(.+)\.json$/)?.[1] ?? "";
+      const owned = new Set(fmArray(page.frontmatter, "visualIds"));
+      for (const spec of embeddedVisualSpecsFromBody(page.body)) {
+        const id = String(spec.id ?? "").trim();
+        if (id) owned.add(id);
+      }
+      return owned.has(visualId);
+    }
+    return false;
+  };
   for (const repair of repairs) {
     const pagePath = String(repair.pagePath ?? "(unknown page)");
     const result = String(repair.result ?? "");
+    const failureTypes = Array.isArray(repair.failureTypes) ? repair.failureTypes.map(String) : [];
     if (result === "unresolved") problems.push(`${pagePath}: repair log result is unresolved`);
     const unresolved = Array.isArray(repair.unresolvedValidationErrors) ? repair.unresolvedValidationErrors : [];
     for (const error of unresolved) problems.push(`${pagePath}: unresolved repair validation error: ${String(error)}`);
+    const changedFiles = Array.isArray(repair.changedFiles) ? repair.changedFiles.map(String) : [];
+    for (const file of changedFiles) {
+      if (!allowedChangedFile(repair, file)) problems.push(`${pagePath}: repair log changedFiles includes unrelated file ${file}`);
+    }
+    const isProseRepair = failureTypes.some((type) => ["repeated_opening", "scaffold_prose", "section_index_prose", "zettelkasten_handle_support"].includes(type));
+    const isPageProseRepair = failureTypes.some((type) => ["repeated_opening", "scaffold_prose", "zettelkasten_handle_support"].includes(type));
+    if (isPageProseRepair && String(repair.executorUsed ?? "") === "deterministic" && String(repair.naturalProseValidation ?? "") !== "pass") {
+      problems.push(`${pagePath}: deterministic semantic prose repair lacks naturalProseValidation=pass`);
+    }
+    if (isProseRepair && !String(repair.modelRepairStatus ?? "").trim()) {
+      problems.push(`${pagePath}: prose repair log missing modelRepairStatus`);
+    }
   }
   const repairedPages = new Set(repairs.map((repair) => String(repair.pagePath ?? "")));
   for (const page of repairedPagesWithFm) {
@@ -1044,7 +1256,9 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Learning Unit Contract Fulfillment",
   "Section Semantic Coherence",
   "Section Title Grammar",
+  "Section Index Prose Quality",
   "Interactive Visual Grounding",
+  "Learner-Facing Scaffold Prose",
   "Source Map Consistency",
   "Source Map Caveat Reconciliation",
   "Source Coverage Modes",
@@ -1062,6 +1276,9 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Crop Quality and Fallbacks",
   "Source Coverage Mode Precision",
   "Source Text Concept Anchors",
+  "Contract/Page Source Anchor Synchronization",
+  "Source Coverage / Final Artifact Consistency",
+  "Visual Title and Caption Quality",
   "Zettelkasten Tags",
   "Zettelkasten Tag Density",
   "Zettelkasten Handle Quality",
@@ -1788,7 +2005,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (!sourceMap) {
         problems.push(".breadboard/planning/Source Map.md missing despite extracted anchors");
       } else {
-        if (/explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only/i.test(sourceMap)) {
+        if (/explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only|formula captions? but exact notation unavailable|exact mathematical notation (?:and variable definitions )?(?:are )?not provided|variable definitions are not provided|formula terms are not fully available/i.test(sourceMap)) {
           problems.push("Source Map says formulas are absent/caption-only even though formula anchors exist");
         }
         if (tableVisuals.length > 0 && /tables? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
@@ -1797,7 +2014,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         if (figureVisuals.length > 0 && /figures? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
           problems.push("Source Map says figures are absent even though figure anchors exist");
         }
-        if (laterPagesExist && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|truncated after page\s*2|source map is truncated|later (?:page|pages|section|sections)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)/i.test(sourceMap)) {
+        if (laterPagesExist && /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|truncated after page\s*2|source map is truncated|later (?:page|pages|section|sections)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|later[- ]page content unavailable|provided excerpt only|not fully available in supplied context/i.test(sourceMap)) {
           problems.push("Source Map contains stale caveats about later source pages");
         }
         if (formulaVisuals.length > 0 && !/Formula Coverage|explicit metric formulas|formula anchors? (?:are )?present/i.test(sourceMap)) {
@@ -2776,6 +2993,44 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(58, "Repair Provenance", repairLogConsistencyProblems(gardenDir, lessonPages), lessonPages.length === 0);
   }
 
+  // 59. Learner-facing Markdown must not contain deterministic repair scaffolds.
+  {
+    check(59, "Learner-Facing Scaffold Prose", learnerFacingScaffoldProseProblems(lessonPages), lessonPages.length === 0);
+  }
+
+  // 60. Section index bodies must be polished learner-facing prose.
+  {
+    check(60, "Section Index Prose Quality", sectionIndexProseQualityProblems(gardenDir), lessonPages.length === 0);
+  }
+
+  // 61. Page/source anchors, source-anchor ledger, and contract anchors agree.
+  {
+    check(
+      61,
+      "Contract/Page Source Anchor Synchronization",
+      [
+        ...sourceAnchorLedgerProblems(gardenDir, lessonPages, embeddedVisualSpecs),
+        ...contractPageSourceAnchorSynchronizationProblems(lessonPages, learningUnitsById),
+      ],
+      lessonPages.length === 0,
+    );
+  }
+
+  // 62. Source Coverage must match final visual JSON, not stale planning claims.
+  {
+    check(
+      62,
+      "Source Coverage / Final Artifact Consistency",
+      sourceCoverageFinalArtifactConsistencyProblems(gardenDir, embeddedVisualSpecs),
+      embeddedVisualSpecs.length === 0,
+    );
+  }
+
+  // 63. Visual titles and captions must be polished and specific.
+  {
+    check(63, "Visual Title and Caption Quality", visualTitleCaptionQualityProblems(embeddedVisualSpecs), embeddedVisualSpecs.length === 0);
+  }
+
   return results;
 }
 
@@ -3101,6 +3356,56 @@ function coverageModeSection(markdown: string, heading: string): string {
   return next >= 0 ? rest.slice(0, next) : rest;
 }
 
+function sourceCoverageFinalArtifactConsistencyProblems(
+  gardenDir: string,
+  embeddedVisualSpecs: Array<{ page: PageFile; spec: Record<string, unknown> }>,
+): string[] {
+  const coverage = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"));
+  if (!coverage) return [];
+  const usedInteractive = coverageModeSection(coverage, "Used as Interactive Grounding");
+  const problems: string[] = [];
+  const visualAnchors = new Map<string, Set<string>>();
+  for (const { page, spec } of embeddedVisualSpecs) {
+    const id = String(spec.id ?? "").trim();
+    if (!id) continue;
+    visualAnchors.set(id, new Set(visualAnchorIds(spec)));
+    for (const anchor of visualAnchorIds(spec)) {
+      const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (!new RegExp(`\\b${escaped}\\b`, "i").test(usedInteractive)) {
+        problems.push(`${id}: final visual JSON uses ${anchor}, but Source Coverage omits it from "Used as Interactive Grounding" (${page.relPath})`);
+      }
+    }
+  }
+  const visualDir = path.join(gardenDir, ".breadboard", "visuals");
+  if (fs.existsSync(visualDir)) {
+    for (const name of fs.readdirSync(visualDir)) {
+      if (!name.endsWith(".json")) continue;
+      let spec: Record<string, unknown> = {};
+      try {
+        spec = JSON.parse(fs.readFileSync(path.join(visualDir, name), "utf-8"));
+      } catch {
+        continue;
+      }
+      const id = String(spec.id ?? name.replace(/\.json$/i, "")).trim();
+      if (!id || visualAnchors.has(id)) continue;
+      visualAnchors.set(id, new Set(visualAnchorIds(spec)));
+    }
+  }
+  for (const line of usedInteractive.split(/\r?\n/)) {
+    const anchors = [...line.matchAll(/\bS\d+\.P\d+\.[A-Z]\d+\b|\btext-[a-z0-9-]+\b/gi)].map((match) => match[0]);
+    if (anchors.length === 0) continue;
+    const visualId = [...visualAnchors.keys()].find((id) => id && line.includes(id));
+    if (!visualId) continue;
+    const actual = visualAnchors.get(visualId) ?? new Set<string>();
+    for (const anchor of anchors) {
+      if (!actual.has(anchor)) {
+        problems.push(`Source Coverage claims visual ${visualId} uses ${anchor}, but final visual JSON does not`);
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
 function sourceCoverageModePrecisionProblems(gardenDir: string, ledger: Array<Record<string, unknown>>): string[] {
   const problems: string[] = [];
   const coverage = readIfExists(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"));
@@ -3394,9 +3699,17 @@ export function writeValidationReport(
     "",
     "See checks 34 and 38.",
     "",
+    "## Section Index Prose Quality",
+    "",
+    "See check 59.",
+    "",
     "## Interactive Visual Grounding",
     "",
     "See checks 23 and 39.",
+    "",
+    "## Learner-Facing Scaffold Prose",
+    "",
+    "See check 3 and check 59.",
     "",
     "## Source Map Consistency",
     "",
@@ -3465,6 +3778,18 @@ export function writeValidationReport(
     "## Source Text Concept Anchors",
     "",
     "See check 50.",
+    "",
+    "## Contract/Page Source Anchor Synchronization",
+    "",
+    "See check 61.",
+    "",
+    "## Source Coverage / Final Artifact Consistency",
+    "",
+    "See check 62.",
+    "",
+    "## Visual Title and Caption Quality",
+    "",
+    "See check 63.",
     "",
     "## Zettelkasten Tags",
     "",

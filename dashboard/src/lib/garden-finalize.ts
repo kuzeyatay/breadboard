@@ -179,20 +179,52 @@ interface LearningUnitContractArtifact {
   foundPath?: string;
 }
 
+type SourceTextConceptAnchorKind =
+  | "definition"
+  | "mechanism"
+  | "method"
+  | "limitation"
+  | "application"
+  | "recommendation"
+  | "comparison"
+  | "result_interpretation"
+  | "concept";
+
+interface SourceTextConceptAnchor {
+  id: string;
+  sourceId: string;
+  page?: number;
+  kind: SourceTextConceptAnchorKind;
+  title: string;
+  exactText?: string;
+  semanticSummary: string;
+  conceptKeywords: string[];
+  confidence: number;
+}
+
 export type FinalizerAction =
   | { kind: "mechanical_fix"; description: string; filePath: string }
   | { kind: "semantic_failure"; description: string; unitId?: string; pagePath?: string; repairPrompt: string };
 
-export type UnitRepairFailureType =
+export type RepairFailureType =
   | "repeated_opening"
+  | "scaffold_prose"
+  | "section_index_prose"
+  | "zettelkasten_handle_support"
   | "formula_grounding"
   | "visual_grounding"
-  | "zettelkasten_handle"
+  | "source_caveat"
   | "section_semantics"
+  // Legacy/internal routing names still collapse to the policy groups above.
+  | "zettelkasten_handle"
   | "contract_fulfillment"
   | "semantic_navigation"
   | "source_text_anchor"
   | "unknown_semantic_failure";
+
+export type UnitRepairFailureType = RepairFailureType;
+export type RepairExecutorPreference = "model_first" | "deterministic_allowed";
+export type ModelRepairStatus = "attempted" | "used" | "skipped" | "unavailable";
 
 export interface UnitRepairRequest {
   unitId: string;
@@ -265,6 +297,9 @@ export interface UnitRepairLogEntry {
   // Executor provenance — never hide fallback behavior.
   executorAttempted: RepairExecutorKind[];
   executorUsed: RepairExecutorKind | "none";
+  executorPreference: RepairExecutorPreference;
+  modelRepairStatus: ModelRepairStatus;
+  naturalProseValidation?: "pass" | "fail" | "not_applicable";
   modelFailureReason?: string;
 }
 
@@ -285,6 +320,8 @@ export interface LearningUnitRepairRunReport {
   repairs: UnitRepairLogEntry[];
   executions: RepairExecutionResult[];
   changedFiles: string[];
+  contractChangedFiles?: Array<{ file: string; affectedUnits: string[] }>;
+  finalizerChangedFiles?: string[];
   semanticFinalizerActions: FinalizerAction[];
   firstValidationFailures: string[];
   finalValidationFailures: string[];
@@ -357,6 +394,90 @@ function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifa
 
 function cleanText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function sourceAnchorLedgerPath(gardenDir: string): string {
+  return path.join(gardenDir, ".breadboard", "source-anchors.json");
+}
+
+function sourceTextAnchorKind(value: unknown): SourceTextConceptAnchorKind {
+  const raw = cleanText(value).replace(/[\s-]+/g, "_");
+  return [
+    "definition",
+    "mechanism",
+    "method",
+    "limitation",
+    "application",
+    "recommendation",
+    "comparison",
+    "result_interpretation",
+    "concept",
+  ].includes(raw) ? raw as SourceTextConceptAnchorKind : "concept";
+}
+
+function normalizeSourceTextAnchor(value: SourceTextConceptAnchor): SourceTextConceptAnchor {
+  return {
+    id: cleanText(value.id),
+    sourceId: cleanText(value.sourceId) || "source",
+    ...(Number.isFinite(value.page) && value.page ? { page: Number(value.page) } : {}),
+    kind: sourceTextAnchorKind(value.kind),
+    title: cleanText(value.title) || cleanText(value.id),
+    ...(cleanText(value.exactText) ? { exactText: cleanText(value.exactText) } : {}),
+    semanticSummary: cleanText(value.semanticSummary) || cleanText(value.title) || cleanText(value.id),
+    conceptKeywords: [...new Set((value.conceptKeywords ?? []).map(cleanText).filter(Boolean))].slice(0, 12),
+    confidence: Math.max(0, Math.min(1, Number.isFinite(value.confidence) ? value.confidence : 0.7)),
+  };
+}
+
+function readSourceAnchorLedger(gardenDir: string): SourceTextConceptAnchor[] {
+  const parsed = readJson<unknown>(sourceAnchorLedgerPath(gardenDir), []);
+  const record = asObject(parsed);
+  const raw = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(record.sourceTextConceptAnchors)
+      ? record.sourceTextConceptAnchors
+      : Array.isArray(record.anchors)
+        ? record.anchors
+        : [];
+  const anchors: SourceTextConceptAnchor[] = [];
+  for (const item of raw) {
+    const row = asObject(item);
+    const id = stringField(row.id ?? row.textAnchorId);
+    if (!id) continue;
+    anchors.push(normalizeSourceTextAnchor({
+      id,
+      sourceId: stringField(row.sourceId),
+      page: typeof row.page === "number" ? row.page : Number.parseInt(stringField(row.page), 10) || undefined,
+      kind: sourceTextAnchorKind(row.kind),
+      title: stringField(row.title),
+      exactText: stringField(row.exactText),
+      semanticSummary: stringField(row.semanticSummary ?? row.description),
+      conceptKeywords: Array.isArray(row.conceptKeywords) ? row.conceptKeywords.map(stringField).filter(Boolean) : [],
+      confidence: typeof row.confidence === "number" ? row.confidence : 0.7,
+    }));
+  }
+  return anchors;
+}
+
+function writeSourceAnchorLedger(gardenDir: string, anchors: SourceTextConceptAnchor[], report: FinalizeReport): void {
+  const deduped = new Map<string, SourceTextConceptAnchor>();
+  for (const anchor of anchors) {
+    const normalized = normalizeSourceTextAnchor(anchor);
+    if (normalized.id) deduped.set(normalized.id, normalized);
+  }
+  const content = `${JSON.stringify({ sourceTextConceptAnchors: [...deduped.values()].sort((a, b) => a.id.localeCompare(b.id)) }, null, 2)}\n`;
+  const target = sourceAnchorLedgerPath(gardenDir);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf-8") : "";
+  if (existing === content) return;
+  fs.writeFileSync(target, content, "utf-8");
+  if (!report.changed.includes(".breadboard/source-anchors.json")) report.changed.push(".breadboard/source-anchors.json");
+}
+
+function registerSourceTextAnchor(gardenDir: string, anchor: SourceTextConceptAnchor, report: FinalizeReport): void {
+  const anchors = readSourceAnchorLedger(gardenDir);
+  anchors.push(anchor);
+  writeSourceAnchorLedger(gardenDir, anchors, report);
 }
 
 function arraysEqual(a: string[], b: string[]): boolean {
@@ -648,7 +769,7 @@ export function pageRole(title: string): PageRole {
   if (/application|hardware|deployment|neuromorphic|tradeoffs suggest/.test(text)) return "application";
   if (/multi-metric|evaluation|metric|accuracy|latency/.test(text)) return "metric";
   if (/neuron model|leaky|\blif\b/.test(text)) return "lif";
-  if (/training|paradigm|surrogate|plasticity/.test(text)) return "training";
+  if (/training|paradigm|surrogate|plasticity|\blearn\b|conversion|stdp/.test(text)) return "training";
   if (/what spiking neural networks are|what .*networks are|spiking neural networks are/.test(text)) return "basic_def";
   if (/from conventional|conventional neural networks|introduction|why spiking|to snns/.test(text)) return "intro";
   return "generic";
@@ -759,6 +880,10 @@ function visualSpecAnchorIds(spec: Record<string, unknown>): string[] {
   return [...new Set(ids)];
 }
 
+function visualSpecTextAnchorIds(spec: Record<string, unknown>): string[] {
+  return visualSpecAnchorIds(spec).filter((id) => /^text-/i.test(id));
+}
+
 function visualSpecAnchorRecords(spec: Record<string, unknown>): Array<Record<string, unknown>> {
   const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors : [];
   return anchors.filter((anchor): anchor is Record<string, unknown> => Boolean(anchor) && typeof anchor === "object");
@@ -845,6 +970,13 @@ const METRIC_CALCULATOR_LABELS: Record<MetricCalculatorFamily, string> = {
   convergence: "convergence time",
 };
 
+function titleCaseMetricLabel(label: string): string {
+  return label
+    .split(/\s+/)
+    .map((word) => word.toUpperCase() === word ? word : `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
 const METRIC_CALCULATOR_PATTERNS: Record<MetricCalculatorFamily, RegExp> = {
   accuracy: /\baccuracy\b|\bcorrect predictions?\b|\.E1\b/i,
   latency: /\blatency\b|\bdecision time\b|\.E2\b/i,
@@ -899,6 +1031,97 @@ function roleForMetricAnchorFamily(family: string | null, targetFamilies: Set<st
   return "context";
 }
 
+const VISUAL_ANCHOR_ROLE_RE = /^(input|output_formula|comparison_basis|context)$/;
+
+function metricFamilyDisplayName(family: string | null): string {
+  if (!family) return "this source formula";
+  if (family in METRIC_CALCULATOR_LABELS) return METRIC_CALCULATOR_LABELS[family as MetricCalculatorFamily];
+  return family.replace(/-/g, " ");
+}
+
+function visualSpecFamilyText(spec: Record<string, unknown>): string {
+  return [
+    spec.title,
+    spec.caption,
+    spec.pedagogicalPurpose,
+    spec.learningGoal,
+    Array.isArray(spec.conceptTargets) ? spec.conceptTargets.join(" ") : "",
+    Array.isArray(spec.inputs) ? spec.inputs.join(" ") : "",
+    Array.isArray(spec.outputs) ? spec.outputs.join(" ") : "",
+    Array.isArray(spec.controls)
+      ? spec.controls.map((control) => typeof control === "object" && control ? Object.values(control as Record<string, unknown>).join(" ") : "").join(" ")
+      : "",
+  ].filter(Boolean).join(" ");
+}
+
+function visualAnchorRoleReason({
+  type,
+  role,
+  family,
+  targetFamilies,
+}: {
+  type: string;
+  role: "input" | "output_formula" | "comparison_basis" | "context";
+  family: string | null;
+  targetFamilies: Set<string>;
+}): string {
+  const label = metricFamilyDisplayName(family);
+  const targets = [...targetFamilies].map(metricFamilyDisplayName).join(", ") || "the selected metric";
+  if (type === "tradeoff_explorer" || role === "comparison_basis") {
+    return `This formula defines ${label}, one source metric used by the visual's tradeoff comparison.`;
+  }
+  if (role === "output_formula") {
+    return `This formula is the source definition for the visual's ${label} output.`;
+  }
+  if (role === "input") {
+    return `This formula supplies ${label} as an input relationship for computing ${targets}.`;
+  }
+  return `This formula provides source context for interpreting ${targets} in the visual.`;
+}
+
+function normalizeVisualAnchorRolesAndReasons(spec: Record<string, unknown>, contextText: string): boolean {
+  const type = String(spec.type ?? "");
+  if (type !== "metric_calculator" && type !== "tradeoff_explorer") return false;
+  const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors : [];
+  if (anchors.length === 0) return false;
+
+  const expectedFamilies = new Set<string>(metricCalculatorFamiliesForText(contextText));
+  for (const anchor of anchors) {
+    const family = formulaFamilyForVisualAnchor(anchor);
+    if (family && expectedFamilies.size === 0) expectedFamilies.add(family);
+  }
+
+  let changed = false;
+  const normalized = anchors.map((anchor) => {
+    if (!anchor || typeof anchor !== "object") return anchor;
+    const record = { ...(anchor as Record<string, unknown>) };
+    const id = String(record.equationId ?? "").trim();
+    if (!/^S\d+\.P\d+\.E\d+$/i.test(id)) return record;
+
+    const family = formulaFamilyForVisualAnchor(record);
+    const desiredRole = type === "tradeoff_explorer"
+      ? "comparison_basis"
+      : roleForMetricAnchorFamily(family, expectedFamilies);
+    const existingRole = String(record.role ?? "").trim();
+    const role = VISUAL_ANCHOR_ROLE_RE.test(existingRole)
+      ? existingRole as "input" | "output_formula" | "comparison_basis" | "context"
+      : desiredRole;
+    if (record.role !== role) {
+      record.role = role;
+      changed = true;
+    }
+    const reason = String(record.reason ?? "").trim();
+    if (reason.length < 12) {
+      record.reason = visualAnchorRoleReason({ type, role, family, targetFamilies: expectedFamilies });
+      changed = true;
+    }
+    return record;
+  });
+
+  if (changed) spec.sourceAnchors = normalized;
+  return changed;
+}
+
 function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText: string): boolean {
   if (String(spec.type ?? "") !== "metric_calculator") return false;
   const families = metricCalculatorFamiliesForText(contextText);
@@ -910,13 +1133,14 @@ function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText:
     }
   }
   const labels = families.map((family) => METRIC_CALCULATOR_LABELS[family]);
-  spec.title = labels.length === 1 ? `${labels[0]} Calculator` : `${labels.join(" and ")} Calculator`;
+  const titleLabels = labels.map(titleCaseMetricLabel);
+  spec.title = titleLabels.length === 1 ? `${titleLabels[0]} Calculator` : `${titleLabels.join(" and ")} Calculator`;
   spec.controls = [...controlsByName.values()];
   spec.inputs = [...controlsByName.values()].map((control) => String(control.label ?? "").toLowerCase()).filter(Boolean);
   spec.outputs = labels;
   spec.conceptTargets = labels;
-  spec.pedagogicalPurpose = `Let the learner manipulate inputs for ${labels.join(", ")} on this lesson instead of a generic all-metric calculator.`;
-  spec.caption = `This calculator focuses on ${labels.join(", ")} for this page.`;
+  spec.pedagogicalPurpose = `Let the learner manipulate inputs for ${labels.join(", ")} and observe how the selected metric responds.`;
+  spec.caption = `Adjust the controls to see how ${labels.join(", ")} changes with the chosen inputs.`;
   spec.regenerationPrompt = `Regenerate this metric calculator so its controls and readouts focus only on ${labels.join(", ")}.`;
   if (Array.isArray(spec.sourceAnchors)) {
     const allowed = new Set<string>(families);
@@ -946,6 +1170,25 @@ function focusMetricCalculatorRecord(spec: Record<string, unknown>, contextText:
     });
   }
   return true;
+}
+
+function repairVisualAnchorRolesAndReasons(gardenDir: string, learnerPages: LearnerPage[], report: FinalizeReport): void {
+  for (const page of learnerPages) {
+    const contextText = [
+      page.title,
+      ...fmGetArray(page.rawFm, "sourceAnchors"),
+      ...fmGetArray(page.rawFm, "sourceVisualIds"),
+      ...fmGetArray(page.rawFm, "sourceFormulaAnchors"),
+      ...formulaEntrySourceAnchors(page.rawFm),
+    ].join(" ");
+    rewriteEmbeddedVisualSpecs(page, (spec) => {
+      const changed = normalizeVisualAnchorRolesAndReasons(spec, `${contextText} ${visualSpecFamilyText(spec)}`);
+      if (!changed) return false;
+      saveVisualSpecArtifact(gardenDir, spec, report);
+      report.notes.push(`added visual anchor roles for ${String(spec.id ?? "(missing id)")} on ${page.rel}`);
+      return true;
+    });
+  }
 }
 
 function repairMetricCalculatorFocus(gardenDir: string, learnerPages: LearnerPage[], report: FinalizeReport): void {
@@ -1120,6 +1363,12 @@ export function finalizeGardenExport({
   // finalization. The finalizer only performs deterministic export hygiene:
   // filesystem cleanup, source/link normalization, stale-caveat removal,
   // path/label alignment, validation reporting, and hard gating.
+  regroundFormulas({ ledger, learnerPages, report });
+  repairLearnerAcronymGrammar(learnerPages, report);
+  repairSourceVisualImagePathCasing(gardenDir, learnerPages, report);
+  repairVisualAnchorRolesAndReasons(gardenDir, learnerPages, report);
+  synchronizePageVisualTextAnchors(learnerPages, report);
+  pruneOrphanSemanticRepairProvenance(gardenDir, learnerPages, report);
 
   // --- Persist learner-page edits --------------------------------------------
   for (const page of learnerPages) {
@@ -1130,6 +1379,12 @@ export function finalizeGardenExport({
   }
   alignSectionFoldersWithTitles(gardenDir, report);
   repairSectionNavigationLabels(gardenDir, report);
+  repairSectionIndexProse(gardenDir, report);
+  const finalLearnerPages = loadLearnerPages(gardenDir);
+  const finalContract = readLearningUnitContract(gardenDir);
+  registerExistingTextAnchors(gardenDir, finalLearnerPages, new Map(finalContract.units.map((unit) => [unit.id, unit])), report);
+  synchronizeContractSourceAnchors(gardenDir, finalContract, finalLearnerPages, report);
+  regenerateSourceCoverageFromFinalState(gardenDir, ledger, report);
 
   // --- Pass K: validation report + critical gate -----------------------------
   writeFinalizeValidationReport({ gardenDir, gardenSlug, report });
@@ -1261,10 +1516,15 @@ function emptyFinalizeReport(): FinalizeReport {
 
 function semanticFailureType(checkName: string): UnitRepairFailureType | null {
   const name = checkName.toLowerCase();
+  if (name.includes("scaffold prose")) return "scaffold_prose";
+  if (name.includes("section index prose")) return "section_index_prose";
   if (name.includes("repetition") || name.includes("opening")) return "repeated_opening";
   if (name.includes("formula")) return "formula_grounding";
   if (name.includes("visual") && !name.includes("source crop")) return "visual_grounding";
   if (name.includes("source text concept")) return "source_text_anchor";
+  if (name.includes("source map caveat")) return "source_caveat";
+  if (name.includes("source coverage / final artifact")) return "visual_grounding";
+  if (name.includes("zettelkasten handle quality") || name.includes("zettelkasten handle naturalness")) return "zettelkasten_handle_support";
   if (name.includes("zettelkasten")) return "zettelkasten_handle";
   if (name.includes("section")) return "section_semantics";
   if (name.includes("contract")) return "contract_fulfillment";
@@ -1277,7 +1537,7 @@ function shouldRouteToUnitRepair(checkName: string): boolean {
   if (!type) return false;
   // Link normalization is finalizer hygiene. The semantic repair loop owns page
   // substance, not the mechanical target family of overview/index links.
-  if (type === "semantic_navigation") return false;
+  if (type === "semantic_navigation" || type === "source_caveat") return false;
   return true;
 }
 
@@ -1372,9 +1632,16 @@ function sourceAnchorsForRepair(page: LearnerPage): SourceAnchor[] {
 function repairRequiredChanges(type: UnitRepairFailureType, problem: string): string[] {
   switch (type) {
     case "repeated_opening":
+    case "scaffold_prose":
       return [
         "Rewrite only the opening 2-4 paragraphs so this page continues from prior units instead of restarting the global motivation.",
+        "Remove repair-scaffold phrases and replace them with finished learner-facing textbook prose.",
         "Keep required source anchors, formulas, tables, figures, visual blocks, and contract-backed Zettelkasten handles in place.",
+      ];
+    case "section_index_prose":
+      return [
+        "Rewrite the section index body as polished learner-facing prose that summarizes the actual pages in the section.",
+        "Avoid template text, lowercase acronyms, and grammar errors such as 'SNNs learns'.",
       ];
     case "formula_grounding":
       return [
@@ -1392,9 +1659,15 @@ function repairRequiredChanges(type: UnitRepairFailureType, problem: string): st
         "If no direct anchor exists, keep conceptual-no-direct-source-figure with a precise justification.",
       ];
     case "zettelkasten_handle":
+    case "zettelkasten_handle_support":
       return [
         "Repair LearningUnitContract.zettelNotes handles first, then update page tags from the contract.",
         "Ensure the page prose supports the repaired atomic handles rather than adding fallback generic tags.",
+      ];
+    case "source_caveat":
+      return [
+        "Remove stale source-availability caveats that contradict extracted source text, formula anchors, table anchors, or later pages.",
+        "If a crop was unreliable, describe the crop-quality limitation without saying source text or formulas are unavailable.",
       ];
     case "section_semantics":
       return [
@@ -1560,14 +1833,7 @@ function fmSetLastSemanticRepair(
   rawFm: string,
   value: { repairedAt: string; repairType: RepairExecutorKind; failureTypes: string[]; repairRequestId: string },
 ): string {
-  const lines = rawFm.split(/\r?\n/);
-  const start = lines.findIndex((line) => /^lastSemanticRepair:\s*/.test(line));
-  let stripped = rawFm;
-  if (start >= 0) {
-    let end = start + 1;
-    while (end < lines.length && /^\s+/.test(lines[end])) end += 1;
-    stripped = [...lines.slice(0, start), ...lines.slice(end)].join("\n");
-  }
+  const stripped = fmRemoveBlock(rawFm, "lastSemanticRepair");
   const block = [
     "lastSemanticRepair:",
     `  repairedAt: ${jsonScalar(value.repairedAt)}`,
@@ -1583,6 +1849,17 @@ function fmSetLastSemanticRepair(
     return strippedLines.join("\n");
   }
   return `${stripped.replace(/\s+$/, "")}\n${block}`;
+}
+
+/** Remove a nested `key:` frontmatter block (the key line plus its indented
+ * children). */
+function fmRemoveBlock(rawFm: string, key: string): string {
+  const lines = rawFm.split(/\r?\n/);
+  const start = lines.findIndex((line) => new RegExp(`^${key}:\\s*`).test(line));
+  if (start < 0) return rawFm;
+  let end = start + 1;
+  while (end < lines.length && /^\s+/.test(lines[end])) end += 1;
+  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
 }
 
 function markSemanticRepairProvenance(
@@ -1622,12 +1899,34 @@ function validationFailuresFromChecks(checks: FinalizeCheck[]): string[] {
 // for real by the finalizer's critical gate once the log exists.
 const REPAIR_BOOKKEEPING_CHECKS = new Set(["Repair Provenance", "Finalizer semantic boundary"]);
 
+const SECTION_ONLY_REPAIR_TYPES = new Set(["section_index_prose", "section_semantics"]);
+
+function requestHasPageScopedFailure(request: UnitRepairRequest): boolean {
+  return request.failureTypes.some((type) => !SECTION_ONLY_REPAIR_TYPES.has(type));
+}
+
+function validationFailureAppliesToRequest(failure: string, request: UnitRepairRequest): boolean {
+  const pageScoped = requestHasPageScopedFailure(request);
+  if (pageScoped && failure.includes(request.pagePath)) return true;
+  if (pageScoped && (failure.includes(`unit "${request.unitId}"`) || failure.includes(`unit ${request.unitId}`))) return true;
+
+  if (request.failureTypes.includes("section_index_prose")) {
+    const sectionIndexPath = `${request.sectionPath}/_index.md`;
+    if (failure.includes(sectionIndexPath)) return true;
+    if (/Section Index Prose/i.test(failure) && failure.includes(request.sectionPath)) return true;
+  }
+
+  if (request.failureTypes.includes("section_semantics")) {
+    if (failure.includes(request.sectionPath)) return true;
+    if (/Section semantic coherence/i.test(failure) && failure.includes(path.basename(request.sectionPath))) return true;
+  }
+
+  return false;
+}
+
 function unresolvedErrorsForRequest(checks: FinalizeCheck[], request: UnitRepairRequest): string[] {
   return validationFailuresFromChecks(checks.filter((check) => !REPAIR_BOOKKEEPING_CHECKS.has(check.name))).filter((failure) =>
-    failure.includes(request.pagePath) ||
-    failure.includes(request.sectionPath) ||
-    failure.includes(`unit "${request.unitId}"`) ||
-    failure.includes(`unit ${request.unitId}`),
+    validationFailureAppliesToRequest(failure, request),
   );
 }
 
@@ -1662,19 +1961,19 @@ function writeRepairArtifacts(gardenDir: string, report: LearningUnitRepairRunRe
     "",
     "## Repaired Units",
     "",
-    "| Unit | Page | Failure | Executor Used | Executor Attempted | Result |",
-    "|---|---|---|---|---|---|",
+    "| Unit | Page | Failure | Executor Used | Model Status | Natural Prose | Result |",
+    "|---|---|---|---|---|---|---|",
     ...(report.repairs.length > 0
       ? report.repairs.map((entry) =>
-          `| ${entry.unitId} | ${entry.pagePath} | ${entry.failureTypes.join(", ")} | ${entry.executorUsed} | ${entry.executorAttempted.join(", ") || "none"} | ${entry.result} |`,
+          `| ${entry.unitId} | ${entry.pagePath} | ${entry.failureTypes.join(", ")} | ${entry.executorUsed} | ${entry.modelRepairStatus} | ${entry.naturalProseValidation ?? "not_applicable"} | ${entry.result} |`,
         )
-      : ["| None | None | None | None | None | not_applicable |"]),
+      : ["| None | None | None | None | None | None | not_applicable |"]),
     "",
     "## Executor Provenance",
     "",
     ...(report.repairs.length > 0
       ? report.repairs.flatMap((entry) => [
-          `- ${entry.pagePath}: attempted [${entry.executorAttempted.join(", ") || "none"}], used ${entry.executorUsed}${entry.modelFailureReason ? ` (model fell back: ${entry.modelFailureReason})` : ""}`,
+          `- ${entry.pagePath}: preference ${entry.executorPreference}, attempted [${entry.executorAttempted.join(", ") || "none"}], used ${entry.executorUsed}, model ${entry.modelRepairStatus}, natural prose ${entry.naturalProseValidation ?? "not_applicable"}${entry.modelFailureReason ? ` (model fell back: ${entry.modelFailureReason})` : ""}`,
         ])
       : ["- None."]),
     "",
@@ -1694,6 +1993,20 @@ function writeRepairArtifacts(gardenDir: string, report: LearningUnitRepairRunRe
           "",
         ])
       : ["- None.", ""]),
+    "## Contract Changed Files",
+    "",
+    ...((report.contractChangedFiles ?? []).length > 0
+      ? (report.contractChangedFiles ?? []).map((entry) =>
+          `- ${entry.file}${entry.affectedUnits.length > 0 ? ` (affected units: ${entry.affectedUnits.join(", ")})` : ""}`,
+        )
+      : ["- None."]),
+    "",
+    "## Finalizer Changed Files",
+    "",
+    ...((report.finalizerChangedFiles ?? []).length > 0
+      ? (report.finalizerChangedFiles ?? []).map((file) => `- ${file}`)
+      : ["- None."]),
+    "",
     "## Semantic Finalizer Actions",
     "",
     ...(report.semanticFinalizerActions.length > 0
@@ -1744,6 +2057,73 @@ function mergeRequestsForPage(pageRequests: UnitRepairRequest[]): UnitRepairRequ
     validationErrors: [...new Set(pageRequests.flatMap((request) => request.validationErrors))],
     requiredChanges: [...new Set(pageRequests.flatMap((request) => request.requiredChanges))],
   };
+}
+
+const PROSE_REPAIR_TYPES = new Set<string>([
+  "repeated_opening",
+  "scaffold_prose",
+  "section_index_prose",
+  "zettelkasten_handle_support",
+]);
+
+const PAGE_PROSE_REPAIR_TYPES = new Set<string>([
+  "repeated_opening",
+  "scaffold_prose",
+  "zettelkasten_handle_support",
+]);
+
+function repairExecutorPreference(failureTypes: string[]): RepairExecutorPreference {
+  return failureTypes.some((type) => PROSE_REPAIR_TYPES.has(type)) ? "model_first" : "deterministic_allowed";
+}
+
+function modelRepairStatusFor({
+  request,
+  attempted,
+  used,
+  wantModel,
+}: {
+  request: UnitRepairRequest;
+  attempted: RepairExecutorKind[];
+  used: RepairExecutorKind | "none";
+  wantModel: boolean;
+}): ModelRepairStatus {
+  if (used === "model") return "used";
+  if (attempted.includes("model")) return "attempted";
+  if (repairExecutorPreference(request.failureTypes) === "model_first" && !wantModel) return "unavailable";
+  return "skipped";
+}
+
+function changedFilesForRequest(
+  request: UnitRepairRequest,
+  changedFiles: string[],
+  page?: LearnerPage,
+): string[] {
+  const ownedVisualIds = new Set<string>();
+  if (page) {
+    for (const id of fmGetArray(page.rawFm, "visualIds")) ownedVisualIds.add(id);
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      const id = String(spec.id ?? "").trim();
+      if (id) ownedVisualIds.add(id);
+    }
+  }
+  const allowContract = request.failureTypes.some((type) =>
+    ["zettelkasten_handle", "zettelkasten_handle_support", "contract_fulfillment", "source_text_anchor"].includes(type),
+  );
+  const allowCoverage = request.failureTypes.some((type) => ["visual_grounding", "source_text_anchor"].includes(type));
+  const allowSourceAnchors = request.failureTypes.includes("source_text_anchor");
+  return changedFiles.filter((file) => {
+    if (file === request.pagePath) return true;
+    if (file === `${request.sectionPath}/_index.md`) return true;
+    if (request.failureTypes.includes("section_semantics") && (file === "learning/_index.md" || file === "learning/Learning Map.md")) return true;
+    if (allowContract && file === ".breadboard/learning-unit-contract.json") return true;
+    if (allowCoverage && file === ".breadboard/planning/Source Coverage.md") return true;
+    if (allowSourceAnchors && file === ".breadboard/source-anchors.json") return true;
+    if (file.startsWith(".breadboard/visuals/")) {
+      const visualId = file.match(/^\.breadboard\/visuals\/(.+)\.json$/)?.[1] ?? "";
+      return ownedVisualIds.has(visualId);
+    }
+    return false;
+  });
 }
 
 /** Visual spec ids a repaired page is allowed to touch: those declared in
@@ -2044,11 +2424,17 @@ export async function repairLearningUnitsFromContract({
       synchronizeContractZettelHandles(gardenDir, contract, deterministicPages, repairReport);
       const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
       repairSectionSemanticTitles(gardenDir, allPages, unitsById, repairReport);
+      repairSectionIndexProse(gardenDir, repairReport);
       repairSourceTextConceptAnchors(gardenDir, deterministicPages, repairReport);
       repairLearningUnitSourceTextAnchors(gardenDir, deterministicPages, unitsById, repairReport);
+      registerExistingTextAnchors(gardenDir, deterministicPages, unitsById, repairReport);
+      synchronizeContractSourceAnchors(gardenDir, contract, deterministicPages, repairReport);
       repairMetricCalculatorFocus(gardenDir, deterministicPages, repairReport);
+      repairVisualAnchorRolesAndReasons(gardenDir, deterministicPages, repairReport);
       regroundFormulas({ ledger, learnerPages: deterministicPages, report: repairReport });
       removeRepeatedMotivation(deterministicPages, repairReport);
+      repairLearnerAcronymGrammar(deterministicPages, repairReport);
+      repairSourceVisualImagePathCasing(gardenDir, deterministicPages, repairReport);
       writeDirtyLearnerPages(deterministicPages, repairReport);
       alignSectionFoldersWithTitles(gardenDir, repairReport);
       repairSectionNavigationLabels(gardenDir, repairReport);
@@ -2071,10 +2457,33 @@ export async function repairLearningUnitsFromContract({
     writeDirtyLearnerPages(finalPages, repairReport);
   }
 
+  const pagesForAnchorSync = loadLearnerPages(gardenDir);
+  const contractForAnchorSync = readLearningUnitContract(gardenDir);
+  const unitsForAnchorSync = new Map(contractForAnchorSync.units.map((unit) => [unit.id, unit]));
+  regroundFormulas(
+    { ledger: readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []), learnerPages: pagesForAnchorSync, report: repairReport },
+  );
+  repairLearnerAcronymGrammar(pagesForAnchorSync, repairReport);
+  repairSourceVisualImagePathCasing(gardenDir, pagesForAnchorSync, repairReport);
+  repairVisualAnchorRolesAndReasons(gardenDir, pagesForAnchorSync, repairReport);
+  synchronizePageVisualTextAnchors(pagesForAnchorSync, repairReport);
+  writeDirtyLearnerPages(pagesForAnchorSync, repairReport);
+  registerExistingTextAnchors(gardenDir, pagesForAnchorSync, unitsForAnchorSync, repairReport);
+  synchronizeContractSourceAnchors(gardenDir, contractForAnchorSync, pagesForAnchorSync, repairReport);
+  regenerateSourceCoverageFromFinalState(
+    gardenDir,
+    readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []),
+    repairReport,
+  );
   const finalChecks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
+  const finalPageByRel = new Map(loadLearnerPages(gardenDir).map((page) => [page.rel, page]));
   const changedFiles = [...new Set(repairReport.changed.filter((file) => !changedBefore.has(file)))].sort();
   const repairs: UnitRepairLogEntry[] = requests.map((request) => {
     const unresolved = unresolvedErrorsForRequest(finalChecks, request);
+    const attempted = attemptedByPage.get(request.pagePath) ?? [];
+    const used = usedByPage.get(request.pagePath) ?? "none";
+    const finalPage = finalPageByRel.get(request.pagePath);
+    const isPageProseRepair = request.failureTypes.some((type) => PAGE_PROSE_REPAIR_TYPES.has(type));
     return {
       unitId: request.unitId,
       pagePath: request.pagePath,
@@ -2083,15 +2492,34 @@ export async function repairLearningUnitsFromContract({
       validationErrors: request.validationErrors,
       requiredChanges: request.requiredChanges,
       repairType: "contract_driven_revision",
-      changedFiles: changedFiles.filter((file) => file === request.pagePath || file.startsWith(`${request.sectionPath}/`) || file.startsWith(".breadboard/")),
+      changedFiles: changedFilesForRequest(request, changedFiles, finalPage),
       result: unresolved.length === 0 ? "resolved" : "unresolved",
       unresolvedValidationErrors: unresolved,
       repairedAt,
-      executorAttempted: attemptedByPage.get(request.pagePath) ?? [],
-      executorUsed: usedByPage.get(request.pagePath) ?? "none",
+      executorAttempted: attempted,
+      executorUsed: used,
+      executorPreference: repairExecutorPreference(request.failureTypes),
+      modelRepairStatus: modelRepairStatusFor({ request, attempted, used, wantModel }),
+      naturalProseValidation: isPageProseRepair && finalPage ? naturalProseValidationForPage(finalPage) : "not_applicable",
       modelFailureReason: modelFailureByPage.get(request.pagePath),
     };
   });
+  const perRequestChangedFiles = new Set(repairs.flatMap((repair) => repair.changedFiles));
+  const contractFile = ".breadboard/learning-unit-contract.json";
+  const contractAffectedUnits = new Set(
+    repairs
+      .filter((repair) => repair.changedFiles.includes(contractFile))
+      .map((repair) => repair.unitId),
+  );
+  if (changedFiles.includes(contractFile) && contractAffectedUnits.size === 0) {
+    for (const request of requests) contractAffectedUnits.add(request.unitId);
+  }
+  const contractChangedFiles = changedFiles.includes(contractFile)
+    ? [{ file: contractFile, affectedUnits: [...contractAffectedUnits].sort() }]
+    : [];
+  const finalizerChangedFiles = changedFiles
+    .filter((file) => file !== contractFile && !perRequestChangedFiles.has(file))
+    .sort();
   const runReport: LearningUnitRepairRunReport = {
     requestedAt,
     gardenSlug,
@@ -2100,6 +2528,8 @@ export async function repairLearningUnitsFromContract({
     repairs,
     executions,
     changedFiles,
+    contractChangedFiles,
+    finalizerChangedFiles,
     semanticFinalizerActions: semanticFailureActionsForRequests(requests),
     firstValidationFailures: validationFailuresFromChecks(firstChecks),
     finalValidationFailures: validationFailuresFromChecks(finalChecks),
@@ -2193,6 +2623,8 @@ export function verifyFinalArtifactNoMutation({
       repairs: [],
       executions: [],
       changedFiles: [],
+      contractChangedFiles: [],
+      finalizerChangedFiles: [],
       semanticFinalizerActions: [],
       firstValidationFailures: [],
       finalValidationFailures: validationFailures,
@@ -2420,6 +2852,13 @@ const STALE_CAVEAT_PATTERNS: RegExp[] = [
   /later-paper details must not be inferred/i,
   /not available in full (?:text|prose)/i,
   /remain qualitative unless more verified source text/i,
+  /formula captions? but exact notation unavailable/i,
+  /exact mathematical notation (?:and variable definitions )?(?:are )?not provided/i,
+  /variable definitions are not provided/i,
+  /formula terms are not fully available/i,
+  /later[- ]page content unavailable/i,
+  /provided excerpt only/i,
+  /not fully available in supplied context/i,
 ];
 
 /** Rewrite a block of text so stale caveats that contradict the extracted
@@ -2432,8 +2871,8 @@ export function sanitizeStaleCaveats(
   const kept: string[] = [];
   for (const line of lines) {
     const isBullet = /^\s*[-*]\s+/.test(line) || /^\s*"[^"]*",?\s*$/.test(line);
-    const staleFormula = facts.formulaAnchorsExist && /(?:formal|explicit) mathematical definitions are not present|formulas? (?:are|is) not present|formula captions? only|exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)|governing equations.*not (?:present|included)|does not include its governing equations|remain qualitative unless more verified/i.test(line);
-    const staleTruncation = facts.laterPagesExist && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|later-paper details must not be inferred|later sections? (?:are|is)? ?(?:not available|unavailable)|not available in full (?:text|prose)/i.test(line);
+    const staleFormula = facts.formulaAnchorsExist && /(?:formal|explicit) mathematical definitions are not present|formulas? (?:are|is) not present|formula captions? only|formula captions? but exact notation unavailable|exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included|not provided)|variable definitions are not provided|formula terms are not fully available|governing equations.*not (?:present|included)|does not include its governing equations|remain qualitative unless more verified/i.test(line);
+    const staleTruncation = facts.laterPagesExist && /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|later-paper details must not be inferred|later[- ]page content unavailable|later sections? (?:are|is)? ?(?:not available|unavailable)|provided excerpt only|not fully available in supplied context|not available in full (?:text|prose)/i.test(line);
     if ((staleFormula || staleTruncation) && isBullet) {
       continue; // drop the whole stale bullet
     }
@@ -2444,7 +2883,10 @@ export function sanitizeStaleCaveats(
         .replace(/formulas? (?:are|is) not present/gi, "formula anchors are present")
         .replace(/only formula captions? are provided[^.\n]*/gi, "formula text is available through extracted source text or formula anchors")
         .replace(/formula captions? only|caption-only/gi, "formula anchors and text fallback are available")
-        .replace(/exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)[^.\n]*/gi, "formula notation is handled through extracted source text or text fallback")
+        .replace(/formula captions? but exact notation unavailable[^.\n]*/gi, "formula notation is handled through extracted source text or text fallback")
+        .replace(/exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included|not provided)[^.\n]*/gi, "formula notation is handled through extracted source text or text fallback")
+        .replace(/variable definitions are not provided[^.\n]*/gi, "variable definitions are handled through extracted source text or formula anchors")
+        .replace(/formula terms are not fully available[^.\n]*/gi, "formula terms are handled through extracted source text or formula anchors")
         .replace(/the (?:supplied|provided) (?:material|source|text) does not include its governing equations/gi, "the extracted source anchors include the governing metric formulas");
     }
     if (facts.laterPagesExist) {
@@ -2453,7 +2895,15 @@ export function sanitizeStaleCaveats(
         .replace(/later[- ]page teaching must remain anchored to extracted [^.\n]*captions[^.\n]*/gi, "later-page teaching can use extracted source prose and source artifacts")
         .replace(/source map is truncated[^.\n]*/gi, "source map includes later-page source evidence")
         .replace(/(?:the (?:main|provided|continuous)[^.\n]*?)?truncated after page\s*2[^.\n]*/gi, "later source pages are available and anchored")
-        .replace(/later sections? (?:are|is)? ?(?:not available|unavailable)[^.\n]*/gi, "later sections are available through source anchors");
+        .replace(/later[- ]page content unavailable[^.\n]*/gi, "later-page source content is available and anchored")
+        .replace(/later sections? (?:are|is)? ?(?:not available|unavailable)[^.\n]*/gi, "later sections are available through source anchors")
+        // Mirror the detector's broad "later (pages|sections) … not available/
+        // unavailable/captions" pattern so finalize can actually clean every
+        // later-page caveat it flags (e.g. JSON-structured Source Map values like
+        // "figures from later pages are available only as extracted captions").
+        .replace(/later[- ](?:pages?|sections?)[^.\n]*?(?:not available|unavailable|(?:extracted )?captions?|anchored to captions)[^.\n]*/gi, "later source pages are available through extracted anchors")
+        .replace(/provided excerpt only[^.\n]*/gi, "source content is available through extracted source text and anchors")
+        .replace(/not fully available in supplied context[^.\n]*/gi, "source content is available through extracted source text and anchors");
     }
     kept.push(out);
   }
@@ -2470,6 +2920,7 @@ function sanitizeStaleCaveatFiles(
     path.join(gardenDir, "learning", "Topic Overview.md"),
     path.join(gardenDir, ".breadboard", "planning", "Source Map.md"),
     path.join(gardenDir, ".breadboard", "planning", "Scope Contract.md"),
+    path.join(gardenDir, ".breadboard", "planning", "Learning Map.md"),
     path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"),
   ];
   for (const learner of loadLearnerPagePaths(gardenDir)) files.push(learner);
@@ -2757,12 +3208,57 @@ function writeSourceCoverage({
   fs.mkdirSync(planningDir, { recursive: true });
   const byId = new Map(ledger.map((visual) => [visual.sourceVisualId, visual]));
   const titleFor = (pageId: string): string => learnerPages.find((page) => page.pageId === pageId)?.title ?? pageId;
+  const contract = readLearningUnitContract(gardenDir);
+  const finalVisuals = finalVisualSpecs(gardenDir, learnerPages).filter((spec) => spec.id);
+  const textAnchorLedger = new Map(readSourceAnchorLedger(gardenDir).map((anchor) => [anchor.id, anchor]));
+  const embeddedLines: string[] = [];
+  const textFormulaLines: string[] = [];
+  const proseLines: string[] = [];
+  const interactiveLines: string[] = [];
+  const referencedLines: string[] = [];
+  const cropFallbackLines: string[] = [];
+  const omittedLines: string[] = [];
+  const missingLines: string[] = [];
+  for (const entry of reconciliation) {
+    const visual = byId.get(entry.id);
+    const caption = String(visual?.caption ?? "source visual");
+    const pages = entry.usedInPages.map(titleFor).join("; ") || "none";
+    const line = `- ${entry.id}: ${caption}; used on ${pages}`;
+    if (entry.embeddedAsImage) embeddedLines.push(line);
+    if (entry.usedAsInteractiveAnchor) interactiveLines.push(`${line}; visual source grounding`);
+    if (visual && classifyFigure(visual) === "equation" && /explained_as_text_formula|used_as_interactive_grounding/i.test(String(visual.conceptUsage ?? ""))) {
+      textFormulaLines.push(line);
+    }
+    if (String(visual?.cropStatus ?? "") === "omitted_unreliable") cropFallbackLines.push(`${line}; crop omitted with text/formula fallback`);
+    if (entry.status === "intentionally_skipped") omittedLines.push(`- ${entry.id}: ${caption}; ${entry.skipReason ?? "intentionally omitted"}`);
+    if (entry.status === "misplaced" || entry.status === "unused") missingLines.push(line);
+  }
+  for (const spec of finalVisuals) {
+    for (const anchorId of spec.anchorIds) interactiveLines.push(`- ${anchorId}: ${spec.pageRel}; visual=${spec.id}`);
+  }
+  for (const page of learnerPages) {
+    for (const anchorId of pageLevelSourceAnchorIds(page)) {
+      if (!/^text-/i.test(anchorId)) continue;
+      const anchor = textAnchorLedger.get(anchorId);
+      proseLines.push(`- ${anchorId}: ${page.rel}; ${anchor?.semanticSummary ?? "source prose anchor"}`);
+    }
+  }
+  for (const assignment of contract.assignments) {
+    const unit = contract.units.find((candidate) => candidate.id === assignment.assignedLearningUnitId);
+    referencedLines.push(`- ${assignment.sourceArtifactId}: assigned to ${assignment.assignedLearningUnitId}${unit ? ` (${unit.title})` : ""}; placement=${assignment.placement}; ${assignment.requiredInterpretation || assignment.reason}`);
+  }
+  const section = (heading: string, items: string[]) => [
+    "",
+    `## ${heading}`,
+    "",
+    ...(items.length > 0 ? [...new Set(items)] : ["- None."]),
+  ];
   const lines = [
     "# Source Coverage",
     "",
-    "Generated deterministically from the reconciled source-visual table. This",
-    "file is authoritative: the ledger, learner frontmatter, and embedded images",
-    "are all derived from the same reconciliation pass.",
+    "Generated deterministically from the final artifact state: learner",
+    "frontmatter, learner bodies, final visual JSON, source-anchor ledgers, and",
+    "the Learning Unit Contract.",
     "",
     "## Reconciled Source Visual Usage",
     "",
@@ -2771,27 +3267,51 @@ function writeSourceCoverage({
     const visual = byId.get(entry.id);
     const caption = String(visual?.caption ?? "");
     const where = entry.usedInPages.length > 0 ? entry.usedInPages.map(titleFor).join("; ") : entry.usedAsInteractiveAnchor ? "interactive anchor" : "none";
-    lines.push(`- ${entry.id} (${entry.status}): ${caption || "source visual"} — used on: ${where}`);
+    lines.push(`- ${entry.id} (${entry.status}): ${caption || "source visual"}; used on: ${where}`);
   }
-  const formulas = ledger.filter((visual) => classifyFigure(visual) === "equation");
-  if (formulas.length > 0) {
-    const metricPage = learnerPages.find((page) => page.role === "metric");
-    lines.push("", "## Formula Anchor Assignments", "");
-    for (const formula of formulas) {
-      lines.push(
-        `- ${formula.sourceVisualId}: ${metricPage ? `central to ${metricPage.title}` : "central metric formula"} — ${String(formula.caption ?? "metric formula")}`,
-      );
-    }
-  }
-  lines.push("", "## Notes", "");
-  lines.push("- Any visual marked intentionally_skipped appears nowhere in learner output.");
-  lines.push("- Any visual marked used is embedded on exactly the listed page(s).");
+  lines.push(
+    ...section("Embedded Source Crops", embeddedLines),
+    ...section("Explained as Text Formulas", textFormulaLines),
+    ...section("Explained in Prose", proseLines),
+    ...section("Used as Interactive Grounding", interactiveLines),
+    ...section("Referenced Again in Synthesis", referencedLines),
+    ...section("Crop Omitted With Text Fallback", cropFallbackLines),
+    ...section("Intentionally Omitted", omittedLines),
+    ...section("Missing or Misplaced", missingLines),
+    "",
+    "## Notes",
+    "",
+    "- Some formula crops were omitted because the crop was unreliable; the formulas were taught from extracted source text when a text/formula fallback is listed.",
+  );
   const content = `${lines.join("\n")}\n`;
   const target = path.join(planningDir, "Source Coverage.md");
   const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf-8") : "";
   const { rawFrontmatter } = parseFrontmatter(existing);
   fs.writeFileSync(target, rawFrontmatter ? joinFrontmatter(rawFrontmatter, content) : content, "utf-8");
   report.changed.push(".breadboard/planning/Source Coverage.md");
+}
+
+function regenerateSourceCoverageFromFinalState(gardenDir: string, ledger: LedgerVisual[], report: FinalizeReport): void {
+  const learnerPages = loadLearnerPages(gardenDir);
+  const interactiveIds = collectInteractiveAnchorIds(learnerPages);
+  const reconciliation: ReconciledAnchorUsage[] = ledger.map((visual) => {
+    const id = visual.sourceVisualId;
+    const embeddedPages = learnerPages
+      .filter((page) => fmGetArray(page.rawFm, "sourceVisualIds").includes(id) || page.body.includes(String(visual.croppedImagePath ?? "__never__")))
+      .map((page) => page.pageId);
+    const embeddedAsImage = embeddedPages.length > 0;
+    const usedAsInteractiveAnchor = interactiveIds.has(id);
+    const skipped = /^(?:intentionally_skipped|skipped|unused)$/i.test(String(visual.usageStatus ?? ""));
+    return {
+      id,
+      status: embeddedAsImage || usedAsInteractiveAnchor ? "used" : skipped ? "intentionally_skipped" : "unused",
+      usedInPages: embeddedPages,
+      embeddedAsImage,
+      usedAsInteractiveAnchor,
+      skipReason: String(visual.skipReason ?? visual.notUsedReason ?? ""),
+    };
+  });
+  writeSourceCoverage({ gardenDir, ledger, reconciliation, learnerPages, report });
 }
 
 // ---------------------------------------------------------------------------
@@ -3082,13 +3602,32 @@ export function groundLearnerFormula(
   return { groundingStatus: "conceptual-helper" };
 }
 
+function compactFormulaMetadataEntries(entries: FinalizeFormulaEntry[]): FinalizeFormulaEntry[] {
+  const sourceDefinitionCount = entries.filter((entry) =>
+    entry.kind === "source_definition" || entry.kind === "source_derived_definition",
+  ).length;
+  const maxWorkedExamples = Math.max(2, sourceDefinitionCount * 2 + 1);
+  let workedExamples = 0;
+  return entries.filter((entry) => {
+    if (entry.kind !== "worked_example") return true;
+    workedExamples += 1;
+    return workedExamples <= maxWorkedExamples;
+  });
+}
+
 // Very small math extractor mirroring extractQuartzMath for finalize's needs.
-function extractBodyFormulas(body: string): string[] {
+function extractBodyFormulaRecords(body: string): Array<{ text: string; display: boolean }> {
   const noCode = body.replace(/```[\s\S]*?```/g, " ");
-  const formulas: string[] = [];
-  for (const match of noCode.matchAll(/\$\$([\s\S]+?)\$\$/g)) formulas.push((match[1] ?? "").trim());
-  for (const match of noCode.matchAll(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g)) formulas.push((match[1] ?? "").trim());
-  return formulas.filter(Boolean);
+  const formulas: Array<{ text: string; display: boolean }> = [];
+  for (const match of noCode.matchAll(/\$\$([\s\S]+?)\$\$/g)) {
+    const text = (match[1] ?? "").trim();
+    if (text) formulas.push({ text, display: true });
+  }
+  for (const match of noCode.matchAll(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g)) {
+    const text = (match[1] ?? "").trim();
+    if (text) formulas.push({ text, display: false });
+  }
+  return formulas;
 }
 
 function regroundFormulas({
@@ -3109,8 +3648,8 @@ function regroundFormulas({
     }));
 
   for (const page of learnerPages) {
-    const formulas = extractBodyFormulas(page.body)
-      .filter((formula) => isGroundableFormula(formula) && !isTrivialFormulaFragment(formula));
+    const formulas = extractBodyFormulaRecords(page.body)
+      .filter((formula) => isGroundableFormula(formula.text) && !isTrivialFormulaFragment(formula.text));
     if (formulas.length === 0) {
       // No math -> no formulas block; also drop any dangling metric anchors.
       const hadBlock = /^formulas:/m.test(page.rawFm) || fmGetArray(page.rawFm, "sourceFormulaAnchors").length > 0 || Boolean(fmGetScalar(page.rawFm, "sourceFormulaAnchor"));
@@ -3122,11 +3661,12 @@ function regroundFormulas({
     }
     const entries: FinalizeFormulaEntry[] = [];
     const anchoredIds = new Set<string>();
-    for (const text of formulas) {
+    for (const { text, display } of formulas) {
       const match = matchFormulaToSource(text, sources);
       const family = formulaMetricFamily(text);
       const workedExample = isWorkedExampleFormula(text);
-      if (!match && !family) continue;
+      const keepInlineConceptual = workedExample || (entries.length === 0 && /=|\\frac|\/|\\sum|\\min|\\max/.test(text));
+      if (!match && !family && !display && !keepInlineConceptual) continue;
       if (match) {
         entries.push({
           kind: workedExample ? "worked_example" : "source_definition",
@@ -3155,16 +3695,51 @@ function regroundFormulas({
         });
       }
     }
+    const compactedEntries = compactFormulaMetadataEntries(entries);
     // Only mark the page dirty when regrounding actually changes the formula
     // metadata. Re-serializing identical grounding must not report the page as
     // repaired, so repair-log.json changedFiles stays limited to real edits.
-    let nextFm = fmSetFormulas(page.rawFm, entries);
+    let nextFm = fmSetFormulas(page.rawFm, compactedEntries);
     nextFm = fmSetArray(nextFm, "sourceFormulaAnchors", [...anchoredIds]);
     nextFm = removeKeyLine(nextFm, "sourceFormulaAnchor");
     if (nextFm === page.rawFm) continue;
     page.rawFm = nextFm;
     page.dirty = true;
-    report.notes.push(`reground ${entries.length} formula(s) on ${page.rel} (${anchoredIds.size} source-anchored)`);
+    report.notes.push(`reground ${compactedEntries.length} formula(s) on ${page.rel} (${anchoredIds.size} source-anchored)`);
+  }
+}
+
+function synchronizePageVisualTextAnchors(learnerPages: LearnerPage[], report: FinalizeReport): void {
+  for (const page of learnerPages) {
+    const visualTextAnchors = new Set<string>();
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      for (const id of visualSpecTextAnchorIds(spec)) visualTextAnchors.add(id);
+    }
+    if (visualTextAnchors.size === 0) continue;
+    const existing = fmGetArray(page.rawFm, "sourceAnchors");
+    const existingSet = new Set(existing);
+    const missing = [...visualTextAnchors].filter((id) => !existingSet.has(id));
+    if (missing.length === 0) continue;
+    page.rawFm = fmSetArray(page.rawFm, "sourceAnchors", [...existing, ...missing]);
+    page.dirty = true;
+    report.notes.push(`synced visual text anchor(s) into ${page.rel}: ${missing.join(", ")}`);
+  }
+}
+
+function pruneOrphanSemanticRepairProvenance(gardenDir: string, learnerPages: LearnerPage[], report: FinalizeReport): void {
+  const run = readRepairRunReport(gardenDir);
+  if (!run) return;
+  const repairedPages = new Set((run.repairs ?? []).map((entry) => entry.pagePath));
+  for (const page of learnerPages) {
+    if (!fmGetScalar(page.rawFm, "lastSemanticRepairAt")) continue;
+    if (repairedPages.has(page.rel)) continue;
+    const before = page.rawFm;
+    page.rawFm = removeKeyLine(page.rawFm, "lastSemanticRepairAt");
+    page.rawFm = removeKeyLine(page.rawFm, "semanticRepairReason");
+    page.rawFm = fmRemoveBlock(page.rawFm, "lastSemanticRepair");
+    if (page.rawFm === before) continue;
+    page.dirty = true;
+    report.notes.push(`removed stale semantic repair provenance from ${page.rel}`);
   }
 }
 
@@ -3302,10 +3877,10 @@ function tagCentralityScore(tag: string, page: LearnerPage): number {
 // ---------------------------------------------------------------------------
 
 const MOTIF_RE = /battery-powered robot|battery-powered drone|quiet hallway|dense ann|silent snn|small camera (?:on|watching)|small vision system for a battery/i;
-const REPEATED_TRANSITION_RE = /the motivation is already in place,?\s+so this page starts from the previous concepts and develops/i;
+const REPEATED_TRANSITION_RE = /the motivation is already in place|this page develops how|focus on the specific mechanism|this lesson adds to the learning path|build up\b[^.\n]{0,120}\bone step at a time/i;
 
 const ROLE_TRANSITION: Partial<Record<PageRole, string>> = {
-  intro: "The opening motivation is established, so this page moves from the broad efficiency problem to the next idea in the learning path. Focus on what changes in the representation, the mechanism, or the metric, and how that change affects the way spiking networks compute.",
+  intro: "Sparse events change the starting point for computation: instead of updating every value at every moment, the system pays attention when meaningful activity appears. That shift sets up the next idea: what representation, mechanism, or measurement changes once information is carried by spikes.",
   lif: "Event-driven sparsity explains why spiking networks can be efficient. The next question is mechanical: what does a single spiking neuron actually do to turn incoming current into a spike? Consider the membrane of one neuron as it integrates input, leaks charge, and fires when it crosses a threshold.",
   training: "Now that event-driven sparsity is established, efficiency only pays off if the network can be trained to fire useful spikes at useful times. Consider a network whose connection weights must be adjusted so that input spike patterns lead to correct decisions.",
   metric: "Now that event-driven sparsity has been established, the next question is how to measure whether it actually helps. A single accuracy number hides the costs that make spiking networks worthwhile, so evaluation has to weigh several quantities at once. Consider comparing two models that reach similar accuracy at very different energy and latency costs.",
@@ -3313,25 +3888,37 @@ const ROLE_TRANSITION: Partial<Record<PageRole, string>> = {
   application: "The measured tradeoffs only matter when they meet a real deployment. Consider an edge device that must hit an accuracy target inside a fixed energy and latency budget, and how that constraint selects one spiking approach over another.",
   challenges: "The tradeoffs so far assume clean measurements and stable hardware. Consider what is still unresolved once spiking networks leave controlled benchmarks: hardware standardization, scalable training, and reproducible evaluation.",
   basic_def: "Building on the motivation for sparse, event-driven computation, consider what a spiking neural network actually is: a network whose neurons communicate with discrete spikes in time rather than continuous activations.",
-  generic: "The motivation is already in place, so this page starts from the previous concepts and develops the next source-grounded claim. Focus on the specific mechanism, metric, result, or limitation this lesson adds to the learning path.",
+  generic: "Once the earlier idea is clear, the next source-grounded claim has to make a more precise move: name the concept, show what changes, and connect that change to the learner's growing model of the system.",
 };
+
+function naturalRepeatedOpeningTransition(page: LearnerPage, previous?: LearnerPage): string {
+  if (page.role !== "generic" && ROLE_TRANSITION[page.role]) return ROLE_TRANSITION[page.role]!;
+  const current = stripTitleNumber(page.title).toLowerCase() || "the next concept";
+  const prior = previous ? stripTitleNumber(previous.title).toLowerCase() : "";
+  if (prior) {
+    return `After ${prior}, ${current} becomes the next question to resolve. The idea now is to make the relationship concrete: what changes in the mechanism, measurement, result, or limitation, and why that change matters for the system being studied.`;
+  }
+  return ROLE_TRANSITION.generic!;
+}
 
 function removeRepeatedMotivation(pages: LearnerPage[], report: FinalizeReport): void {
   let motifSeen = false;
+  let previousLearnerPage: LearnerPage | undefined;
   for (const page of pages) {
     const intro = page.body.replace(/^#.*$/gm, " ").split(/\s+/).filter(Boolean).slice(0, 80).join(" ");
     const hasMotif = MOTIF_RE.test(intro) || REPEATED_TRANSITION_RE.test(intro);
-    if (!hasMotif) continue;
+    if (!hasMotif) {
+      previousLearnerPage = page;
+      continue;
+    }
     if (!motifSeen && page.sectionNumber <= 2) {
       // Allow the first early page to establish the framing.
       motifSeen = true;
+      previousLearnerPage = page;
       continue;
     }
     motifSeen = true;
-    const titlePhrase = page.title.replace(/^\d+(?:\.\d+)*\.?\s*/, "").trim().toLowerCase();
-    const pageSpecificTransition =
-      `The motivation is already in place, so this page develops ${titlePhrase || "the next source-grounded idea"} from the previous concepts. Focus on the specific mechanism, metric, result, or limitation this lesson adds to the learning path.`;
-    const transition = page.role === "generic" ? pageSpecificTransition : (ROLE_TRANSITION[page.role] ?? pageSpecificTransition);
+    const transition = naturalRepeatedOpeningTransition(page, previousLearnerPage);
     if (!transition) continue;
     // Replace the first prose paragraph (which carries the motif) with a
     // forward transition that builds on prior pages.
@@ -3353,6 +3940,7 @@ function removeRepeatedMotivation(pages: LearnerPage[], report: FinalizeReport):
       page.dirty = true;
       report.notes.push(`replaced repeated first-page motivation on ${page.rel}`);
     }
+    previousLearnerPage = page;
   }
 }
 
@@ -3378,6 +3966,142 @@ function repeatedOpeningProblems(pages: LearnerPage[]): string[] {
   if (motifPages.length > 1) problems.push(`repeated battery/quiet-hallway/dense-ANN intro motif on ${motifPages.join(", ")}`);
   for (const [fingerprint, rels] of introByFingerprint) {
     if (rels.length >= 3) problems.push(`repeated opening phrase "${fingerprint}" on ${rels.join(", ")}`);
+  }
+  return [...new Set(problems)];
+}
+
+const LEARNER_SCAFFOLD_PROSE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
+  { label: "The motivation is already in place", pattern: /\bThe motivation is already in place\b/i },
+  { label: "Focus on the specific mechanism", pattern: /\bFocus on the specific mechanism\b/i },
+  { label: "this lesson adds to the learning path", pattern: /\bthis lesson adds to the learning path\b/i },
+  { label: "the previous concepts", pattern: /\bthe previous concepts\b/i },
+  { label: "the specific mechanism, metric, result, or limitation", pattern: /\bthe specific mechanism,\s*metric,\s*result,\s*or limitation\b/i },
+  { label: "this page develops how", pattern: /\bthis page develops how\b/i },
+  { label: "Build up [topic] one step at a time", pattern: /\bBuild up\b[^.\n]{0,120}\bone step at a time\b/i },
+];
+
+function learnerFacingScaffoldProseProblems(pages: LearnerPage[]): string[] {
+  const problems: string[] = [];
+  for (const page of pages) {
+    const prose = teachingProseLite(page.body);
+    for (const { label, pattern } of LEARNER_SCAFFOLD_PROSE_PATTERNS) {
+      if (pattern.test(prose)) problems.push(`${page.rel}: contains repair scaffold prose "${label}"`);
+    }
+    if (/\bsnns\b/.test(prose)) problems.push(`${page.rel}: uses lowercase acronym "snns"`);
+    if (/\bSNNs\s+learns\b/i.test(prose)) problems.push(`${page.rel}: contains grammar error "SNNs learns"`);
+  }
+  return [...new Set(problems)];
+}
+
+function repairLearnerAcronymGrammar(learnerPages: LearnerPage[], report: FinalizeReport): void {
+  for (const page of learnerPages) {
+    const lines = page.body.split(/\r?\n/);
+    let inFence = false;
+    const next = lines.map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      if (/^\s*!\[[^\]]*\]\([^)]*\)\s*$/.test(line)) return line;
+      if (/^\s*\[[^\]]+\]:\s*\S+/.test(line)) return line;
+      return line
+        .replace(/\bsnns\b/gi, "SNNs")
+        .replace(/\bsnn\b/gi, "SNN")
+        .replace(/\bSNNs\s+learns\b/gi, "SNNs learn");
+    }).join("\n");
+    if (next === page.body) continue;
+    page.body = next;
+    page.dirty = true;
+    report.notes.push(`repaired SNN acronym grammar in ${page.rel}`);
+  }
+}
+
+function repairSourceVisualImagePathCasing(gardenDir: string, learnerPages: LearnerPage[], report: FinalizeReport): void {
+  const assetDir = path.join(gardenDir, "assets", "source-visuals");
+  if (!fs.existsSync(assetDir)) return;
+  const actualNameByLower = new Map<string, string>();
+  for (const name of fs.readdirSync(assetDir)) {
+    actualNameByLower.set(name.toLowerCase(), name);
+  }
+  if (actualNameByLower.size === 0) return;
+  for (const page of learnerPages) {
+    const next = page.body.replace(/(!\[[^\]]*\]\()([^)]*\/source-visuals\/)([^)]+)(\))/g, (full, open: string, prefix: string, fileName: string, close: string) => {
+      const actual = actualNameByLower.get(String(fileName).toLowerCase());
+      if (!actual || actual === fileName) return full;
+      return `${open}${prefix}${actual}${close}`;
+    });
+    if (next === page.body) continue;
+    page.body = next;
+    page.dirty = true;
+    report.notes.push(`repaired source visual image path casing in ${page.rel}`);
+  }
+}
+
+function naturalProseValidationForPage(page: LearnerPage): "pass" | "fail" {
+  return learnerFacingScaffoldProseProblems([page]).length === 0 ? "pass" : "fail";
+}
+
+function sectionIndexProseQualityProblems(gardenDir: string): string[] {
+  const pages: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(path.join(gardenDir, "learning"), "learning", pages);
+  const problems: string[] = [];
+  for (const page of pages.filter((entry) => /\/_index\.md$/i.test(entry.rel))) {
+    const { body } = parseFrontmatter(fs.readFileSync(page.abs, "utf-8"));
+    const prose = teachingProseLite(body);
+    if (/\bBuild up\b[^.\n]{0,120}\bone step at a time\b/i.test(prose)) {
+      problems.push(`${page.rel}: contains generic "Build up ... one step at a time" scaffold prose`);
+    }
+    if (/\bsnns\b/.test(prose)) problems.push(`${page.rel}: uses lowercase acronym "snns"`);
+    if (/\bSNNs\s+learns\b/i.test(prose)) problems.push(`${page.rel}: contains grammar error "SNNs learns"`);
+    if (/\bThis section is part of the confirmed Breadboard learning map\b/i.test(prose)) {
+      problems.push(`${page.rel}: exposes learning-map scaffold prose`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function repairSectionIndexProse(gardenDir: string, report: FinalizeReport): void {
+  const pages: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(path.join(gardenDir, "learning"), "learning", pages);
+  for (const page of pages.filter((entry) => /\/_index\.md$/i.test(entry.rel))) {
+    const content = fs.readFileSync(page.abs, "utf-8");
+    const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
+    const prose = teachingProseLite(body);
+    if (!/\bBuild up\b[^.\n]{0,120}\bone step at a time\b|\bsnns\b|\bSNNs\s+learns\b|This section is part of the confirmed Breadboard learning map/i.test(prose)) continue;
+    const title = fmGetScalar(rawFrontmatter, "title") || body.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() || path.basename(path.dirname(page.abs));
+    const links = body.split(/\r?\n/).filter((line) => /\[\[learning\//i.test(line));
+    const childTitles = links
+      .map((line) => line.match(/\|([^\]]+)\]\]/)?.[1] ?? line.match(/\[\[[^\]]+\/([^/\]|]+)(?:\|)?/)?.[1] ?? "")
+      .map((value) => value.replace(/\.md$/i, "").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    const cleanTitle = title.replace(/^\d+(?:\.\d+)*\.?\s*/, "");
+    const summary = childTitles.length > 1
+      ? `${cleanTitle} connects ${childTitles[0]} with ${childTitles.slice(1).join(", ")} so the ideas build in a clear order.`
+      : `${cleanTitle} introduces the core idea and connects it to the next learner-facing step.`;
+    const nextBody = [`# ${title}`, "", summary, "", ...links].join("\n").replace(/\n{3,}/g, "\n\n");
+    fs.writeFileSync(page.abs, hadFrontmatter ? joinFrontmatter(rawFrontmatter, nextBody) : nextBody, "utf-8");
+    if (!report.changed.includes(page.rel)) report.changed.push(page.rel);
+    report.notes.push(`repaired section index prose in ${page.rel}`);
+  }
+}
+
+function visualTitleCaptionQualityProblems(learnerPages: LearnerPage[]): string[] {
+  const problems: string[] = [];
+  for (const page of learnerPages) {
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      const id = String(spec.id ?? "(missing id)");
+      const title = String(spec.title ?? "").trim();
+      const caption = String(spec.caption ?? "").trim();
+      if (!title) problems.push(`${page.rel}: visual ${id} missing title`);
+      if (/^[a-z]/.test(title)) problems.push(`${page.rel}: visual ${id} title starts lowercase: "${title}"`);
+      if (/^SNN metric calculator$/i.test(title)) problems.push(`${page.rel}: visual ${id} uses generic title "${title}"`);
+      if (/\b(?:metric_calculator|tradeoff_explorer|lif_neuron|neural_coding|stdp_window)\b/i.test(`${title} ${caption}`)) {
+        problems.push(`${page.rel}: visual ${id} exposes internal visual type in title/caption`);
+      }
+      if (/^Generic all-metric calculator\.?$/i.test(caption)) problems.push(`${page.rel}: visual ${id} caption is generic`);
+    }
   }
   return [...new Set(problems)];
 }
@@ -3467,9 +4191,17 @@ function writeFinalizeValidationReport({
       "",
       "Section and subsection titles must be learner-facing, grammatical, and free of planning scaffold phrasing.",
       "",
+      "## Section Index Prose Quality",
+      "",
+      "Section index pages must contain polished learner-facing summaries, not generated template prose.",
+      "",
       "## Interactive Visual Grounding",
       "",
       "Interactive visuals must use semantically compatible source anchors or honest conceptual grounding.",
+      "",
+      "## Learner-Facing Scaffold Prose",
+      "",
+      "Final learner Markdown must not contain deterministic repair scaffold instructions or placeholders.",
       "",
       "## Source Map Consistency",
       "",
@@ -3538,6 +4270,18 @@ function writeFinalizeValidationReport({
       "## Source Text Concept Anchors",
       "",
       "Concept visuals should use source-derived prose anchors when the source explains the concept without a figure.",
+      "",
+      "## Contract/Page Source Anchor Synchronization",
+      "",
+      "Page-level source anchors, text-anchor ledger entries, and Learning Unit Contract anchors must agree.",
+      "",
+      "## Source Coverage / Final Artifact Consistency",
+      "",
+      "Source Coverage must match final learner frontmatter, final visual JSON, and final source-anchor ledgers.",
+      "",
+      "## Visual Title and Caption Quality",
+      "",
+      "Visual titles and captions must be polished, specific, and free of internal visual type names.",
       "",
       "## Zettelkasten Tags",
       "",
@@ -3613,7 +4357,9 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Learning Unit Contract Fulfillment",
   "Section Semantic Coherence",
   "Section Title Grammar",
+  "Section Index Prose Quality",
   "Interactive Visual Grounding",
+  "Learner-Facing Scaffold Prose",
   "Source Map Consistency",
   "Source Map Caveat Reconciliation",
   "Source Coverage Modes",
@@ -3631,6 +4377,9 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Crop Quality and Fallbacks",
   "Source Coverage Mode Precision",
   "Source Text Concept Anchors",
+  "Contract/Page Source Anchor Synchronization",
+  "Source Coverage / Final Artifact Consistency",
+  "Visual Title and Caption Quality",
   "Zettelkasten Tags",
   "Zettelkasten Tag Density",
   "Zettelkasten Handle Quality",
@@ -3964,6 +4713,56 @@ function suggestedSectionSemanticTitle(sectionTitle: string, units: LearningUnit
   return number ? `${number}. ${base}` : base;
 }
 
+function distinctiveSectionResultBody(units: LearningUnitContract[], fallbackTitle: string): string {
+  const text = units.map((unit) => `${unit.title} ${unit.learningQuestion} ${(unit.newConcepts ?? []).join(" ")}`).join(" ").toLowerCase();
+  const hasEnergy = /\benergy\b|joules?|power|inference/.test(text);
+  const hasSpike = /spike[- ]?count|spikes?\b/.test(text);
+  const hasLearning = /training loss|convergence|learning curve|final accuracy|epochs?/.test(text);
+  const hasLatency = /\blatency\b|decision time|response time/.test(text);
+  const hasAccuracy = /\baccuracy\b|correct prediction/.test(text);
+  if ((hasEnergy || hasSpike) && hasLearning) return "Energy and Learning Curve Results";
+  if (hasEnergy && hasSpike) return "Energy and Spike Count Results";
+  if (hasLearning) return "Learning Curve Results";
+  if (hasLatency && hasAccuracy) return "Accuracy and Latency Results";
+  if (hasEnergy) return "Energy Results";
+  if (hasAccuracy) return "Accuracy Results";
+  const first = units.map((unit) => stripTitleNumber(unit.title)).find((title) => title && !/^(what|why|how)\b/i.test(title));
+  return first ? `${first.replace(/\bresults?\b/gi, "").trim()} Results` : `${stripTitleNumber(fallbackTitle) || "Measured"} Results`;
+}
+
+function makeSectionSemanticTitleUnique({
+  sectionRel,
+  sectionTitle,
+  units,
+  candidate,
+  keyOwners,
+}: {
+  sectionRel: string;
+  sectionTitle: string;
+  units: LearningUnitContract[];
+  candidate: string;
+  keyOwners: Map<string, Set<string>>;
+}): string {
+  const collides = (title: string) => {
+    const owners = keyOwners.get(normalizedSectionTitleKey(title));
+    return Boolean(owners && [...owners].some((owner) => owner !== sectionRel));
+  };
+  if (!collides(candidate)) return candidate;
+  const number = candidate.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1] ?? sectionTitle.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
+  const prefix = number ? `${number}. ` : "";
+  const alternatives = [
+    `${prefix}${distinctiveSectionResultBody(units, sectionTitle)}`,
+    `${prefix}${stripTitleNumber(sectionTitle).replace(/\b(Formula Definition|Field List)\b/gi, "").trim() || "Measured Results"}`,
+    `${prefix}Result Patterns and Tradeoffs`,
+  ].filter((title) => title.trim() && sectionTitleNaturalnessProblems(title, units.map((unit) => unit.title)).length === 0);
+  for (const title of alternatives) {
+    if (!collides(title)) return title;
+  }
+  let suffix = 2;
+  while (collides(`${candidate} ${suffix}`)) suffix += 1;
+  return `${candidate} ${suffix}`;
+}
+
 function rewriteSectionIndexTitle(indexPath: string, nextTitle: string): boolean {
   const content = fs.readFileSync(indexPath, "utf-8");
   const { rawFrontmatter, body } = parseFrontmatter(content);
@@ -4138,10 +4937,12 @@ function repairSectionSemanticTitles(
   report: FinalizeReport,
 ): void {
   const sectionInputs = sectionSemanticInputs(gardenDir, learnerPages, unitsById);
-  const titleCounts = new Map<string, number>();
+  const keyOwners = new Map<string, Set<string>>();
   for (const section of sectionInputs) {
     const key = normalizedSectionTitleKey(section.sectionTitle);
-    titleCounts.set(key, (titleCounts.get(key) ?? 0) + 1);
+    const owners = keyOwners.get(key) ?? new Set<string>();
+    owners.add(section.rel);
+    keyOwners.set(key, owners);
   }
   for (const section of sectionInputs) {
     const profile = sectionSemanticProfiles([{
@@ -4151,13 +4952,30 @@ function repairSectionSemanticTitles(
     }])[0];
     const grammarProblems = sectionTitleGrammarProblems(section.sectionTitle, section.subsectionTitles);
     const naturalnessProblems = sectionTitleNaturalnessProblems(section.sectionTitle, section.subsectionTitles);
-    const duplicateTitle = (titleCounts.get(normalizedSectionTitleKey(section.sectionTitle)) ?? 0) > 1;
+    const currentKey = normalizedSectionTitleKey(section.sectionTitle);
+    const duplicateTitle = (keyOwners.get(currentKey)?.size ?? 0) > 1;
     if ((!profile || profile.problems.length === 0) && grammarProblems.length === 0 && naturalnessProblems.length === 0 && !duplicateTitle) continue;
-    const nextTitle = suggestedSectionSemanticTitle(section.sectionTitle, section.units);
+    const suggestedTitle = suggestedSectionSemanticTitle(section.sectionTitle, section.units);
+    const nextTitle = suggestedTitle
+      ? makeSectionSemanticTitleUnique({
+          sectionRel: section.rel,
+          sectionTitle: section.sectionTitle,
+          units: section.units,
+          candidate: suggestedTitle,
+          keyOwners,
+        })
+      : null;
     if (!nextTitle || nextTitle === section.sectionTitle) continue;
     const indexPath = path.join(gardenDir, ...section.rel.split("/"), "_index.md");
     if (!fs.existsSync(indexPath)) continue;
     if (rewriteSectionIndexTitle(indexPath, nextTitle)) {
+      const oldOwners = keyOwners.get(currentKey);
+      oldOwners?.delete(section.rel);
+      if (oldOwners && oldOwners.size === 0) keyOwners.delete(currentKey);
+      const nextKey = normalizedSectionTitleKey(nextTitle);
+      const nextOwners = keyOwners.get(nextKey) ?? new Set<string>();
+      nextOwners.add(section.rel);
+      keyOwners.set(nextKey, nextOwners);
       const rel = `${section.rel}/_index.md`;
       if (!report.changed.includes(rel)) report.changed.push(rel);
       report.notes.push(`retitled section ${section.sectionTitle} -> ${nextTitle}`);
@@ -4201,7 +5019,19 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): str
   const addDoc = (rel: string): void => {
     docs.push([rel, path.join(gardenDir, ...rel.split("/"))]);
   };
-  for (const rel of [".breadboard/planning/Source Map.md", ".breadboard/planning/Source Coverage.md", "learning/Learning Map.md", "learning/Topic Overview.md"]) addDoc(rel);
+  // Note: the generated .breadboard/validation-report.md and repair-report.md are
+  // intentionally NOT scanned. They ECHO the detector's own problem descriptions
+  // ("stale caveat says later pages are unavailable"), so scanning them turns a
+  // reported problem into a new, self-referential problem. Caveats are only real
+  // in planning/source/learner docs, which are scanned below.
+  for (const rel of [
+    ".breadboard/planning/Source Map.md",
+    ".breadboard/planning/Scope Contract.md",
+    ".breadboard/planning/Learning Map.md",
+    ".breadboard/planning/Source Coverage.md",
+    "learning/Learning Map.md",
+    "learning/Topic Overview.md",
+  ]) addDoc(rel);
   const planningPages: Array<{ abs: string; rel: string }> = [];
   listMarkdown(path.join(gardenDir, ".breadboard", "planning"), ".breadboard/planning", planningPages);
   for (const page of planningPages) if (!docs.some(([rel]) => rel === page.rel)) docs.push([page.rel, page.abs]);
@@ -4223,7 +5053,7 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): str
     if (!fs.existsSync(filePath)) continue;
     const text = fs.readFileSync(filePath, "utf-8");
     const staleFormulaCaveat =
-      /explicit mathematical definitions are not present|formal mathematical definitions are not present|formulas? (?:are|is) not present|formula exact text unavailable|caption-only|formula captions but not exact|exact displayed notation|standard explanatory notation only|captions only|notation unavailable|mathematical notation not included/i;
+      /explicit mathematical definitions are not present|formal mathematical definitions are not present|formulas? (?:are|is) not present|formula exact text unavailable|caption-only|formula captions but not exact|formula captions but exact notation unavailable|exact displayed notation|exact mathematical notation (?:and variable definitions )?(?:are )?not provided|variable definitions are not provided|formula terms are not fully available|standard explanatory notation only|captions only|notation unavailable|mathematical notation not included/i;
     if ((hasFormulaAnchors || hasFormulaExactText || hasFormulaCrops || hasFormulaMarkdown) && staleFormulaCaveat.test(text)) {
       problems.push(`${label}: stale caveat says formulas/definitions are unavailable despite formula anchors`);
     }
@@ -4233,7 +5063,7 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): str
     if (hasFigures && /figures? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
       problems.push(`${label}: stale caveat says figures are unavailable despite figure anchors`);
     }
-    if (hasLaterPages && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later (?:pages?|sections?)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|must not be inferred beyond/i.test(text)) {
+    if (hasLaterPages && /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later (?:pages?|sections?)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|later[- ]page content unavailable|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|provided excerpt only|not fully available in supplied context|must not be inferred beyond/i.test(text)) {
       problems.push(`${label}: stale caveat says later pages are unavailable despite later anchors/pages`);
     }
   }
@@ -4393,6 +5223,9 @@ function sourceTextAnchorForConcept(
         sourceTitle,
         textAnchorId: `text-${slugifyLoose(sourceId)}-${slugifyLoose(concept.label)}`,
         description: `Source prose explains ${concept.label}: ${excerpt}`,
+        exactText: excerpt,
+        semanticSummary: `Source prose explains ${concept.label}.`,
+        conceptKeywords: concept.label.split(/\s+/).filter((word) => word.length >= 4),
       };
     }
   }
@@ -4414,11 +5247,31 @@ function repairSourceTextConceptAnchors(gardenDir: string, learnerPages: Learner
       const concept = proseConceptForVisualType(type);
       if (!concept || visualHasTextAnchor(spec)) return false;
       const status = String(spec.sourceGroundingStatus ?? "");
-      if (status && status !== "conceptual-no-direct-source-figure" && status !== "source-derived-conceptual") return false;
+      const isConceptualStatus =
+        status === "conceptual-no-direct-source-figure" || status === "source-derived-conceptual";
+      // A visual whose status claims source grounding but carries no surviving
+      // source anchor is in a self-contradictory state (e.g. a metric_calculator
+      // whose formula anchors were filtered out). Normalizing that contradiction
+      // is metadata hygiene, not semantic placement, so we (re)ground it here
+      // rather than let it fail the grounding gate with no repair path.
+      const contradictoryGrounded = visualSpecAnchorIds(spec).length === 0 && !isConceptualStatus;
+      if (!isConceptualStatus && !contradictoryGrounded) return false;
       const cacheKey = `${type}:${concept.label}`;
       if (!anchorCache.has(cacheKey)) anchorCache.set(cacheKey, sourceTextAnchorForConcept(gardenDir, concept));
       const anchor = anchorCache.get(cacheKey);
-      if (!anchor) return false;
+      if (!anchor) {
+        if (!contradictoryGrounded) return false;
+        // No source prose anchor is available to derive from. Downgrade the
+        // contradictory grounded-but-anchorless visual to honest conceptual
+        // grounding so its metadata is self-consistent and publishable.
+        spec.sourceAnchors = [];
+        spec.sourceGroundingStatus = "conceptual-no-direct-source-figure";
+        spec.justification =
+          "This interactive teaches a dynamic concept the source discusses only in prose; no dedicated source figure grounds it, so it is marked conceptual.";
+        saveVisualSpecArtifact(gardenDir, spec, report);
+        report.notes.push(`normalized contradictory visual grounding on ${page.rel} (${type})`);
+        return true;
+      }
       const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors.filter((item) => item && typeof item === "object") : [];
       spec.sourceAnchors = [...anchors, anchor];
       spec.sourceGroundingStatus = "source-derived-conceptual";
@@ -4426,6 +5279,20 @@ function repairSourceTextConceptAnchors(gardenDir: string, learnerPages: Learner
         "The source explains this concept in prose but does not provide a dedicated figure, so the visual is derived from a source text anchor.";
       const textAnchorId = String(anchor.textAnchorId ?? "");
       if (textAnchorId) page.rawFm = fmSetArray(page.rawFm, "sourceAnchors", [...fmGetArray(page.rawFm, "sourceAnchors"), textAnchorId]);
+      if (textAnchorId) {
+        registerSourceTextAnchor(gardenDir, {
+          id: textAnchorId,
+          sourceId: String(anchor.sourceId ?? "source"),
+          kind: "concept",
+          title: concept.label,
+          exactText: String(anchor.exactText ?? ""),
+          semanticSummary: String(anchor.semanticSummary ?? anchor.description ?? `Source prose explains ${concept.label}.`),
+          conceptKeywords: Array.isArray(anchor.conceptKeywords)
+            ? anchor.conceptKeywords.map(stringField).filter(Boolean)
+            : concept.label.split(/\s+/).filter((word) => word.length >= 4),
+          confidence: 0.75,
+        }, report);
+      }
       saveVisualSpecArtifact(gardenDir, spec, report);
       report.notes.push(`added source text anchor ${textAnchorId || "(missing text anchor)"} to ${page.rel}`);
       return true;
@@ -4512,8 +5379,105 @@ function repairLearningUnitSourceTextAnchors(
     const anchorId = `text-${slugifyLoose(paragraph.sourceId)}-${slugifyLoose(keywords.slice(0, 4).join("-"))}`;
     page.rawFm = fmSetArray(page.rawFm, "sourceAnchors", [...existing, anchorId]);
     page.dirty = true;
+    registerSourceTextAnchor(gardenDir, {
+      id: anchorId,
+      sourceId: paragraph.sourceId,
+      page: paragraph.page,
+      kind: sourceTextAnchorKind(unit.role === "training_method" ? "method" : unit.role),
+      title: unit.title,
+      exactText: paragraph.text.slice(0, 500),
+      semanticSummary: `Source prose supports ${unit.title}.`,
+      conceptKeywords: keywords,
+      confidence: 0.72,
+    }, report);
     report.notes.push(`added page source text anchor ${anchorId} to ${page.rel}`);
   }
+}
+
+function synchronizeContractSourceAnchors(
+  gardenDir: string,
+  contract: LearningUnitContractArtifact,
+  learnerPages: LearnerPage[],
+  report: FinalizeReport,
+): void {
+  if (!contract.foundPath || contract.units.length === 0) return;
+  const parsed = readJson<Record<string, unknown>>(contract.foundPath, {});
+  const rawUnits = Array.isArray(parsed.learningUnits) ? parsed.learningUnits as Array<Record<string, unknown>> : [];
+  if (rawUnits.length === 0) return;
+  const pageAnchorsByUnit = new Map<string, string[]>();
+  for (const page of learnerPages) {
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    if (!unitId) continue;
+    const anchors = pageLevelSourceAnchorIds(page).filter((id) => /^text-/i.test(id) || /^S\d+\.P\d+\.[A-Z]\d+$/i.test(id));
+    if (anchors.length > 0) pageAnchorsByUnit.set(unitId, anchors);
+  }
+  let changed = false;
+  for (const rawUnit of rawUnits) {
+    const id = cleanText(rawUnit.id);
+    const pageAnchors = pageAnchorsByUnit.get(id);
+    if (!pageAnchors) continue;
+    const existing = Array.isArray(rawUnit.sourceAnchors) ? rawUnit.sourceAnchors.map(stringField).filter(Boolean) : [];
+    const merged = [...new Set([...existing.filter((anchor) => !/abstract|guidance|researchgap/i.test(anchor)), ...pageAnchors])];
+    if (arraysEqual(existing, merged)) continue;
+    rawUnit.sourceAnchors = merged;
+    changed = true;
+  }
+  if (!changed) return;
+  fs.writeFileSync(contract.foundPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
+  if (!report.changed.includes(".breadboard/learning-unit-contract.json")) report.changed.push(".breadboard/learning-unit-contract.json");
+  const repaired = readLearningUnitContract(gardenDir);
+  contract.units = repaired.units;
+  contract.assignments = repaired.assignments;
+  report.notes.push("synchronized repaired page source anchors into the Learning Unit Contract");
+}
+
+function registerExistingTextAnchors(
+  gardenDir: string,
+  learnerPages: LearnerPage[],
+  unitsById: Map<string, LearningUnitContract>,
+  report: FinalizeReport,
+): void {
+  const existing = new Map(readSourceAnchorLedger(gardenDir).map((anchor) => [anchor.id, anchor]));
+  const anchors: SourceTextConceptAnchor[] = [...existing.values()];
+  for (const page of learnerPages) {
+    const unit = unitsById.get(fmGetScalar(page.rawFm, "learningUnitId"));
+    for (const anchorId of pageLevelSourceAnchorIds(page).filter((id) => /^text-/i.test(id))) {
+      if (existing.has(anchorId)) continue;
+      const keywords = unit ? unitTextAnchorKeywords(unit, page) : anchorId.split("-").filter((word) => word.length >= 4).slice(0, 8);
+      const anchor: SourceTextConceptAnchor = {
+        id: anchorId,
+        sourceId: anchorId.replace(/^text-/i, "").split("-").slice(0, 2).join("-") || "source",
+        kind: sourceTextAnchorKind(unit?.role ?? "concept"),
+        title: unit?.title ?? page.title,
+        semanticSummary: `Source prose supports ${unit?.title ?? page.title}.`,
+        conceptKeywords: keywords.length > 0 ? keywords : [slugifyLoose(page.title)].filter(Boolean),
+        confidence: 0.65,
+      };
+      anchors.push(anchor);
+      existing.set(anchorId, anchor);
+    }
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      for (const record of visualSpecAnchorRecords(spec)) {
+        const anchorId = stringField(record.textAnchorId);
+        if (!anchorId || existing.has(anchorId)) continue;
+        const description = stringField(record.description);
+        const anchor: SourceTextConceptAnchor = {
+          id: anchorId,
+          sourceId: stringField(record.sourceId) || "source",
+          page: typeof record.page === "number" ? record.page : undefined,
+          kind: "concept",
+          title: stringField(record.sourceTitle) || stringField(spec.title) || page.title,
+          exactText: stringField(record.exactText),
+          semanticSummary: description || `Source prose supports ${String(spec.title ?? page.title)}.`,
+          conceptKeywords: `${String(spec.title ?? "")} ${description}`.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4).slice(0, 8),
+          confidence: 0.7,
+        };
+        anchors.push(anchor);
+        existing.set(anchorId, anchor);
+      }
+    }
+  }
+  writeSourceAnchorLedger(gardenDir, anchors, report);
 }
 
 function sourceTextConceptAnchorProblems(gardenDir: string, learnerPages: LearnerPage[]): string[] {
@@ -4567,6 +5531,136 @@ function sourceTextBodyAnchorProblems(
     });
     if (!hasSpecific && anchors.some((anchor) => /abstract|guidance|researchgap/i.test(anchor))) {
       problems.push(`${page.rel}: ${unit.role} unit is grounded only in abstract/guidance anchors even though page ${match.page} source prose matches [${keywords.join(", ")}]`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function pageLevelSourceAnchorIds(page: LearnerPage): string[] {
+  return [...new Set([
+    ...fmGetArray(page.rawFm, "sourceAnchors"),
+    ...fmGetArray(page.rawFm, "sourceVisualIds"),
+    ...fmGetArray(page.rawFm, "sourceFormulaAnchors"),
+  ].filter(Boolean))];
+}
+
+function textAnchorIdsFromPagesAndVisuals(learnerPages: LearnerPage[]): Map<string, string[]> {
+  const byId = new Map<string, string[]>();
+  const add = (id: string, rel: string): void => {
+    if (!/^text-/i.test(id)) return;
+    const refs = byId.get(id) ?? [];
+    refs.push(rel);
+    byId.set(id, refs);
+  };
+  for (const page of learnerPages) {
+    for (const id of pageLevelSourceAnchorIds(page)) add(id, page.rel);
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      const visualId = String(spec.id ?? "(visual)");
+      for (const id of visualSpecAnchorIds(spec)) add(id, `${page.rel}#${visualId}`);
+    }
+  }
+  return byId;
+}
+
+function sourceAnchorLedgerProblems(gardenDir: string, learnerPages: LearnerPage[]): string[] {
+  const used = textAnchorIdsFromPagesAndVisuals(learnerPages);
+  if (used.size === 0) return [];
+  const ledger = readSourceAnchorLedger(gardenDir);
+  const known = new Map(ledger.map((anchor) => [anchor.id, anchor]));
+  const problems: string[] = [];
+  if (ledger.length === 0) problems.push(".breadboard/source-anchors.json missing or empty while text anchors are used");
+  for (const [id, refs] of used) {
+    const anchor = known.get(id);
+    if (!anchor) {
+      problems.push(`${[...new Set(refs)].join(", ")}: text anchor ${id} is not registered in .breadboard/source-anchors.json`);
+      continue;
+    }
+    if (!anchor.semanticSummary) problems.push(`${id}: source-anchor ledger entry missing semanticSummary`);
+    if (!anchor.conceptKeywords || anchor.conceptKeywords.length === 0) problems.push(`${id}: source-anchor ledger entry missing conceptKeywords`);
+  }
+  return [...new Set(problems)];
+}
+
+function contractPageSourceAnchorSynchronizationProblems(
+  learnerPages: LearnerPage[],
+  unitsById: Map<string, LearningUnitContract>,
+): string[] {
+  const problems: string[] = [];
+  for (const page of learnerPages) {
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    const unit = unitsById.get(unitId);
+    if (!unit) continue;
+    const contractAnchors = new Set([
+      ...(unit.sourceAnchors ?? []),
+      ...(unit.sourceFigures ?? []).map((figure) => figure.id),
+      ...(unit.sourceFormulas ?? []).map((formula) => formula.id),
+      ...(unit.sourceTables ?? []).map((table) => table.id),
+      ...(unit.interactiveVisual?.sourceAnchors ?? []),
+    ]);
+    const pageAnchors = pageLevelSourceAnchorIds(page).filter((id) => /^text-/i.test(id) || /^S\d+\.P\d+\.[A-Z]\d+$/i.test(id));
+    for (const id of pageAnchors) {
+      if (!contractAnchors.has(id)) {
+        problems.push(`${page.rel}: page source anchor ${id} is not present in Learning Unit Contract unit ${unit.id}`);
+      }
+    }
+    if (pageAnchors.some((id) => /^text-/i.test(id))) {
+      for (const id of unit.sourceAnchors ?? []) {
+        if (/abstract|guidance|researchgap/i.test(id) && !pageAnchors.includes(id)) {
+          problems.push(`${page.rel}: unit ${unit.id} still keeps broad source anchor ${id} after specific text-anchor repair`);
+        }
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function finalVisualSpecs(gardenDir: string, learnerPages: LearnerPage[]): Array<{ pageRel: string; id: string; anchorIds: string[] }> {
+  const specs: Array<{ pageRel: string; id: string; anchorIds: string[] }> = [];
+  for (const page of learnerPages) {
+    for (const spec of embeddedVisualSpecs(page.body)) {
+      specs.push({ pageRel: page.rel, id: String(spec.id ?? "").trim(), anchorIds: visualSpecAnchorIds(spec) });
+    }
+  }
+  const visualDir = path.join(gardenDir, ".breadboard", "visuals");
+  if (fs.existsSync(visualDir)) {
+    for (const name of fs.readdirSync(visualDir)) {
+      if (!name.endsWith(".json")) continue;
+      const spec = readJson<Record<string, unknown>>(path.join(visualDir, name), {});
+      const id = String(spec.id ?? name.replace(/\.json$/i, "")).trim();
+      if (!id || specs.some((existing) => existing.id === id)) continue;
+      specs.push({ pageRel: `.breadboard/visuals/${name}`, id, anchorIds: visualSpecAnchorIds(spec) });
+    }
+  }
+  return specs;
+}
+
+function sourceCoverageFinalArtifactConsistencyProblems(gardenDir: string, learnerPages: LearnerPage[]): string[] {
+  const coveragePath = path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md");
+  if (!fs.existsSync(coveragePath)) return [];
+  const coverage = fs.readFileSync(coveragePath, "utf-8");
+  const usedInteractive = coverageModeSection(coverage, "Used as Interactive Grounding");
+  const problems: string[] = [];
+  const visualSpecs = finalVisualSpecs(gardenDir, learnerPages).filter((entry) => entry.id);
+  const visualAnchors = new Map<string, Set<string>>();
+  for (const spec of visualSpecs) visualAnchors.set(spec.id, new Set(spec.anchorIds));
+  for (const { id, anchorIds } of visualSpecs) {
+    for (const anchor of anchorIds) {
+      const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (!new RegExp(`\\b${escaped}\\b`, "i").test(usedInteractive)) {
+        problems.push(`${id}: final visual JSON uses ${anchor}, but Source Coverage omits it from "Used as Interactive Grounding"`);
+      }
+    }
+  }
+  for (const line of usedInteractive.split(/\r?\n/)) {
+    const anchors = [...line.matchAll(/\bS\d+\.P\d+\.[A-Z]\d+\b|\btext-[a-z0-9-]+\b/gi)].map((match) => match[0]);
+    if (anchors.length === 0) continue;
+    const visualId = [...visualAnchors.keys()].find((id) => id && line.includes(id));
+    if (!visualId) continue;
+    const actual = visualAnchors.get(visualId) ?? new Set<string>();
+    for (const anchor of anchors) {
+      if (!actual.has(anchor)) {
+        problems.push(`Source Coverage claims visual ${visualId} uses ${anchor}, but final visual JSON does not`);
+      }
     }
   }
   return [...new Set(problems)];
@@ -4721,12 +5815,49 @@ function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPa
     }
     return problems;
   }
+  const pageByRel = new Map(learnerPages.map((page) => [page.rel, page]));
+  const allowedChangedFile = (entry: UnitRepairLogEntry, file: string): boolean => {
+    if (!file) return false;
+    if (file === entry.pagePath) return true;
+    if (file === `${entry.sectionPath}/_index.md`) return true;
+    if (entry.failureTypes.includes("section_semantics") && (file === "learning/_index.md" || file === "learning/Learning Map.md")) return true;
+    if ((entry.failureTypes.includes("zettelkasten_handle") || entry.failureTypes.includes("zettelkasten_handle_support") || entry.failureTypes.includes("contract_fulfillment") || entry.failureTypes.includes("source_text_anchor")) && file === ".breadboard/learning-unit-contract.json") return true;
+    if (entry.failureTypes.includes("source_text_anchor") && file === ".breadboard/source-anchors.json") return true;
+    if ((entry.failureTypes.includes("visual_grounding") || entry.failureTypes.includes("source_text_anchor")) && file === ".breadboard/planning/Source Coverage.md") return true;
+    const page = pageByRel.get(entry.pagePath);
+    if (page && file.startsWith(".breadboard/visuals/")) {
+      const visualId = file.match(/^\.breadboard\/visuals\/(.+)\.json$/)?.[1] ?? "";
+      const owned = new Set(fmGetArray(page.rawFm, "visualIds"));
+      for (const spec of embeddedVisualSpecs(page.body)) {
+        const id = String(spec.id ?? "").trim();
+        if (id) owned.add(id);
+      }
+      return owned.has(visualId);
+    }
+    return false;
+  };
   for (const entry of run.repairs ?? []) {
     if (entry.result === "unresolved") {
       problems.push(`${entry.pagePath}: repair log has unresolved ${entry.failureTypes.join(", ")}`);
     }
     for (const error of entry.unresolvedValidationErrors ?? []) {
       problems.push(`${entry.pagePath}: unresolved repair validation error: ${error}`);
+    }
+    const changedFiles = Array.isArray(entry.changedFiles) ? entry.changedFiles : [];
+    for (const file of changedFiles) {
+      if (!allowedChangedFile(entry, file)) {
+        problems.push(`${entry.pagePath}: repair log changedFiles includes unrelated file ${file}`);
+      }
+    }
+    const proseTypes = ["repeated_opening", "scaffold_prose", "section_index_prose", "zettelkasten_handle_support"];
+    const pageProseTypes = ["repeated_opening", "scaffold_prose", "zettelkasten_handle_support"];
+    const isProseRepair = entry.failureTypes.some((type) => proseTypes.includes(type));
+    const isPageProseRepair = entry.failureTypes.some((type) => pageProseTypes.includes(type));
+    if (isPageProseRepair && entry.executorUsed === "deterministic" && entry.naturalProseValidation !== "pass") {
+      problems.push(`${entry.pagePath}: deterministic semantic prose repair lacks naturalProseValidation=pass`);
+    }
+    if (isProseRepair && !entry.modelRepairStatus) {
+      problems.push(`${entry.pagePath}: prose repair log missing modelRepairStatus`);
     }
   }
   const repairedPages = new Set((run.repairs ?? []).map((entry) => entry.pagePath));
@@ -4806,6 +5937,7 @@ function collectFinalizeChecks({
     .map((entry) => `${entry.id}: skipped but used`));
   push("Finalizer semantic boundary", finalizerBoundaryProblems(report));
   push("Repair Provenance", repairLogConsistencyProblems(gardenDir, learnerPages));
+  push("Learner-Facing Scaffold Prose", learnerFacingScaffoldProseProblems(learnerPages));
 
   // Learning Unit Contract fulfillment.
   const fulfillmentProblems: string[] = [];
@@ -4919,6 +6051,7 @@ function collectFinalizeChecks({
     }
   }
   push("Section title grammar", titleGrammarProblems);
+  push("Section Index Prose Quality", sectionIndexProseQualityProblems(gardenDir));
 
   // Interactive visual grounding.
   const visualGroundingProblems: string[] = [];
@@ -4940,7 +6073,10 @@ function collectFinalizeChecks({
   push("Source Text Concept Anchors", [
     ...sourceTextConceptAnchorProblems(gardenDir, learnerPages),
     ...sourceTextBodyAnchorProblems(gardenDir, learnerPages, unitsById),
+    ...sourceAnchorLedgerProblems(gardenDir, learnerPages),
   ]);
+  push("Contract/Page Source Anchor Synchronization", contractPageSourceAnchorSynchronizationProblems(learnerPages, unitsById));
+  push("Visual Title and Caption Quality", visualTitleCaptionQualityProblems(learnerPages));
 
   // Formula grounding.
   const formulaGroundingProblems: string[] = [];
@@ -4980,6 +6116,9 @@ function collectFinalizeChecks({
       }
       if (kind === "worked_example" && /^(source-anchored|source-derived)$/.test(status)) {
         formulaSourceProblems.push(`${label} is a worked example but is marked ${status}; worked examples may reference source formulas but cannot satisfy source definitions`);
+      }
+      if (kind === "worked_example") {
+        continue;
       }
       if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(text)) {
         formulaSourceProblems.push(`${label} is numeric worked-example arithmetic but is marked ${kind}`);
@@ -5033,6 +6172,7 @@ function collectFinalizeChecks({
   }
   push("Source Coverage follows the Learning Unit Contract", [...new Set(coverageProblems)]);
   push("Source Coverage Mode Precision", sourceCoverageModePrecisionProblems(gardenDir, ledger));
+  push("Source Coverage / Final Artifact Consistency", sourceCoverageFinalArtifactConsistencyProblems(gardenDir, learnerPages));
   push("Source anchor usage vs crop status", sourceAnchorUsageVsCropStatusProblems(ledger, learnerPages));
 
   // Source Map consistency.
@@ -5048,7 +6188,7 @@ function collectFinalizeChecks({
     sourceMapProblems.push(".breadboard/planning/Source Map.md missing");
   }
   if (sourceMap) {
-    if (hasFormulaAnchors && /explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only|formula captions? only|exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)/i.test(sourceMap)) {
+    if (hasFormulaAnchors && /explicit mathematical definitions are not present|formulas? (?:are|is) not present|caption-only|formula captions? only|formula captions? but exact notation unavailable|exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included|not provided)|exact mathematical notation (?:and variable definitions )?(?:are )?not provided|variable definitions are not provided|formula terms are not fully available/i.test(sourceMap)) {
       sourceMapProblems.push("Source Map says formulas are absent/caption-only even though formula anchors exist");
     }
     if (hasTables && /tables? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
@@ -5057,7 +6197,7 @@ function collectFinalizeChecks({
     if (hasFigures && /figures? (?:are|is) not (?:present|available|detected)/i.test(sourceMap)) {
       sourceMapProblems.push("Source Map says figures are absent even though figure anchors exist");
     }
-    if (hasLaterPages && /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later (?:pages?|sections?)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|truncated after page\s*2/i.test(sourceMap)) {
+    if (hasLaterPages && /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later (?:pages?|sections?)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|later[- ]page content unavailable|truncated after page\s*2|provided excerpt only|not fully available in supplied context/i.test(sourceMap)) {
       sourceMapProblems.push("Source Map contains stale caveats about later source pages");
     }
   }
