@@ -570,6 +570,163 @@ describe("garden validator regression fixture", () => {
     }
   });
 
+  test("learner-facing repair scaffold prose fails validation", () => {
+    for (const scaffold of [
+      "The motivation is already in place, so this page develops how SNNs learn from the previous concepts.",
+      "Focus on the specific mechanism, metric, result, or limitation this lesson adds to the learning path.",
+      "After snn architecture with encoding and inhibition, how snns learn becomes the next question to resolve.",
+    ]) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-scaffold-prose-"));
+      try {
+        const dir = buildGoodGarden(root);
+        const pagePath = path.join(dir, "learning", "2. Spiking Neurons", "2.1 The Leaky Integrate-and-Fire Neuron.md");
+        fs.writeFileSync(pagePath, fs.readFileSync(pagePath, "utf-8").replace("# 2.1 The Leaky Integrate-and-Fire Neuron\n\n", `# 2.1 The Leaky Integrate-and-Fire Neuron\n\n${scaffold}\n\n`));
+        const result = checkById(runChecksWithReport(dir, "snn-fixture"), 59);
+        assert.equal(result.status, "FAIL");
+        assert.match(result.problems.join("\n"), /repair scaffold prose|snns/);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("section index scaffold prose fails validation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-section-index-prose-"));
+    try {
+      const dir = buildGoodGarden(root);
+      fs.writeFileSync(
+        path.join(dir, "learning", "3. How SNNs Learn", "_index.md"),
+        fm({ title: "3. How SNNs Learn", knowledge_type: "learning-section", breadboardType: "learning_section" }) +
+          "# 3. How SNNs Learn\n\nBuild up how snns learns one step at a time.\n",
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 60);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /Build up|snns|SNNs learns/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("contradicted stale formula caveats in planning docs fail when formula anchors exist", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-stale-formula-caveat-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const ledgerPath = path.join(dir, ".breadboard", "source-visuals.json");
+      const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+      ledger.push({ sourceVisualId: "S1.P6.E1", sourceId: "snn", pageNumber: 6, type: "equation", caption: "Accuracy formula", exactText: "Accuracy = correct / total" });
+      fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
+      fs.appendFileSync(
+        path.join(dir, ".breadboard", "planning", "Scope Contract.md"),
+        "\n- Formula captions but exact notation unavailable; variable definitions are not provided.\n",
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 42);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /stale caveat/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("text anchors must resolve to the source-anchor ledger and contract", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-text-anchor-ledger-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(pagePath, fs.readFileSync(pagePath, "utf-8").replace("sourceVisualIds: []", 'sourceVisualIds: []\nsourceAnchors: ["text-fixture-missing-ledger"]'));
+      const contractPath = path.join(dir, ".breadboard", "learning-unit-contract.json");
+      const contract = JSON.parse(fs.readFileSync(contractPath, "utf-8"));
+      contract.learningUnits.find((unit) => unit.id === "U7").sourceAnchors = ["text-fixture-missing-ledger"];
+      fs.writeFileSync(contractPath, JSON.stringify(contract, null, 2));
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 61);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /not registered/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("page source anchors drifting from the Learning Unit Contract fail", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-anchor-drift-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      fs.writeFileSync(pagePath, fs.readFileSync(pagePath, "utf-8").replace("sourceVisualIds: []", 'sourceVisualIds: []\nsourceAnchors: ["text-fixture-registered-anchor"]'));
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "source-anchors.json"),
+        JSON.stringify({ sourceTextConceptAnchors: [{ id: "text-fixture-registered-anchor", sourceId: "snn", kind: "concept", title: "Registered anchor", semanticSummary: "Registered source prose.", conceptKeywords: ["registered", "anchor"], confidence: 0.8 }] }, null, 2),
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 61);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /not present in Learning Unit Contract/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Source Coverage visual-anchor claims must match final visual JSON", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-coverage-final-visual-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const coveragePath = path.join(dir, ".breadboard", "planning", "Source Coverage.md");
+      fs.writeFileSync(
+        coveragePath,
+        fs.readFileSync(coveragePath, "utf-8").replace(
+          /- S1\.P4\.F1: \[\[learning\/2\. Spiking Neurons\/2\.1 The Leaky Integrate-and-Fire Neuron[^\n]+interactive visualIds=v_lif/,
+          "- S1.P8.T1: stale table grounding; visual=v_lif",
+        ),
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 62);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /final visual JSON does not|Source Coverage omits/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("repair-log changedFiles may not attribute unrelated visual specs", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-repair-log-provenance-"));
+    try {
+      const dir = buildGoodGarden(root);
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "repair-log.json"),
+        JSON.stringify({
+          repairs: [{
+            unitId: "U3",
+            pagePath: "learning/2. Spiking Neurons/2.1 The Leaky Integrate-and-Fire Neuron.md",
+            sectionPath: "learning/2. Spiking Neurons",
+            failureTypes: ["repeated_opening"],
+            result: "resolved",
+            changedFiles: [".breadboard/visuals/unrelated-visual.json"],
+            unresolvedValidationErrors: [],
+            executorUsed: "deterministic",
+            naturalProseValidation: "pass",
+            modelRepairStatus: "unavailable",
+          }],
+        }, null, 2),
+      );
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 58);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /unrelated file/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("awkward visual titles fail validation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-visual-title-quality-"));
+    try {
+      const dir = buildGoodGarden(root);
+      const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
+      const page = fs.readFileSync(pagePath, "utf-8").replace('"title": "Accuracy, latency, energy, and spike-count tradeoff explorer"', '"title": "latency Calculator"');
+      fs.writeFileSync(pagePath, page);
+      const result = checkById(runChecksWithReport(dir, "snn-fixture"), 63);
+      assert.equal(result.status, "FAIL");
+      assert.match(result.problems.join("\n"), /starts lowercase|awkward/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("repeated opening motifs are not skipped when a contract exists", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-repeated-openings-"));
     try {

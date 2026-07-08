@@ -134,6 +134,51 @@ describe("stale caveat sanitation (D)", () => {
     const out = sanitizeStaleCaveats(input, { laterPagesExist: false, formulaAnchorsExist: false });
     assert.match(out, /truncated after Page 2/i);
   });
+
+  test("rewrites a JSON-structured 'later pages ... available only as extracted captions' caveat", () => {
+    // Regression: the detector flagged this broad "later pages ... captions"
+    // phrasing (common in JSON-structured Source Maps) but the sanitizer had no
+    // matching rewrite, so finalize detected a caveat it could not clean.
+    const input = '        "details": "The provided content is truncated, while figures from later pages are available only as extracted captions.",';
+    const out = sanitizeStaleCaveats(input, facts);
+    assert.doesNotMatch(out, /later pages are available only as extracted captions/i);
+    assert.match(out, /later source pages are available through extracted anchors/);
+    assert.match(out, /"details":/, "must stay valid JSON (key preserved)");
+  });
+
+  test("finalize does not self-flag the generated validation report as a stale caveat", () => {
+    // Regression: the caveat detector used to scan .breadboard/validation-report.md
+    // and .breadboard/repair-report.md, which ECHO problem text — so a reported
+    // caveat became a new self-referential caveat. A stale caveat sitting only in
+    // the generated report must not trip finalize.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-caveat-report-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard", "planning");
+      fs.mkdirSync(bb, { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "source-visuals.json"),
+        JSON.stringify([{ sourceVisualId: "S1.P9.T1", type: "table", caption: "later-page table", pageNumber: 9 }], null, 2),
+      );
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      // A prior validation report that ECHOES a later-page caveat problem.
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "validation-report.md"),
+        "# Report\n\n## Source Map Caveat Reconciliation\n\n- stale caveat says later pages are unavailable despite later anchors/pages\n",
+      );
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((p) => /validation-report\.md.*stale caveat/i.test(p)),
+        false,
+        `finalize must not flag the generated report as a caveat source: ${report.criticalProblems.join(" | ")}`,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -377,6 +422,98 @@ describe("contract-driven semantic repair loop", () => {
     }
   });
 
+  test("adds role and reason metadata to multi-formula tradeoff anchors", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-tradeoff-anchor-roles-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard", "visuals"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "3. Metrics"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      const equations = [
+        ["S1.P6.E1", "Classification accuracy as correct predictions over total predictions"],
+        ["S1.P6.E2", "Latency as decision time minus stimulus input time"],
+        ["S1.P6.E3", "Total spike count summed over neurons and time steps"],
+        ["S1.P6.E4", "Total energy from spike energy and synaptic operation energy"],
+        ["S1.P6.E5", "Normalized energy efficiency as accuracy over energy consumption"],
+        ["S1.P6.E6", "Convergence time as minimum epoch reaching target accuracy"],
+      ];
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "source-visuals.json"),
+        JSON.stringify(equations.map(([sourceVisualId, caption]) => ({ sourceVisualId, type: "equation", caption })), null, 2),
+      );
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), JSON.stringify({ "vis-tradeoff": { type: "tradeoff_explorer", title: "Metric tradeoff" } }, null, 2));
+      const spec = {
+        id: "vis-tradeoff",
+        type: "tradeoff_explorer",
+        title: "Accuracy, latency, energy, and spike-count tradeoff explorer",
+        sourceAnchors: equations.map(([equationId, description]) => ({ equationId, description, sourceId: "source", page: 6 })),
+        conceptTargets: ["accuracy", "latency", "energy", "spike count", "model comparison"],
+        pedagogicalPurpose: "Let the learner compare accuracy, latency, spike count, energy, and normalized efficiency.",
+        props: { priority: "balanced" },
+        controls: [{ name: "priority", label: "Deployment priority", type: "select", options: ["accuracy", "latency", "energy", "balanced"], defaultValue: "balanced" }],
+        inputs: ["deployment priority"],
+        outputs: ["accuracy", "latency", "energy", "spike count"],
+        caption: "Switch priorities to compare metric tradeoffs.",
+        regenerationPrompt: "Improve this tradeoff explorer.",
+        sourceGroundingStatus: "source-grounded",
+        justification: "Anchored to source metric formulas.",
+      };
+      fs.writeFileSync(path.join(dir, ".breadboard", "visuals", "vis-tradeoff.json"), JSON.stringify(spec, null, 2));
+      fs.writeFileSync(
+        path.join(dir, "learning", "3. Metrics", "3.2 Spike Count and Energy.md"),
+        fm({
+          title: "3.2 Spike Count and Energy",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          visualIds: ["vis-tradeoff"],
+          sourceFormulaAnchors: equations.map(([id]) => id),
+          generatedBy: "learn_button",
+        }) + `${FILLER("accuracy latency spike count energy tradeoff", "metric")}\n\n${block(spec)}\n`,
+      );
+
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
+      finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      const out = fs.readFileSync(path.join(dir, "learning", "3. Metrics", "3.2 Spike Count and Energy.md"), "utf-8");
+      assert.match(out, /"role": "comparison_basis"/);
+      assert.match(out, /"reason": "This formula defines accuracy, one source metric used by the visual's tradeoff comparison\."/);
+      const check55 = runChecks(dir, "test-2").find((result) => result.id === 55);
+      assert.equal(check55.status, "PASS", check55.problems.join("\n"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("adds conceptual metadata for meaningful inline formulas when no formulas block exists", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-inline-formula-metadata-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "1. Events"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Events", "1.3 Brain-Inspired Computation.md"),
+        fm({ title: "1.3 Brain-Inspired Computation", knowledge_type: "learning-page", breadboardType: "learning_page", generatedBy: "learn_button" }) +
+          `${FILLER("rate coding and spike timing", "basic_def")}\n\nA compact firing-rate helper is $r = \\frac{N}{T}$, where the count is divided by the window length.\n`,
+      );
+
+      finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      const out = fs.readFileSync(path.join(dir, "learning", "1. Events", "1.3 Brain-Inspired Computation.md"), "utf-8");
+      assert.match(out, /formulas:/);
+      assert.match(out, /text: "r = \\\\frac\{N\}\{T\}"/);
+      assert.match(out, /groundingStatus: "conceptual-helper"/);
+      const check25 = runChecks(dir, "test-2").find((result) => result.id === 25);
+      assert.equal(check25.status, "PASS", check25.problems.join("\n"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("retitles mixed-role sections before semantic validation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-section-retitle-"));
     try {
@@ -554,6 +691,78 @@ describe("content-based formula grounding (H)", () => {
     const grounded = groundLearnerFormula("E_{\\text{total}}", SOURCE_FORMULAS);
     assert.equal(grounded.groundingStatus, "conceptual-helper");
     assert.equal(grounded.sourceAnchor, undefined);
+  });
+
+  test("source-referenced worked examples stay conceptual without formula-meaning failures", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-worked-example-source-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "3. Metrics"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "source-visuals.json"),
+        JSON.stringify([{ sourceVisualId: "S1.P6.E1", type: "equation", caption: "Accuracy as correct predictions over total predictions" }], null, 2),
+      );
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(dir, "learning", "3. Metrics", "3.1 Accuracy.md"),
+        fm({
+          title: "3.1 Accuracy",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          generatedBy: "learn_button",
+          learningUnitId: "U1",
+        }) +
+          `${FILLER("accuracy as a metric", "metric")}\n\n` +
+          "$$\\text{Accuracy} = \\frac{\\text{number of correct predictions}}{\\text{total number of predictions}}$$\n\n" +
+          "A worked check is $$\\frac{950}{1000} = 0.95 = 95\\%$$.\n",
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.doesNotMatch(report.criticalProblems.join("\n"), /matches source formula .*conceptual-helper/);
+      const out = fs.readFileSync(path.join(dir, "learning", "3. Metrics", "3.1 Accuracy.md"), "utf-8");
+      assert.match(out, /kind: "worked_example"/);
+      assert.match(out, /groundingStatus: "conceptual-helper"/);
+      assert.match(out, /sourceAnchor: "S1\.P6\.E1"/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("caps worked-example formula metadata when a result page has no source definitions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-worked-example-cap-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "5. Results"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(dir, "learning", "5. Results", "5.1 Energy per Inference.md"),
+        fm({
+          title: "5.1 Energy per Inference",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          generatedBy: "learn_button",
+          learningUnitId: "U1",
+        }) +
+          `${FILLER("energy per inference and spike count", "comparison")}\n\n` +
+          "The worked reductions are $200 - 20 = 180$, $200 - 5 = 195$, and $195 \\div 200 = 0.975$.\n",
+      );
+
+      finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      const out = fs.readFileSync(path.join(dir, "learning", "5. Results", "5.1 Energy per Inference.md"), "utf-8");
+      const workedExamples = [...out.matchAll(/kind: "worked_example"/g)].length;
+      assert.ok(workedExamples <= 2, `expected at most 2 worked examples, saw ${workedExamples}\n${out}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

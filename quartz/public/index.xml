@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Brain-inspired Computation 1.1 Why Spiking Neural Networks Exist 1.2 Brain-Like Asynchronous Signaling How Membrane Potential Works 2.1 The Leaky Integrate-and-Fire Neuron 2.2 SNN Architecture with Encoding and Inhibition How SNNs Learn 3.1 How SNNs Learn 3.2 Surrogate Gra... ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:10:06 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 Lateral Inhibition in Spiking Networks Measuring Energy, Efficiency, and Convergence 2.1 Accuracy as Correct Prediction R... ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:59 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks are neural systems that compute with events in time. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:10:06 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks, or SNNs, are neural networks built around discrete spike events rather than continuously updated activation values. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:59 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain why spiking neural networks use event-driven spike timing, how LIF neurons and SNN architectures work, how major SNN training strategies differ, and how to interpret accuracy, latency, energy, spike count, and convergence tradeoffs from the pr... ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:10:06 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:59 GMT</pubDate>
   </item><item>
-    <title>1. Brain-inspired Computation</title>
-    <link>https://localhost:8081/test-2/learning/1.-Brain-inspired-Computation/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Brain-inspired-Computation/</guid>
-    <description><![CDATA[ 1. Brain-inspired Computation Build up brain-inspired computation one step at a time. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:09:30 GMT</pubDate>
+    <title>5. Where SNNs Fit and What Still Blocks Adoption</title>
+    <link>https://localhost:8081/test-2/learning/5.-Where-SNNs-Fit-and-What-Still-Blocks-Adoption/</link>
+    <guid>https://localhost:8081/test-2/learning/5.-Where-SNNs-Fit-and-What-Still-Blocks-Adoption/</guid>
+    <description><![CDATA[ 5. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:15 GMT</pubDate>
+  </item><item>
+    <title>4. What the Results Show</title>
+    <link>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/</link>
+    <guid>https://localhost:8081/test-2/learning/4.-What-the-Results-Show/</guid>
+    <description><![CDATA[ 4. What the Results Show What the Results Show introduces the core idea and connects it to the next learner-facing step. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:15 GMT</pubDate>
+  </item><item>
+    <title>1. Why SNNs Need Events</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</guid>
+    <description><![CDATA[ 1. Why SNNs Need Events Why SNNs Need Events introduces the core idea and connects it to the next learner-facing step. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:15 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test-2/learning/1.-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera watching a quiet hallway. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:09:30 GMT</pubDate>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Imagine a small camera watching a quiet hallway. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:15 GMT</pubDate>
   </item><item>
-    <title>2. How Membrane Potential Works</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Membrane-Potential-Works/</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Membrane-Potential-Works/</guid>
-    <description><![CDATA[ 2. How Membrane Potential Works Build up how membrane potential works one step at a time. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:09:30 GMT</pubDate>
+    <title>1.2 Spikes, Timing, and Event-Driven Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</guid>
+    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation Imagine a small camera sensor watching a hallway at night. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:15 GMT</pubDate>
   </item><item>
-    <title>1.2 Brain-Like Asynchronous Signaling</title>
-    <link>https://localhost:8081/test-2/learning/1.-Brain-inspired-Computation/1.2-Brain-Like-Asynchronous-Signaling</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Brain-inspired-Computation/1.2-Brain-Like-Asynchronous-Signaling</guid>
-    <description><![CDATA[ Imagine a small group of neurons receiving signals from the world one moment at a time. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:09:30 GMT</pubDate>
+    <title>1.3 The Leaky Integrate-and-Fire Neuron</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-The-Leaky-Integrate-and-Fire-Neuron</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron Imagine a small motion sensor that has already learned to send information as a spike train: quiet most of the time, then a brief event when something meaningful happens. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:15 GMT</pubDate>
   </item><item>
-    <title>2.1 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Membrane-Potential-Works/2.1-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Membrane-Potential-Works/2.1-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron Imagine a spiking neuron receiving a stream of input spikes from earlier neurons in a network. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:09:30 GMT</pubDate>
-  </item><item>
-    <title>2.2 SNN Architecture with Encoding and Inhibition</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Membrane-Potential-Works/2.2-SNN-Architecture-with-Encoding-and-Inhibition</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Membrane-Potential-Works/2.2-SNN-Architecture-with-Encoding-and-Inhibition</guid>
-    <description><![CDATA[ SNN Architecture with Encoding and Inhibition You already have the basic pieces: a spike train is a sequence of timed events, a neuron layer groups many spiking units, and each neuron fires when its membrane potential reaches a threshold. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:09:30 GMT</pubDate>
-  </item><item>
-    <title>3. How SNNs Learn</title>
-    <link>https://localhost:8081/test-2/learning/3.-How-SNNs-Learn/</link>
-    <guid>https://localhost:8081/test-2/learning/3.-How-SNNs-Learn/</guid>
-    <description><![CDATA[ 3. How SNNs Learn Build up how snns learns one step at a time. ]]></description>
-    <pubDate>Tue, 07 Jul 2026 11:09:30 GMT</pubDate>
+    <title>1.4 Lateral Inhibition in Spiking Networks</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-Lateral-Inhibition-in-Spiking-Networks</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-Lateral-Inhibition-in-Spiking-Networks</guid>
+    <description><![CDATA[ Lateral Inhibition in Spiking Networks A spiking neuron can already turn accumulated input into a timed event: incoming spikes push its internal state upward, and when enough evidence has arrived, the neuron fires. ]]></description>
+    <pubDate>Wed, 08 Jul 2026 06:58:15 GMT</pubDate>
   </item>
     </channel>
   </rss>

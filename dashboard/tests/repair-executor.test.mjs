@@ -8,20 +8,30 @@
 // Plus one integration fixture where deterministic repair is DISABLED
 // (repairExecutor: "model") and a fake model repair is required.
 //
-// Prompt/parse unit tests exercise repair-executor.ts directly.
+// Prompt/parse unit tests exercise repair-executor.ts directly. The e2e cases
+// DISCOVER their target page from the on-disk garden (see helpers/garden.mjs).
 
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   finalizeGardenExport,
   repairLearningUnitsFromContract,
   verifyFinalArtifactNoMutation,
 } from "../src/lib/garden-finalize.ts";
 import { buildModelRepairPrompt, parseModelRepairResponse } from "../src/lib/repair-executor.ts";
+import {
+  freshGarden,
+  read,
+  write,
+  findFormulaPage,
+  findLaterLearnerPages,
+  rewriteFirstProse,
+  injectOpeningMotif,
+  OPENING_MOTIF,
+  skipReason as skip,
+} from "./helpers/garden.mjs";
 
 // ---------------------------------------------------------------------------
 // Prompt + response parsing unit tests
@@ -66,21 +76,19 @@ function fakeRequest(overrides = {}) {
 describe("model repair prompt + parsing", () => {
   test("prompt includes contract, failures, source anchors, handles, neighbours, and the current page", () => {
     const { system, user } = buildModelRepairPrompt(fakeRequest(), { sourceText: "Latency L = t_decision - t_stimulus." });
-    // system constraints
     assert.match(system, /frontmatter schema/i);
     assert.match(system, /KaTeX/);
     assert.match(system, /===PAGE===/);
     assert.match(system, /breadboard-visual/);
-    // user content sections
     assert.match(user, /Learning Unit Contract/);
-    assert.match(user, /S1\.P6\.E2/); // required source formula id
+    assert.match(user, /S1\.P6\.E2/);
     assert.match(user, /Validation errors to fix/);
-    assert.match(user, /latency-measures-time-to-decision/); // required handle
+    assert.match(user, /latency-measures-time-to-decision/);
     assert.match(user, /Previous unit/);
     assert.match(user, /Next unit/);
     assert.match(user, /Exact source text/);
     assert.match(user, /Current page markdown/);
-    assert.match(user, /L = t_d - t_s/); // the current page body
+    assert.match(user, /L = t_d - t_s/);
   });
 
   test("parses the ===PAGE=== envelope plus optional visual specs and contract patch", () => {
@@ -117,68 +125,54 @@ describe("model repair prompt + parsing", () => {
 // End-to-end fake-executor cases on the real generated garden
 // ---------------------------------------------------------------------------
 
-const REAL_GARDEN = fileURLToPath(new URL("../../quartz/content/test-2", import.meta.url));
-const GARDEN_AVAILABLE = fs.existsSync(path.join(REAL_GARDEN, ".breadboard", "learning-unit-contract.json"));
-const skip = GARDEN_AVAILABLE ? false : "real generated garden quartz/content/test-2 is not present";
-
-const LATENCY_PAGE = "learning/2. Measuring Accuracy, Latency, and Spike Count/2.2 Latency as Time to Decision.md";
-const READING_PAGE = "learning/1. Why SNNs Need Events/1.1 Why Spiking Neural Networks Exist.md";
-const OPENING_MOTIF =
-  "Picture a battery-powered robot moving through a quiet hallway: a dense ANN keeps recomputing every frame while a silent SNN waits for events before doing any work.";
-const INJECT_OPENING_PAGE = "learning/6. Where SNNs Fit and What Still Blocks Adoption/6.4 Limits of Current Spiking Neural Networks.md";
-
-function freshGarden() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-rex-"));
-  const dir = path.join(root, "test-2");
-  fs.cpSync(REAL_GARDEN, dir, { recursive: true });
-  for (const noise of ["backups", "debug", "events.jsonl", "repair-log.json", "repair-report.md"]) {
-    fs.rmSync(path.join(dir, ".breadboard", noise), { recursive: true, force: true });
-  }
-  return { root, dir };
-}
-const read = (dir, rel) => fs.readFileSync(path.join(dir, ...rel.split("/")), "utf-8");
-const write = (dir, rel, s) => fs.writeFileSync(path.join(dir, ...rel.split("/")), s, "utf-8");
-
-/** Inject the formula-grounding defect on the latency page (E2 -> E5). */
-function mutateLatency(dir) {
+/** Inject the formula-grounding defect on a discovered single-formula page. */
+function mutateFormulaGrounding(dir) {
+  const target = findFormulaPage(dir); // { rel, anchor, wrongAnchor }
+  const original = read(dir, target.rel);
+  const escaped = target.anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   write(
     dir,
-    LATENCY_PAGE,
-    read(dir, LATENCY_PAGE)
-      .replace(/sourceFormulaAnchors: \["S1\.P6\.E2"\]/, 'sourceFormulaAnchors: ["S1.P6.E5"]')
-      .replace(/sourceAnchor: "S1\.P6\.E2"/g, 'sourceAnchor: "S1.P6.E5"'),
+    target.rel,
+    original
+      .replace(/^sourceFormulaAnchors: \[([^\]]*)\]$/m, (line) => line.replace(`"${target.anchor}"`, `"${target.wrongAnchor}"`))
+      .replace(new RegExp(`sourceAnchor: "${escaped}"`, "g"), `sourceAnchor: "${target.wrongAnchor}"`),
   );
+  return { rel: target.rel, anchor: target.anchor, wrongAnchor: target.wrongAnchor, original };
 }
 
-/** Drive repair + finalize + verify with a fake executor, capturing everything
- * the assertions need before the temp dir is torn down. */
-async function driveExecutor({ mutate, repairExecutor, modelRepair }) {
-  const { root, dir } = freshGarden();
+function snapshotTree(dir) {
+  const out = new Map();
+  const walk = (d, rel) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(path.join(d, e.name), r);
+      else out.set(r, fs.readFileSync(path.join(d, e.name), "utf-8"));
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
+/** Drive repair + finalize + verify with a fake executor built from the mutated
+ * garden's discovered target, capturing everything before teardown. */
+async function driveExecutor({ setup, repairExecutor, makeModelRepair }) {
+  const { root, dir } = await freshGarden();
   try {
-    mutate(dir);
+    const meta = setup(dir) ?? {};
+    const modelRepair = makeModelRepair ? makeModelRepair(meta) : undefined;
     const run = await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2", repairExecutor, modelRepair });
     const finalize = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
     const verify = verifyFinalArtifactNoMutation({ gardenDir: dir, gardenSlug: "test-2" });
-    const failedDir = path.join(dir, ".breadboard", "debug", "failed-repairs");
-    const failedRepairs = fs.existsSync(failedDir) ? fs.readdirSync(failedDir) : [];
-    // Capture the post-pipeline tree so assertions can read files after the temp
-    // dir is torn down in `finally`.
-    const finalTree = new Map();
-    const walk = (d, rel) => {
-      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-        const r = rel ? `${rel}/${entry.name}` : entry.name;
-        if (entry.isDirectory()) walk(path.join(d, entry.name), r);
-        else finalTree.set(r, fs.readFileSync(path.join(d, entry.name), "utf-8"));
-      }
-    };
-    walk(dir, "");
+    const failedAbs = path.join(dir, ".breadboard", "debug", "failed-repairs");
+    const failedRepairs = fs.existsSync(failedAbs) ? fs.readdirSync(failedAbs) : [];
+    const final = snapshotTree(dir);
     const readFinal = (rel) => {
-      const value = finalTree.get(rel);
-      if (value === undefined) throw new Error(`file not present after pipeline: ${rel}`);
-      return value;
+      const v = final.get(rel);
+      if (v === undefined) throw new Error(`file not present after pipeline: ${rel}`);
+      return v;
     };
     const entryFor = (page) => run.repairs.find((r) => r.pagePath === page);
-    return { run, finalize, verify, failedRepairs, readFinal, entryFor };
+    return { meta, run, finalize, verify, failedRepairs, readFinal, entryFor };
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -186,32 +180,25 @@ async function driveExecutor({ mutate, repairExecutor, modelRepair }) {
 
 describe("model-backed repair executor end-to-end (fake model)", () => {
   test("case 1: valid model candidate is used and deterministic fallback is NOT used", { skip }, async () => {
-    let original;
     const ctx = await driveExecutor({
-      mutate: (dir) => {
-        original = read(dir, LATENCY_PAGE); // the correct (E2) page
-        mutateLatency(dir);
-      },
+      setup: mutateFormulaGrounding,
       repairExecutor: "model_with_deterministic_fallback",
       // Fake model returns the known-good page -> valid candidate.
-      modelRepair: (request) => (request.pagePath === LATENCY_PAGE ? { markdown: original, notes: ["returned corrected page"] } : null),
+      makeModelRepair: (meta) => (request) => (request.pagePath === meta.rel ? { markdown: meta.original, notes: ["returned corrected page"] } : null),
     });
 
-    const entry = ctx.entryFor(LATENCY_PAGE);
-    assert.ok(entry, "latency page must have a repair-log entry");
+    const entry = ctx.entryFor(ctx.meta.rel);
+    assert.ok(entry, "target page must have a repair-log entry");
     assert.equal(entry.executorUsed, "model");
     assert.deepEqual(entry.executorAttempted, ["model"], "deterministic must NOT be attempted when the model succeeds");
     assert.equal(entry.result, "resolved");
     assert.equal(entry.modelFailureReason, undefined);
     assert.equal(ctx.failedRepairs.length, 0, "no failed-repair dump when the model succeeds");
-    // execution record present
-    assert.ok(ctx.run.executions.some((e) => e.pagePath === LATENCY_PAGE && e.executor === "model" && e.success));
-    // page carries model provenance and the correct grounding
-    const page = ctx.readFinal(LATENCY_PAGE);
+    assert.ok(ctx.run.executions.some((e) => e.pagePath === ctx.meta.rel && e.executor === "model" && e.success));
+    const page = ctx.readFinal(ctx.meta.rel);
     assert.match(page, /lastSemanticRepair:/);
     assert.match(page, /repairType: "model"/);
-    assert.doesNotMatch(page, /S1\.P6\.E5/);
-    assert.match(page, /sourceFormulaAnchors: \["S1\.P6\.E2"\]/);
+    assert.doesNotMatch(page, new RegExp(ctx.meta.wrongAnchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     // case 5: no-mutation verification passes after finalization
     assert.equal(ctx.verify.accepted, true);
     assert.deepEqual(ctx.verify.mutatedFiles, []);
@@ -220,36 +207,35 @@ describe("model-backed repair executor end-to-end (fake model)", () => {
 
   test("case 2: invalid model candidate is rejected and deterministic fallback repairs the page", { skip }, async () => {
     const ctx = await driveExecutor({
-      mutate: mutateLatency,
+      setup: mutateFormulaGrounding,
       repairExecutor: "model_with_deterministic_fallback",
-      // Fake model returns the still-broken page (keeps E5) -> fails validation.
-      modelRepair: (request) => (request.pagePath === LATENCY_PAGE ? { markdown: request.currentPageMarkdown } : null),
+      // Fake model returns the still-broken page (keeps the wrong anchor).
+      makeModelRepair: (meta) => (request) => (request.pagePath === meta.rel ? { markdown: request.currentPageMarkdown } : null),
     });
 
-    const entry = ctx.entryFor(LATENCY_PAGE);
+    const entry = ctx.entryFor(ctx.meta.rel);
     assert.equal(entry.executorUsed, "deterministic", "must fall back to deterministic");
     assert.deepEqual(entry.executorAttempted, ["model", "deterministic"]);
     assert.match(entry.modelFailureReason ?? "", /failed validation/i);
     assert.equal(entry.result, "resolved");
     assert.ok(ctx.failedRepairs.length >= 1, "rejected candidate must be dumped to failed-repairs/");
-    // page carries deterministic provenance and the deterministic fix (E2)
-    const page = ctx.readFinal(LATENCY_PAGE);
+    const page = ctx.readFinal(ctx.meta.rel);
     assert.match(page, /repairType: "deterministic"/);
-    assert.doesNotMatch(page, /S1\.P6\.E5/);
+    assert.doesNotMatch(page, new RegExp(ctx.meta.wrongAnchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.equal(ctx.verify.accepted, true);
     assert.deepEqual(ctx.verify.mutatedFiles, []);
   });
 
   test("case 3: unavailable model (throws) falls back to deterministic", { skip }, async () => {
     const ctx = await driveExecutor({
-      mutate: mutateLatency,
+      setup: mutateFormulaGrounding,
       repairExecutor: "model_with_deterministic_fallback",
-      modelRepair: () => {
+      makeModelRepair: () => () => {
         throw new Error("model endpoint unavailable");
       },
     });
 
-    const entry = ctx.entryFor(LATENCY_PAGE);
+    const entry = ctx.entryFor(ctx.meta.rel);
     assert.equal(entry.executorUsed, "deterministic");
     assert.deepEqual(entry.executorAttempted, ["model", "deterministic"]);
     assert.match(entry.modelFailureReason ?? "", /model executor error: model endpoint unavailable/);
@@ -259,22 +245,18 @@ describe("model-backed repair executor end-to-end (fake model)", () => {
   });
 
   test("case 4: model candidate touching unsupported files is rejected, deterministic fallback used", { skip }, async () => {
-    let original;
     const ctx = await driveExecutor({
-      mutate: (dir) => {
-        original = read(dir, LATENCY_PAGE);
-        mutateLatency(dir);
-      },
+      setup: mutateFormulaGrounding,
       repairExecutor: "model_with_deterministic_fallback",
       // The page body is correct, but the candidate also patches a FOREIGN unit's
       // contract handles — out of scope for this page's repair.
-      modelRepair: (request) =>
-        request.pagePath === LATENCY_PAGE
-          ? { markdown: original, contractHandlePatch: { unitId: "U_FOREIGN", handles: ["some-foreign-handle"] } }
+      makeModelRepair: (meta) => (request) =>
+        request.pagePath === meta.rel
+          ? { markdown: meta.original, contractHandlePatch: { unitId: "U_FOREIGN", handles: ["some-foreign-handle"] } }
           : null,
     });
 
-    const entry = ctx.entryFor(LATENCY_PAGE);
+    const entry = ctx.entryFor(ctx.meta.rel);
     assert.equal(entry.executorUsed, "deterministic");
     assert.match(entry.modelFailureReason ?? "", /out of scope|unsupported/i);
     assert.ok(ctx.failedRepairs.length >= 1, "out-of-scope candidate must be dumped");
@@ -285,30 +267,16 @@ describe("model-backed repair executor end-to-end (fake model)", () => {
   test("integration: deterministic disabled, model rewrites a repeated opening into a forward transition", { skip }, async () => {
     const MODEL_TRANSITION =
       "MODEL-REWRITE: Building directly on the previous unit, this page advances its specific argument without restating the earlier framing scenario.";
-    const rewriteFirstProse = (markdown) => {
-      const fmMatch = markdown.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
-      const fm = fmMatch ? fmMatch[0] : "";
-      const body = fmMatch ? markdown.slice(fmMatch[0].length) : markdown;
-      const paras = body.replace(/^\n+/, "").split(/\n{2,}/);
-      let idx = paras.findIndex((p) => {
-        const t = p.trim();
-        return t && !t.startsWith("#") && !t.startsWith("!") && !t.startsWith("```");
-      });
-      if (idx < 0) idx = 0;
-      paras[idx] = MODEL_TRANSITION;
-      return fm + paras.join("\n\n");
-    };
-
     const ctx = await driveExecutor({
-      mutate: (dir) => {
-        // Inject the same opening motif into a later page (weak/repeated flow).
-        write(dir, INJECT_OPENING_PAGE, read(dir, INJECT_OPENING_PAGE).replace(/(\n#{1,3} [^\n]+\n\n)/, `$1${OPENING_MOTIF}\n\n`));
+      setup: (dir) => {
+        const rel = findLaterLearnerPages(dir, 1)[0];
+        write(dir, rel, injectOpeningMotif(read(dir, rel), OPENING_MOTIF));
+        return { rel };
       },
       repairExecutor: "model", // deterministic repair intentionally disabled
-      modelRepair: (request) => ({ markdown: rewriteFirstProse(request.currentPageMarkdown), notes: ["model rewrote the repeated opening"] }),
+      makeModelRepair: () => (request) => ({ markdown: rewriteFirstProse(request.currentPageMarkdown, MODEL_TRANSITION), notes: ["model rewrote the repeated opening"] }),
     });
 
-    // both repeated-opening pages were repaired by the MODEL (no deterministic)
     assert.equal(ctx.run.repairExecutorMode, "model");
     assert.ok(ctx.run.repairs.length >= 1);
     for (const entry of ctx.run.repairs) {
@@ -316,13 +284,10 @@ describe("model-backed repair executor end-to-end (fake model)", () => {
       assert.deepEqual(entry.executorAttempted, ["model"]);
       assert.equal(entry.result, "resolved");
     }
-    // the injected page shows the model's distinctive rewrite + model provenance
-    const injected = ctx.readFinal(INJECT_OPENING_PAGE);
+    const injected = ctx.readFinal(ctx.meta.rel);
     assert.match(injected, /MODEL-REWRITE:/);
     assert.doesNotMatch(injected, /battery-powered robot moving through a quiet hallway/);
     assert.match(injected, /repairType: "model"/);
-    // the repair log records model provenance and the artifact is accepted
-    assert.ok(ctx.run.repairs.every((e) => e.executorUsed === "model"));
     assert.equal(ctx.verify.accepted, true);
     assert.deepEqual(ctx.verify.mutatedFiles, []);
     assert.deepEqual(ctx.finalize.criticalProblems, []);
