@@ -87,6 +87,14 @@ describe("fallback + commentary detectors", () => {
   test("assessLessonQuality hard-fails a missing example or Q&A", () => {
     const noExample = "**Question.** a\n\n**Answer.** b\n\n" + "A spiking neuron fires. ".repeat(120);
     assert.ok(assessLessonQuality(noExample).problems.some((p) => p.code === "no-example" && p.hard));
+
+    const analogy =
+      "**Question.** a\n\n**Answer.** b\n\n" +
+      "A simple analogy is a room full of motion detectors where only the changed detector reports activity. ".repeat(120);
+    assert.equal(
+      assessLessonQuality(analogy).problems.some((p) => p.code === "no-example"),
+      false,
+    );
   });
 });
 

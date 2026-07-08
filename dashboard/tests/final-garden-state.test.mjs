@@ -139,6 +139,41 @@ describe("FinalGardenState canonical audit — state-drift regressions", { skip 
     assert.ok(!(audit(dir).byRule.anchor_resolution ?? []).some((p) => p.includes("S9.P9.Z9")), "registered anchor resolves");
   });
 
+  test("3b. bare source-document slug references are reconciled into structural anchors", () => {
+    const dir = freshCopy();
+    const sourceName = fs.readdirSync(path.join(dir, "sources")).find((name) => name.endsWith(".md") && name !== "_index.md");
+    assert.ok(sourceName, "expected a source document");
+    const sourceSlug = path.basename(sourceName, ".md");
+    const page = learnerPages(dir)[0];
+
+    const anchors = readJson(dir, ".breadboard/source-anchors.json");
+    anchors.sourceStructuralAnchors = (anchors.sourceStructuralAnchors ?? []).filter((anchor) => anchor.id !== sourceSlug);
+    writeJson(dir, ".breadboard/source-anchors.json", anchors);
+
+    let md = read(dir, page);
+    md = /^sourceAnchors:/m.test(md)
+      ? md.replace(/^sourceAnchors: \[([^\]]*)\]/m, `sourceAnchors: [$1, "${sourceSlug}"]`)
+      : md.replace(/^(title:.*)$/m, `$1\nsourceAnchors: ["${sourceSlug}"]`);
+    write(dir, page, md);
+
+    const unitId = md.match(/^learningUnitId:\s*"?([^"\n]+)"?/m)?.[1];
+    assert.ok(unitId, "expected learningUnitId");
+    const contract = readJson(dir, ".breadboard/learning-unit-contract.json");
+    const unit = contract.learningUnits.find((candidate) => candidate.id === unitId);
+    assert.ok(unit, "expected matching contract unit");
+    unit.sourceAnchors = [...new Set([...(unit.sourceAnchors ?? []), sourceSlug])];
+    writeJson(dir, ".breadboard/learning-unit-contract.json", contract);
+
+    const before = audit(dir);
+    assert.ok(before.byRule.anchor_resolution?.some((p) => p.includes(sourceSlug)), "audit should flag the unregistered source document slug");
+
+    reconcileFinalGardenState(dir, "test-2");
+    const state = buildFinalGardenState(dir, "test-2");
+    assert.ok(state.sourceAnchors[sourceSlug], "source document slug should be registered as a canonical anchor");
+    assert.equal(state.sourceAnchors[sourceSlug].kind, "guidance");
+    assert.ok(!(audit(dir).byRule.anchor_resolution ?? []).some((p) => p.includes(sourceSlug)), "reconciled source document slug resolves");
+  });
+
   // 4. Page uses a real anchor its unit's contract does not sanction.
   test("4. page uses a text/formula anchor not allowed by its unit contract", () => {
     const dir = freshCopy();
@@ -195,10 +230,13 @@ describe("FinalGardenState canonical audit — state-drift regressions", { skip 
     assert.ok(!/introduces the core idea|learner-facing step/i.test(good));
 
     const dir = freshCopy();
-    const sectionIndex = "learning/4. What the Results Show/_index.md";
+    const sectionName = fs.readdirSync(path.join(dir, "learning"), { withFileTypes: true })
+      .find((entry) => entry.isDirectory() && fs.existsSync(path.join(dir, "learning", entry.name, "_index.md")))?.name;
+    assert.ok(sectionName, "expected a section index");
+    const sectionIndex = `learning/${sectionName}/_index.md`;
     const md = read(dir, sectionIndex);
     const fm = md.match(/^---\n[\s\S]*?\n---/)?.[0] ?? "";
-    write(dir, sectionIndex, `${fm}\n\n# 4. What the Results Show\n\nWhat the Results Show introduces the core idea and connects it to the next learner-facing step.\n`);
+    write(dir, sectionIndex, `${fm}\n\n# ${sectionName}\n\n${sectionName} introduces the core idea and connects it to the next learner-facing step.\n`);
 
     const before = audit(dir);
     assert.ok(before.byRule.section_index_prose?.some((p) => p.includes(sectionIndex)), "audit should flag template section prose");

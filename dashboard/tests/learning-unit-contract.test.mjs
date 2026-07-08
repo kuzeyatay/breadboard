@@ -333,6 +333,21 @@ describe("Learning Unit Contract — inline figure placement (Fix 2)", () => {
     const problems = figurePlacementProblems(md);
     assert.ok(problems.some((p) => /embeds 4 source figures/.test(p)));
   });
+
+  test("does not count source tables against the source figure cap", () => {
+    const md = [
+      prose,
+      "![a](x/source-visuals/a.png)",
+      prose,
+      "![b](x/source-visuals/b.png)",
+      prose,
+      "![c](x/source-visuals/c.png)",
+      prose,
+      "![Table 1](x/source-visuals/page-7-table-t1-summary.png)",
+      prose,
+    ].join("\n\n");
+    assert.deepEqual(figurePlacementProblems(md), []);
+  });
 });
 
 describe("Learning Unit Contract — full-set validation (Fix 11)", () => {

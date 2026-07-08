@@ -40,7 +40,7 @@ import {
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "../dashboard/src/lib/learning-unit-contract.ts";
-import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula } from "../dashboard/src/lib/learn-utils.ts";
+import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "../dashboard/src/lib/learn-utils.ts";
 import { auditFinalGardenState, buildFinalGardenState } from "../dashboard/src/lib/final-garden-state.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -932,6 +932,24 @@ function visualText(visual: Record<string, unknown>): string {
   ].map((value) => String(value ?? "")).join(" ");
 }
 
+function stripTitleNumber(value: string): string {
+  return value.replace(/^\s*\d+(?:\.\d+)*\.?\s*/, "").trim();
+}
+
+function canonicalSectionFolderLabel(title: string, fallbackName = "Section"): string {
+  const number = title.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1] ?? fallbackName.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
+  const segment = safeLearnFileSegment(stripTitleNumber(title), "Section");
+  return number && segment ? `${number}. ${segment}` : (segment || fallbackName);
+}
+
+function canonicalSectionTitleKey(title: string, fallbackName = "Section"): string {
+  return normalizedSectionTitleKey(canonicalSectionFolderLabel(title, fallbackName));
+}
+
+function canonicalSectionBodyKey(title: string): string {
+  return normalizedSectionTitleKey(safeLearnFileSegment(stripTitleNumber(title), "Section"));
+}
+
 function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
   const problems: string[] = [];
   const learningDir = path.join(gardenDir, "learning");
@@ -951,10 +969,12 @@ function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
     const h1 = parsed.body.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
     const folderKey = normalizedSectionTitleKey(entry.name);
     const titleKey = normalizedSectionTitleKey(fmTitle);
+    const canonicalTitleKey = canonicalSectionTitleKey(fmTitle, entry.name);
     sectionTitleByKey.set(titleKey, fmTitle);
+    sectionTitleByKey.set(canonicalTitleKey, fmTitle);
     sectionFolderByKey.set(folderKey, entry.name);
-    if (folderKey !== titleKey) {
-      problems.push(`${rel}/: folder name "${entry.name}" does not match _index title "${fmTitle}"`);
+    if (folderKey !== canonicalTitleKey) {
+      problems.push(`${rel}/: folder name "${entry.name}" does not match canonical _index title "${fmTitle}"`);
     }
     if (h1 && normalizedSectionTitleKey(h1) !== titleKey) {
       problems.push(`${rel}/_index.md: H1 "${h1}" does not match frontmatter title "${fmTitle}"`);
@@ -971,7 +991,9 @@ function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
         problems.push(`learning/_index.md: section link "${ref.label}" targets "${section.folder}" but no matching section title exists`);
         continue;
       }
-      if (normalizedSectionTitleKey(ref.label) !== normalizedSectionTitleKey(title)) {
+      const labelMatchesTitle = normalizedSectionTitleKey(ref.label) === normalizedSectionTitleKey(title);
+      const labelMatchesFolder = canonicalSectionTitleKey(ref.label) === folderKey;
+      if (!labelMatchesTitle && !labelMatchesFolder) {
         problems.push(`learning/_index.md: link label "${ref.label}" does not match target section title "${title}"`);
       }
     }
@@ -983,7 +1005,7 @@ function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
       if (!bullet) continue;
       const label = cleanMapNode(bullet[1]);
       if (!/^\d+\.\s+/.test(label)) continue;
-      const key = normalizedSectionTitleKey(label);
+      const key = canonicalSectionTitleKey(label);
       if (!sectionTitleByKey.has(key) || !sectionFolderByKey.has(key)) {
         problems.push(`learning/Learning Map.md: section label "${label}" does not map to one matching section folder and title`);
       }
@@ -1520,7 +1542,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   {
     const problems: string[] = [];
     for (const page of lessonPages) {
-      if (!/\b(for example|for instance|imagine|consider|suppose|think of|picture)\b/i.test(page.body)) {
+      if (!/\b(for example|for instance|imagine|consider|suppose|think of|picture|analogy|worked example)\b/i.test(page.body)) {
         problems.push(`${page.relPath}: no concrete example / analogy cue`);
       }
       if (!(/\*\*Question\.\*\*/.test(page.body) && /\*\*Answer\.\*\*/.test(page.body))) {
@@ -3293,7 +3315,7 @@ function semanticNavigationNumberProblems(gardenDir: string): string[] {
       if (labelNumber !== sectionInfo.number) {
         problems.push(`SEMANTIC_NAVIGATION_ERROR file="learning/_index.md" label="${ref.label}" target="${ref.target}" problem="Displayed section number ${labelNumber} points to section folder ${sectionInfo.number}"`);
       }
-      if (normalizedSectionTitleKey(labelTitle) !== normalizedSectionTitleKey(sectionInfo.title)) {
+      if (canonicalSectionBodyKey(labelTitle) !== normalizedSectionTitleKey(sectionInfo.title)) {
         problems.push(`SEMANTIC_NAVIGATION_ERROR file="learning/_index.md" label="${ref.label}" target="${ref.target}" problem="Displayed section title does not match target folder title"`);
       }
       continue;

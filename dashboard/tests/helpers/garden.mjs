@@ -208,9 +208,16 @@ export function rewriteFirstProse(markdown, transition) {
   return fm + paras.join("\n\n");
 }
 
-/** Inject the same opening motif as a new first body paragraph after the heading. */
+/** Inject the same opening motif as a new first body paragraph. Handles pages
+ * that carry an H1 in the body AND pages whose title lives only in frontmatter
+ * (no body heading) — the latter is the current learner-page format. */
 export function injectOpeningMotif(markdown, motif) {
-  return markdown.replace(/(\n#{1,3} [^\n]+\n\n)/, `$1${motif}\n\n`);
+  if (/\n#{1,3} [^\n]+\n\n/.test(markdown)) {
+    return markdown.replace(/(\n#{1,3} [^\n]+\n\n)/, `$1${motif}\n\n`);
+  }
+  const fm = markdown.match(/^---\n[\s\S]*?\n---\n\n?/);
+  if (fm) return fm[0] + motif + "\n\n" + markdown.slice(fm[0].length);
+  return `${motif}\n\n${markdown}`;
 }
 
 export const OPENING_MOTIF =

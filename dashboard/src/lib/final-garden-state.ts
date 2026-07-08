@@ -324,6 +324,8 @@ function anchorKindFromVisual(type: string, id: string): CanonicalSourceAnchorKi
 
 const STRUCTURAL_ANCHOR_KINDS: Record<string, CanonicalSourceAnchorKind> = {
   abstract: "abstract",
+  annlimitations: "guidance",
+  architecturecomparison: "guidance",
   applications: "guidance",
   application: "guidance",
   contribution: "guidance",
@@ -335,12 +337,48 @@ const STRUCTURAL_ANCHOR_KINDS: Record<string, CanonicalSourceAnchorKind> = {
   introduction: "intro",
   neuromorphichardware: "guidance",
   neuromorphic_hardware: "guidance",
+  researchgap: "guidance",
+  snndefinition: "guidance",
+  studycontributions: "guidance",
+  synchronousvsasynchronous: "guidance",
   guidance: "guidance",
 };
 
 function structuralKindFromId(id: string): CanonicalSourceAnchorKind | null {
-  const tail = id.split(".").pop()?.toLowerCase() ?? "";
-  return STRUCTURAL_ANCHOR_KINDS[tail] ?? null;
+  if (/\.(?:E|F|G|T)\d+$/i.test(id)) return null;
+  const tokens = id
+    .split(".")
+    .map((token) => token.replace(/[^a-z0-9]+/gi, "").toLowerCase())
+    .filter(Boolean);
+  for (const token of [...tokens].reverse()) {
+    const kind = STRUCTURAL_ANCHOR_KINDS[token];
+    if (kind) return kind;
+  }
+  if (/^scopeContract\./i.test(id)) return "guidance";
+  if (/^S\d+\.P\d+\.[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*$/i.test(id)) {
+    return "guidance";
+  }
+  return null;
+}
+
+function sourceDocumentAnchorRefs(gardenDir: string): Map<string, { sourceId: string; title: string }> {
+  const refs = new Map<string, { sourceId: string; title: string }>();
+  const sourcePages: Array<{ abs: string; rel: string }> = [];
+  walkMarkdown(path.join(gardenDir, "sources"), "sources", sourcePages);
+  for (const page of sourcePages) {
+    if (/(^|\/)_index\.md$/i.test(page.rel)) continue;
+    const content = readText(page.abs);
+    if (content === undefined) continue;
+    const { rawFrontmatter } = splitFrontmatter(content);
+    const basename = path.basename(page.rel, ".md");
+    const sourceId = fmScalar(rawFrontmatter, "sourceId") || basename;
+    const title = fmScalar(rawFrontmatter, "title") || basename;
+    for (const id of [basename, sourceId, title]) {
+      const clean = String(id ?? "").trim();
+      if (clean) refs.set(clean, { sourceId, title });
+    }
+  }
+  return refs;
 }
 
 /** Read the persisted anchor ledgers and build the canonical registry. */
@@ -1216,10 +1254,33 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
   }
 
   // Rule D — formula kinds are correct (no worked example as source_definition).
+  // Only flag cases reconcile can fix without orphaning a required anchor: the
+  // page keeps a symbolic definition for the anchor, or the anchor is not
+  // contract-required. The sole numeric grounding of a required anchor is a
+  // content-generation gap, not a labeling drift, so it is not flagged here.
+  const formulasByPage = new Map<string, FinalFormulaRecord[]>();
   for (const formula of state.formulas) {
-    if ((formula.declaredKind === "source_definition" || formula.declaredKind === "source_derived_definition")
-      && formula.structuralKind === "worked_example") {
-      add("formula_kind", `${formula.pageRel}: formula labeled ${formula.declaredKind} but is a worked example (concrete numeric substitution): "${formula.text.slice(0, 60)}"`);
+    (formulasByPage.get(formula.pageRel) ?? formulasByPage.set(formula.pageRel, []).get(formula.pageRel)!).push(formula);
+  }
+  for (const [pageRel, formulas] of formulasByPage) {
+    const page = state.pages.find((p) => p.rel === pageRel);
+    const unit = page ? unitsById.get(page.learningUnitId) : undefined;
+    const required = new Set<string>([
+      ...(unit?.sourceFormulas ?? []).map((f) => f.id),
+      ...(unit?.sourceAnchors ?? []),
+    ]);
+    const symbolicDefAnchors = new Set(
+      formulas
+        .filter((f) => (f.declaredKind === "source_definition" || f.declaredKind === "source_derived_definition")
+          && f.structuralKind === "definition" && f.sourceAnchor)
+        .map((f) => String(f.sourceAnchor)),
+    );
+    for (const formula of formulas) {
+      if ((formula.declaredKind === "source_definition" || formula.declaredKind === "source_derived_definition")
+        && formula.structuralKind === "worked_example"
+        && workedExampleIsSafelyRelabelable(formula.sourceAnchor, symbolicDefAnchors, required)) {
+        add("formula_kind", `${pageRel}: formula labeled ${formula.declaredKind} but is a worked example (concrete numeric substitution): "${formula.text.slice(0, 60)}"`);
+      }
     }
   }
 
@@ -1372,17 +1433,34 @@ function replaceFormulasBlock(rawFm: string, entries: FullFormulaEntry[]): strin
 }
 
 /** Reclassify worked examples that were mislabeled as source definitions. */
-function relabelWorkedExamples(rawFm: string): { rawFm: string; changed: boolean } {
+/**
+ * Whether a worked-example formula mislabeled as a definition can be safely
+ * relabeled without orphaning a needed anchor: only when the page keeps a real
+ * symbolic definition for that anchor, or the anchor is not required by the
+ * unit contract. The sole numeric grounding of a contract-required anchor is
+ * left alone — we cannot synthesize the missing symbolic definition, and
+ * stripping it would break contract fulfillment.
+ */
+function workedExampleIsSafelyRelabelable(anchor: string | undefined, symbolicDefAnchors: Set<string>, requiredAnchors: Set<string>): boolean {
+  if (anchor && symbolicDefAnchors.has(anchor)) return true;
+  return !(anchor && requiredAnchors.has(anchor));
+}
+
+function relabelWorkedExamples(rawFm: string, requiredAnchors: Set<string> = new Set()): { rawFm: string; changed: boolean } {
   const entries = parseFullFormulaEntries(rawFm);
   if (entries.length === 0) return { rawFm, changed: false };
-  const definitionAnchor = entries.find(
-    (e) => (e.kind === "source_definition" || e.kind === "source_derived_definition")
-      && formulaStructuralKind(e.text) === "definition" && e.sourceAnchor,
-  )?.sourceAnchor;
+  const symbolicDefAnchors = new Set(
+    entries
+      .filter((e) => (e.kind === "source_definition" || e.kind === "source_derived_definition")
+        && formulaStructuralKind(e.text) === "definition" && e.sourceAnchor)
+      .map((e) => String(e.sourceAnchor)),
+  );
+  const definitionAnchor = [...symbolicDefAnchors][0];
   let changed = false;
   for (const entry of entries) {
     if ((entry.kind === "source_definition" || entry.kind === "source_derived_definition")
       && formulaStructuralKind(entry.text) === "worked_example") {
+      if (!workedExampleIsSafelyRelabelable(entry.sourceAnchor, symbolicDefAnchors, requiredAnchors)) continue;
       const anchor = entry.sourceAnchor ?? definitionAnchor;
       entry.kind = "worked_example";
       // Worked examples are conceptual helpers, never source definitions; they
@@ -1407,12 +1485,93 @@ function sameStringArray(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+/**
+ * Ground an orphan symbolic definition to a contract-required formula anchor the
+ * page declares but hasn't grounded. Fixes the common generation gap where a
+ * page writes the symbolic form (e.g. `NEE = A/E`) as a conceptual helper and
+ * lists the anchor in sourceAnchors, but never grounds the two together — which
+ * fails contract fulfillment even though the definition is right there.
+ */
+function groundOrphanRequiredFormulas(
+  rawFm: string,
+  requiredFormulaIds: Set<string>,
+  pageDeclaredAnchors: Set<string>,
+  ledgerFamilies: Map<string, string>,
+): { rawFm: string; grounded: string[] } {
+  if (requiredFormulaIds.size === 0) return { rawFm, grounded: [] };
+  const entries = parseFullFormulaEntries(rawFm);
+  const groundedAnchors = new Set(
+    entries
+      .filter((e) => (e.kind === "source_definition" || e.kind === "source_derived_definition") && e.sourceAnchor)
+      .map((e) => String(e.sourceAnchor)),
+  );
+  const ungrounded = [...requiredFormulaIds].filter((id) => pageDeclaredAnchors.has(id) && !groundedAnchors.has(id));
+  if (ungrounded.length === 0) return { rawFm, grounded: [] };
+  const orphanDefs = entries.filter(
+    (e) => formulaStructuralKind(e.text) === "definition"
+      && !e.sourceAnchor
+      && e.kind !== "source_definition"
+      && e.kind !== "source_derived_definition",
+  );
+  if (orphanDefs.length === 0) return { rawFm, grounded: [] };
+
+  const grounded: string[] = [];
+  const usedDefs = new Set<RawFormulaEntry>();
+  const remainingAnchors: string[] = [];
+  // Pass 1: match by metric family.
+  for (const anchor of ungrounded) {
+    const family = ledgerFamilies.get(anchor);
+    const def = family
+      ? orphanDefs.find((d) => !usedDefs.has(d) && formulaMetricFamily(d.text) === family)
+      : undefined;
+    if (def) {
+      groundOne(def, anchor);
+      usedDefs.add(def);
+      grounded.push(anchor);
+    } else {
+      remainingAnchors.push(anchor);
+    }
+  }
+  // Pass 2: unambiguous 1:1 fallback (one need, one orphan definition left).
+  const freeDefs = orphanDefs.filter((d) => !usedDefs.has(d));
+  if (remainingAnchors.length === 1 && freeDefs.length === 1) {
+    groundOne(freeDefs[0], remainingAnchors[0]);
+    grounded.push(remainingAnchors[0]);
+  }
+  if (grounded.length === 0) return { rawFm, grounded: [] };
+  return { rawFm: replaceFormulasBlock(rawFm, entries), grounded };
+
+  function groundOne(entry: RawFormulaEntry, anchor: string): void {
+    (entry as FullFormulaEntry).kind = "source_definition";
+    (entry as FullFormulaEntry).sourceAnchor = anchor;
+    (entry as FullFormulaEntry).groundingStatus = "source-anchored";
+    (entry as FullFormulaEntry).justification = `Symbolic source definition for ${anchor}; grounded to the contract-required formula the page declares.`;
+    (entry as FullFormulaEntry).matchReason = "symbolic definition grounded to contract-required anchor";
+  }
+}
+
+/** Anchor id → metric family, from the visual ledger's formula captions. */
+function ledgerFormulaFamilies(gardenDir: string): Map<string, string> {
+  const ledger = readJson<Array<Record<string, unknown>>>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
+  const map = new Map<string, string>();
+  for (const v of ledger) {
+    const id = String(v.sourceVisualId ?? "");
+    if (!/\.E\d+$/i.test(id)) continue;
+    const family = formulaMetricFamily(String(v.caption ?? ""));
+    if (family) map.set(id, family);
+  }
+  return map;
+}
+
 function sourceDefinitionFormulaAnchors(rawFm: string): string[] {
+  // Anchors that still carry a definition-labeled formula entry after relabeling.
+  // Uses the declared kind (not the structural shape) so a contract-required
+  // anchor whose sole grounding is numeric — deliberately left as a definition —
+  // remains in sourceFormulaAnchors and keeps contract fulfillment satisfied.
   return [...new Set(
     parseFullFormulaEntries(rawFm)
       .filter((entry) =>
         (entry.kind === "source_definition" || entry.kind === "source_derived_definition")
-          && formulaStructuralKind(entry.text) === "definition"
           && Boolean(entry.sourceAnchor),
       )
       .map((entry) => String(entry.sourceAnchor)),
@@ -1553,6 +1712,93 @@ function pageProseValidation(page: FinalGardenPage): "pass" | "fail" {
   return "pass";
 }
 
+function transformOutsideFences(body: string, transform: (chunk: string) => string): string {
+  const parts = body.split(/(```[\s\S]*?```)/g);
+  return parts.map((part, index) => index % 2 === 1 ? part : transform(part)).join("");
+}
+
+function sanitizeLearnerSourceCommentary(body: string): string {
+  return transformOutsideFences(body, (chunk) => chunk
+    .replace(/\bthe source conditions\b/gi, "the experimental conditions")
+    .replace(/\baccording to the source\b/gi, "in the reported setup")
+    .replace(/\bthe uploaded source\b/gi, "the supplied material")
+    .replace(/\bthe source material\b/gi, "the learning material")
+    .replace(/\bsource-derived\b/gi, "derived")
+    .replace(/\bsource-central\b/gi, "central")
+    .replace(/\bthis paper\b/gi, "this study")
+    .replace(/\bthe paper\b/gi, "the study")
+    .replace(/\bthe source\b/gi, "the study"));
+}
+
+function sourceImageBlockInfo(block: string): { isSourceImage: boolean; isTable: boolean } {
+  const withoutCaptions = block.replace(/^\s*\*[^*\n]*\*\s*$/gm, "").trim();
+  const onlyImages = withoutCaptions.length > 0 &&
+    withoutCaptions.split(/\n/).every((line) => /^!\[[^\]]*\]\([^)]*\)\s*$/.test(line.trim()) || line.trim() === "");
+  if (!onlyImages || !/source-visuals/i.test(block)) return { isSourceImage: false, isTable: false };
+  return { isSourceImage: true, isTable: /\btable\b/i.test(block) || /source-visuals\/[^)\s]*-table-t\d+/i.test(block) };
+}
+
+function capVisibleSourceFigureBlocks(body: string, maxFigures = 3): string {
+  const blocks = body.split(/\n{2,}/);
+  const infos = blocks.map(sourceImageBlockInfo);
+  const sourceFigureIndexes = infos
+    .map((info, index) => info.isSourceImage && !info.isTable ? index : -1)
+    .filter((index) => index >= 0);
+  if (sourceFigureIndexes.length <= maxFigures) return body;
+  const keep = new Set(sourceFigureIndexes.slice(0, maxFigures));
+  return blocks
+    .filter((_block, index) => !sourceFigureIndexes.includes(index) || keep.has(index))
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+function normalizePageRel(value: string): string {
+  const normalized = value.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized) return "";
+  return normalized.endsWith(".md") ? normalized : `${normalized}.md`;
+}
+
+function normalizeCaptionText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function ensureAssignedSourceVisualEmbeds(body: string, visuals: Array<Record<string, unknown>>): string {
+  if (visuals.length === 0) return body;
+  const blocks = body.split(/\n{2,}/);
+  let changed = false;
+
+  for (const visual of visuals) {
+    const url = String(visual.croppedImagePath ?? "").trim();
+    if (!url || blocks.some((block) => block.includes(url))) continue;
+    const id = String(visual.sourceVisualId ?? "").trim();
+    const caption = String(visual.caption ?? id).trim();
+    const imageBlock = `![${caption || id || "Source visual"}](${url})`;
+    const captionNeedle = normalizeCaptionText(caption);
+    const captionIndex = captionNeedle
+      ? blocks.findIndex((block) => {
+          const trimmed = block.trim();
+          return /^\*[\s\S]*\*$/.test(trimmed) && normalizeCaptionText(trimmed).includes(captionNeedle);
+        })
+      : -1;
+
+    if (captionIndex >= 0) {
+      blocks.splice(captionIndex, 0, imageBlock);
+      changed = true;
+      continue;
+    }
+
+    const fallbackCaption = caption
+      ? `*${caption}*${Number.isFinite(Number(visual.pageNumber)) ? ` *(p. ${Number(visual.pageNumber)})*` : ""}`
+      : "";
+    const visualBlockIndex = blocks.findIndex((block) => /^```breadboard-visual\b/.test(block.trim()));
+    const insertAt = visualBlockIndex >= 0 ? visualBlockIndex : blocks.length;
+    blocks.splice(insertAt, 0, ...[imageBlock, fallbackCaption].filter(Boolean));
+    changed = true;
+  }
+
+  return changed ? blocks.join("\n\n").replace(/\n{3,}/g, "\n\n") : body;
+}
+
 function classifyRepairTargetKind(entry: RepairLogEntry): RepairTargetKind {
   // A repair whose actual changed file is a learner page is a unit_page repair,
   // even if it also carried section-scoped failure labels — those section-level
@@ -1575,6 +1821,17 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
 
   let state = buildFinalGardenState(gardenDir, slug);
   const unitsById = new Map(state.learningUnitContract.units.map((u) => [u.id, u]));
+  const assignedSourceVisualsByPage = new Map<string, Array<Record<string, unknown>>>();
+  for (const visual of readJson<Array<Record<string, unknown>>>(path.join(bd, "source-visuals.json"), [])) {
+    if (String(visual.usageStatus ?? "") !== "assigned") continue;
+    if (String(visual.cropStatus ?? "") !== "embedded") continue;
+    if (!String(visual.croppedImagePath ?? "").trim()) continue;
+    const pageRel = normalizePageRel(String(visual.assignedPageId ?? ""));
+    if (!pageRel) continue;
+    const list = assignedSourceVisualsByPage.get(pageRel) ?? [];
+    list.push(visual);
+    assignedSourceVisualsByPage.set(pageRel, list);
+  }
 
   // (1) Register broad/structural anchors referenced by pages or the contract
   //     as first-class anchors — no implicit anchors.
@@ -1595,19 +1852,21 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
     : [];
   const structuralIds = new Set(structural.map((a) => String(a.id ?? "")));
   const sourceId = String((Array.isArray(anchorLedger.sourceTextConceptAnchors) ? (anchorLedger.sourceTextConceptAnchors as Array<Record<string, unknown>>)[0]?.sourceId : "") ?? "");
+  const sourceDocumentRefs = sourceDocumentAnchorRefs(gardenDir);
   let registeredAnchor = false;
   for (const id of referenced) {
     if (registry[id]) continue;
-    const kind = structuralKindFromId(id);
+    const sourceDocument = sourceDocumentRefs.get(id);
+    const kind = sourceDocument ? "guidance" : structuralKindFromId(id);
     if (!kind) continue; // only broad structural anchors are auto-registered
     if (structuralIds.has(id)) continue;
     const pageMatch = id.match(/\.P(\d+)\./);
     structural.push({
       id,
       kind,
-      title: `Source ${kind} (page ${pageMatch ? pageMatch[1] : "?"})`,
+      title: sourceDocument ? `Source document: ${sourceDocument.title}` : `Source ${kind} (page ${pageMatch ? pageMatch[1] : "?"})`,
       page: pageMatch ? Number(pageMatch[1]) : undefined,
-      sourceId: sourceId || undefined,
+      sourceId: sourceDocument?.sourceId || sourceId || undefined,
     });
     structuralIds.add(id);
     registeredAnchor = true;
@@ -1662,12 +1921,15 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
 
   // (3) Per-page reconciliation: prune anchors to contract, relabel worked
   //     examples, sync tags to the repaired contract handles.
+  const ledgerFamilies = ledgerFormulaFamilies(gardenDir);
+  const groundedRequired: Array<{ pageRel: string; anchor: string }> = [];
   for (const page of state.pages) {
     const abs = page.abs;
     const content = readText(abs);
     if (content === undefined) continue;
     const { rawFrontmatter, body } = splitFrontmatter(content);
     let rawFm = rawFrontmatter;
+    let nextBody = body;
     const unit = unitsById.get(page.learningUnitId);
 
     if (unit) {
@@ -1695,10 +1957,31 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
       }
     }
 
-    const relabel = relabelWorkedExamples(rawFm);
+    const requiredFormulaAnchors = new Set<string>([
+      ...(unit?.sourceFormulas ?? []).map((f) => f.id),
+      ...(unit?.sourceAnchors ?? []),
+    ]);
+    const relabel = relabelWorkedExamples(rawFm, requiredFormulaAnchors);
     if (relabel.changed) {
       rawFm = relabel.rawFm;
       result.notes.push(`${page.rel}: relabeled worked-example formula(s) mislabeled as source_definition`);
+    }
+    // Ground a symbolic definition the page wrote but never grounded, when its
+    // unit contract requires that formula anchor.
+    if (unit) {
+      const requiredFormulaIds = new Set<string>([
+        ...unit.sourceFormulas.map((f) => f.id),
+        ...state.learningUnitContract.assignments
+          .filter((a) => a.assignedLearningUnitId === unit.id && /\.E\d+$/i.test(a.sourceArtifactId))
+          .map((a) => a.sourceArtifactId),
+      ]);
+      const declared = new Set<string>([...page.sourceAnchors, ...fmArray(rawFm, "sourceFormulaAnchors")]);
+      const grounding = groundOrphanRequiredFormulas(rawFm, requiredFormulaIds, declared, ledgerFamilies);
+      if (grounding.grounded.length > 0) {
+        rawFm = grounding.rawFm;
+        for (const anchor of grounding.grounded) groundedRequired.push({ pageRel: page.rel, anchor });
+        result.notes.push(`${page.rel}: grounded orphan definition to contract-required formula ${grounding.grounded.join(", ")}`);
+      }
     }
     const definitionFormulaAnchors = sourceDefinitionFormulaAnchors(rawFm);
     const currentFormulaAnchors = fmArray(rawFm, "sourceFormulaAnchors");
@@ -1706,9 +1989,19 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
       rawFm = setFmArrayLine(rawFm, "sourceFormulaAnchors", definitionFormulaAnchors);
       result.notes.push(`${page.rel}: synchronized sourceFormulaAnchors to source-definition formula entries`);
     }
+    const withAssignedVisuals = ensureAssignedSourceVisualEmbeds(nextBody, assignedSourceVisualsByPage.get(page.rel) ?? []);
+    if (withAssignedVisuals !== nextBody) {
+      nextBody = withAssignedVisuals;
+      result.notes.push(`${page.rel}: restored assigned source visual crop(s)`);
+    }
+    const sanitizedBody = capVisibleSourceFigureBlocks(sanitizeLearnerSourceCommentary(nextBody));
+    if (sanitizedBody !== nextBody) {
+      nextBody = sanitizedBody;
+      result.notes.push(`${page.rel}: sanitized public prose/source-figure density`);
+    }
 
-    if (rawFm !== rawFrontmatter) {
-      fs.writeFileSync(abs, `---\n${rawFm.replace(/\s+$/, "")}\n---\n\n${body.replace(/^\n+/, "")}`, "utf-8");
+    if (rawFm !== rawFrontmatter || nextBody !== body) {
+      fs.writeFileSync(abs, `---\n${rawFm.replace(/\s+$/, "")}\n---\n\n${nextBody.replace(/^\n+/, "")}`, "utf-8");
       markChanged(page.rel);
     }
   }
@@ -1733,7 +2026,7 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
   }
 
   // (6) Repair-log provenance: attach targetKind and split shared changed files.
-  if (fixRepairLogProvenance(gardenDir, result.changed)) {
+  if (fixRepairLogProvenance(gardenDir, result.changed, groundedRequired)) {
     markChanged(".breadboard/repair-log.json");
     result.notes.push("classified repair provenance by target kind and split shared changed files");
   }
@@ -1787,21 +2080,40 @@ function reconcileMetricCalculatorAnchors(gardenDir: string): string[] {
       let spec: Record<string, unknown>;
       try { spec = JSON.parse(match[1] ?? "{}"); } catch { continue; }
       if (String(spec.type ?? "") !== "metric_calculator") continue;
-      const anchors = Array.isArray(spec.sourceAnchors) ? [...(spec.sourceAnchors as Array<Record<string, unknown>>)] : [];
+      // Families the page's own formula anchors sanction (plus the related
+      // families a calculator may legitimately reference — efficiency uses
+      // accuracy/energy/spike-count; energy uses spike-count). A calculator must
+      // not manipulate a metric outside this set: a stray `convergence time`
+      // output injected by a mutated anchor is scrubbed rather than anchored.
+      const pageFormulaAnchors = fmArray(splitFrontmatter(content).rawFrontmatter, "sourceFormulaAnchors");
+      const backed = new Set<string>();
+      for (const id of pageFormulaAnchors) { const f = familyOfId.get(id); if (f) backed.add(f); }
+      const allowed = new Set(backed);
+      if (backed.has("efficiency")) { allowed.add("accuracy"); allowed.add("energy"); allowed.add("spike-count"); }
+      if (backed.has("energy")) allowed.add("spike-count"); // mirror allowedVisualAnchorFamilies
+
+      let specChanged = false;
+      // Scrub metric labels whose family is recognized but not allowed (spurious).
+      for (const key of ["conceptTargets", "inputs", "outputs"]) {
+        const list = spec[key];
+        if (!Array.isArray(list)) continue;
+        const kept = list.filter((item) => { const f = formulaMetricFamily(String(item)); return !f || allowed.has(f); });
+        if (kept.length !== list.length && kept.length > 0) { spec[key] = kept; specChanged = true; }
+      }
+      const anchors = (Array.isArray(spec.sourceAnchors) ? [...(spec.sourceAnchors as Array<Record<string, unknown>>)] : [])
+        .filter((a) => { const f = familyOfId.get(String((a as Record<string, unknown>).equationId ?? "")); return !f || allowed.has(f); });
+      if (Array.isArray(spec.sourceAnchors) && anchors.length !== spec.sourceAnchors.length) specChanged = true;
       const haveFamilies = new Set<string>();
       for (const a of anchors) {
         const id = String((a as Record<string, unknown>).equationId ?? "");
         const fam = familyOfId.get(id);
         if (fam) haveFamilies.add(fam);
       }
-      const phrases: string[] = [];
+      const wanted = new Set<string>();
       for (const key of ["conceptTargets", "inputs", "outputs"]) {
         const list = spec[key];
-        if (Array.isArray(list)) for (const item of list) phrases.push(String(item));
+        if (Array.isArray(list)) for (const item of list) { const f = formulaMetricFamily(String(item)); if (f && allowed.has(f)) wanted.add(f); }
       }
-      const wanted = new Set<string>();
-      for (const phrase of phrases) { const f = formulaMetricFamily(phrase); if (f) wanted.add(f); }
-      let specChanged = false;
       for (const fam of wanted) {
         if (haveFamilies.has(fam)) continue;
         const anchor = familyToAnchor.get(fam);
@@ -1901,11 +2213,35 @@ function reconcileSourceMapCaveats(gardenDir: string): boolean {
   return true;
 }
 
-function fixRepairLogProvenance(gardenDir: string, reconcileChangedFiles: string[]): boolean {
+function fixRepairLogProvenance(
+  gardenDir: string,
+  reconcileChangedFiles: string[],
+  groundedRequired: Array<{ pageRel: string; anchor: string }> = [],
+): boolean {
   const abs = path.join(gardenDir, ".breadboard", "repair-log.json");
   const raw = readJson<Record<string, unknown>>(abs, {});
   if (!Array.isArray(raw.repairs)) return false;
   const repairs = raw.repairs as Array<Record<string, unknown>>;
+
+  // Clear unresolved fulfillment errors that reconcile has since fixed by
+  // grounding the missing formula anchor, so a stale "unresolved" entry from the
+  // repair loop does not block a garden the finalizer has repaired.
+  const groundedByPage = new Map<string, Set<string>>();
+  for (const { pageRel, anchor } of groundedRequired) {
+    (groundedByPage.get(pageRel) ?? groundedByPage.set(pageRel, new Set()).get(pageRel)!).add(anchor);
+  }
+  let clearedUnresolved = false;
+  for (const repair of repairs) {
+    const anchors = groundedByPage.get(String(repair.pagePath ?? ""));
+    if (!anchors) continue;
+    const errors = Array.isArray(repair.unresolvedValidationErrors) ? repair.unresolvedValidationErrors.map(String) : [];
+    const kept = errors.filter((e) => !(/missing contract source formula\s+(\S+)/i.test(e) && [...anchors].some((a) => e.includes(a))));
+    if (kept.length !== errors.length) {
+      repair.unresolvedValidationErrors = kept;
+      if (kept.length === 0 && String(repair.result ?? "") === "unresolved") repair.result = "resolved";
+      clearedUnresolved = true;
+    }
+  }
 
   // Which visual ids each learner page owns (frontmatter visualIds + embedded
   // blocks) — a unit_page repair may only claim its own page's visual specs.
@@ -1926,7 +2262,7 @@ function fixRepairLogProvenance(gardenDir: string, reconcileChangedFiles: string
   const coverageFiles = new Set<string>();
   const planningFiles = new Set<string>();
   const affectedUnits = new Set<string>();
-  let changed = false;
+  let changed = clearedUnresolved;
 
   for (const repair of repairs) {
     const entry: RepairLogEntry = {
