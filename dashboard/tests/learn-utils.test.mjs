@@ -201,6 +201,7 @@ describe("learn utilities", () => {
     assert.equal(formulaMetricFamily("E_{\\text{total}} = E_{\\text{spike}}S_{\\text{total}} + E_{\\text{syn}}O_{\\text{syn}}"), "energy");
     assert.equal(formulaMetricFamily("E_{\\\\text{total}} = E_{\\\\text{spike}}S_{\\\\text{total}} + E_{\\\\text{syn}}O_{\\\\text{syn}}"), "energy");
     assert.equal(formulaMetricFamily("L = t_{\\text{decision}} - t_{\\text{stimulus}}"), "latency");
+    assert.equal(formulaMetricFamily("latency measures the time cost of a decision"), "latency");
   });
 });
 

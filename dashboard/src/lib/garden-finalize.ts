@@ -42,6 +42,7 @@ import {
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula } from "./learn-utils.ts";
+import { auditFinalGardenState, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
 import type { SourceAnchor } from "./visual-spec.ts";
 
 // ---------------------------------------------------------------------------
@@ -282,10 +283,23 @@ export interface RepairExecutionResult {
   notes?: string[];
 }
 
+export type RepairTargetKind =
+  | "unit_page"
+  | "section_index"
+  | "contract"
+  | "source_coverage"
+  | "planning_doc"
+  | "visual_spec"
+  | "global_finalization";
+
 export interface UnitRepairLogEntry {
   unitId: string;
   pagePath: string;
   sectionPath: string;
+  /** What the repair actually targeted; scopes which changedFiles are valid. */
+  targetKind?: RepairTargetKind;
+  affectedUnitIds?: string[];
+  affectedSectionId?: string;
   failureTypes: string[];
   validationErrors: string[];
   requiredChanges: string[];
@@ -1384,7 +1398,18 @@ export function finalizeGardenExport({
   const finalContract = readLearningUnitContract(gardenDir);
   registerExistingTextAnchors(gardenDir, finalLearnerPages, new Map(finalContract.units.map((unit) => [unit.id, unit])), report);
   synchronizeContractSourceAnchors(gardenDir, finalContract, finalLearnerPages, report);
-  regenerateSourceCoverageFromFinalState(gardenDir, ledger, report);
+
+  // --- Pass J: canonical final-state reconciliation --------------------------
+  // Build one FinalGardenState from the final files and bring every derived
+  // artifact (Source Coverage, section indexes, contract handles, anchor
+  // ledger, Source Map caveats, repair provenance, worked-example labels) back
+  // into agreement with it. Source Coverage is regenerated as a pure projection
+  // of this state, so no report can drift from the final pages.
+  {
+    const reconcile = reconcileFinalGardenState(gardenDir, gardenSlug);
+    for (const rel of reconcile.changed) if (!report.changed.includes(rel)) report.changed.push(rel);
+    for (const note of reconcile.notes) report.notes.push(note);
+  }
 
   // --- Pass K: validation report + critical gate -----------------------------
   writeFinalizeValidationReport({ gardenDir, gardenSlug, report });
@@ -1705,6 +1730,24 @@ function pageSectionPath(page: LearnerPage): string {
   return page.rel.split("/").slice(0, 2).join("/");
 }
 
+function resolveFinalPageForRequest(request: UnitRepairRequest, learnerPages: LearnerPage[]): LearnerPage | undefined {
+  const byRel = learnerPages.find((page) => page.rel === request.pagePath);
+  if (byRel) return byRel;
+  const byUnit = learnerPages.filter((page) => fmGetScalar(page.rawFm, "learningUnitId") === request.unitId);
+  if (byUnit.length === 1) return byUnit[0];
+  const requestedName = path.posix.basename(request.pagePath);
+  const byName = learnerPages.filter((page) => path.posix.basename(page.rel) === requestedName);
+  return byName.length === 1 ? byName[0] : undefined;
+}
+
+function requestForFinalPage(request: UnitRepairRequest, page: LearnerPage): UnitRepairRequest {
+  return {
+    ...request,
+    pagePath: page.rel,
+    sectionPath: pageSectionPath(page),
+  };
+}
+
 function extractUnitIdFromProblem(problem: string): string | null {
   return problem.match(/unit\s+"?([A-Za-z0-9_-]+)"?/i)?.[1] ?? null;
 }
@@ -1897,7 +1940,11 @@ function validationFailuresFromChecks(checks: FinalizeCheck[]): string[] {
 // written yet, so "Repair Provenance" always reports the just-marked pages as
 // "provenance but log missing". These are guaranteed-transient and are enforced
 // for real by the finalizer's critical gate once the log exists.
-const REPAIR_BOOKKEEPING_CHECKS = new Set(["Repair Provenance", "Finalizer semantic boundary"]);
+// The Final Garden State Audit is a whole-garden acceptance gate enforced by the
+// finalizer AFTER reconciliation writes Source Coverage / the anchor ledger /
+// the repair log. During the repair loop those files still hold pre-reconcile
+// drift, so audit failures must not be blamed on an individual page repair.
+const REPAIR_BOOKKEEPING_CHECKS = new Set(["Repair Provenance", "Finalizer semantic boundary", "Final Garden State Audit"]);
 
 const SECTION_ONLY_REPAIR_TYPES = new Set(["section_index_prose", "section_semantics"]);
 
@@ -2449,10 +2496,24 @@ export async function repairLearningUnitsFromContract({
 
     // --- Provenance: only pages that actually got a repair executor applied ----
     const finalPages = loadLearnerPages(gardenDir);
+    const finalRequestsByRel = new Map<string, UnitRepairRequest[]>();
+    const usedByFinalRel = new Map<string, RepairExecutorKind>();
+    for (const [originalPagePath, pageRequests] of requestByPage) {
+      if (!repairedPaths.has(originalPagePath)) continue;
+      const merged = mergeRequestsForPage(pageRequests);
+      const finalPage = resolveFinalPageForRequest(merged, finalPages);
+      if (!finalPage) continue;
+      const resolved = requestForFinalPage(merged, finalPage);
+      const list = finalRequestsByRel.get(finalPage.rel) ?? [];
+      list.push(resolved);
+      finalRequestsByRel.set(finalPage.rel, list);
+      usedByFinalRel.set(finalPage.rel, usedByPage.get(originalPagePath) ?? usedByPage.get(finalPage.rel) ?? "deterministic");
+    }
     for (const page of finalPages) {
-      if (!repairedPaths.has(page.rel)) continue;
-      const merged = mergeRequestsForPage(requestByPage.get(page.rel)!);
-      markSemanticRepairProvenance(page, merged, repairedAt, usedByPage.get(page.rel) ?? "deterministic");
+      const pageRequests = finalRequestsByRel.get(page.rel);
+      if (!pageRequests?.length) continue;
+      const merged = mergeRequestsForPage(pageRequests);
+      markSemanticRepairProvenance(page, merged, repairedAt, usedByFinalRel.get(page.rel) ?? "deterministic");
     }
     writeDirtyLearnerPages(finalPages, repairReport);
   }
@@ -2479,26 +2540,27 @@ export async function repairLearningUnitsFromContract({
   const finalPageByRel = new Map(loadLearnerPages(gardenDir).map((page) => [page.rel, page]));
   const changedFiles = [...new Set(repairReport.changed.filter((file) => !changedBefore.has(file)))].sort();
   const repairs: UnitRepairLogEntry[] = requests.map((request) => {
-    const unresolved = unresolvedErrorsForRequest(finalChecks, request);
-    const attempted = attemptedByPage.get(request.pagePath) ?? [];
-    const used = usedByPage.get(request.pagePath) ?? "none";
-    const finalPage = finalPageByRel.get(request.pagePath);
-    const isPageProseRepair = request.failureTypes.some((type) => PAGE_PROSE_REPAIR_TYPES.has(type));
+    const finalPage = finalPageByRel.get(request.pagePath) ?? resolveFinalPageForRequest(request, [...finalPageByRel.values()]);
+    const resolvedRequest = finalPage ? requestForFinalPage(request, finalPage) : request;
+    const unresolved = unresolvedErrorsForRequest(finalChecks, resolvedRequest);
+    const attempted = attemptedByPage.get(request.pagePath) ?? attemptedByPage.get(resolvedRequest.pagePath) ?? [];
+    const used = usedByPage.get(request.pagePath) ?? usedByPage.get(resolvedRequest.pagePath) ?? "none";
+    const isPageProseRepair = resolvedRequest.failureTypes.some((type) => PAGE_PROSE_REPAIR_TYPES.has(type));
     return {
-      unitId: request.unitId,
-      pagePath: request.pagePath,
-      sectionPath: request.sectionPath,
-      failureTypes: request.failureTypes,
-      validationErrors: request.validationErrors,
-      requiredChanges: request.requiredChanges,
+      unitId: resolvedRequest.unitId,
+      pagePath: resolvedRequest.pagePath,
+      sectionPath: resolvedRequest.sectionPath,
+      failureTypes: resolvedRequest.failureTypes,
+      validationErrors: resolvedRequest.validationErrors,
+      requiredChanges: resolvedRequest.requiredChanges,
       repairType: "contract_driven_revision",
-      changedFiles: changedFilesForRequest(request, changedFiles, finalPage),
+      changedFiles: changedFilesForRequest(resolvedRequest, changedFiles, finalPage),
       result: unresolved.length === 0 ? "resolved" : "unresolved",
       unresolvedValidationErrors: unresolved,
       repairedAt,
       executorAttempted: attempted,
       executorUsed: used,
-      executorPreference: repairExecutorPreference(request.failureTypes),
+      executorPreference: repairExecutorPreference(resolvedRequest.failureTypes),
       modelRepairStatus: modelRepairStatusFor({ request, attempted, used, wantModel }),
       naturalProseValidation: isPageProseRepair && finalPage ? naturalProseValidationForPage(finalPage) : "not_applicable",
       modelFailureReason: modelFailureByPage.get(request.pagePath),
@@ -4303,6 +4365,10 @@ function writeFinalizeValidationReport({
       "",
       "Semantic repairs must be recorded in .breadboard/repair-log.json and finalizer semantic actions must remain empty.",
       "",
+      "## Final Garden State Audit",
+      "",
+      "One canonical FinalGardenState is built from the final files; Source Coverage, contracts, anchors, visuals, formula kinds, section indexes, zettel handles, repair provenance, and planning caveats must all agree with it. Acceptance is blocked on any contradiction.",
+      "",
       "## Section Title Quality",
       "",
       "See check: section titles are learner-facing.",
@@ -4385,6 +4451,7 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Zettelkasten Handle Quality",
   "Zettelkasten Handle Naturalness",
   "Repair Provenance",
+  "Final Garden State Audit",
   "Section Title Quality",
   "Acceptance Decision",
   "Final Acceptance",
@@ -5818,6 +5885,24 @@ function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPa
   const pageByRel = new Map(learnerPages.map((page) => [page.rel, page]));
   const allowedChangedFile = (entry: UnitRepairLogEntry, file: string): boolean => {
     if (!file) return false;
+    // Target-kind-scoped provenance (canonical model): a repair may only touch
+    // files that belong to its declared target.
+    switch (entry.targetKind) {
+      case "section_index":
+        return /\/_index\.md$/.test(file);
+      case "contract":
+        return file === ".breadboard/learning-unit-contract.json";
+      case "source_coverage":
+        return file === ".breadboard/planning/Source Coverage.md" || file === ".breadboard/source-anchors.json";
+      case "planning_doc":
+        return file.startsWith(".breadboard/planning/") || file === "learning/Learning Map.md";
+      case "visual_spec":
+        return file.startsWith(".breadboard/visuals/");
+      case "global_finalization":
+        return true;
+      default:
+        break; // unit_page (or legacy, no targetKind) → per-page rules below
+    }
     if (file === entry.pagePath) return true;
     if (file === `${entry.sectionPath}/_index.md`) return true;
     if (entry.failureTypes.includes("section_semantics") && (file === "learning/_index.md" || file === "learning/Learning Map.md")) return true;
@@ -5856,7 +5941,10 @@ function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPa
     if (isPageProseRepair && entry.executorUsed === "deterministic" && entry.naturalProseValidation !== "pass") {
       problems.push(`${entry.pagePath}: deterministic semantic prose repair lacks naturalProseValidation=pass`);
     }
-    if (isProseRepair && !entry.modelRepairStatus) {
+    // Finalizer-hygiene provenance entries (section-index/coverage/contract
+    // aggregates) are deterministic structural bookkeeping, not model prose
+    // repairs, so they carry no model-repair status.
+    if (isProseRepair && String(entry.executorUsed) !== "finalizer_hygiene" && !entry.modelRepairStatus) {
       problems.push(`${entry.pagePath}: prose repair log missing modelRepairStatus`);
     }
   }
@@ -6263,6 +6351,18 @@ function collectFinalizeChecks({
   push("Zettelkasten tag density", densityProblems);
   push("Zettelkasten Handle Quality", [...new Set(handleQualityProblems)]);
   push("Zettelkasten Handle Naturalness", [...new Set(handleQualityProblems)]);
+
+  // Canonical final-state audit: the single gate that keeps every report,
+  // ledger, page, contract, anchor, visual, and repair log in agreement.
+  {
+    let auditProblems: string[] = [];
+    try {
+      auditProblems = auditFinalGardenState(buildFinalGardenState(gardenDir)).problems;
+    } catch (error) {
+      auditProblems = [`final-state audit could not run: ${(error as Error).message}`];
+    }
+    push("Final Garden State Audit", auditProblems);
+  }
 
   if (includeReportSelfCheck) {
     const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");

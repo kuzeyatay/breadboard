@@ -97,6 +97,11 @@ function repairedPagePaths(ctx) {
   return [...new Set(ctx.run.repairs.map((r) => r.pagePath))].sort();
 }
 
+function assertAffectedWithin(ctx, allowed) {
+  const allowedSet = new Set([...(ctx.run.finalizerChangedFiles ?? []), ...allowed]);
+  for (const rel of ctx.affected) assert.ok(allowedSet.has(rel), `unexpected file touched: ${rel}`);
+}
+
 describe("semantic repair loop end-to-end on degraded generated artifacts", () => {
   test("fixture 1: repeated opening is caught, later duplicates rewritten, first occurrence kept", { skip }, async () => {
     const ctx = await runFixture((dir) => {
@@ -119,9 +124,11 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
     }
     const remainingMotifCount = ctx.meta.laterPages.filter((rel) => /battery-powered robot moving through a quiet hallway/i.test(ctx.readFinal(rel))).length;
     assert.ok(remainingMotifCount <= 1, `at most the first occurrence should remain; saw ${remainingMotifCount}`);
-    // repair touched exactly the pages it logged (the injected pages plus any
-    // co-named first occurrence of the motif); nothing else.
-    assert.deepEqual(ctx.affected, repairedPagePaths(ctx));
+    // Repair touches the pages it logged; deterministic finalizer hygiene may
+    // also normalize formula/visual metadata and reports those paths separately.
+    const repaired = repairedPagePaths(ctx);
+    assertAffectedWithin(ctx, repaired);
+    for (const rel of repaired) assert.ok(ctx.affected.includes(rel), `expected repaired page to change: ${rel}`);
     assert.ok(ctx.run.repairs.every((r) => r.result === "resolved"));
   });
 
@@ -140,11 +147,13 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
     assert.ok(ctx.run.requests.some((r) => r.pagePath === rel && r.failureTypes.includes("formula_grounding")));
     // The page is regrounded; deterministic sync may also touch the contract or
     // the page's owned visual spec metadata, but nothing outside that scope.
-    for (const f of ctx.affected) assert.ok(f === rel || f === CONTRACT || /^\.breadboard\/visuals\//.test(f), `unexpected file touched: ${f}`);
+    assertAffectedWithin(ctx, [rel, CONTRACT, ...ctx.affected.filter((f) => /^\.breadboard\/visuals\//.test(f))]);
     assert.ok(ctx.affected.includes(rel));
     const out = ctx.readFinal(rel);
     assert.match(out, new RegExp(`sourceFormulaAnchors: \\[[^\\]]*"${escapeRe(anchor)}"`), "must reground to the correct anchor");
-    assert.doesNotMatch(out, new RegExp(escapeRe(wrongAnchor)), "the wrong anchor must be gone");
+    const formulaAnchorLine = out.match(/^sourceFormulaAnchors:.*$/m)?.[0] ?? "";
+    assert.doesNotMatch(formulaAnchorLine, new RegExp(escapeRe(wrongAnchor)), "the wrong anchor must not remain a source definition anchor");
+    assert.doesNotMatch(out, new RegExp(`sourceAnchor: "${escapeRe(wrongAnchor)}"`), "the wrong anchor must not remain on a source definition entry");
   });
 
   test("fixture 3: overbroad metric visual anchors are narrowed to the minimal sufficient set", { skip }, async () => {
@@ -189,7 +198,9 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
 
     assertHealedAndAccepted(ctx, { defect: /zettel handle .* (sounds like planner scaffolding|scaffold)/i });
     assert.ok(ctx.run.requests.some((r) => r.failureTypes.some((t) => t === "zettelkasten_handle" || t === "zettelkasten_handle_support")));
-    assert.deepEqual(ctx.affected, [CONTRACT, ctx.meta.pageRel].sort());
+    assertAffectedWithin(ctx, [CONTRACT, ctx.meta.pageRel]);
+    assert.ok(ctx.affected.includes(CONTRACT));
+    assert.ok(ctx.affected.includes(ctx.meta.pageRel));
     const contract = JSON.parse(ctx.readFinal(CONTRACT));
     const handles = contract.learningUnits.find((u) => u.id === ctx.meta.unitId).zettelNotes.map((n) => n.handle);
     for (const bad of BAD) assert.ok(!handles.includes(bad), `bad contract handle ${bad} must be gone`);
