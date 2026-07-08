@@ -376,11 +376,13 @@ Return ONLY JSON. Include:
 - figures: figures/graphs/tables/formula displays with labels when provided
 - sourceAnchors: compact anchors that later pages can cite
 - missingOrUnclear: unclear or missing source material
+Availability rule (hard): any formula, equation, figure, table, or graph that has an extracted anchor or caption IS available source material. Never place it in missingOrUnclear, and never write caveats saying formulas/equations/notation/definitions/tables/figures are unavailable, "caption-only", "captions but not exact", or "not present" — pages will ground on those anchors. Caveat ONLY about content that has no extracted anchor at all.
 Stay source-aware. If source-only mode is true, do not add outside facts.`;
 
 const SCOPE_CONTRACT_PROMPT = `You create the internal Scope Contract for a Breadboard learning garden. This document is internal planning data; learners never see it.
 Return ONLY JSON with included, excluded, background, deferred, sourceEmphasis, and caveats.
-The contract must protect source scope: no unsupported expansion, no disconnected topic cards, and no final Generated Subtopics pages.`;
+The contract must protect source scope: no unsupported expansion, no disconnected topic cards, and no final Generated Subtopics pages.
+Availability rule (hard): treat any extracted formula, equation, figure, table, or graph anchor as available. Do not add caveats claiming formulas, notation, definitions, tables, or figures are unavailable or caption-only when anchors for them exist.`;
 
 const TOPIC_MAP_PROMPT = `You create the source-grounded Learning Unit Contract for a Breadboard learning garden. Learner pages are NOT planned as sections first. They are planned as 15-25 learning units, then Breadboard clusters those units into sections.
 Return ONLY JSON with this shape:

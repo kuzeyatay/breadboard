@@ -41,7 +41,7 @@ import {
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
-import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula } from "./learn-utils.ts";
+import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
 import { auditFinalGardenState, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
 import type { SourceAnchor } from "./visual-spec.ts";
 
@@ -1360,8 +1360,10 @@ export function finalizeGardenExport({
   // --- Load facts once -------------------------------------------------------
   const ledgerPath = path.join(bd, "source-visuals.json");
   const ledger = readJson<LedgerVisual[]>(ledgerPath, []);
-  const laterPagesExist = sourcesHaveLaterPages(gardenDir);
+  const laterPagesExist = sourcesHaveLaterPages(gardenDir) || ledger.some((visual) => Number(visual.pageNumber ?? 0) > 2);
   const formulaAnchorsExist = ledger.some((visual) => classifyFigure(visual) === "equation");
+  const tableAnchorsExist = ledger.some((visual) => String(visual.type ?? "") === "table" || /\.T\d+$/i.test(visual.sourceVisualId));
+  const figureAnchorsExist = ledger.some((visual) => classifyFigure(visual) !== "equation" && String(visual.type ?? "") !== "table" && !/\.T\d+$/i.test(visual.sourceVisualId));
 
   // --- Load learner pages ----------------------------------------------------
   const learnerPages = loadLearnerPages(gardenDir);
@@ -1370,7 +1372,7 @@ export function finalizeGardenExport({
   normalizeSourceWikilinks(gardenDir, report);
 
   // --- Pass D: stale caveat sanitation (visible + planning) ------------------
-  sanitizeStaleCaveatFiles(gardenDir, { laterPagesExist, formulaAnchorsExist }, report);
+  sanitizeStaleCaveatFiles(gardenDir, { laterPagesExist, formulaAnchorsExist, tableAnchorsExist, figureAnchorsExist }, report);
   repairLearnerNavigationSourceLinks(gardenDir, report);
 
   // Semantic decisions are made by the Learning Unit Contract repair loop before
@@ -1381,6 +1383,7 @@ export function finalizeGardenExport({
   repairLearnerAcronymGrammar(learnerPages, report);
   repairSourceVisualImagePathCasing(gardenDir, learnerPages, report);
   repairVisualAnchorRolesAndReasons(gardenDir, learnerPages, report);
+  repairSourceTextConceptAnchors(gardenDir, learnerPages, report);
   synchronizePageVisualTextAnchors(learnerPages, report);
   pruneOrphanSemanticRepairProvenance(gardenDir, learnerPages, report);
 
@@ -1394,6 +1397,7 @@ export function finalizeGardenExport({
   alignSectionFoldersWithTitles(gardenDir, report);
   repairSectionNavigationLabels(gardenDir, report);
   repairSectionIndexProse(gardenDir, report);
+  repairOrphanLearnerPageUnitIds(gardenDir, readLearningUnitContract(gardenDir), report);
   const finalLearnerPages = loadLearnerPages(gardenDir);
   const finalContract = readLearningUnitContract(gardenDir);
   registerExistingTextAnchors(gardenDir, finalLearnerPages, new Map(finalContract.units.map((unit) => [unit.id, unit])), report);
@@ -1522,6 +1526,101 @@ function loadLearnerPages(gardenDir: string): LearnerPage[] {
   }
   pages.sort((a, b) => a.pageId.localeCompare(b.pageId));
   return pages;
+}
+
+function loadLessonLikePages(gardenDir: string): Array<LearnerPage & { learnAuthored: boolean }> {
+  const all: Array<{ abs: string; rel: string }> = [];
+  listMarkdown(path.join(gardenDir, "learning"), "learning", all);
+  const pages: Array<LearnerPage & { learnAuthored: boolean }> = [];
+  for (const { abs, rel } of all) {
+    if (/(^|\/)_index\.md$/i.test(rel) || /^learning\/(?:Learning Map|Topic Overview)\.md$/i.test(rel)) continue;
+    const content = fs.readFileSync(abs, "utf-8");
+    const parsed = parseFrontmatter(content);
+    if (!parsed.hadFrontmatter) continue;
+    const kt = fmGetScalar(parsed.rawFrontmatter, "knowledge_type");
+    const bt = fmGetScalar(parsed.rawFrontmatter, "breadboardType");
+    const numberedLessonPath = /^learning\/\d+\.\s+[^/]+\/\d+\.\d+\s+.+\.md$/i.test(rel);
+    const isLesson = kt === "learning-page" || kt === "textbook-page" || bt === "learning_page" || bt === "textbook_page" || numberedLessonPath;
+    if (!isLesson) continue;
+    const learnAuthored =
+      fmGetScalar(parsed.rawFrontmatter, "generatedBy") === "learn_button" ||
+      fmGetScalar(parsed.rawFrontmatter, "generated_by") === "learn_button";
+    const title = fmGetScalar(parsed.rawFrontmatter, "title") || path.basename(rel, ".md");
+    pages.push({
+      abs,
+      rel: rel.replace(/\\/g, "/"),
+      pageId: rel.replace(/\\/g, "/").replace(/\.md$/i, ""),
+      rawFm: parsed.rawFrontmatter,
+      body: parsed.body,
+      title,
+      role: pageRole(title),
+      sectionNumber: Number.parseInt(fmGetScalar(parsed.rawFrontmatter, "sectionNumber") || "0", 10) || 0,
+      dirty: false,
+      learnAuthored,
+    });
+  }
+  pages.sort((a, b) => a.pageId.localeCompare(b.pageId));
+  return pages;
+}
+
+function unitTitleMatchKey(value: string): string {
+  return normalizedSectionTitleKey(stripTitleNumber(value));
+}
+
+function repairOrphanLearnerPageUnitIds(
+  gardenDir: string,
+  contract: LearningUnitContractArtifact,
+  report: FinalizeReport,
+): void {
+  if (contract.units.length === 0) return;
+  const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
+  const lessonLike = loadLessonLikePages(gardenDir);
+  if (lessonLike.length === 0) return;
+  const pagesByUnit = new Map<string, Array<LearnerPage & { learnAuthored: boolean }>>();
+  for (const page of lessonLike) {
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    if (!unitId || !unitsById.has(unitId) || !page.learnAuthored) continue;
+    const list = pagesByUnit.get(unitId) ?? [];
+    list.push(page);
+    pagesByUnit.set(unitId, list);
+  }
+  const missingUnits = contract.units.filter((unit) => !pagesByUnit.has(unit.id));
+  if (missingUnits.length === 0) return;
+
+  const candidatePages = lessonLike.filter((page) => {
+    const unitId = fmGetScalar(page.rawFm, "learningUnitId");
+    if (!page.learnAuthored) return true;
+    if (!unitId || !unitsById.has(unitId)) return true;
+    return (pagesByUnit.get(unitId)?.length ?? 0) > 1;
+  });
+  const used = new Set<string>();
+  for (const unit of missingUnits) {
+    const unitKey = unitTitleMatchKey(unit.title);
+    const byTitle = candidatePages.find((page) =>
+      !used.has(page.rel) && unitTitleMatchKey(page.title) === unitKey,
+    );
+    const unitIndex = contract.units.findIndex((candidate) => candidate.id === unit.id);
+    const byOrder = unitIndex >= 0
+      ? candidatePages.filter((page) => !used.has(page.rel))[unitIndex]
+      : undefined;
+    const page = byTitle ?? byOrder;
+    if (!page) continue;
+    page.rawFm = fmSetScalar(page.rawFm, "knowledge_type", "learning-page");
+    page.rawFm = fmSetScalar(page.rawFm, "breadboardType", "learning_page");
+    page.rawFm = fmSetScalar(page.rawFm, "generatedBy", "learn_button");
+    page.rawFm = fmSetScalar(page.rawFm, "generated_by", "learn_button");
+    page.rawFm = fmSetScalar(page.rawFm, "learningUnitId", unit.id);
+    page.rawFm = fmSetScalar(page.rawFm, "learningUnitRole", unit.role);
+    const handles = zettelHandlesForUnit(unit);
+    if (handles.length > 0) page.rawFm = fmSetArray(page.rawFm, "tags", handles);
+    if (fmGetArray(page.rawFm, "sourceAnchors").length === 0 && unit.sourceAnchors.length > 0) {
+      page.rawFm = fmSetArray(page.rawFm, "sourceAnchors", unit.sourceAnchors);
+    }
+    fs.writeFileSync(page.abs, joinFrontmatter(page.rawFm, page.body), "utf-8");
+    if (!report.changed.includes(page.rel)) report.changed.push(page.rel);
+    report.notes.push(`adopted existing learner page ${page.rel} for Learning Unit ${unit.id}`);
+    used.add(page.rel);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2158,6 +2257,9 @@ function changedFilesForRequest(
   );
   const allowCoverage = request.failureTypes.some((type) => ["visual_grounding", "source_text_anchor"].includes(type));
   const allowSourceAnchors = request.failureTypes.includes("source_text_anchor");
+  const allowOwnedVisualSpecs = request.failureTypes.some((type) =>
+    ["visual_grounding", "source_text_anchor", "formula_grounding", "contract_fulfillment"].includes(type),
+  );
   return changedFiles.filter((file) => {
     if (file === request.pagePath) return true;
     if (file === `${request.sectionPath}/_index.md`) return true;
@@ -2167,7 +2269,7 @@ function changedFilesForRequest(
     if (allowSourceAnchors && file === ".breadboard/source-anchors.json") return true;
     if (file.startsWith(".breadboard/visuals/")) {
       const visualId = file.match(/^\.breadboard\/visuals\/(.+)\.json$/)?.[1] ?? "";
-      return ownedVisualIds.has(visualId);
+      return allowOwnedVisualSpecs && ownedVisualIds.has(visualId);
     }
     return false;
   });
@@ -2899,43 +3001,37 @@ function normalizeSourcePageTyping(abs: string, rel: string, report: FinalizeRep
 // Pass D: stale caveat sanitation
 // ---------------------------------------------------------------------------
 
-const STALE_CAVEAT_PATTERNS: RegExp[] = [
-  /only pages?\s*1\s*[-–]\s*2\s+(?:are|is)\s+(?:available|present)/i,
-  /source map is truncated/i,
-  /later[- ]page teaching must remain anchored to extracted .*captions/i,
-  /formula captions? only/i,
-  /exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included)/i,
-  /truncated after page\s*2/i,
-  /(?:formal|explicit) mathematical definitions are not present/i,
-  /formulas? (?:are|is) not present/i,
-  /governing equations.*not (?:present|included)/i,
-  /does not include its governing equations/i,
-  /later sections? (?:are|is)? ?(?:not available|unavailable)/i,
-  /later-paper details must not be inferred/i,
-  /not available in full (?:text|prose)/i,
-  /remain qualitative unless more verified source text/i,
-  /formula captions? but exact notation unavailable/i,
-  /exact mathematical notation (?:and variable definitions )?(?:are )?not provided/i,
-  /variable definitions are not provided/i,
-  /formula terms are not fully available/i,
-  /later[- ]page content unavailable/i,
-  /provided excerpt only/i,
-  /not fully available in supplied context/i,
-];
+// Canonical stale-caveat detection. ONE source of truth shared by the finalizer
+// sanitizer (`sanitizeStaleCaveats`, which removes them) and the reconciliation
+// detector (`sourceMapCaveatProblems`, which flags any that survive). Sharing one
+// list is what stops the recurring whack-a-mole: a phrasing the detector rejects
+// is guaranteed to be sanitized first, because both consult the same regex.
+const STALE_FORMULA_CAVEAT_RE =
+  /(?:formal|explicit) mathematical definitions are not present|only formula captions? are provided|formulas? (?:are|is) not present|formula exact text unavailable|caption-only|formula captions?(?:\s+only|\s+but not exact[^.\n]*|\s+but exact notation unavailable)|exact displayed notation|exact (?:mathematical )?notation (?:and variable definitions )?(?:is |are )?(?:unavailable|not visible|not included|not provided)|variable definitions are not provided|formula terms are not fully available|standard explanatory notation only|captions only|notation unavailable|mathematical notation not included|governing equations[^.\n]*?not (?:present|included)|does not include its governing equations|remain qualitative unless more verified/i;
+const STALE_TRUNCATION_CAVEAT_RE =
+  /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later[- ]page teaching must remain anchored to extracted [^.\n]*captions|truncated after page\s*2|later-paper details must not be inferred|later[- ]page content unavailable|later\s*(?:pages?|sections?)[^.\n]*?(?:not available|unavailable|(?:extracted )?captions?|anchored to captions)|provided excerpt only|not fully available in supplied context|not available in full (?:text|prose)|must not be inferred beyond/i;
+const STALE_TABLE_CAVEAT_RE = /tables? (?:are|is) not (?:present|available|detected|extracted)/i;
+const STALE_FIGURE_CAVEAT_RE = /figures? (?:are|is) not (?:present|available|detected|extracted)/i;
+
+function replaceAll(text: string, re: RegExp, replacement: string): string {
+  return text.replace(new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`), replacement);
+}
 
 /** Rewrite a block of text so stale caveats that contradict the extracted
  * anchors are dropped (bullets) or neutralized (inline). */
 export function sanitizeStaleCaveats(
   text: string,
-  facts: { laterPagesExist: boolean; formulaAnchorsExist: boolean },
+  facts: { laterPagesExist: boolean; formulaAnchorsExist: boolean; tableAnchorsExist?: boolean; figureAnchorsExist?: boolean },
 ): string {
   const lines = text.split(/\r?\n/);
   const kept: string[] = [];
   for (const line of lines) {
     const isBullet = /^\s*[-*]\s+/.test(line) || /^\s*"[^"]*",?\s*$/.test(line);
-    const staleFormula = facts.formulaAnchorsExist && /(?:formal|explicit) mathematical definitions are not present|formulas? (?:are|is) not present|formula captions? only|formula captions? but exact notation unavailable|exact (?:mathematical )?notation (?:is )?(?:unavailable|not visible|not included|not provided)|variable definitions are not provided|formula terms are not fully available|governing equations.*not (?:present|included)|does not include its governing equations|remain qualitative unless more verified/i.test(line);
-    const staleTruncation = facts.laterPagesExist && /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|later-paper details must not be inferred|later[- ]page content unavailable|later sections? (?:are|is)? ?(?:not available|unavailable)|provided excerpt only|not fully available in supplied context|not available in full (?:text|prose)/i.test(line);
-    if ((staleFormula || staleTruncation) && isBullet) {
+    const staleFormula = facts.formulaAnchorsExist && STALE_FORMULA_CAVEAT_RE.test(line);
+    const staleTruncation = facts.laterPagesExist && STALE_TRUNCATION_CAVEAT_RE.test(line);
+    const staleTable = Boolean(facts.tableAnchorsExist) && STALE_TABLE_CAVEAT_RE.test(line);
+    const staleFigure = Boolean(facts.figureAnchorsExist) && STALE_FIGURE_CAVEAT_RE.test(line);
+    if ((staleFormula || staleTruncation || staleTable || staleFigure) && isBullet) {
       continue; // drop the whole stale bullet
     }
     let out = line;
@@ -2967,6 +3063,12 @@ export function sanitizeStaleCaveats(
         .replace(/provided excerpt only[^.\n]*/gi, "source content is available through extracted source text and anchors")
         .replace(/not fully available in supplied context[^.\n]*/gi, "source content is available through extracted source text and anchors");
     }
+    // Catch-all: neutralize any phrasing the detector would still flag, so the
+    // sanitizer can never fall behind the detector's pattern list.
+    if (facts.formulaAnchorsExist) out = replaceAll(out, STALE_FORMULA_CAVEAT_RE, "formula anchors are available");
+    if (facts.laterPagesExist) out = replaceAll(out, STALE_TRUNCATION_CAVEAT_RE, "later source pages are available and anchored");
+    if (facts.tableAnchorsExist) out = replaceAll(out, STALE_TABLE_CAVEAT_RE, "tables are present in the extracted source anchors");
+    if (facts.figureAnchorsExist) out = replaceAll(out, STALE_FIGURE_CAVEAT_RE, "figures are present in the extracted source anchors");
     kept.push(out);
   }
   return kept.join("\n");
@@ -2974,7 +3076,7 @@ export function sanitizeStaleCaveats(
 
 function sanitizeStaleCaveatFiles(
   gardenDir: string,
-  facts: { laterPagesExist: boolean; formulaAnchorsExist: boolean },
+  facts: { laterPagesExist: boolean; formulaAnchorsExist: boolean; tableAnchorsExist?: boolean; figureAnchorsExist?: boolean },
   report: FinalizeReport,
 ): void {
   const files = [
@@ -4630,7 +4732,7 @@ function semanticNavigationNumberProblems(gardenDir: string): string[] {
       if (labelNumber !== sectionInfo.number) {
         problems.push(`SEMANTIC_NAVIGATION_ERROR file="learning/_index.md" label="${ref.label}" target="${ref.target}" problem="Displayed section number ${labelNumber} points to section folder ${sectionInfo.number}"`);
       }
-      if (normalizedSectionTitleKey(labelTitle) !== normalizedSectionTitleKey(sectionInfo.title)) {
+      if (canonicalSectionBodyKey(labelTitle) !== normalizedSectionTitleKey(sectionInfo.title)) {
         problems.push(`SEMANTIC_NAVIGATION_ERROR file="learning/_index.md" label="${ref.label}" target="${ref.target}" problem="Displayed section title does not match target folder title"`);
       }
       continue;
@@ -4849,10 +4951,23 @@ function rewriteSectionIndexTitle(indexPath: string, nextTitle: string): boolean
   return true;
 }
 
-function sectionFolderNameForTitle(title: string, fallbackName: string): string {
+function canonicalSectionFolderLabel(title: string, fallbackName = "Section"): string {
   const number = title.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1] ?? fallbackName.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
   const body = title.replace(/^\s*\d+(?:\.\d+)*\.?\s*/, "").trim();
-  return number && body ? `${number}. ${body}` : fallbackName;
+  const segment = safeLearnFileSegment(body, "Section");
+  return number && segment ? `${number}. ${segment}` : (segment || fallbackName);
+}
+
+function canonicalSectionTitleKey(title: string, fallbackName = "Section"): string {
+  return normalizedSectionTitleKey(canonicalSectionFolderLabel(title, fallbackName));
+}
+
+function canonicalSectionBodyKey(title: string): string {
+  return normalizedSectionTitleKey(safeLearnFileSegment(stripTitleNumber(title), "Section"));
+}
+
+function sectionFolderNameForTitle(title: string, fallbackName: string): string {
+  return canonicalSectionFolderLabel(title, fallbackName);
 }
 
 function replaceAllLiteral(value: string, from: string, to: string): string {
@@ -5119,18 +5234,16 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): str
   for (const [label, filePath] of docs) {
     if (!fs.existsSync(filePath)) continue;
     const text = fs.readFileSync(filePath, "utf-8");
-    const staleFormulaCaveat =
-      /explicit mathematical definitions are not present|formal mathematical definitions are not present|formulas? (?:are|is) not present|formula exact text unavailable|caption-only|formula captions but not exact|formula captions but exact notation unavailable|exact displayed notation|exact mathematical notation (?:and variable definitions )?(?:are )?not provided|variable definitions are not provided|formula terms are not fully available|standard explanatory notation only|captions only|notation unavailable|mathematical notation not included/i;
-    if ((hasFormulaAnchors || hasFormulaExactText || hasFormulaCrops || hasFormulaMarkdown) && staleFormulaCaveat.test(text)) {
+    if ((hasFormulaAnchors || hasFormulaExactText || hasFormulaCrops || hasFormulaMarkdown) && STALE_FORMULA_CAVEAT_RE.test(text)) {
       problems.push(`${label}: stale caveat says formulas/definitions are unavailable despite formula anchors`);
     }
-    if (hasTables && /tables? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
+    if (hasTables && STALE_TABLE_CAVEAT_RE.test(text)) {
       problems.push(`${label}: stale caveat says tables are unavailable despite table anchors`);
     }
-    if (hasFigures && /figures? (?:are|is) not (?:present|available|detected|extracted)/i.test(text)) {
+    if (hasFigures && STALE_FIGURE_CAVEAT_RE.test(text)) {
       problems.push(`${label}: stale caveat says figures are unavailable despite figure anchors`);
     }
-    if (hasLaterPages && /only pages?\s*1\s*[-–-]\s*2\s+(?:are|is)\s+(?:available|present)|source map is truncated|later (?:pages?|sections?)[^.\n]*(?:not available|unavailable|captions?|anchored to captions)|later[- ]page content unavailable|later[- ]page teaching must remain anchored to extracted .*captions|truncated after page\s*2|provided excerpt only|not fully available in supplied context|must not be inferred beyond/i.test(text)) {
+    if (hasLaterPages && STALE_TRUNCATION_CAVEAT_RE.test(text)) {
       problems.push(`${label}: stale caveat says later pages are unavailable despite later anchors/pages`);
     }
   }
@@ -5756,9 +5869,11 @@ function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
     const h1 = body.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
     const folderKey = normalizedSectionTitleKey(entry.name);
     const titleKey = normalizedSectionTitleKey(title);
+    const canonicalTitleKey = canonicalSectionTitleKey(title, entry.name);
     folderKeys.add(folderKey);
     titleKeys.add(titleKey);
-    if (folderKey !== titleKey) problems.push(`learning/${entry.name}/: folder name "${entry.name}" does not match _index title "${title}"`);
+    titleKeys.add(canonicalTitleKey);
+    if (folderKey !== canonicalTitleKey) problems.push(`learning/${entry.name}/: folder name "${entry.name}" does not match canonical _index title "${title}"`);
     if (h1 && normalizedSectionTitleKey(h1) !== titleKey) problems.push(`learning/${entry.name}/_index.md: H1 "${h1}" does not match frontmatter title "${title}"`);
   }
   const map = fs.existsSync(path.join(learningDir, "Learning Map.md"))
@@ -5769,7 +5884,7 @@ function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
     if (!match) continue;
     const label = cleanMapNode(match[1] ?? "");
     if (!/^\d+\.\s+/.test(label)) continue;
-    const key = normalizedSectionTitleKey(label);
+    const key = canonicalSectionTitleKey(label);
     if (!titleKeys.has(key) || !folderKeys.has(key)) problems.push(`learning/Learning Map.md: section label "${label}" does not map to one matching section folder and title`);
   }
   return [...new Set(problems)];

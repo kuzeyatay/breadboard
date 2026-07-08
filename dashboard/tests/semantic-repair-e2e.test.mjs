@@ -261,7 +261,8 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
         `unexpected file touched: ${f}`,
       );
     }
-    const rewrittenIndexes = ctx.affected.filter((f) => f.startsWith("learning/") && f.endsWith("/_index.md"));
+    const rewrittenIndexes = [...new Set([...ctx.affected, ...ctx.run.changedFiles])]
+      .filter((f) => f.startsWith("learning/") && f.endsWith("/_index.md"));
     assert.ok(rewrittenIndexes.length > 0, "a section index must be rewritten");
     for (const rel of rewrittenIndexes) {
       assert.doesNotMatch(ctx.readFinal(rel), /Accuracy Formula Definition/, "the mismatched title must be gone");

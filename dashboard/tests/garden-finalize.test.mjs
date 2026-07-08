@@ -241,9 +241,132 @@ describe("learner navigation semantic repair", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("accepts full section labels that target canonical shortened section folders", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-semantic-nav-long-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const fullBody = "Continuous Activation Cost, Long-range Temporal Modeling Limitation, Model-specific Tradeoff Results";
+      const folderBody = fullBody.slice(0, 96).trim();
+      const fullTitle = `4. ${fullBody}`;
+      const folder = `4. ${folderBody}`;
+      fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", folder), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "_index.md"),
+        fm({ title: "test-2", knowledge_type: "cluster-index" }) +
+          "# test-2\n\n## Learning\n\n- [[learning/_index|Learning]]\n\n## Sources\n\n- [[sources/_index|Sources]]\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "_index.md"),
+        fm({ title: "Learning", knowledge_type: "learning-index", breadboardType: "learning_index" }) +
+          `# Learning\n\n## Sections\n\n- [[learning/${folder}/_index|${fullTitle}]]\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "Topic Overview.md"),
+        fm({ title: "Topic Overview", knowledge_type: "topic-overview", breadboardType: "topic_overview" }) +
+          `# Topic Overview\n\nRead [[learning/${folder}/_index|${fullTitle}]].\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "Learning Map.md"),
+        fm({ title: "Learning Map", knowledge_type: "learning-map", breadboardType: "learning_map" }) +
+          `# Learning Map\n\n- ${fullTitle}\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", folder, "_index.md"),
+        fm({ title: fullTitle, knowledge_type: "textbook-section", breadboardType: "textbook_section" }) +
+          `# ${fullTitle}\n`,
+      );
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /Semantic Navigation Number Matching|Section Folder\/Title Consistency/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("contract-driven semantic repair loop", () => {
+  test("finalize adopts existing orphan learner pages for missing contract units", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-orphan-unit-page-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard");
+      fs.mkdirSync(bb, { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "1. Why SNNs Need Events"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          sourceSetHash: "fixture",
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          learningUnits: [
+            {
+              id: "U1",
+              role: "core_concept",
+              title: "Why Spiking Neural Networks Exist",
+              learningQuestion: "Why do event-driven spikes matter?",
+              sourceAnchors: [],
+              sourceFigures: [],
+              sourceTables: [],
+              sourceFormulas: [],
+              zettelNotes: [
+                {
+                  handle: "spike-events-enable-sparse-computation",
+                  claim: "Spike events enable sparse computation.",
+                },
+              ],
+              mustNotRepeat: [],
+              expectedWordRange: [200, 400],
+            },
+          ],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "_index.md"),
+        fm({ title: "1. Why SNNs Need Events", breadboardType: "textbook_section" }) +
+          "# 1. Why SNNs Need Events\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "1.1 Why Spiking Neural Networks Exist.md"),
+        fm({
+          title: "1.1 Why Spiking Neural Networks Exist",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+        }) + `${FILLER("spike events and sparse computation", "intro")}\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /learning unit U1 has no generated learner page/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const out = fs.readFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "1.1 Why Spiking Neural Networks Exist.md"),
+        "utf-8",
+      );
+      assert.match(out, /^generatedBy: "learn_button"$/m);
+      assert.match(out, /^learningUnitId: "U1"$/m);
+      assert.match(out, /^tags: \[[^\n]*"spike-events-enable-sparse-computation"[^\n]*\]$/m);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("adds source text anchors to conceptual visuals when source prose contains the concept", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-visual-text-anchor-"));
     try {
@@ -299,6 +422,171 @@ describe("contract-driven semantic repair loop", () => {
       assert.match(out, /sourceGroundingStatus": "source-derived-conceptual"/);
       assert.match(out, /text-source-rate-and-temporal-spike-coding/);
       assert.match(out, /sourceAnchors: \["text-source-rate-and-temporal-spike-coding"\]/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("finalize adds text anchors to source-derived metric calculators with formula anchors", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-metric-text-anchor-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard", "visuals"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "3. The Metrics That Make SNNs Measurable"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(
+        path.join(dir, "sources", "source.md"),
+        fm({ title: "Source Paper", breadboardType: "source_document", sourceId: "source" }) +
+          "The metric definition for spike count treats spike count as the number of spike events accumulated across neurons and time steps, so the formula explains activity cost.\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "source-visuals.json"),
+        JSON.stringify([
+          {
+            sourceVisualId: "S1.P6.E3",
+            type: "equation",
+            caption: "Total spike count summed over neurons and time steps",
+            usageStatus: "assigned",
+            conceptUsage: "explained_as_text_formula",
+            cropStatus: "omitted_unreliable",
+          },
+        ], null, 2),
+      );
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      const spec = {
+        id: "vis-spike-count",
+        type: "metric_calculator",
+        title: "Spike Count Calculator",
+        sourceAnchors: [{ equationId: "S1.P6.E3", description: "Total spikes summed over neurons and time steps" }],
+        sourceGroundingStatus: "source-derived-conceptual",
+        justification: "The source explains this concept in prose but does not provide a dedicated figure, so the visual is derived from the source text anchor.",
+        conceptTargets: ["spike count"],
+        pedagogicalPurpose: "Let the learner manipulate spike-count inputs.",
+        props: { spikeCount: 180 },
+        controls: [{ name: "spikeCount", label: "Spike count", type: "slider", min: 0, max: 1000, step: 10, defaultValue: 180 }],
+        inputs: ["spike count"],
+        outputs: ["spike count"],
+        caption: "Adjust spike count.",
+        regenerationPrompt: "Improve this spike-count calculator.",
+        version: 1,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      fs.writeFileSync(path.join(dir, ".breadboard", "visuals", "vis-spike-count.json"), JSON.stringify(spec, null, 2));
+      fs.writeFileSync(
+        path.join(dir, "learning", "3. The Metrics That Make SNNs Measurable", "3.3 Spike Count as Activity Cost.md"),
+        fm({
+          title: "3.3 Spike Count as Activity Cost",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          visualIds: ["vis-spike-count"],
+          sourceAnchors: ["S1.P6.E3"],
+          sourceFormulaAnchors: ["S1.P6.E3"],
+          generatedBy: "learn_button",
+        }) + `${FILLER("spike count as activity cost", "metric")}\n\n${block(spec)}\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /source-derived-conceptual but lacks a textAnchorId/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const out = fs.readFileSync(
+        path.join(dir, "learning", "3. The Metrics That Make SNNs Measurable", "3.3 Spike Count as Activity Cost.md"),
+        "utf-8",
+      );
+      assert.match(out, /text-source-metric-definition/);
+      assert.match(out, /"textAnchorId": "text-source-metric-definition"/);
+      assert.match(out, /sourceAnchors: \["S1.P6.E3", "text-source-metric-definition"\]/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("finalize registers bare source-document slugs used by learner pages", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-slug-anchor-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard");
+      const sourceSlug = "2510-27379v1";
+      fs.mkdirSync(bb, { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "1. Why SNNs Need Events"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(
+        path.join(dir, "sources", `${sourceSlug}.md`),
+        fm({
+          title: "Spiking Neural Networks: The Future of Brain-Inspired Computing",
+          knowledge_type: "source-document",
+          breadboardType: "source_document",
+          sourceId: sourceSlug,
+          internal: "true",
+        }) + "# Source\n\nSpiking neural networks use discrete spike events so computation can become sparse and event driven.\n",
+      );
+      fs.writeFileSync(path.join(bb, "source-anchors.json"), JSON.stringify({ sourceTextConceptAnchors: [], sourceStructuralAnchors: [] }, null, 2));
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          sourceSetHash: "fixture",
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          learningUnits: [
+            {
+              id: "U1",
+              role: "core_concept",
+              title: "Why Spiking Neural Networks Exist",
+              learningQuestion: "Why do event-driven spikes matter?",
+              sourceAnchors: [sourceSlug],
+              sourceFigures: [],
+              sourceTables: [],
+              sourceFormulas: [],
+              zettelNotes: [
+                {
+                  handle: "spike-events-enable-sparse-computation",
+                  claim: "Spike events enable sparse computation.",
+                },
+              ],
+              mustNotRepeat: [],
+              expectedWordRange: [200, 400],
+            },
+          ],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "_index.md"),
+        fm({ title: "1. Why SNNs Need Events", breadboardType: "textbook_section" }) +
+          "# 1. Why SNNs Need Events\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", "1. Why SNNs Need Events", "1.1 Why Spiking Neural Networks Exist.md"),
+        fm({
+          title: "1.1 Why Spiking Neural Networks Exist",
+          knowledge_type: "learning-page",
+          breadboardType: "learning_page",
+          learningUnitId: "U1",
+          learningUnitRole: "core_concept",
+          sourceAnchors: [sourceSlug],
+          tags: ["spike-events-enable-sparse-computation"],
+          generatedBy: "learn_button",
+        }) + `${FILLER("spike events and sparse computation", "intro")}\n`,
+      );
+
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(
+        report.criticalProblems.some((problem) => /source anchor "2510-27379v1".*missing from the canonical source-anchor registry/.test(problem)),
+        false,
+        report.criticalProblems.join(" | "),
+      );
+      const anchors = JSON.parse(fs.readFileSync(path.join(bb, "source-anchors.json"), "utf-8"));
+      assert.ok(
+        (anchors.sourceStructuralAnchors ?? []).some((anchor) => anchor.id === sourceSlug && anchor.sourceId === sourceSlug),
+        "bare source-document slug should be registered as a structural source anchor",
+      );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -1760,6 +1760,10 @@ export function learningMapFromUnits(
 
 const SOURCE_FIGURES_HEADING_RE = /^#{2,3}\s+Source Figures?\s*$/im;
 
+function sourceImageBlockLooksLikeTable(block: string): boolean {
+  return /\btable\b/i.test(block) || /source-visuals\/[^)\s]*-table-t\d+/i.test(block);
+}
+
 /**
  * A source figure image is "orphaned" when it appears under a generic
  * `## Source Figures` heading, or when no interpretive prose sits within
@@ -1788,8 +1792,9 @@ export function figurePlacementProblems(
     if (onlyImages && /!\[[^\]]*\]\([^)]*\)/.test(block)) imageBlockIndexes.push(index);
   });
 
-  if (imageBlockIndexes.length > maxFigures) {
-    problems.push(`page embeds ${imageBlockIndexes.length} source figures (> ${maxFigures}) without justification`);
+  const sourceFigureBlockIndexes = imageBlockIndexes.filter((index) => !sourceImageBlockLooksLikeTable(blocks[index] ?? ""));
+  if (sourceFigureBlockIndexes.length > maxFigures) {
+    problems.push(`page embeds ${sourceFigureBlockIndexes.length} source figures (> ${maxFigures}) without justification`);
   }
 
   const isProse = (block: string): boolean => {
