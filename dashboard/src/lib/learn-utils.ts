@@ -224,7 +224,7 @@ const FORMULA_FAMILY_PATTERNS: Array<[FormulaMetricFamily, RegExp]> = [
   ["probability", /\bprobab|\bp\(|p_\{?i\}?|softmax|\\sigma\(|\\Pr\b/i],
   ["convergence", /\bconverg|\bepochs?\b|\btarget accuracy\b|\btarget\b|t_\{?\\?text\{?conv|t_\{?conv|a\(e\)|\ba_\{?e\}?|\ba_\{?target\}?|arg\s*min|\\arg\s*min|\\min\s*\\?\{/i],
   ["efficiency", /\befficien|\baccuracy per energy\b|normalized energy|\\eta|eta/i],
-  ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|cost/i],
+  ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|(?:energy|power|joule|synaptic|synop|operation)\s+costs?\b|\bcosts?\s+(?:of\s+)?(?:energy|power|joules?|synaptic|synops?|operations?)\b/i],
   ["spike-count", /\bspike[- ]?count\b|\btotal spikes?\b|\bnumber of spikes?\b|\bspikes?\b|n_\{?\\?text\{?(?:spike|spk)|n_\{?(?:spikes?|spk)\}?|n[_\s]*(?:spikes?|spk)|\\sum(?:_\{?[^}\s]*\}?|\s)*(?:s[_\{]|\bspikes?\b)|s_\{?[a-z](?:,[a-z])?\}?|s_n\(t\)|time ?steps?/i],
   ["latency", /\blatency\b|\bdelay\b|\bdecision time\b|\bresponse time\b|t_\{?\\?text\{?(?:latency|decision|stimulus)|t_\{?(?:decision|stimulus)/i],
   ["accuracy", /\baccuracy\b|\bclassification\b|\bcorrect predictions?\b|\bn_\{?\\?text\{?correct|n_\{?correct|n_\{?\\?text\{?total|n_\{?total|correct\s*\/\s*total/i],

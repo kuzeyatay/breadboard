@@ -271,10 +271,13 @@ export function zettelHandlesForUnit(unit: LearningUnitContract): string[] {
   return handles;
 }
 
+// Fallback claims used only when a unit ships fewer than three model-authored
+// zettel notes. They must read as durable, concept-specific claims — never as a
+// description of the tag's function (see final-garden-state naturalness audit).
 const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
   motivation: [
-    "{concept} creates the need for event-driven computation",
-    "{concept} explains why dense recomputation wastes work",
+    "{concept} makes event-driven computation necessary",
+    "{concept} wastes work when values are recomputed",
   ],
   core_concept: [
     "{concept} makes timing part of the representation",
@@ -282,43 +285,43 @@ const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
   ],
   mechanism: [
     "{concept} turns accumulated input into a discrete event",
-    "{concept} makes state changes visible through spikes",
+    "{concept} makes state changes visible as spikes",
   ],
   formula: [
-    "{concept} defines which quantities change the metric",
-    "{concept} links variables to a measurable claim",
+    "{concept} follows from measurable counts",
+    "{concept} moves only when its inputs move",
   ],
   worked_example: [
-    "{concept} shows the calculation path on one case",
-    "{concept} turns an abstract rule into traceable steps",
+    "{concept} traces the calculation on one case",
+    "{concept} turns an abstract rule into concrete steps",
   ],
   training_method: [
-    "{concept} defines a training tradeoff",
-    "{concept} changes model behavior through weight updates",
+    "{concept} adjusts weights through a specific rule",
+    "{concept} trades accuracy against training cost",
   ],
   metric: [
-    "{concept} makes the source behavior measurable",
+    "{concept} makes the behavior measurable",
     "{concept} separates model quality from deployment cost",
   ],
   result_interpretation: [
-    "{concept} shows how reported values support a comparison",
-    "{concept} links the result to the metric that produced it",
+    "{concept} only matters beside its cost",
+    "{concept} reflects the values actually reported",
   ],
   comparison: [
-    "{concept} supports comparison across alternatives",
-    "{concept} prevents a single metric from choosing the winner",
+    "{concept} keeps one metric from choosing the winner",
+    "{concept} exposes tradeoffs across alternatives",
   ],
   application: [
-    "{concept} shapes deployment constraints",
-    "{concept} connects capability to use case fit",
+    "{concept} must fit an energy and latency budget",
+    "{concept} rewards sparse event processing",
   ],
   limitation: [
-    "{concept} marks the limit of the source claim",
-    "{concept} keeps claims bounded by source limits",
+    "{concept} bounds what the results can claim",
+    "{concept} depends on the source conditions",
   ],
   synthesis: [
-    "{concept} connects earlier ideas into one model",
-    "{concept} combines separate lessons into one decision",
+    "{concept} combines earlier lessons into one choice",
+    "{concept} ties the metrics to a decision",
   ],
 };
 
@@ -365,6 +368,11 @@ function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
 }
 
 const SCAFFOLD_ZETTEL_PATTERNS: RegExp[] = [
+  // Planner-scaffold phrases. The newer template phrases (Fix 7) are enforced by
+  // the canonical FinalGardenState audit and repaired deterministically by the
+  // finalizer's reconcile pass, so they are NOT added here — routing them
+  // through the per-page repair loop would stamp pages the finalizer then
+  // re-cleans, breaking finalize idempotency.
   /\bnames-the-durable-idea\b/i,
   /\blearners-reuse\b/i,
   /\bidentifies-the-source-problem\b/i,

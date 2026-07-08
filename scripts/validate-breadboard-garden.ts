@@ -41,6 +41,7 @@ import {
   type SourceFigurePlacement,
 } from "../dashboard/src/lib/learning-unit-contract.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula } from "../dashboard/src/lib/learn-utils.ts";
+import { auditFinalGardenState, buildFinalGardenState } from "../dashboard/src/lib/final-garden-state.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -1180,6 +1181,23 @@ function repairLogConsistencyProblems(gardenDir: string, lessonPages: PageFile[]
     const pagePath = String(repair.pagePath ?? "");
     const sectionPath = String(repair.sectionPath ?? "");
     const failureTypes = Array.isArray(repair.failureTypes) ? repair.failureTypes.map(String) : [];
+    // Target-kind-scoped provenance (canonical model).
+    switch (String(repair.targetKind ?? "")) {
+      case "section_index":
+        return /\/_index\.md$/.test(file);
+      case "contract":
+        return file === ".breadboard/learning-unit-contract.json";
+      case "source_coverage":
+        return file === ".breadboard/planning/Source Coverage.md" || file === ".breadboard/source-anchors.json";
+      case "planning_doc":
+        return file.startsWith(".breadboard/planning/") || file === "learning/Learning Map.md";
+      case "visual_spec":
+        return file.startsWith(".breadboard/visuals/");
+      case "global_finalization":
+        return true;
+      default:
+        break;
+    }
     if (file === pagePath) return true;
     if (file === `${sectionPath}/_index.md`) return true;
     if (failureTypes.includes("section_semantics") && (file === "learning/_index.md" || file === "learning/Learning Map.md")) return true;
@@ -1215,7 +1233,7 @@ function repairLogConsistencyProblems(gardenDir: string, lessonPages: PageFile[]
     if (isPageProseRepair && String(repair.executorUsed ?? "") === "deterministic" && String(repair.naturalProseValidation ?? "") !== "pass") {
       problems.push(`${pagePath}: deterministic semantic prose repair lacks naturalProseValidation=pass`);
     }
-    if (isProseRepair && !String(repair.modelRepairStatus ?? "").trim()) {
+    if (isProseRepair && String(repair.executorUsed ?? "") !== "finalizer_hygiene" && !String(repair.modelRepairStatus ?? "").trim()) {
       problems.push(`${pagePath}: prose repair log missing modelRepairStatus`);
     }
   }
@@ -1284,6 +1302,7 @@ const REQUIRED_VALIDATION_REPORT_SECTIONS = [
   "Zettelkasten Handle Quality",
   "Zettelkasten Handle Naturalness",
   "Repair Provenance",
+  "Final Garden State Audit",
   "Section Title Quality",
   "Acceptance Decision",
   "Final Acceptance",
@@ -3031,6 +3050,19 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     check(63, "Visual Title and Caption Quality", visualTitleCaptionQualityProblems(embeddedVisualSpecs), embeddedVisualSpecs.length === 0);
   }
 
+  // 64. Canonical final-state audit — the single gate that no report, ledger,
+  //     page, contract, anchor, visual, or repair log may contradict.
+  {
+    let auditProblems: string[] = [];
+    try {
+      const state = buildFinalGardenState(gardenDir, gardenSlug);
+      auditProblems = auditFinalGardenState(state).problems;
+    } catch (error) {
+      auditProblems = [`final-state audit could not run: ${(error as Error).message}`];
+    }
+    check(64, "Final Garden State Audit", auditProblems, lessonPages.length === 0);
+  }
+
   return results;
 }
 
@@ -3810,6 +3842,10 @@ export function writeValidationReport(
     "## Repair Provenance",
     "",
     "See check 58.",
+    "",
+    "## Final Garden State Audit",
+    "",
+    "See check 64.",
     "",
     "## Section Title Quality",
     "",
