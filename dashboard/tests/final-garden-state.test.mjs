@@ -319,6 +319,64 @@ describe("FinalGardenState canonical audit — state-drift regressions", { skip 
     assert.ok(!(audit(dir).byRule.repair_provenance ?? []).length, "reconcile re-scopes repair provenance");
   });
 
+  // 11 (Fix 3). Page and contract agree on the same wrong formula anchor, but
+  // the formula's own math contradicts it (synchronized wrongness).
+  test("11. formula grounded to a semantically incompatible anchor", () => {
+    const dir = freshCopy();
+    const state = buildFinalGardenState(dir, "test-2");
+    // An accuracy source-definition formula grounded to its accuracy anchor.
+    const target = state.formulas.find((f) => f.declaredKind === "source_definition"
+      && f.sourceAnchor && state.sourceAnchors[f.sourceAnchor]?.formulaFamily === "accuracy");
+    assert.ok(target, "expected an accuracy formula grounded to the accuracy anchor");
+    const wrong = "S1.P6.E5"; // normalized energy efficiency — a different family
+    let md = read(dir, target.pageRel);
+    md = md.replace(new RegExp(`sourceAnchor: "${target.sourceAnchor.replace(/\./g, "\\.")}"`, "g"), `sourceAnchor: "${wrong}"`)
+           .replace(new RegExp(`^sourceFormulaAnchors: \\["${target.sourceAnchor.replace(/\./g, "\\.")}"\\]`, "m"), `sourceFormulaAnchors: ["${wrong}"]`);
+    write(dir, target.pageRel, md);
+
+    const before = audit(dir);
+    assert.ok(before.byRule.anchor_compatibility?.length, "audit must flag the semantically incompatible grounding");
+
+    reconcileFinalGardenState(dir, "test-2");
+    assert.ok(!(audit(dir).byRule.anchor_compatibility ?? []).length, "reconcile regrounds to the compatible source anchor");
+  });
+
+  // 12 (Fix 7). A used text anchor with no exactText while source text exists.
+  test("12. generic text anchor while source paragraph exists", () => {
+    const dir = freshCopy();
+    const state = buildFinalGardenState(dir, "test-2");
+    const usedTextId = state.sourceUsages.find((u) => u.kind === "text_concept")?.anchorId;
+    assert.ok(usedTextId, "expected a used text anchor");
+    const anchors = readJson(dir, ".breadboard/source-anchors.json");
+    const rec = anchors.sourceTextConceptAnchors.find((a) => a.id === usedTextId);
+    rec.exactText = null; // strip the specific source excerpt
+    writeJson(dir, ".breadboard/source-anchors.json", anchors);
+
+    const before = audit(dir);
+    assert.ok(before.byRule.text_anchor_specificity?.some((p) => p.includes(usedTextId)), "audit must flag the generic text anchor");
+
+    reconcileFinalGardenState(dir, "test-2");
+    const after = buildFinalGardenState(dir, "test-2");
+    assert.ok(after.sourceAnchors[usedTextId]?.exactText, "reconcile populates exactText from the source paragraph");
+    assert.ok(!(audit(dir).byRule.text_anchor_specificity ?? []).length, "text-anchor specificity is restored");
+  });
+
+  // 13 (Fix 13). Debug failed-repairs shipped in the export.
+  test("13. debug failed-repairs must not ship in the export", () => {
+    const dir = freshCopy();
+    const debugDir = path.join(dir, ".breadboard", "debug", "failed-repairs");
+    fs.mkdirSync(debugDir, { recursive: true });
+    fs.writeFileSync(path.join(debugDir, "failed-1.md"), "a failed repair dump");
+    fs.writeFileSync(path.join(debugDir, "failed-2.md"), "another failed repair dump");
+
+    const before = audit(dir);
+    assert.ok(before.byRule.debug_failed_repairs?.length, "audit must flag shipped debug failed-repairs");
+
+    reconcileFinalGardenState(dir, "test-2");
+    assert.ok(!fs.existsSync(debugDir), "reconcile removes the debug failed-repairs directory");
+    assert.ok(!(audit(dir).byRule.debug_failed_repairs ?? []).length, "no debug failed-repairs remain");
+  });
+
   // 10. Planning doc claims formulas are unavailable while anchors exist.
   test("10. planning caveat contradicts extracted formula anchors", () => {
     const dir = freshCopy();

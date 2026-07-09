@@ -19,6 +19,7 @@ import path from "node:path";
 import {
   dedupeSourceArtifactAssignments,
   normalizeLearningUnits,
+  scaffoldLikeZettelHandle,
   zettelHandlesForUnit,
   type LearningUnitContract,
   type SourceArtifactAssignment,
@@ -48,6 +49,14 @@ export interface CanonicalSourceAnchor {
   sourceId?: string;
   /** Where the canonical definition came from. */
   origin: "visual_ledger" | "text_ledger" | "structural_ledger";
+  /** Metric family for formula anchors (accuracy, latency, energy, …), used for
+   *  semantic compatibility checks. Absent when the family is unrecognized. */
+  formulaFamily?: string;
+  caption?: string;
+  semanticSummary?: string;
+  /** Verbatim source excerpt for text anchors (Fix 7). */
+  exactText?: string;
+  conceptKeywords?: string[];
 }
 
 export type FormulaKind =
@@ -390,13 +399,17 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
   for (const visual of visualLedger) {
     const id = String(visual.sourceVisualId ?? "").trim();
     if (!id) continue;
+    const kind = anchorKindFromVisual(String(visual.type ?? ""), id);
+    const caption = String(visual.caption ?? id);
     registry[id] = {
       id,
-      kind: anchorKindFromVisual(String(visual.type ?? ""), id),
-      title: String(visual.caption ?? id),
+      kind,
+      title: caption,
+      caption,
       page: Number.isFinite(Number(visual.pageNumber)) ? Number(visual.pageNumber) : undefined,
       sourceId: String(visual.sourceId ?? "") || undefined,
       origin: "visual_ledger",
+      formulaFamily: kind === "formula" ? (formulaMetricFamily(caption) ?? undefined) : undefined,
     };
   }
 
@@ -415,6 +428,9 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       page: Number.isFinite(Number(record.page)) ? Number(record.page) : undefined,
       sourceId: String(record.sourceId ?? "") || undefined,
       origin: "text_ledger",
+      semanticSummary: record.semanticSummary ? String(record.semanticSummary) : undefined,
+      exactText: typeof record.exactText === "string" && record.exactText.trim() ? record.exactText : undefined,
+      conceptKeywords: Array.isArray(record.conceptKeywords) ? record.conceptKeywords.map(String) : [],
     };
   }
 
@@ -547,6 +563,11 @@ export function zettelHandleNaturalnessReason(handle: string): string | null {
   // Function-describing verbs anchored to generic objects.
   if (/-(?:defines|describes|records|states|introduces|explains|connects)-(?:the|which|what|how|a)-/.test(normalized)) {
     return "describes the tag's function instead of stating a durable claim";
+  }
+  // Stay a superset of the pipeline's own scaffold detector so the audit and the
+  // Zettelkasten Handle Quality check can never disagree about a handle.
+  if (scaffoldLikeZettelHandle(normalized)) {
+    return "reads like planner scaffolding, not a reusable source-specific claim";
   }
   return null;
 }
@@ -1340,8 +1361,97 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
     }
   }
 
+  // Rule J — SEMANTIC anchor compatibility (Fix 3). Field agreement is not
+  // enough: a formula grounded to an anchor whose metric family contradicts the
+  // formula's own math is synchronized wrongness (e.g. a surrogate-gradient or
+  // accuracy formula grounded to the normalized-energy-efficiency anchor).
+  for (const page of state.pages) {
+    for (const formula of page.formulas) {
+      if (formula.declaredKind !== "source_definition" && formula.declaredKind !== "source_derived_definition") continue;
+      const anchorId = formula.sourceAnchor;
+      if (!anchorId) continue;
+      const anchor = anchors[anchorId];
+      if (!anchor || anchor.kind !== "formula" || !anchor.formulaFamily) continue;
+      const formulaFamily = formulaMetricFamily(formula.text);
+      if (formulaFamily && !metricFamiliesCompatible(formulaFamily, anchor.formulaFamily)) {
+        add("anchor_compatibility", `${page.rel}: formula "${formula.text.slice(0, 48)}" is a ${formulaFamily} formula but is grounded to ${anchorId}, the ${anchor.formulaFamily} formula — semantically incompatible`);
+      }
+    }
+    // Page/contract may both declare a formula anchor with no matching formula
+    // on the page whose family is clearly foreign to the page's own metrics.
+    const definitionFamilies = new Set<string>();
+    for (const f of page.formulas) {
+      if (f.structuralKind !== "definition") continue;
+      const fam = formulaMetricFamily(f.text);
+      if (fam) definitionFamilies.add(fam);
+    }
+    if (definitionFamilies.size > 0) {
+      for (const anchorId of page.sourceFormulaAnchors) {
+        const anchor = anchors[anchorId];
+        if (!anchor || anchor.kind !== "formula" || !anchor.formulaFamily) continue;
+        const compatible = [...definitionFamilies].some((fam) => metricFamiliesCompatible(fam, anchor.formulaFamily!));
+        if (!compatible) {
+          add("anchor_compatibility", `${page.rel}: source formula anchor ${anchorId} (${anchor.formulaFamily}) has no compatible formula on the page (page defines [${[...definitionFamilies].join(", ")}])`);
+        }
+      }
+    }
+  }
+
+  // Rule K — text anchors must be specific when the source text exists (Fix 7).
+  const corpus = sourceCorpusLower(state.rootPath);
+  if (corpus) {
+    const usedTextAnchors = new Set(state.sourceUsages.filter((u) => u.kind === "text_concept").map((u) => u.anchorId));
+    for (const id of usedTextAnchors) {
+      const anchor = anchors[id];
+      if (!anchor || anchor.kind !== "text_concept" || anchor.exactText) continue;
+      const keywords = (anchor.conceptKeywords ?? []).map((k) => k.toLowerCase()).filter((k) => k.length >= 4 && !GENERIC_CONCEPT_WORDS.has(k));
+      const present = keywords.filter((k) => corpus.includes(k));
+      if (present.length >= 2) {
+        add("text_anchor_specificity", `${id}: used as a source text anchor but carries no exactText even though the source text covers [${present.slice(0, 4).join(", ")}]`);
+      }
+    }
+  }
+
+  // Rule L — debug failed-repairs must not ship in a production export (Fix 13).
+  try {
+    const debugDir = path.join(state.rootPath, ".breadboard", "debug", "failed-repairs");
+    if (fs.existsSync(debugDir)) {
+      const files = fs.readdirSync(debugDir).filter((n) => !n.startsWith("."));
+      if (files.length > 0) {
+        add("debug_failed_repairs", `${files.length} failed-repair debug file(s) are shipped under .breadboard/debug/failed-repairs/; they must be removed from a production export`);
+      }
+    }
+  } catch {
+    // no debug dir
+  }
+
   const problems = Object.values(byRule).flat();
   return { ok: problems.length === 0, problems, byRule, warnings };
+}
+
+/**
+ * A source-definition formula belongs to exactly one metric family, so its
+ * family must match its anchor's family. Unrecognized families cannot be
+ * disproved, so they are treated as compatible (never a false mismatch).
+ */
+function metricFamiliesCompatible(a: string, b: string): boolean {
+  return !a || !b || a === b;
+}
+
+const GENERIC_CONCEPT_WORDS = new Set([
+  "source", "concept", "prose", "supports", "explains", "based", "content", "material",
+  "spiking", "neural", "networks", "network", "future", "brain", "inspired", "computing",
+]);
+
+function sourceCorpusLower(rootPath: string): string {
+  const files: Array<{ abs: string; rel: string }> = [];
+  walkMarkdown(path.join(rootPath, "sources"), "sources", files);
+  const parts: string[] = [];
+  for (const { abs } of files) {
+    const text = readText(abs);
+    if (text) parts.push(splitFrontmatter(text).body);
+  }
+  return parts.join("\n\n").toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -1548,6 +1658,44 @@ function groundOrphanRequiredFormulas(
     (entry as FullFormulaEntry).justification = `Symbolic source definition for ${anchor}; grounded to the contract-required formula the page declares.`;
     (entry as FullFormulaEntry).matchReason = "symbolic definition grounded to contract-required anchor";
   }
+}
+
+/**
+ * Reground a definition formula whose own math contradicts the metric family of
+ * the anchor it claims (synchronized wrongness — Fix 3). If a correct-family
+ * source formula anchor exists, point at it; otherwise demote the formula to a
+ * conceptual helper rather than keep a semantically false grounding.
+ */
+function regroundMismatchedFormulas(
+  rawFm: string,
+  ledgerFamilies: Map<string, string>,
+  familyToAnchorId: Map<string, string>,
+): { rawFm: string; changed: boolean } {
+  const entries = parseFullFormulaEntries(rawFm);
+  let changed = false;
+  for (const entry of entries) {
+    if (entry.kind !== "source_definition" && entry.kind !== "source_derived_definition") continue;
+    if (!entry.sourceAnchor) continue;
+    const anchorFamily = ledgerFamilies.get(entry.sourceAnchor);
+    const formulaFamily = formulaMetricFamily(entry.text);
+    if (!anchorFamily || !formulaFamily || metricFamiliesCompatible(formulaFamily, anchorFamily)) continue;
+    const correct = familyToAnchorId.get(formulaFamily);
+    if (correct && correct !== entry.sourceAnchor) {
+      entry.sourceAnchor = correct;
+      entry.groundingStatus = "source-anchored";
+      entry.matchReason = `regrounded to the ${formulaFamily} source formula`;
+      delete entry.sourceAnchorTitle;
+    } else {
+      entry.kind = "conceptual_helper";
+      entry.groundingStatus = "conceptual-helper";
+      entry.matchReason = "no compatible source formula anchor";
+      delete entry.sourceAnchor;
+      delete entry.sourceAnchorTitle;
+    }
+    changed = true;
+  }
+  if (!changed) return { rawFm, changed: false };
+  return { rawFm: replaceFormulasBlock(rawFm, entries), changed: true };
 }
 
 /** Anchor id → metric family, from the visual ledger's formula captions. */
@@ -1922,6 +2070,8 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
   // (3) Per-page reconciliation: prune anchors to contract, relabel worked
   //     examples, sync tags to the repaired contract handles.
   const ledgerFamilies = ledgerFormulaFamilies(gardenDir);
+  const familyToAnchorId = new Map<string, string>();
+  for (const [id, fam] of ledgerFamilies) if (!familyToAnchorId.has(fam)) familyToAnchorId.set(fam, id);
   const groundedRequired: Array<{ pageRel: string; anchor: string }> = [];
   for (const page of state.pages) {
     const abs = page.abs;
@@ -1965,6 +2115,12 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
     if (relabel.changed) {
       rawFm = relabel.rawFm;
       result.notes.push(`${page.rel}: relabeled worked-example formula(s) mislabeled as source_definition`);
+    }
+    // Reground formulas grounded to a semantically-wrong-family anchor (Fix 3).
+    const reground = regroundMismatchedFormulas(rawFm, ledgerFamilies, familyToAnchorId);
+    if (reground.changed) {
+      rawFm = reground.rawFm;
+      result.notes.push(`${page.rel}: regrounded formula(s) to the semantically compatible source anchor`);
     }
     // Ground a symbolic definition the page wrote but never grounded, when its
     // unit contract requires that formula anchor.
@@ -2019,6 +2175,22 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
   const sectionSummaries = reconcileSectionSummaries(gardenDir, state, unitsById);
   for (const rel of sectionSummaries) { markChanged(rel); result.notes.push(`regenerated section summary in ${rel}`); }
 
+  // (4b) Populate exactText for used text anchors that have a matching source
+  //      paragraph, so they point to real source text (Fix 7).
+  {
+    const populated = reconcileTextAnchorExactText(gardenDir);
+    if (populated.length > 0) {
+      markChanged(".breadboard/source-anchors.json");
+      for (const id of populated) result.notes.push(`grounded text anchor ${id} to its source paragraph (exactText)`);
+    }
+  }
+
+  // (4c) Drop debug failed-repairs from the exported garden (Fix 13).
+  {
+    const removed = removeDebugFailedRepairs(gardenDir);
+    if (removed > 0) result.notes.push(`removed ${removed} debug failed-repair file(s) from the export`);
+  }
+
   // (5) Reconcile Source Map caveats about now-available formulas.
   if (reconcileSourceMapCaveats(gardenDir)) {
     markChanged(".breadboard/planning/Source Map.md");
@@ -2042,6 +2214,108 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
   markChanged(".breadboard/planning/Source Coverage.md");
 
   return result;
+}
+
+/** Source paragraphs with the page number they appear under (from `# Page N`). */
+function sourceParagraphsWithPages(gardenDir: string): Array<{ page: number; text: string }> {
+  const files: Array<{ abs: string; rel: string }> = [];
+  walkMarkdown(path.join(gardenDir, "sources"), "sources", files);
+  const out: Array<{ page: number; text: string }> = [];
+  for (const { abs, rel } of files) {
+    if (/(^|\/)_index\.md$/i.test(rel)) continue;
+    const text = readText(abs);
+    if (text === undefined) continue;
+    const body = splitFrontmatter(text).body;
+    let page = 0;
+    let buffer: string[] = [];
+    const flush = (): void => {
+      const para = buffer.join(" ").replace(/\s+/g, " ").trim();
+      if (para.length >= 80) out.push({ page, text: para });
+      buffer = [];
+    };
+    for (const line of body.split(/\r?\n/)) {
+      const header = line.match(/^#{1,3}\s*Page\s+(\d+)\b/i);
+      if (header) { flush(); page = Number.parseInt(header[1] ?? "0", 10); continue; }
+      if (/^#{1,6}\s/.test(line)) { flush(); continue; }
+      if (line.trim() === "") { flush(); continue; }
+      buffer.push(line.trim());
+    }
+    flush();
+  }
+  return out;
+}
+
+/**
+ * For each USED text anchor that lacks exactText, find the best-matching source
+ * paragraph (by concept-keyword overlap) and record its verbatim excerpt, page,
+ * and a semantic summary. Returns the anchor ids that were grounded (Fix 7).
+ */
+function reconcileTextAnchorExactText(gardenDir: string): string[] {
+  const bd = path.join(gardenDir, ".breadboard");
+  const anchorPath = path.join(bd, "source-anchors.json");
+  const ledger = readJson<Record<string, unknown>>(anchorPath, {});
+  const textAnchors = Array.isArray(ledger.sourceTextConceptAnchors) ? (ledger.sourceTextConceptAnchors as Array<Record<string, unknown>>) : [];
+  if (textAnchors.length === 0) return [];
+  const state = buildFinalGardenState(gardenDir);
+  const used = new Set(state.sourceUsages.filter((u) => u.kind === "text_concept").map((u) => u.anchorId));
+  const paragraphs = sourceParagraphsWithPages(gardenDir);
+  if (paragraphs.length === 0) return [];
+  const grounded: string[] = [];
+  for (const anchor of textAnchors) {
+    const id = String(anchor.id ?? "");
+    if (!used.has(id)) continue;
+    if (typeof anchor.exactText === "string" && anchor.exactText.trim()) continue;
+    const keywords = (Array.isArray(anchor.conceptKeywords) ? anchor.conceptKeywords.map(String) : [])
+      .map((k) => k.toLowerCase())
+      .filter((k) => k.length >= 4 && !GENERIC_CONCEPT_WORDS.has(k));
+    if (keywords.length === 0) continue;
+    // The concept keywords joined form a distinctive phrase ("spike timing
+    // dependent"). Hyphens are normalized so "Spike-Timing Dependent" matches.
+    const norm = (t: string): string => t.toLowerCase().replace(/[-–]/g, " ");
+    const phrase = keywords.slice(0, 3).join(" ");
+    const isCitation = (t: string): boolean => /^\s*\[\d+\]/.test(t) || /\bvol\.\s*\d+|\bpp\.\s*\d+|\bdoi:|\barxiv\b|scholarpedia|google scho/i.test(t);
+    const score = (p: { text: string }): number => {
+      const n = norm(p.text);
+      const kw = keywords.filter((k) => n.includes(k)).length;
+      if (kw < 2) return 0;
+      return kw + (phrase.length >= 8 && n.includes(phrase) ? 5 : 0);
+    };
+    // Prefer an explanatory paragraph (not a citation, not the whole abstract)
+    // that names the concept, over any paragraph that merely mentions it.
+    const scored = paragraphs
+      .filter((p) => p.text.length >= 100 && p.text.length <= 900 && !isCitation(p.text) && score(p) > 0)
+      .sort((a, b) => score(b) - score(a) || a.text.length - b.text.length);
+    const best = scored[0] ?? paragraphs.filter((p) => !isCitation(p.text) && score(p) > 0).sort((a, b) => score(b) - score(a))[0];
+    if (!best) continue;
+    const bestScore = score(best);
+    if (bestScore < 2) continue;
+    anchor.exactText = best.text.slice(0, 500);
+    if (!anchor.page && best.page) anchor.page = best.page;
+    if (!anchor.semanticSummary || !String(anchor.semanticSummary).trim()) {
+      anchor.semanticSummary = `The source text explains ${String(anchor.title ?? id)}.`;
+    }
+    grounded.push(id);
+  }
+  if (grounded.length === 0) return [];
+  fs.writeFileSync(anchorPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+  return grounded;
+}
+
+/** Remove failed-repair debug artifacts from a production export (Fix 13). */
+function removeDebugFailedRepairs(gardenDir: string): number {
+  const dir = path.join(gardenDir, ".breadboard", "debug", "failed-repairs");
+  let count = 0;
+  try {
+    if (!fs.existsSync(dir)) return 0;
+    count = fs.readdirSync(dir).filter((n) => !n.startsWith(".")).length;
+    fs.rmSync(dir, { recursive: true, force: true });
+    // Drop the parent debug dir too if it is now empty.
+    const parent = path.join(gardenDir, ".breadboard", "debug");
+    if (fs.existsSync(parent) && fs.readdirSync(parent).length === 0) fs.rmSync(parent, { recursive: true, force: true });
+  } catch {
+    // best effort
+  }
+  return count;
 }
 
 /**
