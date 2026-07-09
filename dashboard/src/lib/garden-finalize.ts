@@ -563,6 +563,32 @@ function zettelRepairClaim(unit: LearningUnitContract, used: Set<string>): strin
   return `${title || "This idea"} stays grounded in the source claim`;
 }
 
+// Concept-grounded, non-scaffold suffixes used to mint a DISTINCT replacement
+// handle when the primary claim pool collides (e.g. a long unit concept leaves
+// too few unique base claims). Kept free of scaffold phrasing.
+const DISTINCT_HANDLE_SUFFIXES = [
+  "shapes-the-learner-model",
+  "separates-signal-from-noise",
+  "changes-a-concrete-decision",
+  "stays-observable-in-the-data",
+  "connects-cause-to-measured-effect",
+  "holds-only-within-source-limits",
+];
+
+/** A distinct, non-scaffold handle built from the unit's concepts. */
+function distinctConceptHandle(unit: LearningUnitContract, used: Set<string>): string {
+  const bases = [...(unit.newConcepts ?? []), stripTitleNumber(unit.title), ...(unit.prerequisiteConcepts ?? [])]
+    .map((value) => cleanText(value))
+    .filter(Boolean);
+  for (const base of bases) {
+    for (const suffix of DISTINCT_HANDLE_SUFFIXES) {
+      const handle = atomicZettelHandle(`${base} ${suffix.replace(/-/g, " ")}`);
+      if (handle && !used.has(handle) && !scaffoldLikeZettelHandle(handle)) return handle;
+    }
+  }
+  return "";
+}
+
 function repairContractZettelHandles(
   gardenDir: string,
   contract: LearningUnitContractArtifact,
@@ -589,8 +615,14 @@ function repairContractZettelHandles(
     for (const note of notes) {
       const oldHandle = atomicZettelHandle(cleanText(note.handle ?? note.claim));
       if (!oldHandle || !scaffoldLikeZettelHandle(oldHandle)) continue;
-      const claim = zettelRepairClaim(unit, used);
-      const handle = atomicZettelHandle(claim);
+      let claim = zettelRepairClaim(unit, used);
+      let handle = atomicZettelHandle(claim);
+      // Guarantee a distinct, non-scaffold replacement even when the primary
+      // claim pool collides (long concepts, several bad handles on one unit).
+      if (!handle || used.has(handle) || scaffoldLikeZettelHandle(handle)) {
+        const alt = distinctConceptHandle(unit, used);
+        if (alt) { handle = alt; claim = alt.replace(/-/g, " "); }
+      }
       if (!handle || used.has(handle)) continue;
       note.handle = handle;
       note.claim = claim;

@@ -1,6 +1,6 @@
 ---
 title: "Sources"
-date: "2026-07-08"
+date: "2026-07-09"
 knowledge_type: "source-index"
 breadboardType: "source_index"
 internal: false

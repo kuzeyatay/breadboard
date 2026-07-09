@@ -161,10 +161,12 @@ async function driveExecutor({ setup, repairExecutor, makeModelRepair }) {
     const meta = setup(dir) ?? {};
     const modelRepair = makeModelRepair ? makeModelRepair(meta) : undefined;
     const run = await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2", repairExecutor, modelRepair });
-    const finalize = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
-    const verify = verifyFinalArtifactNoMutation({ gardenDir: dir, gardenSlug: "test-2" });
+    // The failed-repairs dump is a repair-loop debug artifact; the production
+    // finalize strips it (Fix 13), so capture it before finalizing.
     const failedAbs = path.join(dir, ".breadboard", "debug", "failed-repairs");
     const failedRepairs = fs.existsSync(failedAbs) ? fs.readdirSync(failedAbs) : [];
+    const finalize = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+    const verify = verifyFinalArtifactNoMutation({ gardenDir: dir, gardenSlug: "test-2" });
     const final = snapshotTree(dir);
     const readFinal = (rel) => {
       const v = final.get(rel);
