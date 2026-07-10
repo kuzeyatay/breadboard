@@ -40,6 +40,186 @@ export type CanonicalSourceAnchorKind =
   | "intro"
   | "guidance";
 
+export type AnchorConfidence = "high" | "medium" | "low" | "unsupported";
+export type AnchorDecision = "register" | "replace_with_existing" | "needs_critic_review" | "block";
+
+/** The scored evidence proving (or failing to prove) that a source passage
+ *  supports a generated semantic anchor's title, summary, and intended use. */
+export interface AnchorEvidence {
+  matchedPage?: number;
+  keywordHits: string[];
+  missingKeywords: string[];
+  titleOverlapScore: number;
+  keywordCoverageScore: number;
+  pageMatchScore: number;
+  contextSpecificityScore: number;
+  negativeEvidencePenalty: number;
+  totalScore: number;
+  decision: AnchorDecision;
+}
+
+/** Full evidence score for one anchor candidate against the source. */
+export interface AnchorEvidenceScore {
+  anchorId: string;
+  candidateTitle: string;
+  sourceId: string;
+  requestedPage?: number;
+  matchedPage?: number;
+  exactText: string;
+  keywordHits: string[];
+  missingKeywords: string[];
+  titleOverlapScore: number;
+  keywordCoverageScore: number;
+  pageMatchScore: number;
+  contextSpecificityScore: number;
+  negativeEvidencePenalty: number;
+  totalScore: number;
+  confidence: AnchorConfidence;
+  decision: AnchorDecision;
+}
+
+/** A ChatMock critic's explicit verdict on a low-confidence anchor. */
+export interface CriticAnchorConfirmation {
+  anchorId: string;
+  confirmed: boolean;
+  criticIssueId?: string;
+  reason: string;
+  confirmedExactText?: string;
+}
+
+export type AnchorCriticDecisionKind = "confirm" | "replace" | "create_better_anchor" | "reject";
+
+/** The structured decision ChatMock returns for one low-confidence anchor. */
+export interface AnchorCriticDecision {
+  anchorId: string;
+  decision: AnchorCriticDecisionKind;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  confirmedExactText?: string;
+  replacementAnchorId?: string;
+  betterAnchor?: {
+    id: string;
+    kind: "text" | "abstract" | "intro" | "guidance";
+    sourceId: string;
+    page?: number;
+    title: string;
+    exactText: string;
+    semanticSummary: string;
+    conceptKeywords: string[];
+  };
+  requiredRepairs?: Array<{
+    targetKind: "unit_page" | "learning_unit_contract" | "source_anchor_ledger" | "source_coverage";
+    targetPath?: string;
+    instructions: string[];
+  }>;
+}
+
+/** Everything ChatMock needs to judge one low-confidence anchor. */
+export interface AnchorConfirmationPacket {
+  anchor: CanonicalSourceAnchor;
+  evidence: AnchorEvidence;
+  referencedBy: { pages: string[]; unitIds: string[]; visuals: string[] };
+  candidatePassage: { sourceId: string; page?: number; exactText: string };
+  nearbySourcePassages: Array<{ page?: number; exactText: string }>;
+  existingAlternativeAnchors: CanonicalSourceAnchor[];
+}
+
+/** The outcome of applying one anchor decision to the artifacts. */
+export type SourceTextMatchType = "exact" | "normalized_exact" | "near_exact" | "not_found";
+
+/** The result of checking a ChatMock-supplied excerpt against source markdown. */
+export interface SourceTextVerificationResult {
+  ok: boolean;
+  sourceId?: string;
+  page?: number;
+  matchType: SourceTextMatchType;
+  matchedText?: string;
+  similarity?: number;
+  reason: string;
+}
+
+/** Whether a replacement anchor is semantically compatible with the weak one. */
+export interface SemanticCompatibilityResult {
+  ok: boolean;
+  reason: string;
+}
+
+export type ConceptFamily =
+  | "energy"
+  | "energy_efficiency"
+  | "latency"
+  | "accuracy"
+  | "spike_count"
+  | "convergence"
+  | "surrogate_gradient"
+  | "stdp"
+  | "ann_to_snn_conversion"
+  | "neuromorphic_hardware"
+  | "edge_deployment"
+  | "brain_comparison"
+  | "event_driven_computation"
+  | "other";
+
+export type SourceTextRelevanceDecision = "relevant" | "weak_relevance" | "irrelevant";
+
+/** Whether a source excerpt actually SUPPORTS an anchor's meaning (not just
+ *  exists in the source). Presence is checked separately by verifySourceText. */
+export interface SourceTextRelevanceResult {
+  ok: boolean;
+  anchorId: string;
+  anchorTitle: string;
+  anchorKind: string;
+  anchorConceptKeywords: string[];
+  anchorSemanticSummary: string;
+  anchorFamily: ConceptFamily;
+  textFamily: ConceptFamily;
+  textKeywordHits: string[];
+  textMissingKeywords: string[];
+  titleOverlapScore: number;
+  keywordCoverageScore: number;
+  summaryOverlapScore: number;
+  familyCompatibilityScore: number;
+  wrongFamilyPenalty: number;
+  totalScore: number;
+  decision: SourceTextRelevanceDecision;
+  reason: string;
+}
+
+/** A targeted repair for a rejected (unsupported) anchor (Fix 6). */
+export interface RejectedAnchorRepairRequest {
+  targetKind: "unit_page" | "learning_unit_contract" | "source_anchor_ledger" | "source_coverage";
+  rejectedAnchorId: string;
+  affectedPages: string[];
+  affectedUnitIds: string[];
+  instructions: string[];
+}
+
+export interface AppliedAnchorDecision {
+  anchorId: string;
+  decision: AnchorCriticDecisionKind;
+  applied: boolean;
+  confidence?: "high" | "medium" | "low";
+  reason: string;
+  replacementAnchorId?: string;
+  betterAnchorId?: string;
+  createdAnchorId?: string;
+  confirmedExactText?: string;
+  changed: string[];
+  requiredRepairs?: AnchorCriticDecision["requiredRepairs"];
+  rejectedRepairRequests?: RejectedAnchorRepairRequest[];
+  affectedPages?: string[];
+  invalidReason?: string;
+  /** Independent verification that the decision's excerpt exists in the source. */
+  verification?: SourceTextVerificationResult;
+  /** Whether the verified excerpt actually SUPPORTS the anchor's meaning. */
+  relevance?: SourceTextRelevanceResult;
+  /** Whether the replacement anchor is semantically compatible. */
+  semanticCompatibility?: SemanticCompatibilityResult;
+  /** True when a created anchor was verified in source but scored too low to
+   *  accept, so a follow-up critic round is required. */
+  followUpIssue?: boolean;
+}
+
 /** One anchor every reference in the garden must resolve through. */
 export interface CanonicalSourceAnchor {
   id: string;
@@ -57,6 +237,52 @@ export interface CanonicalSourceAnchor {
   /** Verbatim source excerpt for text anchors (Fix 7). */
   exactText?: string;
   conceptKeywords?: string[];
+  /** Evidence-based confidence for GENERATED semantic anchors. Absent for
+   *  first-class source structures (visuals, source-doc structural anchors). */
+  confidence?: AnchorConfidence;
+  /** Why a generated semantic anchor was accepted (Fix 3). */
+  evidence?: AnchorEvidence;
+  /** True once a ChatMock critic explicitly confirmed a low-confidence anchor. */
+  criticConfirmed?: boolean;
+  criticConfirmationReason?: string;
+  criticConfirmedExactText?: string;
+}
+
+/** A proposed source anchor BEFORE it is proven against the source. Generation
+ *  and repair create candidates; a candidate becomes a `CanonicalSourceAnchor`
+ *  only after `resolveSourceAnchorCandidate` finds a real source basis for it.
+ *  No anchor id may reach a page/contract without passing through this gate. */
+export interface SourceAnchorCandidate {
+  proposedId: string;
+  sourceId: string;
+  page?: number;
+  kind: "text" | "abstract" | "intro" | "guidance";
+  title: string;
+  conceptKeywords: string[];
+  semanticSummary: string;
+  sourceSearchTerms: string[];
+  requiredForUnitIds: string[];
+}
+
+export type MissingAnchorRepairAction =
+  | "register_from_source_text"
+  | "replace_with_existing_anchor"
+  | "needs_critic_review"
+  | "remove_unsupported_anchor";
+
+/** A referenced anchor that is not (yet) in the canonical registry, plus the
+ *  action the anchor-repair pass will take to resolve it before acceptance. */
+export interface MissingAnchorRepairRequest {
+  targetKind: "source_anchor_ledger";
+  missingAnchorId: string;
+  referencedByPages: string[];
+  referencedByUnitIds: string[];
+  sourceId?: string;
+  inferredPage?: number;
+  inferredConceptKeywords: string[];
+  repairAction: MissingAnchorRepairAction;
+  /** For replace: the existing canonical anchor that will absorb the reference. */
+  replacementAnchorId?: string;
 }
 
 export type FormulaKind =
@@ -444,7 +670,15 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
     const record = anchor as Record<string, unknown>;
     const id = String(record.id ?? "").trim();
     if (!id) continue;
-    const kind = structuralKindFromId(id) ?? (String(record.kind ?? "") as CanonicalSourceAnchorKind) ?? "guidance";
+    // A registered record's explicit kind wins over the id-token heuristic, so a
+    // semantic anchor registered as "abstract"/"intro"/"text_concept" keeps that
+    // kind even when its id tail is not a known structural token.
+    const kind = (String(record.kind ?? "").trim() as CanonicalSourceAnchorKind)
+      || structuralKindFromId(id)
+      || "guidance";
+    const confidence = ["high", "medium", "low", "unsupported"].includes(String(record.confidence))
+      ? String(record.confidence) as AnchorConfidence
+      : undefined;
     registry[id] = {
       id,
       kind,
@@ -452,6 +686,14 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       page: Number.isFinite(Number(record.page)) ? Number(record.page) : undefined,
       sourceId: String(record.sourceId ?? "") || undefined,
       origin: "structural_ledger",
+      semanticSummary: record.semanticSummary ? String(record.semanticSummary) : undefined,
+      exactText: typeof record.exactText === "string" && record.exactText.trim() ? record.exactText : undefined,
+      conceptKeywords: Array.isArray(record.conceptKeywords) ? record.conceptKeywords.map(String) : undefined,
+      confidence,
+      evidence: record.evidence && typeof record.evidence === "object" ? record.evidence as AnchorEvidence : undefined,
+      criticConfirmed: record.criticConfirmed === true,
+      criticConfirmationReason: record.criticConfirmationReason ? String(record.criticConfirmationReason) : undefined,
+      criticConfirmedExactText: typeof record.criticConfirmedExactText === "string" ? record.criticConfirmedExactText : undefined,
     };
   }
 
@@ -1211,6 +1453,20 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
     }
   }
 
+  // Rule A2 — a GENERATED semantic anchor must have defensible source evidence.
+  // Registering an anchor from one weak keyword hit turns "unregistered" into
+  // "registered but wrongly grounded"; a low/unsupported anchor is blocking in
+  // strict mode until a critic confirms it (Fix 4).
+  for (const [id, anchor] of Object.entries(anchors)) {
+    if (!anchor.confidence || anchor.criticConfirmed) continue;
+    if (anchor.confidence !== "low" && anchor.confidence !== "unsupported") continue;
+    if (!referencedAnchors.has(id)) continue;
+    add(
+      "anchor_evidence",
+      `source anchor "${id}" is registered with ${anchor.confidence} source evidence (score ${anchor.evidence?.totalScore ?? "?"}, ${anchor.evidence?.keywordHits.length ?? 0} keyword hit(s)); strict acceptance requires medium+ confidence or a critic confirmation`,
+    );
+  }
+
   // Rule B — contract/page anchor relations agree bidirectionally.
   for (const page of state.pages) {
     const unit = unitsById.get(page.learningUnitId);
@@ -1957,6 +2213,1533 @@ function classifyRepairTargetKind(entry: RepairLogEntry): RepairTargetKind {
   return "unit_page";
 }
 
+// ---------------------------------------------------------------------------
+// Missing source-anchor registration and repair (Fixes 1–4)
+//
+// The final audit forbids any anchor that is referenced but not registered in
+// the canonical registry. Generation/repair can mint semantic anchor ids such
+// as "S1.P1.energy-bottleneck" that were never proven against the source. This
+// pass resolves each such id BEFORE acceptance: register it from real source
+// text, replace it with an equivalent existing anchor, or leave it blocking so
+// the garden stays a draft.
+// ---------------------------------------------------------------------------
+
+const SEMANTIC_ANCHOR_STOPWORDS = new Set([
+  "the", "and", "for", "from", "with", "that", "this", "into", "are", "was", "how", "why",
+  "snn", "snns", "spiking", "neural", "network", "networks", "source", "page", "concept",
+]);
+
+/** True for a broad "S<sec>.P<page>.<slug>" reference that is neither a
+ *  figure/formula/table code nor a `text-` ledger id. */
+function isSemanticAnchorId(id: string): boolean {
+  if (!id || id.startsWith("text-") || id.startsWith("trivial:")) return false;
+  if (/\.(?:E|F|G|T)\d+$/i.test(id)) return false;
+  return /^S\d+\.P\d+\..+$/i.test(id);
+}
+
+function semanticAnchorKeywords(id: string): string[] {
+  const tail = id.replace(/^S\d+\.P\d+\./i, "");
+  return [...new Set(
+    tail.split(/[^a-z0-9]+/i).map((w) => w.toLowerCase()).filter((w) => w.length >= 3 && !SEMANTIC_ANCHOR_STOPWORDS.has(w)),
+  )];
+}
+
+function semanticAnchorPage(id: string): number | undefined {
+  const match = id.match(/\.P(\d+)\./i);
+  return match ? Number(match[1]) : undefined;
+}
+
+function semanticAnchorKind(id: string): CanonicalSourceAnchorKind {
+  const struct = structuralKindFromId(id);
+  if (struct === "abstract" || struct === "intro" || struct === "guidance") return struct;
+  const keywords = semanticAnchorKeywords(id).join(" ");
+  if (/\babstract\b/.test(keywords)) return "abstract";
+  if (/\bintro(duction)?\b/.test(keywords)) return "intro";
+  return "text_concept";
+}
+
+interface SourceParagraph {
+  sourceId: string;
+  sourceTitle: string;
+  page: number;
+  text: string;
+}
+
+/** Source paragraphs carrying their sourceId and the `# Page N` they appear
+ *  under, used to prove/register a semantic anchor from real source prose. */
+function sourceParagraphsWithSource(gardenDir: string): SourceParagraph[] {
+  const files: Array<{ abs: string; rel: string }> = [];
+  walkMarkdown(path.join(gardenDir, "sources"), "sources", files);
+  const out: SourceParagraph[] = [];
+  for (const { abs, rel } of files) {
+    if (/(^|\/)_index\.md$/i.test(rel)) continue;
+    const text = readText(abs);
+    if (text === undefined) continue;
+    const { rawFrontmatter, body } = splitFrontmatter(text);
+    const sourceId = fmScalar(rawFrontmatter, "sourceId") || path.basename(rel, ".md");
+    const sourceTitle = fmScalar(rawFrontmatter, "title") || path.basename(rel, ".md");
+    let page = 0;
+    let buffer: string[] = [];
+    const flush = (): void => {
+      const para = buffer.join(" ").replace(/\s+/g, " ").trim();
+      if (page > 0 && para.length >= 40) out.push({ sourceId, sourceTitle, page, text: para });
+      buffer = [];
+    };
+    for (const line of body.split(/\r?\n/)) {
+      const header = line.match(/^#{1,3}\s*Page\s+(\d+)\b/i);
+      if (header) { flush(); page = Number.parseInt(header[1] ?? "0", 10); continue; }
+      if (/^#{1,6}\s/.test(line)) { flush(); continue; }
+      if (line.trim() === "") { flush(); continue; }
+      buffer.push(line.trim());
+    }
+    flush();
+  }
+  return out;
+}
+
+function titleFromKeywords(keywords: string[], para: SourceParagraph): string {
+  const phrase = keywords.slice(0, 4).join(" ").trim();
+  const title = phrase || para.sourceTitle || "Source concept";
+  return title.charAt(0).toUpperCase() + title.slice(1);
+}
+
+// ---------------------------------------------------------------------------
+// Evidence scoring (Fix 1/2): a passage must actually support the anchor, not
+// merely share one keyword. Kind-specific gates require stronger proof.
+// ---------------------------------------------------------------------------
+
+/** Curated per-keyword synonyms — a keyword "hits" a passage when the keyword
+ *  OR one of its close synonyms is present. Kept deliberately small so a match
+ *  reflects the concept, not a distant family term. */
+const KEYWORD_SYNONYMS: Record<string, string[]> = {
+  energy: ["energy", "power", "consumption", "joule", "joules", "watt"],
+  efficiency: ["efficiency", "efficient"],
+  bottleneck: ["bottleneck"],
+  brain: ["brain", "biological", "neuroscience", "cortex"],
+  comparison: ["comparison", "compared", "versus", "unlike", "alternative", "contrast"],
+  latency: ["latency", "delay"],
+  accuracy: ["accuracy", "accurate", "correct"],
+  spike: ["spike", "spikes", "spiking"],
+  timing: ["timing", "temporal"],
+  dependent: ["dependent"],
+  plasticity: ["plasticity", "stdp"],
+  surrogate: ["surrogate"],
+  gradient: ["gradient", "backpropagation", "backprop"],
+  neuromorphic: ["neuromorphic", "loihi"],
+  hardware: ["hardware", "chip", "asic", "fpga"],
+  conversion: ["conversion", "convert", "converted"],
+  edge: ["edge", "embedded", "mobile"],
+  deployment: ["deployment", "deploy", "inference"],
+};
+
+/** Concept families used only to detect wrong-family passages (negative
+ *  evidence) and passage specificity — not to count keyword hits. */
+const FAMILY_TERMS: Record<string, string[]> = {
+  energy: ["energy", "power", "consumption", "efficiency", "joule", "watt", "bottleneck"],
+  latency: ["latency", "delay", "timestep", "inference time", "decision time"],
+  accuracy: ["accuracy", "classification", "error rate", "correct"],
+  spike_count: ["spike count", "firing rate", "sparsity", "number of spikes"],
+  training: ["surrogate", "gradient", "backpropagation", "stdp", "plasticity", "conversion", "learning rule"],
+  hardware: ["neuromorphic", "hardware", "loihi", "chip", "edge", "deployment"],
+  neuron: ["lif", "leaky", "integrate", "membrane", "threshold", "reset"],
+};
+
+const BOILERPLATE_RE = /international journal|issn|creative commons|\blicense\b|corresponding author|received:|accepted:|\bvolume\s*\d|\bdoi\b|©/i;
+const RESULT_VOCAB_RE = /\btable\b|\bfigure\b|\bgraph\b|\bresults?\b|reported|shown in|\bcolumn\b|\brow\b|percentage|%|dataset/i;
+
+function normalizeForMatch(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function keywordHitTerms(keyword: string): string[] {
+  return KEYWORD_SYNONYMS[keyword] ?? [keyword];
+}
+function tokenSetContainsKeyword(tokens: Set<string>, keyword: string): boolean {
+  return keywordHitTerms(keyword).some((term) => tokens.has(term));
+}
+function titleTermsOf(title: string): string[] {
+  return [...new Set(normalizeForMatch(title).split(" ").filter((w) => w.length >= 3 && !SEMANTIC_ANCHOR_STOPWORDS.has(w)))];
+}
+function familyHitCount(passageNorm: string, family: string): number {
+  return (FAMILY_TERMS[family] ?? []).filter((term) => passageNorm.includes(normalizeForMatch(term))).length;
+}
+function dominantFamily(passageNorm: string): { family: string; hits: number } | null {
+  let best: { family: string; hits: number } | null = null;
+  for (const family of Object.keys(FAMILY_TERMS)) {
+    const hits = familyHitCount(passageNorm, family);
+    if (hits > 0 && (!best || hits > best.hits)) best = { family, hits };
+  }
+  return best;
+}
+function anchorFamilyOf(keywords: string[], titleTerms: string[]): string | null {
+  const hay = normalizeForMatch([...keywords, ...titleTerms].join(" "));
+  let best: { family: string; hits: number } | null = null;
+  for (const family of Object.keys(FAMILY_TERMS)) {
+    const hits = (FAMILY_TERMS[family] ?? []).filter((term) => hay.includes(normalizeForMatch(term))).length;
+    if (hits > 0 && (!best || hits > best.hits)) best = { family, hits };
+  }
+  return best?.family ?? null;
+}
+function namedMethodHit(anchorId: string, keywords: string[], passageNorm: string): boolean {
+  const phrase = normalizeForMatch(anchorId.replace(/^S\d+\.P\d+\./i, ""));
+  if (phrase.split(" ").length >= 2 && phrase.length >= 8 && passageNorm.includes(phrase)) return true;
+  const acronym = keywords.map((k) => k[0]).join("");
+  if (acronym.length >= 3 && new RegExp(`(^| )${acronym}( |$)`).test(passageNorm)) return true;
+  return false;
+}
+
+const CONFIDENCE_RANK: Record<AnchorConfidence, number> = { unsupported: 0, low: 1, medium: 2, high: 3 };
+function minConfidence(a: AnchorConfidence, b: AnchorConfidence): AnchorConfidence {
+  return CONFIDENCE_RANK[a] <= CONFIDENCE_RANK[b] ? a : b;
+}
+
+function kindGatePasses(kind: CanonicalSourceAnchorKind, m: {
+  keywordHits: string[];
+  keywordCoverageScore: number;
+  titleOverlapScore: number;
+  namedMethod: boolean;
+  pageMatchScore: number;
+  exactTextLen: number;
+  resultVocab: boolean;
+  formulaFamilyMatch: boolean;
+}): boolean {
+  if (kind === "formula") return m.formulaFamilyMatch;
+  if (kind === "abstract" || kind === "intro") {
+    return m.pageMatchScore >= 1 && m.exactTextLen >= 120 && (m.keywordCoverageScore > 0 || m.titleOverlapScore >= 0.5);
+  }
+  if (kind === "table" || kind === "graph" || kind === "figure") return m.resultVocab;
+  // method/concept anchors (text_concept, guidance): the strong-proof gate.
+  return m.keywordHits.length >= 2 || m.namedMethod || (m.titleOverlapScore >= 0.66 && m.keywordHits.length >= 1);
+}
+
+/** Score a candidate semantic anchor against the source paragraphs. Pure and
+ *  deterministic so it can be unit-tested with crafted passages. */
+export function scoreAnchorEvidence(input: {
+  anchorId: string;
+  title?: string;
+  kind?: CanonicalSourceAnchorKind;
+  conceptKeywords?: string[];
+  sourceId?: string;
+  requestedPage?: number;
+  paragraphs: SourceParagraph[];
+}): AnchorEvidenceScore {
+  const keywords = input.conceptKeywords?.length ? input.conceptKeywords.map((k) => k.toLowerCase()) : semanticAnchorKeywords(input.anchorId);
+  const kind = input.kind ?? semanticAnchorKind(input.anchorId);
+  const requestedPage = input.requestedPage ?? semanticAnchorPage(input.anchorId);
+  const title = input.title || (keywords.length ? keywords.slice(0, 4).join(" ") : input.anchorId);
+  const titleTerms = titleTermsOf(title);
+
+  const evaluate = (para: SourceParagraph) => {
+    const norm = normalizeForMatch(para.text);
+    const tokens = new Set(norm.split(" "));
+    const keywordHits = keywords.filter((k) => tokenSetContainsKeyword(tokens, k));
+    const missingKeywords = keywords.filter((k) => !tokenSetContainsKeyword(tokens, k));
+    const keywordCoverageScore = keywords.length ? keywordHits.length / keywords.length : 0;
+    const matchedTitle = titleTerms.filter((t) => tokenSetContainsKeyword(tokens, t));
+    const titleOverlapScore = titleTerms.length ? matchedTitle.length / titleTerms.length : 0;
+    const pageMatchScore = requestedPage == null ? 0.5
+      : para.page === requestedPage ? 1
+        : Math.abs(para.page - requestedPage) === 1 ? 0.5 : 0;
+    const conceptTerms = [...new Set([...keywords, ...titleTerms])];
+    const presentConcept = conceptTerms.filter((t) => tokenSetContainsKeyword(tokens, t));
+    let contextSpecificityScore = conceptTerms.length ? presentConcept.length / conceptTerms.length : 0;
+    if (presentConcept.length >= 3) contextSpecificityScore = Math.min(1, contextSpecificityScore + 0.1);
+    if (BOILERPLATE_RE.test(para.text)) contextSpecificityScore *= 0.4;
+    const namedMethod = namedMethodHit(input.anchorId, keywords, norm);
+
+    let negativeEvidencePenalty = 0;
+    const anchorFamily = anchorFamilyOf(keywords, titleTerms);
+    if (anchorFamily) {
+      const dom = dominantFamily(norm);
+      const ownHits = familyHitCount(norm, anchorFamily);
+      if (dom && dom.family !== anchorFamily && dom.hits >= 2 && ownHits <= 1) {
+        negativeEvidencePenalty = dom.hits >= 3 ? 0.45 : 0.3;
+      } else if (dom && dom.family !== anchorFamily && dom.hits > ownHits) {
+        negativeEvidencePenalty = 0.15;
+      }
+    }
+    const raw = 0.35 * keywordCoverageScore + 0.25 * titleOverlapScore + 0.2 * contextSpecificityScore + 0.2 * pageMatchScore;
+    const totalScore = Math.max(0, Math.min(1, raw - negativeEvidencePenalty));
+    return { para, keywordHits, missingKeywords, keywordCoverageScore, titleOverlapScore, pageMatchScore, contextSpecificityScore, negativeEvidencePenalty, namedMethod, totalScore };
+  };
+
+  const pool = input.paragraphs.length ? input.paragraphs : [];
+  let best = pool.map(evaluate).sort((a, b) => b.totalScore - a.totalScore || b.keywordHits.length - a.keywordHits.length)[0];
+  const sourceId = input.sourceId || best?.para.sourceId || "";
+
+  if (!best) {
+    return { anchorId: input.anchorId, candidateTitle: title, sourceId, requestedPage, matchedPage: undefined, exactText: "", keywordHits: [], missingKeywords: keywords, titleOverlapScore: 0, keywordCoverageScore: 0, pageMatchScore: 0, contextSpecificityScore: 0, negativeEvidencePenalty: 0, totalScore: 0, confidence: "unsupported", decision: "block" };
+  }
+
+  const resultVocab = RESULT_VOCAB_RE.test(best.para.text);
+  const formulaFamilyMatch = kind === "formula" && Boolean(formulaMetricFamily(keywords.join(" ")));
+  const gate = kindGatePasses(kind, {
+    keywordHits: best.keywordHits,
+    keywordCoverageScore: best.keywordCoverageScore,
+    titleOverlapScore: best.titleOverlapScore,
+    namedMethod: best.namedMethod,
+    pageMatchScore: best.pageMatchScore,
+    exactTextLen: best.para.text.length,
+    resultVocab,
+    formulaFamilyMatch,
+  });
+
+  let confidence: AnchorConfidence;
+  if (best.keywordHits.length === 0 && !best.namedMethod && best.titleOverlapScore < 0.34) confidence = "unsupported";
+  else if (!gate) confidence = (best.keywordHits.length > 0 || best.namedMethod) ? "low" : "unsupported";
+  else if (best.namedMethod && best.totalScore >= 0.6) confidence = "high";
+  else if (best.totalScore >= 0.7) confidence = "high";
+  else if (best.totalScore >= 0.5) confidence = "medium";
+  else if (best.totalScore >= 0.3) confidence = "low";
+  else confidence = "unsupported";
+  if (best.negativeEvidencePenalty >= 0.3 && !best.namedMethod) confidence = minConfidence(confidence, "low");
+
+  let decision: AnchorDecision;
+  if (confidence === "high" || confidence === "medium") decision = "register";
+  else if (confidence === "low") decision = best.negativeEvidencePenalty >= 0.3 ? "block" : "needs_critic_review";
+  else decision = "block";
+
+  return {
+    anchorId: input.anchorId,
+    candidateTitle: title,
+    sourceId,
+    requestedPage,
+    matchedPage: best.para.page,
+    exactText: best.para.text.slice(0, 500),
+    keywordHits: best.keywordHits,
+    missingKeywords: best.missingKeywords,
+    titleOverlapScore: Number(best.titleOverlapScore.toFixed(3)),
+    keywordCoverageScore: Number(best.keywordCoverageScore.toFixed(3)),
+    pageMatchScore: best.pageMatchScore,
+    contextSpecificityScore: Number(best.contextSpecificityScore.toFixed(3)),
+    negativeEvidencePenalty: best.negativeEvidencePenalty,
+    totalScore: Number(best.totalScore.toFixed(3)),
+    confidence,
+    decision,
+  };
+}
+
+function evidenceFromScore(score: AnchorEvidenceScore): AnchorEvidence {
+  return {
+    matchedPage: score.matchedPage,
+    keywordHits: score.keywordHits,
+    missingKeywords: score.missingKeywords,
+    titleOverlapScore: score.titleOverlapScore,
+    keywordCoverageScore: score.keywordCoverageScore,
+    pageMatchScore: score.pageMatchScore,
+    contextSpecificityScore: score.contextSpecificityScore,
+    negativeEvidencePenalty: score.negativeEvidencePenalty,
+    totalScore: score.totalScore,
+    decision: score.decision,
+  };
+}
+
+/** Existing anchor confidence rank for "is it stronger than the candidate?". */
+function anchorStrength(anchor: CanonicalSourceAnchor): number {
+  if (anchor.confidence) return CONFIDENCE_RANK[anchor.confidence];
+  // Source-doc structural anchors and visual anchors are first-class → strong.
+  return CONFIDENCE_RANK.high;
+}
+
+/** LITERAL concept tokens (conceptKeywords + title only, no synonyms, no noisy
+ *  exactText) — the strict basis for deciding two anchors are the same concept. */
+function literalConceptTokens(anchor: CanonicalSourceAnchor): Set<string> {
+  const tokens = new Set<string>();
+  for (const keyword of anchor.conceptKeywords ?? []) tokens.add(keyword.toLowerCase());
+  for (const word of normalizeForMatch(anchor.title ?? "").split(" ")) {
+    if (word.length >= 3 && !SEMANTIC_ANCHOR_STOPWORDS.has(word)) tokens.add(word);
+  }
+  return tokens;
+}
+
+/** Find an existing canonical anchor that genuinely covers this concept (≥2
+ *  LITERAL keyword overlap, or same/adjacent page + ≥1 for a first-class
+ *  structural anchor) and is at least as strong — to reuse instead of minting a
+ *  near-duplicate, without absorbing a reference into an unrelated anchor (Fix 5). */
+function pickStrongerExistingAnchor(
+  anchorId: string,
+  keywords: string[],
+  inferredPage: number | undefined,
+  sourceId: string,
+  registry: Record<string, CanonicalSourceAnchor>,
+  candidateConfidence: AnchorConfidence,
+): string | undefined {
+  let best: { id: string; score: number } | null = null;
+  for (const anchor of Object.values(registry)) {
+    if (anchor.id === anchorId) continue;
+    if (anchor.kind === "formula" || anchor.kind === "figure" || anchor.kind === "table" || anchor.kind === "graph") continue;
+    if (sourceId && anchor.sourceId && anchor.sourceId !== sourceId) continue;
+    const tokens = literalConceptTokens(anchor);
+    const overlap = keywords.filter((keyword) => tokens.has(keyword)).length;
+    const samePage = inferredPage != null && anchor.page != null && Math.abs(anchor.page - inferredPage) <= 1;
+    const structural = anchor.origin === "structural_ledger" && !anchor.confidence; // source-doc structure
+    const qualifies = overlap >= 2 || (samePage && overlap >= 1 && structural);
+    if (!qualifies) continue;
+    if (anchorStrength(anchor) < CONFIDENCE_RANK[candidateConfidence]) continue;
+    const score = overlap * 10 + (samePage ? 3 : 0) + anchorStrength(anchor);
+    if (!best || score > best.score) best = { id: anchor.id, score };
+  }
+  return best?.id;
+}
+
+type MissingAnchorResolution =
+  | { action: "register_from_source_text"; record: CanonicalSourceAnchor; score: AnchorEvidenceScore }
+  | { action: "needs_critic_review"; record: CanonicalSourceAnchor; score: AnchorEvidenceScore }
+  | { action: "replace_with_existing_anchor"; replacementAnchorId: string; score: AnchorEvidenceScore }
+  | { action: "remove_unsupported_anchor"; score: AnchorEvidenceScore };
+
+/** Decide how to resolve one referenced-but-unregistered semantic anchor using
+ *  scored evidence: register (medium+), replace with a genuinely equivalent
+ *  stronger existing anchor (Fix 5), route a weakly-grounded one to the critic
+ *  (Fix 6), or block. */
+function resolveMissingSemanticAnchor(
+  anchorId: string,
+  registry: Record<string, CanonicalSourceAnchor>,
+  paragraphs: SourceParagraph[],
+  fallbackSourceId: string,
+): MissingAnchorResolution {
+  const keywords = semanticAnchorKeywords(anchorId);
+  const inferredPage = semanticAnchorPage(anchorId);
+  const kind = semanticAnchorKind(anchorId);
+  const score = scoreAnchorEvidence({ anchorId, kind, conceptKeywords: keywords, requestedPage: inferredPage, sourceId: fallbackSourceId, paragraphs });
+  const sourceId = score.sourceId || fallbackSourceId || "source";
+
+  const buildRecord = (confidence: AnchorConfidence): CanonicalSourceAnchor => ({
+    id: anchorId,
+    kind,
+    title: score.candidateTitle.charAt(0).toUpperCase() + score.candidateTitle.slice(1),
+    page: score.matchedPage ?? inferredPage,
+    sourceId,
+    origin: "structural_ledger",
+    semanticSummary: `Source page ${score.matchedPage ?? "?"} supports ${score.keywordHits.join(", ") || score.candidateTitle}.`,
+    exactText: score.exactText || undefined,
+    conceptKeywords: keywords,
+    confidence,
+    evidence: evidenceFromScore(score),
+  });
+
+  const existing = pickStrongerExistingAnchor(anchorId, keywords, inferredPage, sourceId, registry, score.confidence);
+
+  if (score.decision === "register") {
+    // A well-supported anchor is registered as its OWN concept. Replace only
+    // when an existing anchor is a genuine ≥2-literal-keyword duplicate, so we
+    // never fold a good reference into an unrelated anchor.
+    if (existing && keywords.filter((k) => literalConceptTokens(registry[existing]).has(k)).length >= 2) {
+      return { action: "replace_with_existing_anchor", replacementAnchorId: existing, score };
+    }
+    return { action: "register_from_source_text", record: buildRecord(score.confidence), score };
+  }
+
+  // Weak/unsupported: reuse a genuinely equivalent stronger anchor if one exists.
+  if (existing) return { action: "replace_with_existing_anchor", replacementAnchorId: existing, score };
+
+  if (score.decision === "needs_critic_review") {
+    return { action: "needs_critic_review", record: buildRecord("low"), score };
+  }
+  return { action: "remove_unsupported_anchor", score };
+}
+
+export interface MissingAnchorRepairResult {
+  changed: string[];
+  notes: string[];
+  registered: string[];
+  replaced: Array<{ from: string; to: string }>;
+  /** Registered but low-confidence: blocking until a critic confirms (Fix 6). */
+  needsCriticReview: string[];
+  /** No source basis and no equivalent: blocking (Fix 4). */
+  unresolved: string[];
+  requests: MissingAnchorRepairRequest[];
+  /** The full evidence score for every semantic anchor processed (Fix 3/8). */
+  evidenceScores: AnchorEvidenceScore[];
+}
+
+/** Register or replace every referenced-but-unregistered semantic source anchor
+ *  using scored evidence: medium+ registers, weak reuses a stronger existing
+ *  anchor or is registered low + routed to the critic, unsupported stays
+ *  blocking. Idempotent. Keeps page frontmatter and the contract in sync when it
+ *  replaces an anchor (Fix 4). */
+export function repairMissingCanonicalAnchors(gardenDir: string, slug?: string): MissingAnchorRepairResult {
+  const result: MissingAnchorRepairResult = { changed: [], notes: [], registered: [], replaced: [], needsCriticReview: [], unresolved: [], requests: [], evidenceScores: [] };
+  const bd = path.join(gardenDir, ".breadboard");
+  const markChanged = (rel: string): void => { if (!result.changed.includes(rel)) result.changed.push(rel); };
+
+  const state = buildFinalGardenState(gardenDir, slug);
+  const registry = state.sourceAnchors;
+
+  const refPages = new Map<string, Set<string>>();
+  const refUnits = new Map<string, Set<string>>();
+  const noteRef = (id: string, pageRel?: string, unitId?: string): void => {
+    if (pageRel) (refPages.get(id) ?? refPages.set(id, new Set()).get(id)!).add(pageRel);
+    if (unitId) (refUnits.get(id) ?? refUnits.set(id, new Set()).get(id)!).add(unitId);
+  };
+  for (const page of state.pages) {
+    for (const id of [...page.sourceAnchors, ...page.sourceFormulaAnchors]) noteRef(id, page.rel);
+  }
+  for (const unit of state.learningUnitContract.units) {
+    for (const id of unit.sourceAnchors ?? []) noteRef(id, undefined, unit.id);
+  }
+
+  const missing = [...new Set([...refPages.keys(), ...refUnits.keys()])]
+    .filter((id) => isSemanticAnchorId(id) && !registry[id])
+    .sort();
+  if (missing.length === 0) {
+    writeSourceAnchorEvidenceReport(gardenDir, registry, [], markChanged);
+    return result;
+  }
+
+  const paragraphs = sourceParagraphsWithSource(gardenDir);
+  const fallbackSourceId = Object.values(registry).map((a) => a.sourceId).find(Boolean)
+    ?? paragraphs[0]?.sourceId ?? "";
+
+  const anchorLedgerPath = path.join(bd, "source-anchors.json");
+  const anchorLedger = readJson<Record<string, unknown>>(anchorLedgerPath, {});
+  const structural: Array<Record<string, unknown>> = Array.isArray(anchorLedger.sourceStructuralAnchors)
+    ? [...(anchorLedger.sourceStructuralAnchors as Array<Record<string, unknown>>)]
+    : [];
+  const structuralIds = new Set(structural.map((a) => String(a.id ?? "")));
+  const replacements = new Map<string, string>();
+  let ledgerChanged = false;
+
+  const persistRecord = (record: CanonicalSourceAnchor): void => {
+    if (structuralIds.has(record.id)) return;
+    structural.push({
+      id: record.id,
+      kind: record.kind,
+      title: record.title,
+      page: record.page,
+      sourceId: record.sourceId,
+      semanticSummary: record.semanticSummary,
+      exactText: record.exactText,
+      conceptKeywords: record.conceptKeywords,
+      confidence: record.confidence,
+      evidence: record.evidence,
+    });
+    structuralIds.add(record.id);
+    ledgerChanged = true;
+  };
+
+  for (const id of missing) {
+    const resolution = resolveMissingSemanticAnchor(id, registry, paragraphs, fallbackSourceId);
+    result.evidenceScores.push(resolution.score);
+    const request: MissingAnchorRepairRequest = {
+      targetKind: "source_anchor_ledger",
+      missingAnchorId: id,
+      referencedByPages: [...(refPages.get(id) ?? [])],
+      referencedByUnitIds: [...(refUnits.get(id) ?? [])],
+      sourceId: fallbackSourceId || undefined,
+      inferredPage: semanticAnchorPage(id),
+      inferredConceptKeywords: semanticAnchorKeywords(id),
+      repairAction: resolution.action,
+    };
+    if (resolution.action === "register_from_source_text") {
+      persistRecord(resolution.record);
+      result.registered.push(id);
+      result.notes.push(`registered source anchor ${id} (confidence ${resolution.record.confidence}, score ${resolution.score.totalScore})`);
+    } else if (resolution.action === "needs_critic_review") {
+      // Register with low confidence so the evidence is auditable, but it blocks
+      // strict acceptance until a critic confirms it (Fix 4/6).
+      persistRecord(resolution.record);
+      result.needsCriticReview.push(id);
+      result.notes.push(`low-confidence anchor ${id} (score ${resolution.score.totalScore}) routed to critic: ${resolution.score.missingKeywords.length} keyword(s) unmatched`);
+    } else if (resolution.action === "replace_with_existing_anchor") {
+      request.replacementAnchorId = resolution.replacementAnchorId;
+      replacements.set(id, resolution.replacementAnchorId);
+      result.replaced.push({ from: id, to: resolution.replacementAnchorId });
+      result.notes.push(`replaced weak anchor ${id} with stronger canonical anchor ${resolution.replacementAnchorId} (Fix 5)`);
+    } else {
+      result.unresolved.push(id);
+      result.notes.push(`unsupported anchor ${id}: no source basis and no equivalent (score ${resolution.score.totalScore}); stays blocking`);
+    }
+    result.requests.push(request);
+  }
+
+  if (ledgerChanged) {
+    anchorLedger.sourceStructuralAnchors = structural;
+    fs.writeFileSync(anchorLedgerPath, `${JSON.stringify(anchorLedger, null, 2)}\n`, "utf-8");
+    markChanged(".breadboard/source-anchors.json");
+  }
+
+  if (replacements.size > 0) {
+    for (const page of state.pages) {
+      const content = readText(page.abs);
+      if (content === undefined) continue;
+      const { rawFrontmatter, body } = splitFrontmatter(content);
+      let rawFm = rawFrontmatter;
+      for (const key of ["sourceAnchors", "sourceFormulaAnchors"]) {
+        const values = fmArray(rawFm, key);
+        if (values.some((value) => replacements.has(value))) {
+          rawFm = setFmArrayLine(rawFm, key, values.map((value) => replacements.get(value) ?? value));
+        }
+      }
+      if (rawFm !== rawFrontmatter) {
+        fs.writeFileSync(page.abs, `---\n${rawFm.replace(/\s+$/, "")}\n---\n\n${body.replace(/^\n+/, "")}`, "utf-8");
+        markChanged(page.rel);
+      }
+    }
+    const contractPath = fs.existsSync(path.join(bd, "learning-unit-contract.json"))
+      ? path.join(bd, "learning-unit-contract.json")
+      : path.join(bd, "planning", "learning-unit-contract.json");
+    if (fs.existsSync(contractPath)) {
+      const contractJson = readJson<Record<string, unknown>>(contractPath, {});
+      const units = Array.isArray(contractJson.learningUnits)
+        ? contractJson.learningUnits as Array<Record<string, unknown>>
+        : Array.isArray(contractJson.units)
+          ? contractJson.units as Array<Record<string, unknown>>
+          : [];
+      let contractChanged = false;
+      for (const unit of units) {
+        const anchors = Array.isArray(unit.sourceAnchors) ? unit.sourceAnchors.map(String) : [];
+        if (anchors.some((value) => replacements.has(value))) {
+          unit.sourceAnchors = [...new Set(anchors.map((value) => replacements.get(value) ?? value))];
+          contractChanged = true;
+        }
+      }
+      if (contractChanged) {
+        fs.writeFileSync(contractPath, `${JSON.stringify(contractJson, null, 2)}\n`, "utf-8");
+        markChanged(path.relative(gardenDir, contractPath).split(path.sep).join("/"));
+      }
+    }
+  }
+
+  // Refresh registry (records just written) and emit the evidence report.
+  const finalRegistry = buildFinalGardenState(gardenDir, slug).sourceAnchors;
+  writeSourceAnchorEvidenceReport(gardenDir, finalRegistry, result.replaced, markChanged);
+  return result;
+}
+
+/**
+ * Fix 2/7: resolve a proposed anchor CANDIDATE into a canonical record ONLY when
+ * scored evidence is at least medium confidence. Generation and repair must call
+ * this BEFORE attaching any anchor id to a page or the contract — a candidate
+ * whose evidence is weak returns null and must NOT be used as-is.
+ * `reconcileFinalGardenState` enforces the same rule as the final safety net.
+ */
+export function resolveSourceAnchorCandidate(
+  gardenDir: string,
+  candidate: SourceAnchorCandidate,
+): CanonicalSourceAnchor | null {
+  const paragraphs = sourceParagraphsWithSource(gardenDir);
+  const keywords = candidate.conceptKeywords.length
+    ? candidate.conceptKeywords.map((k) => k.toLowerCase())
+    : semanticAnchorKeywords(candidate.proposedId);
+  const kind: CanonicalSourceAnchorKind = candidate.kind === "text" ? "text_concept" : candidate.kind;
+  // Fold explicit search terms in as extra concept keywords for the scorer.
+  const scoreKeywords = [...new Set([...keywords, ...candidate.sourceSearchTerms.map((t) => t.toLowerCase())])].filter(Boolean);
+  const score = scoreAnchorEvidence({
+    anchorId: candidate.proposedId,
+    title: candidate.title,
+    kind,
+    conceptKeywords: scoreKeywords,
+    sourceId: candidate.sourceId,
+    requestedPage: candidate.page ?? semanticAnchorPage(candidate.proposedId),
+    paragraphs,
+  });
+  // Creation-time gate: only medium/high evidence may be attached directly.
+  if (score.decision !== "register") return null;
+  return {
+    id: candidate.proposedId,
+    kind,
+    title: candidate.title || (score.candidateTitle.charAt(0).toUpperCase() + score.candidateTitle.slice(1)),
+    page: score.matchedPage ?? candidate.page,
+    sourceId: candidate.sourceId || score.sourceId || "source",
+    origin: "structural_ledger",
+    semanticSummary: candidate.semanticSummary || `Source page ${score.matchedPage ?? "?"} supports ${score.keywordHits.join(", ")}.`,
+    exactText: score.exactText || undefined,
+    conceptKeywords: keywords,
+    confidence: score.confidence,
+    evidence: evidenceFromScore(score),
+  };
+}
+
+/**
+ * Fix 7: partition model-proposed source anchor ids into those safe to attach
+ * now — figure/formula/table codes, first-class structural anchors, and semantic
+ * anchors that RESOLVE against the source — and those to DEFER (unresolvable
+ * semantic anchors that must not enter a page/contract as raw strings). When the
+ * source markdown is not available yet, nothing is deferred (the reconcile net
+ * enforces evidence later).
+ */
+export function ingestModelSourceAnchors(
+  gardenDir: string,
+  anchors: string[],
+): { accepted: string[]; deferred: string[] } {
+  const canValidate = fs.existsSync(path.join(gardenDir, "sources"));
+  const accepted: string[] = [];
+  const deferred: string[] = [];
+  for (const raw of anchors) {
+    const id = String(raw ?? "").trim();
+    if (!id) continue;
+    // Codes and first-class structural anchors pass through untouched.
+    if (!isSemanticAnchorId(id) || structuralKindFromId(id)) { accepted.push(id); continue; }
+    if (!canValidate) { accepted.push(id); continue; }
+    const resolved = resolveSourceAnchorCandidate(gardenDir, {
+      proposedId: id,
+      sourceId: "",
+      kind: "text",
+      title: "",
+      conceptKeywords: semanticAnchorKeywords(id),
+      semanticSummary: "",
+      sourceSearchTerms: [],
+      requiredForUnitIds: [],
+    });
+    if (resolved) accepted.push(id); else deferred.push(id);
+  }
+  return { accepted: [...new Set(accepted)], deferred: [...new Set(deferred)] };
+}
+
+/** Extract the anchor ids Rule A flagged as referenced-but-unregistered. */
+export function missingRegistryAnchorIds(problems: string[]): string[] {
+  const ids: string[] = [];
+  for (const problem of problems) {
+    const match = problem.match(/source anchor "([^"]+)" is referenced[\s\S]*?missing from the canonical source-anchor registry/);
+    if (match) ids.push(match[1]);
+  }
+  return [...new Set(ids)];
+}
+
+/** Fix 6: the human-readable "not published" explanation for missing anchors. */
+export function describeMissingAnchorFailure(ids: string[]): string {
+  return [
+    "The garden was generated as a draft but not published because these source anchors are referenced but not registered:",
+    ...ids.map((id) => `- ${id}`),
+    "",
+    "Recommended repair: register these as source text anchors from their page, replace them with existing canonical anchors, or remove them if unsupported.",
+  ].join("\n");
+}
+
+/** A blocking critic issue for a weakly-grounded generated anchor (Fix 6). */
+export interface AnchorCriticIssue {
+  severity: "blocking";
+  type: "source_anchor_mismatch";
+  sourceAnchorIds: string[];
+  problem: string;
+  evidence: string;
+  expected: string;
+  repairTarget: "source_anchor_ledger";
+  suggestedRepair: string;
+  pagePath?: string;
+}
+
+/** Build critic issues for every referenced generated anchor whose evidence is
+ *  low/unsupported and not yet critic-confirmed (Fix 6). */
+export function buildAnchorEvidenceCriticIssues(state: FinalGardenState): AnchorCriticIssue[] {
+  const referenced = new Set<string>();
+  for (const page of state.pages) for (const id of [...page.sourceAnchors, ...page.sourceFormulaAnchors]) referenced.add(id);
+  for (const unit of state.learningUnitContract.units) for (const id of unit.sourceAnchors ?? []) referenced.add(id);
+  const issues: AnchorCriticIssue[] = [];
+  for (const anchor of Object.values(state.sourceAnchors)) {
+    if (!anchor.confidence || anchor.criticConfirmed) continue;
+    if (anchor.confidence !== "low" && anchor.confidence !== "unsupported") continue;
+    if (!referenced.has(anchor.id)) continue;
+    const ev = anchor.evidence;
+    const total = ev ? ev.keywordHits.length + ev.missingKeywords.length : 0;
+    const page = state.pages.find((p) => p.sourceAnchors.includes(anchor.id) || p.sourceFormulaAnchors.includes(anchor.id));
+    issues.push({
+      severity: "blocking",
+      type: "source_anchor_mismatch",
+      sourceAnchorIds: [anchor.id],
+      problem: "Generated semantic anchor has weak source evidence.",
+      evidence: ev
+        ? `Only ${ev.keywordHits.length} of ${total} keywords matched (score ${ev.totalScore}); ${ev.negativeEvidencePenalty > 0 ? "passage is dominated by a different concept family; " : ""}passage does not clearly support the anchor summary.`
+        : `Anchor confidence is ${anchor.confidence}.`,
+      expected: "Replace with a supported source anchor or revise the unit/page grounding.",
+      repairTarget: "source_anchor_ledger",
+      suggestedRepair: "Ask ChatMock to confirm, replace, or remove the anchor.",
+      pagePath: page?.rel,
+    });
+  }
+  return issues.sort((a, b) => a.sourceAnchorIds[0].localeCompare(b.sourceAnchorIds[0]));
+}
+
+/** Record a ChatMock critic's verdict on a low-confidence anchor (Fix 4). A
+ *  confirmed anchor becomes acceptance-passing; the audit exempts it. */
+export function recordCriticAnchorConfirmation(gardenDir: string, confirmation: CriticAnchorConfirmation): boolean {
+  const ledgerPath = path.join(gardenDir, ".breadboard", "source-anchors.json");
+  const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
+  const structural = Array.isArray(ledger.sourceStructuralAnchors) ? ledger.sourceStructuralAnchors as Array<Record<string, unknown>> : [];
+  const record = structural.find((a) => String(a.id ?? "") === confirmation.anchorId);
+  if (!record) return false;
+  record.criticConfirmed = confirmation.confirmed;
+  record.criticConfirmationReason = confirmation.reason;
+  if (confirmation.criticIssueId) record.criticIssueId = confirmation.criticIssueId;
+  if (confirmation.confirmedExactText) record.criticConfirmedExactText = confirmation.confirmedExactText;
+  ledger.sourceStructuralAnchors = structural;
+  fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// ChatMock anchor confirmation loop (wire low-confidence anchors to the critic)
+// ---------------------------------------------------------------------------
+
+/** Referenced, low/unsupported, not-yet-confirmed generated anchor ids. */
+export function unresolvedLowConfidenceAnchorIds(state: FinalGardenState): string[] {
+  const referenced = new Set<string>();
+  for (const page of state.pages) for (const id of [...page.sourceAnchors, ...page.sourceFormulaAnchors]) referenced.add(id);
+  for (const unit of state.learningUnitContract.units) for (const id of unit.sourceAnchors ?? []) referenced.add(id);
+  return Object.values(state.sourceAnchors)
+    .filter((a) => a.confidence && !a.criticConfirmed && (a.confidence === "low" || a.confidence === "unsupported") && referenced.has(a.id))
+    .map((a) => a.id)
+    .sort();
+}
+
+/** Build a ChatMock decision packet for every unresolved low-confidence anchor. */
+export function buildAnchorConfirmationPackets(gardenDir: string, state: FinalGardenState): AnchorConfirmationPacket[] {
+  const ids = unresolvedLowConfidenceAnchorIds(state);
+  if (ids.length === 0) return [];
+  const paragraphs = sourceParagraphsWithSource(gardenDir);
+  const packets: AnchorConfirmationPacket[] = [];
+  for (const id of ids) {
+    const anchor = state.sourceAnchors[id];
+    if (!anchor) continue;
+    const pages = state.pages.filter((p) => p.sourceAnchors.includes(id) || p.sourceFormulaAnchors.includes(id)).map((p) => p.rel);
+    const unitIds = state.learningUnitContract.units.filter((u) => (u.sourceAnchors ?? []).includes(id)).map((u) => u.id);
+    const visuals = state.visuals.filter((v) => [...v.anchorIds, ...v.textAnchorIds].includes(id)).map((v) => v.id);
+    const page = anchor.page ?? semanticAnchorPage(id);
+    const nearby = paragraphs
+      .filter((p) => page == null || Math.abs(p.page - page) <= 1)
+      .filter((p) => p.text.slice(0, 500) !== (anchor.exactText ?? ""))
+      .slice(0, 4)
+      .map((p) => ({ page: p.page, exactText: p.text.slice(0, 400) }));
+    const keywords = anchor.conceptKeywords ?? semanticAnchorKeywords(id);
+    const existingAlternativeAnchors = Object.values(state.sourceAnchors)
+      .filter((a) => a.id !== id && a.kind !== "formula" && a.kind !== "figure" && a.kind !== "table" && a.kind !== "graph")
+      .filter((a) => {
+        const tokens = literalConceptTokens(a);
+        const overlap = keywords.filter((k) => tokens.has(k)).length;
+        const near = page != null && a.page != null && Math.abs(a.page - page) <= 1;
+        return overlap >= 1 || near;
+      })
+      .sort((a, b) => anchorStrength(b) - anchorStrength(a))
+      .slice(0, 5);
+    packets.push({
+      anchor,
+      evidence: anchor.evidence ?? { keywordHits: [], missingKeywords: keywords, titleOverlapScore: 0, keywordCoverageScore: 0, pageMatchScore: 0, contextSpecificityScore: 0, negativeEvidencePenalty: 0, totalScore: 0, decision: "needs_critic_review" },
+      referencedBy: { pages, unitIds, visuals },
+      candidatePassage: { sourceId: anchor.sourceId ?? "", page: anchor.page, exactText: anchor.exactText ?? "" },
+      nearbySourcePassages: nearby,
+      existingAlternativeAnchors,
+    });
+  }
+  return packets;
+}
+
+/** Validate a structured anchor decision (Fix 3 rules). */
+export function validateAnchorCriticDecision(decision: AnchorCriticDecision): { valid: boolean; reason?: string } {
+  if (!decision || !decision.anchorId) return { valid: false, reason: "missing anchorId" };
+  switch (decision.decision) {
+    case "confirm":
+      if (decision.confidence !== "high" && decision.confidence !== "medium") return { valid: false, reason: "confirm requires high|medium confidence" };
+      if (!decision.confirmedExactText || !decision.confirmedExactText.trim()) return { valid: false, reason: "confirm requires confirmedExactText" };
+      return { valid: true };
+    case "replace":
+      if (!decision.replacementAnchorId) return { valid: false, reason: "replace requires replacementAnchorId" };
+      return { valid: true };
+    case "create_better_anchor":
+      if (!decision.betterAnchor?.exactText?.trim()) return { valid: false, reason: "create_better_anchor requires betterAnchor.exactText" };
+      if (!decision.betterAnchor?.id) return { valid: false, reason: "create_better_anchor requires betterAnchor.id" };
+      return { valid: true };
+    case "reject":
+      return { valid: true }; // valid, but keeps the anchor blocking
+    default:
+      return { valid: false, reason: `unknown decision "${(decision as { decision?: string }).decision}"` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Independent verification of ChatMock anchor decisions against the source
+// ---------------------------------------------------------------------------
+
+/** Near-exact threshold: a candidate must be ≥ 92% similar to count as a match. */
+export const NEAR_EXACT_SIMILARITY_THRESHOLD = 0.92;
+
+/** Normalize source/critic text so trivial formatting differences do not block a
+ *  match: NFKC, unify quotes/dashes, de-space citation brackets, collapse
+ *  whitespace, lowercase. Does NOT tolerate paraphrase. */
+function normalizeSourceText(text: string): string {
+  return String(text ?? "")
+    .normalize("NFKC")
+    .replace(/[‘’‛′‵]/g, "'")
+    .replace(/[“”″‶]/g, '"')
+    .replace(/[‐-―−⁃﹘﹣－]/g, "-")
+    .replace(/\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]/g, (_m, inner: string) => `[${inner.replace(/\s*,\s*/g, ",").replace(/\s+/g, "")}]`)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** Character-bigram Dice similarity in [0,1] — cheap and robust to small edits. */
+function bigramDice(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const grams = (s: string): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i += 1) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) ?? 0) + 1); }
+    return m;
+  };
+  const ga = grams(a);
+  const gb = grams(b);
+  let inter = 0;
+  for (const [g, na] of ga) { const nb = gb.get(g); if (nb) inter += Math.min(na, nb); }
+  return (2 * inter) / ((a.length - 1) + (b.length - 1));
+}
+
+/** Best near-exact similarity of `target` against sliding windows of `haystack`. */
+function bestWindowSimilarity(target: string, haystack: string): number {
+  if (!target || haystack.length < 2) return 0;
+  const len = target.length;
+  if (haystack.length <= len) return bigramDice(target, haystack);
+  let best = 0;
+  const step = Math.max(1, Math.floor(len / 4));
+  for (let i = 0; i + len <= haystack.length; i += step) {
+    const sim = bigramDice(target, haystack.slice(i, i + len));
+    if (sim > best) best = sim;
+    if (best >= 0.999) break;
+  }
+  // Also probe the window that starts at the first shared token, for alignment.
+  const firstWord = target.split(" ")[0];
+  const at = firstWord ? haystack.indexOf(firstWord) : -1;
+  if (at >= 0) best = Math.max(best, bigramDice(target, haystack.slice(at, at + len)));
+  return best;
+}
+
+/**
+ * Fix 1/2: verify a ChatMock-supplied excerpt actually exists in the source
+ * markdown. Tries exact, then normalized-exact, then near-exact (≥ threshold).
+ * Paraphrase is never accepted. Scoped to the anchor's page (± 1) when known.
+ */
+export function verifySourceText(
+  gardenDir: string,
+  exactText: string,
+  opts: { sourceId?: string; page?: number; nearExactThreshold?: number } = {},
+): SourceTextVerificationResult {
+  const target = String(exactText ?? "").replace(/\s+/g, " ").trim();
+  if (target.length < 12) return { ok: false, matchType: "not_found", reason: "excerpt too short to verify" };
+  const threshold = opts.nearExactThreshold ?? NEAR_EXACT_SIMILARITY_THRESHOLD;
+  const all = sourceParagraphsWithSource(gardenDir);
+  const scoped = all.filter((p) => {
+    if (opts.sourceId && p.sourceId && p.sourceId !== opts.sourceId) return false;
+    if (opts.page != null) return Math.abs(p.page - opts.page) <= 1;
+    return true;
+  });
+  const pool = scoped.length ? scoped : all;
+  const normTarget = normalizeSourceText(target);
+
+  // 1) exact substring (whitespace-collapsed, case-sensitive).
+  for (const p of pool) {
+    if (p.text.includes(target)) return { ok: true, sourceId: p.sourceId, page: p.page, matchType: "exact", matchedText: target, similarity: 1, reason: "exact source substring match" };
+  }
+  // 2) normalized exact.
+  for (const p of pool) {
+    if (normalizeSourceText(p.text).includes(normTarget)) return { ok: true, sourceId: p.sourceId, page: p.page, matchType: "normalized_exact", matchedText: p.text.slice(0, 240), similarity: 1, reason: "normalized (quotes/dashes/whitespace/citations) source match" };
+  }
+  // 3) near-exact (very high similarity only).
+  let best: { p: SourceParagraph; sim: number } | null = null;
+  for (const p of pool) {
+    const sim = bestWindowSimilarity(normTarget, normalizeSourceText(p.text));
+    if (!best || sim > best.sim) best = { p, sim };
+  }
+  if (best && best.sim >= threshold) {
+    return { ok: true, sourceId: best.p.sourceId, page: best.p.page, matchType: "near_exact", matchedText: best.p.text.slice(0, 240), similarity: Number(best.sim.toFixed(3)), reason: `near-exact source match (similarity ${best.sim.toFixed(3)} ≥ ${threshold})` };
+  }
+  return { ok: false, matchType: "not_found", similarity: best ? Number(best.sim.toFixed(3)) : 0, reason: `excerpt not found in source (best similarity ${best ? best.sim.toFixed(3) : "0"} < ${threshold}); paraphrase is not accepted as proof` };
+}
+
+// ---------------------------------------------------------------------------
+// Relevance verification: a verified excerpt must SUPPORT the anchor's meaning.
+// ---------------------------------------------------------------------------
+
+/** Fine-grained concept families (multi-word terms allowed). Separate from the
+ *  coarse FAMILY_TERMS used by the evidence scorer so that scoring is unchanged. */
+const CONCEPT_FAMILY_TERMS: Record<Exclude<ConceptFamily, "other">, string[]> = {
+  energy: ["energy", "power consumption", "power", "consumption", "joule", "watt", "bottleneck"],
+  energy_efficiency: ["energy efficiency", "energy-efficient", "efficiency", "efficient", "normalized energy"],
+  latency: ["latency", "delay", "inference time", "decision time", "timestep", "response time"],
+  accuracy: ["accuracy", "accurate", "classification accuracy", "error rate", "correctly classified", "% accuracy", "top-1"],
+  spike_count: ["spike count", "firing rate", "number of spikes", "sparsity", "spike rate", "spikes per"],
+  convergence: ["convergence", "converge", "epoch", "training time", "converges", "convergence time"],
+  surrogate_gradient: ["surrogate gradient", "surrogate", "differentiab", "non-differentiab", "backpropagation through", "gradient", "backprop"],
+  stdp: ["spike-timing-dependent plasticity", "spike timing dependent plasticity", "stdp", "spike timing", "synaptic plasticity", "hebbian", "r-stdp"],
+  ann_to_snn_conversion: ["ann-to-snn", "ann to snn", "conversion", "converted", "convert trained"],
+  neuromorphic_hardware: ["neuromorphic", "loihi", "truenorth", "hardware", "chip", "asic", "fpga"],
+  edge_deployment: ["edge computing", "edge", "mobile", "embedded", "deployment", "iot"],
+  brain_comparison: ["brain-inspired", "brain inspired", "brain", "biological", "neuroscience", "cortex", "human brain"],
+  event_driven_computation: ["event-driven", "event driven", "asynchronous", "discrete spikes", "discrete binary spikes", "spike events", "sparse events"],
+};
+
+/** Which families are close enough to count as the same concept for relevance. */
+const FAMILY_COMPAT_GROUPS: ConceptFamily[][] = [
+  ["energy", "energy_efficiency"],
+  ["event_driven_computation", "spike_count"],
+];
+function conceptFamiliesCompatible(a: ConceptFamily, b: ConceptFamily): boolean {
+  if (a === "other" || b === "other") return false;
+  if (a === b) return true;
+  return FAMILY_COMPAT_GROUPS.some((g) => g.includes(a) && g.includes(b));
+}
+
+function familyHitCountIn(normText: string, family: Exclude<ConceptFamily, "other">): number {
+  return CONCEPT_FAMILY_TERMS[family].filter((term) => normText.includes(normalizeForMatch(term))).length;
+}
+
+/** Detect the dominant concept family of a block of text. */
+export function detectConceptFamily(text: string): { family: ConceptFamily; hits: number } {
+  const norm = normalizeForMatch(text);
+  let best: { family: ConceptFamily; hits: number } = { family: "other", hits: 0 };
+  for (const family of Object.keys(CONCEPT_FAMILY_TERMS) as Array<Exclude<ConceptFamily, "other">>) {
+    const hits = familyHitCountIn(norm, family);
+    if (hits > best.hits) best = { family, hits };
+  }
+  return best;
+}
+
+interface RelevanceAnchorLike {
+  id: string;
+  title?: string;
+  kind?: string;
+  conceptKeywords?: string[];
+  semanticSummary?: string;
+}
+
+/**
+ * Fix 1/5: does `quoteText` actually SUPPORT the anchor's title/summary/keywords
+ * and concept family? Scores keyword coverage, title overlap, summary overlap,
+ * and family compatibility, penalizing a passage dominated by a WRONG family.
+ * Presence (verifySourceText) must be checked separately and first.
+ */
+export function verifySourceTextRelevance(anchor: RelevanceAnchorLike, quoteText: string): SourceTextRelevanceResult {
+  const keywords = (anchor.conceptKeywords?.length ? anchor.conceptKeywords : semanticAnchorKeywords(anchor.id)).map((k) => k.toLowerCase());
+  const title = anchor.title ?? "";
+  const summary = anchor.semanticSummary ?? "";
+  const kind = anchor.kind ?? "text_concept";
+  const norm = normalizeForMatch(quoteText);
+  const tokens = new Set(norm.split(" "));
+
+  const textKeywordHits = keywords.filter((k) => tokenSetContainsKeyword(tokens, k));
+  const textMissingKeywords = keywords.filter((k) => !tokenSetContainsKeyword(tokens, k));
+  const keywordCoverageScore = keywords.length ? textKeywordHits.length / keywords.length : 0;
+
+  const titleTerms = titleTermsOf(title);
+  const titleOverlapScore = titleTerms.length ? titleTerms.filter((t) => tokenSetContainsKeyword(tokens, t)).length / titleTerms.length : 0;
+
+  const summaryTerms = [...new Set(titleTermsOf(summary))].filter((t) => !SEMANTIC_ANCHOR_STOPWORDS.has(t));
+  const summaryOverlapScore = summaryTerms.length ? summaryTerms.filter((t) => tokenSetContainsKeyword(tokens, t)).length / summaryTerms.length : 0;
+
+  const anchorFamily = detectConceptFamily([keywords.join(" "), title, summary].join(" ")).family;
+  const dominantText = detectConceptFamily(quoteText);
+  const textFamily = dominantText.family;
+
+  let familyCompatibilityScore = 0.5;
+  let wrongFamilyPenalty = 0;
+  if (anchorFamily !== "other" && textFamily !== "other") {
+    if (conceptFamiliesCompatible(anchorFamily, textFamily)) {
+      familyCompatibilityScore = 1;
+    } else {
+      familyCompatibilityScore = 0;
+      // The passage is clearly about a different concept — the core failure mode.
+      wrongFamilyPenalty = dominantText.hits >= 2 ? 0.5 : 0.3;
+    }
+  } else if (anchorFamily !== "other" && textFamily === "other") {
+    // Anchor has a concrete family but the text does not evidence it.
+    familyCompatibilityScore = familyHitCountIn(norm, anchorFamily as Exclude<ConceptFamily, "other">) > 0 ? 0.75 : 0.25;
+  }
+
+  const totalScore = Math.max(0, Math.min(1,
+    0.3 * keywordCoverageScore + 0.2 * titleOverlapScore + 0.15 * summaryOverlapScore + 0.35 * familyCompatibilityScore - wrongFamilyPenalty,
+  ));
+
+  const hasAnyEvidence = textKeywordHits.length > 0 || titleOverlapScore > 0 || familyCompatibilityScore >= 0.75;
+  let decision: SourceTextRelevanceDecision;
+  if (wrongFamilyPenalty >= 0.3 || !hasAnyEvidence) decision = "irrelevant";
+  else if (totalScore >= 0.6 || (familyCompatibilityScore === 1 && textKeywordHits.length >= 1)) decision = "relevant";
+  else if (totalScore >= 0.35) decision = "weak_relevance";
+  else decision = "irrelevant";
+
+  const ok = decision === "relevant";
+  const reason = decision === "relevant"
+    ? `passage supports the ${anchorFamily} anchor (${textKeywordHits.length}/${keywords.length} keywords, family ${textFamily})`
+    : decision === "weak_relevance"
+      ? `passage weakly supports the anchor (${textKeywordHits.length}/${keywords.length} keywords, family ${textFamily} vs ${anchorFamily})`
+      : wrongFamilyPenalty > 0
+        ? `passage is about ${textFamily}, not the ${anchorFamily} anchor concept`
+        : `passage does not evidence the anchor's title/summary/keywords`;
+
+  return {
+    ok, anchorId: anchor.id, anchorTitle: title, anchorKind: kind,
+    anchorConceptKeywords: keywords, anchorSemanticSummary: summary,
+    anchorFamily, textFamily,
+    textKeywordHits, textMissingKeywords,
+    titleOverlapScore: Number(titleOverlapScore.toFixed(3)),
+    keywordCoverageScore: Number(keywordCoverageScore.toFixed(3)),
+    summaryOverlapScore: Number(summaryOverlapScore.toFixed(3)),
+    familyCompatibilityScore,
+    wrongFamilyPenalty,
+    totalScore: Number(totalScore.toFixed(3)),
+    decision, reason,
+  };
+}
+
+/** Is a confirm/create relevance verdict acceptable for this anchor kind (Fix 2)?
+ *  weak_relevance is allowed only for broad abstract/intro/guidance anchors with
+ *  high critic confidence. Never for formula/method/result/table/graph/visual. */
+export function isRelevanceAcceptableForKind(relevance: SourceTextRelevanceResult, kind: string, criticConfidence: string): boolean {
+  if (relevance.decision === "relevant") return true;
+  const broad = kind === "abstract" || kind === "intro" || kind === "guidance";
+  return relevance.decision === "weak_relevance" && criticConfidence === "high" && broad;
+}
+
+/**
+ * Fix 3: is `replacementId` semantically compatible with the weak anchor and its
+ * usage? Requires the replacement to exist, be strong, share kind/source/family,
+ * and overlap the weak anchor's concept (or its page/unit role).
+ */
+export function checkReplacementCompatibility(
+  state: FinalGardenState,
+  weakAnchorId: string,
+  replacementId: string,
+): SemanticCompatibilityResult {
+  const weak = state.sourceAnchors[weakAnchorId];
+  const rep = state.sourceAnchors[replacementId];
+  if (!rep) return { ok: false, reason: `replacement anchor ${replacementId} is not in the canonical registry` };
+  const strong = rep.criticConfirmed || !rep.confidence || rep.confidence === "high" || rep.confidence === "medium";
+  if (!strong) return { ok: false, reason: `replacement ${replacementId} is itself ${rep.confidence} confidence and not critic-confirmed` };
+
+  const weakIsFormula = weak?.kind === "formula";
+  const repIsFormula = rep.kind === "formula";
+  if (weakIsFormula !== repIsFormula) return { ok: false, reason: `kind mismatch: ${weak?.kind ?? "?"} anchor cannot be replaced by a ${rep.kind} anchor` };
+  if (weakIsFormula && repIsFormula && !metricFamiliesCompatible(weak?.formulaFamily ?? "", rep.formulaFamily ?? "")) {
+    return { ok: false, reason: `formula family mismatch: ${weak?.formulaFamily ?? "?"} vs ${rep.formulaFamily ?? "?"}` };
+  }
+  if (weak?.sourceId && rep.sourceId && weak.sourceId !== rep.sourceId) {
+    return { ok: false, reason: `different source document (${weak.sourceId} vs ${rep.sourceId})` };
+  }
+  if (weak?.page != null && rep.page != null && Math.abs(weak.page - rep.page) > 3) {
+    return { ok: false, reason: `replacement page ${rep.page} is far from the weak anchor page ${weak.page}` };
+  }
+
+  const weakKeywords = weak?.conceptKeywords ?? semanticAnchorKeywords(weakAnchorId);
+  const weakFamily = anchorFamilyOf(weakKeywords, titleTermsOf(weak?.title ?? ""));
+  const repFamily = anchorFamilyOf(rep.conceptKeywords ?? [], titleTermsOf(rep.title ?? ""));
+  if (weakFamily && repFamily && weakFamily !== repFamily) {
+    return { ok: false, reason: `concept family mismatch: ${weakFamily} anchor replaced by a ${repFamily} anchor` };
+  }
+  const repTokens = literalConceptTokens(rep);
+  const overlap = weakKeywords.filter((k) => repTokens.has(k)).length;
+  const sameFamily = Boolean(weakFamily && weakFamily === repFamily);
+  if (overlap < 1 && !sameFamily) {
+    // Fall back to the affected unit/page role concepts.
+    const roleTokens = new Set<string>();
+    for (const page of state.pages.filter((p) => p.sourceAnchors.includes(weakAnchorId) || p.sourceFormulaAnchors.includes(weakAnchorId))) {
+      for (const w of titleTermsOf(page.title)) roleTokens.add(w);
+    }
+    for (const unit of state.learningUnitContract.units.filter((u) => (u.sourceAnchors ?? []).includes(weakAnchorId))) {
+      for (const c of unit.newConcepts ?? []) for (const w of titleTermsOf(String(c))) roleTokens.add(w);
+    }
+    const roleOverlap = [...repTokens].filter((t) => roleTokens.has(t)).length;
+    if (roleOverlap < 1) return { ok: false, reason: `no concept overlap between ${replacementId} and the weak anchor or its page/unit role` };
+  }
+  return { ok: true, reason: `compatible (${sameFamily ? `same ${weakFamily} family` : `${overlap} keyword overlap`}, strong replacement)` };
+}
+
+/** Build targeted repair requests for a rejected (unsupported) anchor (Fix 6). */
+function rejectedAnchorRepairRequests(state: FinalGardenState, anchorId: string, instructions: string[]): RejectedAnchorRepairRequest[] {
+  const affectedPages = state.pages.filter((p) => p.sourceAnchors.includes(anchorId) || p.sourceFormulaAnchors.includes(anchorId)).map((p) => p.rel);
+  const affectedUnitIds = state.learningUnitContract.units.filter((u) => (u.sourceAnchors ?? []).includes(anchorId)).map((u) => u.id);
+  const base = instructions.length ? instructions : [
+    `Remove or replace the unsupported anchor ${anchorId} from the page and contract; reground on a valid canonical anchor.`,
+    `If the page explanation depends on the unsupported claim, revise that passage to what the source supports.`,
+  ];
+  const targets: RejectedAnchorRepairRequest["targetKind"][] = ["unit_page", "learning_unit_contract", "source_anchor_ledger"];
+  return targets.map((targetKind) => ({ targetKind, rejectedAnchorId: anchorId, affectedPages, affectedUnitIds, instructions: base }));
+}
+
+/** Rewrite every reference to `from` → `to` in page frontmatter, the contract,
+ *  and visual specs. Returns the repo-relative files changed. */
+function replaceAnchorReference(gardenDir: string, slug: string | undefined, from: string, to: string): string[] {
+  const changed: string[] = [];
+  const state = buildFinalGardenState(gardenDir, slug);
+  for (const page of state.pages) {
+    const content = readText(page.abs);
+    if (content === undefined) continue;
+    const { rawFrontmatter, body } = splitFrontmatter(content);
+    let rawFm = rawFrontmatter;
+    for (const key of ["sourceAnchors", "sourceFormulaAnchors"]) {
+      const values = fmArray(rawFm, key);
+      if (values.includes(from)) rawFm = setFmArrayLine(rawFm, key, values.map((v) => (v === from ? to : v)));
+    }
+    if (rawFm !== rawFrontmatter) {
+      fs.writeFileSync(page.abs, `---\n${rawFm.replace(/\s+$/, "")}\n---\n\n${body.replace(/^\n+/, "")}`, "utf-8");
+      changed.push(page.rel);
+    }
+  }
+  const bd = path.join(gardenDir, ".breadboard");
+  const contractPath = fs.existsSync(path.join(bd, "learning-unit-contract.json"))
+    ? path.join(bd, "learning-unit-contract.json")
+    : path.join(bd, "planning", "learning-unit-contract.json");
+  if (fs.existsSync(contractPath)) {
+    const contractJson = readJson<Record<string, unknown>>(contractPath, {});
+    const units = Array.isArray(contractJson.learningUnits) ? contractJson.learningUnits as Array<Record<string, unknown>>
+      : Array.isArray(contractJson.units) ? contractJson.units as Array<Record<string, unknown>> : [];
+    let contractChanged = false;
+    for (const unit of units) {
+      const anchors = Array.isArray(unit.sourceAnchors) ? unit.sourceAnchors.map(String) : [];
+      if (anchors.includes(from)) { unit.sourceAnchors = [...new Set(anchors.map((v) => (v === from ? to : v)))]; contractChanged = true; }
+    }
+    if (contractChanged) {
+      fs.writeFileSync(contractPath, `${JSON.stringify(contractJson, null, 2)}\n`, "utf-8");
+      changed.push(path.relative(gardenDir, contractPath).split(path.sep).join("/"));
+    }
+  }
+  const visualsDir = path.join(bd, "visuals");
+  if (fs.existsSync(visualsDir)) {
+    for (const name of fs.readdirSync(visualsDir)) {
+      if (!name.endsWith(".json")) continue;
+      const abs = path.join(visualsDir, name);
+      const text = readText(abs);
+      if (text === undefined || !text.includes(from)) continue;
+      let spec: Record<string, unknown>;
+      try { spec = JSON.parse(text); } catch { continue; }
+      const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors as Array<Record<string, unknown>> : [];
+      let visualChanged = false;
+      for (const a of anchors) for (const k of ["textAnchorId", "figureId", "equationId", "tableId"]) {
+        if (String(a[k] ?? "") === from) { a[k] = to; visualChanged = true; }
+      }
+      if (visualChanged) {
+        fs.writeFileSync(abs, `${JSON.stringify(spec, null, 2)}\n`, "utf-8");
+        changed.push(`.breadboard/visuals/${name}`);
+      }
+    }
+  }
+  return changed;
+}
+
+/** Drop an anchor record from the ledger if nothing references it anymore. */
+function removeUnusedAnchorRecord(gardenDir: string, slug: string | undefined, anchorId: string): boolean {
+  const state = buildFinalGardenState(gardenDir, slug);
+  const referenced = new Set<string>();
+  for (const page of state.pages) for (const id of [...page.sourceAnchors, ...page.sourceFormulaAnchors, ...page.sourceVisualIds]) referenced.add(id);
+  for (const unit of state.learningUnitContract.units) for (const id of unit.sourceAnchors ?? []) referenced.add(id);
+  for (const v of state.visuals) for (const id of [...v.anchorIds, ...v.textAnchorIds]) referenced.add(id);
+  if (referenced.has(anchorId)) return false;
+  const ledgerPath = path.join(gardenDir, ".breadboard", "source-anchors.json");
+  const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
+  const structural = Array.isArray(ledger.sourceStructuralAnchors) ? ledger.sourceStructuralAnchors as Array<Record<string, unknown>> : [];
+  const next = structural.filter((a) => String(a.id ?? "") !== anchorId);
+  if (next.length === structural.length) return false;
+  ledger.sourceStructuralAnchors = next;
+  fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+  return true;
+}
+
+/** Append an applied decision to the persistent anchor-decision log. */
+function logAnchorDecision(gardenDir: string, applied: AppliedAnchorDecision): void {
+  const p = path.join(gardenDir, ".breadboard", "anchor-critic-decisions.json");
+  const existing = readJson<AppliedAnchorDecision[]>(p, []);
+  const next = existing.filter((d) => d.anchorId !== applied.anchorId);
+  next.push(applied);
+  next.sort((a, b) => a.anchorId.localeCompare(b.anchorId));
+  fs.writeFileSync(p, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+}
+
+/**
+ * Apply one ChatMock anchor decision to the artifacts (Fix 4). Confirms,
+ * replaces, creates a better anchor, or rejects (keeping the anchor blocking).
+ * Persists a decision-log entry so the evidence report can render it. The caller
+ * must rebuild FinalGardenState and re-audit afterwards.
+ */
+export function applyAnchorCriticDecision(
+  gardenDir: string,
+  slug: string | undefined,
+  decision: AnchorCriticDecision,
+): AppliedAnchorDecision {
+  const base: AppliedAnchorDecision = {
+    anchorId: decision.anchorId,
+    decision: decision.decision,
+    applied: false,
+    confidence: decision.confidence,
+    reason: decision.reason,
+    changed: [],
+  };
+  const validity = validateAnchorCriticDecision(decision);
+  if (!validity.valid) {
+    const rejected: AppliedAnchorDecision = { ...base, applied: false, invalidReason: validity.reason };
+    logAnchorDecision(gardenDir, rejected);
+    return rejected;
+  }
+
+  const stateNow = buildFinalGardenState(gardenDir, slug);
+  const anchorNow = stateNow.sourceAnchors[decision.anchorId];
+
+  if (decision.decision === "confirm") {
+    // Fix 1: the confirmed excerpt must actually EXIST in the source markdown.
+    const verification = verifySourceText(gardenDir, decision.confirmedExactText!, { sourceId: anchorNow?.sourceId, page: anchorNow?.page });
+    if (!verification.ok) {
+      const bad: AppliedAnchorDecision = { ...base, applied: false, verification, invalidReason: `confirmedExactText not found in source (${verification.matchType})` };
+      logAnchorDecision(gardenDir, bad);
+      return bad;
+    }
+    // Fix 2: and it must be RELEVANT to the anchor's meaning, not merely present.
+    const relevance = verifySourceTextRelevance(
+      { id: decision.anchorId, title: anchorNow?.title, kind: anchorNow?.kind, conceptKeywords: anchorNow?.conceptKeywords, semanticSummary: anchorNow?.semanticSummary },
+      decision.confirmedExactText!,
+    );
+    if (!isRelevanceAcceptableForKind(relevance, anchorNow?.kind ?? "text_concept", decision.confidence)) {
+      const bad: AppliedAnchorDecision = { ...base, applied: false, verification, relevance, invalidReason: `confirmedExactText found but does not support anchor (relevance: ${relevance.decision}; ${relevance.reason})` };
+      logAnchorDecision(gardenDir, bad);
+      return bad;
+    }
+    const ok = recordCriticAnchorConfirmation(gardenDir, {
+      anchorId: decision.anchorId,
+      confirmed: true,
+      reason: decision.reason,
+      confirmedExactText: decision.confirmedExactText,
+    });
+    const applied: AppliedAnchorDecision = { ...base, applied: ok, confirmedExactText: decision.confirmedExactText, verification, relevance, changed: ok ? [".breadboard/source-anchors.json"] : [] };
+    logAnchorDecision(gardenDir, applied);
+    return applied;
+  }
+
+  if (decision.decision === "replace") {
+    const to = decision.replacementAnchorId!;
+    // Fix 3: the replacement must be canonical AND semantically compatible.
+    const semanticCompatibility = checkReplacementCompatibility(stateNow, decision.anchorId, to);
+    if (!semanticCompatibility.ok) {
+      const bad: AppliedAnchorDecision = { ...base, applied: false, replacementAnchorId: to, semanticCompatibility, invalidReason: `incompatible replacement: ${semanticCompatibility.reason}` };
+      logAnchorDecision(gardenDir, bad);
+      return bad;
+    }
+    // Fix 4: the replacement must HAVE source text/summary AND that text must be
+    // relevant to the weak anchor's usage (not just family-compatible metadata).
+    const rep = stateNow.sourceAnchors[to];
+    const repText = rep.exactText ?? rep.semanticSummary ?? "";
+    if (!repText.trim()) {
+      const bad: AppliedAnchorDecision = { ...base, applied: false, replacementAnchorId: to, semanticCompatibility, invalidReason: `replacement ${to} has no source text or semantic summary to verify relevance` };
+      logAnchorDecision(gardenDir, bad);
+      return bad;
+    }
+    const relevance = verifySourceTextRelevance(
+      { id: decision.anchorId, title: anchorNow?.title, kind: anchorNow?.kind, conceptKeywords: anchorNow?.conceptKeywords, semanticSummary: anchorNow?.semanticSummary },
+      repText,
+    );
+    if (relevance.decision === "irrelevant") {
+      const bad: AppliedAnchorDecision = { ...base, applied: false, replacementAnchorId: to, semanticCompatibility, relevance, invalidReason: `replacement text is not relevant to the weak anchor usage (${relevance.reason})` };
+      logAnchorDecision(gardenDir, bad);
+      return bad;
+    }
+    const changed = replaceAnchorReference(gardenDir, slug, decision.anchorId, to);
+    removeUnusedAnchorRecord(gardenDir, slug, decision.anchorId);
+    const applied: AppliedAnchorDecision = { ...base, applied: true, replacementAnchorId: to, semanticCompatibility, relevance, changed };
+    logAnchorDecision(gardenDir, applied);
+    return applied;
+  }
+
+  if (decision.decision === "create_better_anchor") {
+    const better = decision.betterAnchor!;
+    const kind: CanonicalSourceAnchorKind = better.kind === "text" ? "text_concept" : better.kind;
+    // Fix 2: the proposed exact text must exist in the source markdown.
+    const verification = verifySourceText(gardenDir, better.exactText, { sourceId: better.sourceId, page: better.page });
+    if (!verification.ok) {
+      const bad: AppliedAnchorDecision = { ...base, applied: false, verification, invalidReason: `betterAnchor.exactText not found in source (${verification.matchType})` };
+      logAnchorDecision(gardenDir, bad);
+      return bad;
+    }
+    // Fix 3: the proposed exact text must also be RELEVANT to the proposed
+    // anchor's own title/summary/keywords, not merely a real sentence.
+    const relevance = verifySourceTextRelevance(
+      { id: better.id, title: better.title, kind, conceptKeywords: better.conceptKeywords, semanticSummary: better.semanticSummary },
+      better.exactText,
+    );
+    if (relevance.decision !== "relevant") {
+      const followUp: AppliedAnchorDecision = {
+        ...base, applied: false, createdAnchorId: better.id, verification, relevance, followUpIssue: true,
+        invalidReason: `betterAnchor exact text is in source but does not support the proposed anchor meaning (relevance: ${relevance.decision}; ${relevance.reason})`,
+      };
+      logAnchorDecision(gardenDir, followUp);
+      return followUp;
+    }
+    // Fix 2: score deterministically WITHOUT any artificial confidence floor.
+    const score = scoreAnchorEvidence({
+      anchorId: better.id,
+      title: better.title,
+      kind,
+      conceptKeywords: better.conceptKeywords,
+      sourceId: better.sourceId,
+      requestedPage: better.page ?? verification.page,
+      paragraphs: sourceParagraphsWithSource(gardenDir),
+    });
+    if (score.confidence !== "high" && score.confidence !== "medium") {
+      // Verified + relevant but the deterministic evidence is still weak.
+      // Do NOT accept; route to another critic round (Fix 2/5).
+      const followUp: AppliedAnchorDecision = {
+        ...base, applied: false, createdAnchorId: better.id, verification, relevance, followUpIssue: true,
+        invalidReason: `betterAnchor exact text is in source but evidence score is ${score.confidence} (${score.totalScore}); the anchor title/summary/keywords are not strongly supported`,
+      };
+      logAnchorDecision(gardenDir, followUp);
+      return followUp;
+    }
+    const ledgerPath = path.join(gardenDir, ".breadboard", "source-anchors.json");
+    const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
+    const structural = Array.isArray(ledger.sourceStructuralAnchors) ? ledger.sourceStructuralAnchors as Array<Record<string, unknown>> : [];
+    if (!structural.some((a) => String(a.id ?? "") === better.id)) {
+      structural.push({
+        id: better.id,
+        kind,
+        title: better.title,
+        page: better.page ?? verification.page ?? score.matchedPage,
+        sourceId: better.sourceId,
+        semanticSummary: better.semanticSummary,
+        exactText: better.exactText,
+        conceptKeywords: better.conceptKeywords,
+        confidence: score.confidence, // true score, no floor
+        evidence: evidenceFromScore(score),
+        criticConfirmed: true,
+        criticConfirmationReason: decision.reason,
+        criticConfirmedExactText: better.exactText,
+      });
+    }
+    ledger.sourceStructuralAnchors = structural;
+    fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+    const changed = [".breadboard/source-anchors.json"];
+    if (better.id !== decision.anchorId) {
+      changed.push(...replaceAnchorReference(gardenDir, slug, decision.anchorId, better.id));
+      removeUnusedAnchorRecord(gardenDir, slug, decision.anchorId);
+    }
+    const applied: AppliedAnchorDecision = { ...base, applied: true, betterAnchorId: better.id, createdAnchorId: better.id, verification, relevance, confidence: score.confidence, changed: [...new Set(changed)] };
+    logAnchorDecision(gardenDir, applied);
+    return applied;
+  }
+
+  // reject: keep the anchor blocking; produce targeted repair requests (Fix 6).
+  const instructions = (decision.requiredRepairs ?? []).flatMap((r) => r.instructions);
+  const rejectedRepairRequests = rejectedAnchorRepairRequests(stateNow, decision.anchorId, instructions);
+  const rejected: AppliedAnchorDecision = {
+    ...base, applied: true, requiredRepairs: decision.requiredRepairs,
+    rejectedRepairRequests, affectedPages: rejectedRepairRequests[0]?.affectedPages ?? [],
+  };
+  logAnchorDecision(gardenDir, rejected);
+  return rejected;
+}
+
+/** Fix 8: write the auditable source-anchor evidence report (md + json). Only
+ *  covers GENERATED semantic anchors (those carrying an evidence-based
+ *  confidence). Content is deterministic so it is idempotent across runs. */
+function writeSourceAnchorEvidenceReport(
+  gardenDir: string,
+  registry: Record<string, CanonicalSourceAnchor>,
+  replaced: Array<{ from: string; to: string }>,
+  markChanged: (rel: string) => void,
+): void {
+  const anchors = Object.values(registry).filter((a) => a.confidence).sort((a, b) => a.id.localeCompare(b.id));
+  const bd = path.join(gardenDir, ".breadboard");
+  const hasDecisions = fs.existsSync(path.join(bd, "anchor-critic-decisions.json"));
+  if (anchors.length === 0 && replaced.length === 0 && !hasDecisions) return;
+  fs.mkdirSync(bd, { recursive: true });
+
+  const row = (a: CanonicalSourceAnchor): Record<string, unknown> => ({
+    anchor: a.id,
+    confidence: a.confidence,
+    totalScore: a.evidence?.totalScore ?? null,
+    sourcePage: a.page ?? null,
+    keywordHits: a.evidence?.keywordHits ?? [],
+    missingKeywords: a.evidence?.missingKeywords ?? [],
+    decision: a.evidence?.decision ?? null,
+    criticConfirmed: a.criticConfirmed === true,
+  });
+  const registered = anchors.filter((a) => (a.confidence === "high" || a.confidence === "medium") && !a.criticConfirmed).map(row);
+  const critic = anchors.filter((a) => a.confidence === "low" && !a.criticConfirmed).map(row);
+  const unsupported = anchors.filter((a) => a.confidence === "unsupported" && !a.criticConfirmed).map(row);
+
+  // ChatMock anchor decisions (Fix 8): confirmed / replaced / rejected sections.
+  const decisions = readJson<AppliedAnchorDecision[]>(path.join(bd, "anchor-critic-decisions.json"), []);
+  const decByAnchor = new Map(decisions.map((d) => [d.anchorId, d]));
+  const confirmedRows = anchors
+    .filter((a) => a.criticConfirmed)
+    .map((a) => ({ anchor: a.id, decision: decByAnchor.get(a.id)?.decision ?? "confirm", confidence: a.confidence, confirmedText: a.criticConfirmedExactText ?? a.exactText ?? "", reason: decByAnchor.get(a.id)?.reason ?? a.criticConfirmationReason ?? "" }));
+  const replacedRows = [
+    ...replaced.map((r) => ({ from: r.from, to: r.to, reason: "deterministic equivalence (Fix 5)" })),
+    ...decisions.filter((d) => d.applied && (d.decision === "replace" || (d.decision === "create_better_anchor" && d.betterAnchorId && d.betterAnchorId !== d.anchorId))).map((d) => ({ from: d.anchorId, to: d.replacementAnchorId ?? d.betterAnchorId ?? "", reason: d.reason })),
+  ].filter((r) => r.to);
+  const rejectedRows = decisions.filter((d) => d.decision === "reject" || (!d.applied && d.invalidReason)).map((d) => ({ anchor: d.anchorId, reason: d.invalidReason ? `invalid decision: ${d.invalidReason}` : d.reason, pages: (d.affectedPages ?? []).join(", ") }));
+
+  // Fix 4/6: independent-verification row per decision (presence + relevance + compat).
+  const verificationRows = decisions.map((d) => ({
+    anchor: d.anchorId,
+    decision: d.decision,
+    applied: d.applied,
+    sourceTextMatch: d.verification ? d.verification.matchType : (d.decision === "replace" ? "n/a" : "—"),
+    relevance: d.relevance ? d.relevance.decision : "—",
+    compatibility: d.semanticCompatibility ? (d.semanticCompatibility.ok ? "ok" : "incompatible") : "—",
+    reason: d.invalidReason ?? d.reason ?? "",
+  }));
+
+  const json = { registered, lowConfidence: critic, unsupported, criticConfirmed: confirmedRows, replaced: replacedRows, rejected: rejectedRows, decisionVerification: verificationRows };
+  const jsonRel = ".breadboard/source-anchor-evidence.json";
+  const jsonContent = `${JSON.stringify(json, null, 2)}\n`;
+  const jsonPath = path.join(bd, "source-anchor-evidence.json");
+  if ((readText(jsonPath) ?? "") !== jsonContent) {
+    fs.writeFileSync(jsonPath, jsonContent, "utf-8");
+    markChanged(jsonRel);
+  }
+
+  const table = (rows: Array<Record<string, unknown>>): string[] => rows.length === 0
+    ? ["| — | — | — | — | — | — |"]
+    : rows.map((r) => `| ${r.anchor} | ${r.confidence} | ${r.totalScore ?? "—"} | ${r.sourcePage ?? "—"} | ${(r.keywordHits as string[]).join(" ") || "—"} | ${r.decision} |`);
+  const header = ["| Anchor | Confidence | Evidence Score | Source Page | Keyword Hits | Decision |", "|---|---:|---:|---:|---|---|"];
+  const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s).replace(/\|/g, "\\|").replace(/\n/g, " ");
+  const md = [
+    "# Source-Anchor Evidence",
+    "",
+    "Generated semantic anchors are canonical only when a source passage supports the anchor's title, summary, and intended use. Scored by keyword coverage, title overlap, page match, context specificity, and negative (wrong-family) evidence. Low-confidence anchors are sent to the ChatMock critic to confirm, replace, create a better anchor, or reject.",
+    "",
+    "## Registered Generated Anchors",
+    "",
+    ...header,
+    ...table(registered),
+    "",
+    "## Low-Confidence / Critic-Reviewed Anchors",
+    "",
+    ...header,
+    ...table(critic),
+    "",
+    "## Unsupported Anchors",
+    "",
+    ...header,
+    ...table(unsupported),
+    "",
+    "## Critic-Confirmed Anchors",
+    "",
+    "| Anchor | Decision | Confidence | Confirmed Text | Reason |",
+    "|---|---|---:|---|---|",
+    ...(confirmedRows.length ? confirmedRows.map((r) => `| ${r.anchor} | ${r.decision} | ${r.confidence} | ${clip(r.confirmedText, 80)} | ${clip(r.reason, 80)} |`) : ["| — | — | — | — | — |"]),
+    "",
+    "## Replaced Anchors",
+    "",
+    "| Old Anchor | New Anchor | Reason |",
+    "|---|---|---|",
+    ...(replacedRows.length ? replacedRows.map((r) => `| ${r.from} | ${r.to} | ${clip(r.reason, 80)} |`) : ["| — | — | — |"]),
+    "",
+    "## Rejected Anchors",
+    "",
+    "| Anchor | Reason | Affected Pages |",
+    "|---|---|---|",
+    ...(rejectedRows.length ? rejectedRows.map((r) => `| ${r.anchor} | ${clip(r.reason, 80)} | ${clip(r.pages, 80)} |`) : ["| — | — | — |"]),
+    "",
+    "## Anchor Decision Verification",
+    "",
+    "| Anchor | Decision | Applied | Source Text Match | Relevance | Compatibility | Reason |",
+    "|---|---|---:|---|---|---|---|",
+    ...(verificationRows.length
+      ? verificationRows.map((r) => `| ${r.anchor} | ${r.decision} | ${r.applied ? "yes" : "no"} | ${r.sourceTextMatch} | ${r.relevance} | ${r.compatibility} | ${clip(r.reason, 80)} |`)
+      : ["| — | — | — | — | — | — | — |"]),
+    "",
+  ].join("\n");
+  const mdRel = ".breadboard/source-anchor-evidence.md";
+  const mdPath = path.join(bd, "source-anchor-evidence.md");
+  if ((readText(mdPath) ?? "") !== md) {
+    fs.writeFileSync(mdPath, md, "utf-8");
+    markChanged(mdRel);
+  }
+}
+
 /**
  * Rebuild every derived/reported artifact from the canonical state and repair
  * the mechanical drifts the audit detects. Idempotent: running it twice is a
@@ -1968,7 +3751,7 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
   const markChanged = (rel: string): void => { if (!result.changed.includes(rel)) result.changed.push(rel); };
 
   let state = buildFinalGardenState(gardenDir, slug);
-  const unitsById = new Map(state.learningUnitContract.units.map((u) => [u.id, u]));
+  let unitsById = new Map(state.learningUnitContract.units.map((u) => [u.id, u]));
   const assignedSourceVisualsByPage = new Map<string, Array<Record<string, unknown>>>();
   for (const visual of readJson<Array<Record<string, unknown>>>(path.join(bd, "source-visuals.json"), [])) {
     if (String(visual.usageStatus ?? "") !== "assigned") continue;
@@ -2026,6 +3809,21 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
     markChanged(".breadboard/source-anchors.json");
     // Refresh registry so later steps resolve the new anchors.
     state = buildFinalGardenState(gardenDir, slug);
+  }
+
+  // (1b) Register/replace missing SEMANTIC anchors that the dictionary-based
+  //      auto-registration above does not cover — e.g. "S1.P1.energy-bottleneck"
+  //      whose slug is not a known structural token. Each is proven against the
+  //      source, replaced with an equivalent canonical anchor, or left blocking
+  //      (Fixes 1–4). Page frontmatter and the contract are kept in sync.
+  {
+    const anchorRepair = repairMissingCanonicalAnchors(gardenDir, slug);
+    for (const rel of anchorRepair.changed) markChanged(rel);
+    for (const note of anchorRepair.notes) result.notes.push(note);
+    if (anchorRepair.changed.length > 0) {
+      state = buildFinalGardenState(gardenDir, slug);
+      unitsById = new Map(state.learningUnitContract.units.map((u) => [u.id, u]));
+    }
   }
 
   // (2) Naturalize planner-scaffold zettel handles in the contract.
