@@ -19,6 +19,8 @@ import {
   type RepairExecutorMode,
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
+import { describeMissingAnchorFailure, ingestModelSourceAnchors, missingRegistryAnchorIds } from "@/lib/final-garden-state";
+import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import {
   appendGardenEvent,
   buildDeterministicVisual,
@@ -1593,11 +1595,24 @@ function writeLearningUnitContractArtifacts({
   const bbDir = path.join(clusterDir, ".breadboard");
   const planningDir = path.join(bbDir, "planning");
   fs.mkdirSync(planningDir, { recursive: true });
+  // Fix 7: never attach a raw semantic source anchor the source cannot support.
+  // Codes and first-class structural anchors pass through; unresolvable semantic
+  // anchors are dropped from the contract before they propagate to pages (the
+  // deterministic reconcile enforces the same rule as the final safety net).
+  const deferredSourceAnchors: string[] = [];
+  const gatedUnits = units.map((unit) => {
+    if (!Array.isArray(unit.sourceAnchors) || unit.sourceAnchors.length === 0) return unit;
+    const { accepted, deferred } = ingestModelSourceAnchors(clusterDir, unit.sourceAnchors);
+    if (deferred.length === 0) return unit;
+    deferredSourceAnchors.push(...deferred);
+    return { ...unit, sourceAnchors: accepted };
+  });
   const payload = {
     sourceSetHash,
     generatedAt: nowIso(),
-    learningUnits: units,
+    learningUnits: gatedUnits,
     sourceArtifactAssignments: assignments,
+    ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
   };
   fs.writeFileSync(path.join(bbDir, "learning-unit-contract.json"), JSON.stringify(payload, null, 2), "utf-8");
   const lines = [
@@ -4832,8 +4847,12 @@ export async function runTextbookGeneration({
       unresolvedRepairFailures: verification.unresolvedRepairFailures,
     });
     if (finalizeReport.criticalProblems.length > 0) {
+      // Fix 6: when the blocker is unregistered source anchors, lead with the
+      // clear, actionable explanation before the raw audit lines.
+      const missingAnchors = missingRegistryAnchorIds(finalizeReport.criticalProblems);
+      const anchorGuidance = missingAnchors.length > 0 ? `${describeMissingAnchorFailure(missingAnchors)}\n\n` : "";
       throw new Error(
-        `Export finalize failed critical validation for ${gardenId}: ${finalizeReport.criticalProblems.join("; ")}. ` +
+        `${anchorGuidance}Export finalize failed critical validation for ${gardenId}: ${finalizeReport.criticalProblems.join("; ")}. ` +
           "The garden was not published. See .breadboard/validation-report.md and .breadboard/repair-report.md.",
       );
     }
@@ -4847,6 +4866,54 @@ export async function runTextbookGeneration({
           ].join("; ") || "final artifact was not accepted"
         }. The garden was not published. See .breadboard/validation-report.md and .breadboard/repair-report.md.`,
       );
+    }
+
+    // Stage 8c (end-stage semantic critic): ChatMock reviews the FINAL exported
+    // state and drives targeted repair rounds. It NEVER fails generation — the
+    // garden is a draft regardless of critic outcome. It becomes publish-ready
+    // only when deterministic validation AND the critic find no blocking issues.
+    // Any error (e.g. ChatMock unreachable) is swallowed so a draft still ships.
+    try {
+      if ((process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false") {
+        // Real ChatMock-backed repair: the model rewrites the flagged page/section
+        // first for semantic issues, then the deterministic finalizer runs for
+        // mechanical fixes and as the fallback when a model candidate is rejected.
+        const modelRepair = createChatMockModelRepair({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS });
+        const criticLoop = await runCriticLoop({
+          gardenDir: clusterDir,
+          gardenSlug: gardenId,
+          critic: createChatMockCritic({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
+          // Low-confidence generated source anchors are sent to ChatMock to
+          // confirm, replace, create a better anchor, or reject — inside the
+          // same critic-loop rounds. Unresolved ones keep publishReady false.
+          anchorConfirm: createChatMockAnchorCritic({ client, model, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
+          repair: makeCriticArtifactRepair({ modelRepair }),
+          // Let the loop audit the live state so anchor resolution counts toward
+          // publish-readiness. Deterministic critical failures already threw above.
+          structuralFailure: false,
+        });
+        appendLearnEvent(contentPath, gardenId, "learn_critic_loop_completed", {
+          jobId: job.id,
+          textbookVersionId,
+          draftGenerated: criticLoop.status.draftGenerated,
+          lifecycleStatus: criticLoop.status.lifecycleStatus,
+          accepted: criticLoop.status.accepted,
+          publishReady: criticLoop.status.publishReady,
+          deterministicPass: criticLoop.status.deterministicPass,
+          criticRequired: criticLoop.status.criticRequired,
+          criticAvailabilityStatus: criticLoop.status.criticAvailabilityStatus,
+          criticPass: criticLoop.status.criticPass,
+          rounds: criticLoop.rounds.length,
+          unresolvedBlocking: criticLoop.finalBlockingIssues.length,
+          warnings: criticLoop.finalWarnings.length,
+          reason: criticLoop.status.reason,
+        });
+      }
+    } catch (criticError) {
+      appendLearnEvent(contentPath, gardenId, "learn_critic_loop_skipped", {
+        jobId: job.id,
+        reason: criticError instanceof Error ? criticError.message : String(criticError),
+      });
     }
 
     throwIfLearnCancelled(job.id);

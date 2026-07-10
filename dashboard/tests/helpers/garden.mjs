@@ -151,13 +151,26 @@ export function findResultSection(dir) {
     entry.push(roleById.get(page.unitId));
     bySection.set(section, entry);
   }
+  const asResult = (section) => ({ sectionRel: section, indexRel: `${section}/_index.md`, title: read(dir, `${section}/_index.md`).match(/^title: "([^"]*)"/m)?.[1] ?? "" });
+  // Prefer a result_interpretation-dominant section; otherwise fall back to a
+  // section that clearly evaluates results (result_interpretation/comparison),
+  // then to any section with a single dominant role — the fixture only needs a
+  // role-coherent section whose title can be made to mismatch.
   for (const [section, roles] of bySection) {
     const resultCount = roles.filter((r) => r === "result_interpretation").length;
-    if (resultCount >= 2 && resultCount >= Math.ceil(roles.length / 2)) {
-      return { sectionRel: section, indexRel: `${section}/_index.md`, title: read(dir, `${section}/_index.md`).match(/^title: "([^"]*)"/m)?.[1] ?? "" };
-    }
+    if (resultCount >= 2 && resultCount >= Math.ceil(roles.length / 2)) return asResult(section);
   }
-  throw new Error("no result_interpretation-dominant section found");
+  for (const [section, roles] of bySection) {
+    const evalCount = roles.filter((r) => r === "result_interpretation" || r === "comparison").length;
+    if (evalCount >= 1 && evalCount >= Math.ceil(roles.length / 2)) return asResult(section);
+  }
+  for (const [section, roles] of bySection) {
+    const counts = new Map();
+    for (const r of roles) counts.set(r, (counts.get(r) ?? 0) + 1);
+    const top = [...counts.values()].sort((a, b) => b - a)[0] ?? 0;
+    if (roles.length >= 2 && top >= Math.ceil(roles.length / 2)) return asResult(section);
+  }
+  throw new Error("no role-coherent section found");
 }
 
 // Minimal replica of garden-finalize's pageRole, used only to pick later pages
