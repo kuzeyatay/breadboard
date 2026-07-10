@@ -89,6 +89,24 @@ describe("validateVisualSpec", () => {
     assert.strictEqual(spec!.type, "ray_diagram")
   })
 
+  test("drops plain-English source anchor labels from visual anchor id fields", () => {
+    const dirty = {
+      ...validSpec,
+      sourceAnchors: [
+        {
+          ...validSpec.sourceAnchors[0],
+          figureId: "source caveats",
+          textAnchorId: "S1.P12.spike-timing",
+        },
+      ],
+    }
+    const { spec, errors } = validateVisualSpec(dirty)
+    assert.ok(spec)
+    assert.strictEqual(spec!.sourceAnchors[0].figureId, undefined)
+    assert.strictEqual(spec!.sourceAnchors[0].textAnchorId, "S1.P12.spike-timing")
+    assert.ok(errors.some((message) => message.includes("sourceAnchors.figureId") && message.includes("planning_caveat")))
+  })
+
   test("drops unknown fields and non-scalar junk from props", () => {
     const { spec } = validateVisualSpec({
       ...validSpec,

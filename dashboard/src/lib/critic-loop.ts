@@ -21,6 +21,9 @@ import {
   buildAnchorEvidenceCriticIssues,
   buildFinalGardenState,
   reconcileFinalGardenState,
+  repairCriticSourceAnchorExactText,
+  repairCriticWorkedExampleMisclassification,
+  sanitizeSourceAnchorIds,
   unresolvedLowConfidenceAnchorIds,
   type AnchorConfirmationPacket,
   type AnchorCriticDecision,
@@ -83,8 +86,28 @@ export interface ArtifactRepairRequest {
   targetPath?: string;
   affectedUnitIds?: string[];
   affectedAnchorIds?: string[];
+  formulaKindRepairs?: FormulaKindRepairRequest[];
+  textAnchorExactTextRepairs?: TextAnchorExactTextRepairRequest[];
   instructions: string[];
   evidence: string[];
+}
+
+export interface FormulaKindRepairRequest {
+  issueId: string;
+  pagePath?: string;
+  formulaIndex?: number;
+  sourceAnchorIds?: string[];
+  expectedKind: "worked_example";
+  basedOnFormula?: string;
+  evidence?: string;
+}
+
+export interface TextAnchorExactTextRepairRequest {
+  issueId: string;
+  anchorIds: string[];
+  pagePath?: string;
+  evidence?: string;
+  problem?: string;
 }
 
 export interface CriticReviewPacket {
@@ -597,6 +620,29 @@ function repairTargetPath(issue: CriticIssue): string | undefined {
   }
 }
 
+function issueText(issue: CriticIssue): string {
+  return [issue.problem, issue.evidence, issue.expected, issue.suggestedRepair].filter(Boolean).join("\n");
+}
+
+function extractFormulaIndex(issue: CriticIssue): number | undefined {
+  const match = issueText(issue).match(/\bformulas?\s*\[\s*(\d+)\s*\]|\bformula\s+(?:index\s*)?(\d+)\b/i);
+  const raw = match?.[1] ?? match?.[2];
+  return raw === undefined ? undefined : Number.parseInt(raw, 10);
+}
+
+function extractAnchorIds(issue: CriticIssue): string[] {
+  const explicit = issue.sourceAnchorIds ?? [];
+  const mined = issueText(issue).match(/\bS\d+\.P\d+\.[A-Za-z0-9_.-]+\b|scopeContract\.[A-Za-z0-9_.-]+/g) ?? [];
+  return [...new Set([...explicit, ...mined].map(String).filter(Boolean))];
+}
+
+function sourceAnchorIssueNeedsExactTextRepair(issue: CriticIssue): boolean {
+  if (issue.type !== "source_anchor_mismatch") return false;
+  if (issue.repairTarget === "source_anchor_ledger") return true;
+  const text = issueText(issue);
+  return /\bexactText\b|verbatim|quoted?|passage|excerpt|source text|wrong source|does not support|irrelevant|mismatch/i.test(text);
+}
+
 /** Group blocking issues into targeted repair requests (one per target+path). */
 export function criticIssuesToRepairRequests(issues: CriticIssue[]): ArtifactRepairRequest[] {
   const groups = new Map<string, ArtifactRepairRequest>();
@@ -612,6 +658,8 @@ export function criticIssuesToRepairRequests(issues: CriticIssue[]): ArtifactRep
         targetPath,
         affectedUnitIds: [],
         affectedAnchorIds: [],
+        formulaKindRepairs: [],
+        textAnchorExactTextRepairs: [],
         instructions: [],
         evidence: [],
       };
@@ -620,12 +668,35 @@ export function criticIssuesToRepairRequests(issues: CriticIssue[]): ArtifactRep
     req.issueIds.push(issue.id);
     if (issue.suggestedRepair) req.instructions.push(issue.suggestedRepair);
     if (issue.evidence) req.evidence.push(issue.evidence);
-    for (const id of issue.sourceAnchorIds ?? []) if (!req.affectedAnchorIds!.includes(id)) req.affectedAnchorIds!.push(id);
+    const anchorIds = extractAnchorIds(issue);
+    for (const id of anchorIds) if (!req.affectedAnchorIds!.includes(id)) req.affectedAnchorIds!.push(id);
+    if (issue.type === "worked_example_misclassified") {
+      req.formulaKindRepairs!.push({
+        issueId: issue.id,
+        pagePath: issue.pagePath,
+        formulaIndex: extractFormulaIndex(issue),
+        sourceAnchorIds: anchorIds.filter((id) => /\.E\d+$/i.test(id)),
+        expectedKind: "worked_example",
+        basedOnFormula: anchorIds.find((id) => /\.E\d+$/i.test(id)),
+        evidence: issue.evidence,
+      });
+    }
+    if (sourceAnchorIssueNeedsExactTextRepair(issue) && anchorIds.length > 0) {
+      req.textAnchorExactTextRepairs!.push({
+        issueId: issue.id,
+        anchorIds,
+        pagePath: issue.pagePath,
+        evidence: issue.evidence,
+        problem: issue.problem,
+      });
+    }
   }
   return [...groups.values()].map((req) => ({
     ...req,
     affectedUnitIds: req.affectedUnitIds!.length ? req.affectedUnitIds : undefined,
     affectedAnchorIds: req.affectedAnchorIds!.length ? req.affectedAnchorIds : undefined,
+    formulaKindRepairs: req.formulaKindRepairs!.length ? req.formulaKindRepairs : undefined,
+    textAnchorExactTextRepairs: req.textAnchorExactTextRepairs!.length ? req.textAnchorExactTextRepairs : undefined,
   }));
 }
 
@@ -762,15 +833,60 @@ function buildModelRepairInput(state: FinalGardenState, gardenDir: string, reque
 }
 
 /** Write and validate a model repair candidate; reverts if it breaks the state. */
+function fmArrayFromMarkdown(markdown: string, key: string): string[] {
+  const fm = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+  const match = fm.match(new RegExp(`^${key}:\\s*\\[([^\\]]*)\\]\\s*$`, "m"));
+  if (!match) return [];
+  return (match[1] ?? "")
+    .split(",")
+    .map((item) => item.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+}
+
+function modelMarkdownHasInvalidAnchorLabels(markdown: string): boolean {
+  for (const key of ["sourceAnchors", "sourceFormulaAnchors"]) {
+    const values = fmArrayFromMarkdown(markdown, key);
+    if (sanitizeSourceAnchorIds(values).rejectedLabels.length > 0) return true;
+  }
+  const blocks = markdown.match(/```breadboard-visual\r?\n[\s\S]*?\r?\n```/g) ?? [];
+  for (const block of blocks) {
+    const raw = block.replace(/^```breadboard-visual\r?\n/, "").replace(/\r?\n```$/, "");
+    try {
+      if (modelJsonHasInvalidAnchorLabels(JSON.parse(raw))) return true;
+    } catch {
+      // Invalid visual JSON is handled by the normal parse/build path.
+    }
+  }
+  return false;
+}
+
+function modelJsonHasInvalidAnchorLabels(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const spec = value as Record<string, unknown>;
+  const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors : [];
+  for (const item of anchors) {
+    if (typeof item === "string" && sanitizeSourceAnchorIds([item]).rejectedLabels.length > 0) return true;
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    for (const key of ["figureId", "tableId", "equationId", "questionId", "textAnchorId"]) {
+      const raw = typeof record[key] === "string" ? String(record[key]).trim() : "";
+      if (raw && sanitizeSourceAnchorIds([raw]).rejectedLabels.length > 0) return true;
+    }
+  }
+  return false;
+}
+
 function applyModelRepairOutput(gardenDir: string, gardenSlug: string, out: ModelRepairOutput): boolean {
   const abs = path.join(gardenDir, out.targetPath);
   if (!fs.existsSync(path.dirname(abs))) return false;
   const before = fs.existsSync(abs) ? fs.readFileSync(abs, "utf-8") : null;
   if (out.revisedMarkdown !== undefined) {
     if (!/^---\r?\n[\s\S]*?\r?\n---/.test(out.revisedMarkdown)) return false; // must keep frontmatter
+    if (modelMarkdownHasInvalidAnchorLabels(out.revisedMarkdown)) return false;
     if (before !== null && out.revisedMarkdown.trim() === before.trim()) return false;
     fs.writeFileSync(abs, out.revisedMarkdown.endsWith("\n") ? out.revisedMarkdown : `${out.revisedMarkdown}\n`, "utf-8");
   } else if (out.revisedJson !== undefined) {
+    if (modelJsonHasInvalidAnchorLabels(out.revisedJson)) return false;
     fs.writeFileSync(abs, `${JSON.stringify(out.revisedJson, null, 2)}\n`, "utf-8");
   } else {
     return false;
@@ -782,6 +898,49 @@ function applyModelRepairOutput(gardenDir: string, gardenSlug: string, out: Mode
     if (before !== null) fs.writeFileSync(abs, before, "utf-8");
     return false;
   }
+}
+
+function applyTargetedDeterministicRepair(gardenDir: string, gardenSlug: string, req: ArtifactRepairRequest): TargetedRepairSummary {
+  const changed: string[] = [];
+  const notes: string[] = [];
+  let attempted = false;
+  let resolved = false;
+  const mark = (rel: string): void => { if (rel && !changed.includes(rel)) changed.push(rel); };
+
+  for (const spec of req.formulaKindRepairs ?? []) {
+    attempted = true;
+    const out = repairCriticWorkedExampleMisclassification(gardenDir, gardenSlug, {
+      pagePath: spec.pagePath ?? req.targetPath,
+      formulaIndex: spec.formulaIndex,
+      sourceAnchorIds: spec.sourceAnchorIds?.length ? spec.sourceAnchorIds : req.affectedAnchorIds,
+      evidence: spec.evidence,
+    });
+    out.changed.forEach(mark);
+    notes.push(...out.notes);
+    resolved = resolved || out.resolved;
+  }
+
+  for (const spec of req.textAnchorExactTextRepairs ?? []) {
+    attempted = true;
+    const out = repairCriticSourceAnchorExactText(gardenDir, gardenSlug, {
+      sourceAnchorIds: spec.anchorIds.length ? spec.anchorIds : req.affectedAnchorIds,
+      pagePath: spec.pagePath ?? req.targetPath,
+      evidence: spec.evidence,
+      problem: spec.problem,
+    });
+    out.changed.forEach(mark);
+    notes.push(...out.notes);
+    resolved = resolved || out.resolved;
+  }
+
+  return { attempted, resolved, changed, notes };
+}
+
+interface TargetedRepairSummary {
+  attempted: boolean;
+  resolved: boolean;
+  changed: string[];
+  notes: string[];
 }
 
 /** Production repair: MODEL-first for semantic page/section issues, then the
@@ -797,9 +956,23 @@ export function makeCriticArtifactRepair(opts: {
   return async (gardenDir, gardenSlug, requests, ctx) => {
     const provenance: RepairProvenanceRecord[] = [];
     const handledByModel = new Set<string>();
+    for (const req of requests) {
+      const targeted = applyTargetedDeterministicRepair(gardenDir, gardenSlug, req);
+      if (!targeted.attempted || targeted.changed.length === 0) continue;
+      provenance.push({
+        requestId: req.id,
+        targetKind: req.targetKind,
+        targetPath: req.targetPath,
+        executorAttempted: ["deterministic"],
+        executorUsed: "deterministic",
+        changed: true,
+      });
+      handledByModel.add(req.id);
+    }
     if (opts.modelRepair) {
       for (const req of requests) {
         if (!requestIsModelFirst(req, ctx.issuesById)) continue;
+        if (handledByModel.has(req.id)) continue;
         const issue = ctx.issuesById?.get(req.issueIds[0]);
         if (!issue) continue;
         const state = buildFinalGardenState(gardenDir, gardenSlug);
@@ -1160,6 +1333,17 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
   );
 
   const s = result.status;
+  const mdCell = (value: string | undefined): string => String(value ?? "")
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "\\|")
+    .trim()
+    .slice(0, 220) || "-";
+  let deterministicProblems: string[] = [];
+  try {
+    deterministicProblems = auditFinalGardenState(buildFinalGardenState(gardenDir)).problems;
+  } catch {
+    deterministicProblems = [];
+  }
   const loop = {
     enabled: s.criticAvailabilityStatus !== "disabled",
     criticAvailabilityStatus: s.criticAvailabilityStatus,
@@ -1227,14 +1411,19 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
     "## Unresolved blocking issues",
     "",
     ...(result.finalBlockingIssues.length > 0
-      ? result.finalBlockingIssues.flatMap((i) => [
-          `- **[${i.type}]** ${i.problem}`,
-          `  - Where: ${i.pagePath ?? i.sectionPath ?? i.visualId ?? "global"}`,
-          ...(i.sourceAnchorIds && i.sourceAnchorIds.length ? [`  - Source anchors: ${i.sourceAnchorIds.join(", ")}`] : []),
-          `  - Evidence: ${i.evidence}`,
-          `  - Expected: ${i.expected}`,
-          `  - Repair target: ${i.repairTarget}`,
-        ])
+      ? [
+          "| Type | Target | Anchors | Problem | Expected | Suggested repair |",
+          "|---|---|---|---|---|---|",
+          ...result.finalBlockingIssues.map((i) =>
+            `| ${mdCell(i.type)} | ${mdCell(i.pagePath ?? i.sectionPath ?? i.visualId ?? i.repairTarget)} | ${mdCell((i.sourceAnchorIds ?? []).join(", "))} | ${mdCell(i.problem)} | ${mdCell(i.expected)} | ${mdCell(i.suggestedRepair)} |`,
+          ),
+        ]
+      : ["- None."]),
+    "",
+    "## Deterministic audit blockers",
+    "",
+    ...(deterministicProblems.length > 0
+      ? deterministicProblems.slice(0, 40).map((problem) => `- ${mdCell(problem)}`)
       : ["- None."]),
     "",
     "## Warnings",
@@ -1270,7 +1459,10 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
   // report so a critic-blocked garden is never presented as fully accepted.
   const reportPath = path.join(bd, "validation-report.md");
   if (fs.existsSync(reportPath)) {
-    let report = fs.readFileSync(reportPath, "utf-8").replace(/\n## Critic Publish Readiness[\s\S]*$/m, "").replace(/\s+$/, "");
+    let report = fs.readFileSync(reportPath, "utf-8")
+      .replace(/\n## Critic Publish Readiness[\s\S]*$/m, "")
+      .replace(/^Accepted:\s+(?:yes|no)\s*$/gm, `Accepted: ${s.accepted ? "yes" : "no"}`)
+      .replace(/\s+$/, "");
     report += [
       "",
       "",
@@ -1279,6 +1471,7 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
       `Lifecycle status: ${s.lifecycleStatus}`,
       `Deterministic validation: ${s.deterministicPass ? "pass" : "fail"}`,
       `Critic validation: ${s.criticPass ? "pass" : s.criticAvailabilityStatus === "available" ? "fail" : s.criticAvailabilityStatus}`,
+      `Overall accepted: ${s.accepted ? "yes" : "no"}`,
       `Publish-ready: ${s.publishReady ? "yes" : "no"}`,
       `Blocking issues: ${result.finalBlockingIssues.length}, Warnings: ${result.finalWarnings.length}`,
       ...(s.reason ? [`Reason: ${s.reason}`] : []),
