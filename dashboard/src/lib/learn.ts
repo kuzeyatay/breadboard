@@ -19,7 +19,7 @@ import {
   type RepairExecutorMode,
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
-import { describeMissingAnchorFailure, ingestModelSourceAnchors, missingRegistryAnchorIds } from "@/lib/final-garden-state";
+import { describeMissingAnchorFailure, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
 import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import {
   appendGardenEvent,
@@ -4875,6 +4875,28 @@ export async function runTextbookGeneration({
     // Any error (e.g. ChatMock unreachable) is swallowed so a draft still ships.
     try {
       if ((process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false") {
+        // Fix 13 step 2: migrate/rescore LEGACY text-concept anchors BEFORE the
+        // critic runs, so no legacy numeric-confidence anchor is grandfathered in.
+        try {
+          const migration = migrateLegacyTextConceptAnchors(clusterDir, gardenId);
+          if (migration.counts.legacyFound > 0) {
+            reconcileFinalGardenState(clusterDir, gardenId);
+            appendLearnEvent(contentPath, gardenId, "learn_legacy_anchors_migrated", {
+              jobId: job.id,
+              legacyFound: migration.counts.legacyFound,
+              migrated: migration.counts.migrated,
+              replaced: migration.counts.replaced,
+              needsCritic: migration.counts.needs_critic_review,
+              blocking: migration.counts.blocking,
+              suspiciousPassages: migration.duplicateGroups.filter((g) => g.suspicious).length,
+            });
+          }
+        } catch (migrationError) {
+          appendLearnEvent(contentPath, gardenId, "learn_legacy_anchor_migration_failed", {
+            jobId: job.id,
+            reason: migrationError instanceof Error ? migrationError.message : String(migrationError),
+          });
+        }
         // Real ChatMock-backed repair: the model rewrites the flagged page/section
         // first for semantic issues, then the deterministic finalizer runs for
         // mechanical fixes and as the fallback when a model candidate is rejected.
