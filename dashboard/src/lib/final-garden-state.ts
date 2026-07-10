@@ -270,6 +270,24 @@ export type MissingAnchorRepairAction =
   | "needs_critic_review"
   | "remove_unsupported_anchor";
 
+export type InvalidSourceAnchorLabelReason =
+  | "not_anchor_id"
+  | "generic_label"
+  | "planning_caveat"
+  | "invalid_format"
+  | "unresolved";
+
+export interface RejectedSourceAnchorLabel {
+  value: string;
+  reason: InvalidSourceAnchorLabelReason;
+  suggestedField?: string;
+}
+
+export interface SourceAnchorSanitizationResult {
+  acceptedAnchorIds: string[];
+  rejectedLabels: RejectedSourceAnchorLabel[];
+}
+
 /** A referenced anchor that is not (yet) in the canonical registry, plus the
  *  action the anchor-repair pass will take to resolve it before acceptance. */
 export interface MissingAnchorRepairRequest {
@@ -596,6 +614,52 @@ function structuralKindFromId(id: string): CanonicalSourceAnchorKind | null {
   return null;
 }
 
+const GENERIC_ANCHOR_LABEL_RE = /\b(?:source|general|provided|context|notes?|discussion|limitations?|method|formula|caption|captions?|map|learning)\b/i;
+const CAVEAT_ANCHOR_LABEL_RE = /\b(?:caveat|caveats|not fully available|not available|missing|omitted|deferred|excluded|limitation|limitations|supplied results)\b/i;
+
+/** True only for strings shaped like canonical source-anchor ids. Human labels
+ * such as "source caveats" or "general context" are not plausible ids and must
+ * stay out of sourceAnchors/sourceFormulaAnchors/visual anchors/contracts. */
+export function isPlausibleSourceAnchorId(value: string): boolean {
+  const id = String(value ?? "").trim();
+  if (!id || /\s/.test(id)) return false;
+  if (/^S\d+\.P\d+\.(?:E|F|G|T)\d+$/i.test(id)) return true;
+  if (/^S\d+\.P\d+\.[A-Za-z0-9][A-Za-z0-9_.-]*$/i.test(id)) return true;
+  if (/^text-[A-Za-z0-9][A-Za-z0-9_.-]*-[A-Za-z0-9][A-Za-z0-9_.-]*$/i.test(id)) return true;
+  if (/^scopeContract\.(?:excluded|deferred|included|guidance)$/i.test(id)) return true;
+  return false;
+}
+
+export function classifyRejectedSourceAnchorLabel(value: string): RejectedSourceAnchorLabel {
+  const raw = String(value ?? "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return { value: raw, reason: "invalid_format" };
+  if (CAVEAT_ANCHOR_LABEL_RE.test(lower)) {
+    return { value: raw, reason: "planning_caveat", suggestedField: "sourceCaveats" };
+  }
+  if (GENERIC_ANCHOR_LABEL_RE.test(lower)) {
+    return { value: raw, reason: "generic_label", suggestedField: "sourceNotes" };
+  }
+  if (/\s/.test(raw)) return { value: raw, reason: "not_anchor_id", suggestedField: "sourceNotes" };
+  return { value: raw, reason: "invalid_format" };
+}
+
+export function sanitizeSourceAnchorIds(values: string[]): SourceAnchorSanitizationResult {
+  const accepted: string[] = [];
+  const rejectedLabels: RejectedSourceAnchorLabel[] = [];
+  for (const raw of values) {
+    const value = String(raw ?? "").trim();
+    if (!value || value.startsWith("trivial:")) continue;
+    if (isPlausibleSourceAnchorId(value)) {
+      if (!accepted.includes(value)) accepted.push(value);
+    } else {
+      const rejected = classifyRejectedSourceAnchorLabel(value);
+      if (!rejectedLabels.some((item) => item.value === rejected.value && item.reason === rejected.reason)) rejectedLabels.push(rejected);
+    }
+  }
+  return { acceptedAnchorIds: accepted, rejectedLabels };
+}
+
 function sourceDocumentAnchorRefs(gardenDir: string): Map<string, { sourceId: string; title: string }> {
   const refs = new Map<string, { sourceId: string; title: string }>();
   const sourcePages: Array<{ abs: string; rel: string }> = [];
@@ -647,6 +711,7 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
     const record = anchor as Record<string, unknown>;
     const id = String(record.id ?? "").trim();
     if (!id) continue;
+    if (!isPlausibleSourceAnchorId(id)) continue;
     registry[id] = {
       id,
       kind: "text_concept",
@@ -670,6 +735,7 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
     const record = anchor as Record<string, unknown>;
     const id = String(record.id ?? "").trim();
     if (!id) continue;
+    if (!isPlausibleSourceAnchorId(id)) continue;
     // A registered record's explicit kind wins over the id-token heuristic, so a
     // semantic anchor registered as "abstract"/"intro"/"text_concept" keeps that
     // kind even when its id tail is not a known structural token.
@@ -735,8 +801,10 @@ export function formulaStructuralKind(text: string): FormulaStructuralKind {
 
   const numericOnlyFraction = /\\frac\s*\{\s*[\d.,]+\s*\}\s*\{\s*[\d.,]+\s*\}/.test(withoutPercentFactor)
     || /(?:^|[^A-Za-z}])\d[\d.,]*\s*\/\s*\d[\d.,]*/.test(withoutPercentFactor);
-  // A bare numeric result: the expression terminates in `= <number>` (optionally %).
-  const bareNumericResult = /=\s*[+-]?\d[\d.,]*\s*\\?%?\s*$/.test(withoutPercentFactor.trim());
+  // A bare numeric result: the expression terminates in `= <number>` or
+  // `\approx <number>` (optionally %). Numeric approximations are worked
+  // examples even when the left side is a symbolic label such as `\eta`.
+  const bareNumericResult = /(?:=|\\approx|≈)\s*[+-]?\d[\d.,]*\s*\\?%?\s*$/.test(withoutPercentFactor.trim());
 
   const symbols = stripFormulaLabels(raw)
     .replace(/\\(?:frac|times|cdot|left|right|text|mathrm|operatorname|approx|geq|leq|neq|sum|prod|int|sqrt|%)/g, " ")
@@ -1411,6 +1479,33 @@ function coverageSection(markdown: string, heading: string): string {
 
 const ANCHOR_TOKEN_RE = /\bS\d+\.P\d+\.[A-Za-z]\w*\b|\btext-[a-z0-9-]+\b/gi;
 
+function invalidRegistryAnchorRecords(rootPath: string): string[] {
+  const ledger = readJson<Record<string, unknown>>(path.join(rootPath, ".breadboard", "source-anchors.json"), {});
+  const problems: string[] = [];
+  for (const key of ["sourceTextConceptAnchors", "sourceStructuralAnchors"]) {
+    const records = Array.isArray(ledger[key]) ? ledger[key] as Array<Record<string, unknown>> : [];
+    for (const record of records) {
+      const id = String(record.id ?? "").trim();
+      if (!id) continue;
+      if (!isPlausibleSourceAnchorId(id)) {
+        const rejected = classifyRejectedSourceAnchorLabel(id);
+        problems.push(`source-anchor registry ${key} contains invalid source-anchor label "${id}" (${rejected.reason}); it must not be registered as canonical`);
+        continue;
+      }
+      const kind = String(record.kind ?? (key === "sourceTextConceptAnchors" ? "text_concept" : "")).trim();
+      if (key === "sourceStructuralAnchors" && kind && !["text_concept", "formula", "figure", "table", "graph", "abstract", "intro", "guidance"].includes(kind)) {
+        problems.push(`source-anchor registry ${key} record "${id}" has invalid kind "${kind}"`);
+      }
+      if (!String(record.sourceId ?? "").trim()) problems.push(`source-anchor registry ${key} record "${id}" is missing sourceId`);
+      if (!String(record.title ?? "").trim()) problems.push(`source-anchor registry ${key} record "${id}" is missing title`);
+      if (key === "sourceTextConceptAnchors" && !String(record.semanticSummary ?? "").trim()) {
+        problems.push(`source-anchor registry ${key} record "${id}" is missing semanticSummary`);
+      }
+    }
+  }
+  return problems;
+}
+
 /**
  * The single final-state consistency audit. Acceptance is `Accepted: yes` only
  * when this passes. Each rule proves a class of state drift cannot survive.
@@ -1425,11 +1520,17 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
   const anchors = state.sourceAnchors;
   const index = usageIndex(state);
   const unitsById = new Map(state.learningUnitContract.units.map((u) => [u.id, u]));
+  for (const problem of invalidRegistryAnchorRecords(state.rootPath)) add("invalid_anchor_label", problem);
 
   // Rule A — every referenced anchor resolves through the canonical registry.
   const referencedAnchors = new Map<string, string[]>();
+  const invalidAnchorLabels = new Map<string, string[]>();
   const noteRef = (id: string, where: string): void => {
     if (!id || id.startsWith("trivial:")) return;
+    if (!isPlausibleSourceAnchorId(id)) {
+      (invalidAnchorLabels.get(id) ?? invalidAnchorLabels.set(id, []).get(id)!).push(where);
+      return;
+    }
     (referencedAnchors.get(id) ?? referencedAnchors.set(id, []).get(id)!).push(where);
   };
   for (const page of state.pages) {
@@ -1446,6 +1547,13 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
   }
   for (const unit of state.learningUnitContract.units) {
     for (const id of unit.sourceAnchors ?? []) noteRef(id, `contract ${unit.id}`);
+  }
+  for (const [id, where] of invalidAnchorLabels) {
+    const rejected = classifyRejectedSourceAnchorLabel(id);
+    add(
+      "invalid_anchor_label",
+      `invalid source-anchor label "${id}" is referenced (${where.slice(0, 3).join("; ")}${where.length > 3 ? "; ..." : ""}); it looks like ${rejected.reason === "planning_caveat" ? "a planning/caveat label" : "a non-anchor label"}, not a canonical source-anchor ID`,
+    );
   }
   for (const [id, where] of referencedAnchors) {
     if (!anchors[id]) {
@@ -1735,6 +1843,180 @@ function setFmArrayLine(rawFm: string, key: string, values: string[]): string {
   return `${rawFm.replace(/\s+$/, "")}\n${line}`;
 }
 
+export interface InvalidAnchorLabelRepairRequest {
+  targetKind: "unit_page" | "learning_unit_contract";
+  invalidValue: string;
+  pagePath?: string;
+  unitId?: string;
+  reason: "not_anchor_id" | "generic_label" | "planning_caveat";
+  repairAction: "remove_from_sourceAnchors" | "move_to_caveats" | "replace_with_canonical_anchor";
+}
+
+export interface InvalidAnchorLabelRepairResult {
+  changed: string[];
+  notes: string[];
+  requests: InvalidAnchorLabelRepairRequest[];
+}
+
+function repairActionForInvalidLabel(label: RejectedSourceAnchorLabel): InvalidAnchorLabelRepairRequest["repairAction"] {
+  return label.reason === "planning_caveat" ? "move_to_caveats" : "remove_from_sourceAnchors";
+}
+
+function sanitizeAnchorArrayForField(values: string[]): SourceAnchorSanitizationResult {
+  return sanitizeSourceAnchorIds(values);
+}
+
+/** Remove non-anchor labels from source-grounding fields. Caveat labels move to
+ * sourceCaveats/sourceNotes so they remain visible but cannot satisfy grounding. */
+export function repairInvalidSourceAnchorLabels(gardenDir: string, slug?: string): InvalidAnchorLabelRepairResult {
+  const result: InvalidAnchorLabelRepairResult = { changed: [], notes: [], requests: [] };
+  const markChanged = (rel: string): void => { if (!result.changed.includes(rel)) result.changed.push(rel); };
+  const noteMove = (value: string, where: string, label: RejectedSourceAnchorLabel): void => {
+    result.notes.push(`removed invalid source-anchor label "${value}" from ${where}; classified as ${label.reason}${label.suggestedField ? ` (${label.suggestedField})` : ""}`);
+  };
+
+  const state = buildFinalGardenState(gardenDir, slug);
+  for (const page of state.pages) {
+    const content = readText(page.abs);
+    if (content === undefined) continue;
+    const { rawFrontmatter, body } = splitFrontmatter(content);
+    let rawFm = rawFrontmatter;
+    let pageChanged = false;
+    const moved: string[] = [];
+    for (const key of ["sourceAnchors", "sourceFormulaAnchors"]) {
+      const values = fmArray(rawFm, key);
+      if (values.length === 0) continue;
+      const sanitized = sanitizeAnchorArrayForField(values);
+      if (sanitized.rejectedLabels.length === 0) continue;
+      rawFm = setFmArrayLine(rawFm, key, sanitized.acceptedAnchorIds);
+      pageChanged = true;
+      for (const label of sanitized.rejectedLabels) {
+        if (label.suggestedField === "sourceCaveats") moved.push(label.value);
+        result.requests.push({
+          targetKind: "unit_page",
+          invalidValue: label.value,
+          pagePath: page.rel,
+          reason: label.reason === "invalid_format" || label.reason === "unresolved" ? "not_anchor_id" : label.reason,
+          repairAction: repairActionForInvalidLabel(label),
+        });
+        noteMove(label.value, `${page.rel} ${key}`, label);
+      }
+    }
+    if (moved.length > 0) {
+      rawFm = setFmArrayLine(rawFm, "sourceCaveats", [...fmArray(rawFm, "sourceCaveats"), ...moved]);
+      pageChanged = true;
+    }
+    if (pageChanged && rawFm !== rawFrontmatter) {
+      fs.writeFileSync(page.abs, `---\n${rawFm.replace(/\s+$/, "")}\n---\n\n${body.replace(/^\n+/, "")}`, "utf-8");
+      markChanged(page.rel);
+    }
+  }
+
+  const bd = path.join(gardenDir, ".breadboard");
+  const contractPath = fs.existsSync(path.join(bd, "learning-unit-contract.json"))
+    ? path.join(bd, "learning-unit-contract.json")
+    : path.join(bd, "planning", "learning-unit-contract.json");
+  if (fs.existsSync(contractPath)) {
+    const contractJson = readJson<Record<string, unknown>>(contractPath, {});
+    const units = Array.isArray(contractJson.learningUnits)
+      ? contractJson.learningUnits as Array<Record<string, unknown>>
+      : Array.isArray(contractJson.units)
+        ? contractJson.units as Array<Record<string, unknown>>
+        : [];
+    let contractChanged = false;
+    for (const unit of units) {
+      const values = Array.isArray(unit.sourceAnchors) ? unit.sourceAnchors.map(String) : [];
+      if (values.length === 0) continue;
+      const sanitized = sanitizeAnchorArrayForField(values);
+      if (sanitized.rejectedLabels.length === 0) continue;
+      unit.sourceAnchors = sanitized.acceptedAnchorIds;
+      const caveats = Array.isArray(unit.sourceCaveats) ? unit.sourceCaveats.map(String) : [];
+      for (const label of sanitized.rejectedLabels) {
+        if (label.suggestedField === "sourceCaveats" && !caveats.includes(label.value)) caveats.push(label.value);
+        result.requests.push({
+          targetKind: "learning_unit_contract",
+          invalidValue: label.value,
+          unitId: String(unit.id ?? ""),
+          reason: label.reason === "invalid_format" || label.reason === "unresolved" ? "not_anchor_id" : label.reason,
+          repairAction: repairActionForInvalidLabel(label),
+        });
+        noteMove(label.value, `contract ${String(unit.id ?? "(unknown)")}`, label);
+      }
+      if (caveats.length > 0) unit.sourceCaveats = caveats;
+      contractChanged = true;
+    }
+    if (contractChanged) {
+      fs.writeFileSync(contractPath, `${JSON.stringify(contractJson, null, 2)}\n`, "utf-8");
+      markChanged(path.relative(gardenDir, contractPath).split(path.sep).join("/"));
+    }
+  }
+
+  const anchorLedgerPath = path.join(bd, "source-anchors.json");
+  if (fs.existsSync(anchorLedgerPath)) {
+    const ledger = readJson<Record<string, unknown>>(anchorLedgerPath, {});
+    let ledgerChanged = false;
+    for (const key of ["sourceTextConceptAnchors", "sourceStructuralAnchors"]) {
+      const records = Array.isArray(ledger[key]) ? ledger[key] as Array<Record<string, unknown>> : [];
+      const kept = records.filter((record) => isPlausibleSourceAnchorId(String(record.id ?? "")));
+      if (kept.length !== records.length) {
+        ledger[key] = kept;
+        ledgerChanged = true;
+        for (const record of records) {
+          const id = String(record.id ?? "").trim();
+          if (id && !isPlausibleSourceAnchorId(id)) {
+            const label = classifyRejectedSourceAnchorLabel(id);
+            noteMove(id, `source-anchor registry ${key}`, label);
+          }
+        }
+      }
+    }
+    if (ledgerChanged) {
+      fs.writeFileSync(anchorLedgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+      markChanged(".breadboard/source-anchors.json");
+    }
+  }
+
+  const visualsDir = path.join(bd, "visuals");
+  if (fs.existsSync(visualsDir)) {
+    for (const name of fs.readdirSync(visualsDir)) {
+      if (!name.endsWith(".json")) continue;
+      const abs = path.join(visualsDir, name);
+      const text = readText(abs);
+      if (text === undefined) continue;
+      let spec: Record<string, unknown>;
+      try { spec = JSON.parse(text); } catch { continue; }
+      if (!Array.isArray(spec.sourceAnchors)) continue;
+      let visualChanged = false;
+      const planningNotes = Array.isArray(spec.planningNotes) ? spec.planningNotes.map(String) : [];
+      const cleaned = (spec.sourceAnchors as unknown[]).flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const record = { ...(item as Record<string, unknown>) };
+        let hadInvalid = false;
+        for (const key of ["figureId", "tableId", "equationId", "questionId", "textAnchorId"]) {
+          const value = typeof record[key] === "string" ? String(record[key]).trim() : "";
+          if (!value || isPlausibleSourceAnchorId(value)) continue;
+          const label = classifyRejectedSourceAnchorLabel(value);
+          delete record[key];
+          hadInvalid = true;
+          visualChanged = true;
+          planningNotes.push(`${value}: ${label.reason}`);
+          noteMove(value, `.breadboard/visuals/${name} ${key}`, label);
+        }
+        const hasGroundingId = ["figureId", "tableId", "equationId", "questionId", "textAnchorId"].some((key) => typeof record[key] === "string" && String(record[key]).trim());
+        return hasGroundingId || !hadInvalid ? [record] : [];
+      });
+      if (cleaned.length !== spec.sourceAnchors.length) visualChanged = true;
+      if (!visualChanged) continue;
+      spec.sourceAnchors = cleaned;
+      if (planningNotes.length > 0) spec.planningNotes = [...new Set(planningNotes)];
+      fs.writeFileSync(abs, `${JSON.stringify(spec, null, 2)}\n`, "utf-8");
+      markChanged(`.breadboard/visuals/${name}`);
+    }
+  }
+
+  return result;
+}
+
 interface FullFormulaEntry {
   kind: string;
   text: string;
@@ -1845,6 +2127,212 @@ function relabelWorkedExamples(rawFm: string, requiredAnchors: Set<string> = new
   }
   if (!changed) return { rawFm, changed: false };
   return { rawFm: replaceFormulasBlock(rawFm, entries), changed: true };
+}
+
+export interface TargetedCriticRepairResult {
+  changed: string[];
+  notes: string[];
+  resolved: boolean;
+}
+
+export interface CriticFormulaKindRepairInput {
+  pagePath?: string;
+  formulaIndex?: number;
+  sourceAnchorIds?: string[];
+  evidence?: string;
+  problem?: string;
+}
+
+function sourceDefinitionForFormulaAnchor(anchorId: string, anchor?: CanonicalSourceAnchor): { text: string; reason: string } | null {
+  const text = [anchorId, anchor?.title, anchor?.caption, anchor?.semanticSummary, anchor?.formulaFamily].filter(Boolean).join(" ").toLowerCase();
+  const byId = (suffix: string) => new RegExp(`\\.${suffix}$`, "i").test(anchorId);
+  const family = anchor?.formulaFamily || formulaMetricFamily(text) || "";
+  if (byId("E1")) {
+    return {
+      text: "\\text{Accuracy} = \\frac{N_{\\text{correct}}}{N_{\\text{total}}}",
+      reason: "symbolic accuracy definition: correct predictions over total predictions",
+    };
+  }
+  if (byId("E2")) {
+    return {
+      text: "T_{\\text{latency}} = t_{\\text{decision}} - t_{\\text{stimulus}}",
+      reason: "symbolic latency definition: decision time minus stimulus time",
+    };
+  }
+  if (byId("E3")) {
+    return {
+      text: "N_{\\text{spikes}} = \\sum_{n,t} s_n(t)",
+      reason: "symbolic spike-count definition: spikes summed across neurons and time",
+    };
+  }
+  if (byId("E4")) {
+    return {
+      text: "E_{\\text{energy}} = N_{\\text{spikes}}E_{\\text{spike}} + N_{\\text{synops}}E_{\\text{synop}}",
+      reason: "symbolic energy definition: spike and synaptic operation costs",
+    };
+  }
+  if (byId("E5")) {
+    return {
+      text: "\\eta_{\\text{efficiency}} = \\frac{\\text{Accuracy}}{E_{\\text{energy}}}",
+      reason: "symbolic normalized-efficiency definition: accuracy divided by energy",
+    };
+  }
+  if (byId("E6")) {
+    return {
+      text: "T_{\\text{convergence}} = \\min\\{e : A(e) \\geq A_{\\text{target}}\\}",
+      reason: "symbolic convergence definition: first epoch reaching target accuracy",
+    };
+  }
+  if (family === "accuracy" || /\baccuracy|correct prediction|classification/.test(text)) {
+    return {
+      text: "\\text{Accuracy} = \\frac{N_{\\text{correct}}}{N_{\\text{total}}}",
+      reason: "symbolic accuracy definition: correct predictions over total predictions",
+    };
+  }
+  if (family === "latency" || /\blatency|decision time|response time/.test(text)) {
+    return {
+      text: "T_{\\text{latency}} = t_{\\text{decision}} - t_{\\text{stimulus}}",
+      reason: "symbolic latency definition: decision time minus stimulus time",
+    };
+  }
+  if (family === "spike-count" || /\bspike count|total spike|number of spikes/.test(text)) {
+    return {
+      text: "N_{\\text{spikes}} = \\sum_{n,t} s_n(t)",
+      reason: "symbolic spike-count definition: spikes summed across neurons and time",
+    };
+  }
+  if (family === "efficiency" || /\befficien|\bnormalized energy|accuracy per energy/.test(text)) {
+    return {
+      text: "\\eta_{\\text{efficiency}} = \\frac{\\text{Accuracy}}{E_{\\text{energy}}}",
+      reason: "symbolic normalized-efficiency definition: accuracy divided by energy",
+    };
+  }
+  if (family === "energy" || /\benergy|synaptic operation|synop|joule/.test(text)) {
+    return {
+      text: "E_{\\text{energy}} = N_{\\text{spikes}}E_{\\text{spike}} + N_{\\text{synops}}E_{\\text{synop}}",
+      reason: "symbolic energy definition: spike and synaptic operation costs",
+    };
+  }
+  if (family === "convergence" || /\bconvergence|epoch|target accuracy|learning curve/.test(text)) {
+    return {
+      text: "T_{\\text{convergence}} = \\min\\{e : A(e) \\geq A_{\\text{target}}\\}",
+      reason: "symbolic convergence definition: first epoch reaching target accuracy",
+    };
+  }
+  return null;
+}
+
+function sourceDefinitionExists(entries: FullFormulaEntry[], anchorId: string): boolean {
+  return entries.some((entry) =>
+    (entry.kind === "source_definition" || entry.kind === "source_derived_definition")
+    && entry.sourceAnchor === anchorId
+    && formulaStructuralKind(entry.text) === "definition",
+  );
+}
+
+function normalizedPageCandidates(gardenDir: string, pagePath?: string): Array<{ abs: string; rel: string }> {
+  const rel = String(pagePath ?? "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (rel && rel.startsWith("learning/") && rel.endsWith(".md")) {
+    return [{ rel, abs: path.join(gardenDir, ...rel.split("/")) }].filter((p) => fs.existsSync(p.abs));
+  }
+  const pages: Array<{ abs: string; rel: string }> = [];
+  walkMarkdown(path.join(gardenDir, "learning"), "learning", pages);
+  return pages.filter((p) => !/(^|\/)_index\.md$/i.test(p.rel));
+}
+
+/** Targeted critic repair: a concrete numeric substitution must be metadata
+ * `worked_example`, while the source anchor remains satisfied by a symbolic
+ * `source_definition` entry. This is deliberately metadata-only and
+ * idempotent; if the source formula family is unknown, it leaves the blocker
+ * for the critic instead of guessing. */
+export function repairCriticWorkedExampleMisclassification(
+  gardenDir: string,
+  slug: string | undefined,
+  input: CriticFormulaKindRepairInput,
+): TargetedCriticRepairResult {
+  const result: TargetedCriticRepairResult = { changed: [], notes: [], resolved: false };
+  const state = buildFinalGardenState(gardenDir, slug);
+  const anchorIds = new Set((input.sourceAnchorIds ?? []).filter((id) => /\.E\d+$/i.test(id)));
+  const candidates = normalizedPageCandidates(gardenDir, input.pagePath);
+
+  for (const page of candidates) {
+    const content = readText(page.abs);
+    if (content === undefined) continue;
+    const { rawFrontmatter, body } = splitFrontmatter(content);
+    const entries = parseFullFormulaEntries(rawFrontmatter);
+    if (entries.length === 0) continue;
+
+    const targetIndexes = entries
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry, index }) => {
+        if (typeof input.formulaIndex === "number" && index !== input.formulaIndex) return false;
+        const sourceAnchor = entry.sourceAnchor ? String(entry.sourceAnchor) : undefined;
+        const anchorMatches = anchorIds.size === 0 || (sourceAnchor && anchorIds.has(sourceAnchor));
+        return anchorMatches
+          && (entry.kind === "source_definition" || entry.kind === "source_derived_definition")
+          && formulaStructuralKind(entry.text) === "worked_example";
+      });
+    if (targetIndexes.length === 0) continue;
+
+    const targetAnchors = new Set<string>();
+    for (const { entry } of targetIndexes) {
+      const anchor = entry.sourceAnchor || [...anchorIds][0];
+      if (anchor) targetAnchors.add(anchor);
+    }
+
+    let changed = false;
+    const insertAt = Math.max(0, Math.min(...targetIndexes.map((t) => t.index)));
+    const insertions: FullFormulaEntry[] = [];
+    for (const anchorId of targetAnchors) {
+      if (sourceDefinitionExists(entries, anchorId)) continue;
+      const def = sourceDefinitionForFormulaAnchor(anchorId, state.sourceAnchors[anchorId]);
+      if (!def) {
+        result.notes.push(`could not synthesize a symbolic source definition for ${anchorId}`);
+        continue;
+      }
+      insertions.push({
+        kind: "source_definition",
+        text: def.text,
+        normalizedText: def.text,
+        groundingStatus: "source-anchored",
+        sourceAnchor: anchorId,
+        sourceAnchorTitle: state.sourceAnchors[anchorId]?.title ?? anchorId,
+        matchReason: def.reason,
+        justification: `Inserted during critic repair so ${anchorId} is satisfied by a symbolic source definition, not a numeric worked example.`,
+      });
+      changed = true;
+    }
+    if (insertions.length > 0) entries.splice(insertAt, 0, ...insertions);
+
+    for (const { entry } of targetIndexes) {
+      const anchor = entry.sourceAnchor || [...targetAnchors][0];
+      entry.kind = "worked_example";
+      entry.groundingStatus = "conceptual-helper";
+      entry.basedOnFormula = anchor;
+      entry.justification = anchor
+        ? `Worked example applying source formula ${anchor}; a concrete numeric substitution, not the symbolic source definition.`
+        : "Worked example: a concrete numeric substitution, not a symbolic source definition.";
+      entry.matchReason = "numeric instance of the source formula";
+      delete entry.sourceAnchor;
+      delete entry.sourceAnchorTitle;
+      delete entry.confidence;
+      changed = true;
+    }
+
+    if (!changed) continue;
+    let nextFm = replaceFormulasBlock(rawFrontmatter, entries);
+    const existingFormulaAnchors = fmArray(nextFm, "sourceFormulaAnchors");
+    const groundedAnchors = entries
+      .filter((entry) => (entry.kind === "source_definition" || entry.kind === "source_derived_definition") && entry.sourceAnchor)
+      .map((entry) => String(entry.sourceAnchor));
+    nextFm = setFmArrayLine(nextFm, "sourceFormulaAnchors", [...existingFormulaAnchors, ...groundedAnchors]);
+    fs.writeFileSync(page.abs, `---\n${nextFm.replace(/\s+$/, "")}\n---\n\n${body.replace(/^\n+/, "")}`, "utf-8");
+    result.changed.push(page.rel);
+    result.notes.push(`reclassified numeric source-definition formula(s) as worked examples on ${page.rel}`);
+    result.resolved = true;
+  }
+
+  return result;
 }
 
 function sameStringArray(a: string[], b: string[]): boolean {
@@ -2865,7 +3353,9 @@ export function ingestModelSourceAnchors(
   const canValidate = fs.existsSync(path.join(gardenDir, "sources"));
   const accepted: string[] = [];
   const deferred: string[] = [];
-  for (const raw of anchors) {
+  const sanitized = sanitizeSourceAnchorIds(anchors);
+  for (const raw of sanitized.rejectedLabels) deferred.push(raw.value);
+  for (const raw of sanitized.acceptedAnchorIds) {
     const id = String(raw ?? "").trim();
     if (!id) continue;
     // Codes and first-class structural anchors pass through untouched.
@@ -3764,6 +4254,16 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
     assignedSourceVisualsByPage.set(pageRel, list);
   }
 
+  {
+    const invalidRepair = repairInvalidSourceAnchorLabels(gardenDir, slug);
+    for (const rel of invalidRepair.changed) markChanged(rel);
+    for (const note of invalidRepair.notes) result.notes.push(note);
+    if (invalidRepair.changed.length > 0) {
+      state = buildFinalGardenState(gardenDir, slug);
+      unitsById = new Map(state.learningUnitContract.units.map((u) => [u.id, u]));
+    }
+  }
+
   // (1) Register broad/structural anchors referenced by pages or the contract
   //     as first-class anchors — no implicit anchors.
   const anchorLedgerPath = path.join(bd, "source-anchors.json");
@@ -3786,6 +4286,7 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
   const sourceDocumentRefs = sourceDocumentAnchorRefs(gardenDir);
   let registeredAnchor = false;
   for (const id of referenced) {
+    if (!isPlausibleSourceAnchorId(id)) continue;
     if (registry[id]) continue;
     const sourceDocument = sourceDocumentRefs.get(id);
     const kind = sourceDocument ? "guidance" : structuralKindFromId(id);
@@ -4097,6 +4598,132 @@ function reconcileTextAnchorExactText(gardenDir: string): string[] {
   if (grounded.length === 0) return [];
   fs.writeFileSync(anchorPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
   return grounded;
+}
+
+export interface CriticTextAnchorExactTextRepairInput {
+  sourceAnchorIds?: string[];
+  pagePath?: string;
+  evidence?: string;
+  problem?: string;
+}
+
+function ledgerAnchorBuckets(ledger: Record<string, unknown>): Array<{ key: string; records: Array<Record<string, unknown>> }> {
+  return [
+    {
+      key: "sourceTextConceptAnchors",
+      records: Array.isArray(ledger.sourceTextConceptAnchors)
+        ? ledger.sourceTextConceptAnchors as Array<Record<string, unknown>>
+        : [],
+    },
+    {
+      key: "sourceStructuralAnchors",
+      records: Array.isArray(ledger.sourceStructuralAnchors)
+        ? ledger.sourceStructuralAnchors as Array<Record<string, unknown>>
+        : [],
+    },
+  ];
+}
+
+function updateLedgerBucket(ledger: Record<string, unknown>, bucket: { key: string; records: Array<Record<string, unknown>> }): void {
+  ledger[bucket.key] = bucket.records;
+}
+
+/** Targeted critic repair for text/source-anchor exactText drift. The repair
+ * uses the same scorer as canonical-anchor registration; it only rewrites the
+ * ledger when the source passage reaches register-grade evidence. Unsupported
+ * anchors remain blocking for the critic instead of being papered over. */
+export function repairCriticSourceAnchorExactText(
+  gardenDir: string,
+  slug: string | undefined,
+  input: CriticTextAnchorExactTextRepairInput,
+): TargetedCriticRepairResult {
+  const result: TargetedCriticRepairResult = { changed: [], notes: [], resolved: false };
+  const ids = [...new Set((input.sourceAnchorIds ?? []).map((id) => String(id).trim()).filter(Boolean))];
+  if (ids.length === 0) return result;
+
+  const bd = path.join(gardenDir, ".breadboard");
+  const anchorPath = path.join(bd, "source-anchors.json");
+  const ledger = readJson<Record<string, unknown>>(anchorPath, {});
+  const buckets = ledgerAnchorBuckets(ledger);
+  const paragraphs = sourceParagraphsWithSource(gardenDir);
+  if (paragraphs.length === 0) {
+    result.notes.push("no source paragraphs available for exactText repair");
+    return result;
+  }
+
+  let state = buildFinalGardenState(gardenDir, slug);
+  let ledgerChanged = false;
+  for (const id of ids) {
+    const bucket = buckets.find((candidate) => candidate.records.some((record) => String(record.id ?? "") === id));
+    const record = bucket?.records.find((candidate) => String(candidate.id ?? "") === id);
+    const canonical = state.sourceAnchors[id];
+    if (!record || !bucket || !canonical) {
+      result.notes.push(`source anchor ${id} is not a ledger text/structural anchor`);
+      continue;
+    }
+    if (canonical.kind === "formula" || canonical.kind === "figure" || canonical.kind === "table" || canonical.kind === "graph") {
+      result.notes.push(`source anchor ${id} is a ${canonical.kind} anchor, not a text exactText repair target`);
+      continue;
+    }
+
+    const keywords = (Array.isArray(record.conceptKeywords) ? record.conceptKeywords.map(String) : canonical.conceptKeywords ?? semanticAnchorKeywords(id))
+      .map((keyword) => keyword.toLowerCase())
+      .filter((keyword) => keyword.length >= 3 && !SEMANTIC_ANCHOR_STOPWORDS.has(keyword));
+    const requestedPage = Number.isFinite(Number(record.page)) ? Number(record.page) : canonical.page ?? semanticAnchorPage(id);
+    const score = scoreAnchorEvidence({
+      anchorId: id,
+      title: String(record.title ?? canonical.title ?? id),
+      kind: (String(record.kind ?? canonical.kind) as CanonicalSourceAnchorKind) || canonical.kind,
+      conceptKeywords: keywords,
+      sourceId: String(record.sourceId ?? canonical.sourceId ?? ""),
+      requestedPage,
+      paragraphs,
+    });
+
+    if (score.decision === "register" && score.exactText.trim()) {
+      const current = typeof record.exactText === "string" ? record.exactText.trim() : "";
+      record.exactText = score.exactText;
+      record.page = score.matchedPage ?? requestedPage;
+      record.sourceId = score.sourceId || record.sourceId || canonical.sourceId;
+      record.semanticSummary = `Source page ${score.matchedPage ?? record.page ?? "?"} supports ${score.keywordHits.join(", ") || String(record.title ?? id)}.`;
+      record.conceptKeywords = keywords.length ? keywords : semanticAnchorKeywords(id);
+      record.confidence = score.confidence;
+      record.evidence = evidenceFromScore(score);
+      updateLedgerBucket(ledger, bucket);
+      ledgerChanged = true;
+      result.resolved = true;
+      result.notes.push(current === score.exactText.trim()
+        ? `confirmed exactText for ${id} with ${score.confidence} evidence`
+        : `replaced exactText for ${id} with source page ${score.matchedPage ?? "?"} passage (${score.confidence}, score ${score.totalScore})`);
+      continue;
+    }
+
+    const replacement = pickStrongerExistingAnchor(
+      id,
+      keywords.length ? keywords : semanticAnchorKeywords(id),
+      requestedPage,
+      String(record.sourceId ?? canonical.sourceId ?? score.sourceId ?? ""),
+      state.sourceAnchors,
+      score.confidence,
+    );
+    if (replacement) {
+      const changed = replaceAnchorReference(gardenDir, slug, id, replacement);
+      removeUnusedAnchorRecord(gardenDir, slug, id);
+      result.changed.push(...changed.filter((rel) => !result.changed.includes(rel)));
+      result.resolved = true;
+      result.notes.push(`replaced weak text anchor ${id} with stronger canonical anchor ${replacement}`);
+      state = buildFinalGardenState(gardenDir, slug);
+    } else {
+      result.notes.push(`kept ${id} blocking: best source passage scored ${score.totalScore} (${score.confidence})`);
+    }
+  }
+
+  if (ledgerChanged) {
+    for (const bucket of buckets) updateLedgerBucket(ledger, bucket);
+    fs.writeFileSync(anchorPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+    if (!result.changed.includes(".breadboard/source-anchors.json")) result.changed.push(".breadboard/source-anchors.json");
+  }
+  return result;
 }
 
 /** Remove failed-repair debug artifacts from a production export (Fix 13). */

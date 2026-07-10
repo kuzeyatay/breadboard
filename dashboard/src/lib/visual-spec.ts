@@ -140,6 +140,28 @@ const MAX_SPEC_CHARS = 40000
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/
 const CONTROL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/
 const CONTROL_TYPES = new Set(["slider", "toggle", "select"])
+const GENERIC_ANCHOR_LABEL_RE = /\b(?:source|general|provided|context|notes?|discussion|limitations?|method|formula|caption|captions?|map|learning)\b/i
+const CAVEAT_ANCHOR_LABEL_RE = /\b(?:caveat|caveats|not fully available|not available|missing|omitted|deferred|excluded|limitation|limitations|supplied results)\b/i
+
+function isPlausibleVisualSourceAnchorId(value: string): boolean {
+  const id = String(value ?? "").trim()
+  if (!id || /\s/.test(id)) return false
+  if (/^S\d+\.P\d+\.(?:E|F|G|T)\d+$/i.test(id)) return true
+  if (/^S\d+\.P\d+\.[A-Za-z0-9][A-Za-z0-9_.-]*$/i.test(id)) return true
+  if (/^text-[A-Za-z0-9][A-Za-z0-9_.-]*-[A-Za-z0-9][A-Za-z0-9_.-]*$/i.test(id)) return true
+  if (/^scopeContract\.(?:excluded|deferred|included|guidance)$/i.test(id)) return true
+  return false
+}
+
+function rejectedVisualSourceAnchorReason(value: string): string {
+  const raw = String(value ?? "").trim()
+  if (!raw) return "invalid_format"
+  const lower = raw.toLowerCase()
+  if (CAVEAT_ANCHOR_LABEL_RE.test(lower)) return "planning_caveat"
+  if (GENERIC_ANCHOR_LABEL_RE.test(lower)) return "generic_label"
+  if (/\s/.test(raw)) return "not_anchor_id"
+  return "invalid_format"
+}
 
 /** Anything that could smuggle executable behavior through a string field. */
 const FORBIDDEN_PATTERN =
@@ -229,13 +251,24 @@ function sanitizeSourceAnchors(value: unknown, errors: string[]): SourceAnchor[]
     const roleRaw = safeString(raw.role, "sourceAnchors.role", errors, 40)
     const reason = safeString(raw.reason, "sourceAnchors.reason", errors, 500)
     const page = finiteNumber(raw.page)
+    const checkedAnchorId = (candidate: string | undefined, field: string): string | undefined => {
+      if (!candidate) return undefined
+      if (isPlausibleVisualSourceAnchorId(candidate)) return candidate
+      errors.push(`${field} "${candidate}" is not a valid source-anchor ID (${rejectedVisualSourceAnchorReason(candidate)})`)
+      return undefined
+    }
     if (sourceId) anchor.sourceId = sourceId
     if (sourceTitle) anchor.sourceTitle = sourceTitle
-    if (figureId) anchor.figureId = figureId
-    if (tableId) anchor.tableId = tableId
-    if (equationId) anchor.equationId = equationId
-    if (questionId) anchor.questionId = questionId
-    if (textAnchorId) anchor.textAnchorId = textAnchorId
+    const checkedFigureId = checkedAnchorId(figureId, "sourceAnchors.figureId")
+    const checkedTableId = checkedAnchorId(tableId, "sourceAnchors.tableId")
+    const checkedEquationId = checkedAnchorId(equationId, "sourceAnchors.equationId")
+    const checkedQuestionId = checkedAnchorId(questionId, "sourceAnchors.questionId")
+    const checkedTextAnchorId = checkedAnchorId(textAnchorId, "sourceAnchors.textAnchorId")
+    if (checkedFigureId) anchor.figureId = checkedFigureId
+    if (checkedTableId) anchor.tableId = checkedTableId
+    if (checkedEquationId) anchor.equationId = checkedEquationId
+    if (checkedQuestionId) anchor.questionId = checkedQuestionId
+    if (checkedTextAnchorId) anchor.textAnchorId = checkedTextAnchorId
     if (kindRaw && /^(definition|mechanism|method|limitation|application|recommendation|comparison|result_interpretation|concept)$/.test(kindRaw)) anchor.kind = kindRaw as SourceAnchor["kind"]
     if (title) anchor.title = title
     if (exactText) anchor.exactText = exactText

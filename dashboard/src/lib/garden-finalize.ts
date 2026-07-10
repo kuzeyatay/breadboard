@@ -336,6 +336,7 @@ export interface LearningUnitRepairRunReport {
   changedFiles: string[];
   contractChangedFiles?: Array<{ file: string; affectedUnits: string[] }>;
   finalizerChangedFiles?: string[];
+  finalizerNotes?: string[];
   semanticFinalizerActions: FinalizerAction[];
   firstValidationFailures: string[];
   finalValidationFailures: string[];
@@ -2185,6 +2186,12 @@ function writeRepairArtifacts(gardenDir: string, report: LearningUnitRepairRunRe
       ? (report.finalizerChangedFiles ?? []).map((file) => `- ${file}`)
       : ["- None."]),
     "",
+    "## Finalizer Notes",
+    "",
+    ...((report.finalizerNotes ?? []).length > 0
+      ? (report.finalizerNotes ?? []).slice(0, 200).map((note) => `- ${note}`)
+      : ["- None."]),
+    "",
     "## Semantic Finalizer Actions",
     "",
     ...(report.semanticFinalizerActions.length > 0
@@ -2670,6 +2677,11 @@ export async function repairLearningUnitsFromContract({
     readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []),
     repairReport,
   );
+  {
+    const reconcile = reconcileFinalGardenState(gardenDir, gardenSlug);
+    for (const rel of reconcile.changed) if (!repairReport.changed.includes(rel)) repairReport.changed.push(rel);
+    for (const note of reconcile.notes) repairReport.notes.push(note);
+  }
   const finalChecks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
   const finalPageByRel = new Map(loadLearnerPages(gardenDir).map((page) => [page.rel, page]));
   const changedFiles = [...new Set(repairReport.changed.filter((file) => !changedBefore.has(file)))].sort();
@@ -2726,6 +2738,7 @@ export async function repairLearningUnitsFromContract({
     changedFiles,
     contractChangedFiles,
     finalizerChangedFiles,
+    finalizerNotes: repairReport.notes,
     semanticFinalizerActions: semanticFailureActionsForRequests(requests),
     firstValidationFailures: validationFailuresFromChecks(firstChecks),
     finalValidationFailures: validationFailuresFromChecks(finalChecks),
@@ -2821,6 +2834,7 @@ export function verifyFinalArtifactNoMutation({
       changedFiles: [],
       contractChangedFiles: [],
       finalizerChangedFiles: [],
+      finalizerNotes: [],
       semanticFinalizerActions: [],
       firstValidationFailures: [],
       finalValidationFailures: validationFailures,

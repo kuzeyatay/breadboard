@@ -20,6 +20,8 @@ import {
   repeatedOpeningFindings,
   generateSectionSummary,
   isTemplateSectionSummary,
+  isPlausibleSourceAnchorId,
+  sanitizeSourceAnchorIds,
 } from "../src/lib/final-garden-state.ts";
 
 const REAL_GARDEN = fileURLToPath(new URL("../../quartz/content/test-2", import.meta.url));
@@ -54,6 +56,80 @@ function audit(dir) {
   return auditFinalGardenState(buildFinalGardenState(dir, "test-2"));
 }
 
+function parseArrayFromFrontmatter(markdown, key) {
+  const match = markdown.match(new RegExp(`^${key}:\\s*\\[([^\\]]*)\\]`, "m"));
+  if (!match) return [];
+  return [...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]);
+}
+
+function tinyAnchorGarden({ invalid = "source caveats", valid = "S1.P1.energy-bottleneck" } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-anchor-label-"));
+  const dir = path.join(root, "test-2");
+  fs.mkdirSync(path.join(dir, ".breadboard", "planning"), { recursive: true });
+  fs.mkdirSync(path.join(dir, ".breadboard", "visuals"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "learning", "1. Intro"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".breadboard", "source-anchors.json"), JSON.stringify({ sourceTextConceptAnchors: [], sourceStructuralAnchors: [] }, null, 2) + "\n");
+  fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]\n");
+  fs.writeFileSync(path.join(dir, "sources", "paper.md"), `---
+title: "Paper"
+sourceId: "S1"
+---
+
+# Page 1
+
+Energy bottleneck limits neuromorphic deployment because low-power systems must reduce energy consumption while preserving useful accuracy. This paragraph gives direct source text for the energy bottleneck concept in spiking neural networks.
+`);
+  fs.writeFileSync(path.join(dir, "learning", "_index.md"), `---
+title: "Learning"
+---
+
+# Learning
+`);
+  fs.writeFileSync(path.join(dir, "learning", "1. Intro", "_index.md"), `---
+title: "1. Intro"
+---
+
+# 1. Intro
+`);
+  fs.writeFileSync(path.join(dir, "learning", "1. Intro", "1.1 Limits.md"), `---
+title: "Limits"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generated_by: "learn_button"
+learningUnitId: "U18"
+learningUnitRole: "limitation"
+tags: []
+sourceAnchors: ["${invalid}", "${valid}"]
+sourceFormulaAnchors: []
+sourceVisualIds: []
+visualIds: []
+---
+
+The supplied results have limits, but energy bottlenecks are the real source-grounded concept.
+`);
+  fs.writeFileSync(path.join(dir, ".breadboard", "learning-unit-contract.json"), JSON.stringify({
+    learningUnits: [{
+      id: "U18",
+      title: "Limits",
+      role: "limitation",
+      sourceAnchors: [invalid, valid],
+      sourceFigures: [],
+      sourceFormulas: [],
+      sourceTables: [],
+      prerequisiteConcepts: [],
+      newConcepts: ["limits"],
+      zettelNotes: [
+        { handle: "limits-bound-source-claims", claim: "Limits bound source claims.", connectedTo: [] },
+        { handle: "energy-bottlenecks-shape-deployment", claim: "Energy bottlenecks shape deployment.", connectedTo: [] },
+        { handle: "caveats-do-not-ground-evidence", claim: "Caveats do not ground evidence.", connectedTo: [] },
+      ],
+    }],
+    sourceArtifactAssignments: [],
+  }, null, 2) + "\n");
+  return { dir, pageRel: "learning/1. Intro/1.1 Limits.md", invalid, valid };
+}
+
 /** All learner (subsection) page rels. */
 function learnerPages(dir) {
   const out = [];
@@ -67,6 +143,60 @@ function learnerPages(dir) {
   walk(path.join(dir, "learning"), "");
   return out.sort();
 }
+
+describe("source anchor label sanitization", () => {
+  test("invalid source anchor label fails shape validation", () => {
+    assert.equal(isPlausibleSourceAnchorId("S1.P6.E5"), true);
+    assert.equal(isPlausibleSourceAnchorId("S1.P1.energy-bottleneck"), true);
+    assert.equal(isPlausibleSourceAnchorId("text-2510-27379v1-spike-timing-dependent-plasticity"), true);
+    assert.equal(isPlausibleSourceAnchorId("source caveats"), false);
+    const sanitized = sanitizeSourceAnchorIds(["source caveats", "S1.P1.energy-bottleneck"]);
+    assert.deepEqual(sanitized.acceptedAnchorIds, ["S1.P1.energy-bottleneck"]);
+    assert.equal(sanitized.rejectedLabels[0].reason, "planning_caveat");
+  });
+
+  test("invalid label is removed from page and contract and moved to sourceCaveats", () => {
+    const { dir, pageRel } = tinyAnchorGarden();
+    const before = audit(dir);
+    assert.ok(before.byRule.invalid_anchor_label?.some((p) => p.includes("source caveats")), "invalid label is reported separately");
+    assert.ok(before.byRule.anchor_resolution?.some((p) => p.includes("S1.P1.energy-bottleneck")), "valid missing anchor remains a registry problem");
+
+    reconcileFinalGardenState(dir, "test-2");
+    const page = read(dir, pageRel);
+    assert.doesNotMatch(page, /sourceAnchors: \[[^\]]*source caveats/);
+    assert.match(page, /sourceCaveats: \["source caveats"\]/);
+    const contract = readJson(dir, ".breadboard/learning-unit-contract.json");
+    const unit = contract.learningUnits.find((u) => u.id === "U18");
+    assert.ok(!unit.sourceAnchors.includes("source caveats"));
+    assert.ok(unit.sourceCaveats.includes("source caveats"));
+  });
+
+  test("invalid label is not registered as a canonical anchor", () => {
+    const { dir } = tinyAnchorGarden();
+    const anchors = readJson(dir, ".breadboard/source-anchors.json");
+    anchors.sourceStructuralAnchors.push({ id: "source caveats", kind: "guidance", sourceId: "S1", title: "Source caveats", semanticSummary: "Bad label." });
+    writeJson(dir, ".breadboard/source-anchors.json", anchors);
+    const before = audit(dir);
+    assert.ok(before.byRule.invalid_anchor_label?.some((p) => p.includes("registry") && p.includes("source caveats")));
+
+    reconcileFinalGardenState(dir, "test-2");
+    const afterLedger = readJson(dir, ".breadboard/source-anchors.json");
+    assert.ok(!(afterLedger.sourceStructuralAnchors ?? []).some((a) => a.id === "source caveats"));
+    assert.equal(buildFinalGardenState(dir, "test-2").sourceAnchors["source caveats"], undefined);
+  });
+
+  test("valid generated semantic anchor still registers from source evidence", () => {
+    const { dir, valid } = tinyAnchorGarden();
+    reconcileFinalGardenState(dir, "test-2");
+    const state = buildFinalGardenState(dir, "test-2");
+    assert.ok(state.sourceAnchors[valid], "valid generated semantic anchor registered");
+    assert.equal(state.sourceAnchors[valid].confidence === "medium" || state.sourceAnchors[valid].confidence === "high", true);
+    assert.equal(state.sourceAnchors["source caveats"], undefined);
+    const after = audit(dir);
+    assert.ok(!(after.byRule.invalid_anchor_label ?? []).length, "invalid labels cleared");
+    assert.ok(!(after.byRule.anchor_resolution ?? []).some((p) => p.includes(valid)), "valid anchor resolves");
+  });
+});
 
 describe("FinalGardenState canonical audit — state-drift regressions", { skip }, () => {
   test("baseline reconciled garden passes the audit", () => {
@@ -139,7 +269,7 @@ describe("FinalGardenState canonical audit — state-drift regressions", { skip 
     assert.ok(!(audit(dir).byRule.anchor_resolution ?? []).some((p) => p.includes("S9.P9.Z9")), "registered anchor resolves");
   });
 
-  test("3b. bare source-document slug references are reconciled into structural anchors", () => {
+  test("3b. bare source-document slug references are rejected as invalid anchor labels", () => {
     const dir = freshCopy();
     const sourceName = fs.readdirSync(path.join(dir, "sources")).find((name) => name.endsWith(".md") && name !== "_index.md");
     assert.ok(sourceName, "expected a source document");
@@ -165,13 +295,21 @@ describe("FinalGardenState canonical audit — state-drift regressions", { skip 
     writeJson(dir, ".breadboard/learning-unit-contract.json", contract);
 
     const before = audit(dir);
-    assert.ok(before.byRule.anchor_resolution?.some((p) => p.includes(sourceSlug)), "audit should flag the unregistered source document slug");
+    assert.ok(before.byRule.invalid_anchor_label?.some((p) => p.includes(sourceSlug)), "audit should flag the bare source document slug as an invalid anchor label");
 
     reconcileFinalGardenState(dir, "test-2");
     const state = buildFinalGardenState(dir, "test-2");
-    assert.ok(state.sourceAnchors[sourceSlug], "source document slug should be registered as a canonical anchor");
-    assert.equal(state.sourceAnchors[sourceSlug].kind, "guidance");
-    assert.ok(!(audit(dir).byRule.anchor_resolution ?? []).some((p) => p.includes(sourceSlug)), "reconciled source document slug resolves");
+    assert.equal(state.sourceAnchors[sourceSlug], undefined, "source document slug should not be registered as a canonical anchor");
+    const repairedPage = read(dir, page);
+    const repairedPageAnchors = parseArrayFromFrontmatter(repairedPage, "sourceAnchors");
+    const repairedContract = readJson(dir, ".breadboard/learning-unit-contract.json");
+    const repairedUnit = repairedContract.learningUnits.find((candidate) => candidate.id === unitId);
+    assert.ok(repairedUnit, "expected repaired matching contract unit");
+    assert.ok(!repairedPageAnchors.includes(sourceSlug), "reconcile removes the bare slug from page sourceAnchors");
+    assert.ok(!(repairedUnit.sourceAnchors ?? []).includes(sourceSlug), "reconcile removes the bare slug from contract sourceAnchors");
+    const after = audit(dir);
+    assert.ok(!(after.byRule.invalid_anchor_label ?? []).some((p) => p.includes(sourceSlug)), "reconciled bare source document slug is gone");
+    assert.ok(!(after.byRule.anchor_resolution ?? []).some((p) => p.includes(sourceSlug)), "reconciled bare source document slug does not appear as an unresolved canonical anchor");
   });
 
   // 4. Page uses a real anchor its unit's contract does not sanction.

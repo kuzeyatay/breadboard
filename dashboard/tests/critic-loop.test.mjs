@@ -20,6 +20,7 @@ import {
   computeIssueResolutions,
   parseModelRepairOutput,
   DEFAULT_CRITIC_LOOP_OPTIONS,
+  writeCriticReports,
 } from "../src/lib/critic-loop.ts";
 import { buildFinalGardenState } from "../src/lib/final-garden-state.ts";
 
@@ -58,6 +59,20 @@ const issue = (over) => ({
   ...over,
 });
 
+function mkTinyGarden(prefix = "bb-critic-tiny-") {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = path.join(root, "test-2");
+  fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "learning", "1. Metrics"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".breadboard", "source-anchors.json"), JSON.stringify({
+    sourceTextConceptAnchors: [],
+    sourceStructuralAnchors: [],
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]\n");
+  return dir;
+}
+
 /** A critic that returns a fixed set of issues on every round. */
 const constantCritic = (issues) => () => issues;
 /** A critic that returns issues[round-1] (empty after list exhausts). */
@@ -69,6 +84,213 @@ function statefulCritic(perRound) {
 const noopRepair = () => ({ attempted: 0, resolved: 0 });
 /** Repair that reports it attempted the requests but resolved none. */
 const countingRepair = (calls) => (dir, slug, requests) => { calls.push(requests); return { attempted: requests.length, resolved: 0 }; };
+
+describe("targeted critic metadata repairs", () => {
+  test("worked_example_misclassified repairs metadata and inserts symbolic source definition", async () => {
+    const dir = mkTinyGarden();
+    const pageRel = "learning/1. Metrics/1.1 Efficiency.md";
+    fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), JSON.stringify([
+      {
+        sourceVisualId: "S1.P6.E5",
+        type: "equation",
+        caption: "Normalized energy efficiency equals accuracy divided by energy.",
+        pageNumber: 6,
+        sourceId: "S1",
+      },
+    ], null, 2) + "\n");
+    fs.writeFileSync(path.join(dir, ...pageRel.split("/")), `---
+title: "Efficiency"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generated_by: "learn_button"
+learningUnitId: "U1"
+sourceAnchors: []
+sourceFormulaAnchors: ["S1.P6.E5"]
+tags: []
+formulas:
+  - kind: "source_definition"
+    text: "\\eta = \\frac{97.8}{15} \\approx 6.52"
+    groundingStatus: "source-anchored"
+    sourceAnchor: "S1.P6.E5"
+    sourceAnchorTitle: "Normalized efficiency"
+---
+
+Numeric efficiency example.
+`);
+    const bad = issue({
+      id: "wk1",
+      type: "worked_example_misclassified",
+      repairTarget: "unit_page",
+      pagePath: pageRel,
+      sourceAnchorIds: ["S1.P6.E5"],
+      evidence: 'formulas[0] stores "\\eta = \\frac{97.8}{15} \\approx 6.52" as source_definition',
+      suggestedRepair: "Move numeric arithmetic to worked_example and keep a symbolic source definition for S1.P6.E5.",
+    });
+    const requests = criticIssuesToRepairRequests([bad]);
+    assert.equal(requests[0].formulaKindRepairs.length, 1);
+
+    const repair = makeCriticArtifactRepair({ deterministicFinalize: () => {} });
+    const outcome = await repair(dir, "test-2", requests, { round: 1, issuesById: new Map([[bad.id, bad]]) });
+    assert.ok(outcome.provenance.some((p) => p.executorUsed === "deterministic" && p.changed));
+
+    const md = read(dir, pageRel);
+    assert.match(md, /kind: "source_definition"[\s\S]*sourceAnchor: "S1\.P6\.E5"/);
+    assert.match(md, /\\\\eta_\{\\\\text\{efficiency\}\} = \\\\frac\{\\\\text\{Accuracy\}\}\{E_\{\\\\text\{energy\}\}\}/);
+    const worked = md.match(/- kind: "worked_example"[\s\S]*?(?=\n  - kind:|\n---)/)?.[0] ?? "";
+    assert.match(worked, /basedOnFormula: "S1\.P6\.E5"/);
+    assert.doesNotMatch(worked, /sourceAnchor:/);
+  });
+
+  test("source_anchor_mismatch repairs wrong exactText from source prose", async () => {
+    const dir = mkTinyGarden();
+    const pageRel = "learning/1. Metrics/1.1 Hardware.md";
+    const wrong = "Leaky integrate-and-fire neurons accumulate membrane potential until a threshold creates a spike event.";
+    const right = "Neuromorphic hardware uses event-driven chips and specialized hardware circuits to run spiking neural networks with low-power asynchronous computation near the sensor.";
+    fs.writeFileSync(path.join(dir, "sources", "paper.md"), `---
+title: "SNN Paper"
+sourceId: "S1"
+---
+
+# Page 2
+
+${wrong}
+
+${right}
+`);
+    fs.writeFileSync(path.join(dir, ".breadboard", "source-anchors.json"), JSON.stringify({
+      sourceTextConceptAnchors: [
+        {
+          id: "S1.P2.NeuromorphicHardware",
+          title: "Neuromorphic hardware",
+          page: 2,
+          sourceId: "S1",
+          semanticSummary: "The source explains neuromorphic hardware for SNN deployment.",
+          exactText: wrong,
+          conceptKeywords: ["neuromorphic", "hardware"],
+        },
+      ],
+      sourceStructuralAnchors: [],
+    }, null, 2) + "\n");
+    fs.writeFileSync(path.join(dir, ...pageRel.split("/")), `---
+title: "Hardware"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generated_by: "learn_button"
+learningUnitId: "U1"
+sourceAnchors: ["S1.P2.NeuromorphicHardware"]
+sourceFormulaAnchors: []
+tags: []
+---
+
+Hardware paragraph.
+`);
+    const bad = issue({
+      id: "sa1",
+      type: "source_anchor_mismatch",
+      repairTarget: "source_anchor_ledger",
+      sourceAnchorIds: ["S1.P2.NeuromorphicHardware"],
+      problem: "text anchor exactText quotes a LIF passage instead of neuromorphic hardware.",
+      evidence: wrong,
+      suggestedRepair: "Replace exactText with the relevant source passage.",
+    });
+    const requests = criticIssuesToRepairRequests([bad]);
+    assert.equal(requests[0].textAnchorExactTextRepairs.length, 1);
+
+    const repair = makeCriticArtifactRepair({ deterministicFinalize: () => {} });
+    await repair(dir, "test-2", requests, { round: 1, issuesById: new Map([[bad.id, bad]]) });
+    const ledger = JSON.parse(read(dir, ".breadboard/source-anchors.json"));
+    const rec = ledger.sourceTextConceptAnchors.find((a) => a.id === "S1.P2.NeuromorphicHardware");
+    assert.match(rec.exactText, /Neuromorphic hardware uses event-driven chips/);
+    assert.doesNotMatch(rec.exactText, /membrane potential/);
+    assert.ok(rec.evidence.totalScore >= 0.5);
+  });
+
+  test("critic reports downgrade validation Accepted when critic blockers remain", () => {
+    const dir = mkTinyGarden("bb-critic-report-");
+    fs.writeFileSync(path.join(dir, ".breadboard", "validation-report.md"), [
+      "# Breadboard Validation Report",
+      "",
+      "Accepted: yes",
+      "",
+      "## Acceptance Decision",
+      "",
+      "Accepted: yes",
+      "",
+      "## Final Acceptance",
+      "",
+      "Accepted: yes",
+      "",
+    ].join("\n"));
+    const blocking = [issue({
+      id: "b1",
+      type: "source_anchor_mismatch",
+      repairTarget: "source_anchor_ledger",
+      sourceAnchorIds: ["S1.P2.NeuromorphicHardware"],
+      problem: "wrong exactText",
+      expected: "relevant exact source passage",
+      suggestedRepair: "replace exactText or keep blocked",
+    })];
+    writeCriticReports(dir, {
+      status: {
+        draftGenerated: true,
+        accepted: false,
+        publishReady: false,
+        lifecycleStatus: "needs_review",
+        deterministicPass: true,
+        criticRequired: true,
+        criticAvailable: true,
+        criticRan: true,
+        criticPass: false,
+        criticAvailabilityStatus: "available",
+        unresolvedBlockingIssues: blocking,
+        warnings: [],
+        repairRoundsUsed: 1,
+        reason: "unresolved_critic_issues",
+      },
+      rounds: [],
+      finalBlockingIssues: blocking,
+      finalWarnings: [],
+    });
+    const validation = read(dir, ".breadboard/validation-report.md");
+    assert.doesNotMatch(validation, /^Accepted:\s+yes\s*$/m);
+    assert.match(validation, /Deterministic validation: pass/);
+    assert.match(validation, /Overall accepted: no/);
+    const criticReport = read(dir, ".breadboard/critic-report.md");
+    assert.match(criticReport, /## Unresolved blocking issues/);
+    assert.match(criticReport, /\| Type \| Target \| Anchors \| Problem \| Expected \| Suggested repair \|/);
+  });
+
+  test("model repair candidate cannot add invalid source anchor labels", async () => {
+    const dir = mkTinyGarden("bb-critic-invalid-anchor-");
+    const pageRel = "learning/1. Metrics/1.1 Invalid.md";
+    const original = `---
+title: "Invalid"
+knowledge_type: "learning-page"
+breadboardType: "learning_page"
+generated_by: "learn_button"
+learningUnitId: "U1"
+sourceAnchors: []
+sourceFormulaAnchors: []
+tags: []
+---
+
+Original body.
+`;
+    fs.writeFileSync(path.join(dir, ...pageRel.split("/")), original);
+    const revised = original.replace("sourceAnchors: []", 'sourceAnchors: ["source caveats"]');
+    const bad = issue({ id: "m1", type: "repeated_opening", repairTarget: "unit_page", pagePath: pageRel });
+    const repair = makeCriticArtifactRepair({
+      modelRepair: (input) => ({ targetPath: input.repairRequest.targetPath, revisedMarkdown: revised }),
+      deterministicFinalize: () => {},
+    });
+    const outcome = await repair(dir, "test-2", criticIssuesToRepairRequests([bad]), { round: 1, issuesById: new Map([[bad.id, bad]]) });
+    const provenance = outcome.provenance.find((p) => p.targetPath === pageRel);
+    assert.equal(provenance.executorUsed, "deterministic");
+    assert.equal(provenance.changed, false);
+    assert.match(provenance.modelFailureReason ?? "", /no valid candidate/);
+    assert.equal(read(dir, pageRel), original);
+  });
+});
 
 describe("ChatMock critic loop", { skip }, () => {
   const opts = { maxRounds: 3, maxIssuesPerRound: 12, maxTotalRepairAttempts: 25, strictPublish: true };
