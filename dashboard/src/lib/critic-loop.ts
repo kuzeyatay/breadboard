@@ -25,6 +25,7 @@ import {
   repairCriticWorkedExampleMisclassification,
   sanitizeSourceAnchorIds,
   unresolvedLowConfidenceAnchorIds,
+  verifySourceTextRelevance,
   type AnchorConfirmationPacket,
   type AnchorCriticDecision,
   type AppliedAnchorDecision,
@@ -110,23 +111,44 @@ export interface TextAnchorExactTextRepairRequest {
   problem?: string;
 }
 
+/** A formula sent to the critic — NEVER truncated (Fix 1). */
+export interface CriticFormulaRecord {
+  kind: "source_definition" | "source_derived_definition" | "worked_example" | "conceptual_helper";
+  text: string;
+  sourceAnchor?: string;
+  basedOnFormula?: string;
+  packetTruncated: false;
+  fullLength: number;
+}
+
+/** Any other large field, with truncation made EXPLICIT (Fix 2). */
+export interface CriticExcerpt {
+  text: string;
+  fullLength: number;
+  packetTruncated: boolean;
+  truncationReason?: "token_budget" | "excerpt_limit";
+  sourcePath?: string;
+  startOffset?: number;
+  endOffset?: number;
+}
+
 export interface CriticReviewPacket {
   gardenTitle: string;
   sections: Array<{
     title: string;
-    indexExcerpt: string;
+    indexExcerpt: CriticExcerpt;
     pages: Array<{
       path: string;
       title: string;
-      openingExcerpt: string;
+      openingExcerpt: CriticExcerpt;
       frontmatterSummary: {
         sourceAnchors: string[];
         sourceFormulaAnchors: string[];
-        formulas: unknown[];
+        formulas: CriticFormulaRecord[];
         tags: string[];
         visuals: string[];
       };
-      bodyExcerpts: string[];
+      bodyExcerpts: CriticExcerpt[];
     }>;
   }>;
   sourceAnchors: Array<{
@@ -134,8 +156,9 @@ export interface CriticReviewPacket {
     kind: string;
     title: string;
     semanticSummary: string;
-    exactText?: string;
+    exactText?: CriticExcerpt;
     formulaFamily?: string;
+    confidence?: string;
   }>;
   visualSummaries: Array<{
     id: string;
@@ -145,8 +168,20 @@ export interface CriticReviewPacket {
     sourceAnchors: string[];
     anchorRoles?: unknown[];
   }>;
-  sourceCoverageSummary: string;
+  sourceCoverageSummary: CriticExcerpt;
   deterministicValidationSummary: string;
+  /** Global note reminding the critic that packetTruncated:true is an excerpt. */
+  evidenceNote: string;
+}
+
+/** Result of independently verifying a critic issue against full state (Fix 3). */
+export interface CriticIssueVerificationResult {
+  issueId: string;
+  verified: boolean;
+  severity: "confirmed_blocking" | "confirmed_warning" | "unsupported" | "insufficient_evidence";
+  checkedFiles: string[];
+  fullStateEvidence?: string[];
+  reason: string;
 }
 
 export interface CriticLoopOptions {
@@ -234,6 +269,14 @@ export interface CriticRoundRecord {
   resolutions: CriticIssueResolution[];
   provenance: RepairProvenanceRecord[];
   anchorDecisions?: AppliedAnchorDecision[];
+  /** Fix 6: critic-issue verification accounting for this round. */
+  reportedIssues?: number;
+  verifiedBlockingIssues?: number;
+  verifiedWarnings?: number;
+  unsupportedIssues?: number;
+  insufficientEvidenceIssues?: number;
+  issueVerifications?: CriticIssueVerificationResult[];
+  falsePositives?: Array<{ issue: CriticIssue; verification: CriticIssueVerificationResult }>;
 }
 
 /** Stable id prefix marking a deterministic low-confidence anchor issue, so it
@@ -319,10 +362,43 @@ function firstProseParagraphs(body: string, count: number): string[] {
     .slice(0, count);
 }
 
-function frontmatterFormulaSummaries(state: FinalGardenState, pageRel: string): unknown[] {
+/** Wrap a possibly-truncated string with explicit truncation metadata (Fix 2). */
+function makeExcerpt(full: string, limit: number, opts: { sourcePath?: string; reason?: "token_budget" | "excerpt_limit" } = {}): CriticExcerpt {
+  const text = String(full ?? "");
+  const truncated = text.length > limit;
+  return {
+    text: truncated ? text.slice(0, limit) : text,
+    fullLength: text.length,
+    packetTruncated: truncated,
+    ...(truncated ? { truncationReason: opts.reason ?? "excerpt_limit", startOffset: 0, endOffset: limit } : {}),
+    ...(opts.sourcePath ? { sourcePath: opts.sourcePath } : {}),
+  };
+}
+
+const CRITIC_FORMULA_KINDS = new Set(["source_definition", "source_derived_definition", "worked_example", "conceptual_helper"]);
+
+/** Full formula records for the critic — never truncated (Fix 1). */
+function criticFormulaRecords(state: FinalGardenState, pageRel: string): CriticFormulaRecord[] {
   return state.formulas
     .filter((f) => f.pageRel === pageRel)
-    .map((f) => ({ kind: f.declaredKind || f.structuralKind, text: f.text.slice(0, 80), sourceAnchor: f.sourceAnchor, basedOnFormula: f.basedOnFormula }));
+    .map((f) => {
+      const declared = String(f.declaredKind ?? "");
+      const kind = (CRITIC_FORMULA_KINDS.has(declared)
+        ? declared
+        : f.structuralKind === "worked_example"
+          ? "worked_example"
+          : f.structuralKind === "definition"
+            ? "source_definition"
+            : "conceptual_helper") as CriticFormulaRecord["kind"];
+      return {
+        kind,
+        text: f.text, // full LaTeX, exact, never sliced
+        sourceAnchor: f.sourceAnchor,
+        basedOnFormula: f.basedOnFormula,
+        packetTruncated: false as const,
+        fullLength: f.text.length,
+      };
+    });
 }
 
 function summarizeAudit(audit: FinalAuditResult): string {
@@ -347,21 +423,22 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
     .map(([dir, pages]) => {
       const section = sectionByDir.get(dir);
       const sortedPages = [...pages].sort((a, b) => a.subsectionNumber.localeCompare(b.subsectionNumber, undefined, { numeric: true }));
+      const indexFull = (section?.body ?? "").replace(/```[\s\S]*?```/g, " ").replace(/^#.*$/gm, " ").replace(/\s+/g, " ").trim();
       return {
         title: section?.title ?? dir.split("/").pop() ?? dir,
-        indexExcerpt: (section?.body ?? "").replace(/```[\s\S]*?```/g, " ").replace(/^#.*$/gm, " ").replace(/\s+/g, " ").trim().slice(0, 320),
+        indexExcerpt: makeExcerpt(indexFull, 320, { sourcePath: section?.rel }),
         pages: sortedPages.map((page) => ({
           path: page.rel,
           title: page.title,
-          openingExcerpt: firstProseParagraphs(page.body, 1).join(" ").slice(0, 400),
+          openingExcerpt: makeExcerpt(firstProseParagraphs(page.body, 1).join(" "), 400, { sourcePath: page.rel }),
           frontmatterSummary: {
             sourceAnchors: page.sourceAnchors,
             sourceFormulaAnchors: page.sourceFormulaAnchors,
-            formulas: frontmatterFormulaSummaries(state, page.rel),
+            formulas: criticFormulaRecords(state, page.rel),
             tags: page.tags,
             visuals: page.visualIds,
           },
-          bodyExcerpts: firstProseParagraphs(page.body, 3).map((p) => p.slice(0, 300)),
+          bodyExcerpts: firstProseParagraphs(page.body, 3).map((p) => makeExcerpt(p, 300, { sourcePath: page.rel })),
         })),
       };
     });
@@ -371,8 +448,9 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
     kind: a.kind,
     title: a.title,
     semanticSummary: a.semanticSummary ?? a.title,
-    exactText: a.exactText ? a.exactText.slice(0, 240) : undefined,
+    exactText: a.exactText ? makeExcerpt(a.exactText, 240) : undefined,
     formulaFamily: a.formulaFamily,
+    confidence: typeof a.confidence === "string" ? a.confidence : undefined,
   }));
 
   const visualSummaries = state.visuals.map((v) => ({
@@ -389,8 +467,9 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
     sections,
     sourceAnchors,
     visualSummaries,
-    sourceCoverageSummary: (state.planningDocs.sourceCoverage ?? "").replace(/^---[\s\S]*?---/, "").replace(/\s+/g, " ").trim().slice(0, 1200),
+    sourceCoverageSummary: makeExcerpt((state.planningDocs.sourceCoverage ?? "").replace(/^---[\s\S]*?---/, "").replace(/\s+/g, " ").trim(), 1200, { sourcePath: ".breadboard/planning/Source Coverage.md" }),
     deterministicValidationSummary: deterministicValidationSummary ?? summarizeAudit(audit),
+    evidenceNote: "Formulas are complete (packetTruncated:false). Any field with packetTruncated:true is only an excerpt — do NOT infer that the underlying garden artifact is truncated or malformed from where an excerpt ends; inspect the full FinalGardenState value before issuing a truncation blocker.",
   };
 }
 
@@ -399,6 +478,10 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
 // ---------------------------------------------------------------------------
 
 export const CRITIC_SYSTEM_PROMPT = `You are Breadboard's final semantic critic. You review the FINAL exported state of a generated learning garden and report only genuine semantic errors that deterministic validators cannot reliably judge.
+
+EVIDENCE TRUTHFULNESS (read first):
+- Formula records are COMPLETE (packetTruncated:false); their "text" is the full LaTeX. Never report a formula as truncated or malformed based on where a formula string appears to end.
+- A field marked packetTruncated:true is only an EXCERPT. Do NOT infer that the underlying garden artifact is truncated or malformed from the excerpt ending. Request or inspect the full FinalGardenState value (via its sourcePath) before issuing any truncation/malformed blocker.
 
 Deterministic validators already ran; do not re-report anything unless the final state truly contradicts itself or the source. Focus on MEANING, not field agreement:
 - Fields agreeing on a WRONG value is still an error (a page and its contract both citing the wrong source formula anchor is wrong).
@@ -485,6 +568,128 @@ export function parseCriticIssues(text: string): CriticIssue[] {
     });
   }
   return issues;
+}
+
+// ---------------------------------------------------------------------------
+// Independent critic-issue verification against full FinalGardenState (Fix 3/4)
+// ---------------------------------------------------------------------------
+
+/** Is a LaTeX formula string syntactically complete (balanced, no cut command)? */
+export function isFormulaSyntacticallyComplete(text: string): boolean {
+  const t = String(text ?? "").trim();
+  if (!t) return false;
+  let depth = 0;
+  for (const ch of t) {
+    if (ch === "{") depth += 1;
+    else if (ch === "}") { depth -= 1; if (depth < 0) return false; }
+  }
+  if (depth !== 0) return false;
+  if ((t.match(/\\left\b/g) ?? []).length !== (t.match(/\\right\b/g) ?? []).length) return false;
+  if (/\\$/.test(t)) return false;               // dangling backslash
+  if (/(\.\.\.|…)\s*$/.test(t)) return false;     // visible ellipsis cut
+  if (/\\[a-zA-Z]+\{[^}]*$/.test(t)) return false; // command with unclosed argument
+  return true;
+}
+
+const TRUNCATION_RE = /truncat|cut off|cut short|cutoff|incomplete|malformed|ends? abruptly|missing (?:the )?(?:rest|end|closing)|appears? (?:cut|shortened)|not complete/i;
+
+const DEFAULT_TEMPLATE_PHRASES = [
+  "introduces the core idea", "so the pieces connect into one picture", "one step at a time",
+  "connect into one picture", "brings the ideas together", "builds on the previous",
+];
+
+/**
+ * Fix 3/4: independently verify a critic issue against the FULL FinalGardenState
+ * before it can become a blocking repair request. Truncation/malformed claims are
+ * checked against complete formula/body text; other listed types get targeted
+ * deterministic checks. Types without a specific check are trusted (confirmed) so
+ * the critic is not weakened.
+ */
+export function verifyCriticIssueAgainstFinalState(issue: CriticIssue, state: FinalGardenState): CriticIssueVerificationResult {
+  const issueId = issue.id;
+  const confirmedSeverity = issue.severity === "warning" ? "confirmed_warning" : "confirmed_blocking";
+  const text = `${issue.problem} ${issue.evidence} ${issue.expected}`;
+  const mentionsTruncation = TRUNCATION_RE.test(text);
+  const pageFormulas = (rel?: string) => state.formulas.filter((f) => !rel || f.pageRel === rel);
+  const targetFiles = issue.pagePath ? [issue.pagePath] : issue.sectionPath ? [issue.sectionPath] : [];
+
+  // Deterministic anchor-evidence issues are already verified by the audit.
+  if (issue.id.startsWith(ANCHOR_EVIDENCE_ISSUE_PREFIX)) {
+    return { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: [".breadboard/source-anchors.json"], reason: "deterministic anchor-evidence issue (already verified by the final-state audit)" };
+  }
+
+  // Default when a check cannot locate its target: TRUST the critic (do not
+  // weaken it). Only affirmative counter-evidence downgrades an issue.
+  const trust = (checkedFiles: string[], reason: string): CriticIssueVerificationResult =>
+    ({ issueId, verified: true, severity: confirmedSeverity, checkedFiles, reason });
+
+  // (a) Formula truncation / malformed formula — the known packet false positive.
+  if (mentionsTruncation && /formula|equation|latex|\\|expression|brace/i.test(text)) {
+    const anchorIds = new Set(issue.sourceAnchorIds ?? []);
+    const candidates = pageFormulas(issue.pagePath).filter((f) => anchorIds.size === 0 || anchorIds.has(f.sourceAnchor ?? "") || anchorIds.has(f.basedOnFormula ?? ""));
+    const pool = candidates.length ? candidates : pageFormulas(issue.pagePath);
+    const files = [...new Set(pool.map((f) => f.pageRel))];
+    if (pool.length === 0) return trust(targetFiles, "no formula located to check; trusting the critic verdict");
+    const incomplete = pool.filter((f) => !isFormulaSyntacticallyComplete(f.text));
+    if (incomplete.length === 0) {
+      return { issueId, verified: false, severity: "unsupported", checkedFiles: files, fullStateEvidence: pool.map((f) => f.text), reason: "Full FinalGardenState formula is complete (balanced braces, no cut commands); only the packet excerpt was truncated" };
+    }
+    return { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: files, fullStateEvidence: incomplete.map((f) => f.text), reason: "Full formula is syntactically incomplete (unbalanced braces or a cut command)" };
+  }
+
+  // (b) Worked-example misclassification.
+  if (issue.type === "worked_example_misclassified") {
+    const pool = pageFormulas(issue.pagePath);
+    const files = issue.pagePath ? [issue.pagePath] : [...new Set(pool.map((f) => f.pageRel))];
+    if (pool.length === 0) return trust(files, "no formulas located to check; trusting the critic verdict");
+    const misclassified = pool.filter((f) => f.structuralKind === "worked_example" && f.declaredKind === "source_definition");
+    if (misclassified.length > 0) {
+      return { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: files, fullStateEvidence: misclassified.map((f) => f.text), reason: "a numeric worked example is labeled source_definition in the full record" };
+    }
+    return { issueId, verified: false, severity: "unsupported", checkedFiles: files, reason: "no numeric substitution is mislabeled as source_definition in the full formula records" };
+  }
+
+  // (c) Source-anchor mismatch — inspect the full canonical anchor record.
+  if (issue.type === "source_anchor_mismatch") {
+    const ids = issue.sourceAnchorIds ?? [];
+    const anchors = ids.map((id) => state.sourceAnchors[id]).filter(Boolean);
+    if (anchors.length === 0) return trust([".breadboard/source-anchors.json"], "referenced anchor not resolvable here; trusting the critic verdict");
+    for (const anchor of anchors) {
+      if (anchor.criticConfirmed) continue;
+      if (!anchor.exactText) {
+        return { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: [".breadboard/source-anchors.json"], reason: `anchor ${anchor.id} has no exactText (cannot be source-grounded)` };
+      }
+      const relevance = verifySourceTextRelevance({ id: anchor.id, title: anchor.title, kind: anchor.kind, conceptKeywords: anchor.conceptKeywords, semanticSummary: anchor.semanticSummary }, anchor.exactText);
+      if (relevance.decision === "irrelevant") {
+        return { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: [".breadboard/source-anchors.json"], fullStateEvidence: [anchor.exactText.slice(0, 160)], reason: `anchor ${anchor.id} exactText does not support its concept (relevance: irrelevant; ${relevance.reason})` };
+      }
+    }
+    return { issueId, verified: false, severity: "unsupported", checkedFiles: [".breadboard/source-anchors.json"], reason: "the full anchor record's exactText is relevant/critic-confirmed; the compact summary was misleading" };
+  }
+
+  // (d) Section prose / repeated opening — inspect the FULL markdown, not excerpts.
+  if (issue.type === "section_index_template_prose") {
+    const key = (issue.sectionPath ?? "").replace(/\/_index\.md$/, "");
+    const section = state.sections.find((s) => s.rel === issue.sectionPath || (key && s.rel.startsWith(key)));
+    if (!section) return trust(targetFiles, "section not located; trusting the critic verdict");
+    const hasTemplate = DEFAULT_TEMPLATE_PHRASES.some((p) => section.body.toLowerCase().includes(p));
+    return hasTemplate
+      ? { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: [section.rel], reason: "full section index body contains template scaffold prose" }
+      : { issueId, verified: false, severity: "unsupported", checkedFiles: [section.rel], reason: "full section index body does not contain template scaffold prose (the excerpt was misleading)" };
+  }
+  if (issue.type === "repeated_opening") {
+    const target = state.pages.find((p) => p.rel === issue.pagePath);
+    if (!target) return trust(targetFiles, "page not located; trusting the critic verdict");
+    const opening = (s: string) => firstProseParagraphs(s, 1).join(" ").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 120);
+    const targetOpening = opening(target.body);
+    const duplicate = targetOpening.length >= 40 && state.pages.some((p) => p.rel !== target.rel && opening(p.body) === targetOpening);
+    return duplicate
+      ? { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: [target.rel], reason: "another page shares the same full opening paragraph" }
+      : { issueId, verified: false, severity: "unsupported", checkedFiles: [target.rel], reason: "no other page shares this full opening; the short excerpt looked similar but the full openings differ" };
+  }
+
+  // (e) Everything else: trust the critic (do not weaken it).
+  return trust(targetFiles, "no deterministic contradiction found; trusting the critic verdict");
 }
 
 /** Minimal shape of an OpenAI-compatible chat client (ChatMock or the SDK). The
@@ -1165,14 +1370,33 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
 
   if (!options.enabled) return finish([], [], false, false);
 
-  // Merge deterministic low-confidence anchor issues with the ChatMock critic's
-  // issues for a round; anchor issues sort first and win id collisions.
-  const reviewIssues = (state: FinalGardenState, criticIssues: CriticIssue[]): CriticIssue[] => {
-    const merged = [...anchorEvidenceCriticIssues(state), ...criticIssues];
+  // Merge deterministic low-confidence anchor issues with the VERIFIED ChatMock
+  // issues for a round. Every ChatMock issue is independently checked against the
+  // full FinalGardenState; unsupported/insufficient-evidence issues are recorded
+  // as false positives and never become blocking (Fix 3/5).
+  const verifiedReview = (state: FinalGardenState, criticIssues: CriticIssue[]) => {
+    const verifications = criticIssues.map((i) => verifyCriticIssueAgainstFinalState(i, state));
+    const verById = new Map(verifications.map((v) => [v.issueId, v]));
+    const kept = criticIssues.filter((i) => {
+      const v = verById.get(i.id);
+      return v && (v.severity === "confirmed_blocking" || v.severity === "confirmed_warning");
+    });
+    const falsePositives = criticIssues
+      .filter((i) => { const v = verById.get(i.id); return v && (v.severity === "unsupported" || v.severity === "insufficient_evidence"); })
+      .map((i) => ({ issue: i, verification: verById.get(i.id)! }));
+    const anchorIssues = anchorEvidenceCriticIssues(state);
+    const merged = [...anchorIssues, ...kept];
     const seen = new Set<string>();
-    const out: CriticIssue[] = [];
-    for (const issue of merged) { if (seen.has(issue.id)) continue; seen.add(issue.id); out.push(issue); }
-    return out;
+    const issues: CriticIssue[] = [];
+    for (const issue of merged) { if (seen.has(issue.id)) continue; seen.add(issue.id); issues.push(issue); }
+    return {
+      issues,
+      blocking: issues.filter((i) => i.severity === "blocking"),
+      warnings: issues.filter((i) => i.severity === "warning"),
+      verifications,
+      falsePositives,
+      reportedIssues: criticIssues.length + anchorIssues.length,
+    };
   };
 
   let totalAttempts = 0;
@@ -1194,9 +1418,17 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       // Prose critic unavailable — low-confidence anchors still block.
       return finish([...(prevBlocking ?? []), ...anchorIssues.filter((a) => !(prevBlocking ?? []).some((p) => p.id === a.id))], lastWarnings, round > 1, true, error instanceof Error ? error.message : String(error));
     }
-    const issues = reviewIssues(state, criticIssues);
-    const blocking = issues.filter((i) => i.severity === "blocking");
-    const warnings = issues.filter((i) => i.severity === "warning");
+    const review = verifiedReview(state, criticIssues);
+    const { blocking, warnings } = review;
+    const verificationFields = {
+      reportedIssues: review.reportedIssues,
+      verifiedBlockingIssues: blocking.length,
+      verifiedWarnings: warnings.length,
+      unsupportedIssues: review.falsePositives.filter((f) => f.verification.severity === "unsupported").length,
+      insufficientEvidenceIssues: review.falsePositives.filter((f) => f.verification.severity === "insufficient_evidence").length,
+      issueVerifications: review.verifications,
+      ...(review.falsePositives.length ? { falsePositives: review.falsePositives } : {}),
+    };
     lastBlocking = blocking;
     lastWarnings = warnings;
 
@@ -1208,12 +1440,12 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
     }
 
     if (blocking.length === 0) {
-      rounds.push({ round, blockingIssues: 0, warnings: warnings.length, repairsAttempted: 0, repairsResolved: 0, issueTypes: [], resolutions: [], provenance: [] });
+      rounds.push({ round, blockingIssues: 0, warnings: warnings.length, repairsAttempted: 0, repairsResolved: 0, issueTypes: [], resolutions: [], provenance: [], ...verificationFields });
       endedClean = true;
       break;
     }
     if (totalAttempts >= options.maxTotalRepairAttempts) {
-      rounds.push({ round, blockingIssues: blocking.length, warnings: warnings.length, repairsAttempted: 0, repairsResolved: 0, issueTypes: [...new Set(blocking.map((i) => i.type))], resolutions: [], provenance: [] });
+      rounds.push({ round, blockingIssues: blocking.length, warnings: warnings.length, repairsAttempted: 0, repairsResolved: 0, issueTypes: [...new Set(blocking.map((i) => i.type))], resolutions: [], provenance: [], ...verificationFields });
       break;
     }
 
@@ -1268,6 +1500,7 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       issueTypes: [...new Set(blocking.map((i) => i.type))],
       resolutions: [], provenance: outcome.provenance ?? [],
       ...(anchorDecisions.length ? { anchorDecisions } : {}),
+      ...verificationFields,
     });
     prevBlocking = blocking;
     prevRequestsByIssue = requestsByIssue;
@@ -1280,9 +1513,9 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
   if (!endedClean && prevBlocking && prevRoundIdx >= 0 && rounds[prevRoundIdx].resolutions.length === 0) {
     try {
       const state = buildFinalGardenState(args.gardenDir, args.gardenSlug);
-      const finalIssues = reviewIssues(state, (await Promise.resolve(args.critic(buildCriticReviewPacket(state)))).slice(0, options.maxIssuesPerRound));
-      lastBlocking = finalIssues.filter((i) => i.severity === "blocking");
-      lastWarnings = finalIssues.filter((i) => i.severity === "warning");
+      const finalReview = verifiedReview(state, (await Promise.resolve(args.critic(buildCriticReviewPacket(state)))).slice(0, options.maxIssuesPerRound));
+      lastBlocking = finalReview.blocking;
+      lastWarnings = finalReview.warnings;
       const resolutions = computeIssueResolutions(prevBlocking, lastBlocking, prevRequestsByIssue);
       rounds[prevRoundIdx].resolutions = resolutions;
       rounds[prevRoundIdx].repairsResolved = resolutions.filter((r) => r.status === "resolved").length;
@@ -1372,10 +1605,21 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
             ...(d.invalidReason ? { invalidReason: d.invalidReason } : {}),
           })) }
         : {}),
+      // Fix 6: critic-issue verification accounting for the round.
+      ...(r.reportedIssues != null ? { reportedIssues: r.reportedIssues } : {}),
+      ...(r.verifiedBlockingIssues != null ? { verifiedBlockingIssues: r.verifiedBlockingIssues } : {}),
+      ...(r.verifiedWarnings != null ? { verifiedWarnings: r.verifiedWarnings } : {}),
+      ...(r.unsupportedIssues != null ? { unsupportedIssues: r.unsupportedIssues } : {}),
+      ...(r.insufficientEvidenceIssues != null ? { insufficientEvidenceIssues: r.insufficientEvidenceIssues } : {}),
+      ...(r.issueVerifications && r.issueVerifications.length ? { issueVerifications: r.issueVerifications } : {}),
     })),
     finalBlockingIssues: result.finalBlockingIssues.length,
     publishReady: s.publishReady,
     ...(result.finalBlockingIssues.length > 0 ? { unresolvedBlockingIssues: result.finalBlockingIssues } : {}),
+    ...((() => {
+      const fps = result.rounds.flatMap((r) => r.falsePositives ?? []);
+      return fps.length ? { unsupportedCriticIssues: fps.map((f) => ({ issueId: f.issue.id, type: f.issue.type, problem: f.issue.problem, verification: f.verification.severity, reason: f.verification.reason })) } : {};
+    })()),
   };
   fs.writeFileSync(path.join(bd, "critic-loop.json"), `${JSON.stringify(loop, null, 2)}\n`, "utf-8");
 
@@ -1431,6 +1675,18 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
     ...(result.finalWarnings.length > 0
       ? result.finalWarnings.map((i) => `- **[${i.type}]** ${i.problem} (${i.pagePath ?? i.sectionPath ?? "global"})`)
       : ["- None."]),
+    "",
+    "## Unsupported Critic Issues",
+    "",
+    ...(() => {
+      const fps = result.rounds.flatMap((r) => (r.falsePositives ?? []).map((f) => ({ round: r.round, f })));
+      if (fps.length === 0) return ["- None."];
+      return [
+        "| Issue | Reported Problem | Verification Result | Reason |",
+        "|---|---|---|---|",
+        ...fps.map(({ f }) => `| ${mdCell(f.issue.id)} | ${mdCell(f.issue.problem)} | ${f.verification.severity} | ${mdCell(f.verification.reason)} |`),
+      ];
+    })(),
     "",
     "## Anchor Confirmation Decisions",
     "",

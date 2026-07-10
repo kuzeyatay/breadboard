@@ -712,6 +712,12 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
     const id = String(record.id ?? "").trim();
     if (!id) continue;
     if (!isPlausibleSourceAnchorId(id)) continue;
+    // Surface a STRING confidence enum only (a legacy numeric confidence is
+    // deliberately NOT surfaced, so an unmigrated legacy anchor is not treated as
+    // acceptance-passing — it must pass migration/evidence first).
+    const confidence = ["high", "medium", "low", "unsupported"].includes(String(record.confidence))
+      ? String(record.confidence) as AnchorConfidence
+      : undefined;
     registry[id] = {
       id,
       kind: "text_concept",
@@ -722,6 +728,11 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       semanticSummary: record.semanticSummary ? String(record.semanticSummary) : undefined,
       exactText: typeof record.exactText === "string" && record.exactText.trim() ? record.exactText : undefined,
       conceptKeywords: Array.isArray(record.conceptKeywords) ? record.conceptKeywords.map(String) : [],
+      confidence,
+      evidence: record.evidence && typeof record.evidence === "object" ? record.evidence as AnchorEvidence : undefined,
+      criticConfirmed: record.criticConfirmed === true,
+      criticConfirmationReason: record.criticConfirmationReason ? String(record.criticConfirmationReason) : undefined,
+      criticConfirmedExactText: typeof record.criticConfirmedExactText === "string" ? record.criticConfirmedExactText : undefined,
     };
   }
 
@@ -3775,6 +3786,275 @@ export function isRelevanceAcceptableForKind(relevance: SourceTextRelevanceResul
   if (relevance.decision === "relevant") return true;
   const broad = kind === "abstract" || kind === "intro" || kind === "guidance";
   return relevance.decision === "weak_relevance" && criticConfidence === "high" && broad;
+}
+
+// ---------------------------------------------------------------------------
+// Legacy text-concept anchor migration (Fix 7–12)
+//
+// Old text-concept anchors carry a numeric `confidence` and no evidence/relevance
+// metadata, so they bypass the current anchor-validation system. Migration
+// re-scores each from source, detects suspicious reused passages, repairs or
+// replaces them, and holds every legacy anchor to the same evidence/relevance
+// standard as newly generated anchors.
+// ---------------------------------------------------------------------------
+
+export type LegacyAnchorMigrationStatus = "migrated" | "replaced" | "merged" | "needs_critic_review" | "blocking";
+
+export interface LegacyAnchorMigrationResult {
+  anchorId: string;
+  originalRecord: unknown;
+  status: LegacyAnchorMigrationStatus;
+  candidatePassagesChecked: number;
+  selectedPassage?: string;
+  evidence?: AnchorEvidence;
+  relevance?: SourceTextRelevanceResult;
+  replacementAnchorId?: string;
+  oldConfidence?: number | string;
+  newConfidence?: AnchorConfidence;
+  reason: string;
+}
+
+export interface DuplicateAnchorPassageGroup {
+  normalizedPassageHash: string;
+  anchorIds: string[];
+  anchorTitles: string[];
+  conceptFamilies: ConceptFamily[];
+  passage: string;
+  suspicious: boolean;
+  reason: string;
+}
+
+/** A text-concept anchor is LEGACY if it lacks current evidence/relevance
+ *  metadata (Fix 7): numeric/missing confidence, no evidence, or no exactText. */
+export function isLegacyTextConceptAnchor(record: Record<string, unknown>): boolean {
+  const conf = record.confidence;
+  const missingEnum = !["high", "medium", "low", "unsupported"].includes(String(conf));
+  const numericConfidence = typeof conf === "number";
+  const noEvidence = !record.evidence || typeof record.evidence !== "object";
+  const noExactText = !(typeof record.exactText === "string" && String(record.exactText).trim());
+  const noSourceId = !String(record.sourceId ?? "").trim();
+  return numericConfidence || missingEnum || noEvidence || noExactText || noSourceId;
+}
+
+function anchorKeywordsFromMetadata(record: Record<string, unknown>, roleTerms: string[] = []): string[] {
+  const existing = Array.isArray(record.conceptKeywords) ? record.conceptKeywords.map((k) => String(k).toLowerCase()) : [];
+  const fromText = [String(record.title ?? ""), String(record.semanticSummary ?? "")].flatMap((t) => titleTermsOf(t));
+  const fromId = String(record.id ?? "").replace(/^text-[^-]*-/i, "").split(/[^a-z0-9]+/i).map((w) => w.toLowerCase());
+  const merged = [...existing, ...fromText, ...fromId, ...roleTerms.map((t) => t.toLowerCase())]
+    .filter((w) => w.length >= 3 && !SEMANTIC_ANCHOR_STOPWORDS.has(w));
+  return [...new Set(merged)].slice(0, 10);
+}
+
+function normalizedPassageKey(text: string): string {
+  return normalizeSourceText(text).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** Group text anchors by (near-)identical exactText and flag suspicious reuse. */
+export function detectDuplicateAnchorPassages(
+  anchors: Array<{ id: string; title?: string; exactText?: string; conceptKeywords?: string[]; semanticSummary?: string }>,
+): DuplicateAnchorPassageGroup[] {
+  const byHash = new Map<string, typeof anchors>();
+  for (const a of anchors) {
+    const key = normalizedPassageKey(a.exactText ?? "");
+    if (!key) continue;
+    (byHash.get(key) ?? byHash.set(key, []).get(key)!).push(a);
+  }
+  const groups: DuplicateAnchorPassageGroup[] = [];
+  for (const [hash, members] of byHash) {
+    if (members.length < 2) continue;
+    const families = [...new Set(members.map((m) => detectConceptFamily([...(m.conceptKeywords ?? []), m.title ?? "", m.semanticSummary ?? ""].join(" ")).family))];
+    const distinctFamilies = families.filter((f) => f !== "other").length;
+    // Pairwise keyword overlap of the anchors that share the passage.
+    const keywordSets = members.map((m) => new Set([...(m.conceptKeywords ?? []).map((k) => k.toLowerCase()), ...titleTermsOf(m.title ?? "")]));
+    let anyOverlap = false;
+    for (let i = 0; i < keywordSets.length && !anyOverlap; i += 1) {
+      for (let j = i + 1; j < keywordSets.length; j += 1) {
+        if ([...keywordSets[i]].some((k) => keywordSets[j].has(k))) { anyOverlap = true; break; }
+      }
+    }
+    const manyAnchors = members.length >= 3;
+    const familiesDiffer = distinctFamilies >= 2;
+    const suspicious = manyAnchors || familiesDiffer || !anyOverlap;
+    const reasons: string[] = [];
+    if (manyAnchors) reasons.push(`one passage grounds ${members.length} anchors`);
+    if (familiesDiffer) reasons.push(`anchor families differ (${families.join(", ")})`);
+    if (!anyOverlap) reasons.push("anchor titles/keywords do not overlap");
+    groups.push({
+      normalizedPassageHash: hash,
+      anchorIds: members.map((m) => m.id),
+      anchorTitles: members.map((m) => m.title ?? m.id),
+      conceptFamilies: families,
+      passage: members[0].exactText ?? "",
+      suspicious,
+      reason: suspicious ? reasons.join("; ") : `${members.length} closely-related anchors legitimately reuse the same passage`,
+    });
+  }
+  return groups.sort((a, b) => b.anchorIds.length - a.anchorIds.length);
+}
+
+export interface LegacyMigrationReport {
+  results: LegacyAnchorMigrationResult[];
+  duplicateGroups: DuplicateAnchorPassageGroup[];
+  changed: string[];
+  counts: Record<LegacyAnchorMigrationStatus, number> & { legacyFound: number };
+}
+
+/**
+ * Fix 8/10: re-score every LEGACY text-concept anchor from source text, repair
+ * wrong/shared passages, replace with stronger existing anchors, or leave weak
+ * ones blocking (with a string confidence enum so the audit + anchor critic
+ * catch them). Writes the anchors back and returns a migration report.
+ */
+export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string): LegacyMigrationReport {
+  const bd = path.join(gardenDir, ".breadboard");
+  const ledgerPath = path.join(bd, "source-anchors.json");
+  const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
+  const textAnchors: Array<Record<string, unknown>> = Array.isArray(ledger.sourceTextConceptAnchors)
+    ? [...(ledger.sourceTextConceptAnchors as Array<Record<string, unknown>>)]
+    : [];
+  const results: LegacyAnchorMigrationResult[] = [];
+  const changed: string[] = [];
+  const counts = { migrated: 0, replaced: 0, merged: 0, needs_critic_review: 0, blocking: 0, legacyFound: 0 } as LegacyMigrationReport["counts"];
+
+  const duplicateGroups = detectDuplicateAnchorPassages(textAnchors.map((r) => ({ id: String(r.id ?? ""), title: String(r.title ?? ""), exactText: typeof r.exactText === "string" ? r.exactText : "", conceptKeywords: Array.isArray(r.conceptKeywords) ? r.conceptKeywords.map(String) : [], semanticSummary: String(r.semanticSummary ?? "") })));
+  const suspiciousIds = new Set(duplicateGroups.filter((g) => g.suspicious).flatMap((g) => g.anchorIds));
+
+  const legacy = textAnchors.filter((r) => r.id && isLegacyTextConceptAnchor(r));
+  counts.legacyFound = legacy.length;
+  if (legacy.length === 0) return { results, duplicateGroups, changed, counts };
+
+  const state = buildFinalGardenState(gardenDir, slug);
+  const registry = state.sourceAnchors;
+  const paragraphs = sourceParagraphsWithSource(gardenDir);
+  const roleTermsFor = (id: string): string[] => {
+    const pages = state.pages.filter((p) => p.sourceAnchors.includes(id));
+    const units = state.learningUnitContract.units.filter((u) => (u.sourceAnchors ?? []).includes(id));
+    return [...pages.flatMap((p) => titleTermsOf(p.title)), ...units.flatMap((u) => (u.newConcepts ?? []).flatMap((c) => titleTermsOf(String(c))))];
+  };
+
+  let ledgerChanged = false;
+  const removedIds = new Set<string>();
+
+  for (const record of legacy) {
+    const id = String(record.id);
+    const oldConfidence = (typeof record.confidence === "number" || typeof record.confidence === "string") ? record.confidence : undefined;
+    const keywords = anchorKeywordsFromMetadata(record, roleTermsFor(id));
+    const score = scoreAnchorEvidence({ anchorId: id, title: String(record.title ?? ""), kind: "text_concept", conceptKeywords: keywords, sourceId: String(record.sourceId ?? "") || paragraphs[0]?.sourceId, requestedPage: Number.isFinite(Number(record.page)) ? Number(record.page) : semanticAnchorPage(id), paragraphs });
+    const bestPassage = score.exactText;
+    const relevance = bestPassage ? verifySourceTextRelevance({ id, title: String(record.title ?? ""), kind: "text_concept", conceptKeywords: keywords, semanticSummary: String(record.semanticSummary ?? "") }, bestPassage) : undefined;
+    const candidatePassagesChecked = paragraphs.filter((p) => score.requestedPage == null || Math.abs(p.page - score.requestedPage) <= 1).length || paragraphs.length;
+    const strong = (score.confidence === "high" || score.confidence === "medium") && relevance?.decision === "relevant";
+
+    const record_ = record; // mutated in place in textAnchors
+    if (strong && bestPassage) {
+      const replacedText = bestPassage.trim() !== String(record.exactText ?? "").trim();
+      record_.exactText = bestPassage;
+      record_.page = score.matchedPage ?? record_.page;
+      record_.sourceId = score.sourceId || record_.sourceId || paragraphs[0]?.sourceId;
+      record_.conceptKeywords = keywords;
+      record_.confidence = score.confidence;
+      record_.evidence = evidenceFromScore(score);
+      delete (record_ as Record<string, unknown>).relevanceDecision;
+      ledgerChanged = true;
+      const status: LegacyAnchorMigrationStatus = replacedText ? "replaced" : "migrated";
+      counts[status] += 1;
+      results.push({ anchorId: id, originalRecord: { ...record }, status, candidatePassagesChecked, selectedPassage: bestPassage.slice(0, 200), evidence: evidenceFromScore(score), relevance, oldConfidence, newConfidence: score.confidence, reason: replacedText ? `rescored to a stronger source passage (${score.confidence}, ${relevance?.decision})` : `rescored in place with current evidence (${score.confidence}, ${relevance?.decision})` });
+      continue;
+    }
+
+    // Weak/irrelevant. Fix 10: prefer a stronger EXISTING canonical anchor.
+    const existing = pickStrongerExistingAnchor(id, keywords, Number.isFinite(Number(record.page)) ? Number(record.page) : undefined, String(record.sourceId ?? ""), registry, score.confidence);
+    if (existing && suspiciousIds.has(id)) {
+      const repChanged = replaceAnchorReference(gardenDir, slug, id, existing);
+      for (const c of repChanged) if (!changed.includes(c)) changed.push(c);
+      removedIds.add(id);
+      counts.replaced += 1;
+      results.push({ anchorId: id, originalRecord: { ...record }, status: "replaced", candidatePassagesChecked, replacementAnchorId: existing, oldConfidence, reason: `suspicious shared passage; references switched to stronger existing anchor ${existing}` });
+      continue;
+    }
+
+    // No good passage and no stronger anchor: keep blocking with a real enum so
+    // the audit + anchor critic loop hold it to the current standard (Fix 11).
+    const newConfidence: AnchorConfidence = score.confidence === "unsupported" ? "unsupported" : "low";
+    record_.confidence = newConfidence;
+    record_.evidence = evidenceFromScore(score);
+    record_.conceptKeywords = keywords;
+    if (bestPassage && relevance && relevance.decision !== "irrelevant") record_.exactText = bestPassage;
+    ledgerChanged = true;
+    const status: LegacyAnchorMigrationStatus = newConfidence === "unsupported" ? "blocking" : "needs_critic_review";
+    counts[status] += 1;
+    results.push({ anchorId: id, originalRecord: { ...record }, status, candidatePassagesChecked, selectedPassage: bestPassage?.slice(0, 200), evidence: evidenceFromScore(score), relevance, oldConfidence, newConfidence, reason: suspiciousIds.has(id) ? `shared/unsupported passage and no stronger existing anchor; ${score.confidence} evidence — routed to critic` : `no source passage strongly supports this anchor (${score.confidence}); routed to critic` });
+  }
+
+  if (removedIds.size > 0) {
+    ledger.sourceTextConceptAnchors = textAnchors.filter((r) => !removedIds.has(String(r.id)));
+    ledgerChanged = true;
+  } else {
+    ledger.sourceTextConceptAnchors = textAnchors;
+  }
+  if (ledgerChanged) {
+    fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+    if (!changed.includes(".breadboard/source-anchors.json")) changed.push(".breadboard/source-anchors.json");
+  }
+
+  writeLegacyMigrationReport(gardenDir, results, duplicateGroups, counts, changed);
+  return { results, duplicateGroups, changed, counts };
+}
+
+function writeLegacyMigrationReport(
+  gardenDir: string,
+  results: LegacyAnchorMigrationResult[],
+  duplicateGroups: DuplicateAnchorPassageGroup[],
+  counts: LegacyMigrationReport["counts"],
+  changed: string[],
+): void {
+  const bd = path.join(gardenDir, ".breadboard");
+  fs.mkdirSync(bd, { recursive: true });
+  const json = { counts, results, duplicateGroups };
+  const jsonPath = path.join(bd, "source-anchor-migration.json");
+  const jsonContent = `${JSON.stringify(json, null, 2)}\n`;
+  if ((readText(jsonPath) ?? "") !== jsonContent) {
+    fs.writeFileSync(jsonPath, jsonContent, "utf-8");
+    if (!changed.includes(".breadboard/source-anchor-migration.json")) changed.push(".breadboard/source-anchor-migration.json");
+  }
+  const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s).replace(/\|/g, "\\|").replace(/\n/g, " ");
+  const migrated = results.filter((r) => r.status === "migrated" || r.status === "replaced" || r.status === "merged");
+  const unresolved = results.filter((r) => r.status === "needs_critic_review" || r.status === "blocking");
+  const md = [
+    "# Source-Anchor Migration",
+    "",
+    `Legacy text-concept anchors found: ${counts.legacyFound}. Migrated: ${counts.migrated}, Replaced: ${counts.replaced}, Merged: ${counts.merged}, Needs critic: ${counts.needs_critic_review}, Blocking: ${counts.blocking}.`,
+    "",
+    "## Migrated Anchors",
+    "",
+    "| Anchor | Old Confidence | New Confidence | Evidence Score | Relevance | Result |",
+    "|---|---:|---:|---:|---|---|",
+    ...(migrated.length ? migrated.map((r) => `| ${r.anchorId} | ${r.oldConfidence ?? "—"} | ${r.newConfidence ?? (r.replacementAnchorId ? "→" + r.replacementAnchorId : "—")} | ${r.evidence?.totalScore ?? "—"} | ${r.relevance?.decision ?? "—"} | ${r.status} |`) : ["| — | — | — | — | — | — |"]),
+    "",
+    "## Replaced or Merged Anchors",
+    "",
+    ...(results.filter((r) => r.replacementAnchorId).length
+      ? results.filter((r) => r.replacementAnchorId).map((r) => `- ${r.anchorId} → ${r.replacementAnchorId} (${clip(r.reason, 80)})`)
+      : ["- None."]),
+    "",
+    "## Suspicious Reused Passages",
+    "",
+    "| Passage Summary | Anchor Count | Families | Action |",
+    "|---|---:|---|---|",
+    ...(duplicateGroups.filter((g) => g.suspicious).length
+      ? duplicateGroups.filter((g) => g.suspicious).map((g) => `| ${clip(g.passage, 60)} | ${g.anchorIds.length} | ${g.conceptFamilies.join(", ")} | ${clip(g.reason, 60)} |`)
+      : ["| — | — | — | — |"]),
+    "",
+    "## Unresolved Legacy Anchors",
+    "",
+    ...(unresolved.length ? unresolved.map((r) => `- **${r.anchorId}** (${r.status}): ${clip(r.reason, 100)}`) : ["- None."]),
+    "",
+  ].join("\n");
+  const mdPath = path.join(bd, "source-anchor-migration.md");
+  if ((readText(mdPath) ?? "") !== md) {
+    fs.writeFileSync(mdPath, md, "utf-8");
+    if (!changed.includes(".breadboard/source-anchor-migration.md")) changed.push(".breadboard/source-anchor-migration.md");
+  }
 }
 
 /**
