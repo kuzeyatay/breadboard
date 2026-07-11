@@ -4913,6 +4913,10 @@ export async function runTextbookGeneration({
           // Let the loop audit the live state so anchor resolution counts toward
           // publish-readiness. Deterministic critical failures already threw above.
           structuralFailure: false,
+          // Fix 2: this is FINALIZATION on a migrated ledger — any legacy
+          // text_concept record still unresolved keeps the garden out of
+          // publish-ready, derived from the ledger (never a migration report).
+          enforceLegacyFinalization: true,
         });
         appendLearnEvent(contentPath, gardenId, "learn_critic_loop_completed", {
           jobId: job.id,

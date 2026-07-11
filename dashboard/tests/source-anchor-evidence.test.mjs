@@ -16,6 +16,7 @@ import {
   buildFinalGardenState,
   auditFinalGardenState,
   reconcileFinalGardenState,
+  migrateLegacyTextConceptAnchors,
   repairMissingCanonicalAnchors,
   resolveSourceAnchorCandidate,
   buildAnchorEvidenceCriticIssues,
@@ -187,10 +188,14 @@ describe("evidence-based anchor registration in a garden", { skip }, () => {
 
   test("7. every registered generated anchor carries evidence metadata", () => {
     const dir = freshCopy();
-    // The baseline already registered the two real semantic anchors; re-derive.
+    // Evidence metadata is attached by the evidence pipeline (migrate/rescore),
+    // exactly as production runs it before the critic loop — mirror that here so
+    // the assertion covers real evidence-scored records rather than raw legacy
+    // ledger entries.
+    migrateLegacyTextConceptAnchors(dir, "test-2");
     reconcileFinalGardenState(dir, "test-2");
     const registry = buildFinalGardenState(dir, "test-2").sourceAnchors;
-    const generated = Object.values(registry).filter((a) => a.confidence);
+    const generated = Object.values(registry).filter((a) => a.evidence);
     assert.ok(generated.length >= 1, "at least one generated anchor exists");
     for (const anchor of generated) {
       assert.ok(anchor.evidence, `${anchor.id} has evidence`);

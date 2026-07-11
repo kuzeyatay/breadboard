@@ -70,6 +70,21 @@ function injectLowConfidenceAnchor(dir, anchorId = "S1.P1.energy-widget") {
   return { pageRel, unitId, anchorId };
 }
 
+// A strong, source-grounded "energy" replacement anchor, registered explicitly by
+// the test so the fixture does not depend on a particular generated garden still
+// happening to contain an `energy-bottleneck` anchor.
+function registerEnergyBottleneck(dir) {
+  const l = readLedger(dir);
+  l.sourceStructuralAnchors.push({
+    id: "S1.P1.energy-bottleneck", kind: "guidance", sourceId: "2510-27379v1", page: 1,
+    title: "Energy cost bottleneck", confidence: "high",
+    conceptKeywords: ["energy", "bottleneck"],
+    exactText: "high power consumption-a critical bottleneck in scenarios such as mobile and edge computing",
+    semanticSummary: "Conventional networks are energy-bottlenecked by dense per-inference computation.",
+    evidence: { keywordHits: ["energy", "bottleneck"], missingKeywords: [], titleOverlapScore: 1, keywordCoverageScore: 1, pageMatchScore: 1, contextSpecificityScore: 1, negativeEvidencePenalty: 0, totalScore: 0.95, decision: "register" },
+  });
+  write(dir, ".breadboard/source-anchors.json", JSON.stringify(l, null, 2) + "\n");
+}
 const noCritic = () => [];
 const throwingCritic = () => { throw new Error("connect ECONNREFUSED 127.0.0.1:8765"); };
 
@@ -115,6 +130,7 @@ describe("anchor confirmation in the ChatMock critic loop", { skip }, () => {
   test("3. ChatMock replaces the anchor → page/contract updated, old anchor gone, audit passes", async () => {
     const dir = freshCopy();
     const { pageRel, unitId, anchorId } = injectLowConfidenceAnchor(dir);
+    registerEnergyBottleneck(dir);
     const anchorConfirm = (packet) => ({
       anchorId: packet.anchor.id, decision: "replace", confidence: "high",
       replacementAnchorId: "S1.P1.energy-bottleneck", reason: "energy-bottleneck already covers this concept",
@@ -203,6 +219,7 @@ describe("anchor confirmation in the ChatMock critic loop", { skip }, () => {
   test("round records anchor decisions in critic-loop.json", async () => {
     const dir = freshCopy();
     const { anchorId } = injectLowConfidenceAnchor(dir);
+    registerEnergyBottleneck(dir);
     const anchorConfirm = (packet) => ({ anchorId: packet.anchor.id, decision: "replace", confidence: "high", replacementAnchorId: "S1.P1.energy-bottleneck", reason: "covered" });
     await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: noCritic, anchorConfirm, options: { maxRounds: 3 } });
     const loop = JSON.parse(read(dir, ".breadboard/critic-loop.json"));

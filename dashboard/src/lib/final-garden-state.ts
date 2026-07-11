@@ -246,6 +246,10 @@ export interface CanonicalSourceAnchor {
   criticConfirmed?: boolean;
   criticConfirmationReason?: string;
   criticConfirmedExactText?: string;
+  /** Relevance verdict persisted on a migrated anchor. */
+  relevance?: { decision: string; totalScore?: number; anchorFamily?: string; textFamily?: string };
+  /** Legacy-migration provenance (Fix 5). */
+  migration?: { migratedAt?: string; previousSchema?: string; migrationStatus?: string; migrationReason?: string; replacementAnchorId?: string };
 }
 
 /** A proposed source anchor BEFORE it is proven against the source. Generation
@@ -680,6 +684,46 @@ function sourceDocumentAnchorRefs(gardenDir: string): Map<string, { sourceId: st
   return refs;
 }
 
+const CONFIDENCE_MERGE_RANK: Record<string, number> = { unsupported: 1, low: 2, medium: 3, high: 4 };
+
+/**
+ * Fix 6: merge two canonical records for the same id with deterministic
+ * precedence — a modern evidence-backed / critic-confirmed / migrated record is
+ * never downgraded or overwritten by a legacy (no-evidence) record. Non-
+ * conflicting fields are merged; evidence/relevance/migration/critic confirmation
+ * are preserved.
+ */
+export function mergeCanonicalSourceAnchor(existing: CanonicalSourceAnchor | undefined, incoming: CanonicalSourceAnchor): CanonicalSourceAnchor {
+  if (!existing) return incoming;
+  const rank = (a: CanonicalSourceAnchor): number => {
+    let r = 0;
+    if (a.evidence) r += 4;
+    if (a.migration) r += 3;
+    if (a.criticConfirmed) r += 3;
+    if (a.confidence) r += 1;
+    return r;
+  };
+  const [rich, poor] = rank(incoming) >= rank(existing) ? [incoming, existing] : [existing, incoming];
+  const confidence = [rich.confidence, poor.confidence]
+    .filter((c): c is AnchorConfidence => Boolean(c))
+    .sort((a, b) => (CONFIDENCE_MERGE_RANK[b] ?? 0) - (CONFIDENCE_MERGE_RANK[a] ?? 0))[0] ?? rich.confidence;
+  return {
+    ...poor,
+    ...rich,
+    // Never remove evidence/relevance/migration or downgrade confidence.
+    evidence: rich.evidence ?? poor.evidence,
+    relevance: rich.relevance ?? poor.relevance,
+    migration: rich.migration ?? poor.migration,
+    criticConfirmed: rich.criticConfirmed || poor.criticConfirmed,
+    criticConfirmationReason: rich.criticConfirmationReason ?? poor.criticConfirmationReason,
+    criticConfirmedExactText: rich.criticConfirmedExactText ?? poor.criticConfirmedExactText,
+    exactText: rich.exactText ?? poor.exactText,
+    semanticSummary: rich.semanticSummary ?? poor.semanticSummary,
+    conceptKeywords: (rich.conceptKeywords?.length ? rich.conceptKeywords : poor.conceptKeywords) ?? [],
+    confidence,
+  };
+}
+
 /** Read the persisted anchor ledgers and build the canonical registry. */
 export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, CanonicalSourceAnchor> {
   const bd = path.join(gardenDir, ".breadboard");
@@ -718,7 +762,7 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
     const confidence = ["high", "medium", "low", "unsupported"].includes(String(record.confidence))
       ? String(record.confidence) as AnchorConfidence
       : undefined;
-    registry[id] = {
+    const incoming: CanonicalSourceAnchor = {
       id,
       kind: "text_concept",
       title: String(record.title ?? record.semanticSummary ?? id),
@@ -733,7 +777,11 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       criticConfirmed: record.criticConfirmed === true,
       criticConfirmationReason: record.criticConfirmationReason ? String(record.criticConfirmationReason) : undefined,
       criticConfirmedExactText: typeof record.criticConfirmedExactText === "string" ? record.criticConfirmedExactText : undefined,
+      relevance: record.relevance && typeof record.relevance === "object" ? record.relevance as CanonicalSourceAnchor["relevance"] : undefined,
+      migration: record.migration && typeof record.migration === "object" ? record.migration as CanonicalSourceAnchor["migration"] : undefined,
     };
+    // Fix 6: never let a legacy record overwrite a modern one with the same id.
+    registry[id] = registry[id] ? mergeCanonicalSourceAnchor(registry[id], incoming) : incoming;
   }
 
   // First-class broad/structural anchors (S1.P1.Abstract, S1.P1.Intro,
@@ -3789,6 +3837,141 @@ export function isRelevanceAcceptableForKind(relevance: SourceTextRelevanceResul
 }
 
 // ---------------------------------------------------------------------------
+// Static/interactive source-visual representation (Fix 1)
+//
+// A source figure is "represented" if EITHER its source crop is embedded and
+// explained as a static visual, OR a grounded interactive visual exists. A
+// static embed must not require a duplicate interactive visualization.
+// ---------------------------------------------------------------------------
+
+export type SourceVisualRepresentationMode =
+  | "markdown_source_embed"
+  | "source_visual_ledger"
+  | "interactive_visual"
+  | "explicit_omission";
+
+export interface SourceVisualRepresentationResult {
+  anchorId: string;
+  represented: boolean;
+  representationModes: SourceVisualRepresentationMode[];
+  pagePaths: string[];
+  visualIds: string[];
+  evidence: string[];
+  reason: string;
+}
+
+const MD_IMAGE_EMBED_RE = /!\[[^\]]*\]\(\s*<?([^)>\s]+)>?[^)]*\)/g;
+
+function assetFileForUrl(gardenDir: string, slug: string, url: string): string | null {
+  const clean = String(url ?? "").replace(/^<|>$/g, "").trim();
+  if (!clean.startsWith("/")) return null;
+  const rel = clean.replace(new RegExp(`^/${slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`), "").replace(/^\//, "");
+  return path.join(gardenDir, ...rel.split("/"));
+}
+
+/** Does the page body carry explanatory prose (a non-heading/image line)? */
+function pageHasExplanatoryProse(body: string): boolean {
+  return body.split(/\n{2,}/).some((p) => {
+    const s = p.replace(/\s+/g, " ").trim();
+    return s.length >= 40 && !s.startsWith("#") && !s.startsWith("!") && !s.startsWith("|") && !s.startsWith("```");
+  });
+}
+
+function embedUrlMatchesAnchor(url: string, anchorId: string): boolean {
+  const u = url.toLowerCase();
+  if (u.includes(anchorId.toLowerCase())) return true;
+  const pageNum = (anchorId.match(/\.P(\d+)\./i) ?? [])[1];
+  const code = (anchorId.match(/\.([A-Za-z]\d+)$/i) ?? [])[1]?.toLowerCase();
+  if (pageNum && u.includes(`page-${pageNum}`) && (!code || u.includes(code))) return true;
+  return false;
+}
+
+/**
+ * Fix 1: is a source-visual anchor represented in the final artifact? Checks a
+ * static markdown embed (Mode A) + ledger usage (Mode B), a grounded interactive
+ * visual (Mode C), or a justified omission (Mode D). Either A/B or C satisfies
+ * representation — a static figure does not need a duplicate interactive one.
+ */
+export function verifySourceVisualRepresentation(anchorId: string, state: FinalGardenState): SourceVisualRepresentationResult {
+  const gardenDir = state.rootPath;
+  const slug = state.slug;
+  const modes = new Set<SourceVisualRepresentationMode>();
+  const pagePaths = new Set<string>();
+  const visualIds = new Set<string>();
+  const evidence: string[] = [];
+
+  const ledger = readJson<Array<Record<string, unknown>>>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
+  const ledgerEntry = ledger.find((v) => String(v.sourceVisualId ?? v.anchorId ?? "") === anchorId);
+
+  for (const page of state.pages) {
+    const referenced = page.sourceVisualIds.includes(anchorId) || page.sourceAnchors.includes(anchorId) || page.sourceFormulaAnchors.includes(anchorId);
+    if (!referenced) continue;
+    let embeddedAsset: string | undefined;
+    for (const m of page.body.matchAll(MD_IMAGE_EMBED_RE)) {
+      const url = m[1];
+      if (!embedUrlMatchesAnchor(url, anchorId)) continue;
+      const file = assetFileForUrl(gardenDir, slug, url);
+      if (file && fs.existsSync(file)) { embeddedAsset = url; break; }
+    }
+    const hasProse = pageHasExplanatoryProse(page.body);
+    // Mode A: markdown embed of an existing asset + explanatory prose.
+    if (embeddedAsset && hasProse && page.sourceVisualIds.includes(anchorId)) {
+      modes.add("markdown_source_embed");
+      pagePaths.add(page.rel);
+      evidence.push(`${page.rel} embeds ${embeddedAsset} with explanatory prose (sourceVisualIds includes ${anchorId})`);
+    }
+    // Mode B: source-visual ledger says embedded_and_explained and the page embeds it.
+    if (ledgerEntry && embeddedAsset) {
+      const usage = String(ledgerEntry.conceptUsage ?? "");
+      const crop = String(ledgerEntry.cropStatus ?? "");
+      const assigned = normalizePageRel(String(ledgerEntry.assignedPageId ?? ""));
+      if ((usage === "embedded_and_explained" || crop === "embedded") && (assigned === page.rel || assigned === page.rel.replace(/\.md$/, ""))) {
+        modes.add("source_visual_ledger");
+        pagePaths.add(page.rel);
+        evidence.push(`source-visual ledger: ${anchorId} conceptUsage=${usage || "?"} cropStatus=${crop || "?"} on ${page.rel}`);
+      }
+    }
+  }
+
+  // Mode C: a grounded interactive visual used by a page.
+  for (const v of state.visuals) {
+    if (![...v.anchorIds, ...v.textAnchorIds].includes(anchorId)) continue;
+    const usedByPage = v.pageRel && state.pages.some((p) => p.rel === v.pageRel && p.visualIds.includes(v.id));
+    if (usedByPage) {
+      modes.add("interactive_visual");
+      visualIds.add(v.id);
+      pagePaths.add(v.pageRel!);
+      evidence.push(`interactive visual ${v.id} grounded to ${anchorId} on ${v.pageRel}`);
+    }
+  }
+
+  // Mode D: a justified, pedagogically-defensible omission recorded in coverage.
+  let omissionReason: string | undefined;
+  const coverage = state.planningDocs.sourceCoverage ?? "";
+  const omissionLine = coverage.split(/\r?\n/).find((l) => l.includes(anchorId) && /(intentionally[_ ]skipped|not[_ ]used[_ ]with[_ ]reason|omit|justified)/i.test(l));
+  const central = state.learningUnitContract.units.some((u) => u.sourceFigures?.some((f) => f.id === anchorId && f.placement !== "not_used_with_reason"));
+  if (omissionLine && !central) {
+    modes.add("explicit_omission");
+    omissionReason = omissionLine.trim().slice(0, 160);
+    evidence.push(`Source Coverage records a justified omission for ${anchorId}`);
+  }
+
+  const modesArr = [...modes];
+  // An unexplained missing figure is NOT represented; a lone justified omission
+  // counts as accounted-for but not "visually represented".
+  const represented = modesArr.some((m) => m === "markdown_source_embed" || m === "source_visual_ledger" || m === "interactive_visual")
+    || (modesArr.length === 1 && modesArr[0] === "explicit_omission");
+  const reason = represented
+    ? modesArr.includes("markdown_source_embed") || modesArr.includes("source_visual_ledger")
+      ? `${anchorId} is embedded and explained as a static source visual`
+      : modesArr.includes("interactive_visual")
+        ? `${anchorId} is represented by a grounded interactive visual`
+        : `${anchorId} is a justified, non-central omission`
+    : `${anchorId} has no static embed, no grounded interactive visual, and no justified omission`;
+  return { anchorId, represented, representationModes: modesArr, pagePaths: [...pagePaths], visualIds: [...visualIds], evidence, reason, ...(omissionReason ? {} : {}) };
+}
+
+// ---------------------------------------------------------------------------
 // Legacy text-concept anchor migration (Fix 7–12)
 //
 // Old text-concept anchors carry a numeric `confidence` and no evidence/relevance
@@ -3799,6 +3982,15 @@ export function isRelevanceAcceptableForKind(relevance: SourceTextRelevanceResul
 // ---------------------------------------------------------------------------
 
 export type LegacyAnchorMigrationStatus = "migrated" | "replaced" | "merged" | "needs_critic_review" | "blocking";
+
+/** Provenance persisted on a migrated final anchor record (Fix 5). */
+export interface AnchorMigrationProvenance {
+  migratedAt: string;
+  previousSchema: "numeric_confidence_legacy";
+  migrationStatus: "migrated" | "replaced" | "merged" | "critic_confirmed";
+  migrationReason: string;
+  replacementAnchorId?: string;
+}
 
 export interface LegacyAnchorMigrationResult {
   anchorId: string;
@@ -3812,6 +4004,8 @@ export interface LegacyAnchorMigrationResult {
   oldConfidence?: number | string;
   newConfidence?: AnchorConfidence;
   reason: string;
+  closureComplete?: boolean;
+  remainingActiveReferences?: AnchorReferenceOccurrence[];
 }
 
 export interface DuplicateAnchorPassageGroup {
@@ -3906,6 +4100,7 @@ export interface LegacyMigrationReport {
  * catch them). Writes the anchors back and returns a migration report.
  */
 export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string): LegacyMigrationReport {
+  const MIGRATION_TS = new Date().toISOString();
   const bd = path.join(gardenDir, ".breadboard");
   const ledgerPath = path.join(bd, "source-anchors.json");
   const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
@@ -3948,15 +4143,19 @@ export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string
     const record_ = record; // mutated in place in textAnchors
     if (strong && bestPassage) {
       const replacedText = bestPassage.trim() !== String(record.exactText ?? "").trim();
+      const migStatus = replacedText ? "replaced" : "migrated";
       record_.exactText = bestPassage;
       record_.page = score.matchedPage ?? record_.page;
       record_.sourceId = score.sourceId || record_.sourceId || paragraphs[0]?.sourceId;
       record_.conceptKeywords = keywords;
       record_.confidence = score.confidence;
       record_.evidence = evidenceFromScore(score);
+      // Fix 5: persist relevance + migration provenance atomically.
+      if (relevance) record_.relevance = { decision: relevance.decision, totalScore: relevance.totalScore, anchorFamily: relevance.anchorFamily, textFamily: relevance.textFamily };
+      record_.migration = { migratedAt: MIGRATION_TS, previousSchema: "numeric_confidence_legacy", migrationStatus: migStatus, migrationReason: replacedText ? "rescored to a stronger source passage" : "rescored against source text" } as AnchorMigrationProvenance;
       delete (record_ as Record<string, unknown>).relevanceDecision;
       ledgerChanged = true;
-      const status: LegacyAnchorMigrationStatus = replacedText ? "replaced" : "migrated";
+      const status: LegacyAnchorMigrationStatus = migStatus;
       counts[status] += 1;
       results.push({ anchorId: id, originalRecord: { ...record }, status, candidatePassagesChecked, selectedPassage: bestPassage.slice(0, 200), evidence: evidenceFromScore(score), relevance, oldConfidence, newConfidence: score.confidence, reason: replacedText ? `rescored to a stronger source passage (${score.confidence}, ${relevance?.decision})` : `rescored in place with current evidence (${score.confidence}, ${relevance?.decision})` });
       continue;
@@ -3965,11 +4164,12 @@ export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string
     // Weak/irrelevant. Fix 10: prefer a stronger EXISTING canonical anchor.
     const existing = pickStrongerExistingAnchor(id, keywords, Number.isFinite(Number(record.page)) ? Number(record.page) : undefined, String(record.sourceId ?? ""), registry, score.confidence);
     if (existing && suspiciousIds.has(id)) {
-      const repChanged = replaceAnchorReference(gardenDir, slug, id, existing);
-      for (const c of repChanged) if (!changed.includes(c)) changed.push(c);
+      // Fix 8: replace across ALL final references and verify closure.
+      const closure = applyAnchorReplacementClosure(gardenDir, slug, id, existing);
+      for (const c of closure.updatedFiles) if (!changed.includes(c)) changed.push(c);
       removedIds.add(id);
       counts.replaced += 1;
-      results.push({ anchorId: id, originalRecord: { ...record }, status: "replaced", candidatePassagesChecked, replacementAnchorId: existing, oldConfidence, reason: `suspicious shared passage; references switched to stronger existing anchor ${existing}` });
+      results.push({ anchorId: id, originalRecord: { ...record }, status: "replaced", candidatePassagesChecked, replacementAnchorId: existing, oldConfidence, reason: closure.complete ? `suspicious shared passage; references switched to stronger existing anchor ${existing} (closure complete)` : `references switched to ${existing} but ${closure.remainingActiveReferences.length} active old reference(s) remain`, closureComplete: closure.complete, remainingActiveReferences: closure.remainingActiveReferences });
       continue;
     }
 
@@ -3979,6 +4179,8 @@ export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string
     record_.confidence = newConfidence;
     record_.evidence = evidenceFromScore(score);
     record_.conceptKeywords = keywords;
+    if (relevance) record_.relevance = { decision: relevance.decision, totalScore: relevance.totalScore, anchorFamily: relevance.anchorFamily, textFamily: relevance.textFamily };
+    record_.migration = { migratedAt: MIGRATION_TS, previousSchema: "numeric_confidence_legacy", migrationStatus: "migrated", migrationReason: `rescored to ${newConfidence}; routed to critic` } as AnchorMigrationProvenance;
     if (bestPassage && relevance && relevance.decision !== "irrelevant") record_.exactText = bestPassage;
     ledgerChanged = true;
     const status: LegacyAnchorMigrationStatus = newConfidence === "unsupported" ? "blocking" : "needs_critic_review";
@@ -4132,7 +4334,7 @@ function replaceAnchorReference(gardenDir: string, slug: string | undefined, fro
     if (content === undefined) continue;
     const { rawFrontmatter, body } = splitFrontmatter(content);
     let rawFm = rawFrontmatter;
-    for (const key of ["sourceAnchors", "sourceFormulaAnchors"]) {
+    for (const key of ["sourceAnchors", "sourceFormulaAnchors", "sourceVisualIds"]) {
       const values = fmArray(rawFm, key);
       if (values.includes(from)) rawFm = setFmArrayLine(rawFm, key, values.map((v) => (v === from ? to : v)));
     }
@@ -4193,11 +4395,296 @@ function removeUnusedAnchorRecord(gardenDir: string, slug: string | undefined, a
   const ledgerPath = path.join(gardenDir, ".breadboard", "source-anchors.json");
   const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
   const structural = Array.isArray(ledger.sourceStructuralAnchors) ? ledger.sourceStructuralAnchors as Array<Record<string, unknown>> : [];
-  const next = structural.filter((a) => String(a.id ?? "") !== anchorId);
-  if (next.length === structural.length) return false;
-  ledger.sourceStructuralAnchors = next;
+  const text = Array.isArray(ledger.sourceTextConceptAnchors) ? ledger.sourceTextConceptAnchors as Array<Record<string, unknown>> : [];
+  const nextStructural = structural.filter((a) => String(a.id ?? "") !== anchorId);
+  const nextText = text.filter((a) => String(a.id ?? "") !== anchorId);
+  if (nextStructural.length === structural.length && nextText.length === text.length) return false;
+  ledger.sourceStructuralAnchors = nextStructural;
+  ledger.sourceTextConceptAnchors = nextText;
   fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Anchor replacement closure (Fix 8): a replacement is not complete until the
+// old id is gone from every final reference.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Fix 7/8/9: anchor-reference classification (active vs historical).
+//
+// After a replacement old→new, "completeness" means every ACTIVE reference to the
+// old id is gone: page grounding, contract units, interactive/source visuals, the
+// coverage projection, and the canonical registry record. HISTORICAL mentions —
+// repair logs, critic logs, the migration report — legitimately keep the old id
+// as an audit trail and must be preserved (searchable, shown separately), NOT
+// rewritten. Free-text prose mentions are treated conservatively as non-active.
+// ---------------------------------------------------------------------------
+
+export type AnchorReferenceClassification =
+  | "active_grounding"
+  | "active_contract"
+  | "active_visual"
+  | "active_projection"
+  | "canonical_registry"
+  | "historical_repair_log"
+  | "historical_critic_log"
+  | "historical_migration_report"
+  | "free_text_mention";
+
+export interface AnchorReferenceOccurrence {
+  anchorId: string;
+  path: string;
+  field?: string;
+  classification: AnchorReferenceClassification;
+  active: boolean;
+  context?: string;
+}
+
+export interface AnchorReplacementClosureResult {
+  oldAnchorId: string;
+  newAnchorId: string;
+  updatedFiles: string[];
+  /** References that must be gone for a replacement to be complete. */
+  remainingActiveReferences: AnchorReferenceOccurrence[];
+  /** Preserved history that legitimately still names the old id. */
+  historicalMentions: AnchorReferenceOccurrence[];
+  /** True iff no ACTIVE references remain (historical mentions do NOT block). */
+  complete: boolean;
+}
+
+const ACTIVE_ANCHOR_CLASSIFICATIONS = new Set<AnchorReferenceClassification>([
+  "active_grounding", "active_contract", "active_visual", "active_projection", "canonical_registry",
+]);
+
+function isActiveAnchorClassification(c: AnchorReferenceClassification): boolean {
+  return ACTIVE_ANCHOR_CLASSIFICATIONS.has(c);
+}
+
+/** Whole-token matcher so `text-…-stdp` does not match inside `text-…-stdp-x`. */
+function anchorTokenRegex(id: string): RegExp {
+  return new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`);
+}
+
+function firstMatchContext(text: string, re: RegExp): string | undefined {
+  const line = text.split(/\r?\n/).find((l) => re.test(l));
+  return line ? line.trim().slice(0, 160) : undefined;
+}
+
+/**
+ * Fix 7/8: scan every final artifact for a still-present reference to `oldId`,
+ * CLASSIFYING each occurrence as active or historical. Whole-token matching only.
+ */
+export function findRemainingAnchorReferences(gardenDir: string, oldId: string): AnchorReferenceOccurrence[] {
+  const re = anchorTokenRegex(oldId);
+  const out: AnchorReferenceOccurrence[] = [];
+  const add = (rel: string, field: string, classification: AnchorReferenceClassification, text: string): void => {
+    out.push({ anchorId: oldId, path: rel, field, classification, active: isActiveAnchorClassification(classification), context: firstMatchContext(text, re) });
+  };
+  const checkWhole = (rel: string, field: string, classification: AnchorReferenceClassification): void => {
+    const text = readText(path.join(gardenDir, ...rel.split("/")));
+    if (text !== undefined && re.test(text)) add(rel, field, classification, text);
+  };
+
+  // Learner pages: frontmatter grounding is ACTIVE; a body occurrence is a visual
+  // reference (active) only when it sits in a visual block/embed line, otherwise a
+  // conservative free-text mention.
+  const learnerPages: Array<{ abs: string; rel: string }> = [];
+  walkMarkdown(path.join(gardenDir, "learning"), "learning", learnerPages);
+  for (const p of learnerPages) {
+    const text = readText(p.abs);
+    if (text === undefined || !re.test(text)) continue;
+    const { rawFrontmatter, body } = splitFrontmatter(text);
+    if (rawFrontmatter && re.test(rawFrontmatter)) add(p.rel, "page frontmatter (grounding)", "active_grounding", rawFrontmatter);
+    if (body && re.test(body)) {
+      const visualLine = body.split(/\r?\n/).find((l) => re.test(l) && /figureId|breadboard-visual|source-visuals|!\[/.test(l));
+      if (visualLine) add(p.rel, "page body (visual)", "active_visual", body);
+      else add(p.rel, "page body (prose)", "free_text_mention", body);
+    }
+  }
+
+  checkWhole(".breadboard/learning-unit-contract.json", "learning-unit-contract", "active_contract");
+  checkWhole(".breadboard/planning/Source Coverage.md", "source-coverage projection", "active_projection");
+  checkWhole(".breadboard/source-anchors.json", "canonical anchor registry", "canonical_registry");
+  const visualsDir = path.join(gardenDir, ".breadboard", "visuals");
+  if (fs.existsSync(visualsDir)) {
+    for (const name of fs.readdirSync(visualsDir)) if (name.endsWith(".json")) checkWhole(`.breadboard/visuals/${name}`, "visual-json", "active_visual");
+  }
+
+  // Historical: audit trails that legitimately keep the old id.
+  checkWhole(".breadboard/repair-log.json", "repair-log", "historical_repair_log");
+  for (const rel of ["critic-issues.json", "critic-loop.json", "critic-report.md", "anchor-critic-decisions.json", "source-anchor-evidence.json", "source-anchor-evidence.md"]) {
+    checkWhole(`.breadboard/${rel}`, rel, "historical_critic_log");
+  }
+  for (const rel of ["source-anchor-migration.json", "source-anchor-migration.md"]) {
+    checkWhole(`.breadboard/${rel}`, rel, "historical_migration_report");
+  }
+  return out;
+}
+
+function splitClosure(gardenDir: string, oldId: string, newId: string, updatedFiles: string[]): AnchorReplacementClosureResult {
+  const occurrences = findRemainingAnchorReferences(gardenDir, oldId);
+  const remainingActiveReferences = occurrences.filter((o) => o.active);
+  const historicalMentions = occurrences.filter((o) => !o.active);
+  return { oldAnchorId: oldId, newAnchorId: newId, updatedFiles, remainingActiveReferences, historicalMentions, complete: remainingActiveReferences.length === 0 };
+}
+
+/** Replace `oldId` → `newId` across ALL active locations, remove the now-unused
+ *  old record, then compute closure. Historical mentions are left intact. */
+export function applyAnchorReplacementClosure(gardenDir: string, slug: string | undefined, oldId: string, newId: string): AnchorReplacementClosureResult {
+  const updatedFiles = replaceAnchorReference(gardenDir, slug, oldId, newId);
+  removeUnusedAnchorRecord(gardenDir, slug, oldId);
+  // Regenerate Source Coverage from the (now-updated) state so the projection
+  // drops the old id.
+  try {
+    const state = buildFinalGardenState(gardenDir, slug);
+    const coveragePath = path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md");
+    if (fs.existsSync(coveragePath)) {
+      const existing = readText(coveragePath) ?? "";
+      const { rawFrontmatter } = splitFrontmatter(existing);
+      const body = projectSourceCoverage(state);
+      const content = rawFrontmatter ? `---\n${rawFrontmatter.replace(/\s+$/, "")}\n---\n\n${body}` : body;
+      if (content !== existing) { fs.writeFileSync(coveragePath, content, "utf-8"); if (!updatedFiles.includes(".breadboard/planning/Source Coverage.md")) updatedFiles.push(".breadboard/planning/Source Coverage.md"); }
+    }
+  } catch { /* best effort */ }
+  return splitClosure(gardenDir, oldId, newId, updatedFiles);
+}
+
+/** Verify (without mutating) that a reported replacement is closed. */
+export function computeAnchorReplacementClosure(gardenDir: string, oldId: string, newId: string): AnchorReplacementClosureResult {
+  return splitClosure(gardenDir, oldId, newId, []);
+}
+
+// ---------------------------------------------------------------------------
+// Fix 1/2/3: LEDGER-DRIVEN legacy text-concept audit.
+//
+// Legacy enforcement is derived from the FINAL canonical ledger itself, NOT from
+// the presence of a migration report. A report is diagnostic output: it can be
+// missing, stale, or wrong, and must never enable or disable validation. The
+// audit is kind-specific — only genuine text_concept records are held to the
+// strict modern schema (confidence enum + evidence + relevance + source text).
+// Formula/figure/table/graph records are structural and are NOT judged by the
+// text-concept schema.
+// ---------------------------------------------------------------------------
+
+export type LegacyAnchorReason =
+  | "numeric_confidence"
+  | "missing_confidence_enum"
+  | "missing_evidence"
+  | "missing_relevance"
+  | "missing_source_text"
+  | "missing_source_id"
+  | "legacy_critic_confirmation";
+
+export interface LegacyAnchorLedgerAuditResult {
+  /** The audit always runs; it does not depend on a migration report existing. */
+  required: boolean;
+  /** True iff no unresolved legacy text_concept records remain. */
+  passed: boolean;
+  legacyAnchors: Array<{ anchorId: string; reasons: LegacyAnchorReason[] }>;
+  migratedAnchors: string[];
+  unresolvedAnchors: string[];
+  problems: string[];
+}
+
+const MODERN_CONFIDENCE_ENUM = new Set(["high", "medium", "low", "unsupported"]);
+/** Non-text canonical kinds: NEVER judged by the text-concept schema (Fix 3). */
+const NON_TEXT_ANCHOR_KINDS = new Set(["formula", "figure", "table", "graph"]);
+
+/** Kind-specific legacy detection for one text-ledger record. Returns [] when the
+ *  record is either modern OR a non-text (structural) record mis-filed here. */
+export function legacyTextConceptReasons(record: Record<string, unknown>): LegacyAnchorReason[] {
+  // A record whose kind is an explicit non-text kind is structural, not a text
+  // concept — do NOT subject it to the text-concept schema.
+  if (NON_TEXT_ANCHOR_KINDS.has(String(record.kind ?? "").toLowerCase())) return [];
+  const reasons: LegacyAnchorReason[] = [];
+  const conf = record.confidence;
+  if (typeof conf === "number") reasons.push("numeric_confidence");
+  else if (!MODERN_CONFIDENCE_ENUM.has(String(conf))) reasons.push("missing_confidence_enum");
+  if (!record.evidence || typeof record.evidence !== "object") reasons.push("missing_evidence");
+  if (!record.relevance || typeof record.relevance !== "object") reasons.push("missing_relevance");
+  if (!(typeof record.exactText === "string" && String(record.exactText).trim())) reasons.push("missing_source_text");
+  if (!String(record.sourceId ?? "").trim()) reasons.push("missing_source_id");
+  if (record.criticConfirmed !== undefined && typeof record.criticConfirmed !== "boolean") reasons.push("legacy_critic_confirmation");
+  return reasons;
+}
+
+/**
+ * Fix 1: audit the FINAL canonical ledger for unresolved legacy text_concept
+ * records. Report-independent: the presence/absence of
+ * `.breadboard/source-anchor-migration.json(.md)` does not affect whether this
+ * runs or its verdict. `required` is always true.
+ */
+export function auditLegacyAnchorsFromFinalLedger(state: FinalGardenState): LegacyAnchorLedgerAuditResult {
+  const ledger = readJson<Record<string, unknown>>(path.join(state.rootPath, ".breadboard", "source-anchors.json"), {});
+  const textRecords = Array.isArray(ledger.sourceTextConceptAnchors) ? ledger.sourceTextConceptAnchors as Array<Record<string, unknown>> : [];
+  const legacyAnchors: Array<{ anchorId: string; reasons: LegacyAnchorReason[] }> = [];
+  const migratedAnchors: string[] = [];
+  const unresolvedAnchors: string[] = [];
+  const problems: string[] = [];
+  for (const rec of textRecords) {
+    const id = String(rec.id ?? "").trim();
+    if (!id) continue;
+    if (NON_TEXT_ANCHOR_KINDS.has(String(rec.kind ?? "").toLowerCase())) continue; // structural, out of scope
+    const reasons = legacyTextConceptReasons(rec);
+    if (reasons.length === 0) {
+      if (rec.migration && typeof rec.migration === "object") migratedAnchors.push(id);
+      continue;
+    }
+    legacyAnchors.push({ anchorId: id, reasons });
+    unresolvedAnchors.push(id);
+    problems.push(`legacy text-concept anchor "${id}" is unresolved in the final ledger: ${reasons.join(", ")}`);
+  }
+  return {
+    required: true,
+    passed: legacyAnchors.length === 0,
+    legacyAnchors,
+    migratedAnchors,
+    unresolvedAnchors,
+    problems,
+  };
+}
+
+/**
+ * Fix 2: final-ledger migration-persistence + replacement-closure audit. Reads
+ * the FINAL canonical ledger DIRECTLY (never gated on a report existing) and adds
+ * a report-cross-check as a secondary diagnostic. Returns "Accepted: no" problems
+ * for the finalize gate.
+ */
+export function auditLegacyMigrationPersistence(gardenDir: string): { problems: string[] } {
+  const problems: string[] = [];
+  const state = buildFinalGardenState(gardenDir);
+  // (1) Report-independent, ledger-driven legacy detection.
+  const ledgerAudit = auditLegacyAnchorsFromFinalLedger(state);
+  problems.push(...ledgerAudit.problems);
+
+  const ledger = readJson<Record<string, unknown>>(path.join(gardenDir, ".breadboard", "source-anchors.json"), {});
+  const textRecords = Array.isArray(ledger.sourceTextConceptAnchors) ? ledger.sourceTextConceptAnchors as Array<Record<string, unknown>> : [];
+  const byId = new Map(textRecords.map((r) => [String(r.id ?? ""), r]));
+
+  // (2) Secondary cross-check against the migration report IF present. The report
+  //     can only ADD diagnostics; it can never suppress the ledger audit above.
+  const migPath = path.join(gardenDir, ".breadboard", "source-anchor-migration.json");
+  if (fs.existsSync(migPath)) {
+    const mig = readJson<{ results?: Array<Record<string, unknown>> }>(migPath, {});
+    for (const r of mig.results ?? []) {
+      const status = String(r.status ?? "");
+      const anchorId = String(r.anchorId ?? "");
+      if ((status === "migrated" || status === "replaced") && byId.has(anchorId)) {
+        const rec = byId.get(anchorId)!;
+        if (legacyTextConceptReasons(rec).length > 0) {
+          problems.push(`migration reports "${anchorId}" as ${status} but its final record is still legacy`);
+        }
+      }
+      if (status === "replaced" && r.replacementAnchorId) {
+        const closure = computeAnchorReplacementClosure(gardenDir, anchorId, String(r.replacementAnchorId));
+        if (!closure.complete) {
+          problems.push(`anchor "${anchorId}" was replaced by "${r.replacementAnchorId}" but still has active references in ${closure.remainingActiveReferences.map((x) => x.field ?? x.path).join(", ")}`);
+        }
+      }
+    }
+  }
+  return { problems: [...new Set(problems)] };
 }
 
 /** Append an applied decision to the persistent anchor-decision log. */
@@ -4515,7 +5002,7 @@ function writeSourceAnchorEvidenceReport(
  * the mechanical drifts the audit detects. Idempotent: running it twice is a
  * no-op. Returns the files it changed and human-readable notes.
  */
-export function reconcileFinalGardenState(gardenDir: string, slug?: string): ReconcileResult {
+export function reconcileFinalGardenState(gardenDir: string, slug?: string, opts?: { stripDebugFailedRepairs?: boolean }): ReconcileResult {
   const result: ReconcileResult = { changed: [], notes: [] };
   const bd = path.join(gardenDir, ".breadboard");
   const markChanged = (rel: string): void => { if (!result.changed.includes(rel)) result.changed.push(rel); };
@@ -4764,8 +5251,11 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string): Rec
     }
   }
 
-  // (4c) Drop debug failed-repairs from the exported garden (Fix 13).
-  {
+  // (4c) Drop debug failed-repairs from the exported garden (Fix 13). This is an
+  // EXPORT concern: a mid-repair reconcile (inside the repair loop) must NOT strip
+  // them, or the rejected-candidate dumps vanish before they can be inspected or
+  // captured. The final export reconcile (and finalize) still strips.
+  if (opts?.stripDebugFailedRepairs !== false) {
     const removed = removeDebugFailedRepairs(gardenDir);
     if (removed > 0) result.notes.push(`removed ${removed} debug failed-repair file(s) from the export`);
   }

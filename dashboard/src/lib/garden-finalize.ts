@@ -42,7 +42,7 @@ import {
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
-import { auditFinalGardenState, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
+import { auditFinalGardenState, auditLegacyMigrationPersistence, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
 import type { SourceAnchor } from "./visual-spec.ts";
 
 // ---------------------------------------------------------------------------
@@ -200,7 +200,16 @@ interface SourceTextConceptAnchor {
   exactText?: string;
   semanticSummary: string;
   conceptKeywords: string[];
-  confidence: number;
+  /** Legacy numeric OR the modern string enum ("high"|"medium"|"low"|"unsupported"). */
+  confidence: number | string;
+  /** Modern evidence/relevance/migration/critic metadata — MUST be preserved so
+   *  a migrated record is never downgraded to legacy (Fix 6). */
+  evidence?: unknown;
+  relevance?: unknown;
+  migration?: unknown;
+  criticConfirmed?: boolean;
+  criticConfirmationReason?: string;
+  criticConfirmedExactText?: string;
 }
 
 export type FinalizerAction =
@@ -430,7 +439,13 @@ function sourceTextAnchorKind(value: unknown): SourceTextConceptAnchorKind {
   ].includes(raw) ? raw as SourceTextConceptAnchorKind : "concept";
 }
 
+const MODERN_CONFIDENCE_ENUM = new Set(["high", "medium", "low", "unsupported"]);
+
 function normalizeSourceTextAnchor(value: SourceTextConceptAnchor): SourceTextConceptAnchor {
+  // Preserve a modern string-enum confidence; only clamp a legacy numeric one.
+  const confidence: number | string = typeof value.confidence === "string" && MODERN_CONFIDENCE_ENUM.has(value.confidence)
+    ? value.confidence
+    : Math.max(0, Math.min(1, typeof value.confidence === "number" && Number.isFinite(value.confidence) ? value.confidence : 0.7));
   return {
     id: cleanText(value.id),
     sourceId: cleanText(value.sourceId) || "source",
@@ -440,7 +455,14 @@ function normalizeSourceTextAnchor(value: SourceTextConceptAnchor): SourceTextCo
     ...(cleanText(value.exactText) ? { exactText: cleanText(value.exactText) } : {}),
     semanticSummary: cleanText(value.semanticSummary) || cleanText(value.title) || cleanText(value.id),
     conceptKeywords: [...new Set((value.conceptKeywords ?? []).map(cleanText).filter(Boolean))].slice(0, 12),
-    confidence: Math.max(0, Math.min(1, Number.isFinite(value.confidence) ? value.confidence : 0.7)),
+    confidence,
+    // Fix 6: never drop modern evidence/relevance/migration/critic metadata.
+    ...(value.evidence && typeof value.evidence === "object" ? { evidence: value.evidence } : {}),
+    ...(value.relevance && typeof value.relevance === "object" ? { relevance: value.relevance } : {}),
+    ...(value.migration && typeof value.migration === "object" ? { migration: value.migration } : {}),
+    ...(value.criticConfirmed ? { criticConfirmed: true } : {}),
+    ...(value.criticConfirmationReason ? { criticConfirmationReason: value.criticConfirmationReason } : {}),
+    ...(value.criticConfirmedExactText ? { criticConfirmedExactText: value.criticConfirmedExactText } : {}),
   };
 }
 
@@ -468,17 +490,34 @@ function readSourceAnchorLedger(gardenDir: string): SourceTextConceptAnchor[] {
       exactText: stringField(row.exactText),
       semanticSummary: stringField(row.semanticSummary ?? row.description),
       conceptKeywords: Array.isArray(row.conceptKeywords) ? row.conceptKeywords.map(stringField).filter(Boolean) : [],
-      confidence: typeof row.confidence === "number" ? row.confidence : 0.7,
+      // Preserve the raw confidence (string enum or number); do not force 0.7.
+      confidence: (typeof row.confidence === "string" || typeof row.confidence === "number") ? row.confidence : 0.7,
+      ...(row.evidence && typeof row.evidence === "object" ? { evidence: row.evidence } : {}),
+      ...(row.relevance && typeof row.relevance === "object" ? { relevance: row.relevance } : {}),
+      ...(row.migration && typeof row.migration === "object" ? { migration: row.migration } : {}),
+      ...(row.criticConfirmed === true ? { criticConfirmed: true } : {}),
+      ...(typeof row.criticConfirmationReason === "string" ? { criticConfirmationReason: row.criticConfirmationReason } : {}),
+      ...(typeof row.criticConfirmedExactText === "string" ? { criticConfirmedExactText: row.criticConfirmedExactText } : {}),
     }));
   }
   return anchors;
+}
+
+/** A record is "modern" (evidence-backed / migrated / critic-confirmed) and must
+ *  never be replaced by a legacy numeric-confidence record with the same id. */
+function isModernTextAnchor(a: SourceTextConceptAnchor): boolean {
+  return Boolean(a.evidence || a.migration || a.criticConfirmed || (typeof a.confidence === "string" && MODERN_CONFIDENCE_ENUM.has(a.confidence)));
 }
 
 function writeSourceAnchorLedger(gardenDir: string, anchors: SourceTextConceptAnchor[], report: FinalizeReport): void {
   const deduped = new Map<string, SourceTextConceptAnchor>();
   for (const anchor of anchors) {
     const normalized = normalizeSourceTextAnchor(anchor);
-    if (normalized.id) deduped.set(normalized.id, normalized);
+    if (!normalized.id) continue;
+    const prior = deduped.get(normalized.id);
+    // Fix 6: precedence — a modern record is never downgraded by a legacy one.
+    if (prior && isModernTextAnchor(prior) && !isModernTextAnchor(normalized)) continue;
+    deduped.set(normalized.id, normalized);
   }
   const content = `${JSON.stringify({ sourceTextConceptAnchors: [...deduped.values()].sort((a, b) => a.id.localeCompare(b.id)) }, null, 2)}\n`;
   const target = sourceAnchorLedgerPath(gardenDir);
@@ -2678,7 +2717,9 @@ export async function repairLearningUnitsFromContract({
     repairReport,
   );
   {
-    const reconcile = reconcileFinalGardenState(gardenDir, gardenSlug);
+    // Preserve rejected-candidate dumps under debug/failed-repairs/ through the
+    // repair loop; only the final EXPORT (finalizeGardenExport) strips them.
+    const reconcile = reconcileFinalGardenState(gardenDir, gardenSlug, { stripDebugFailedRepairs: false });
     for (const rel of reconcile.changed) if (!repairReport.changed.includes(rel)) repairReport.changed.push(rel);
     for (const note of reconcile.notes) repairReport.notes.push(note);
   }
@@ -3497,8 +3538,14 @@ function writeSourceCoverage({
   const target = path.join(planningDir, "Source Coverage.md");
   const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf-8") : "";
   const { rawFrontmatter } = parseFrontmatter(existing);
-  fs.writeFileSync(target, rawFrontmatter ? joinFrontmatter(rawFrontmatter, content) : content, "utf-8");
-  report.changed.push(".breadboard/planning/Source Coverage.md");
+  const next = rawFrontmatter ? joinFrontmatter(rawFrontmatter, content) : content;
+  // Only write + report a touch when the projection actually changes; a
+  // regeneration that reproduces the identical file is not a mutation (e.g. a
+  // repair that narrows visual anchors back to the original minimal set).
+  if (next !== existing) {
+    fs.writeFileSync(target, next, "utf-8");
+    report.changed.push(".breadboard/planning/Source Coverage.md");
+  }
 }
 
 function regenerateSourceCoverageFromFinalState(gardenDir: string, ledger: LedgerVisual[], report: FinalizeReport): void {
@@ -6533,6 +6580,22 @@ function collectFinalizeChecks({
     // status while they remain unresolved. The audit itself is unchanged.
     if (anchorEvidenceProblems.length) {
       checks.push({ name: "Source-Anchor Evidence (critic-review)", status: "PASS", problems: anchorEvidenceProblems });
+    }
+  }
+
+  // Fix 1/2: legacy text-concept persistence is derived from the FINAL ledger
+  // (never gated on a migration report). Like low-confidence anchor evidence,
+  // unresolved legacy records are RESOLVABLE by migration + the ChatMock anchor
+  // critic during the critic loop, so they are surfaced here as a non-failing
+  // critic-review item rather than hard-aborting the mechanical finalize.
+  // Publish-readiness is still blocked by the critic loop's acceptance status
+  // (auditLegacyAnchorsFromFinalLedger) while any legacy record remains.
+  {
+    let migrationProblems: string[] = [];
+    try { migrationProblems = auditLegacyMigrationPersistence(gardenDir).problems; }
+    catch (error) { migrationProblems = [`legacy-migration persistence audit could not run: ${(error as Error).message}`]; }
+    if (migrationProblems.length) {
+      checks.push({ name: "Legacy Source-Anchor Migration Persistence (critic-review)", status: "PASS", problems: migrationProblems });
     }
   }
 

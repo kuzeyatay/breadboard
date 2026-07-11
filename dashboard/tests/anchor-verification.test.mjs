@@ -80,6 +80,17 @@ function registerStrongAnchor(dir, rec) {
   });
   write(dir, ".breadboard/source-anchors.json", JSON.stringify(l, null, 2) + "\n");
 }
+// A strong, source-grounded "energy" replacement anchor. Registered explicitly by
+// the test so the fixture does not depend on any particular generated garden
+// still happening to contain an `energy-bottleneck` anchor.
+function registerEnergyBottleneck(dir) {
+  registerStrongAnchor(dir, {
+    id: "S1.P1.energy-bottleneck", title: "Energy cost bottleneck", page: 1,
+    conceptKeywords: ["energy", "bottleneck"],
+    exactText: "high power consumption-a critical bottleneck in scenarios such as mobile and edge computing",
+    semanticSummary: "Conventional networks are energy-bottlenecked by dense per-inference computation.",
+  });
+}
 const noCritic = () => [];
 
 describe("source-text verification (pure)", { skip }, () => {
@@ -103,6 +114,7 @@ describe("source-text verification (pure)", { skip }, () => {
     const dir = freshCopy();
     injectLowConfidenceAnchor(dir, "S1.P1.energy-widget");
     registerStrongAnchor(dir, { id: "S1.P1.surrogate-strong", title: "Surrogate gradient training", page: 1, conceptKeywords: ["surrogate", "gradient"] });
+    registerEnergyBottleneck(dir);
     const state = buildFinalGardenState(dir, "test-2");
     assert.equal(checkReplacementCompatibility(state, "S1.P1.energy-widget", "S1.P1.energy-bottleneck").ok, true);
     const bad = checkReplacementCompatibility(state, "S1.P1.energy-widget", "S1.P1.surrogate-strong");
@@ -204,6 +216,7 @@ describe("verified anchor decisions in the critic loop", { skip }, () => {
   test("7. replace with compatible (same-family) anchor passes", async () => {
     const dir = freshCopy();
     const { pageRel, anchorId } = injectLowConfidenceAnchor(dir);
+    registerEnergyBottleneck(dir);
     const anchorConfirm = (p) => ({ anchorId: p.anchor.id, decision: "replace", confidence: "high", replacementAnchorId: "S1.P1.energy-bottleneck", reason: "same energy concept" });
     const res = await runCriticLoop({ gardenDir: dir, gardenSlug: "test-2", critic: noCritic, anchorConfirm, options: { maxRounds: 3 } });
     assert.ok(pageAnchors(dir, pageRel).includes("S1.P1.energy-bottleneck"));
