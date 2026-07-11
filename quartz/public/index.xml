@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Temporal Data and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 Input Encoding and SNN Layers Measuring Accuracy, Latency, and Spike Count 2.1 Accuracy 2.2 Latency 2.3 Spike Count Measuri... ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:36 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 Sparse Computation and Energy Awareness 1.4 The Leaky Integrate-and-Fire Neuron 1.5 SNN Circuit Motifs Measuring Energy, Efficiency, and Convergence 2.1 Accuracy... ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:33:30 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks, or SNNs, are neural networks that communicate with discrete spike events instead of continuously passing dense activation values from layer to layer. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:36 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks A spiking neural network, or SNN, is a neural network that communicates through discrete spike events rather than continuously updated activation values. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:33:30 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:36 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain why spiking neural networks are proposed as brain-inspired alternatives to conventional neural networks, describe spike-based computation and LIF neuron behavior, compare major SNN training strategies, interpret the source’s evaluation metrics... ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:33:30 GMT</pubDate>
   </item><item>
-    <title>3.1 Energy Consumption</title>
-    <link>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/3.1-Energy-Consumption</link>
-    <guid>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/3.1-Energy-Consumption</guid>
-    <description><![CDATA[ Energy Consumption Once spike count and synaptic operations are measurable, energy becomes a quantity you can build from counts instead of a vague claim about a model being “efficient.” Imagine a small vision sensor watching a hallway. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:02 GMT</pubDate>
+    <title>1.1 Why Spiking Neural Networks Exist</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera on a battery-powered robot sitting in a hallway. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:32:22 GMT</pubDate>
   </item><item>
-    <title>3.2 Normalized Energy Efficiency</title>
-    <link>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/3.2-Normalized-Energy-Efficiency</link>
-    <guid>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/3.2-Normalized-Energy-Efficiency</guid>
-    <description><![CDATA[ After measuring accuracy as “how often the model is right” and energy consumption as “how much work the model spends to make one inference,” the natural question is how to compare them at the same time. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:02 GMT</pubDate>
+    <title>1.2 Spikes, Timing, and Event-Driven Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Spikes,-Timing,-and-Event-Driven-Computation</guid>
+    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation You already have the idea of an activation: a number that says how strongly a neuron-like unit is responding at a particular time step. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:32:22 GMT</pubDate>
   </item><item>
-    <title>3.3 Convergence Time</title>
-    <link>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/3.3-Convergence-Time</link>
-    <guid>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/3.3-Convergence-Time</guid>
-    <description><![CDATA[ After measuring what an SNN spends during inference, the next question is how soon it becomes useful while it is still learning. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:02 GMT</pubDate>
+    <title>1.3 Sparse Computation and Energy Awareness</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Sparse-Computation-and-Energy-Awareness</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-Sparse-Computation-and-Energy-Awareness</guid>
+    <description><![CDATA[ Sparse Computation and Energy Awareness Imagine the spike train from the previous page arriving at a small battery-powered camera on a streetlight. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:32:22 GMT</pubDate>
   </item><item>
-    <title>3. Measuring Energy, Efficiency, and Convergence</title>
-    <link>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/</link>
-    <guid>https://localhost:8081/test-2/learning/3.-Measuring-Energy,-Efficiency,-and-Convergence/</guid>
-    <description><![CDATA[ 3. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:02 GMT</pubDate>
+    <title>1.4 The Leaky Integrate-and-Fire Neuron</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-The-Leaky-Integrate-and-Fire-Neuron</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-The-Leaky-Integrate-and-Fire-Neuron</guid>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A spike event gives an SNN a compact way to say, “something happened at this time.” Now imagine one neuron receiving a stream of those events from earlier neurons. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:32:22 GMT</pubDate>
   </item><item>
-    <title>4.1 How SNNs Learn</title>
-    <link>https://localhost:8081/test-2/learning/4.-How-SNNs-Learn/4.1-How-SNNs-Learn</link>
-    <guid>https://localhost:8081/test-2/learning/4.-How-SNNs-Learn/4.1-How-SNNs-Learn</guid>
-    <description><![CDATA[ How SNNs Learn Imagine the spiking neuron you have already met sitting inside a small network that watches a changing signal, such as a gesture from an event camera or a short sound pattern. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:02 GMT</pubDate>
+    <title>1.5 SNN Circuit Motifs</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-SNN-Circuit-Motifs</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.5-SNN-Circuit-Motifs</guid>
+    <description><![CDATA[ SNN Circuit Motifs Once a neuron can receive a spike train, let its internal state rise, and fire when it crosses a threshold, the next question is how many such neurons cooperate inside a network. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:32:22 GMT</pubDate>
   </item><item>
-    <title>4.2 Surrogate Gradient Training</title>
-    <link>https://localhost:8081/test-2/learning/4.-How-SNNs-Learn/4.2-Surrogate-Gradient-Training</link>
-    <guid>https://localhost:8081/test-2/learning/4.-How-SNNs-Learn/4.2-Surrogate-Gradient-Training</guid>
-    <description><![CDATA[ Surrogate Gradient Training After learning that an SNN communicates through spike events, the training problem becomes sharper: a neuron can build up internal voltage smoothly for a while, but its outward message is a sudden yes-or-no event. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:02 GMT</pubDate>
+    <title>1. Why SNNs Need Events</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</guid>
+    <description><![CDATA[ 1. Why SNNs Need Events Build up why snns need events one step at a time. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:32:22 GMT</pubDate>
   </item><item>
-    <title>4.3 ANN-to-SNN Conversion</title>
-    <link>https://localhost:8081/test-2/learning/4.-How-SNNs-Learn/4.3-ANN-to-SNN-Conversion</link>
-    <guid>https://localhost:8081/test-2/learning/4.-How-SNNs-Learn/4.3-ANN-to-SNN-Conversion</guid>
-    <description><![CDATA[ ANN-to-SNN Conversion You already have the ingredients needed to understand a converted spiking network: an ANN computes with continuous activation values, an SNN communicates with spike trains, and a simulation window gives the spiking network time to express information through events. ]]></description>
-    <pubDate>Fri, 10 Jul 2026 17:25:02 GMT</pubDate>
+    <title>2.1 Accuracy and Latency</title>
+    <link>https://localhost:8081/test-2/learning/2.-Measuring-Energy,-Efficiency,-and-Convergence/2.1-Accuracy-and-Latency</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Measuring-Energy,-Efficiency,-and-Convergence/2.1-Accuracy-and-Latency</guid>
+    <description><![CDATA[ Accuracy and Latency Imagine a small spiking vision system watching the entrance to a room. Most of the time, the scene is quiet. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 07:32:22 GMT</pubDate>
   </item>
     </channel>
   </rss>

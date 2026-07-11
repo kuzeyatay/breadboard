@@ -505,7 +505,7 @@ describe("contract-driven semantic repair loop", () => {
     }
   });
 
-  test("finalize registers bare source-document slugs used by learner pages", () => {
+  test("finalize rejects bare source-document slugs as imprecise anchor labels (not registered)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-slug-anchor-"));
     try {
       const dir = path.join(root, "test-2");
@@ -577,6 +577,10 @@ describe("contract-driven semantic repair loop", () => {
       );
 
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      // A bare document slug is imprecise grounding: finalize strips it from the
+      // page rather than registering the whole document as an anchor (matches the
+      // canonical-audit rule in final-garden-state 3b). It must leave neither a
+      // dangling "missing from registry" problem nor a registered slug anchor.
       assert.equal(
         report.criticalProblems.some((problem) => /source anchor "2510-27379v1".*missing from the canonical source-anchor registry/.test(problem)),
         false,
@@ -584,9 +588,12 @@ describe("contract-driven semantic repair loop", () => {
       );
       const anchors = JSON.parse(fs.readFileSync(path.join(bb, "source-anchors.json"), "utf-8"));
       assert.ok(
-        (anchors.sourceStructuralAnchors ?? []).some((anchor) => anchor.id === sourceSlug && anchor.sourceId === sourceSlug),
-        "bare source-document slug should be registered as a structural source anchor",
+        !(anchors.sourceStructuralAnchors ?? []).some((anchor) => anchor.id === sourceSlug),
+        "bare source-document slug must NOT be registered as a structural source anchor",
       );
+      const pageMd = fs.readFileSync(path.join(dir, "learning", "1. Why SNNs Need Events", "1.1 Why Spiking Neural Networks Exist.md"), "utf-8");
+      const pageAnchors = (pageMd.match(/^sourceAnchors:\s*\[([^\]]*)\]/m)?.[1] ?? "");
+      assert.ok(!pageAnchors.includes(sourceSlug), "reconcile removes the bare slug from the page's sourceAnchors");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

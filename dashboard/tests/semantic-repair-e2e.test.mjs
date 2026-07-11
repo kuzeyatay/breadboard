@@ -178,7 +178,9 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
     assertHealedAndAccepted(ctx, { defect: /unrelated formula anchor|lacks a valid role|lacks a specific role reason/i });
     assert.ok(ctx.run.requests.some((r) => r.pagePath === ctx.meta.rel && r.failureTypes.includes("visual_grounding")));
     for (const f of ctx.affected) {
-      assert.ok(f === ctx.meta.rel || /^\.breadboard\/visuals\//.test(f), `unexpected file touched: ${f}`);
+      // Narrowing a page's visual source anchors changes which source equations
+      // are "used", so the Source Coverage projection legitimately updates too.
+      assert.ok(f === ctx.meta.rel || /^\.breadboard\/visuals\//.test(f) || f === SOURCE_COVERAGE, `unexpected file touched: ${f}`);
     }
     assert.ok(ctx.affected.includes(ctx.meta.rel));
   });
@@ -239,7 +241,9 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
     const ctx = await runFixture((dir) => {
       const section = findResultSection(dir); // { sectionRel, indexRel, title }
       const number = section.title.match(/^(\d+)\./)?.[1] ?? "5";
-      const badTitle = `${number}. Accuracy Formula Definition`;
+      // A title clearly unrelated to this section's units (a neuron-biophysics
+      // topic on a metrics/comparison section) — an unambiguous role mismatch.
+      const badTitle = `${number}. Neuron Membrane Potential Dynamics`;
       const s = read(dir, section.indexRel)
         .replace(new RegExp(`title: "${escapeRe(section.title)}"`), `title: "${badTitle}"`)
         .replace(new RegExp(`^# ${escapeRe(section.title)}$`, "m"), `# ${badTitle}`);
@@ -247,7 +251,7 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
       return { section };
     });
 
-    assertHealedAndAccepted(ctx, { defect: /does not match _index title|SECTION_SEMANTIC_MISMATCH/i });
+    assertHealedAndAccepted(ctx, { defect: /does not match (canonical )?_index title|folder name .* does not match|SECTION_SEMANTIC_MISMATCH/i });
     assert.ok(ctx.run.requests.some((r) => r.failureTypes.includes("section_semantics")));
     for (const f of ctx.affected) {
       assert.ok(
@@ -265,7 +269,7 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
       .filter((f) => f.startsWith("learning/") && f.endsWith("/_index.md"));
     assert.ok(rewrittenIndexes.length > 0, "a section index must be rewritten");
     for (const rel of rewrittenIndexes) {
-      assert.doesNotMatch(ctx.readFinal(rel), /Accuracy Formula Definition/, "the mismatched title must be gone");
+      assert.doesNotMatch(ctx.readFinal(rel), /Neuron Membrane Potential Dynamics/, "the mismatched title must be gone");
     }
   });
 

@@ -14,9 +14,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import {
   applyAnchorCriticDecision,
   auditFinalGardenState,
+  auditLegacyAnchorsFromFinalLedger,
   buildAnchorConfirmationPackets,
   buildAnchorEvidenceCriticIssues,
   buildFinalGardenState,
@@ -26,6 +28,7 @@ import {
   sanitizeSourceAnchorIds,
   unresolvedLowConfidenceAnchorIds,
   verifySourceTextRelevance,
+  verifySourceVisualRepresentation,
   type AnchorConfirmationPacket,
   type AnchorCriticDecision,
   type AppliedAnchorDecision,
@@ -132,6 +135,20 @@ export interface CriticExcerpt {
   endOffset?: number;
 }
 
+/** Per-source-visual representation summary so the critic sees that a STATIC
+ *  embed (not only a visual JSON) counts as represented (Fix 3). */
+export interface CriticSourceVisualSummary {
+  anchorId: string;
+  title: string;
+  assignedPages: string[];
+  markdownEmbeds: Array<{ pagePath: string; assetPath: string }>;
+  ledgerUsage?: { conceptUsage?: string; cropStatus?: string; assignedPageId?: string };
+  interactiveVisualIds: string[];
+  omissionReason?: string;
+  represented: boolean;
+  representationModes: string[];
+}
+
 export interface CriticReviewPacket {
   gardenTitle: string;
   sections: Array<{
@@ -169,6 +186,8 @@ export interface CriticReviewPacket {
     anchorRoles?: unknown[];
   }>;
   sourceCoverageSummary: CriticExcerpt;
+  /** Fix 3: representation status of each source-visual anchor (static or interactive). */
+  sourceVisualSummaries: CriticSourceVisualSummary[];
   deterministicValidationSummary: string;
   /** Global note reminding the critic that packetTruncated:true is an excerpt. */
   evidenceNote: string;
@@ -182,6 +201,161 @@ export interface CriticIssueVerificationResult {
   checkedFiles: string[];
   fullStateEvidence?: string[];
   reason: string;
+}
+
+// ---------------------------------------------------------------------------
+// Critic issue INSTANCE identity (Fix 4/5/6)
+//
+// A critic issue is not a stable object across rounds. The same `issueId` can be
+// re-emitted in a later round with *different evidence* (e.g. after a partial
+// repair), and two different problems can happen to share an id. So finalization
+// must NOT collapse verification state by `issueId` alone — an id that was
+// `unsupported` once must not permanently suppress a genuinely-`confirmed_blocking`
+// occurrence of that id later. We therefore model each per-round occurrence as a
+// distinct INSTANCE (keyed partly by an evidence hash), group instances by a
+// round-independent STABLE IDENTITY, and take the LATEST instance's verdict.
+// ---------------------------------------------------------------------------
+
+/** One verified occurrence of a critic issue in ONE round. Same `issueId` in two
+ *  rounds with different evidence ⇒ two DISTINCT instances (different `evidenceHash`). */
+export interface CriticIssueInstanceKey {
+  issueId: string;
+  round: number;
+  issueType: CriticIssueType;
+  targetPath?: string;
+  targetAnchorId?: string;
+  evidenceHash: string;
+}
+
+export interface VerifiedCriticIssueInstance {
+  key: CriticIssueInstanceKey;
+  issue: CriticIssue;
+  verification: CriticIssueVerificationResult;
+}
+
+/** Round- and evidence-independent identity of "the same problem", used to
+ *  collapse per-round instances and select the latest verdict. */
+export interface CriticIssueStableIdentity {
+  issueType: CriticIssueType;
+  targetPath?: string;
+  targetAnchorId?: string;
+  normalizedProblemKey: string;
+}
+
+/** Result of collapsing instances to a final, per-identity verdict. */
+export interface FinalCriticIssueResolution {
+  blockers: CriticIssue[];
+  warnings: CriticIssue[];
+  unsupportedDiagnostics: VerifiedCriticIssueInstance[];
+  insufficientEvidenceDiagnostics: VerifiedCriticIssueInstance[];
+  resolvedIdentities: CriticIssueStableIdentity[];
+  byIdentity: Array<{ identityKey: string; identity: CriticIssueStableIdentity; latest: VerifiedCriticIssueInstance }>;
+}
+
+function issueTargetPath(issue: CriticIssue): string | undefined {
+  return issue.pagePath ?? issue.sectionPath ?? undefined;
+}
+
+function issueEvidenceHash(issue: CriticIssue): string {
+  const basis = `${issue.evidence ?? ""} ${issue.problem ?? ""} ${issue.expected ?? ""}`;
+  return createHash("sha1").update(basis).digest("hex").slice(0, 16);
+}
+
+function normalizedProblemKey(problem: string): string {
+  return String(problem ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ").slice(0, 160);
+}
+
+export function criticIssueStableIdentity(issue: CriticIssue): CriticIssueStableIdentity {
+  return {
+    issueType: issue.type,
+    targetPath: issueTargetPath(issue),
+    targetAnchorId: issue.sourceAnchorIds?.[0],
+    normalizedProblemKey: normalizedProblemKey(issue.problem),
+  };
+}
+
+export function criticIssueStableIdentityKey(id: CriticIssueStableIdentity): string {
+  return [id.issueType, id.targetPath ?? "", id.targetAnchorId ?? "", id.normalizedProblemKey].join("");
+}
+
+function buildCriticIssueInstance(issue: CriticIssue, round: number, verification: CriticIssueVerificationResult): VerifiedCriticIssueInstance {
+  return {
+    key: {
+      issueId: issue.id,
+      round,
+      issueType: issue.type,
+      targetPath: issueTargetPath(issue),
+      targetAnchorId: issue.sourceAnchorIds?.[0],
+      evidenceHash: issueEvidenceHash(issue),
+    },
+    issue,
+    verification,
+  };
+}
+
+/**
+ * Fix 4/5/6: collapse per-round instances to a final verdict per STABLE IDENTITY.
+ * For each identity we take the LATEST (highest-round) instance and classify it:
+ *   confirmed_blocking (still active) → blocker
+ *   confirmed_warning  (still active) → warning
+ *   unsupported                        → diagnostic (never blocks/warns)
+ *   insufficient_evidence              → diagnostic (surfaced; does not block)
+ *   not present in the final review    → resolved (neither)
+ * There is NO global "ever-unsupported by issueId" set: an id whose latest
+ * instance is confirmed_blocking IS a blocker even if an earlier instance of the
+ * same id (different evidence) verified as unsupported.
+ */
+export function resolveFinalCriticIssues(
+  instances: VerifiedCriticIssueInstance[],
+  activeIssues: CriticIssue[],
+  _strictPublish: boolean,
+): FinalCriticIssueResolution {
+  // Latest (highest-round) verified instance per stable identity. `>=` so that a
+  // later occurrence of the same identity supersedes an earlier one.
+  const latestByIdentity = new Map<string, VerifiedCriticIssueInstance>();
+  for (const inst of instances) {
+    const k = criticIssueStableIdentityKey(criticIssueStableIdentity(inst.issue));
+    const cur = latestByIdentity.get(k);
+    if (!cur || inst.key.round >= cur.key.round) latestByIdentity.set(k, inst);
+  }
+  const activeKeys = new Set(activeIssues.map((i) => criticIssueStableIdentityKey(criticIssueStableIdentity(i))));
+
+  const blockers: CriticIssue[] = [];
+  const warnings: CriticIssue[] = [];
+  const byIdentity: FinalCriticIssueResolution["byIdentity"] = [];
+  const seenActive = new Set<string>();
+
+  // Drive final blocking/warning classification from the AUTHORITATIVE active set
+  // (the last review's deduped issues, which reflect the final state). For each
+  // active issue we consult its LATEST instance's verdict: if the latest verdict
+  // is unsupported/insufficient-evidence, it is a false positive and is dropped;
+  // otherwise the tier follows the issue's DECLARED severity (cosmetic ⇒ neither).
+  for (const issue of activeIssues) {
+    const k = criticIssueStableIdentityKey(criticIssueStableIdentity(issue));
+    if (seenActive.has(k)) continue;
+    seenActive.add(k);
+    const latest = latestByIdentity.get(k);
+    const sev = latest?.verification.severity;
+    if (sev === "unsupported" || sev === "insufficient_evidence") continue; // latest verdict = not a real problem
+    if (issue.severity === "blocking") blockers.push(issue);
+    else if (issue.severity === "warning") warnings.push(issue);
+    // cosmetic ⇒ neither
+  }
+
+  // Diagnostics (reporting only): latest-per-identity false positives and the
+  // identities the critic stopped reporting (resolved).
+  const unsupportedDiagnostics: VerifiedCriticIssueInstance[] = [];
+  const insufficientEvidenceDiagnostics: VerifiedCriticIssueInstance[] = [];
+  const resolvedIdentities: CriticIssueStableIdentity[] = [];
+  for (const [k, latest] of latestByIdentity) {
+    const identity = criticIssueStableIdentity(latest.issue);
+    byIdentity.push({ identityKey: k, identity, latest });
+    const sev = latest.verification.severity;
+    if (sev === "unsupported") unsupportedDiagnostics.push(latest);
+    else if (sev === "insufficient_evidence") insufficientEvidenceDiagnostics.push(latest);
+    else if (!activeKeys.has(k)) resolvedIdentities.push(identity);
+  }
+  return { blockers, warnings, unsupportedDiagnostics, insufficientEvidenceDiagnostics, resolvedIdentities, byIdentity };
 }
 
 export interface CriticLoopOptions {
@@ -304,6 +478,8 @@ export interface CriticLoopResult {
   rounds: CriticRoundRecord[];
   finalBlockingIssues: CriticIssue[];
   finalWarnings: CriticIssue[];
+  /** Fix 4/5/6: per-stable-identity latest-verdict resolution (diagnostics). */
+  finalResolution?: FinalCriticIssueResolution;
 }
 
 /** The critic: reviews a packet, returns structured issues. ChatMock in prod. */
@@ -373,6 +549,45 @@ function makeExcerpt(full: string, limit: number, opts: { sourcePath?: string; r
     ...(truncated ? { truncationReason: opts.reason ?? "excerpt_limit", startOffset: 0, endOffset: limit } : {}),
     ...(opts.sourcePath ? { sourcePath: opts.sourcePath } : {}),
   };
+}
+
+/** Build a representation summary per source-visual anchor (Fix 3). */
+function buildSourceVisualSummaries(state: FinalGardenState): CriticSourceVisualSummary[] {
+  let ledger: Array<Record<string, unknown>> = [];
+  try { ledger = JSON.parse(fs.readFileSync(path.join(state.rootPath, ".breadboard", "source-visuals.json"), "utf-8")); } catch { ledger = []; }
+  const anchorIds = new Set<string>();
+  for (const page of state.pages) for (const id of page.sourceVisualIds) anchorIds.add(id);
+  for (const [id, a] of Object.entries(state.sourceAnchors)) if (a.kind === "figure" || a.kind === "table" || a.kind === "graph") anchorIds.add(id);
+  const summaries: CriticSourceVisualSummary[] = [];
+  for (const anchorId of [...anchorIds].sort()) {
+    const rep = verifySourceVisualRepresentation(anchorId, state);
+    const anchor = state.sourceAnchors[anchorId];
+    const entry = ledger.find((v) => String(v.sourceVisualId ?? v.anchorId ?? "") === anchorId);
+    const markdownEmbeds: Array<{ pagePath: string; assetPath: string }> = [];
+    for (const page of state.pages) {
+      if (!page.sourceVisualIds.includes(anchorId)) continue;
+      for (const m of page.body.matchAll(/!\[[^\]]*\]\(\s*<?([^)>\s]+)>?[^)]*\)/g)) {
+        const url = m[1].toLowerCase();
+        const num = (anchorId.match(/\.P(\d+)\./i) ?? [])[1];
+        const code = (anchorId.match(/\.([A-Za-z]\d+)$/i) ?? [])[1]?.toLowerCase();
+        if (url.includes(anchorId.toLowerCase()) || (num && url.includes(`page-${num}`) && (!code || url.includes(code)))) {
+          markdownEmbeds.push({ pagePath: page.rel, assetPath: m[1] });
+        }
+      }
+    }
+    summaries.push({
+      anchorId,
+      title: anchor?.title ?? anchor?.caption ?? anchorId,
+      assignedPages: rep.pagePaths,
+      markdownEmbeds,
+      ledgerUsage: entry ? { conceptUsage: String(entry.conceptUsage ?? ""), cropStatus: String(entry.cropStatus ?? ""), assignedPageId: String(entry.assignedPageId ?? "") } : undefined,
+      interactiveVisualIds: rep.visualIds,
+      omissionReason: rep.representationModes.includes("explicit_omission") ? (rep.evidence.find((e) => /omission/i.test(e)) ?? "justified omission") : undefined,
+      represented: rep.represented,
+      representationModes: rep.representationModes,
+    });
+  }
+  return summaries;
 }
 
 const CRITIC_FORMULA_KINDS = new Set(["source_definition", "source_derived_definition", "worked_example", "conceptual_helper"]);
@@ -468,8 +683,9 @@ export function buildCriticReviewPacket(state: FinalGardenState, deterministicVa
     sourceAnchors,
     visualSummaries,
     sourceCoverageSummary: makeExcerpt((state.planningDocs.sourceCoverage ?? "").replace(/^---[\s\S]*?---/, "").replace(/\s+/g, " ").trim(), 1200, { sourcePath: ".breadboard/planning/Source Coverage.md" }),
+    sourceVisualSummaries: buildSourceVisualSummaries(state),
     deterministicValidationSummary: deterministicValidationSummary ?? summarizeAudit(audit),
-    evidenceNote: "Formulas are complete (packetTruncated:false). Any field with packetTruncated:true is only an excerpt — do NOT infer that the underlying garden artifact is truncated or malformed from where an excerpt ends; inspect the full FinalGardenState value before issuing a truncation blocker.",
+    evidenceNote: "Formulas are complete (packetTruncated:false). Any field with packetTruncated:true is only an excerpt — do NOT infer that the underlying garden artifact is truncated or malformed from where an excerpt ends; inspect the full FinalGardenState value before issuing a truncation blocker. A source figure is REPRESENTED (see sourceVisualSummaries.represented) when its crop is embedded and explained (markdown_source_embed/source_visual_ledger) OR a grounded interactive visual exists — do not require an interactive visual for a static figure.",
   };
 }
 
@@ -482,6 +698,7 @@ export const CRITIC_SYSTEM_PROMPT = `You are Breadboard's final semantic critic.
 EVIDENCE TRUTHFULNESS (read first):
 - Formula records are COMPLETE (packetTruncated:false); their "text" is the full LaTeX. Never report a formula as truncated or malformed based on where a formula string appears to end.
 - A field marked packetTruncated:true is only an EXCERPT. Do NOT infer that the underlying garden artifact is truncated or malformed from the excerpt ending. Request or inspect the full FinalGardenState value (via its sourcePath) before issuing any truncation/malformed blocker.
+- A visual source is REPRESENTED if its source crop is embedded and explained in the page — an interactive visual is NOT required. Do not require an interactive visual when the static source figure itself is appropriate. Before reporting a missing/unrepresented figure, check sourceVisualSummaries: representationModes may be markdown_source_embed, source_visual_ledger, or interactive_visual — any of these means the figure IS represented. Check sourceVisualIds, Markdown image embeds, the source-visual ledger usage, and visual JSON; do not assume only .breadboard/visuals/*.json counts.
 
 Deterministic validators already ran; do not re-report anything unless the final state truly contradicts itself or the source. Focus on MEANING, not field agreement:
 - Fields agreeing on a WRONG value is still an error (a page and its contract both citing the wrong source formula anchor is wrong).
@@ -622,6 +839,24 @@ export function verifyCriticIssueAgainstFinalState(issue: CriticIssue, state: Fi
   // weaken it). Only affirmative counter-evidence downgrades an issue.
   const trust = (checkedFiles: string[], reason: string): CriticIssueVerificationResult =>
     ({ issueId, verified: true, severity: confirmedSeverity, checkedFiles, reason });
+
+  // (a0) Missing/unrepresented source-visual claim — verify against ALL modes
+  //      (static embed, ledger, interactive) before it can block (Fix 2).
+  const mentionsMissingVisual = /(unrepresented|not (?:visualized|represented|shown)|missing (?:visual|figure|diagram|representation)|no (?:visual|figure|diagram)|figure .*not|architecture (?:figure|diagram|visual))/i.test(text);
+  if (issue.type === "visual_grounding_mismatch" || mentionsMissingVisual) {
+    const anchorIds = [...new Set([...(issue.sourceAnchorIds ?? []), ...(text.match(/S\d+\.P\d+\.[A-Za-z]\d+/g) ?? [])])];
+    if (anchorIds.length > 0) {
+      const reps = anchorIds.map((id) => verifySourceVisualRepresentation(id, state));
+      const represented = reps.filter((r) => r.represented);
+      if (represented.length === anchorIds.length && represented.length > 0) {
+        return { issueId, verified: false, severity: "unsupported", checkedFiles: [...new Set(represented.flatMap((r) => r.pagePaths))], fullStateEvidence: represented.flatMap((r) => r.evidence).slice(0, 4), reason: `source figure is embedded and explained as a static source visual (${represented.map((r) => `${r.anchorId}: ${r.representationModes.join("+")}`).join("; ")})` };
+      }
+      const missing = reps.filter((r) => !r.represented);
+      if (missing.length > 0) {
+        return { issueId, verified: true, severity: "confirmed_blocking", checkedFiles: targetFiles, fullStateEvidence: missing.map((r) => r.reason), reason: `${missing.map((r) => r.anchorId).join(", ")} is not represented by any static embed, interactive visual, or justified omission` };
+      }
+    }
+  }
 
   // (a) Formula truncation / malformed formula — the known packet false positive.
   if (mentionsTruncation && /formula|equation|latex|\\|expression|brace/i.test(text)) {
@@ -1264,6 +1499,14 @@ export interface RunCriticLoopArgs {
    *  unusable); drives the publish_failed_structural lifecycle. */
   structuralFailure?: boolean;
   writeReports?: boolean;
+  /**
+   * Fix 2: FINALIZATION enforcement. When true (the production pipeline, which
+   * migrates legacy anchors BEFORE the loop), any legacy text_concept record that
+   * remains unresolved in the FINAL ledger blocks publish-readiness, derived
+   * directly from the ledger (never from a migration report). Left false for
+   * loop-mechanics unit tests that feed a non-final (un-migrated) garden.
+   */
+  enforceLegacyFinalization?: boolean;
 }
 
 function finalizeStatus(args: {
@@ -1348,7 +1591,29 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
     catch { return 0; }
   };
 
+  // Every verified per-round issue occurrence, for latest-verdict-per-identity
+  // finalization (Fix 4/5/6). Never keyed globally by issueId.
+  const allInstances: VerifiedCriticIssueInstance[] = [];
+  let finalResolution: FinalCriticIssueResolution | undefined;
+
   const finish = (blocking: CriticIssue[], warnings: CriticIssue[], criticRan: boolean, criticErrored: boolean, criticErrorMessage?: string): CriticLoopResult => {
+    // Fix 4/5/6: final blockers/warnings come from the LATEST verified instance
+    // per stable identity — NOT a global "ever-unsupported by issueId" filter. An
+    // id whose latest occurrence is confirmed_blocking blocks even if an earlier
+    // occurrence (different evidence) verified unsupported; conversely an id whose
+    // latest occurrence is unsupported never leaks in as a blocker.
+    //
+    // Deterministic anchor-evidence issues are ground truth (not ChatMock-verified
+    // through instances), so they pass through directly.
+    const anchorBlocking = blocking.filter((i) => i.id.startsWith(ANCHOR_EVIDENCE_ISSUE_PREFIX));
+    const chatActive = [
+      ...blocking.filter((i) => !i.id.startsWith(ANCHOR_EVIDENCE_ISSUE_PREFIX)),
+      ...warnings.filter((i) => i.severity === "warning" && !i.id.startsWith(ANCHOR_EVIDENCE_ISSUE_PREFIX)),
+    ];
+    const resolution = resolveFinalCriticIssues(allInstances, chatActive, options.strictPublish);
+    finalResolution = resolution;
+    const verifiedBlocking = [...anchorBlocking, ...resolution.blockers];
+    const verifiedWarnings = resolution.warnings;
     const status = finalizeStatus({
       draftGenerated,
       deterministicPass: detPass(),
@@ -1358,12 +1623,28 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       criticRan,
       criticErrored,
       criticErrorMessage,
-      blocking,
-      warnings,
+      blocking: verifiedBlocking,
+      warnings: verifiedWarnings,
       roundsUsed: rounds.length,
       unresolvedLowConfidenceAnchors: anchorCountNow(),
     });
-    const result: CriticLoopResult = { status, rounds, finalBlockingIssues: blocking, finalWarnings: warnings };
+    // Fix 2 (FINALIZATION only): a garden that still carries unresolved legacy
+    // text_concept records in its FINAL ledger is not publish-ready, derived
+    // directly from the ledger and independent of any migration report. Applied
+    // only when the caller (the production pipeline, which migrates first) opts
+    // in; loop-mechanics unit tests feed non-final gardens and do not.
+    if (args.enforceLegacyFinalization && status.publishReady) {
+      let legacyRemaining = 0;
+      try { legacyRemaining = auditLegacyAnchorsFromFinalLedger(buildFinalGardenState(args.gardenDir, args.gardenSlug)).legacyAnchors.length; }
+      catch { legacyRemaining = 0; }
+      if (legacyRemaining > 0) {
+        status.publishReady = false;
+        status.accepted = false;
+        status.lifecycleStatus = "needs_review";
+        status.reason = "unresolved_legacy_anchor";
+      }
+    }
+    const result: CriticLoopResult = { status, rounds, finalBlockingIssues: verifiedBlocking, finalWarnings: verifiedWarnings, finalResolution: resolution };
     if (args.writeReports !== false) writeCriticReports(args.gardenDir, result);
     return result;
   };
@@ -1374,16 +1655,19 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
   // issues for a round. Every ChatMock issue is independently checked against the
   // full FinalGardenState; unsupported/insufficient-evidence issues are recorded
   // as false positives and never become blocking (Fix 3/5).
-  const verifiedReview = (state: FinalGardenState, criticIssues: CriticIssue[]) => {
+  const verifiedReview = (state: FinalGardenState, criticIssues: CriticIssue[], round: number) => {
     const verifications = criticIssues.map((i) => verifyCriticIssueAgainstFinalState(i, state));
-    const verById = new Map(verifications.map((v) => [v.issueId, v]));
+    // Instances are keyed per-issue-per-round (with an evidence hash), NOT by
+    // issueId, so the finalizer can take the latest verdict per stable identity.
+    const instances = criticIssues.map((i, idx) => buildCriticIssueInstance(i, round, verifications[idx]));
+    const verByIdx = new Map<CriticIssue, CriticIssueVerificationResult>(criticIssues.map((i, idx) => [i, verifications[idx]]));
     const kept = criticIssues.filter((i) => {
-      const v = verById.get(i.id);
+      const v = verByIdx.get(i);
       return v && (v.severity === "confirmed_blocking" || v.severity === "confirmed_warning");
     });
     const falsePositives = criticIssues
-      .filter((i) => { const v = verById.get(i.id); return v && (v.severity === "unsupported" || v.severity === "insufficient_evidence"); })
-      .map((i) => ({ issue: i, verification: verById.get(i.id)! }));
+      .filter((i) => { const v = verByIdx.get(i); return v && (v.severity === "unsupported" || v.severity === "insufficient_evidence"); })
+      .map((i) => ({ issue: i, verification: verByIdx.get(i)! }));
     const anchorIssues = anchorEvidenceCriticIssues(state);
     const merged = [...anchorIssues, ...kept];
     const seen = new Set<string>();
@@ -1394,6 +1678,7 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       blocking: issues.filter((i) => i.severity === "blocking"),
       warnings: issues.filter((i) => i.severity === "warning"),
       verifications,
+      instances,
       falsePositives,
       reportedIssues: criticIssues.length + anchorIssues.length,
     };
@@ -1418,7 +1703,8 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
       // Prose critic unavailable — low-confidence anchors still block.
       return finish([...(prevBlocking ?? []), ...anchorIssues.filter((a) => !(prevBlocking ?? []).some((p) => p.id === a.id))], lastWarnings, round > 1, true, error instanceof Error ? error.message : String(error));
     }
-    const review = verifiedReview(state, criticIssues);
+    const review = verifiedReview(state, criticIssues, round);
+    allInstances.push(...review.instances);
     const { blocking, warnings } = review;
     const verificationFields = {
       reportedIssues: review.reportedIssues,
@@ -1513,7 +1799,9 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
   if (!endedClean && prevBlocking && prevRoundIdx >= 0 && rounds[prevRoundIdx].resolutions.length === 0) {
     try {
       const state = buildFinalGardenState(args.gardenDir, args.gardenSlug);
-      const finalReview = verifiedReview(state, (await Promise.resolve(args.critic(buildCriticReviewPacket(state)))).slice(0, options.maxIssuesPerRound));
+      const measurementRound = (rounds[rounds.length - 1]?.round ?? 0) + 1;
+      const finalReview = verifiedReview(state, (await Promise.resolve(args.critic(buildCriticReviewPacket(state)))).slice(0, options.maxIssuesPerRound), measurementRound);
+      allInstances.push(...finalReview.instances);
       lastBlocking = finalReview.blocking;
       lastWarnings = finalReview.warnings;
       const resolutions = computeIssueResolutions(prevBlocking, lastBlocking, prevRequestsByIssue);
@@ -1670,7 +1958,7 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
       ? deterministicProblems.slice(0, 40).map((problem) => `- ${mdCell(problem)}`)
       : ["- None."]),
     "",
-    "## Warnings",
+    "## Verified Warnings",
     "",
     ...(result.finalWarnings.length > 0
       ? result.finalWarnings.map((i) => `- **[${i.type}]** ${i.problem} (${i.pagePath ?? i.sectionPath ?? "global"})`)
@@ -1679,12 +1967,24 @@ export function writeCriticReports(gardenDir: string, result: CriticLoopResult):
     "## Unsupported Critic Issues",
     "",
     ...(() => {
-      const fps = result.rounds.flatMap((r) => (r.falsePositives ?? []).map((f) => ({ round: r.round, f })));
+      const fps = result.rounds.flatMap((r) => (r.falsePositives ?? []).filter((f) => f.verification.severity === "unsupported").map((f) => ({ round: r.round, f })));
       if (fps.length === 0) return ["- None."];
       return [
         "| Issue | Reported Problem | Verification Result | Reason |",
         "|---|---|---|---|",
         ...fps.map(({ f }) => `| ${mdCell(f.issue.id)} | ${mdCell(f.issue.problem)} | ${f.verification.severity} | ${mdCell(f.verification.reason)} |`),
+      ];
+    })(),
+    "",
+    "## Insufficient-Evidence Critic Issues",
+    "",
+    ...(() => {
+      const rows = result.rounds.flatMap((r) => (r.falsePositives ?? []).filter((f) => f.verification.severity === "insufficient_evidence"));
+      if (rows.length === 0) return ["- None."];
+      return [
+        "| Issue | Reported Problem | Reason |",
+        "|---|---|---|",
+        ...rows.map((f) => `| ${mdCell(f.issue.id)} | ${mdCell(f.issue.problem)} | ${mdCell(f.verification.reason)} |`),
       ];
     })(),
     "",
