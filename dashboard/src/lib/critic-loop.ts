@@ -17,6 +17,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import {
   applyAnchorCriticDecision,
+  auditCanonicalRegistryIntegrity,
   auditFinalGardenState,
   auditLegacyAnchorsFromFinalLedger,
   buildAnchorConfirmationPackets,
@@ -480,6 +481,8 @@ export interface CriticLoopResult {
   finalWarnings: CriticIssue[];
   /** Fix 4/5/6: per-stable-identity latest-verdict resolution (diagnostics). */
   finalResolution?: FinalCriticIssueResolution;
+  /** Fix 12/13/14: the single canonical acceptance decision all reports share. */
+  finalDecision?: FinalAcceptanceDecision;
 }
 
 /** The critic: reviews a packet, returns structured issues. ChatMock in prod. */
@@ -1579,6 +1582,135 @@ function finalizeStatus(args: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Fix 12/13/14: ONE canonical acceptance decision derived from the SAME rebuilt,
+// post-migration FinalGardenState. Deterministic failures take precedence over
+// critic availability; critic unavailability is reported separately, never as a
+// substitute for a deterministic failure. Every report reads these same counts.
+// ---------------------------------------------------------------------------
+
+export type FinalAcceptancePrimaryReason =
+  | "accepted"
+  | "deterministic_validation_failed"
+  | "verified_critic_blockers"
+  | "critic_unavailable_with_unresolved_semantic_issues"
+  | "repair_budget_exhausted";
+
+export interface FinalAcceptanceDecision {
+  draftGenerated: boolean;
+  deterministicPass: boolean;
+  criticRan: boolean;
+  criticAvailable: boolean;
+  criticPass: boolean;
+  accepted: boolean;
+  publishReady: boolean;
+  lifecycleStatus: GardenLifecycleStatus;
+  primaryReason: FinalAcceptancePrimaryReason;
+  deterministicBlockers: CriticIssue[];
+  verifiedCriticBlockers: CriticIssue[];
+  verifiedWarnings: CriticIssue[];
+  criticAvailabilityProblem?: string;
+  deterministicBlockerCount: number;
+  verifiedCriticBlockerCount: number;
+  verifiedWarningCount: number;
+}
+
+const DETERMINISTIC_ANCHOR_EVIDENCE_RULE = "anchor_evidence";
+
+/** Collect ALL deterministic anchor/graph blockers from the rebuilt final state:
+ *  missing canonical anchors, dangling embedded-visual anchors, incomplete
+ *  replacement closure, and legacy-migration persistence failures. Low-confidence
+ *  anchor evidence is EXCLUDED here — it is a critic-resolvable issue, surfaced
+ *  through the anchor-evidence critic path, not a hard deterministic failure. */
+export function collectDeterministicBlockers(state: FinalGardenState, opts?: { includeLegacy?: boolean }): CriticIssue[] {
+  const out: CriticIssue[] = [];
+  const seen = new Set<string>();
+  const push = (type: CriticIssueType, problem: string, target: CriticRepairTarget): void => {
+    if (seen.has(problem)) return;
+    seen.add(problem);
+    out.push({ id: `det-${createHash("sha1").update(problem).digest("hex").slice(0, 12)}`, severity: "blocking", type, pagePath: undefined, sourceAnchorIds: undefined, problem, evidence: problem, expected: "resolve deterministically (no dangling or legacy references)", repairTarget: target, suggestedRepair: "fix the source-anchor graph and re-run finalization" });
+  };
+  let audit: FinalAuditResult | undefined;
+  try { audit = auditFinalGardenState(state); } catch { audit = undefined; }
+  if (audit) {
+    const evidenceProblems = new Set(audit.byRule[DETERMINISTIC_ANCHOR_EVIDENCE_RULE] ?? []);
+    for (const p of audit.problems) if (!evidenceProblems.has(p)) push("source_anchor_mismatch", p, "source_anchor_ledger");
+  }
+  try { for (const p of auditCanonicalRegistryIntegrity(state).problems) push("source_anchor_mismatch", p, "source_anchor_ledger"); } catch { /* ignore */ }
+  // Legacy-persistence is a FINALIZATION concern (opt-in), matching the pipeline's
+  // enforceLegacyFinalization gate — un-migrated loop-mechanics gardens are not
+  // penalized for grandfathered numeric anchors.
+  if (opts?.includeLegacy !== false) {
+    try { for (const p of auditLegacyAnchorsFromFinalLedger(state).problems) push("source_anchor_mismatch", p, "source_anchor_ledger"); } catch { /* ignore */ }
+  }
+  return out;
+}
+
+/**
+ * Fix 12/13/14: compute the single canonical acceptance decision. `primaryReason`
+ * follows the strict precedence: deterministic_validation_failed >
+ * verified_critic_blockers > critic_unavailable_with_unresolved_semantic_issues >
+ * repair_budget_exhausted > accepted.
+ */
+export function computeFinalAcceptanceDecision(
+  state: FinalGardenState,
+  args: {
+    draftGenerated: boolean;
+    strictPublish: boolean;
+    criticRan: boolean;
+    criticAvailable: boolean;
+    criticAvailabilityProblem?: string;
+    verifiedCriticBlockers: CriticIssue[];
+    verifiedWarnings: CriticIssue[];
+    repairBudgetExhausted?: boolean;
+    includeLegacyAsDeterministic?: boolean;
+  },
+): FinalAcceptanceDecision {
+  const deterministicBlockers = collectDeterministicBlockers(state, { includeLegacy: args.includeLegacyAsDeterministic !== false });
+  const deterministicPass = deterministicBlockers.length === 0;
+  const verifiedCriticBlockers = args.verifiedCriticBlockers;
+  const verifiedWarnings = args.verifiedWarnings;
+  const criticPass = args.criticRan && args.criticAvailable && verifiedCriticBlockers.length === 0;
+  const semanticUnresolved = verifiedCriticBlockers.length > 0 || (args.strictPublish && !args.criticAvailable);
+
+  const publishReady = args.draftGenerated
+    && deterministicPass
+    && verifiedCriticBlockers.length === 0
+    && (args.strictPublish ? (args.criticRan && args.criticAvailable) : true);
+
+  // Strict precedence — deterministic failures win over critic availability.
+  const primaryReason: FinalAcceptancePrimaryReason = !deterministicPass
+    ? "deterministic_validation_failed"
+    : verifiedCriticBlockers.length > 0
+      ? "verified_critic_blockers"
+      : args.strictPublish && !args.criticAvailable && semanticUnresolved
+        ? "critic_unavailable_with_unresolved_semantic_issues"
+        : args.repairBudgetExhausted
+          ? "repair_budget_exhausted"
+          : "accepted";
+
+  const lifecycleStatus: GardenLifecycleStatus = publishReady ? "publish_ready" : "needs_review";
+
+  return {
+    draftGenerated: args.draftGenerated,
+    deterministicPass,
+    criticRan: args.criticRan,
+    criticAvailable: args.criticAvailable,
+    criticPass,
+    accepted: publishReady,
+    publishReady,
+    lifecycleStatus,
+    primaryReason,
+    deterministicBlockers,
+    verifiedCriticBlockers,
+    verifiedWarnings,
+    criticAvailabilityProblem: args.criticAvailable ? undefined : args.criticAvailabilityProblem,
+    deterministicBlockerCount: deterministicBlockers.length,
+    verifiedCriticBlockerCount: verifiedCriticBlockers.length,
+    verifiedWarningCount: verifiedWarnings.length,
+  };
+}
+
 export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoopResult> {
   const options: CriticLoopOptions = { ...DEFAULT_CRITIC_LOOP_OPTIONS, ...(args.options ?? {}) };
   const repair = args.repair ?? makeDefaultArtifactRepair();
@@ -1644,7 +1776,40 @@ export async function runCriticLoop(args: RunCriticLoopArgs): Promise<CriticLoop
         status.reason = "unresolved_legacy_anchor";
       }
     }
-    const result: CriticLoopResult = { status, rounds, finalBlockingIssues: verifiedBlocking, finalWarnings: verifiedWarnings, finalResolution: resolution };
+    // Fix 12/13/14: one canonical acceptance decision from the rebuilt final
+    // state. Deterministic blockers (missing anchors, dangling embedded visuals,
+    // incomplete closure, legacy persistence) take precedence over critic
+    // availability. Non-anchor-evidence verified critic blockers are the semantic
+    // blockers; deterministic ones are computed from the state itself.
+    // The canonical decision is ADDITIVE: it never loosens the loop status. It can
+    // only ADD blocking (a hard deterministic failure the loop status missed) —
+    // never flip a needs_review garden to publish_ready.
+    let finalDecision: FinalAcceptanceDecision | undefined;
+    try {
+      const decisionState = buildFinalGardenState(args.gardenDir, args.gardenSlug);
+      finalDecision = computeFinalAcceptanceDecision(decisionState, {
+        draftGenerated,
+        strictPublish: options.strictPublish,
+        criticRan,
+        criticAvailable: !criticErrored && criticRan,
+        criticAvailabilityProblem: criticErrored ? (criticErrorMessage ?? "critic did not run") : undefined,
+        verifiedCriticBlockers: resolution.blockers,
+        verifiedWarnings: resolution.warnings,
+        repairBudgetExhausted: totalAttempts >= options.maxTotalRepairAttempts,
+        includeLegacyAsDeterministic: Boolean(args.enforceLegacyFinalization),
+      });
+      // A HARD deterministic failure (missing anchor / dangling / cycle / legacy)
+      // must block publish and take precedence — but never override the loop's
+      // own (narrower) publish decision when it already blocks.
+      if (!finalDecision.deterministicPass && status.publishReady) {
+        status.publishReady = false;
+        status.accepted = false;
+        status.lifecycleStatus = "needs_review";
+        status.reason = "deterministic_validation_failed";
+      }
+    } catch { /* keep finalizeStatus result */ }
+
+    const result: CriticLoopResult = { status, rounds, finalBlockingIssues: verifiedBlocking, finalWarnings: verifiedWarnings, finalResolution: resolution, finalDecision };
     if (args.writeReports !== false) writeCriticReports(args.gardenDir, result);
     return result;
   };
@@ -1841,11 +2006,52 @@ async function applyAnchorDecisions(
 // Reports
 // ---------------------------------------------------------------------------
 
+/**
+ * Fix 12/24: force the validation report to agree with the canonical decision.
+ * It can never show "0 FAIL"/"Accepted: yes" while deterministicPass is false —
+ * the header counts are raised to include deterministic + verified-critic blockers
+ * and an authoritative "Final Acceptance Decision" section is written.
+ */
+export function reconcileValidationReportWithDecision(gardenDir: string, d: FinalAcceptanceDecision): void {
+  const p = path.join(gardenDir, ".breadboard", "validation-report.md");
+  let text = fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : "# Breadboard Validation Report\n\nCheck results: 0 PASS, 0 WARN, 0 FAIL, 0 SKIP\nAccepted: yes\n";
+  const blockerTotal = d.deterministicBlockerCount + d.verifiedCriticBlockerCount;
+  text = text.replace(/^Accepted: .*$/m, `Accepted: ${d.accepted ? "yes" : "no"}`);
+  text = text.replace(/^Check results: (\d+) PASS, (\d+) WARN, (\d+) FAIL, (\d+) SKIP$/m, (_full, pass, warn, fail, skip) => {
+    const failN = Math.max(Number(fail), blockerTotal);
+    return `Check results: ${pass} PASS, ${warn} WARN, ${failN} FAIL, ${skip} SKIP`;
+  });
+  const section = [
+    "## Final Acceptance Decision",
+    "",
+    `Primary reason: ${d.primaryReason}`,
+    `Deterministic pass: ${d.deterministicPass}`,
+    `Publish ready: ${d.publishReady}`,
+    `Critic available: ${d.criticAvailable}${d.criticAvailabilityProblem ? ` (${d.criticAvailabilityProblem})` : ""}`,
+    `Deterministic blockers: ${d.deterministicBlockerCount}`,
+    `Verified critic blockers: ${d.verifiedCriticBlockerCount}`,
+    `Verified warnings: ${d.verifiedWarningCount}`,
+    "",
+    ...(d.deterministicBlockers.length ? d.deterministicBlockers.map((b) => `- [deterministic] ${String(b.problem).replace(/\r?\n/g, " ")}`) : ["- No deterministic blockers."]),
+    ...d.verifiedCriticBlockers.map((b) => `- [critic] ${String(b.problem).replace(/\r?\n/g, " ")}`),
+    "",
+  ].join("\n");
+  const re = /## Final Acceptance Decision[\s\S]*?(?=\n## |\s*$)/;
+  text = re.test(text) ? text.replace(re, `${section}`) : `${text.replace(/\s*$/, "")}\n\n${section}\n`;
+  fs.writeFileSync(p, text.endsWith("\n") ? text : `${text}\n`, "utf-8");
+}
+
 export function writeCriticReports(gardenDir: string, result: CriticLoopResult): void {
   const bd = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(bd, { recursive: true });
 
-  fs.writeFileSync(path.join(bd, "acceptance-status.json"), `${JSON.stringify(result.status, null, 2)}\n`, "utf-8");
+  // Fix 12/14: acceptance-status carries the canonical decision + shared counts so
+  // every consumer (UI, reports) reads the same deterministic/critic breakdown.
+  const acceptance = result.finalDecision
+    ? { ...result.status, finalDecision: result.finalDecision, deterministicBlockerCount: result.finalDecision.deterministicBlockerCount, verifiedCriticBlockerCount: result.finalDecision.verifiedCriticBlockerCount, verifiedWarningCount: result.finalDecision.verifiedWarningCount }
+    : result.status;
+  fs.writeFileSync(path.join(bd, "acceptance-status.json"), `${JSON.stringify(acceptance, null, 2)}\n`, "utf-8");
+  if (result.finalDecision) reconcileValidationReportWithDecision(gardenDir, result.finalDecision);
 
   fs.writeFileSync(
     path.join(bd, "critic-issues.json"),

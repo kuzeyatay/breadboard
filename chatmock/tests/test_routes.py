@@ -65,6 +65,7 @@ class RouteTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
         model_ids = [item["id"] for item in body["data"]]
+        self.assertEqual(model_ids[0], "gpt-5.6-sol")
         self.assertIn("gpt-5.4", model_ids)
         self.assertIn("gpt-5.4-mini", model_ids)
         self.assertIn("gpt-5.3-codex-spark", model_ids)
@@ -74,8 +75,28 @@ class RouteTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(response.status_code, 200)
         model_names = [item["name"] for item in body["models"]]
+        self.assertEqual(model_names[0], "gpt-5.6-sol")
         self.assertIn("gpt-5.4", model_names)
         self.assertIn("gpt-5.4-mini", model_names)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_defaults_to_gpt_5_6_sol(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp-default"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_start.call_args.args[0], "gpt-5.6-sol")
+        self.assertEqual(response.get_json()["model"], "gpt-5.6-sol")
 
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions(self, mock_start) -> None:

@@ -19,7 +19,7 @@ import {
   type RepairExecutorMode,
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
-import { describeMissingAnchorFailure, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
+import { describeMissingAnchorFailure, healDanglingReplacementReferences, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
 import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import {
   appendGardenEvent,
@@ -4889,6 +4889,22 @@ export async function runTextbookGeneration({
               needsCritic: migration.counts.needs_critic_review,
               blocking: migration.counts.blocking,
               suspiciousPassages: migration.duplicateGroups.filter((g) => g.suspicious).length,
+              replacementPlanApplied: Boolean(migration.replacementPlanApplied),
+            });
+          }
+          // Safety net for a garden left with DANGLING references by an earlier
+          // UNSAFE per-anchor replacement pass (repoint to surviving anchors /
+          // restore both-deleted cycles). The two-phase planner prevents this
+          // going forward; this heals any pre-existing damage before the critic.
+          const heal = healDanglingReplacementReferences(clusterDir, gardenId);
+          if (heal.healed.length > 0 || heal.problems.length > 0) {
+            reconcileFinalGardenState(clusterDir, gardenId);
+            appendLearnEvent(contentPath, gardenId, "learn_dangling_anchor_references_healed", {
+              jobId: job.id,
+              healed: heal.healed.length,
+              repointed: heal.healed.filter((h) => h.action === "repointed").length,
+              restored: heal.healed.filter((h) => h.action === "restored").length,
+              problems: heal.problems,
             });
           }
         } catch (migrationError) {
