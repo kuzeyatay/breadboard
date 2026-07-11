@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+    <channel>
+      <title>breadboard</title>
+      <link>https://localhost:8081</link>
+      <description>Last 10 notes on breadboard</description>
+      <generator>Quartz -- quartz.jzhao.xyz</generator>
+      <item>
+    <title>Learning Map</title>
+    <link>https://localhost:8081/test-2/learning/Learning-Map</link>
+    <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
+    <description><![CDATA[ Learning Map Section Order Why SNNs Need Events 1.1 Why Spiking Neural Networks Exist 1.2 Biological Inspiration Without Biological Overclaiming 1.3 The Leaky Integrate-and-Fire Neuron 1.4 Spiking Network Architecture How SNNs Learn 2.1 How SNNs Learn 2.2 Surrogate Gradient Training 2.3 ANN-to-SNN C... ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:43 GMT</pubDate>
+  </item><item>
+    <title>Topic Overview</title>
+    <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
+    <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
+    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks, or SNNs, are neural networks that communicate with discrete spike events instead of continuously passing dense activation values through every layer. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:43 GMT</pubDate>
+  </item><item>
+    <title>Spiking Neural Networks</title>
+    <link>https://localhost:8081/test-2/learning/</link>
+    <guid>https://localhost:8081/test-2/learning/</guid>
+    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:43 GMT</pubDate>
+  </item><item>
+    <title>1.1 Why Spiking Neural Networks Exist</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a tiny camera on a battery-powered robot watching a hallway. Most of the time, the hallway barely changes. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:06 GMT</pubDate>
+  </item><item>
+    <title>1.2 Biological Inspiration Without Biological Overclaiming</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Biological-Inspiration-Without-Biological-Overclaiming</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.2-Biological-Inspiration-Without-Biological-Overclaiming</guid>
+    <description><![CDATA[ Biological Inspiration Without Biological Overclaiming After why spiking neural networks exist, biological inspiration without biological overclaiming becomes the next question to resolve. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:06 GMT</pubDate>
+  </item><item>
+    <title>1.3 The Leaky Integrate-and-Fire Neuron</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-The-Leaky-Integrate-and-Fire-Neuron</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron Imagine the event-based sensor from the previous idea watching a quiet scene. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:06 GMT</pubDate>
+  </item><item>
+    <title>1.4 Spiking Network Architecture</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-Spiking-Network-Architecture</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/1.4-Spiking-Network-Architecture</guid>
+    <description><![CDATA[ A single spiking neuron can already do something powerful: it can sit quietly, accumulate incoming signals over time, and fire a spike when its internal state reaches a threshold. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:06 GMT</pubDate>
+  </item><item>
+    <title>1. Why SNNs Need Events</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-SNNs-Need-Events/</guid>
+    <description><![CDATA[ 1. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:06 GMT</pubDate>
+  </item><item>
+    <title>2.1 How SNNs Learn</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.1-How-SNNs-Learn</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.1-How-SNNs-Learn</guid>
+    <description><![CDATA[ How SNNs Learn Imagine a spiking network already knows how to compute with brief events: each neuron waits, accumulates input, and emits a spike when its internal state reaches a threshold. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:06 GMT</pubDate>
+  </item><item>
+    <title>2.2 Surrogate Gradient Training</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.2-Surrogate-Gradient-Training</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-SNNs-Learn/2.2-Surrogate-Gradient-Training</guid>
+    <description><![CDATA[ Surrogate Gradient Training Imagine a spiking network that already knows how to listen for events: a neuron receives incoming spikes, its internal voltage rises, and when that voltage crosses a threshold it emits its own spike. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 10:03:06 GMT</pubDate>
+  </item>
+    </channel>
+  </rss>
