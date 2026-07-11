@@ -549,6 +549,96 @@ function visualAnchorIdsByKind(spec: Record<string, unknown>): { hard: string[];
   return { hard: [...new Set(hard)], text: [...new Set(text)], roles: [...new Set(roles)] };
 }
 
+// ---------------------------------------------------------------------------
+// Embedded visual-block anchor references (Fix 7/8): a `breadboard-visual` block
+// inside a learner page body is ACTIVE artifact state — its anchor ids must be
+// updated during replacement, not treated as free-text prose.
+// ---------------------------------------------------------------------------
+
+/** Scalar (single-id) anchor fields carried by a visual spec / its sourceAnchors. */
+const EMBEDDED_VISUAL_ID_FIELDS = ["textAnchorId", "sourceAnchorId", "formulaAnchorId", "figureAnchorId", "figureId", "tableId", "equationId", "questionId"];
+/** Array-of-id anchor fields carried by a visual spec. */
+const EMBEDDED_VISUAL_ARRAY_FIELDS = ["sourceAnchors", "sourceFormulaAnchors", "sourceVisualIds"];
+
+export interface EmbeddedVisualReference {
+  pagePath: string;
+  blockIndex: number;
+  visualId?: string;
+  references: { field: string; anchorId: string }[];
+}
+
+/** Collect every anchor id referenced by a parsed visual spec (recursively). */
+function collectVisualSpecAnchorRefs(spec: unknown, out: { field: string; anchorId: string }[]): void {
+  if (!spec || typeof spec !== "object") return;
+  for (const [key, value] of Object.entries(spec as Record<string, unknown>)) {
+    if (typeof value === "string") {
+      if (EMBEDDED_VISUAL_ID_FIELDS.includes(key) && value.trim()) out.push({ field: key, anchorId: value.trim() });
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === "string") {
+          if (EMBEDDED_VISUAL_ARRAY_FIELDS.includes(key) && item.trim()) out.push({ field: key, anchorId: item.trim() });
+        } else {
+          collectVisualSpecAnchorRefs(item, out);
+        }
+      }
+    } else if (value && typeof value === "object") {
+      collectVisualSpecAnchorRefs(value, out);
+    }
+  }
+}
+
+/** Rewrite `from` → `to` across every anchor field of a parsed visual spec. */
+function replaceAnchorsInVisualSpec(spec: unknown, from: string, to: string): boolean {
+  if (!spec || typeof spec !== "object") return false;
+  let changed = false;
+  for (const [key, value] of Object.entries(spec as Record<string, unknown>)) {
+    if (typeof value === "string") {
+      if (EMBEDDED_VISUAL_ID_FIELDS.includes(key) && value === from) { (spec as Record<string, unknown>)[key] = to; changed = true; }
+    } else if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) {
+        if (typeof value[i] === "string") {
+          if (EMBEDDED_VISUAL_ARRAY_FIELDS.includes(key) && value[i] === from) { value[i] = to; changed = true; }
+        } else if (replaceAnchorsInVisualSpec(value[i], from, to)) {
+          changed = true;
+        }
+      }
+    } else if (value && typeof value === "object") {
+      if (replaceAnchorsInVisualSpec(value, from, to)) changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Structurally parse every embedded `breadboard-visual` block's anchor refs. */
+export function parseEmbeddedVisualReferences(pagePath: string, body: string): EmbeddedVisualReference[] {
+  const out: EmbeddedVisualReference[] = [];
+  const re = new RegExp(VISUAL_BLOCK_RE.source, "g");
+  let match: RegExpExecArray | null;
+  let blockIndex = 0;
+  while ((match = re.exec(body)) !== null) {
+    let spec: Record<string, unknown>;
+    try { spec = JSON.parse(match[1] ?? "{}"); } catch { blockIndex += 1; continue; }
+    const references: { field: string; anchorId: string }[] = [];
+    collectVisualSpecAnchorRefs(spec, references);
+    out.push({ pagePath, blockIndex, visualId: typeof spec.id === "string" ? spec.id : undefined, references });
+    blockIndex += 1;
+  }
+  return out;
+}
+
+/** Rewrite `from` → `to` inside every embedded `breadboard-visual` block. */
+function rewriteEmbeddedVisualAnchors(body: string, from: string, to: string): { body: string; changed: boolean } {
+  let changed = false;
+  const re = new RegExp(VISUAL_BLOCK_RE.source, "g");
+  const next = body.replace(re, (full: string, json: string) => {
+    let spec: Record<string, unknown>;
+    try { spec = JSON.parse(json); } catch { return full; }
+    if (replaceAnchorsInVisualSpec(spec, from, to)) { changed = true; return "```breadboard-visual\n" + JSON.stringify(spec, null, 2) + "\n```"; }
+    return full;
+  });
+  return { body: next, changed };
+}
+
 function readJson<T>(filePath: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
@@ -4091,6 +4181,8 @@ export interface LegacyMigrationReport {
   duplicateGroups: DuplicateAnchorPassageGroup[];
   changed: string[];
   counts: Record<LegacyAnchorMigrationStatus, number> & { legacyFound: number };
+  /** True when at least one replacement proposal was routed through the atomic plan. */
+  replacementPlanApplied?: boolean;
 }
 
 /**
@@ -4129,6 +4221,8 @@ export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string
 
   let ledgerChanged = false;
   const removedIds = new Set<string>();
+  const proposals: PlannedAnchorReplacement[] = [];
+  const proposalMeta = new Map<string, { candidatePassagesChecked: number; oldConfidence: number | string | undefined; replacementAnchorId: string; originalRecord: Record<string, unknown> }>();
 
   for (const record of legacy) {
     const id = String(record.id);
@@ -4164,12 +4258,19 @@ export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string
     // Weak/irrelevant. Fix 10: prefer a stronger EXISTING canonical anchor.
     const existing = pickStrongerExistingAnchor(id, keywords, Number.isFinite(Number(record.page)) ? Number(record.page) : undefined, String(record.sourceId ?? ""), registry, score.confidence);
     if (existing && suspiciousIds.has(id)) {
-      // Fix 8: replace across ALL final references and verify closure.
-      const closure = applyAnchorReplacementClosure(gardenDir, slug, id, existing);
-      for (const c of closure.updatedFiles) if (!changed.includes(c)) changed.push(c);
-      removedIds.add(id);
-      counts.replaced += 1;
-      results.push({ anchorId: id, originalRecord: { ...record }, status: "replaced", candidatePassagesChecked, replacementAnchorId: existing, oldConfidence, reason: closure.complete ? `suspicious shared passage; references switched to stronger existing anchor ${existing} (closure complete)` : `references switched to ${existing} but ${closure.remainingActiveReferences.length} active old reference(s) remain`, closureComplete: closure.complete, remainingActiveReferences: closure.remainingActiveReferences });
+      // Two-phase: PROPOSE a replacement (do NOT mutate refs or delete now). Also
+      // rescore this record in place so that if the plan blocks the proposal
+      // (e.g. a cycle), the surviving record is modern, not numeric-legacy.
+      const newConf: AnchorConfidence = score.confidence === "unsupported" ? "unsupported" : "low";
+      record_.confidence = newConf;
+      record_.evidence = evidenceFromScore(score);
+      record_.conceptKeywords = keywords;
+      if (relevance) record_.relevance = { decision: relevance.decision, totalScore: relevance.totalScore, anchorFamily: relevance.anchorFamily, textFamily: relevance.textFamily };
+      record_.migration = { migratedAt: MIGRATION_TS, previousSchema: "numeric_confidence_legacy", migrationStatus: "migrated", migrationReason: `proposed duplicate-merge into ${existing}; pending atomic plan` } as AnchorMigrationProvenance;
+      if (bestPassage && relevance && relevance.decision !== "irrelevant") record_.exactText = bestPassage;
+      ledgerChanged = true;
+      proposals.push({ oldAnchorId: id, proposedNewAnchorId: existing, reason: "duplicate_anchor_merge", requestedBy: "legacy_migration" });
+      proposalMeta.set(id, { candidatePassagesChecked, oldConfidence, replacementAnchorId: existing, originalRecord: { ...record } });
       continue;
     }
 
@@ -4188,19 +4289,48 @@ export function migrateLegacyTextConceptAnchors(gardenDir: string, slug?: string
     results.push({ anchorId: id, originalRecord: { ...record }, status, candidatePassagesChecked, selectedPassage: bestPassage?.slice(0, 200), evidence: evidenceFromScore(score), relevance, oldConfidence, newConfidence, reason: suspiciousIds.has(id) ? `shared/unsupported passage and no stronger existing anchor; ${score.confidence} evidence — routed to critic` : `no source passage strongly supports this anchor (${score.confidence}); routed to critic` });
   }
 
-  if (removedIds.size > 0) {
-    ledger.sourceTextConceptAnchors = textAnchors.filter((r) => !removedIds.has(String(r.id)));
-    ledgerChanged = true;
-  } else {
-    ledger.sourceTextConceptAnchors = textAnchors;
-  }
+  // Persist in-place migrations FIRST (pending-replacement records included, now
+  // rescored/modern) so the plan's atomic apply reads a consistent ledger.
+  ledger.sourceTextConceptAnchors = textAnchors;
   if (ledgerChanged) {
     fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
     if (!changed.includes(".breadboard/source-anchors.json")) changed.push(".breadboard/source-anchors.json");
   }
 
+  // Two-phase, graph-based, atomic replacement (this patch). Build the WHOLE
+  // replacement graph, reject/resolve cycles, collapse chains to surviving
+  // anchors, and apply atomically. No record is deleted until global closure.
+  if (proposals.length > 0) {
+    const planState = buildFinalGardenState(gardenDir, slug);
+    const plan = buildAnchorReplacementPlan(proposals, Object.values(planState.sourceAnchors));
+    const application = applyAnchorReplacementPlanAtomically(gardenDir, planState, plan);
+    for (const f of application.updatedFiles) if (!changed.includes(f)) changed.push(f);
+
+    const appliedOlds = new Set(application.applied ? application.replacementsApplied.map((r) => r.oldAnchorId) : []);
+    for (const p of proposals) {
+      const meta = proposalMeta.get(p.oldAnchorId)!;
+      if (appliedOlds.has(p.oldAnchorId)) {
+        removedIds.add(p.oldAnchorId);
+        counts.replaced += 1;
+        const finalTarget = application.replacementsApplied.find((r) => r.oldAnchorId === p.oldAnchorId)?.finalAnchorId ?? p.proposedNewAnchorId;
+        results.push({ anchorId: p.oldAnchorId, originalRecord: meta.originalRecord, status: "replaced", candidatePassagesChecked: meta.candidatePassagesChecked, replacementAnchorId: finalTarget, oldConfidence: meta.oldConfidence, reason: `duplicate passage; references atomically switched to surviving anchor ${finalTarget} (global closure passed)`, closureComplete: true });
+      } else {
+        counts.needs_critic_review += 1;
+        const blockReason = plan.cycleResolutions.find((c) => c.cycle.includes(p.oldAnchorId) && c.action === "blocked_for_review")
+          ? `replacement blocked by an unresolved cycle; record preserved for critic review`
+          : plan.invalidTargets.find((t) => t.oldAnchorId === p.oldAnchorId)?.reason
+          ?? (application.rolledBack ? `replacement plan rolled back: ${application.reason}` : `replacement into ${p.proposedNewAnchorId} not applied; routed to critic`);
+        results.push({ anchorId: p.oldAnchorId, originalRecord: meta.originalRecord, status: "needs_critic_review", candidatePassagesChecked: meta.candidatePassagesChecked, replacementAnchorId: p.proposedNewAnchorId, oldConfidence: meta.oldConfidence, reason: blockReason, closureComplete: false });
+      }
+    }
+
+    const finalState = buildFinalGardenState(gardenDir, slug);
+    const closureAudit = auditGlobalAnchorReplacementClosure(finalState, application.replacementsApplied.map((r) => ({ oldAnchorId: r.oldAnchorId, finalAnchorId: r.finalAnchorId })));
+    writeAnchorReplacementPlanReports(gardenDir, plan, application, closureAudit, changed);
+  }
+
   writeLegacyMigrationReport(gardenDir, results, duplicateGroups, counts, changed);
-  return { results, duplicateGroups, changed, counts };
+  return { results, duplicateGroups, changed, counts, replacementPlanApplied: proposals.length > 0 };
 }
 
 function writeLegacyMigrationReport(
@@ -4338,8 +4468,10 @@ function replaceAnchorReference(gardenDir: string, slug: string | undefined, fro
       const values = fmArray(rawFm, key);
       if (values.includes(from)) rawFm = setFmArrayLine(rawFm, key, values.map((v) => (v === from ? to : v)));
     }
-    if (rawFm !== rawFrontmatter) {
-      fs.writeFileSync(page.abs, `---\n${rawFm.replace(/\s+$/, "")}\n---\n\n${body.replace(/^\n+/, "")}`, "utf-8");
+    // Fix 7/8: embedded `breadboard-visual` blocks are active state — update them.
+    const embedded = rewriteEmbeddedVisualAnchors(body, from, to);
+    if (rawFm !== rawFrontmatter || embedded.changed) {
+      fs.writeFileSync(page.abs, `---\n${rawFm.replace(/\s+$/, "")}\n---\n\n${embedded.body.replace(/^\n+/, "")}`, "utf-8");
       changed.push(page.rel);
     }
   }
@@ -4370,11 +4502,9 @@ function replaceAnchorReference(gardenDir: string, slug: string | undefined, fro
       if (text === undefined || !text.includes(from)) continue;
       let spec: Record<string, unknown>;
       try { spec = JSON.parse(text); } catch { continue; }
-      const anchors = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors as Array<Record<string, unknown>> : [];
-      let visualChanged = false;
-      for (const a of anchors) for (const k of ["textAnchorId", "figureId", "equationId", "tableId"]) {
-        if (String(a[k] ?? "") === from) { a[k] = to; visualChanged = true; }
-      }
+      // Fix 7: cover every anchor field (top-level textAnchorId/sourceAnchorId/… and
+      // nested sourceAnchors[]), not just a fixed sourceAnchors subset.
+      const visualChanged = replaceAnchorsInVisualSpec(spec, from, to);
       if (visualChanged) {
         fs.writeFileSync(abs, `${JSON.stringify(spec, null, 2)}\n`, "utf-8");
         changed.push(`.breadboard/visuals/${name}`);
@@ -4497,9 +4627,15 @@ export function findRemainingAnchorReferences(gardenDir: string, oldId: string):
     const { rawFrontmatter, body } = splitFrontmatter(text);
     if (rawFrontmatter && re.test(rawFrontmatter)) add(p.rel, "page frontmatter (grounding)", "active_grounding", rawFrontmatter);
     if (body && re.test(body)) {
-      const visualLine = body.split(/\r?\n/).find((l) => re.test(l) && /figureId|breadboard-visual|source-visuals|!\[/.test(l));
-      if (visualLine) add(p.rel, "page body (visual)", "active_visual", body);
-      else add(p.rel, "page body (prose)", "free_text_mention", body);
+      // Fix 8: structurally detect the id inside an embedded breadboard-visual
+      // block — that is ACTIVE artifact state, not prose.
+      const embeddedRefs = parseEmbeddedVisualReferences(p.rel, body).flatMap((b) => b.references.map((r) => r.anchorId));
+      if (embeddedRefs.includes(oldId)) add(p.rel, "page body (embedded visual)", "active_visual", body);
+      else {
+        const visualLine = body.split(/\r?\n/).find((l) => re.test(l) && /source-visuals|!\[/.test(l));
+        if (visualLine) add(p.rel, "page body (visual embed)", "active_visual", body);
+        else add(p.rel, "page body (prose)", "free_text_mention", body);
+      }
     }
   }
 
@@ -4553,6 +4689,601 @@ export function applyAnchorReplacementClosure(gardenDir: string, slug: string | 
 /** Verify (without mutating) that a reported replacement is closed. */
 export function computeAnchorReplacementClosure(gardenDir: string, oldId: string, newId: string): AnchorReplacementClosureResult {
   return splitClosure(gardenDir, oldId, newId, []);
+}
+
+// ===========================================================================
+// TWO-PHASE, GRAPH-BASED, ATOMIC anchor replacement (this patch).
+//
+// Every replacement source (legacy migration, critic repair, duplicate merge,
+// regrounding) FIRST produces a proposal. The planner then builds a directed
+// replacement graph, rejects/resolves cycles, collapses chains to a surviving
+// canonical anchor, and only then applies all replacements atomically. No record
+// is deleted until a GLOBAL closure audit passes on the rebuilt FinalGardenState.
+// ===========================================================================
+
+export type PlannedAnchorReplacementReason =
+  | "legacy_migration"
+  | "stronger_canonical_anchor"
+  | "critic_replacement"
+  | "duplicate_anchor_merge"
+  | "source_text_regrounding";
+
+export interface PlannedAnchorReplacement {
+  oldAnchorId: string;
+  proposedNewAnchorId: string;
+  reason: PlannedAnchorReplacementReason;
+  requestedBy?: string;
+  sourcePage?: string;
+  sourceUnitId?: string;
+}
+
+export interface AnchorCycleResolution {
+  cycle: string[];
+  action: "selected_survivor" | "blocked_for_review";
+  survivorAnchorId?: string;
+  reason: string;
+}
+
+export interface AnchorReplacementPlan {
+  replacements: PlannedAnchorReplacement[];
+  /** oldAnchorId → final surviving canonical anchor (applicable subset only). */
+  resolvedTargets: Record<string, string>;
+  /** oldAnchorId → the transitive chain of ids to its final target. */
+  chains: Record<string, string[]>;
+  cycles: string[][];
+  cycleResolutions: AnchorCycleResolution[];
+  invalidTargets: { oldAnchorId: string; proposedNewAnchorId: string; reason: string }[];
+  survivingAnchorIds: string[];
+  blockedReplacements: PlannedAnchorReplacement[];
+  valid: boolean;
+  problems: string[];
+}
+
+export interface AnchorReplacementApplicationResult {
+  planValid: boolean;
+  applied: boolean;
+  replacementsApplied: { oldAnchorId: string; finalAnchorId: string; chain: string[] }[];
+  updatedFiles: string[];
+  remainingActiveReferences: AnchorReferenceOccurrence[];
+  registryProblems: string[];
+  rolledBack: boolean;
+  reason: string;
+}
+
+export type AnchorUsageStatus = "actively_referenced" | "unused_candidate" | "historical_only";
+
+/**
+ * Fix 3: follow the replacement map transitively to a surviving anchor. Detects
+ * cycles (returns the offending cycle) and self-loops (terminal). The full chain
+ * is always returned for reporting; path compression is done by the caller.
+ */
+export function resolveFinalAnchorTarget(
+  anchorId: string,
+  replacementMap: Map<string, string>,
+): { finalAnchorId?: string; path: string[]; cycle?: string[]; error?: string } {
+  const path: string[] = [];
+  const seen = new Set<string>();
+  let cur = anchorId;
+  // Bound the walk defensively.
+  for (let i = 0; i <= replacementMap.size + 1; i += 1) {
+    if (seen.has(cur)) {
+      const idx = path.indexOf(cur);
+      const cycle = [...path.slice(idx), cur];
+      return { path: [...path, cur], cycle, error: `replacement cycle: ${cycle.join(" → ")}` };
+    }
+    seen.add(cur);
+    path.push(cur);
+    const next = replacementMap.get(cur);
+    if (next === undefined || next === cur) return { finalAnchorId: cur, path };
+    cur = next;
+  }
+  return { path, error: "replacement chain exceeded bound" };
+}
+
+/** Deterministic strength score for cycle-survivor selection (Fix 4). */
+function anchorStrengthScore(a: CanonicalSourceAnchor | undefined): number {
+  if (!a) return -1;
+  let s = 0;
+  if (a.criticConfirmed) s += 100;
+  const conf: Record<string, number> = { high: 40, medium: 25, low: 10, unsupported: 0 };
+  if (typeof a.confidence === "string") s += conf[a.confidence] ?? 0;
+  else if (!a.confidence) s += 30; // first-class structural anchor (no confidence)
+  if (a.evidence && typeof a.evidence.totalScore === "number") s += a.evidence.totalScore * 20;
+  if (a.relevance?.decision === "relevant") s += 10;
+  if (a.relevance && typeof a.relevance.totalScore === "number") s += a.relevance.totalScore * 10;
+  if (typeof a.exactText === "string" && a.exactText.trim()) s += 2;
+  return s;
+}
+
+/**
+ * Fix 2/4/5: build and validate the directed replacement graph. Detects self-
+ * replacements, conflicting targets, missing/deleted targets, and cycles; resolves
+ * chains transitively; picks a deterministic survivor for a cycle only when one is
+ * unambiguously stronger, else blocks the whole cycle (never deletes every node).
+ */
+export function buildAnchorReplacementPlan(
+  replacements: PlannedAnchorReplacement[],
+  anchors: CanonicalSourceAnchor[],
+): AnchorReplacementPlan {
+  const anchorById = new Map(anchors.map((a) => [a.id, a]));
+  const anchorIds = new Set(anchorById.keys());
+  const problems: string[] = [];
+  const invalidTargets: AnchorReplacementPlan["invalidTargets"] = [];
+  const blocked = new Set<PlannedAnchorReplacement>();
+  const cyclesOut: string[][] = [];
+  const cycleResolutions: AnchorCycleResolution[] = [];
+
+  // (1) Group by old anchor; separate self-replacements and conflicts.
+  const byOld = new Map<string, PlannedAnchorReplacement[]>();
+  for (const r of replacements) (byOld.get(r.oldAnchorId) ?? byOld.set(r.oldAnchorId, []).get(r.oldAnchorId)!).push(r);
+
+  const edges = new Map<string, string>();
+  const originalProposal = new Map<string, string>();
+  for (const [old, group] of byOld) {
+    const targets = [...new Set(group.map((g) => g.proposedNewAnchorId).filter((t) => t !== old))];
+    if (targets.length === 0) continue; // pure self-replacement → no-op (Fix 7 test)
+    if (targets.length > 1) {
+      for (const g of group) blocked.add(g);
+      invalidTargets.push({ oldAnchorId: old, proposedNewAnchorId: targets.join(" | "), reason: "conflicting replacement targets" });
+      problems.push(`anchor ${old} has conflicting replacement targets: ${targets.join(", ")}`);
+      continue;
+    }
+    edges.set(old, targets[0]);
+    originalProposal.set(old, targets[0]);
+  }
+
+  const replacementMap = new Map(edges);
+
+  // (2) Detect cycles.
+  const seenCycleKey = new Set<string>();
+  for (const old of edges.keys()) {
+    const res = resolveFinalAnchorTarget(old, replacementMap);
+    if (res.cycle) {
+      const uniq = [...new Set(res.cycle)];
+      const key = [...uniq].sort().join("|");
+      if (!seenCycleKey.has(key)) { seenCycleKey.add(key); cyclesOut.push(uniq); }
+    }
+  }
+
+  // (3/4) Resolve cycles: pick a clear survivor or block the whole cycle.
+  for (const cycle of cyclesOut) {
+    const ranked = cycle.map((id) => ({ id, s: anchorStrengthScore(anchorById.get(id)) })).sort((a, b) => b.s - a.s);
+    const top = ranked[0];
+    const second = ranked[1];
+    const unambiguous = top && second && top.s > second.s;
+    if (unambiguous) {
+      const survivor = top.id;
+      for (const id of cycle) {
+        if (id === survivor) replacementMap.delete(id);
+        else replacementMap.set(id, survivor);
+      }
+      cycleResolutions.push({ cycle, action: "selected_survivor", survivorAnchorId: survivor, reason: `unambiguously strongest by evidence/relevance (${top.s.toFixed(2)} > ${second.s.toFixed(2)})` });
+    } else {
+      for (const id of cycle) {
+        replacementMap.delete(id);
+        for (const g of byOld.get(id) ?? []) blocked.add(g);
+      }
+      cycleResolutions.push({ cycle, action: "blocked_for_review", reason: "no unambiguously stronger anchor; all records preserved for critic/model resolution" });
+      problems.push(`replacement cycle ${cycle.join(" → ")} → ${cycle[0]} has no clear survivor; blocked`);
+    }
+  }
+
+  // (5) Resolve final targets over the (now cycle-free) map; validate survival.
+  const resolvedTargets: Record<string, string> = {};
+  const chains: Record<string, string[]> = {};
+  const appliedOlds = new Set<string>();
+  for (const old of replacementMap.keys()) {
+    const res = resolveFinalAnchorTarget(old, replacementMap);
+    if (res.cycle || !res.finalAnchorId) {
+      for (const g of byOld.get(old) ?? []) blocked.add(g);
+      problems.push(`anchor ${old} could not be resolved to a final target`);
+      continue;
+    }
+    const target = res.finalAnchorId;
+    if (!anchorIds.has(target)) {
+      invalidTargets.push({ oldAnchorId: old, proposedNewAnchorId: originalProposal.get(old) ?? target, reason: `resolved target ${target} does not exist in the registry` });
+      for (const g of byOld.get(old) ?? []) blocked.add(g);
+      problems.push(`anchor ${old} → ${target} is invalid: target missing from the canonical registry`);
+      continue;
+    }
+    resolvedTargets[old] = target;
+    chains[old] = res.path;
+    appliedOlds.add(old);
+  }
+
+  const survivingAnchorIds = [...anchorIds].filter((id) => !appliedOlds.has(id));
+
+  // (6) Every resolved target must be in the survivor set.
+  for (const [old, target] of Object.entries(resolvedTargets)) {
+    if (!survivingAnchorIds.includes(target)) {
+      problems.push(`resolved target ${target} for ${old} does not survive the plan`);
+    }
+  }
+
+  const blockedReplacements = [...blocked];
+  const valid = invalidTargets.length === 0 && blockedReplacements.length === 0 && problems.length === 0;
+  return { replacements, resolvedTargets, chains, cycles: cyclesOut, cycleResolutions, invalidTargets, survivingAnchorIds, blockedReplacements, valid, problems };
+}
+
+/**
+ * Fix 9: after the plan is applied and the state rebuilt, verify that no active
+ * reference points at a replaced/intermediate anchor and every final target
+ * survives. Registry records of replaced olds are ignored here (they are removed
+ * only after this passes).
+ */
+export function auditGlobalAnchorReplacementClosure(
+  state: FinalGardenState,
+  appliedReplacements: { oldAnchorId: string; finalAnchorId: string }[],
+  opts?: { ignoreProjection?: boolean },
+): {
+  passed: boolean;
+  danglingReferences: AnchorReferenceOccurrence[];
+  missingTargets: string[];
+  deletedStillReferenced: string[];
+  intermediateTargetsStillReferenced: string[];
+  problems: string[];
+} {
+  const registryIds = new Set(Object.keys(state.sourceAnchors));
+  const replacedOlds = new Set(appliedReplacements.map((a) => a.oldAnchorId));
+  const finalTargets = [...new Set(appliedReplacements.map((a) => a.finalAnchorId))];
+  const danglingReferences: AnchorReferenceOccurrence[] = [];
+  const deletedStillReferenced: string[] = [];
+  const intermediateTargetsStillReferenced: string[] = [];
+  const missingTargets: string[] = [];
+  const problems: string[] = [];
+
+  for (const old of replacedOlds) {
+    const active = findRemainingAnchorReferences(state.rootPath, old).filter((o) => o.active && o.classification !== "canonical_registry" && !(opts?.ignoreProjection && o.classification === "active_projection"));
+    if (active.length > 0) {
+      danglingReferences.push(...active);
+      deletedStillReferenced.push(old);
+      problems.push(`replaced anchor ${old} is still actively referenced in ${active.map((o) => o.field ?? o.path).join(", ")}`);
+    }
+  }
+  for (const { oldAnchorId, finalAnchorId } of appliedReplacements) {
+    if (replacedOlds.has(finalAnchorId)) {
+      intermediateTargetsStillReferenced.push(finalAnchorId);
+      problems.push(`replacement target ${finalAnchorId} of ${oldAnchorId} is itself scheduled for removal (unresolved intermediate)`);
+    }
+  }
+  for (const t of finalTargets) {
+    if (!registryIds.has(t)) { missingTargets.push(t); problems.push(`replacement target ${t} is missing from the canonical registry`); }
+  }
+  const passed = danglingReferences.length === 0 && deletedStillReferenced.length === 0 && intermediateTargetsStillReferenced.length === 0 && missingTargets.length === 0;
+  return { passed, danglingReferences, missingTargets, deletedStillReferenced, intermediateTargetsStillReferenced, problems };
+}
+
+/** Every active anchor id referenced anywhere resolves to exactly one canonical
+ *  record (Fix 10). */
+export function auditCanonicalRegistryIntegrity(state: FinalGardenState): { passed: boolean; problems: string[]; missingIds: string[] } {
+  const registryIds = new Set(Object.keys(state.sourceAnchors));
+  const referenced = new Map<string, string[]>();
+  const note = (id: string, where: string): void => { if (id) (referenced.get(id) ?? referenced.set(id, []).get(id)!).push(where); };
+  for (const page of state.pages) {
+    for (const id of page.sourceAnchors) note(id, `page ${page.rel} frontmatter`);
+    for (const id of page.sourceFormulaAnchors) note(id, `page ${page.rel} formula`);
+    for (const id of page.sourceVisualIds) note(id, `page ${page.rel} visualIds`);
+    const embedded = parseEmbeddedVisualReferences(page.rel, page.body).flatMap((b) => b.references.map((r) => r.anchorId));
+    for (const id of embedded) note(id, `page ${page.rel} embedded visual`);
+  }
+  for (const unit of state.learningUnitContract.units) for (const id of unit.sourceAnchors ?? []) note(id, `contract ${unit.id}`);
+  for (const v of state.visuals) for (const id of [...v.anchorIds, ...v.textAnchorIds]) note(id, `visual ${v.id}`);
+
+  const missingIds: string[] = [];
+  const problems: string[] = [];
+  for (const [id, where] of referenced) {
+    if (!registryIds.has(id)) {
+      missingIds.push(id);
+      problems.push(`referenced anchor ${id} has no canonical record (referenced by ${[...new Set(where)].slice(0, 4).join("; ")})`);
+    }
+  }
+  return { passed: missingIds.length === 0, problems, missingIds };
+}
+
+/** Fix 15: classify each canonical anchor by whether it is actively referenced. */
+export function classifyAnchorUsage(state: FinalGardenState): Record<string, AnchorUsageStatus> {
+  const active = new Set<string>();
+  for (const page of state.pages) {
+    for (const id of [...page.sourceAnchors, ...page.sourceFormulaAnchors, ...page.sourceVisualIds]) active.add(id);
+    for (const b of parseEmbeddedVisualReferences(page.rel, page.body)) for (const r of b.references) active.add(r.anchorId);
+  }
+  for (const unit of state.learningUnitContract.units) for (const id of unit.sourceAnchors ?? []) active.add(id);
+  for (const v of state.visuals) for (const id of [...v.anchorIds, ...v.textAnchorIds]) active.add(id);
+  const out: Record<string, AnchorUsageStatus> = {};
+  for (const id of Object.keys(state.sourceAnchors)) out[id] = active.has(id) ? "actively_referenced" : "unused_candidate";
+  return out;
+}
+
+/** Snapshot every text artifact under learning/ and .breadboard/ for rollback. */
+function snapshotGardenTextFiles(gardenDir: string): Map<string, string> {
+  const snap = new Map<string, string>();
+  const walk = (abs: string): void => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(abs, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(md|json)$/i.test(e.name)) {
+        const rel = path.relative(gardenDir, p).split(path.sep).join("/");
+        const t = readText(p);
+        if (t !== undefined) snap.set(rel, t);
+      }
+    }
+  };
+  for (const root of ["learning", ".breadboard"]) {
+    const abs = path.join(gardenDir, root);
+    if (fs.existsSync(abs)) walk(abs);
+  }
+  return snap;
+}
+
+/** Restore the given files from a snapshot (used to roll a failed plan back). */
+function restoreGardenTextFiles(gardenDir: string, snap: Map<string, string>, files: Iterable<string>): void {
+  for (const rel of files) {
+    if (!snap.has(rel)) continue;
+    const abs = path.join(gardenDir, ...rel.split("/"));
+    const cur = readText(abs);
+    if (cur !== snap.get(rel)) fs.writeFileSync(abs, snap.get(rel)!, "utf-8");
+  }
+}
+
+function regenerateSourceCoverageProjection(gardenDir: string, slug: string | undefined, updatedFiles: string[]): void {
+  try {
+    const state = buildFinalGardenState(gardenDir, slug);
+    const coveragePath = path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md");
+    if (!fs.existsSync(coveragePath)) return;
+    const existing = readText(coveragePath) ?? "";
+    const { rawFrontmatter } = splitFrontmatter(existing);
+    const body = projectSourceCoverage(state);
+    const content = rawFrontmatter ? `---\n${rawFrontmatter.replace(/\s+$/, "")}\n---\n\n${body}` : body;
+    if (content !== existing) {
+      fs.writeFileSync(coveragePath, content, "utf-8");
+      if (!updatedFiles.includes(".breadboard/planning/Source Coverage.md")) updatedFiles.push(".breadboard/planning/Source Coverage.md");
+    }
+  } catch { /* best effort */ }
+}
+
+/**
+ * Fix 6: apply a validated plan atomically. Stages all page/contract/visual/
+ * embedded-visual/coverage rewrites, rebuilds the state, runs the GLOBAL closure
+ * audit, and only THEN removes obsolete records. On any closure/integrity failure
+ * the whole change set is rolled back to the pre-apply snapshot.
+ */
+export function applyAnchorReplacementPlanAtomically(
+  gardenDir: string,
+  state: FinalGardenState,
+  plan: AnchorReplacementPlan,
+): AnchorReplacementApplicationResult {
+  const slug = state.slug;
+  const pairs = Object.entries(plan.resolvedTargets);
+  const replacementsApplied = pairs.map(([oldAnchorId, finalAnchorId]) => ({ oldAnchorId, finalAnchorId, chain: plan.chains[oldAnchorId] ?? [oldAnchorId, finalAnchorId] }));
+  const applied = pairs.map(([oldAnchorId, finalAnchorId]) => ({ oldAnchorId, finalAnchorId }));
+
+  if (pairs.length === 0) {
+    return {
+      planValid: plan.valid, applied: false, replacementsApplied: [], updatedFiles: [],
+      remainingActiveReferences: [], registryProblems: [], rolledBack: false,
+      reason: plan.problems.length ? `no applicable replacements (${plan.blockedReplacements.length} blocked): ${plan.problems.join("; ")}` : "no replacements to apply",
+    };
+  }
+
+  const snap = snapshotGardenTextFiles(gardenDir);
+  const updatedFiles: string[] = [];
+
+  // (1-3) Stage all ACTIVE-artifact reference rewrites (records NOT yet removed).
+  for (const { oldAnchorId, finalAnchorId } of applied) {
+    for (const f of replaceAnchorReference(gardenDir, slug, oldAnchorId, finalAnchorId)) {
+      if (!updatedFiles.includes(f)) updatedFiles.push(f);
+    }
+  }
+
+  // (4-6) Rebuild state and run global closure BEFORE deleting anything. Source
+  // Coverage is a derived projection regenerated AFTER deletion, so it is excluded
+  // from the pre-delete check (the old record is still legitimately in the ledger).
+  const staged = buildFinalGardenState(gardenDir, slug);
+  const closure = auditGlobalAnchorReplacementClosure(staged, applied, { ignoreProjection: true });
+  if (!closure.passed) {
+    restoreGardenTextFiles(gardenDir, snap, updatedFiles);
+    return {
+      planValid: plan.valid, applied: false, replacementsApplied, updatedFiles,
+      remainingActiveReferences: closure.danglingReferences, registryProblems: closure.problems,
+      rolledBack: true, reason: `global closure failed pre-delete: ${closure.problems.join("; ")}`,
+    };
+  }
+
+  // (7) Closure passed → remove obsolete canonical records, then regenerate the
+  // Source Coverage projection from the now-clean registry.
+  for (const { oldAnchorId } of applied) removeUnusedAnchorRecord(gardenDir, slug, oldAnchorId);
+  if (!updatedFiles.includes(".breadboard/source-anchors.json")) updatedFiles.push(".breadboard/source-anchors.json");
+  regenerateSourceCoverageProjection(gardenDir, slug, updatedFiles);
+
+  // (8) Final closure + registry integrity on the post-delete state.
+  const final = buildFinalGardenState(gardenDir, slug);
+  const finalClosure = auditGlobalAnchorReplacementClosure(final, applied);
+  const integrity = auditCanonicalRegistryIntegrity(final);
+  if (!finalClosure.passed || !integrity.passed) {
+    restoreGardenTextFiles(gardenDir, snap, updatedFiles);
+    return {
+      planValid: plan.valid, applied: false, replacementsApplied, updatedFiles,
+      remainingActiveReferences: finalClosure.danglingReferences,
+      registryProblems: [...finalClosure.problems, ...integrity.problems],
+      rolledBack: true, reason: `post-delete audit failed: ${[...finalClosure.problems, ...integrity.problems].join("; ")}`,
+    };
+  }
+
+  return {
+    planValid: plan.valid, applied: true, replacementsApplied, updatedFiles,
+    remainingActiveReferences: [], registryProblems: [], rolledBack: false,
+    reason: `applied ${applied.length} replacement(s); global closure + registry integrity passed`,
+  };
+}
+
+/** Fix 11: write the replacement-plan reports (JSON + Markdown) from the plan +
+ *  application result. Diagnostic output — never gates validation. */
+export function writeAnchorReplacementPlanReports(
+  gardenDir: string,
+  plan: AnchorReplacementPlan,
+  application: AnchorReplacementApplicationResult,
+  closure: ReturnType<typeof auditGlobalAnchorReplacementClosure>,
+  changed: string[],
+): void {
+  const bd = path.join(gardenDir, ".breadboard");
+  fs.mkdirSync(bd, { recursive: true });
+  const json = { plan, application, closure };
+  const jsonPath = path.join(bd, "anchor-replacement-plan.json");
+  const jsonContent = `${JSON.stringify(json, null, 2)}\n`;
+  if ((readText(jsonPath) ?? "") !== jsonContent) {
+    fs.writeFileSync(jsonPath, jsonContent, "utf-8");
+    if (!changed.includes(".breadboard/anchor-replacement-plan.json")) changed.push(".breadboard/anchor-replacement-plan.json");
+  }
+  const cell = (s: string): string => String(s ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  const md = [
+    "# Anchor Replacement Plan",
+    "",
+    `Proposals: ${plan.replacements.length}. Applied: ${Object.keys(plan.resolvedTargets).length}. Blocked: ${plan.blockedReplacements.length}. Plan valid: ${plan.valid}. Rolled back: ${application.rolledBack}.`,
+    "",
+    "## Replacement Graph",
+    "",
+    "| Old Anchor | Proposed Target | Final Target | Chain | Status |",
+    "|---|---|---|---|---|",
+    ...(plan.replacements.length
+      ? plan.replacements.map((r) => {
+          const final = plan.resolvedTargets[r.oldAnchorId];
+          const chain = plan.chains[r.oldAnchorId];
+          const blocked = plan.blockedReplacements.includes(r);
+          const status = blocked ? "blocked" : final ? "applied" : "no-op";
+          return `| ${cell(r.oldAnchorId)} | ${cell(r.proposedNewAnchorId)} | ${cell(final ?? "—")} | ${cell(chain ? chain.join(" → ") : "—")} | ${status} |`;
+        })
+      : ["| — | — | — | — | — |"]),
+    "",
+    "## Detected Cycles",
+    "",
+    "| Cycle | Resolution | Survivor | Reason |",
+    "|---|---|---|---|",
+    ...(plan.cycleResolutions.length
+      ? plan.cycleResolutions.map((c) => `| ${cell(c.cycle.join(" → ") + " → " + c.cycle[0])} | ${c.action} | ${cell(c.survivorAnchorId ?? "—")} | ${cell(c.reason)} |`)
+      : ["| — | — | — | — |"]),
+    "",
+    "## Invalid Targets",
+    "",
+    ...(plan.invalidTargets.length ? plan.invalidTargets.map((t) => `- ${cell(t.oldAnchorId)} → ${cell(t.proposedNewAnchorId)}: ${cell(t.reason)}`) : ["- None."]),
+    "",
+    "## Applied Replacements",
+    "",
+    ...(application.replacementsApplied.length && application.applied
+      ? application.replacementsApplied.map((r) => `- ${cell(r.oldAnchorId)} → ${cell(r.finalAnchorId)} (chain: ${cell(r.chain.join(" → "))})`)
+      : ["- None."]),
+    "",
+    "## Global Closure Audit",
+    "",
+    `Passed: ${closure.passed}.`,
+    ...(closure.problems.length ? closure.problems.map((p) => `- ${cell(p)}`) : ["- No problems."]),
+    "",
+    "## Remaining Active References",
+    "",
+    ...(application.remainingActiveReferences.length
+      ? application.remainingActiveReferences.map((o) => `- ${cell(o.anchorId)} in ${cell(o.path)} (${o.classification})`)
+      : ["- None."]),
+    "",
+  ].join("\n");
+  const mdPath = path.join(bd, "anchor-replacement-plan.md");
+  if ((readText(mdPath) ?? "") !== md) {
+    fs.writeFileSync(mdPath, md, "utf-8");
+    if (!changed.includes(".breadboard/anchor-replacement-plan.md")) changed.push(".breadboard/anchor-replacement-plan.md");
+  }
+}
+
+/** Rescore a (legacy) record against the source into a modern canonical record. */
+function rescoreRecordToModern(record: Record<string, unknown>, paragraphs: SourceParagraph[]): Record<string, unknown> {
+  const id = String(record.id ?? "");
+  const keywords = anchorKeywordsFromMetadata(record);
+  const score = scoreAnchorEvidence({ anchorId: id, title: String(record.title ?? ""), kind: "text_concept", conceptKeywords: keywords, sourceId: String(record.sourceId ?? "") || paragraphs[0]?.sourceId, requestedPage: Number.isFinite(Number(record.page)) ? Number(record.page) : semanticAnchorPage(id), paragraphs });
+  const bestPassage = score.exactText;
+  const relevance = bestPassage ? verifySourceTextRelevance({ id, title: String(record.title ?? ""), kind: "text_concept", conceptKeywords: keywords, semanticSummary: String(record.semanticSummary ?? "") }, bestPassage) : undefined;
+  const conf: AnchorConfidence = (score.confidence === "high" || score.confidence === "medium") && relevance?.decision === "relevant" ? score.confidence : (score.confidence === "unsupported" ? "unsupported" : "low");
+  return {
+    ...record,
+    exactText: bestPassage || record.exactText,
+    page: score.matchedPage ?? record.page,
+    sourceId: score.sourceId || record.sourceId || paragraphs[0]?.sourceId,
+    conceptKeywords: keywords,
+    confidence: conf,
+    evidence: evidenceFromScore(score),
+    ...(relevance ? { relevance: { decision: relevance.decision, totalScore: relevance.totalScore, anchorFamily: relevance.anchorFamily, textFamily: relevance.textFamily } } : {}),
+    migration: { migratedAt: new Date().toISOString(), previousSchema: "numeric_confidence_legacy", migrationStatus: "migrated", migrationReason: "restored after an unsafe replacement cycle; rescored against source" },
+  };
+}
+
+/**
+ * Heal a garden left with DANGLING references by an earlier UNSAFE (per-anchor)
+ * replacement pass: references still point at deleted anchors. Using the migration
+ * report's old→new map, each dangling id is resolved transitively; when its final
+ * target survives it is repointed atomically, and when its whole chain collapsed
+ * (a both-deleted cycle) the referenced record is restored (rescored to modern).
+ * This is exactly the correction the two-phase planner now prevents up-front.
+ */
+export function healDanglingReplacementReferences(gardenDir: string, slug?: string): { changed: string[]; healed: Array<{ oldId: string; action: "restored" | "repointed"; target: string }>; problems: string[] } {
+  const changed: string[] = [];
+  const healed: Array<{ oldId: string; action: "restored" | "repointed"; target: string }> = [];
+  const problems: string[] = [];
+  const migPath = path.join(gardenDir, ".breadboard", "source-anchor-migration.json");
+  if (!fs.existsSync(migPath)) return { changed, healed, problems };
+  const mig = readJson<{ results?: Array<Record<string, unknown>> }>(migPath, {});
+  const results = Array.isArray(mig.results) ? mig.results : [];
+  const map = new Map<string, string>();
+  const originalById = new Map<string, Record<string, unknown>>();
+  for (const r of results) {
+    const aid = String(r.anchorId ?? "");
+    if ((r.status === "replaced" || r.status === "merged") && r.replacementAnchorId) map.set(aid, String(r.replacementAnchorId));
+    if (r.originalRecord && typeof r.originalRecord === "object") originalById.set(aid, r.originalRecord as Record<string, unknown>);
+  }
+  if (map.size === 0) return { changed, healed, problems };
+
+  let state = buildFinalGardenState(gardenDir, slug);
+  if (auditCanonicalRegistryIntegrity(state).missingIds.length === 0) return { changed, healed, problems };
+  const paragraphs = sourceParagraphsWithSource(gardenDir);
+
+  // (1) Restore records whose replacement chain has NO surviving target.
+  const ledgerPath = path.join(gardenDir, ".breadboard", "source-anchors.json");
+  const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
+  const text = Array.isArray(ledger.sourceTextConceptAnchors) ? ledger.sourceTextConceptAnchors as Array<Record<string, unknown>> : [];
+  const present = new Set(text.map((r) => String(r.id)));
+  let ledgerDirty = false;
+  for (const old of [...new Set(auditCanonicalRegistryIntegrity(state).missingIds)]) {
+    const res = resolveFinalAnchorTarget(old, map);
+    if (!res.cycle && res.finalAnchorId && state.sourceAnchors[res.finalAnchorId]) continue; // survives → repoint later
+    if (present.has(old)) continue;
+    const orig = originalById.get(old);
+    if (!orig) { problems.push(`cannot restore dangling ${old}: no original record in migration report`); continue; }
+    text.push(rescoreRecordToModern(orig, paragraphs));
+    present.add(old); ledgerDirty = true;
+    healed.push({ oldId: old, action: "restored", target: old });
+  }
+  if (ledgerDirty) {
+    ledger.sourceTextConceptAnchors = text;
+    fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
+    if (!changed.includes(".breadboard/source-anchors.json")) changed.push(".breadboard/source-anchors.json");
+    state = buildFinalGardenState(gardenDir, slug);
+  }
+
+  // (2) Repoint the remaining dangling ids (their chain survives) atomically.
+  const repoints: PlannedAnchorReplacement[] = [];
+  for (const old of [...new Set(auditCanonicalRegistryIntegrity(state).missingIds)]) {
+    const res = resolveFinalAnchorTarget(old, map);
+    if (!res.cycle && res.finalAnchorId && state.sourceAnchors[res.finalAnchorId]) repoints.push({ oldAnchorId: old, proposedNewAnchorId: res.finalAnchorId, reason: "stronger_canonical_anchor", requestedBy: "dangling_reference_heal" });
+  }
+  if (repoints.length > 0) {
+    const plan = buildAnchorReplacementPlan(repoints, Object.values(state.sourceAnchors));
+    const application = applyAnchorReplacementPlanAtomically(gardenDir, state, plan);
+    for (const f of application.updatedFiles) if (!changed.includes(f)) changed.push(f);
+    if (application.applied) for (const r of application.replacementsApplied) healed.push({ oldId: r.oldAnchorId, action: "repointed", target: r.finalAnchorId });
+    else problems.push(`dangling-reference repoint not applied: ${application.reason}`);
+    state = buildFinalGardenState(gardenDir, slug);
+  }
+
+  const stillMissing = [...new Set(auditCanonicalRegistryIntegrity(state).missingIds)];
+  if (stillMissing.length) problems.push(`still dangling after heal: ${stillMissing.join(", ")}`);
+  return { changed, healed, problems };
 }
 
 // ---------------------------------------------------------------------------

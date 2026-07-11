@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ..model_registry import DEFAULT_MODEL
 from .types import COUNCIL_MODES, CouncilInput, message_text
 
 FULL_COUNCIL_TASKS = frozenset(
@@ -49,9 +50,9 @@ EVOLUTION_COUNCIL_TASKS = frozenset(
 )
 
 DEFAULT_COUNCIL_MODELS = [
-    "gpt-5.5",
+    DEFAULT_MODEL,
 ]
-DEFAULT_CHAIRMAN_MODEL = "gpt-5.5"
+DEFAULT_CHAIRMAN_MODEL = DEFAULT_MODEL
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -93,7 +94,7 @@ class CouncilConfig:
     chairman_model: str = DEFAULT_CHAIRMAN_MODEL
     default_council_mode: str = "direct_council"
     # ChatGPT OAuth model used for direct_council parity with legacy ChatMock calls.
-    upstream_fallback_model: str = "gpt-5.5"
+    upstream_fallback_model: str = DEFAULT_MODEL
     ledger_dir: Optional[str] = None
     # Heuristics for chooseCouncilMode
     short_prompt_chars: int = 1200

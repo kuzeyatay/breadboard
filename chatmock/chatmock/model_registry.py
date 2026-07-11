@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
-ALL_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
-DEFAULT_REASONING_EFFORTS = frozenset(ALL_REASONING_EFFORTS)
+DEFAULT_MODEL = "gpt-5.6-sol"
+ALL_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+DEFAULT_REASONING_EFFORTS = frozenset(("none", "minimal", "low", "medium", "high", "xhigh"))
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,13 @@ class ModelSpec:
 
 
 _MODEL_SPECS = (
+    ModelSpec(
+        public_id="gpt-5.6-sol",
+        upstream_id="gpt-5.6-sol",
+        aliases=("gpt-5.6", "gpt5.6", "gpt5.6-sol", "gpt-5.6-latest", "gpt-5.6-sol-latest"),
+        allowed_efforts=frozenset(("none", "low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
+    ),
     ModelSpec(
         public_id="gpt-5",
         upstream_id="gpt-5",
@@ -143,13 +151,19 @@ def _strip_model_name(model: str | None) -> tuple[str, str | None]:
         return "", None
     if ":" in value:
         base, maybe_effort = value.rsplit(":", 1)
-        if maybe_effort in DEFAULT_REASONING_EFFORTS:
+        if maybe_effort in DEFAULT_REASONING_EFFORTS or (
+            maybe_effort == "max" and _ALIASES.get(base) == DEFAULT_MODEL
+        ):
             return base, maybe_effort
     for separator in ("-", "_"):
         for effort in ALL_REASONING_EFFORTS:
             suffix = f"{separator}{effort}"
             if value.endswith(suffix):
-                return value[: -len(suffix)], effort
+                base = value[: -len(suffix)]
+                if effort in DEFAULT_REASONING_EFFORTS or (
+                    effort == "max" and _ALIASES.get(base) == DEFAULT_MODEL
+                ):
+                    return base, effort
     return value, None
 
 
@@ -168,7 +182,7 @@ def normalize_model_name(model: str | None, debug_model: str | None = None) -> s
     if spec is not None:
         return spec.upstream_id
     base, _ = _strip_model_name(model)
-    return base or "gpt-5.5"
+    return base or DEFAULT_MODEL
 
 
 def uses_codex_instructions(model: str | None) -> bool:
