@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
+import { DEFAULT_MODEL } from '@/lib/ai-models';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
 import { normalizeTopicTags, refreshClusterIndex, resolveClusterNoteFile, scanClusterKnowledge, semanticTagsFromText, slugify } from '@/lib/knowledge';
@@ -454,7 +455,7 @@ export async function POST(request: Request) {
     fs.mkdirSync(clusterDir, { recursive: true });
     const timestamp = Date.now();
     const date = new Date().toISOString();
-    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-5.5';
+    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : DEFAULT_MODEL;
 
     if (mode === 'chat-note') {
       const sourceMessage = latestAssistantMessage(messages as ChatMessage[]);

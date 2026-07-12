@@ -1,115 +1,108 @@
 ---
 title: "Topic Overview"
-date: "2026-07-11T10:03:43.363Z"
+date: "2026-07-12T11:48:03.492Z"
 knowledge_type: "topic-overview"
 breadboardType: "topic_overview"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mrg752yg_r6zxzic"
-learningVersionId: "learning_mrg752yg_r6zxzic"
+learningVersion: "learning_mrhqb6op_fspr5tk"
+learningVersionId: "learning_mrhqb6op_fspr5tk"
 sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5"
 ---
 
 # Spiking Neural Networks
 
-Spiking Neural Networks, or SNNs, are neural networks that communicate with discrete spike events instead of continuously passing dense activation values through every layer. A conventional artificial neural network usually treats information as numbers that are recomputed layer by layer. An SNN treats information as events in time: a neuron stays mostly quiet, accumulates input, and emits a spike only when its internal state crosses a firing threshold.
+Spiking neural networks process information through discrete events called **spikes**. Instead of recomputing continuous activation values at every step, a spiking neuron maintains an internal state, responds to incoming events over time, and emits a spike when that state crosses a threshold. This makes **timing** part of the representation: information can depend not only on how many spikes occur, but also on when they occur.
 
-That one change reshapes the whole topic. Spikes make timing part of the representation. Sparse activity makes computation potentially cheaper because inactive neurons do not need to do as much work. Threshold-based firing makes latency, spike count, and energy just as important as accuracy. Learning in SNNs also becomes harder, because a spike is a discrete event, and discrete threshold events do not fit ordinary gradient-based training as smoothly as continuous activations do.
+This garden develops that idea from first principles. You will follow an input as it is encoded into spike trains, accumulated by Leaky Integrate-and-Fire neurons, and shaped by competition between neurons. You will then examine three ways to train or obtain a working spiking network:
 
-The central question of this garden is:
+- **Surrogate-gradient training** uses a differentiable approximation during optimization to work around the non-differentiable spike event.
+- **ANN-to-SNN conversion** transfers behavior from a trained conventional neural network into a spiking implementation.
+- **Spike-Timing-Dependent Plasticity (STDP)** changes connection strengths according to the relative timing of presynaptic and postsynaptic spikes.
 
-**How can a neural network use sparse timed spikes to make accurate decisions while reducing latency, energy, or adaptation cost?**
+These approaches solve different learning problems and produce different tradeoffs. A model with strong classification accuracy may require more spikes, a longer inference window, or more energy. A model with sparse activity and low estimated energy may learn more slowly. There is therefore no useful single-metric answer to the question "Which model is best?"
 
-You will learn SNNs as a chain of ideas rather than as a list of definitions. First, you will see why event-driven computation is useful. Then you will build the mechanism of a spiking neuron, connect neurons into networks, compare the main training strategies, derive the evaluation metrics, and finally read performance results as tradeoffs rather than single-number rankings.
+## What You Will Learn
 
-## Learning Spine
+By the end of the garden, you should be able to:
 
-Start with the simplest intuition: a spike is a meaningful event. If nothing happens, the network may not need to compute much. If enough input arrives, a neuron fires. This gives SNNs their appeal for low-power and time-sensitive systems, especially when signals unfold over time.
+1. Explain why dense, synchronous computation motivates event-driven alternatives.
+2. Distinguish continuous-valued activations from temporally structured spike trains.
+3. Trace the accumulation, leakage, threshold crossing, spike emission, and reset of a Leaky Integrate-and-Fire neuron.
+4. Follow information from input encoding through spike trains, excitatory neurons, and winner-take-all competition.
+5. Explain why discrete spikes complicate ordinary gradient-based training.
+6. Compare surrogate-gradient training, ANN-to-SNN conversion, and STDP.
+7. Calculate and interpret classification accuracy, inference latency, spike count, estimated energy, normalized energy efficiency, and convergence time.
+8. Read tables, learning curves, and comparison graphs without reducing model quality to one number.
+9. Choose a training strategy based on accuracy, latency, energy, activity, convergence, application demands, and deployment constraints.
 
-The first mechanism to understand is the **Leaky Integrate-and-Fire neuron**. A spiking neuron has a membrane potential, which you can think of as an internal running signal. Incoming spikes push this potential upward. Leak pulls it downward over time. A firing threshold decides when the neuron emits a spike. Once you understand accumulation, leak, threshold crossing, and spike generation, the rest of the garden becomes much easier.
+## The Learning Path
 
-The next step is network organization. SNNs are not just isolated firing neurons; they are networks of spike pathways. Input layers encode incoming information, excitatory layers help propagate activity, and inhibitory layers help regulate it. The architecture matters because spike timing and spike count depend on how events move through the network.
+The recommended order follows the path from mechanism to evidence: first understand why spikes are useful, then how they are generated and trained, and finally how competing approaches are measured and selected.
 
-Then comes learning. SNNs can be trained or adapted in several ways:
+### 1. [[learning/1. How Brain-inspired Computation Works/_index|1. How Brain-inspired Computation Works]]
 
-- **Surrogate gradient training** keeps gradient-based learning usable by approximating how learning signals pass through discrete spikes.
-- **ANN-to-SNN conversion** starts from a trained artificial neural network and converts its behavior into a spiking form, often trading direct SNN training for reuse of an existing model.
-- **Spike-Timing Dependent Plasticity**, or STDP, changes synaptic strength based on the relative timing of pre-synaptic and post-synaptic spikes.
+Begin with the computational motivation and build a concrete picture of event-driven processing.
 
-Finally, SNNs must be evaluated with more than accuracy. A model that is accurate but slow may fail in real-time settings. A model that saves energy but loses too much accuracy may not be useful. A model with few spikes may be efficient, but spike count only matters when connected to energy, latency, and task performance. The garden therefore treats accuracy, latency, spike count, energy, normalized energy efficiency, and convergence time as one connected evaluation system.
+1. [[learning/1. How Brain-inspired Computation Works/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]] - Contrast dense, continuously recomputed activations with sparse event-driven activity.
+2. [[learning/1. How Brain-inspired Computation Works/1.2 Spikes, Timing, and Event-Driven Computation|Spikes, Timing, and Event-Driven Computation]] - Learn how spike timing, spike rate, and asynchronous communication create a spatiotemporal representation.
+3. [[learning/1. How Brain-inspired Computation Works/1.3 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]] - Follow membrane potential as input is accumulated, partially lost through leakage, compared with a firing threshold, and reset after a spike.
+4. [[learning/1. How Brain-inspired Computation Works/1.4 From Encoded Input to Spike Trains|From Encoded Input to Spike Trains]] - Trace an input through encoding and into the temporally structured activity processed by spiking neurons.
+5. [[learning/1. How Brain-inspired Computation Works/1.5 Winner-Take-All Competition|Winner-Take-All Competition]] - See how lateral inhibition makes excitatory neurons compete and promotes selective responses.
 
-## Recommended Reading Order
+### 2. [[learning/2. How Non-differentiable Spike Event Is Applied/_index|2. How Non-differentiable Spike Event Is Applied]]
 
-Read the garden in this order if you are new to SNNs:
+Once spike generation is clear, examine the central learning difficulty: a discrete threshold event does not provide the ordinary derivative expected by gradient-based optimization.
 
-1. [[learning/1. Why SNNs Need Events/_index|1. Why SNNs Need Events]]
-   - [[learning/1. Why SNNs Need Events/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
-   - [[learning/1. Why SNNs Need Events/1.2 Biological Inspiration Without Biological Overclaiming|Biological Inspiration Without Biological Overclaiming]]
-   - [[learning/1. Why SNNs Need Events/1.3 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]]
-   - [[learning/1. Why SNNs Need Events/1.4 Spiking Network Architecture|Spiking Network Architecture]]
+1. [[learning/2. How Non-differentiable Spike Event Is Applied/2.1 How SNNs Learn|How SNNs Learn]] - Establish why spiking networks require distinct learning strategies.
+2. [[learning/2. How Non-differentiable Spike Event Is Applied/2.2 Surrogate-Gradient Training|Surrogate-Gradient Training]] - Understand how an approximate derivative enables direct optimization of an SNN.
+3. [[learning/2. How Non-differentiable Spike Event Is Applied/2.3 ANN-to-SNN Conversion|ANN-to-SNN Conversion]] - Examine what can be preserved when trained ANN behavior is transferred into a spiking implementation, and what additional simulation time or spike activity may be required.
+4. [[learning/2. How Non-differentiable Spike Event Is Applied/2.4 Spike-Timing-Dependent Plasticity|Spike-Timing-Dependent Plasticity]] - Connect the order and separation of spikes to local changes in connection strength.
 
-2. [[learning/2. How SNNs Learn/_index|2. How SNNs Learn]]
-   - [[learning/2. How SNNs Learn/2.1 How SNNs Learn|How SNNs Learn]]
-   - [[learning/2. How SNNs Learn/2.2 Surrogate Gradient Training|Surrogate Gradient Training]]
-   - [[learning/2. How SNNs Learn/2.3 ANN-to-SNN Conversion|ANN-to-SNN Conversion]]
-   - [[learning/2. How SNNs Learn/2.4 Spike-Timing Dependent Plasticity|Spike-Timing Dependent Plasticity]]
+### 3. [[learning/3. How Performance Is Evaluated/_index|3. How Performance Is Evaluated]]
 
-3. [[learning/3. The Metrics That Make SNNs Measurable/_index|3. The Metrics That Make SNNs Measurable]]
-   - [[learning/3. The Metrics That Make SNNs Measurable/3.1 Accuracy|Accuracy]]
-   - [[learning/3. The Metrics That Make SNNs Measurable/3.2 Latency|Latency]]
-   - [[learning/3. The Metrics That Make SNNs Measurable/3.3 Spike Count|Spike Count]]
-   - [[learning/3. The Metrics That Make SNNs Measurable/3.4 Energy and Normalized Energy Efficiency|Energy and Normalized Energy Efficiency]]
-   - [[learning/3. The Metrics That Make SNNs Measurable/3.5 Convergence Time|Convergence Time]]
+Learn the first three measurements before interpreting any model ranking.
 
-4. [[learning/4. What the Results Show/_index|4. What the Results Show]]
-   - [[learning/4. What the Results Show/4.1 Continuous Activations Versus Sparse Spikes|Continuous Activations Versus Sparse Spikes]]
-   - [[learning/4. What the Results Show/4.2 Reading Accuracy and Energy Results Together|Reading Accuracy and Energy Results Together]]
-   - [[learning/4. What the Results Show/4.3 Reading Latency Results|Reading Latency Results]]
+1. [[learning/3. How Performance Is Evaluated/3.1 Classification Accuracy|Classification Accuracy]] - Calculate the fraction of predictions that are correct and identify what accuracy leaves unmeasured.
+2. [[learning/3. How Performance Is Evaluated/3.2 Inference Latency|Inference Latency]] - Measure elapsed time from the arrival of a stimulus to the model's decision.
+3. [[learning/3. How Performance Is Evaluated/3.3 Spike Count and Event Activity|Spike Count and Event Activity]] - Sum spike events across neurons and simulation timesteps to quantify network activity.
 
-5. [[learning/5. Energy and Learning Curve Results/_index|5. Energy and Learning Curve Results]]
-   - [[learning/5. Energy and Learning Curve Results/5.1 Reading Energy and Spike Count Results|Reading Energy and Spike Count Results]]
-   - [[learning/5. Energy and Learning Curve Results/5.2 Reading Training Loss Curves|Reading Training Loss Curves]]
-   - [[learning/5. Energy and Learning Curve Results/5.3 Reading Training Accuracy Curves|Reading Training Accuracy Curves]]
+### 4. [[learning/4. Measuring Energy Cost Per Spike/_index|4. Measuring Energy Cost Per Spike]]
 
-6. [[learning/6. Where SNNs Fit and What Still Blocks Adoption/_index|6. Where SNNs Fit and What Still Blocks Adoption]]
-   - [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.1 Neuromorphic Hardware Context|Neuromorphic Hardware Context]]
-   - [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.2 Choosing an SNN Training Strategy|Choosing an SNN Training Strategy]]
-   - [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.3 Applications for Low-Power Temporal Intelligence|Applications for Low-Power Temporal Intelligence]]
-   - [[learning/6. Where SNNs Fit and What Still Blocks Adoption/6.4 Limits of the Results and Responsible Interpretation|Limits of the Results and Responsible Interpretation]]
+Connect event activity to estimated computational cost, then interpret learning speed.
 
-This order matters because each later section depends on earlier intuitions. Metrics are easier after spike mechanics. Training tradeoffs are easier after event-driven computation. Result interpretation is easier after the formulas are clear. Method selection is easiest once accuracy, latency, energy, spike count, and convergence have already been separated.
+1. [[learning/4. Measuring Energy Cost Per Spike/4.1 Energy per Inference|Energy per Inference]] - Combine the costs of spike events and synaptic operations into an estimated total.
+2. [[learning/4. Measuring Energy Cost Per Spike/4.2 Normalized Energy Efficiency|Normalized Energy Efficiency]] - Relate task performance to energy consumption using accuracy per joule.
+3. [[learning/4. Measuring Energy Cost Per Spike/4.3 Convergence Time and Learning Curves|Convergence Time and Learning Curves]] - Use loss and accuracy curves together, and define convergence as the first epoch at which a chosen target accuracy is reached.
 
-## How To Learn This Topic
+### 5. [[learning/5. Comparing and Interpreting the Results/_index|5. Comparing and Interpreting the Results]]
 
-Use three passes.
+Finish by combining the mechanisms and metrics rather than searching for a universal winner.
 
-On the first pass, focus on intuition. Ask: **What changes when neural activity becomes sparse and event-driven?** Do not try to memorize every metric immediately. Make sure you can explain why a spike is different from a continuous activation value.
+1. [[learning/5. Comparing and Interpreting the Results/5.1 Accuracy and Energy Tradeoffs|Accuracy and Energy Tradeoffs]] - Compare ANN and SNN approaches on MNIST and CIFAR-10 while keeping predictive performance and normalized energy distinct.
+2. [[learning/5. Comparing and Interpreting the Results/5.2 Latency, Energy, and Spike-Count Tradeoffs|Latency, Energy, and Spike-Count Tradeoffs]] - Examine why response time, energy per inference, and event count are related but not interchangeable.
+3. [[learning/5. Comparing and Interpreting the Results/5.3 Choosing an SNN Training Strategy|Choosing an SNN Training Strategy]] - Match model characteristics to priorities such as fast response, sparse activity, low energy, competitive accuracy, timing-based adaptation, and practical deployment.
 
-On the second pass, focus on mechanisms. Draw a simple LIF neuron and label input, membrane potential, leak, threshold, and spike output. Then draw a small network and trace how spikes move from an input layer through excitatory and inhibitory activity. If you can explain when a neuron fires and how spikes travel, the architecture and training sections will feel grounded.
+## How to Study This Garden
 
-On the third pass, focus on tradeoffs. For every method, ask what it seems to optimize:
+Move through the sections in order on your first pass. Later ideas depend on earlier distinctions: spike count is meaningful only after spike events are clear, and training tradeoffs are easier to interpret once latency, energy, and convergence have precise definitions.
 
-- Surrogate-gradient SNNs are important when high accuracy and low latency are priorities.
-- Converted SNNs are useful when reuse of a trained ANN is attractive, while accepting costs such as longer simulation windows or more spikes.
-- STDP-based SNNs are important when low-power adaptive learning is the priority, while accepting slower convergence or lower accuracy in some comparisons.
+When you encounter a neuron trajectory, network diagram, table, or learning curve, do more than identify the highest or lowest value. Ask:
 
-The main habit to build is multi-metric thinking. Never ask only "Which model is best?" Ask "Best for what constraint?" Accuracy-sensitive, latency-sensitive, energy-sensitive, and adaptation-sensitive deployments can point to different choices.
+- What quantity is changing?
+- What mechanism could produce that change?
+- Which competing objective becomes worse when this one improves?
+- Is the result a general property of the method, or a result within the evaluated setup?
 
-## What This Garden Covers
+For each metric, calculate a small example before comparing models. For each training strategy, keep two questions together: **How does learning happen?** and **What costs or benefits follow from that choice?** This prevents a strong result on one metric from becoming an unsupported claim of overall superiority.
 
-This garden covers the foundations needed to reason about SNNs as event-driven neural systems. It explains why sparse spikes matter, how a simple spiking neuron fires, how SNN layers organize spike flow, how the major training approaches differ, and how to evaluate SNNs with accuracy, latency, spike count, energy, normalized energy efficiency, and convergence time.
+## Scope
 
-It also covers practical interpretation. You will learn how to read comparisons among ANN baselines, converted SNNs, surrogate-gradient SNNs, and STDP-based SNNs without reducing the result to a single winner. The goal is to choose an SNN approach based on the deployment priority: accuracy, latency, energy efficiency, spike sparsity, or adaptive learning.
+This garden covers the event-driven foundations of spiking computation, Leaky Integrate-and-Fire neuron intuition, input encoding, spike trains, excitatory competition, three training paradigms, six evaluation metrics, and comparative results for ANN and SNN variants on MNIST and CIFAR-10. It also connects model selection to neuromorphic computing, robotics, sensory processing, mobile and edge AI, and brain-computer interfaces. IBM TrueNorth and Intel Loihi appear as examples of neuromorphic platforms that motivate event-driven deployment.
 
-Application coverage stays focused on settings that fit the SNN argument: edge AI, robotics, neuromorphic vision, brain-computer interfaces, sensory processing, mobile low-power inference, and neuromorphic computing contexts such as IBM TrueNorth and Intel Loihi as examples of low-power event-driven hardware directions.
+The reported comparisons remain tied to their evaluated models, datasets, assumptions, and measurement methods. Energy values based on spike and synaptic-operation costs are treated as estimates rather than automatically interpreted as direct hardware measurements. MNIST and CIFAR-10 results illustrate tradeoffs; they do not establish that one training strategy-or SNNs as a whole-always outperforms conventional neural networks.
 
-## What This Garden Does Not Cover
+The garden does not provide implementation tutorials, framework APIs, benchmark-reproduction instructions, detailed hardware programming, or a broad survey of every neuron model and encoding scheme. It also does not derive unsupported surrogate estimators, conversion algorithms, or STDP equations. Detailed biological membrane models, advanced network architectures, hardware specifications, and comparisons with unrelated model families remain outside the present scope.
 
-This garden does not try to be a complete survey of all SNN research. It does not cover every neuron model, every learning rule, every neuromorphic chip, or every benchmark used in the broader field. It also does not teach implementation in PyTorch, snnTorch, Brian2, Nengo, Norse, or other software frameworks.
-
-The mathematical treatment stays focused on the formulas needed for evaluation: accuracy, latency, total spikes, total energy, normalized energy efficiency, and convergence time. It does not develop a deeper formal theory of spiking dynamics beyond the concepts needed to understand the LIF model, spike trains, training methods, and performance tradeoffs.
-
-Hardware discussion stays conceptual. Neuromorphic chips appear as examples of why sparse event-driven computation is attractive, not as a detailed chip specification or commercial readiness comparison.
-
-The safest way to read this garden is as a structured path into SNN reasoning: understand events, understand firing, understand training, measure the right costs, and choose methods by tradeoff rather than by a single headline metric.
+The goal is narrower and more useful: to understand how timed spike events support computation, how spiking networks can learn, how their behavior is measured, and how to make a defensible choice when accuracy, speed, energy, activity, and convergence point in different directions.

@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
+import { DEFAULT_ASSISTANT_MODELS, mergeAssistantModels } from '@/lib/ai-models';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { requireUserId, RouteError, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
-
-const DEFAULT_MODELS = ['gpt-5.5', 'gpt-5.4'];
 
 export async function GET(request: Request) {
   try {
@@ -18,14 +17,14 @@ export async function GET(request: Request) {
       ...data,
       object: data?.object ?? 'list',
       data: [
-        ...DEFAULT_MODELS.map((id) => ({
+        ...DEFAULT_ASSISTANT_MODELS.map((id) => ({
           id,
           object: 'model',
           owned_by: 'chatmock',
         })),
         ...models.filter(
           (item: { id?: unknown }) =>
-            typeof item?.id !== 'string' || !DEFAULT_MODELS.includes(item.id),
+            typeof item?.id !== 'string' || !DEFAULT_ASSISTANT_MODELS.includes(item.id),
         ),
       ],
     });
@@ -34,7 +33,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       object: 'list',
-      data: DEFAULT_MODELS.map((id) => ({
+      data: mergeAssistantModels([]).map((id) => ({
         id,
         object: 'model',
         owned_by: 'chatmock',

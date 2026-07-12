@@ -1115,8 +1115,13 @@ async function ensureSourceVisualsExtracted({
     );
     if (realFigures.length === 0) {
       const detail = extractionErrors.length > 0 ? ` (${extractionErrors.join("; ")})` : "";
+      // Distinguish a retryable model/infra failure from a source that genuinely
+      // has no detectable figures, so the user knows whether to retry or not.
+      const guidance = extractionErrors.length > 0
+        ? " The visual-detection model returned errors and may be unavailable — retry generation once it is reachable."
+        : " No meaningful figures or tables were detected in the source page snapshots.";
       throw new Error(
-        `Source visual extraction failed: ${visualRichSlugs.size} visual-rich source(s) produced zero extracted figures/tables${detail}. Refusing to write learner pages with no source figures.`,
+        `Source visual extraction failed: ${visualRichSlugs.size} visual-rich source(s) produced zero extracted figures/tables${detail}.${guidance} Refusing to write learner pages with no source figures.`,
       );
     }
   }
@@ -4805,47 +4810,90 @@ export async function runTextbookGeneration({
       if (raw === "model" || raw === "model_with_deterministic_fallback" || raw === "deterministic") return raw;
       return "model_with_deterministic_fallback";
     })();
-    const repairRun = await repairLearningUnitsFromContract({
-      gardenDir: clusterDir,
-      gardenSlug: gardenId,
-      repairExecutor: repairExecutorMode,
-      modelRepair:
-        repairExecutorMode === "deterministic"
-          ? undefined
-          : createOpenAIRepairExecutor({ client, model, gardenId, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
-    });
-    appendLearnEvent(contentPath, gardenId, "learn_semantic_repair_completed", {
-      jobId: job.id,
-      textbookVersionId,
-      repairExecutorMode,
-      requestCount: repairRun.requests.length,
-      repairCount: repairRun.repairs.length,
-      modelRepairCount: repairRun.repairs.filter((entry) => entry.executorUsed === "model").length,
-      unresolvedCount: repairRun.repairs.filter((entry) => entry.result === "unresolved").length,
-      changedFiles: repairRun.changedFiles,
-    });
+    // Stages 8a+8b (repair -> export finalize -> verify) run as a bounded
+    // convergence loop instead of a single pass followed by a hard fail. Each
+    // pass repairs the flagged pages (ChatMock-backed model repair with a
+    // deterministic fallback), finalizes the on-disk tree exactly as Quartz
+    // sees it, and verifies it. When the deterministic gate still finds
+    // problems, ChatMock gets another focused pass: `collectUnitRepairRequests`
+    // re-derives requests from exactly what still fails, and re-running the
+    // repair loop also refreshes the repair-log so a page fixed by a later
+    // deterministic pass is not blocked by a stale "unresolved" record. The
+    // loop only gives up (and the terminal throw below fires) once ChatMock can
+    // no longer make progress, so a healthy model self-heals gate failures
+    // rather than ending generation on the first attempt.
+    const MAX_FINALIZE_PASSES = 3;
+    let repairRun!: Awaited<ReturnType<typeof repairLearningUnitsFromContract>>;
+    let finalizeReport!: ReturnType<typeof finalizeGardenExport>;
+    let verification!: ReturnType<typeof verifyFinalArtifactNoMutation>;
+    let previousProblemSignature = "";
+    for (let pass = 1; pass <= MAX_FINALIZE_PASSES; pass += 1) {
+      if (pass > 1) {
+        updateLearnJob(job.id, {
+          status: "building_navigation",
+          currentStep: `Repairing remaining lesson issues (pass ${pass})`,
+          progressPercent: 96,
+          currentSectionTitle: undefined,
+          currentPageTitle: undefined,
+        });
+      }
+      throwIfLearnCancelled(job.id);
+      repairRun = await repairLearningUnitsFromContract({
+        gardenDir: clusterDir,
+        gardenSlug: gardenId,
+        repairExecutor: repairExecutorMode,
+        modelRepair:
+          repairExecutorMode === "deterministic"
+            ? undefined
+            : createOpenAIRepairExecutor({ client, model, gardenId, timeoutMs: LEARN_PLANNING_TIMEOUT_MS }),
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_semantic_repair_completed", {
+        jobId: job.id,
+        textbookVersionId,
+        pass,
+        repairExecutorMode,
+        requestCount: repairRun.requests.length,
+        repairCount: repairRun.repairs.length,
+        modelRepairCount: repairRun.repairs.filter((entry) => entry.executorUsed === "model").length,
+        unresolvedCount: repairRun.repairs.filter((entry) => entry.result === "unresolved").length,
+        changedFiles: repairRun.changedFiles,
+      });
 
-    // Stage 8b (deterministic export finalize + hard gate): clean and validate
-    // the on-disk tree exactly as Quartz will see it. Semantic content repair
-    // belongs to the Learning Unit repair loop above.
-    throwIfLearnCancelled(job.id);
-    const finalizeReport = finalizeGardenExport({ gardenDir: clusterDir, gardenSlug: gardenId });
-    appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
-      jobId: job.id,
-      textbookVersionId,
-      removed: finalizeReport.removed,
-      changedCount: finalizeReport.changed.length,
-      criticalProblems: finalizeReport.criticalProblems,
-    });
-    const verification = verifyFinalArtifactNoMutation({ gardenDir: clusterDir, gardenSlug: gardenId });
-    appendLearnEvent(contentPath, gardenId, "learn_final_artifact_verified", {
-      jobId: job.id,
-      textbookVersionId,
-      accepted: verification.accepted,
-      mutatedFiles: verification.mutatedFiles,
-      validationFailures: verification.validationFailures,
-      unresolvedRepairFailures: verification.unresolvedRepairFailures,
-    });
+      // Deterministic export finalize + hard gate: clean and validate the
+      // on-disk tree exactly as Quartz will see it.
+      throwIfLearnCancelled(job.id);
+      finalizeReport = finalizeGardenExport({ gardenDir: clusterDir, gardenSlug: gardenId });
+      appendLearnEvent(contentPath, gardenId, "learn_export_finalized", {
+        jobId: job.id,
+        textbookVersionId,
+        pass,
+        removed: finalizeReport.removed,
+        changedCount: finalizeReport.changed.length,
+        criticalProblems: finalizeReport.criticalProblems,
+      });
+      verification = verifyFinalArtifactNoMutation({ gardenDir: clusterDir, gardenSlug: gardenId });
+      appendLearnEvent(contentPath, gardenId, "learn_final_artifact_verified", {
+        jobId: job.id,
+        textbookVersionId,
+        pass,
+        accepted: verification.accepted,
+        mutatedFiles: verification.mutatedFiles,
+        validationFailures: verification.validationFailures,
+        unresolvedRepairFailures: verification.unresolvedRepairFailures,
+      });
+
+      if (finalizeReport.criticalProblems.length === 0 && verification.accepted) break;
+      // Stop retrying once a pass stops making progress (same blocking set as
+      // last time) so a down/unhelpful model does not burn extra passes.
+      const problemSignature = [
+        ...finalizeReport.criticalProblems,
+        ...verification.validationFailures,
+        ...verification.unresolvedRepairFailures,
+      ].sort().join("|");
+      if (problemSignature === previousProblemSignature) break;
+      previousProblemSignature = problemSignature;
+    }
+
     if (finalizeReport.criticalProblems.length > 0) {
       // Fix 6: when the blocker is unregistered source anchors, lead with the
       // clear, actionable explanation before the raw audit lines.

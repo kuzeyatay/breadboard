@@ -10,6 +10,11 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import ChatMarkdown from '@/app/components/chat-markdown';
+import {
+  DEFAULT_ASSISTANT_MODELS,
+  DEFAULT_MODEL,
+  mergeAssistantModels,
+} from '@/lib/ai-models';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -177,8 +182,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const [thinkingMode, setThinkingMode] = useState(false);
-  const [model, setModel] = useState('gpt-5.5');
-  const [models, setModels] = useState<string[]>(['gpt-5.5', 'gpt-5.4']);
+  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -225,7 +230,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
             .map((item: { id?: unknown }) => (typeof item?.id === 'string' ? item.id : null))
             .filter((id: string | null): id is string => Boolean(id))
         : [];
-      if (ids.length > 0) setModels(Array.from(new Set(['gpt-5.5', 'gpt-5.4', ...ids])));
+      if (ids.length > 0) setModels(mergeAssistantModels(ids));
       setModelsLoaded(true);
     } catch {
       // Keep local defaults when the endpoint is unavailable.

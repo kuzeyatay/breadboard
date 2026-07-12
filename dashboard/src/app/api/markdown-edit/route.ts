@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
+import { DEFAULT_MODEL } from '@/lib/ai-models';
 import { normalizeTopicTags, refreshClusterIndex, resolveClusterNoteFile } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
@@ -175,7 +176,7 @@ export async function POST(request: Request) {
     const slugInput = typeof body.slug === 'string' ? body.slug.trim() : '';
     const instruction = typeof body.instruction === 'string' ? body.instruction.trim() : '';
     const chatMessages = parseChatMessages(body.messages);
-    const selectedModel = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'gpt-5.5';
+    const selectedModel = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : DEFAULT_MODEL;
 
     if (!clusterSlug || !slugInput || !instruction) {
       return NextResponse.json({ error: 'clusterSlug, slug, and instruction are required' }, { status: 400 });

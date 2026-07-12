@@ -268,9 +268,21 @@ describe("semantic repair loop end-to-end on degraded generated artifacts", () =
     const rewrittenIndexes = [...new Set([...ctx.affected, ...ctx.run.changedFiles])]
       .filter((f) => f.startsWith("learning/") && f.endsWith("/_index.md"));
     assert.ok(rewrittenIndexes.length > 0, "a section index must be rewritten");
+    // The topic-neutral retitle can rename the section FOLDER (the new title
+    // differs from the injected one), so an old _index path in changedFiles may
+    // have been renamed away — check every surviving rewritten index.
+    let checked = 0;
     for (const rel of rewrittenIndexes) {
-      assert.doesNotMatch(ctx.readFinal(rel), /Neuron Membrane Potential Dynamics/, "the mismatched title must be gone");
+      let content;
+      try {
+        content = ctx.readFinal(rel);
+      } catch {
+        continue; // renamed away by the retitle
+      }
+      checked += 1;
+      assert.doesNotMatch(content, /Neuron Membrane Potential Dynamics/, "the mismatched title must be gone");
     }
+    assert.ok(checked > 0, "at least one surviving rewritten section index must be checked");
   });
 
   test("baseline sanity: the un-degraded generated garden yields zero repair requests and stays accepted", { skip }, async () => {

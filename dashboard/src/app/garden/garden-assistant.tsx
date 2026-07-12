@@ -14,6 +14,11 @@ import ChatMarkdown from '@/app/components/chat-markdown';
 import LearnErrorDialog from '@/app/components/learn-error-dialog';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import {
+  DEFAULT_ASSISTANT_MODELS,
+  DEFAULT_MODEL,
+  mergeAssistantModels,
+} from '@/lib/ai-models';
+import {
   forgetDismissedLearnErrorsForGarden,
   learnErrorDismissalKey,
   loadDismissedLearnErrorKeys,
@@ -341,8 +346,8 @@ export default function GardenAssistant({
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [thinkingMode, setThinkingMode] = useState(false);
-  const [model, setModel] = useState('gpt-5.5');
-  const [models, setModels] = useState<string[]>(['gpt-5.5', 'gpt-5.4']);
+  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -401,7 +406,7 @@ export default function GardenAssistant({
             .filter((id: string | null): id is string => Boolean(id))
         : [];
       if (ids.length > 0) {
-        setModels(Array.from(new Set(['gpt-5.5', 'gpt-5.4', ...ids])));
+        setModels(mergeAssistantModels(ids));
       }
       setModelsLoaded(true);
     } catch {
