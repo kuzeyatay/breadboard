@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
+import { DEFAULT_MODEL } from '@/lib/ai-models';
 import { normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge } from '@/lib/knowledge';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
@@ -274,7 +275,7 @@ export async function POST(request: Request) {
     const selectedModel =
       typeof body.model === 'string' && body.model.trim()
         ? body.model.trim()
-        : 'gpt-5.5';
+        : DEFAULT_MODEL;
 
     if (!clusterSlug) {
       return NextResponse.json({ error: 'clusterSlug is required' }, { status: 400 });

@@ -5,6 +5,7 @@ import type {
   ResponseCreateParamsStreaming,
   ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
+import { DEFAULT_MODEL } from '@/lib/ai-models';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
@@ -415,7 +416,7 @@ export async function POST(request: Request) {
       apiKey: process.env.OPENAI_API_KEY || 'local',
     });
 
-    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : 'gpt-5.5';
+    const selectedModel = typeof model === 'string' && model.trim() ? model.trim() : DEFAULT_MODEL;
     const hasImageAttachments = chatAttachments.some((attachment) => attachment.type === 'image');
     const shouldEnableImageGeneration = wantsImageGeneration(
       lastUserMessage?.content ?? '',

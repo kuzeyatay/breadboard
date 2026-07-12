@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import OpenAI from "openai";
+import { DEFAULT_MODEL } from "./ai-models";
 import { withCouncil } from "./council";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import {
@@ -27,8 +28,7 @@ import { normalizeQuartzMarkdown } from "./quartz-markdown";
 
 // Re-exported so existing `@/lib/knowledge` importers keep working unchanged.
 export { slugify, semanticTagsFromText, normalizeTopicTags };
-
-export const DEFAULT_MODEL = "gpt-5.5";
+export { DEFAULT_MODEL } from "./ai-models";
 
 export interface DocumentPage {
   label: string;

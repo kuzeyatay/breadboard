@@ -809,6 +809,53 @@ describe("contract-driven semantic repair loop", () => {
     }
   });
 
+  test("caps and de-duplicates harvested inline formulas so a math-heavy page passes Formula Metadata Noise", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-formula-noise-"));
+    try {
+      const dir = path.join(root, "test-2");
+      fs.mkdirSync(path.join(dir, ".breadboard"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "learning", "2. How SNNs Learn"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(dir, ".breadboard", "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      // A surrogate-gradient page whose prose reuses the same helper repeatedly
+      // and mentions many partial-derivative fragments — exactly the shape that
+      // produced an 11-entry frontmatter block and blocked publishing.
+      const mathProse = [
+        "The weight update follows gradient descent: $$W_{\\text{new}} = w_{\\text{old}} - \\eta \\frac{\\partial L}{\\partial w}$$",
+        "The chain rule expands as $$\\frac{\\partial L}{\\partial w} \\approx \\frac{\\partial L}{\\partial s}\\; g(u-\\theta)\\; \\frac{\\partial u}{\\partial w}$$",
+        "The spike is a threshold decision $s = H(u - \\theta)$, and the surrogate slope is $g(u-\\theta)$.",
+        "Each factor matters: $\\frac{\\partial L}{\\partial w}$ combines $\\frac{\\partial L}{\\partial s}$ with the surrogate $g(u-\\theta)$ and $\\frac{\\partial u}{\\partial w}$.",
+        "Near threshold the argument $u-\\theta$ is small, so $g(u-\\theta)$ peaks and $\\frac{\\partial L}{\\partial s}$ carries the signal.",
+      ].join("\n\n");
+      fs.writeFileSync(
+        path.join(dir, "learning", "2. How SNNs Learn", "2.2 Surrogate Gradient Training.md"),
+        fm({ title: "2.2 Surrogate Gradient Training", knowledge_type: "learning-page", breadboardType: "learning_page", generatedBy: "learn_button" }) +
+          `${FILLER("surrogate gradient training", "training")}\n\n${mathProse}\n`,
+      );
+
+      finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      const pagePath = path.join(dir, "learning", "2. How SNNs Learn", "2.2 Surrogate Gradient Training.md");
+      const out = fs.readFileSync(pagePath, "utf-8");
+      const entryCount = (out.match(/^ {2}- kind:/gm) ?? []).length;
+      assert.ok(entryCount > 0 && entryCount <= 6, `expected a focused formula block, got ${entryCount} entries`);
+      // The thrice-repeated surrogate slope collapses to a single entry.
+      const surrogateEntries = (out.match(/text: "g\(u-\\\\theta\)"/g) ?? []).length;
+      assert.equal(surrogateEntries, 1, "duplicate g(u-θ) must be de-duplicated to one entry");
+      const check54 = runChecks(dir, "test-2").find((result) => result.id === 54);
+      assert.equal(check54.status, "PASS", check54.problems.join("\n"));
+
+      // Re-running finalize must not churn the compacted block (idempotent).
+      const before = fs.readFileSync(pagePath, "utf-8");
+      finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      assert.equal(fs.readFileSync(pagePath, "utf-8"), before, "compacted formula block must be a fixed point");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("retitles mixed-role sections before semantic validation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-section-retitle-"));
     try {
@@ -850,13 +897,73 @@ describe("contract-driven semantic repair loop", () => {
       await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       assert.equal(
-        report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
+        report.criticalProblems.some((problem) => /Section semantic coherence|Section Title Naturalness/.test(problem)),
         false,
         report.criticalProblems.join(" | "),
       );
-      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. How SNNs Learn and Are Evaluated", "_index.md"), "utf-8");
-      assert.match(sectionIndex, /title: "2\. How SNNs Learn and Are Evaluated"/);
-      assert.match(sectionIndex, /^# 2\. How SNNs Learn and Are Evaluated$/m);
+      // The metrics-only title that mismatched the training+metric units is
+      // replaced by a purpose-coherent, topic-neutral one; folder/_index/H1 sync.
+      assert.equal(fs.existsSync(path.join(dir, "learning", "2. The Metrics That Make SNNs Measurable")), false);
+      const { folder, titleInFm, h1 } = sectionAfterRetitle(dir, "2.");
+      assert.match(folder, /applied|method|training|evaluat|strateg/i);
+      assert.equal(titleInFm, folder);
+      assert.equal(h1, folder);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retitles application/limitation sections away from a blacklisted metric title", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-app-section-retitle-"));
+    try {
+      const dir = path.join(root, "test-2");
+      const bb = path.join(dir, ".breadboard");
+      fs.mkdirSync(bb, { recursive: true });
+      const sectionDir = "6. Measuring the Core Quantities";
+      fs.mkdirSync(path.join(dir, "learning", sectionDir), { recursive: true });
+      fs.mkdirSync(path.join(dir, "sources"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
+      fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
+      fs.writeFileSync(path.join(bb, "source-visuals.json"), "[]");
+      fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(bb, "learning-unit-contract.json"),
+        JSON.stringify({
+          learningUnits: [
+            { id: "L", role: "limitation", title: "Limits of Conventional Neural Architectures", learningQuestion: "Where do dense networks fall short?", zettelNotes: [{ handle: "dense-networks-limit-energy-efficiency", claim: "Dense networks limit energy efficiency." }] },
+            { id: "A", role: "application", title: "Neuromorphic Hardware and Deployment", learningQuestion: "Where do SNNs deploy?", zettelNotes: [{ handle: "neuromorphic-hardware-enables-low-power-deployment", claim: "Neuromorphic hardware enables low-power deployment." }] },
+          ],
+          sourceArtifactAssignments: [],
+        }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", sectionDir, "_index.md"),
+        fm({ title: "6. Measuring the Core Quantities", breadboardType: "textbook_section" }) +
+          "# 6. Measuring the Core Quantities\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", sectionDir, "6.1 Limits of Conventional Neural Architectures.md"),
+        fm({ title: "6.1 Limits of Conventional Neural Architectures", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "L", generatedBy: "learn_button", tags: ["dense-networks-limit-energy-efficiency"] }) +
+          `${FILLER("limits of conventional architectures", "challenges")}\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, "learning", sectionDir, "6.3 Neuromorphic Hardware and Deployment.md"),
+        fm({ title: "6.3 Neuromorphic Hardware and Deployment", knowledge_type: "learning-page", breadboardType: "learning_page", learningUnitId: "A", generatedBy: "learn_button", tags: ["neuromorphic-hardware-enables-low-power-deployment"] }) +
+          `${FILLER("neuromorphic hardware deployment", "application")}\n`,
+      );
+
+      await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
+      const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
+      // The blacklisted "Measuring the Core Quantities" metric title must be gone,
+      // and no section coherence / naturalness problem may reach the gate.
+      assert.equal(report.criticalProblems.some((p) => /Measuring the Core Quantities|Section semantic coherence|Section Title Naturalness/.test(p)), false, report.criticalProblems.join(" | "));
+      assert.equal(fs.existsSync(path.join(dir, "learning", sectionDir)), false, "old blacklisted section folder should be renamed away");
+      // Topic-neutral application/limitation title (no domain noun hardcoded).
+      const { folder, titleInFm, h1 } = sectionAfterRetitle(dir, "6.");
+      assert.match(folder, /application|applications|limits?|open questions|practical/i);
+      assert.doesNotMatch(folder, /\bSNN|spiking|neuromorphic\b/i);
+      assert.equal(titleInFm, folder);
+      assert.equal(h1, folder);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -897,12 +1004,15 @@ describe("contract-driven semantic repair loop", () => {
       await repairLearningUnitsFromContract({ gardenDir: dir, gardenSlug: "test-2" });
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       assert.equal(
-        report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
+        report.criticalProblems.some((problem) => /Section semantic coherence|Section Title Naturalness/.test(problem)),
         false,
         report.criticalProblems.join(" | "),
       );
-      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "2. Measuring Decision Latency", "_index.md"), "utf-8");
-      assert.match(sectionIndex, /title: "2\. Measuring Decision Latency"/);
+      // A formula/formalism section gets a formalism-purpose title.
+      const { folder, titleInFm, h1 } = sectionAfterRetitle(dir, "2.");
+      assert.match(folder, /formal|mathematical|describing|measur|equation/i);
+      assert.equal(titleInFm, folder);
+      assert.equal(h1, folder);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -950,14 +1060,16 @@ describe("contract-driven semantic repair loop", () => {
       const report = finalizeGardenExport({ gardenDir: dir, gardenSlug: "test-2" });
       const verification = verifyFinalArtifactNoMutation({ gardenDir: dir, gardenSlug: "test-2" });
       assert.equal(
-        report.criticalProblems.some((problem) => /Section semantic coherence/.test(problem)),
+        report.criticalProblems.some((problem) => /Section semantic coherence|Section Title Naturalness/.test(problem)),
         false,
         report.criticalProblems.join(" | "),
       );
       assert.deepEqual(verification.mutatedFiles, []);
-      const sectionIndex = fs.readFileSync(path.join(dir, "learning", "5. Metrics and Results Compared", "_index.md"), "utf-8");
-      assert.match(sectionIndex, /title: "5\. Metrics and Results Compared"/);
-      assert.match(sectionIndex, /^# 5\. Metrics and Results Compared$/m);
+      // Metric+result section gets an evaluation/evidence-purpose title; sync.
+      const { folder, titleInFm, h1 } = sectionAfterRetitle(dir, "5.");
+      assert.match(folder, /measur|evaluat|results?|interpret|compar/i);
+      assert.equal(titleInFm, folder);
+      assert.equal(h1, folder);
       const repairReport = fs.readFileSync(path.join(dir, ".breadboard", "repair-report.md"), "utf-8");
       assert.match(repairReport, /## Final Verification/);
       assert.match(repairReport, /No-mutation check: pass/);
@@ -1279,6 +1391,18 @@ describe("finalize gates semantic defects", () => {
 // Defective SNN garden builder: complete enough to pass all checks *after*
 // finalize, but seeded with every failure class this task fixes.
 // ---------------------------------------------------------------------------
+
+/** Discover a retitled section folder by its number prefix and return the
+ * folder name plus its _index frontmatter title and H1 for sync checks. */
+function sectionAfterRetitle(dir, numberPrefix) {
+  const folder = fs.readdirSync(path.join(dir, "learning")).find((entry) => entry.startsWith(numberPrefix));
+  const index = fs.readFileSync(path.join(dir, "learning", folder, "_index.md"), "utf-8");
+  return {
+    folder,
+    titleInFm: index.match(/^title:\s*"([^"]*)"/m)?.[1],
+    h1: index.match(/^#\s+(.+?)\s*$/m)?.[1],
+  };
+}
 
 function fm(obj) {
   const lines = [];

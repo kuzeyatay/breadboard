@@ -9,9 +9,11 @@
  * handles needed for that step. Sections are then *clustered from* the units, so
  * a shallow "8 sections, 1 subsection each" map is structurally impossible.
  *
- * This module is dependency-free on purpose: the dashboard pipeline, the
- * standalone validator script, and the test suite all import it directly. The
- * only imports are type-only (fully erased at runtime).
+ * This module owns the section-title VALIDATION checks (naturalness, grammar,
+ * semantic coherence). The topic-agnostic title GENERATION lives in
+ * ./section-title.ts, which it delegates to; that module imports the validators
+ * back for candidate scoring. The cycle is call-time only (neither module uses
+ * the other at import/top-level), which ES modules resolve correctly.
  */
 
 import type {
@@ -19,6 +21,12 @@ import type {
   LearningSectionPlan,
   LearningSubsectionPlan,
 } from "./learn-utils";
+import {
+  buildGardenTopicProfile,
+  foreignTitleContentWords,
+  generateSectionTitle,
+  type GardenTopicProfile,
+} from "./section-title.ts";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -486,14 +494,18 @@ function unitRoleFamily(role: LearningUnitRole): SectionRoleFamily {
   }
 }
 
+// Topic-neutral role hints. These are a CONSISTENCY CHECK on title vocabulary,
+// not the primary role detector (unit roles are the source of truth). They must
+// stay free of domain proper nouns — any subject-specific term is supplied by a
+// GardenTopicProfile or section concepts, never hardcoded here.
 const TITLE_ROLE_HINTS: Array<[SectionRoleFamily, RegExp]> = [
-  ["motivation", /\bwhy\b|\bexist\b|\bmotivat|\bneed\b|\bpurpose\b/i],
-  ["mechanism", /\bmechanism|\bworks?\b|\bspike event|\bneuron|\blif\b|\bmembrane|\bthreshold|\breset|\bcoding|\barchitecture|\bdynamics|\bformal|\bformula/i],
-  ["training_method", /\blearn(?:s|ing)?\b|\btrain(?:s|ing|ed)?\b|\bsurrogate\b|\bgradient\b|\bstdp\b|\bplasticity\b|\bconversion\b|\bann[- ]to[- ]snn\b|\bmethod\b|\bstrategy\b/i],
-  ["metric", /\bmetric|\bmeasur|\bevaluat|\baccuracy\b|\blatency\b|\benergy\b|\bspike count\b|\bconvergence\b|\bperformance\b|\bscore/i],
-  ["comparison", /\bcompar|\btrade[- ]?off|\bversus\b|\bvs\b|\bmodel families\b|\bresults?\b|\bresults show\b/i],
-  ["application", /\bapplication|\bdeploy|\bhardware|\bneuromorphic|\bwhere\b|\bfit\b|\badoption\b|\bblocks?\b|\bchallenge|\blimitation|\bfuture|\bunresolved/i],
-  ["synthesis", /\btogether\b|\bunified\b|\bbig picture\b|\bconnect|\boverview\b|\bframework\b/i],
+  ["motivation", /\bwhy\b|\bexist\b|\bmotivat|\bneed\b|\bpurpose\b|\bproblem\b|\bmatter/i],
+  ["mechanism", /\bmechanism|\bmechanics\b|\bworks?\b|\bworking\b|\bprocess\b|\bhow it\b|\bdynamics\b|\barchitecture\b|\bstructure\b|\bstate\b|\bstep/i],
+  ["training_method", /\blearn(?:s|ing)?\b|\btrain(?:s|ing|ed)?\b|\bmethod\b|\bstrateg|\bapproach|\btechnique|\balgorithm|\boptimiz/i],
+  ["metric", /\bmetric|\bmeasur|\bevaluat|\bperformance\b|\bscore|\bquantif|\bassess|\bformal|\bmathematical|\bequation|\bnotation/i],
+  ["comparison", /\bcompar|\btrade[- ]?off|\bversus\b|\bvs\b|\balternativ|\bresults?\b/i],
+  ["application", /\bapplication|\bapplied\b|\bpractical|\buse case|\breal[- ]world|\bdeploy|\bwhere\b|\bfit\b|\badoption\b|\bblocks?\b|\bchallenge|\blimit|\bconstraint|\bopen question|\bfuture|\bunresolved/i],
+  ["synthesis", /\btogether\b|\bunified\b|\bbig picture\b|\bconnect|\boverview\b|\bframework\b|\bsynthes/i],
 ];
 
 export function sectionRoleFamilyForUnitRole(role: LearningUnitRole): SectionRoleFamily {
@@ -516,6 +528,23 @@ function semanticProblem(sectionTitle: string, dominantRoles: string[], problem:
 function importantSectionFamilies(families: SectionRoleFamily[]): SectionRoleFamily[] {
   const important = families.filter((role) => role !== "motivation" && role !== "synthesis");
   return important.length > 0 ? important : families;
+}
+
+const TITLE_CONTENT_STOPWORDS = new Set([
+  "the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with", "from",
+  "why", "how", "what", "when", "where", "which", "is", "are", "it", "its",
+  "this", "that", "still", "yet", "not", "as", "at", "by", "about",
+]);
+
+/** Lowercased content words (>= 3 chars, non-stopword) — a topic-neutral way to
+ * ask "does this title mention one of the section's own concepts?". */
+function titleContentWords(value: string): string[] {
+  return compact(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .flatMap((word) => word.split("-"))
+    .filter((word) => word.length >= 3 && !TITLE_CONTENT_STOPWORDS.has(word));
 }
 
 export function sectionSemanticProfile(input: SectionSemanticInput): SectionSemanticProfile {
@@ -551,6 +580,13 @@ export function sectionSemanticProfile(input: SectionSemanticInput): SectionSema
   const dominantRoleLabels = importantFamilies.length ? importantFamilies : dominantFamilies;
   const problems: string[] = [];
 
+  // Content words the title shares with the section's own concepts (topic
+  // agnostic: no hardcoded domain nouns).
+  const sectionConceptTexts = [...subsectionTitles, ...dominantConcepts, ...units.flatMap((unit) => unit.newConcepts ?? [])];
+  const conceptWords = new Set(sectionConceptTexts.flatMap((value) => titleContentWords(value)));
+  const titleNamesSectionConcept = titleContentWords(sectionTitle).some((word) => conceptWords.has(word));
+  const purposeMatched = titleHints.some((hint) => families.includes(hint));
+
   if (units.length > 0 && titleHints.length > 0) {
     const titleHas = (role: SectionRoleFamily) => titleHints.includes(role);
     const unitHas = (role: SectionRoleFamily) => families.includes(role);
@@ -566,22 +602,35 @@ export function sectionSemanticProfile(input: SectionSemanticInput): SectionSema
     if (unitHas("application") && titleMechanismOnly) {
       problems.push(semanticProblem(sectionTitle, dominantRoleLabels, "application or limitation units sit under a mechanism/formula title", "split section or retitle to include applications and limitations"));
     }
-    const motivationTitleIntroducesMechanism =
-      importantFamilies.length === 1 &&
-      importantFamilies[0] === "mechanism" &&
-      titleHas("motivation") &&
-      !titleHas("metric") &&
-      !titleHas("comparison") &&
-      !titleHas("training_method") &&
-      /\b(?:snn|spik|event|neuron|network|computation|compute)\b/i.test(
-        [sectionTitle, ...subsectionTitles, ...dominantConcepts].join(" "),
-      );
+    // The generic purpose-mismatch checks only fire when the title does NOT name
+    // any of the section's own concepts. A title that uses the section's concept
+    // vocabulary is on-topic even if a concept name coincidentally contains a
+    // role-hint word (e.g. "Optimization" reading as a method hint, "Equation"
+    // as a metric hint). Specific structural checks above still fire.
     const missing = importantFamilies.filter((role) => !titleHints.includes(role));
-    if (importantFamilies.length >= 2 && missing.length > 0 && !titleAcknowledgesMixed) {
+    if (importantFamilies.length >= 2 && missing.length > 0 && !titleAcknowledgesMixed && !titleNamesSectionConcept) {
       problems.push(semanticProblem(sectionTitle, dominantRoleLabels, `mixed section title omits ${missing.join(", ")} role(s)`, "split the section or use a title that names the mixed purpose"));
     }
-    if (importantFamilies.length === 1 && !titleHints.includes(importantFamilies[0]) && !motivationTitleIntroducesMechanism) {
+    if (importantFamilies.length === 1 && !titleHints.includes(importantFamilies[0]) && !titleNamesSectionConcept) {
       problems.push(semanticProblem(sectionTitle, dominantRoleLabels, `title vocabulary points to ${titleHints.join(", ")} but units are ${importantFamilies[0]}`, "retitle the section to match the unit role"));
+    }
+  }
+
+  // Topic-agnostic off-topic detection: a title that neither reflects the
+  // section's purpose (via role hints) nor names any of the section's own
+  // concepts, yet introduces foreign, non-universal content words, is unrelated
+  // to the section's units. This replaces the old domain-noun regexes and works
+  // for any subject (e.g. a "Neuron Membrane Potential Dynamics" title on a
+  // metrics section, or an SNN title on a photosynthesis section).
+  if (units.length > 0 && problems.length === 0 && !purposeMatched && !titleNamesSectionConcept) {
+    const foreign = foreignTitleContentWords(sectionTitle, sectionConceptTexts);
+    if (foreign.length > 0) {
+      problems.push(semanticProblem(
+        sectionTitle,
+        dominantRoleLabels,
+        `title introduces concepts foreign to the section (${foreign.slice(0, 3).join(", ")})`,
+        "retitle the section to match its units",
+      ));
     }
   }
 
@@ -1506,216 +1555,63 @@ function subsectionFromUnit(unit: LearningUnitContract): LearningSubsectionPlan 
   };
 }
 
-function topicLabel(topic: string): string {
-  const cleaned = compact(topic).replace(/\bLearning Garden\b/gi, "").trim();
-  if (!cleaned) return "the Topic";
-  if (/spiking neural networks|snns/i.test(cleaned)) return "SNNs";
-  return cleaned.replace(/^the\s+/i, "");
+function stripSectionNumber(value: string): string {
+  return compact(value).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
 }
 
-function titleCase(value: string): string {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word, index) => {
-      const lower = word.toLowerCase();
-      if (index > 0 && /^(and|or|the|a|an|to|of|in|for|with)$/.test(lower)) return lower;
-      return lower.replace(/^./, (ch) => ch.toUpperCase());
-    })
-    .join(" ");
+/** A minimal unit reconstructed from a title + role, used when only partial
+ * (title/role) information is available for title polishing. */
+function pseudoUnitForTitle(title: string, role: string): LearningUnitContract {
+  const clean = stripSectionNumber(title);
+  return {
+    id: clean || "unit",
+    title: clean,
+    role: (LEARNING_UNIT_ROLES as readonly string[]).includes(role) ? (role as LearningUnitRole) : "core_concept",
+    learningQuestion: "",
+    prerequisiteConcepts: [],
+    newConcepts: clean ? [clean] : [],
+    sourceAnchors: [],
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    zettelNotes: [],
+    mustNotRepeat: [],
+    expectedWordRange: [0, 0],
+  };
 }
 
-function conceptFromUnits(units: LearningUnitContract[], fallback: string): string {
-  const concepts = units.flatMap((unit) => [...unit.newConcepts, unit.title]);
-  const candidate =
-    concepts
-      .map((item) => compact(item).replace(/^\d+(?:\.\d+)*\.?\s*/, ""))
-      .find((item) => item && !/^(why|how|what|when|where|the)\b/i.test(item)) ??
-    fallback;
-  return titleCase(candidate.replace(/\bSNNs\b/gi, "SNNs"));
+/**
+ * Generation-time section title. Delegates entirely to the topic-agnostic
+ * candidate system in ./section-title.ts: the GardenTopicProfile supplies the
+ * subject vocabulary, the units supply the universal purpose + focus concepts,
+ * and the highest-scoring VALID topic-neutral title is chosen.
+ * `otherSectionTitles` keeps sibling section titles unique.
+ */
+function polishSectionTitle(
+  units: LearningUnitContract[],
+  profile: GardenTopicProfile,
+  otherSectionTitles: string[],
+): string {
+  return generateSectionTitle({ units, profile, otherSectionTitles }).title;
 }
 
-function titleFamilyFlags(text: string): Set<string> {
-  const lower = compact(text).toLowerCase();
-  const out = new Set<string>();
-  if (/\baccuracy\b|\bcorrect prediction/.test(lower)) out.add("accuracy");
-  if (/\blatency\b|\bdecision time\b|\bresponse time\b/.test(lower)) out.add("latency");
-  if (/\bspike count\b|\bspikes?\b/.test(lower)) out.add("spikes");
-  if (/\benergy\b|\bjoules?\b|\bpower\b/.test(lower)) out.add("energy");
-  if (/\befficien|\baccuracy per energy\b|\bnormalized\b/.test(lower)) out.add("efficiency");
-  if (/\bconverg|\bepochs?\b|\btarget accuracy\b/.test(lower)) out.add("convergence");
-  if (/\bthreshold\b|\bmembrane potential\b|\bfiring\b/.test(lower)) out.add("threshold");
-  return out;
-}
-
+/**
+ * Backward-compatible polish from a partial (roles + titles) input. Reconstructs
+ * pseudo-units and a minimal profile so the same generic candidate system runs;
+ * kept for callers that only have this shape.
+ */
 export function polishSectionTitleFromInput(input: SectionTitlePolishInput): string {
-  const roles = new Set(input.unitRoles.map((role) => compact(role)));
-  const text = [
-    input.originalTitle,
-    ...input.unitTitles,
-    ...input.sourceAnchorTitles,
-    input.dominantLearnerQuestion,
-  ].join(" ");
-  const families = titleFamilyFlags(text);
-  const hasFormula = roles.has("formula") || roles.has("worked_example");
-  const hasMetric = roles.has("metric");
-  const hasTraining = roles.has("training_method");
-  const hasComparison = roles.has("comparison") || roles.has("result_interpretation");
-  const prefix = input.sectionNumber > 0 ? `${input.sectionNumber}. ` : "";
-  let body = compact(input.originalTitle).replace(/^\d+(?:\.\d+)*\.?\s*/, "");
-  if (hasFormula || hasMetric) {
-    const firstGroup = ["accuracy", "latency"].filter((family) => families.has(family));
-    const hasSpikeCost = families.has("spikes");
-    const hasDeploymentCost = families.has("energy") || families.has("efficiency") || families.has("convergence");
-    const secondGroup = ["energy", "spikes", "efficiency", "convergence"].filter((family) => families.has(family));
-    if (firstGroup.length > 0 && hasSpikeCost && !hasDeploymentCost) body = "Measuring Accuracy, Latency, and Spike Count";
-    else if (firstGroup.length === 2 && secondGroup.length === 0) body = "Measuring Accuracy and Latency";
-    else if (firstGroup.length === 1 && firstGroup[0] === "accuracy" && secondGroup.length === 0) body = "Measuring Accuracy";
-    else if (firstGroup.length === 1 && firstGroup[0] === "latency" && secondGroup.length === 0) body = "Measuring Decision Latency";
-    else if (families.has("convergence") && (families.has("energy") || families.has("efficiency"))) body = "Measuring Energy, Efficiency, and Convergence";
-    else if (secondGroup.length > 0 && !families.has("accuracy") && !families.has("latency")) body = "Measuring Energy, Spikes, and Efficiency";
-    else if (firstGroup.length > 0 && secondGroup.length > 0) body = "How Metrics Connect to Deployment Cost";
-    else if (families.has("threshold")) body = "How Threshold Rules Create Spikes";
-    else body = "Measuring the Core Quantities";
-  } else if (hasTraining && hasComparison) {
-    body = "Training Methods and Results Compared";
-  } else if (hasTraining) {
-    body = "How the Method Learns";
-  }
-  if (sectionTitleNaturalnessProblems(body).length > 0) body = "Measuring the Core Quantities";
-  return `${prefix}${body}`;
-}
-
-function polishSectionTitle(cluster: SectionCluster, units: LearningUnitContract[], gardenTopic: string): string {
-  const topic = topicLabel(gardenTopic);
-  const roles = new Set(units.map((unit) => unit.role));
-  const hasFormulaRole = roles.has("formula") || roles.has("worked_example");
-  const hasMetricRole = roles.has("metric");
-  const hasTrainingRole = roles.has("training_method");
-  const hasComparisonRole = roles.has("comparison") || roles.has("result_interpretation");
-  if (roles.has("motivation") && (roles.has("core_concept") || roles.has("mechanism"))) {
-    return /SNNs/i.test(topic) ? "Why SNNs Need Events" : `Why ${topic} Needs a New Mechanism`;
-  }
-  if (hasTrainingRole && hasMetricRole) return /SNNs/i.test(topic) ? "How SNNs Learn and Are Evaluated" : `How ${topic} Learns and Is Evaluated`;
-  if (hasTrainingRole && hasFormulaRole) return "Training Methods and Formal Rules";
-  if (hasComparisonRole && hasMetricRole) return "Metrics and Results Compared";
-  if (hasComparisonRole && hasFormulaRole) return "Formulas and Results Compared";
-  if (hasComparisonRole && hasTrainingRole) return "Training Methods and Results Compared";
-  if (roles.has("core_concept") || roles.has("mechanism")) {
-    return `How ${conceptFromUnits(units, topic)} Works`;
-  }
-  if (hasFormulaRole && hasMetricRole) {
-    return polishSectionTitleFromInput({
-      sectionNumber: 0,
-      originalTitle: cluster.title,
-      unitTitles: units.map((unit) => unit.title),
-      unitRoles: units.map((unit) => unit.role),
-      sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
-      dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
-    });
-  }
-  if (hasFormulaRole) {
-    return polishSectionTitleFromInput({
-      sectionNumber: 0,
-      originalTitle: cluster.title,
-      unitTitles: units.map((unit) => unit.title),
-      unitRoles: units.map((unit) => unit.role),
-      sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
-      dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
-    });
-  }
-  if (hasMetricRole) {
-    return /SNNs/i.test(topic) ? "The Metrics That Make SNNs Measurable" : `The Rules and Metrics Behind ${topic}`;
-  }
-  if (roles.has("result_interpretation")) return "What the Results Show";
-  if (hasTrainingRole) return `How ${topic} Learns`;
-  if (hasComparisonRole) return "What the Results Show";
-  if (roles.has("application") || roles.has("limitation") || roles.has("synthesis")) {
-    return `Where ${topic} Fits and What Still Blocks It`;
-  }
-  const first = conceptFromUnits(units, cluster.title);
-  return first === "This Topic" ? `Understanding ${topic}` : first;
-}
-
-const SECTION_CONCEPT_STOPWORDS = new Set([
-  "what", "why", "how", "where", "the", "and", "or", "as", "with", "for", "from",
-  "result", "results", "show", "reading", "using", "source", "lesson", "overview",
-  "metric", "metrics", "snn", "snns", "neural", "network", "networks",
-]);
-
-function compactConceptTitle(value: string): string {
-  const cleaned = compact(value)
-    .replace(/^\d+(?:\.\d+)*\.?\s*/, "")
-    .replace(/\b(?:reading|understanding|using|interpreting|results?|comparisons?|across models)\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const words = cleaned.split(/\s+/).filter((word) => {
-    const key = word.toLowerCase().replace(/[^a-z0-9]/g, "");
-    return key.length > 1 && !SECTION_CONCEPT_STOPWORDS.has(key);
+  const units = input.unitTitles.length > 0
+    ? input.unitTitles.map((title, index) => pseudoUnitForTitle(title, input.unitRoles[index] ?? "core_concept"))
+    : [pseudoUnitForTitle(input.originalTitle, "core_concept")];
+  const profile = buildGardenTopicProfile({
+    gardenTitle: input.originalTitle,
+    units,
+    sourceAnchorTitles: input.sourceAnchorTitles,
+    sourceSemanticSummaries: input.dominantLearnerQuestion ? [input.dominantLearnerQuestion] : [],
   });
-  return titleCase(words.slice(0, 5).join(" "));
-}
-
-function disambiguatedSectionTitle(units: LearningUnitContract[], fallback: string): string {
-  const roles = new Set(units.map((unit) => unit.role));
-  const candidates = [
-    ...units.flatMap((unit) => unit.newConcepts),
-    ...units.map((unit) => unit.title),
-  ]
-    .map(compactConceptTitle)
-    .filter(Boolean);
-  const unique = [...new Set(candidates)].slice(0, 3);
-  const stem = unique.length > 0 ? unique.join(", ") : compactConceptTitle(fallback) || "Focused";
-  const hasFormulaRole = roles.has("formula") || roles.has("worked_example");
-  const hasMetricRole = roles.has("metric");
-  const hasComparisonRole = roles.has("comparison") || roles.has("result_interpretation");
-  if (roles.has("training_method") && hasFormulaRole) return `${stem} Training and Formal Rules`;
-  if (roles.has("training_method") && hasMetricRole) return `${stem} Training and Evaluation`;
-  if (hasComparisonRole && hasFormulaRole) return `${stem} Formulas and Results`;
-  if (hasComparisonRole && hasMetricRole) return `${stem} Metrics and Results`;
-  if (hasComparisonRole) return `${stem} Results`;
-  if (hasFormulaRole) {
-    return polishSectionTitleFromInput({
-      sectionNumber: 0,
-      originalTitle: fallback,
-      unitTitles: units.map((unit) => unit.title),
-      unitRoles: units.map((unit) => unit.role),
-      sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
-      dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
-    }).replace(/^\d+\.\s*/, "");
-  }
-  if (hasMetricRole) return `${stem} Metrics`;
-  if (roles.has("training_method")) return `${stem} Training Methods`;
-  if (roles.has("application") || roles.has("limitation")) return `${stem} Applications and Limits`;
-  return stem;
-}
-
-function disambiguateDuplicateSectionTitles(
-  sections: LearningSectionPlan[],
-  clusters: SectionCluster[],
-  byId: Map<string, LearningUnitContract>,
-): LearningSectionPlan[] {
-  const groups = new Map<string, number[]>();
-  sections.forEach((section, index) => {
-    const key = normalizedSectionTitleKey(section.title);
-    const list = groups.get(key) ?? [];
-    list.push(index);
-    groups.set(key, list);
-  });
-  const next = [...sections];
-  for (const indexes of groups.values()) {
-    if (indexes.length <= 1) continue;
-    for (const index of indexes) {
-      const clusterUnits = clusters[index].unitIds.map((id) => byId.get(id)).filter(Boolean) as LearningUnitContract[];
-      const title = disambiguatedSectionTitle(clusterUnits, next[index].title);
-      next[index] = {
-        ...next[index],
-        title,
-        purpose: `Build up ${title.toLowerCase()} one step at a time.`,
-      };
-    }
-  }
-  return next;
+  const bare = generateSectionTitle({ units, profile, sectionNumber: input.sectionNumber }).title;
+  return input.sectionNumber > 0 ? `${input.sectionNumber}. ${bare}` : bare;
 }
 
 /**
@@ -1729,10 +1625,15 @@ export function learningMapFromUnits(
 ): ProposedLearningMap {
   const byId = new Map(units.map((unit) => [unit.id, unit]));
   const clusters = clusterUnitsIntoSections(units);
-  const rawSections: LearningSectionPlan[] = clusters.map((cluster) => {
+  // One garden-wide topic profile supplies the subject vocabulary for every
+  // section title; titles are generated in order so each stays unique.
+  const profile = buildGardenTopicProfile({ gardenTitle: meta.title, units });
+  const usedTitles: string[] = [];
+  const sections: LearningSectionPlan[] = clusters.map((cluster) => {
     const clusterUnits = cluster.unitIds.map((id) => byId.get(id)).filter(Boolean) as LearningUnitContract[];
     const sectionAnchors = [...new Set(clusterUnits.flatMap((unit) => unit.sourceAnchors))].slice(0, 8);
-    const sectionTitle = polishSectionTitle(cluster, clusterUnits, meta.title);
+    const sectionTitle = polishSectionTitle(clusterUnits, profile, usedTitles);
+    usedTitles.push(sectionTitle);
     return {
       title: sectionTitle,
       purpose: cluster.singleSubsectionReason
@@ -1742,7 +1643,6 @@ export function learningMapFromUnits(
       subsections: clusterUnits.map(subsectionFromUnit),
     };
   });
-  const sections = disambiguateDuplicateSectionTitles(rawSections, clusters, byId);
   return {
     gardenId: meta.gardenId,
     title: meta.title,

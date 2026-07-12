@@ -19,6 +19,11 @@ import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
 import UsageLimitsPopover from "@/app/components/usage-limits-popover";
 import {
+  DEFAULT_ASSISTANT_MODELS,
+  DEFAULT_MODEL,
+  mergeAssistantModels,
+} from "@/lib/ai-models";
+import {
   forgetDismissedLearnErrorsForGarden,
   learnErrorDismissalKey,
   loadDismissedLearnErrorKeys,
@@ -851,8 +856,8 @@ export default function WorkspaceClient({
   const [isSavingNote, setIsSavingNote] = useState(false);
 
   // Model selector
-  const [model, setModel] = useState("gpt-5.5");
-  const [models, setModels] = useState<string[]>(["gpt-5.5", "gpt-5.4"]);
+  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -879,7 +884,7 @@ export default function WorkspaceClient({
             .filter((id: string | null): id is string => Boolean(id))
         : [];
       if (ids.length > 0) {
-        setModels(Array.from(new Set(["gpt-5.5", "gpt-5.4", ...ids])));
+        setModels(mergeAssistantModels(ids));
       }
       setModelsLoaded(true);
     } catch {

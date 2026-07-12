@@ -859,7 +859,19 @@ function formulaAnchorSemanticText(visual: Record<string, unknown> | undefined):
 }
 
 function unquoteYamlScalar(value: string): string {
-  return value.trim().replace(/^["']|["']$/g, "");
+  const t = value.trim();
+  // Double-quoted scalars are JSON-escaped (LaTeX like "\\text{..}"); decode
+  // them so checks classify the same text the generator produced. Mirrors
+  // garden-finalize.ts / final-garden-state.ts.
+  if (t.startsWith('"') && t.endsWith('"') && t.length >= 2) {
+    try {
+      return JSON.parse(t) as string;
+    } catch {
+      return t.slice(1, -1);
+    }
+  }
+  if (t.startsWith("'") && t.endsWith("'") && t.length >= 2) return t.slice(1, -1);
+  return t.replace(/^["']|["']$/g, "");
 }
 
 interface FormulaFrontmatterEntry {

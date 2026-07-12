@@ -323,6 +323,8 @@ export async function extractSourceVisuals(
   const cropDir = path.join(contentPath, gardenSlug, CROPPED_ASSETS_FOLDER);
   const found: SourceVisual[] = [];
   const counters = new Map<string, number>();
+  const detectionErrors: string[] = [];
+  let consecutiveDetectionFailures = 0;
 
   const nextId = (pageNumber: number, type: SourceVisualType): string => {
     const letter = TYPE_LETTER[type];
@@ -348,8 +350,18 @@ export async function extractSourceVisuals(
     let detections: Array<{ type: SourceVisualType; caption: string; bbox?: SourceVisualBBox }> = [];
     try {
       detections = await detectVisualsOnPage(client, model, pngBuffer);
-    } catch {
+      consecutiveDetectionFailures = 0;
+    } catch (error) {
+      // A THROW means the detection call itself failed (model unavailable,
+      // timeout, network) — distinct from a successful call that returned no
+      // visuals. Track it so the caller can tell "model down" from "no figures".
       detections = [];
+      detectionErrors.push(`page ${pageNumber || "?"}: ${error instanceof Error ? error.message : String(error)}`);
+      consecutiveDetectionFailures += 1;
+      // Fail fast when the model is clearly unavailable: if the first pages all
+      // error and nothing has been extracted yet, stop scanning the rest rather
+      // than grinding every page (each with its own SDK retries).
+      if (found.length === 0 && consecutiveDetectionFailures >= 3) break;
     }
 
     if (detections.length === 0) continue;
@@ -385,6 +397,17 @@ export async function extractSourceVisuals(
       }
       found.push(visual);
     }
+  }
+
+  // If detection FAILED (model unavailable) and nothing new was found, do not
+  // overwrite the ledger — preserve any prior good extraction — and surface the
+  // failure so Stage 2 reports a retryable model error instead of implying the
+  // source has no figures. A genuine "no meaningful visuals" result (successful
+  // calls that returned []) leaves no detectionErrors and falls through.
+  if (found.length === 0 && detectionErrors.length > 0) {
+    throw new Error(
+      `vision detection failed on ${detectionErrors.length} page(s): ${detectionErrors.slice(0, 2).join("; ")}`,
+    );
   }
 
   // Pages where detection found nothing meaningful get no entry at all —

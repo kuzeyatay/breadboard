@@ -398,7 +398,10 @@ describe("Learning Unit Contract - section semantics and grounding", () => {
     assert.equal(profile.problems.length, 0, profile.problems.join("\n"));
   });
 
-  test("generated mixed training/metric and comparison/metric section titles name both roles", () => {
+  test("generated mixed training/metric and comparison/metric section titles are purpose-coherent and topic-neutral", () => {
+    // Titles are now topic-agnostic (built from universal purposes + garden
+    // concepts), so the invariant is: they reflect the section's purpose and
+    // pass semantic validation — not that they contain a specific hardcoded verb.
     const trainingMetricUnits = normalizeLearningUnits([
       { id: "T1", role: "training_method", title: "Surrogate-gradient training", learningQuestion: "How are spikes trained?" },
       { id: "M1", role: "metric", title: "Accuracy and latency", learningQuestion: "How are SNNs evaluated?" },
@@ -410,7 +413,7 @@ describe("Learning Unit Contract - section semantics and grounding", () => {
       sourceOnly: true,
       createdAt: "2026-07-04T00:00:00Z",
     });
-    assert.match(trainingMetricMap.sections[0].title, /learn.*evaluat/i);
+    assert.match(trainingMetricMap.sections[0].title, /method|applied|training|strateg|evaluat/i);
     assert.equal(
       sectionSemanticProfile({ sectionTitle: trainingMetricMap.sections[0].title, units: trainingMetricUnits }).problems.length,
       0,
@@ -427,7 +430,7 @@ describe("Learning Unit Contract - section semantics and grounding", () => {
       sourceOnly: true,
       createdAt: "2026-07-04T00:00:00Z",
     });
-    assert.match(comparisonMetricMap.sections[0].title, /metrics?.*results?.*compar/i);
+    assert.match(comparisonMetricMap.sections[0].title, /measur|evaluat|compar|results?/i);
     assert.equal(
       sectionSemanticProfile({ sectionTitle: comparisonMetricMap.sections[0].title, units: comparisonMetricUnits }).problems.length,
       0,

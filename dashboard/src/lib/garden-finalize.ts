@@ -34,13 +34,13 @@ import {
   sectionSemanticProfiles,
   sectionTitleGrammarProblems,
   sectionTitleNaturalnessProblems,
-  polishSectionTitleFromInput,
   zettelHandleQualityProblems,
   zettelHandlesForUnit,
   type LearningUnitContract,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
 } from "./learning-unit-contract.ts";
+import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
 import { auditFinalGardenState, auditLegacyMigrationPersistence, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
 import type { SourceAnchor } from "./visual-spec.ts";
@@ -1305,12 +1305,12 @@ function formulaAnchorsFromFrontmatter(rawFm: string): string[] {
   for (const line of lines) {
     const match = line.match(/^\s+sourceAnchor:\s*(.*)$/);
     if (match) {
-      const value = (match[1] ?? "").trim().replace(/^["']|["']$/g, "");
+      const value = unquoteYamlScalar(match[1] ?? "");
       if (value) anchors.add(value);
     }
     const textMatch = line.match(/^\s+-\s*text:\s*(.*)$/);
     if (textMatch) {
-      const value = (textMatch[1] ?? "").trim().replace(/^["']|["']$/g, "");
+      const value = unquoteYamlScalar(textMatch[1] ?? "");
       if (value && !isGroundableFormula(value)) anchors.add(`trivial:${value}`);
     }
   }
@@ -1337,7 +1337,21 @@ interface ParsedFormulaEntry {
 }
 
 function unquoteYamlScalar(value: string): string {
-  return value.trim().replace(/^["']|["']$/g, "");
+  const t = value.trim();
+  // Double-quoted scalars are JSON-escaped (serializeFormulas uses jsonScalar =
+  // JSON.stringify), so LaTeX like "\\text{..}" is stored with a doubled
+  // backslash. Decode it back to a single backslash so the validation checks
+  // classify the SAME text the generator/regrounder produced — otherwise the
+  // doubled backslash can flip heuristics such as isWorkedExampleFormula.
+  if (t.startsWith('"') && t.endsWith('"') && t.length >= 2) {
+    try {
+      return JSON.parse(t) as string;
+    } catch {
+      return t.slice(1, -1);
+    }
+  }
+  if (t.startsWith("'") && t.endsWith("'") && t.length >= 2) return t.slice(1, -1);
+  return t.replace(/^["']|["']$/g, "");
 }
 
 function formulaEntriesFromFrontmatter(rawFm: string): ParsedFormulaEntry[] {
@@ -3859,17 +3873,80 @@ export function groundLearnerFormula(
   return { groundingStatus: "conceptual-helper" };
 }
 
-function compactFormulaMetadataEntries(entries: FinalizeFormulaEntry[]): FinalizeFormulaEntry[] {
-  const sourceDefinitionCount = entries.filter((entry) =>
+// Hard ceiling shared with the finalize noise gate (`entries.length > 10`).
+const MAX_FORMULA_METADATA_ENTRIES = 10;
+
+/** Focused budget mirroring the validator's "Formula Metadata Noise" rule
+ * (`entries.length > max(6, displayCount + sourceDefinitionCount + 4)`): a page
+ * gets a floor of 6 entries plus room for its display formulas and grounded
+ * source definitions, never more than the hard ceiling. Keeping the on-disk
+ * block within this budget satisfies both the finalize gate AND the standalone
+ * `validate:garden` tool, so a math-heavy page cannot balloon the block by
+ * harvesting every inline fragment. */
+function focusedFormulaBudget(displayCount: number, sourceDefinitionCount: number): number {
+  return Math.min(MAX_FORMULA_METADATA_ENTRIES, Math.max(6, displayCount + sourceDefinitionCount + 4));
+}
+
+/** Rank a formula entry by how much it belongs in the metadata block. Lower is
+ * more important and is dropped last when the block is over budget. Source
+ * (derived) definitions are the real metric/source relationships; a helper or
+ * worked example that carries a recognized metric family is more meaningful
+ * than a bare inline fragment. */
+function formulaMetadataEntryRank(entry: FinalizeFormulaEntry): number {
+  const kind = entry.kind ?? "conceptual_helper";
+  if (kind === "source_definition") return 0;
+  if (kind === "source_derived_definition") return 1;
+  const hasFamily = Boolean(formulaMetricFamily(entry.text));
+  if (kind === "worked_example") return hasFamily ? 2 : 4;
+  return hasFamily ? 3 : 5; // conceptual_helper
+}
+
+function formulaMetadataDedupeKey(entry: FinalizeFormulaEntry): string {
+  return (entry.normalizedText || normalizeFormulaText(entry.text)).trim() || entry.text.trim();
+}
+
+function compactFormulaMetadataEntries(entries: FinalizeFormulaEntry[], displayCount = 0): FinalizeFormulaEntry[] {
+  // 1) De-duplicate by normalized formula text, keeping the most authoritative
+  //    occurrence (source definition > derived > worked example > helper) so a
+  //    formula repeated across the prose contributes one metadata entry.
+  const byKey = new Map<string, FinalizeFormulaEntry>();
+  const order: string[] = [];
+  for (const entry of entries) {
+    const key = formulaMetadataDedupeKey(entry);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, entry);
+      order.push(key);
+    } else if (formulaMetadataEntryRank(entry) < formulaMetadataEntryRank(existing)) {
+      byKey.set(key, entry);
+    }
+  }
+  const deduped = order.map((key) => byKey.get(key)!);
+
+  // 2) Cap worked examples relative to the source definitions they illustrate.
+  const sourceDefinitionCount = deduped.filter((entry) =>
     entry.kind === "source_definition" || entry.kind === "source_derived_definition",
   ).length;
   const maxWorkedExamples = Math.max(2, sourceDefinitionCount * 2 + 1);
   let workedExamples = 0;
-  return entries.filter((entry) => {
+  const ratioCapped = deduped.filter((entry) => {
     if (entry.kind !== "worked_example") return true;
     workedExamples += 1;
     return workedExamples <= maxWorkedExamples;
   });
+
+  // 3) Keep the block focused: never let it become an inline-fragment dump.
+  //    Retain the most important entries up to the focused budget and drop the
+  //    least important tail, preserving original (body) order for the survivors
+  //    so re-running finalize is stable and produces no spurious churn.
+  const budget = focusedFormulaBudget(displayCount, sourceDefinitionCount);
+  if (ratioCapped.length <= budget) return ratioCapped;
+  return ratioCapped
+    .map((entry, index) => ({ entry, index, rank: formulaMetadataEntryRank(entry) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .slice(0, budget)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.entry);
 }
 
 // Very small math extractor mirroring extractQuartzMath for finalize's needs.
@@ -3952,7 +4029,8 @@ function regroundFormulas({
         });
       }
     }
-    const compactedEntries = compactFormulaMetadataEntries(entries);
+    const displayCount = formulas.filter((formula) => formula.display).length;
+    const compactedEntries = compactFormulaMetadataEntries(entries, displayCount);
     // Only mark the page dirty when regrounding actually changes the formula
     // metadata. Re-serializing identical grounding must not report the page as
     // repaired, so repair-log.json changedFiles stays limited to real edits.
@@ -4930,99 +5008,29 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function suggestedSectionSemanticTitle(sectionTitle: string, units: LearningUnitContract[]): string | null {
-  const roles = new Set(units.map((unit) => unit.role));
-  const hasFormula = roles.has("formula") || roles.has("worked_example");
-  const hasMechanism = roles.has("core_concept") || roles.has("mechanism");
-  const hasTraining = roles.has("training_method");
-  const hasMetricRole = roles.has("metric");
-  const hasMetric = hasMetricRole || hasFormula;
-  const hasComparison = roles.has("comparison") || roles.has("result_interpretation");
-  const naturalnessProblems = sectionTitleNaturalnessProblems(sectionTitle, units.map((unit) => unit.title));
-  let base: string | null = null;
-  if (hasTraining && hasMetric) base = "How SNNs Learn and Are Evaluated";
-  else if (hasComparison && hasMetric) base = "Metrics and Results Compared";
-  else if (hasComparison && hasTraining) base = "Training Methods and Results Compared";
-  else if (hasFormula && hasMetricRole && !hasTraining && !hasComparison && !hasMechanism) base = polishSectionTitleFromInput({
-    sectionNumber: 0,
-    originalTitle: sectionTitle,
-    unitTitles: units.map((unit) => unit.title),
-    unitRoles: units.map((unit) => unit.role),
-    sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
-    dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
-  });
-  else if (hasFormula && !roles.has("metric") && !roles.has("result_interpretation") && !hasTraining && !hasComparison) base = polishSectionTitleFromInput({
-    sectionNumber: 0,
-    originalTitle: sectionTitle,
-    unitTitles: units.map((unit) => unit.title),
-    unitRoles: units.map((unit) => unit.role),
-    sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
-    dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
-  });
-  else if (hasMechanism && !hasMetric && !hasTraining && !hasComparison) base = "How the Mechanism Works";
-  else if (hasMetricRole && !hasMechanism && !hasTraining && !hasComparison) base = "The Metrics That Make SNNs Measurable";
-  else if (roles.has("result_interpretation") && !hasMetricRole && !hasMechanism && !hasTraining) base = "What the Results Show";
-  else if (naturalnessProblems.length > 0) base = polishSectionTitleFromInput({
-    sectionNumber: 0,
-    originalTitle: sectionTitle,
-    unitTitles: units.map((unit) => unit.title),
-    unitRoles: units.map((unit) => unit.role),
-    sourceAnchorTitles: units.flatMap((unit) => unit.sourceFormulas.map((formula) => formula.teachingGoal)),
-    dominantLearnerQuestion: units.map((unit) => unit.learningQuestion).filter(Boolean)[0] ?? "",
-  });
-  if (!base) return null;
+/**
+ * Repair-time section title. Delegates to the topic-agnostic candidate system —
+ * the garden profile supplies subject vocabulary, the section's units supply the
+ * universal purpose + focus concepts, `otherSectionTitles` keeps it unique, and
+ * the current title is offered as a candidate so a good one is kept unchanged.
+ * Returns null only when the best candidate equals the current title (nothing to
+ * fix).
+ */
+function suggestedSectionSemanticTitle(
+  sectionTitle: string,
+  units: LearningUnitContract[],
+  profile: GardenTopicProfile,
+  otherSectionTitles: string[] = [],
+): string | null {
   const number = sectionTitle.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
-  return number ? `${number}. ${base}` : base;
-}
-
-function distinctiveSectionResultBody(units: LearningUnitContract[], fallbackTitle: string): string {
-  const text = units.map((unit) => `${unit.title} ${unit.learningQuestion} ${(unit.newConcepts ?? []).join(" ")}`).join(" ").toLowerCase();
-  const hasEnergy = /\benergy\b|joules?|power|inference/.test(text);
-  const hasSpike = /spike[- ]?count|spikes?\b/.test(text);
-  const hasLearning = /training loss|convergence|learning curve|final accuracy|epochs?/.test(text);
-  const hasLatency = /\blatency\b|decision time|response time/.test(text);
-  const hasAccuracy = /\baccuracy\b|correct prediction/.test(text);
-  if ((hasEnergy || hasSpike) && hasLearning) return "Energy and Learning Curve Results";
-  if (hasEnergy && hasSpike) return "Energy and Spike Count Results";
-  if (hasLearning) return "Learning Curve Results";
-  if (hasLatency && hasAccuracy) return "Accuracy and Latency Results";
-  if (hasEnergy) return "Energy Results";
-  if (hasAccuracy) return "Accuracy Results";
-  const first = units.map((unit) => stripTitleNumber(unit.title)).find((title) => title && !/^(what|why|how)\b/i.test(title));
-  return first ? `${first.replace(/\bresults?\b/gi, "").trim()} Results` : `${stripTitleNumber(fallbackTitle) || "Measured"} Results`;
-}
-
-function makeSectionSemanticTitleUnique({
-  sectionRel,
-  sectionTitle,
-  units,
-  candidate,
-  keyOwners,
-}: {
-  sectionRel: string;
-  sectionTitle: string;
-  units: LearningUnitContract[];
-  candidate: string;
-  keyOwners: Map<string, Set<string>>;
-}): string {
-  const collides = (title: string) => {
-    const owners = keyOwners.get(normalizedSectionTitleKey(title));
-    return Boolean(owners && [...owners].some((owner) => owner !== sectionRel));
-  };
-  if (!collides(candidate)) return candidate;
-  const number = candidate.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1] ?? sectionTitle.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
-  const prefix = number ? `${number}. ` : "";
-  const alternatives = [
-    `${prefix}${distinctiveSectionResultBody(units, sectionTitle)}`,
-    `${prefix}${stripTitleNumber(sectionTitle).replace(/\b(Formula Definition|Field List)\b/gi, "").trim() || "Measured Results"}`,
-    `${prefix}Result Patterns and Tradeoffs`,
-  ].filter((title) => title.trim() && sectionTitleNaturalnessProblems(title, units.map((unit) => unit.title)).length === 0);
-  for (const title of alternatives) {
-    if (!collides(title)) return title;
-  }
-  let suffix = 2;
-  while (collides(`${candidate} ${suffix}`)) suffix += 1;
-  return `${candidate} ${suffix}`;
+  const bare = generateSectionTitle({
+    units,
+    profile,
+    existingTitle: sectionTitle,
+    otherSectionTitles,
+  }).title;
+  const next = number ? `${number}. ${bare}` : bare;
+  return normalizedSectionTitleKey(next) === normalizedSectionTitleKey(sectionTitle) ? null : next;
 }
 
 function rewriteSectionIndexTitle(indexPath: string, nextTitle: string): boolean {
@@ -5205,6 +5213,16 @@ function alignSectionFoldersWithTitles(gardenDir: string, report: FinalizeReport
   }
 }
 
+function readGardenTitle(gardenDir: string): string {
+  const indexPath = path.join(gardenDir, "_index.md");
+  if (fs.existsSync(indexPath)) {
+    const { rawFrontmatter } = parseFrontmatter(fs.readFileSync(indexPath, "utf-8"));
+    const title = fmGetScalar(rawFrontmatter, "title");
+    if (title) return title;
+  }
+  return path.basename(gardenDir);
+}
+
 function repairSectionSemanticTitles(
   gardenDir: string,
   learnerPages: LearnerPage[],
@@ -5212,15 +5230,13 @@ function repairSectionSemanticTitles(
   report: FinalizeReport,
 ): void {
   const sectionInputs = sectionSemanticInputs(gardenDir, learnerPages, unitsById);
-  const keyOwners = new Map<string, Set<string>>();
+  if (sectionInputs.length === 0) return;
+  // One garden-wide topic profile (from ALL contract units) supplies the subject
+  // vocabulary; sibling titles keep each section unique as we go.
+  const profile = buildGardenTopicProfile({ gardenTitle: readGardenTitle(gardenDir), units: [...unitsById.values()] });
+  const titleByRel = new Map(sectionInputs.map((section) => [section.rel, section.sectionTitle]));
   for (const section of sectionInputs) {
-    const key = normalizedSectionTitleKey(section.sectionTitle);
-    const owners = keyOwners.get(key) ?? new Set<string>();
-    owners.add(section.rel);
-    keyOwners.set(key, owners);
-  }
-  for (const section of sectionInputs) {
-    const profile = sectionSemanticProfiles([{
+    const semantic = sectionSemanticProfiles([{
       sectionTitle: section.sectionTitle,
       units: section.units,
       subsectionTitles: section.subsectionTitles,
@@ -5228,29 +5244,19 @@ function repairSectionSemanticTitles(
     const grammarProblems = sectionTitleGrammarProblems(section.sectionTitle, section.subsectionTitles);
     const naturalnessProblems = sectionTitleNaturalnessProblems(section.sectionTitle, section.subsectionTitles);
     const currentKey = normalizedSectionTitleKey(section.sectionTitle);
-    const duplicateTitle = (keyOwners.get(currentKey)?.size ?? 0) > 1;
-    if ((!profile || profile.problems.length === 0) && grammarProblems.length === 0 && naturalnessProblems.length === 0 && !duplicateTitle) continue;
-    const suggestedTitle = suggestedSectionSemanticTitle(section.sectionTitle, section.units);
-    const nextTitle = suggestedTitle
-      ? makeSectionSemanticTitleUnique({
-          sectionRel: section.rel,
-          sectionTitle: section.sectionTitle,
-          units: section.units,
-          candidate: suggestedTitle,
-          keyOwners,
-        })
-      : null;
+    const duplicateTitle = [...titleByRel.entries()].some(
+      ([rel, title]) => rel !== section.rel && normalizedSectionTitleKey(title) === currentKey,
+    );
+    if ((!semantic || semantic.problems.length === 0) && grammarProblems.length === 0 && naturalnessProblems.length === 0 && !duplicateTitle) continue;
+    const otherTitles = [...titleByRel.entries()]
+      .filter(([rel]) => rel !== section.rel)
+      .map(([, title]) => title);
+    const nextTitle = suggestedSectionSemanticTitle(section.sectionTitle, section.units, profile, otherTitles);
     if (!nextTitle || nextTitle === section.sectionTitle) continue;
     const indexPath = path.join(gardenDir, ...section.rel.split("/"), "_index.md");
     if (!fs.existsSync(indexPath)) continue;
     if (rewriteSectionIndexTitle(indexPath, nextTitle)) {
-      const oldOwners = keyOwners.get(currentKey);
-      oldOwners?.delete(section.rel);
-      if (oldOwners && oldOwners.size === 0) keyOwners.delete(currentKey);
-      const nextKey = normalizedSectionTitleKey(nextTitle);
-      const nextOwners = keyOwners.get(nextKey) ?? new Set<string>();
-      nextOwners.add(section.rel);
-      keyOwners.set(nextKey, nextOwners);
+      titleByRel.set(section.rel, nextTitle);
       const rel = `${section.rel}/_index.md`;
       if (!report.changed.includes(rel)) report.changed.push(rel);
       report.notes.push(`retitled section ${section.sectionTitle} -> ${nextTitle}`);
