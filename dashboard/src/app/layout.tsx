@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Schibsted_Grotesk, Source_Sans_3 } from "next/font/google";
+import { Suspense } from "react";
+import NavigationProgress from "@/app/components/navigation-progress";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 
@@ -47,7 +49,12 @@ export default function RootLayout({
       lang="en"
       className={`${sourceSans.variable} ${schibsted.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <Suspense fallback={null}>
+          <NavigationProgress />
+        </Suspense>
+        {children}
+      </body>
     </html>
   );
 }

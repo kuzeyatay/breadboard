@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { FormEvent } from 'react';
+import { startNavigationProgress } from '@/app/components/navigation-progress';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -38,6 +39,7 @@ export default function RegisterPage() {
     setLoading(false);
 
     if (res.ok) {
+      startNavigationProgress();
       router.push('/auth/login?registered=true');
       return;
     }

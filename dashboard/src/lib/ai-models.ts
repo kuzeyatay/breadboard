@@ -16,3 +16,8 @@ export function mergeAssistantModels(modelIds: readonly unknown[]): string[] {
   });
   return Array.from(new Set([...DEFAULT_ASSISTANT_MODELS, ...validIds]));
 }
+
+export function formatAssistantModelName(modelId: string): string {
+  if (modelId === 'gpt-5.6-sol' || modelId === 'gpt-5.6') return 'GPT-5.6 Sol';
+  return modelId.replace(/^gpt-/i, 'GPT-');
+}

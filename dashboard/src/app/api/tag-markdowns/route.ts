@@ -3,7 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { DEFAULT_MODEL } from '@/lib/ai-models';
-import { normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge } from '@/lib/knowledge';
+import { refreshClusterIndex, scanClusterKnowledge } from '@/lib/knowledge';
+import { updateLearnerPageConcepts } from '@/lib/garden-semantics';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
@@ -11,7 +12,6 @@ import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-au
 
 export const dynamic = 'force-dynamic';
 
-type Frontmatter = Record<string, string | string[]>;
 type ChatMessage = { role: string; content: string };
 type Attachment =
   | { type: 'text'; text: string; name: string }
@@ -47,11 +47,12 @@ Return ONLY valid JSON with this shape:
 Rules:
 - Only use note slugs that already exist in the provided inventory.
 - Only update notes that clearly match the user's request.
-- Tags are Zettelkasten-style concept handles: notes that share a tag become linked in the graph, so each tag must name the reusable concept that would make two notes worth connecting.
+- Tags are canonical reusable concepts: notes that share a concept become linked in the graph. Never submit a claim sentence, page summary, source name, or organizational label as a concept.
 - Return only normalized lower-case kebab-case tags. Good: "restoring-force", "stable-equilibrium", "angular-frequency", "simple-harmonic-motion". Bad: physics, math, formula, important, wave, calculus, force, understanding-the-basics, title slugs, source filenames.
 - If the user explicitly asks for organizational tags (schedule, week, unit, module, or course tags), you may use those exact tags even though they are not idea tags.
 - Avoid generic, document-type, or learning tags like note, markdown, chat, garden, document, source, topic, misc, general, important, learning, study, formula, or example unless the user explicitly wants them, and never reference a page/slide/figure in a tag.
-- Use "merge" unless the user explicitly asks to replace, overwrite, reset, or clear existing tags.
+- Return 1-5 genuinely central concepts per learner page and use "merge" unless the user explicitly asks to replace, overwrite, reset, or clear existing tags.
+- Only learner pages are editable. Never update sources, planning pages, indexes, or internal notes.
 - If no notes should change, return {"mode":"merge","summary":"No clear matches","updates":[]}.
 - Never invent notes that are not in the inventory.`;
 
@@ -140,111 +141,6 @@ function stripMarkdownFence(value: string): string {
     .trim();
 }
 
-function parseYamlArray(value: string): string[] {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return [];
-  return trimmed
-    .slice(1, -1)
-    .split(',')
-    .map((item) => item.trim().replace(/^["']|["']$/g, ''))
-    .filter(Boolean);
-}
-
-function yamlListItemValue(line: string): string | null {
-  const match = line.match(/^\s*-\s*(.+?)\s*$/);
-  if (!match) return null;
-  return match[1].trim().replace(/^["']|["']$/g, '');
-}
-
-function parseYamlValue(value: string): string | string[] {
-  const trimmed = value.trim();
-  if (trimmed.startsWith('[') && trimmed.endsWith(']')) return parseYamlArray(trimmed);
-  return trimmed.replace(/^["']|["']$/g, '');
-}
-
-function parseFrontmatter(content: string): Frontmatter {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return {};
-
-  const data: Frontmatter = {};
-  const lines = (match[1] ?? '').split(/\r?\n/);
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    const line = lines[lineIndex];
-    const colonIndex = line.indexOf(':');
-    if (colonIndex <= 0) continue;
-    const key = line.slice(0, colonIndex).trim();
-    const value = line.slice(colonIndex + 1).trim();
-    const blockValues: string[] = [];
-    for (const nextLine of lines.slice(lineIndex + 1)) {
-      const item = yamlListItemValue(nextLine);
-      if (!item) break;
-      blockValues.push(item);
-    }
-    if (value === '' && blockValues.length > 0) {
-      data[key] = blockValues;
-      continue;
-    }
-    if (value.startsWith('[') && blockValues.length > 0) {
-      data[key] = [...parseYamlArray(value), ...blockValues];
-      continue;
-    }
-    data[key] = parseYamlValue(value);
-  }
-  return data;
-}
-
-function frontmatterArrayValue(data: Frontmatter, key: string): string[] {
-  const value = data[key];
-  return Array.isArray(value)
-    ? value
-    : typeof value === 'string' && value
-      ? [value]
-      : [];
-}
-
-function yamlQuote(value: string): string {
-  return JSON.stringify(value.replace(/\r/g, ''));
-}
-
-function yamlArray(values: string[]): string {
-  return `[${values.map((value) => yamlQuote(value)).join(', ')}]`;
-}
-
-function updateFrontmatterArrayValue(content: string, key: string, values: string[]): string {
-  const field = `${key}: ${yamlArray(values)}`;
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-
-  if (!match) {
-    return values.length > 0 ? `---\n${field}\n---\n\n${content}` : content;
-  }
-
-  const body = content.slice(match[0].length).replace(/^\r?\n/, '');
-  const lines = (match[1] ?? '').split(/\r?\n/);
-  let found = false;
-  let skippingValueList = false;
-  const nextLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.trimStart().startsWith(`${key}:`)) {
-      found = true;
-      skippingValueList = true;
-      if (values.length > 0) nextLines.push(field);
-      continue;
-    }
-
-    if (skippingValueList) {
-      if (yamlListItemValue(line) !== null) continue;
-      skippingValueList = false;
-    }
-
-    nextLines.push(line);
-  }
-
-  if (!found && values.length > 0) nextLines.push(field);
-
-  return `---\n${nextLines.join('\n').trimEnd()}\n---\n\n${body}`;
-}
-
 function shouldReplaceTags(requestText: string): boolean {
   return /\b(replace|overwrite|reset|clear(?:\s+all)?\s+(?:existing\s+)?tags|set\s+tags\s+to)\b/i.test(
     requestText,
@@ -292,7 +188,9 @@ export async function POST(request: Request) {
 
     const clusterDir = path.join(contentPath, cluster.slug);
     const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
-    const editableNodes = knowledge.nodes.filter((node) => node.type !== 'cluster-index');
+    const editableNodes = knowledge.nodes.filter(
+      (node) => node.type === 'learning-page' || node.breadboardType === 'learning_page',
+    );
     if (editableNodes.length === 0) {
       return NextResponse.json({ success: true, summary: 'No textbook pages found.', updated: [] });
     }
@@ -392,18 +290,17 @@ export async function POST(request: Request) {
         continue;
       }
 
-      const currentContent = fs.readFileSync(filePath, 'utf-8');
-      const currentTags = frontmatterArrayValue(parseFrontmatter(currentContent), 'tags');
-      const nextTags = normalizeTopicTags(
-        finalMode === 'replace' ? suggestedTags : [...currentTags, ...suggestedTags],
-        currentContent,
-        16,
-        `${node.title}\n${currentContent}`,
-      );
+      const currentTags = node.tags;
+      const assignment = updateLearnerPageConcepts({
+        gardenDir: clusterDir,
+        pageRelPath: node.relPath,
+        requestedTerms: suggestedTags,
+        primaryTerms: suggestedTags.slice(0, 1),
+        mode: finalMode,
+        provenance: 'bulk-tag-edit',
+      });
+      const nextTags = assignment.tags;
       if (sameStringArray(currentTags, nextTags)) continue;
-
-      const nextContent = updateFrontmatterArrayValue(currentContent, 'tags', nextTags);
-      fs.writeFileSync(filePath, nextContent, 'utf-8');
       appliedUpdates.push({
         slug: node.slug,
         title: node.title,

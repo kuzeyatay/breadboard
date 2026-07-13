@@ -9,7 +9,9 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --test --experimental-strip-types tests/*.test.mjs",
-    "validate:garden": "node --experimental-strip-types ../scripts/validate-breadboard-garden.ts"
+    "validate:garden": "node --experimental-strip-types ../scripts/validate-breadboard-garden.ts",
+    "migrate:semantics": "node --experimental-strip-types ../scripts/migrate-garden-semantics.ts",
+    "evaluate:retrieval": "node --experimental-strip-types ../scripts/evaluate-semantic-retrieval.ts"
   },
   "dependencies": {
     "adm-zip": "^0.5.17",

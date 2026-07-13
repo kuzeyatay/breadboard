@@ -42,6 +42,7 @@ import {
 } from "../dashboard/src/lib/learning-unit-contract.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "../dashboard/src/lib/learn-utils.ts";
 import { auditFinalGardenState, buildFinalGardenState } from "../dashboard/src/lib/final-garden-state.ts";
+import { validateGardenSemantics } from "../dashboard/src/lib/garden-semantics.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -881,6 +882,9 @@ interface FormulaFrontmatterEntry {
   justification?: string;
   sourceAnchor?: string;
   sourceAnchorTitle?: string;
+  basedOnFormula?: string;
+  formulaFamily?: string;
+  exampleGroupId?: string;
 }
 
 function formulaEntriesFromFrontmatter(rawFrontmatter: string): FormulaFrontmatterEntry[] {
@@ -1041,22 +1045,33 @@ function formulaMetadataNoiseProblems(lessonPages: PageFile[]): string[] {
   for (const page of lessonPages) {
     const entries = formulaEntriesFromFrontmatter(page.rawFrontmatter);
     if (entries.length === 0) continue;
-    const displayCount = extractQuartzMath(page.body).filter((expr) => expr.display && isGroundableFormula(expr.formula)).length;
-    const sourceDefinitionCount = entries.filter((entry) => {
-      const kind = formulaEntryKind(entry);
-      return kind === "source_definition" || kind === "source_derived_definition";
-    }).length;
-    const workedExampleCount = entries.filter((entry) => formulaEntryKind(entry) === "worked_example").length;
     const trivial = entries.filter((entry) => isTrivialFormulaFragment(String(entry.text ?? "")) || !isFormulaExpression(String(entry.text ?? "")));
     if (entries.length > 10) {
       problems.push(`${page.relPath}: formulas: contains ${entries.length} entries; expected focused metric/source relationships, not inline-fragment harvesting`);
     }
-    if (entries.length > Math.max(6, displayCount + sourceDefinitionCount + 4)) {
-      problems.push(`${page.relPath}: formulas: has ${entries.length} entries but only ${displayCount} display formula(s) and ${sourceDefinitionCount} source definition formula(s)`);
+    // Relationship-based validation (replaces the worked-example / display count
+    // ratios): one source definition may be applied by many worked examples, so
+    // only truly ORPHAN worked examples (no lineage to a definition) are flagged.
+    const definitionFamilies = new Set<string>();
+    const definitionAnchors = new Set<string>();
+    for (const entry of entries) {
+      const kind = formulaEntryKind(entry);
+      if (kind === "source_definition" || kind === "source_derived_definition") {
+        const fam = String(entry.formulaFamily ?? "") || formulaMetricFamily(String(entry.text ?? "")) || "";
+        if (fam) definitionFamilies.add(fam);
+        if (entry.sourceAnchor) definitionAnchors.add(String(entry.sourceAnchor));
+      }
     }
-    if (workedExampleCount > Math.max(2, sourceDefinitionCount * 2 + 1)) {
-      problems.push(`${page.relPath}: formulas: has ${workedExampleCount} worked example(s) but only ${sourceDefinitionCount} source definition formula(s)`);
-    }
+    entries.forEach((entry, index) => {
+      if (formulaEntryKind(entry) !== "worked_example") return;
+      const fam = String(entry.formulaFamily ?? "") || formulaMetricFamily(String(entry.text ?? "")) || "";
+      const basedOn = String(entry.basedOnFormula ?? "");
+      const hasExplicit = Boolean(basedOn) && (definitionAnchors.has(basedOn) || /^S\d+\.P\d+\.[A-Z]?\d+$/i.test(basedOn));
+      const hasImplicit = Boolean(fam) && definitionFamilies.has(fam);
+      if (!hasExplicit && !hasImplicit) {
+        problems.push(`${page.relPath}: formulas[${index}] worked example lacks lineage to a source definition (missing basedOnFormula)`);
+      }
+    });
     if (trivial.length > 0 && trivial.length / entries.length > 0.3) {
       problems.push(`${page.relPath}: ${trivial.length}/${entries.length} formulas: entries are trivial fragments`);
     }
@@ -1402,6 +1417,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   }
 
   const pages: PageFile[] = [];
+  const hasSemanticRegistry = fs.existsSync(path.join(gardenDir, ".breadboard", "concept-registry.json"));
   walkMarkdown(gardenDir, "", pages);
   const published = pages.filter((page) => page.published);
   const lessonPages = published.filter((page) => {
@@ -1623,6 +1639,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   // 8. Learner lesson pages carry exactly the Learning Unit Contract's
   //    zettel handles; no fallback/source/topic tags and no conceptTags.
   {
+    if (hasSemanticRegistry) {
+      check(8, "legacy claim-handle tag validation", [], true, { reason: "superseded by canonical semantic check 65" });
+    } else {
     const problems: string[] = [];
     const tagCounts = new Map<string, number>();
     const knownContractHandles = new Set(learningUnits.flatMap((unit) => zettelHandlesForUnit(unit)));
@@ -1694,6 +1713,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     check(8, "learner tags exactly match Learning Unit Contract zettel handles", problems, lessonPages.length === 0);
+    }
   }
 
   // 9. Internal/source/planning pages carry no public tags.
@@ -2226,6 +2246,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 
   // 24. Atomic Zettelkasten handles are specific and not broadly reused.
   {
+    if (hasSemanticRegistry) {
+      check(24, "legacy atomic handle validation", [], true, { reason: "superseded by canonical semantic check 65" });
+    } else {
     const problems: string[] = [];
     const counts = new Map<string, number>();
     const knownContractHandles = new Set(learningUnits.flatMap((unit) => zettelHandlesForUnit(unit)));
@@ -2252,6 +2275,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     check(24, "learner tags are atomic and specific", [...new Set(problems)], lessonPages.length === 0);
+    }
   }
 
   // 25. Learner formulas must be explicitly grounded per formula, never with a
@@ -2910,6 +2934,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 
   // 45. Substantial learner pages have enough contract-backed Zettelkasten handles.
   {
+    if (hasSemanticRegistry) {
+      check(45, "legacy Zettelkasten tag density", [], true, { reason: "one to five canonical concepts are validated by check 65" });
+    } else {
     const problems: string[] = [];
     for (const page of lessonPages) {
       const words = proseWordCount(page.body);
@@ -2925,6 +2952,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     check(45, "Zettelkasten tag density is useful", problems, lessonPages.length === 0);
+    }
   }
 
   // 46. Top-level learning section titles must be unique after normalization.
@@ -2969,6 +2997,9 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 
   // 51. Zettelkasten handles must be concrete concept claims, not planner scaffolds.
   {
+    if (hasSemanticRegistry) {
+      check(51, "legacy Zettelkasten handle quality", [], true, { reason: "claims and public concepts are separate in semantic schema v1" });
+    } else {
     const problems = learningUnits.flatMap((unit) => zettelHandleQualityProblems(unit));
     for (const page of lessonPages) {
       for (const tag of fmArray(page.frontmatter, "tags")) {
@@ -2976,6 +3007,7 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
     check(51, "Zettelkasten Handle Quality", [...new Set(problems)], lessonPages.length === 0 && learningUnits.length === 0);
+    }
   }
 
   // 52. Section folder names, section frontmatter titles, H1 headings, and map
@@ -3037,8 +3069,12 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
 
   // 57. Explicit naturalness row for Zettelkasten handles.
   {
+    if (hasSemanticRegistry) {
+      check(57, "legacy Zettelkasten handle naturalness", [], true, { reason: "claims and public concepts are separate in semantic schema v1" });
+    } else {
     const problems = learningUnits.flatMap((unit) => zettelHandleQualityProblems(unit));
     check(57, "Zettelkasten Handle Naturalness", [...new Set(problems)], learningUnits.length === 0);
+    }
   }
 
   // 58. Semantic repairs must be traceable and resolved.
@@ -3095,6 +3131,20 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       auditProblems = [`final-state audit could not run: ${(error as Error).message}`];
     }
     check(64, "Final Garden State Audit", auditProblems, lessonPages.length === 0);
+  }
+
+  // 65. Canonical concepts, page assignments, claims, relations and aliases.
+  {
+    if (!hasSemanticRegistry) {
+      check(65, "Canonical Semantic Registry", [], true, { reason: "legacy garden; run semantic migration" });
+    } else {
+      const semantic = validateGardenSemantics(gardenDir);
+      check(65, "Canonical Semantic Registry", semantic.hardFailures, lessonPages.length === 0);
+      check(66, "Semantic Health Diagnostics", semantic.diagnostics, false, {
+        severity: semantic.diagnostics.length > 0 ? "warn" : "pass",
+        acceptanceBlocking: false,
+      });
+    }
   }
 
   return results;

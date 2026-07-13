@@ -26,7 +26,10 @@ import {
 
 const REAL_GARDEN = fileURLToPath(new URL("../../quartz/content/test-2", import.meta.url));
 const AVAILABLE = fs.existsSync(path.join(REAL_GARDEN, ".breadboard", "learning-unit-contract.json"));
-const skip = AVAILABLE ? false : "real generated garden quartz/content/test-2 is not present";
+const LIVE_GARDEN_ENABLED = /^(1|true|yes)$/i.test((process.env.BREADBOARD_TEST_LIVE_GARDEN ?? "").trim());
+const skip = !LIVE_GARDEN_ENABLED
+  ? "opt-in live-garden integration test; set BREADBOARD_TEST_LIVE_GARDEN=1 to run"
+  : (AVAILABLE ? false : "real generated garden quartz/content/test-2 is not present");
 
 const read = (dir, rel) => fs.readFileSync(path.join(dir, ...rel.split("/")), "utf-8");
 const write = (dir, rel, s) => fs.writeFileSync(path.join(dir, ...rel.split("/")), s, "utf-8");

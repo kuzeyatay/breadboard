@@ -53,7 +53,6 @@ describe("Zettelkasten tag utilities", () => {
     assert.ok(!tags.includes("understanding-the-basics"));
     assert.ok(!tags.includes("limits-of-synchronous-continuous-networks"));
     assert.ok(!tags.some((tag) => tag.includes("2510")));
-    assert.ok(tags.includes("synchronous-computation"));
     assert.ok(tags.includes("continuous-activation"));
     assert.ok(tags.includes("dense-computation"));
     assert.ok(tags.includes("energy-efficiency"));
@@ -78,13 +77,12 @@ describe("Zettelkasten tag utilities", () => {
       maxTags: 8,
     });
 
-    assert.ok(tags.includes("synchronous-computation"));
     assert.ok(tags.includes("continuous-activation"));
     assert.ok(tags.includes("dense-computation"));
     assert.ok(tags.includes("event-driven-processing"));
     assert.ok(tags.includes("neuromorphic-computing"));
     assert.ok(tags.includes("energy-efficiency"));
-    assert.ok(tags.length >= 4 && tags.length <= 8);
+    assert.ok(tags.length >= 2 && tags.length <= 5);
   });
 
   test("rejects invalid punctuation and keeps conceptually meaningful numbers", () => {

@@ -19,8 +19,11 @@ import {
   clusterDepthProblems,
   dropIncompatibleInteractiveVisuals,
   interactiveVisualGroundingProblems,
+  semanticConceptsForUnit,
+  knowledgeClaimsForUnit,
 } from "../src/lib/learning-unit-contract.ts";
 import { sanitizeLearnerTitle } from "../src/lib/learn-utils.ts";
+import { isValidPublicConceptSlug } from "../src/lib/semantic-core.ts";
 
 // A realistic set of learning units for an SNN source (used generically — the
 // clustering/validation logic is domain-agnostic).
@@ -86,10 +89,11 @@ describe("Learning Unit Contract — clustering (Fix 1)", () => {
     assert.ok(map.sections.length >= 4 && map.sections.length <= 7);
     const totalSubs = map.sections.reduce((n, s) => n + s.subsections.length, 0);
     assert.equal(totalSubs, 14);
-    // Subsections carry the unit's source visuals + atomic tags.
+    // Subsections carry source visuals and one-to-five reusable concepts.
     const lif = map.sections.flatMap((s) => s.subsections).find((s) => s.title === "The LIF neuron");
-    assert.ok(lif.sourceVisualIds.length === 0 || lif.conceptTags.every(isAtomicZettelHandle));
-    assert.ok(map.sections.flatMap((s) => s.subsections).every((s) => s.conceptTags.every(isAtomicZettelHandle)));
+    assert.ok(lif.sourceVisualIds.length === 0 || lif.conceptTags.every(isValidPublicConceptSlug));
+    assert.ok(map.sections.flatMap((s) => s.subsections).every((s) =>
+      s.conceptTags.length >= 1 && s.conceptTags.length <= 5 && s.conceptTags.every(isValidPublicConceptSlug)));
   });
 });
 
@@ -119,7 +123,7 @@ describe("Learning Unit Contract — atomic Zettelkasten handles (Fix 6/7)", () 
     }
   });
 
-  test("normalization tops up thin zettel plans to at least three atomic handles", () => {
+  test("normalization keeps a thin grounded plan without fabricating filler", () => {
     const [unit] = normalizeLearningUnits([
       {
         id: "U-thin",
@@ -133,9 +137,12 @@ describe("Learning Unit Contract — atomic Zettelkasten handles (Fix 6/7)", () 
         ],
       },
     ]);
-    const handles = zettelHandlesForUnit(unit);
-    assert.ok(handles.length >= 3, `expected at least three handles, got ${handles.join(", ")}`);
-    assert.ok(handles.every(isAtomicZettelHandle));
+    const concepts = semanticConceptsForUnit(unit);
+    const claims = knowledgeClaimsForUnit(unit);
+    assert.ok(concepts.length >= 1 && concepts.length <= 5);
+    assert.ok(concepts.every((concept) => isValidPublicConceptSlug(concept.slug)));
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0].text, "Spike count connects activity to cost.");
   });
 });
 
@@ -362,11 +369,17 @@ describe("Learning Unit Contract — full-set validation (Fix 11)", () => {
     assert.ok(problems.some((p) => /only 6 learning units/.test(p)));
   });
 
-  test("a slash-namespaced handle is rejected", () => {
+  test("a claim-shaped semantic concept is rejected", () => {
     const units = snnUnits();
-    units[0].zettelNotes[0].handle = "metric/accuracy-per-energy";
+    units[0].semanticConcepts = [{
+      slug: "accuracy-alone-hides-energy-and-latency-cost",
+      preferredLabel: "Accuracy alone hides energy and latency cost",
+      role: "primary",
+      aliases: [],
+      evidenceAnchors: [],
+    }];
     const problems = validateLearningUnitContracts(units);
-    assert.ok(problems.some((p) => /slash namespace/.test(p) || /not an atomic concept handle/.test(p)));
+    assert.ok(problems.some((p) => /invalid or claim-shaped public concept/.test(p)));
   });
 });
 

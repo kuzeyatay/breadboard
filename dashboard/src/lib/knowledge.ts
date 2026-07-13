@@ -25,6 +25,8 @@ import {
   readingOrderRank,
 } from "./learning-garden";
 import { normalizeQuartzMarkdown } from "./quartz-markdown";
+import { readGardenSemanticArtifacts } from "./garden-semantics";
+import { resolveConcept } from "./semantic-core";
 
 // Re-exported so existing `@/lib/knowledge` importers keep working unchanged.
 export { slugify, semanticTagsFromText, normalizeTopicTags };
@@ -115,7 +117,11 @@ export interface KnowledgeNode {
   internal: string;
   flagColor: string;
   locations: string[];
+  sourceAnchors: string[];
   tags: string[];
+  primaryConcepts: string[];
+  supportingConcepts: string[];
+  claimIds: string[];
   related: string[];
   date: string;
   wordCount: number;
@@ -223,7 +229,7 @@ Rules:
 - Each tag should be reusable across multiple notes, specific enough to be meaningful, and broad enough to appear again. Never reference a page/slide/figure location, source filename, author name, or title slug in a tag.
 - Never use app or navigation tags such as graph, links, quartz-graph, map, index, garden, knowledge, generated, note, topic, source, document, pdf, file, chat, answer, response, general, or misc.
 - Keep tags separate from the knowledge graph itself: relationships and relatedTopics carry structural links; tags are lightweight conceptual connectors.
-- Use 4-8 concept-handle tags per topic when the source supports them, and 5-10 suggestedTags for the whole document.
+- Use 2-5 reusable concept candidates per topic when the source supports them; these are internal planning hints, not public Quartz tags.
 - Link topics aggressively through relatedTopics and relationships whenever the relationship is grounded in the source.
 - Each topic should have at least one relatedTopic when more than one topic is extracted.
 - Create 2-5 strong relationships per topic when possible. Prefer precise relation labels: depends-on, contrasts-with, example-of, part-of, causes, enables, applies-to, derives-from, measured-by, limits, or related.
@@ -1829,16 +1835,9 @@ async function harmonizeTopicNote({
   }
 
   const { data } = parseMarkdownFile(target.content);
-  const newTags = normalizeTopicTags(
-    topic.tags,
-    [topic.title, topic.explanation].join("\n"),
-    8,
-    [topic.title, outputPlainText].join("\n"),
-  );
-  const existingTags = frontmatterArray(data, "tags");
-  const mergedTags = [...new Set([...existingTags, ...newTags])].slice(0, 10);
-
-  const updatedFrontmatter = frontmatter({ ...data, date: new Date().toISOString(), tags: mergedTags });
+  // Ingestion may enrich learner prose, but public concepts remain owned by
+  // the Learning Unit Contract and canonical semantic service.
+  const updatedFrontmatter = frontmatter({ ...data, date: new Date().toISOString() });
   fs.writeFileSync(target.filePath, `${updatedFrontmatter}${mergedBody}\n`, "utf-8");
 }
 
@@ -2567,6 +2566,7 @@ export function scanClusterKnowledge(
 
   migrateRootSourceDocumentsToSources(clusterDir);
   const markdownEntries = walkClusterMarkdown(clusterDir);
+  const semanticArtifacts = readGardenSemanticArtifacts(clusterDir, clusterSlug);
 
   const cacheKey = path.resolve(clusterDir);
   const signature = markdownEntries
@@ -2599,16 +2599,37 @@ export function scanClusterKnowledge(
     const internal = frontmatterString(data, "internal");
     const flagColor = frontmatterString(data, "flag_color");
     const locations = frontmatterArray(data, "locations");
-    const tags = normalizeTopicTags(
-      frontmatterArray(data, "tags"),
-      "",
-      8,
-      [title, body].join("\n"),
-    );
+    const sourceAnchors = frontmatterArray(data, "sourceAnchors");
     const related = frontmatterArray(data, "related");
     const type = isInternalConceptMetadata(data, relPath)
       ? INTERNAL_CONCEPT_TYPE
       : inferKnowledgeType(data);
+    const isLearnerPage = (
+      relPath.replace(/\\/g, "/").startsWith(`${LEARNING_FOLDER}/`) &&
+      (LEARNING_PAGE_TYPES.has(type) || nodeBreadboardType === "learning_page")
+    );
+    const rawPrimaryConcepts = frontmatterArray(data, "primaryConcepts");
+    const rawSupportingConcepts = frontmatterArray(data, "supportingConcepts");
+    const claimIds = isLearnerPage ? frontmatterArray(data, "claimIds") : [];
+    const assignmentTerms = [...rawPrimaryConcepts, ...rawSupportingConcepts];
+    const legacyTerms = frontmatterArray(data, "tags");
+    const publicTerms = assignmentTerms.length > 0 ? assignmentTerms : legacyTerms;
+    const resolvedTerms = semanticArtifacts.registry.concepts.length > 0
+      ? publicTerms
+          .map((term) => resolveConcept(term, semanticArtifacts.registry)?.slug)
+          .filter((term): term is string => Boolean(term))
+      : normalizeTopicTags(publicTerms, "", 5, [title, body].join("\n"));
+    const tags = isLearnerPage ? [...new Set(resolvedTerms)].slice(0, 5) : [];
+    const primaryConcepts = isLearnerPage
+      ? rawPrimaryConcepts
+          .map((term) => resolveConcept(term, semanticArtifacts.registry)?.slug ?? term)
+          .filter((term) => tags.includes(term))
+      : [];
+    const supportingConcepts = isLearnerPage
+      ? rawSupportingConcepts
+          .map((term) => resolveConcept(term, semanticArtifacts.registry)?.slug ?? term)
+          .filter((term) => tags.includes(term) && !primaryConcepts.includes(term))
+      : [];
     const date = frontmatterString(data, "date") || modifiedAt;
     const wordCount = body.trim().split(/\s+/).filter(Boolean).length;
 
@@ -2632,7 +2653,11 @@ export function scanClusterKnowledge(
       internal,
       flagColor,
       locations,
+      sourceAnchors,
       tags,
+      primaryConcepts,
+      supportingConcepts,
+      claimIds,
       related,
       date,
       wordCount,

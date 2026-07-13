@@ -322,6 +322,31 @@ describe("contract-driven semantic repair loop", () => {
               sourceFigures: [],
               sourceTables: [],
               sourceFormulas: [],
+              semanticConcepts: [
+                {
+                  slug: "event-driven-processing",
+                  preferredLabel: "Event-driven processing",
+                  role: "primary",
+                  aliases: ["event-driven computation"],
+                  evidenceAnchors: [],
+                },
+                {
+                  slug: "sparse-computation",
+                  preferredLabel: "Sparse computation",
+                  role: "supporting",
+                  aliases: [],
+                  evidenceAnchors: [],
+                },
+              ],
+              knowledgeClaims: [
+                {
+                  text: "Spike events enable sparse computation.",
+                  subject: "event-driven-processing",
+                  predicate: "enables",
+                  object: "sparse-computation",
+                  evidenceAnchors: [],
+                },
+              ],
               zettelNotes: [
                 {
                   handle: "spike-events-enable-sparse-computation",
@@ -361,7 +386,10 @@ describe("contract-driven semantic repair loop", () => {
       );
       assert.match(out, /^generatedBy: "learn_button"$/m);
       assert.match(out, /^learningUnitId: "U1"$/m);
-      assert.match(out, /^tags: \[[^\n]*"spike-events-enable-sparse-computation"[^\n]*\]$/m);
+      assert.match(out, /^primaryConcepts: \["event-driven-processing"\]$/m);
+      assert.match(out, /^supportingConcepts: \["sparse-computation"\]$/m);
+      assert.match(out, /^tags: \["event-driven-processing", "sparse-computation"\]$/m);
+      assert.doesNotMatch(out, /^tags: \[[^\n]*"spike-events-enable-sparse-computation"[^\n]*\]$/m);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -840,7 +868,8 @@ describe("contract-driven semantic repair loop", () => {
       const pagePath = path.join(dir, "learning", "2. How SNNs Learn", "2.2 Surrogate Gradient Training.md");
       const out = fs.readFileSync(pagePath, "utf-8");
       const entryCount = (out.match(/^ {2}- kind:/gm) ?? []).length;
-      assert.ok(entryCount > 0 && entryCount <= 6, `expected a focused formula block, got ${entryCount} entries`);
+      // Lineage compaction de-duplicates and stays under the noise ceiling (10).
+      assert.ok(entryCount > 0 && entryCount <= 10, `expected a de-duplicated formula block, got ${entryCount} entries`);
       // The thrice-repeated surrogate slope collapses to a single entry.
       const surrogateEntries = (out.match(/text: "g\(u-\\\\theta\)"/g) ?? []).length;
       assert.equal(surrogateEntries, 1, "duplicate g(u-θ) must be de-duplicated to one entry");

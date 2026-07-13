@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  type ChangeEvent,
   useCallback,
   useEffect,
   useRef,
@@ -9,18 +10,29 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import AssistantComposer from '@/app/components/assistant-composer';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import {
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
   mergeAssistantModels,
 } from '@/lib/ai-models';
+import {
+  DEFAULT_ASSISTANT_REASONING_EFFORT,
+  type AssistantReasoningEffort,
+} from '@/lib/assistant-reasoning';
+import {
+  CHAT_ATTACHMENT_ACCEPT,
+  extractChatAttachments,
+  type ChatAttachment,
+} from '@/lib/chat-attachments';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   sources?: string[];
   thinking?: string;
+  attachmentNames?: string[];
 }
 
 interface ChatSession {
@@ -181,12 +193,17 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
-  const [thinkingMode, setThinkingMode] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
+    DEFAULT_ASSISTANT_REASONING_EFFORT,
+  );
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
+  const [extractingAttachments, setExtractingAttachments] = useState(false);
+  const [attachmentStatus, setAttachmentStatus] = useState('');
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const activeSession = sessions.find((session) => session.id === activeId) ?? null;
   const isPublic = scope === 'public';
@@ -308,20 +325,30 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   async function sendMessage(textOverride?: string) {
     const text = (textOverride ?? input).trim();
-    if (!text || isStreaming) return;
+    if ((!text && chatAttachments.length === 0) || isStreaming) return;
+
+    const pendingAttachments = chatAttachments;
+    const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
+    const displayText = text || 'Please review the attached document(s).';
 
     let session = activeSession;
     let sessionTitle: string | undefined;
     if (!session) {
-      sessionTitle = chatTitleFromText(text);
+      sessionTitle = chatTitleFromText(text || attachmentNames[0] || 'Document review');
       session = createSession(sessionTitle);
     }
 
-    const userMessage: ChatMessage = { role: 'user', content: text };
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: displayText,
+      attachmentNames,
+    };
     const nextMessages = [...messages, userMessage];
     let assistantMessage: ChatMessage = { role: 'assistant', content: '', sources: [] };
 
     setInput('');
+    setChatAttachments([]);
+    setAttachmentStatus('');
     setIsStreaming(true);
     setMessages([...nextMessages, assistantMessage]);
 
@@ -332,7 +359,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
         body: JSON.stringify({
           messages: nextMessages.map(({ role, content }) => ({ role, content })),
           model,
-          thinking: thinkingMode,
+          reasoningEffort,
+          attachments: pendingAttachments,
           scope,
         }),
       });
@@ -421,6 +449,18 @@ export default function KnowledgeTerminal({ scope }: Props) {
       event.preventDefault();
       void sendMessage();
     }
+  }
+
+  async function handleAttachmentInput(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (files.length === 0) return;
+    setExtractingAttachments(true);
+    setAttachmentStatus('Reading documents…');
+    const result = await extractChatAttachments(files);
+    setChatAttachments((current) => [...current, ...result.attachments]);
+    setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
+    setExtractingAttachments(false);
   }
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
@@ -666,6 +706,11 @@ export default function KnowledgeTerminal({ scope }: Props) {
                         {message.role === 'user' ? (
                           <div className="rounded-2xl rounded-br-sm bg-gray-800 px-4 py-2.5 text-sm leading-6 text-gray-100">
                             <p className="whitespace-pre-wrap">{message.content}</p>
+                            {message.attachmentNames?.length ? (
+                              <p className="mt-1.5 text-[11px] text-gray-400">
+                                {message.attachmentNames.join(' · ')}
+                              </p>
+                            ) : null}
                           </div>
                         ) : (
                           <div className="text-sm leading-7 text-gray-200">
@@ -705,97 +750,39 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
           {/* Composer */}
           <div className="shrink-0 px-4 pb-3">
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                void sendMessage();
-              }}
-              className="mx-auto w-full max-w-3xl rounded-2xl border border-gray-700 bg-gray-900/70 px-3 py-2.5 transition focus-within:border-gray-500"
-            >
-              <textarea
-                value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={handleInputKeyDown}
-                placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything across your gardens...'}
-                rows={1}
-                className="block max-h-40 min-h-[24px] w-full resize-none bg-transparent text-sm leading-6 text-gray-100 outline-none placeholder:text-gray-600"
-              />
-              <div className="mt-2 flex items-center justify-between gap-2">
-                <span className="text-[11px] text-gray-600">Enter to send, Shift+Enter for a new line</span>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setThinkingMode((value) => !value)}
-                    title="Extended thinking"
-                    className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition ${
-                      thinkingMode
-                        ? 'border-purple-700 bg-purple-950/30 text-purple-300'
-                        : 'border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'
-                    }`}
-                  >
-                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1.5m0 15V21m9-9h-1.5M4.5 12H3m15.4 6.4-1.1-1.1M6.7 6.7 5.6 5.6m12.8 0-1.1 1.1M6.7 17.3l-1.1 1.1M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                    </svg>
-                    Think
-                  </button>
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = !showModelPicker;
-                        setShowModelPicker(next);
-                        if (next) void loadModels();
-                      }}
-                      className="rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
-                    >
-                      {model}
-                    </button>
-                    {showModelPicker ? (
-                      <>
-                        <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
-                        <div className="absolute bottom-full right-0 z-20 mb-1.5 max-h-56 min-w-44 overflow-y-auto rounded-md border border-gray-700 bg-gray-900 py-1 shadow-2xl">
-                          {modelsLoading ? (
-                            <div className="px-3 py-2 text-xs text-gray-500">Loading models...</div>
-                          ) : null}
-                          {models.map((item) => (
-                            <button
-                              key={item}
-                              type="button"
-                              onClick={() => {
-                                setModel(item);
-                                setShowModelPicker(false);
-                              }}
-                              className={`block w-full px-3 py-2 text-left text-sm transition ${
-                                item === model ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-                              }`}
-                            >
-                              {item}
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    ) : null}
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={!input.trim() || isStreaming}
-                    className="flex h-7 w-7 items-center justify-center rounded-full bg-gray-100 text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-500"
-                    aria-label="Send"
-                  >
-                    {isStreaming ? (
-                      <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                    ) : (
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12h15m0 0-6-6m6 6-6 6" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </form>
+            <input
+              ref={attachmentInputRef}
+              type="file"
+              accept={CHAT_ATTACHMENT_ACCEPT}
+              multiple
+              onChange={handleAttachmentInput}
+              className="hidden"
+            />
+            <AssistantComposer
+              className="mx-auto w-full max-w-3xl"
+              compact
+              value={input}
+              onChange={setInput}
+              onSubmit={() => void sendMessage()}
+              onKeyDown={handleInputKeyDown}
+              placeholder={isPublic ? 'Ask anything across all public gardens...' : 'Ask anything across your gardens...'}
+              isSending={isStreaming}
+              canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
+              model={model}
+              models={models}
+              modelsLoading={modelsLoading}
+              onLoadModels={() => void loadModels()}
+              onModelChange={setModel}
+              reasoningEffort={reasoningEffort}
+              onReasoningEffortChange={setReasoningEffort}
+              onAddDocuments={() => attachmentInputRef.current?.click()}
+              isAddingDocuments={extractingAttachments}
+              attachments={chatAttachments}
+              onRemoveAttachment={(index) =>
+                setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
+              }
+              statusMessage={attachmentStatus}
+            />
           </div>
         </div>
       </div>

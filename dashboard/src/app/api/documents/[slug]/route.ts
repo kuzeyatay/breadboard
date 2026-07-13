@@ -424,7 +424,7 @@ export async function PATCH(
 
   const body = await request.json().catch(() => ({}));
   let content = fs.readFileSync(context.filePath, 'utf-8');
-  let tags = frontmatterArrayValue(parseFrontmatter(content), 'tags');
+  let tags = frontmatterArrayValue(parseFrontmatter(content), 'semanticHints');
 
   if (Object.prototype.hasOwnProperty.call(body, 'content')) {
     if (typeof body.content !== 'string') {
@@ -470,10 +470,11 @@ export async function PATCH(
     tags = normalizeTopicTags(
       body.tags.map((tag: string) => tag.trim()),
       content,
-      8,
+      5,
       `${frontmatterTitle(content)}\n${content}`,
     );
-    content = updateFrontmatterArrayValue(content, 'tags', tags);
+    content = updateFrontmatterArrayValue(content, 'tags', []);
+    content = updateFrontmatterArrayValue(content, 'semanticHints', tags);
   }
 
   fs.writeFileSync(context.filePath, content, 'utf-8');
@@ -498,7 +499,7 @@ export async function GET(
     fileName: path.basename(context.filePath),
     content,
     title: frontmatterTitle(content),
-    tags: frontmatterArrayValue(parseFrontmatter(content), 'tags'),
+    tags: frontmatterArrayValue(parseFrontmatter(content), 'semanticHints'),
     body,
   });
 }

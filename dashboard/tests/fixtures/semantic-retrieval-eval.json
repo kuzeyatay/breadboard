@@ -1,0 +1,32 @@
+{
+  "k": 5,
+  "queries": [
+    {
+      "query": "How does a LIF neuron integrate input and emit a spike?",
+      "expectedPages": [
+        "learning/1. How Brain-inspired Computation Works/1.3 The Leaky Integrate-and-Fire Neuron.md"
+      ],
+      "expectedAnchors": [
+        "S1.P4.G1"
+      ]
+    },
+    {
+      "query": "How do surrogate gradients train through non-differentiable spike events?",
+      "expectedPages": [
+        "learning/2. How Non-differentiable Spike Event Is Applied/2.2 Surrogate-Gradient Training.md"
+      ],
+      "expectedAnchors": [
+        "S1.P10.G1"
+      ]
+    },
+    {
+      "query": "What tradeoff connects spike count, energy, and inference latency?",
+      "expectedPages": [
+        "learning/5. Comparing and Interpreting the Results/5.2 Latency, Energy, and Spike-Count Tradeoffs.md"
+      ],
+      "expectedAnchors": [
+        "S1.P8.T1"
+      ]
+    }
+  ]
+}

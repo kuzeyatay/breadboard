@@ -149,15 +149,15 @@ export async function POST(request: Request) {
       ? normalizeTopicTags(
           tags.map((tag: string) => tag.trim()).filter(Boolean),
           body_,
-          8,
+          5,
           `${title.trim()}\n${body_}`,
         )
       : [];
-    const tagsLine =
+    const semanticHintsLine =
       normalizedTags.length > 0
-        ? `tags: [${normalizedTags.map((tag) => JSON.stringify(tag)).join(', ')}]\n`
+        ? `semanticHints: [${normalizedTags.map((tag) => JSON.stringify(tag)).join(', ')}]\n`
         : '';
-    const frontmatter = `---\ntitle: ${JSON.stringify(title.trim())}\ndate: ${JSON.stringify(date)}\nsource: "user-note"\nknowledge_type: "user-note"\n${tagsLine}---\n\n`;
+    const frontmatter = `---\ntitle: ${JSON.stringify(title.trim())}\ndate: ${JSON.stringify(date)}\nsource: "user-note"\nknowledge_type: "user-note"\n${semanticHintsLine}---\n\n`;
     fs.writeFileSync(path.join(targetDir, `${slug}.md`), frontmatter + body_, 'utf-8');
 
     refreshClusterIndex(contentPath, cluster.slug);
