@@ -27,6 +27,16 @@ import {
   generateSectionTitle,
   type GardenTopicProfile,
 } from "./section-title.ts";
+import { semanticTagsFromText } from "./tags.ts";
+import {
+  isGenericFillerClaim,
+  isValidPublicConceptSlug,
+  normalizeConceptSlug,
+  normalizeRelationPredicate,
+  preferredLabelFromSlug,
+  type KnowledgeClaimPlan,
+  type SemanticConceptPlan,
+} from "./semantic-core.ts";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -142,6 +152,11 @@ export interface LearningUnitContract {
   interactiveVisual?: InteractiveVisualContract;
 
   zettelNotes: ZettelNote[];
+
+  /** Canonical concept identities planned separately from readable claims. */
+  semanticConcepts?: SemanticConceptPlan[];
+  /** Evidence-grounded natural-language claims. Legacy zettelNotes remain migration input only. */
+  knowledgeClaims?: KnowledgeClaimPlan[];
 
   mustNotRepeat: string[];
   expectedWordRange: [number, number];
@@ -279,102 +294,131 @@ export function zettelHandlesForUnit(unit: LearningUnitContract): string[] {
   return handles;
 }
 
-// Fallback claims used only when a unit ships fewer than three model-authored
-// zettel notes. They must read as durable, concept-specific claims — never as a
-// description of the tag's function (see final-garden-state naturalness audit).
-const ROLE_ZETTEL_CLAIMS: Record<LearningUnitRole, string[]> = {
-  motivation: [
-    "{concept} makes event-driven computation necessary",
-    "{concept} wastes work when values are recomputed",
-  ],
-  core_concept: [
-    "{concept} makes timing part of the representation",
-    "{concept} separates spike events from continuous activations",
-  ],
-  mechanism: [
-    "{concept} turns accumulated input into a discrete event",
-    "{concept} makes state changes visible as spikes",
-  ],
-  formula: [
-    "{concept} follows from measurable counts",
-    "{concept} moves only when its inputs move",
-  ],
-  worked_example: [
-    "{concept} traces the calculation on one case",
-    "{concept} turns an abstract rule into concrete steps",
-  ],
-  training_method: [
-    "{concept} adjusts weights through a specific rule",
-    "{concept} trades accuracy against training cost",
-  ],
-  metric: [
-    "{concept} makes the behavior measurable",
-    "{concept} separates model quality from deployment cost",
-  ],
-  result_interpretation: [
-    "{concept} only matters beside its cost",
-    "{concept} reflects the values actually reported",
-  ],
-  comparison: [
-    "{concept} keeps one metric from choosing the winner",
-    "{concept} exposes tradeoffs across alternatives",
-  ],
-  application: [
-    "{concept} must fit an energy and latency budget",
-    "{concept} rewards sparse event processing",
-  ],
-  limitation: [
-    "{concept} bounds what the results can claim",
-    "{concept} depends on the source conditions",
-  ],
-  synthesis: [
-    "{concept} combines earlier lessons into one choice",
-    "{concept} ties the metrics to a decision",
-  ],
-};
-
-function primaryZettelConcept(unit: LearningUnitContract): string {
-  const candidate =
-    [...unit.newConcepts, unit.title, unit.learningQuestion]
-      .map((value) => compact(value).replace(/^\d+(?:\.\d+)*\.?\s*/, ""))
-      .find((value) => value && !/^(why|how|what|where|when|the)\b/i.test(value)) ??
-    unit.title ??
-    "the concept";
-  return candidate.replace(/\s+/g, " ").trim() || "the concept";
+function inferredClaimPredicate(text: string): ReturnType<typeof normalizeRelationPredicate> {
+  if (/\bcaus(?:e|es|ed)\b/i.test(text)) return "causes";
+  if (/\benabl(?:e|es|ed)\b/i.test(text)) return "enables";
+  if (/\bmeasur(?:e|es|ed|ement)\b/i.test(text)) return "measured-by";
+  if (/\bcontrast|whereas|unlike\b/i.test(text)) return "contrasts-with";
+  if (/\blimit|bound|constraint\b/i.test(text)) return "limits";
+  if (/\bemits?.*\bwhen\b|\bfires?.*\bwhen\b/i.test(text)) return "emits-when";
+  if (/\bderived? from\b/i.test(text)) return "derived-from";
+  return "related-to";
 }
 
-function generatedZettelNote(unit: LearningUnitContract, claimTemplate: string): ZettelNote | null {
-  const concept = primaryZettelConcept(unit);
-  const claim = claimTemplate.replace("{concept}", concept);
-  const handle = atomicZettelHandle(claim);
-  if (!isAtomicZettelHandle(handle)) return null;
+function normalizedConceptPlan(raw: unknown): SemanticConceptPlan | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const slug = normalizeConceptSlug(compact(record.slug ?? record.id ?? record.preferredLabel));
+  if (!isValidPublicConceptSlug(slug)) return null;
   return {
-    handle,
-    claim,
-    connectedTo: [...new Set([...unit.prerequisiteConcepts, ...unit.newConcepts, ...unit.sourceAnchors].filter(Boolean))].slice(0, 5),
+    slug,
+    preferredLabel: compact(record.preferredLabel ?? record.label) || preferredLabelFromSlug(slug),
+    role: compact(record.role).toLowerCase() === "primary" ? "primary" : "supporting",
+    aliases: asStringArray(record.aliases),
+    evidenceAnchors: asStringArray(record.evidenceAnchors ?? record.sourceAnchors),
   };
 }
 
-function expandZettelNotesForUnit(unit: LearningUnitContract): ZettelNote[] {
-  const notes = [...(unit.zettelNotes ?? [])];
-  const seen = new Set(zettelHandlesForUnit({ ...unit, zettelNotes: notes }));
-  const templates = [
-    ...(ROLE_ZETTEL_CLAIMS[unit.role] ?? []),
-    "{concept} stays testable through observable details",
-    "{concept} changes which decision a learner should make",
-  ];
-  for (const template of templates) {
-    if (seen.size >= 3) break;
-    const note = generatedZettelNote(unit, template);
-    if (!note) continue;
-    const handle = atomicZettelHandle(note.handle || note.claim);
-    if (!handle || seen.has(handle)) continue;
-    seen.add(handle);
-    notes.push(note);
+function deriveSemanticConcepts(unit: LearningUnitContract): SemanticConceptPlan[] {
+  const explicit = (unit.semanticConcepts ?? [])
+    .map(normalizedConceptPlan)
+    .filter((plan): plan is SemanticConceptPlan => Boolean(plan));
+  if (explicit.length > 0) {
+    const seen = new Set<string>();
+    return explicit.filter((plan) => !seen.has(plan.slug) && Boolean(seen.add(plan.slug))).slice(0, 5);
   }
-  return notes.slice(0, 6);
+
+  const directPrimary = (unit.newConcepts ?? [])
+    .map(normalizeConceptSlug)
+    .filter(isValidPublicConceptSlug);
+  const directSupporting = (unit.prerequisiteConcepts ?? [])
+    .map(normalizeConceptSlug)
+    .filter(isValidPublicConceptSlug);
+  const inferred = semanticTagsFromText(
+    [
+      unit.title,
+      unit.learningQuestion,
+      ...(unit.zettelNotes ?? []).map((note) => note.claim),
+    ].join("\n"),
+    5,
+  ).filter(isValidPublicConceptSlug);
+  const ordered = [...directPrimary, ...directSupporting, ...inferred]
+    .filter((slug, index, all) => all.indexOf(slug) === index)
+    .slice(0, 5);
+  const primaryCandidates = directPrimary.length > 0
+    ? new Set(directPrimary.slice(0, 2))
+    : new Set(ordered.slice(0, 1));
+  return ordered.map((slug) => ({
+    slug,
+    preferredLabel: preferredLabelFromSlug(slug),
+    role: primaryCandidates.has(slug) ? "primary" : "supporting",
+    aliases: [],
+    evidenceAnchors: [...new Set(unit.sourceAnchors ?? [])],
+  }));
 }
 
+function normalizedKnowledgeClaim(raw: unknown): KnowledgeClaimPlan | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const text = compact(record.text ?? record.claim ?? record.statement);
+  if (!text || isGenericFillerClaim(text)) return null;
+  const subject = normalizeConceptSlug(compact(record.subject));
+  if (!subject) return null;
+  const object = normalizeConceptSlug(compact(record.object));
+  return {
+    text,
+    subject,
+    predicate: normalizeRelationPredicate(record.predicate),
+    ...(object ? { object } : {}),
+    conceptIds: asStringArray(record.conceptIds ?? record.concepts).map(normalizeConceptSlug).filter(Boolean),
+    evidenceAnchors: asStringArray(record.evidenceAnchors ?? record.sourceAnchors),
+    derivationAnchors: asStringArray(record.derivationAnchors),
+    connectedClaimIds: asStringArray(record.connectedClaimIds),
+  };
+}
+
+function deriveKnowledgeClaims(unit: LearningUnitContract): KnowledgeClaimPlan[] {
+  const explicit = (unit.knowledgeClaims ?? [])
+    .map(normalizedKnowledgeClaim)
+    .filter((claim): claim is KnowledgeClaimPlan => Boolean(claim));
+  if (explicit.length > 0) return explicit;
+  const concepts = deriveSemanticConcepts(unit);
+  const subject = concepts.find((concept) => concept.role === "primary")?.slug ?? concepts[0]?.slug;
+  if (!subject) return [];
+  return (unit.zettelNotes ?? []).flatMap((note) => {
+    const text = compact(note.claim);
+    if (!text || isGenericFillerClaim(text)) return [];
+    const object = (note.connectedTo ?? [])
+      .map(normalizeConceptSlug)
+      .find((slug) => isValidPublicConceptSlug(slug) && slug !== subject);
+    return [{
+      text,
+      subject,
+      predicate: inferredClaimPredicate(text),
+      ...(object ? { object } : {}),
+      conceptIds: concepts.map((concept) => concept.slug),
+      evidenceAnchors: [...new Set(unit.sourceAnchors ?? [])],
+      derivationAnchors: [],
+      connectedClaimIds: [],
+    }];
+  });
+}
+
+export function semanticConceptsForUnit(unit: LearningUnitContract): SemanticConceptPlan[] {
+  return deriveSemanticConcepts(unit);
+}
+
+export function knowledgeClaimsForUnit(unit: LearningUnitContract): KnowledgeClaimPlan[] {
+  return deriveKnowledgeClaims(unit);
+}
+
+export function conceptTagsForUnit(unit: LearningUnitContract): string[] {
+  return semanticConceptsForUnit(unit).map((concept) => concept.slug).slice(0, 5);
+}
+
+// Fallback claims used only when a unit ships fewer than three model-authored
+// zettel notes. They must read as durable, concept-specific claims — never as a
+// description of the tag's function (see final-garden-state naturalness audit).
 const SCAFFOLD_ZETTEL_PATTERNS: RegExp[] = [
   // Planner-scaffold phrases. The newer template phrases (Fix 7) are enforced by
   // the canonical FinalGardenState audit and repaired deterministically by the
@@ -1185,10 +1229,20 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
       sourceTables: asArray(record.sourceTables).map(normalizeTable).filter(Boolean) as SourceTableContract[],
       interactiveVisual: normalizeInteractiveVisual(record.interactiveVisual),
       zettelNotes: asArray(record.zettelNotes).map(normalizeZettelNote).filter(Boolean) as ZettelNote[],
+      semanticConcepts: asArray(record.semanticConcepts)
+        .map(normalizedConceptPlan)
+        .filter(Boolean) as SemanticConceptPlan[],
+      knowledgeClaims: asArray(record.knowledgeClaims)
+        .map(normalizedKnowledgeClaim)
+        .filter(Boolean) as KnowledgeClaimPlan[],
       mustNotRepeat: asStringArray(record.mustNotRepeat ?? record.avoid),
       expectedWordRange: normalizeWordRange(record.expectedWordRange ?? record.wordRange),
     };
-    units.push({ ...unit, zettelNotes: expandZettelNotesForUnit(unit) });
+    units.push({
+      ...unit,
+      semanticConcepts: deriveSemanticConcepts(unit),
+      knowledgeClaims: deriveKnowledgeClaims(unit),
+    });
   });
   return units;
 }
@@ -1536,7 +1590,7 @@ function subsectionFromUnit(unit: LearningUnitContract): LearningSubsectionPlan 
     purpose: unit.learningQuestion || `Teach ${unit.title} directly.`,
     sourceAnchors: unit.sourceAnchors,
     visualOpportunities: unit.interactiveVisual ? [unit.interactiveVisual.uniqueConcept] : [],
-    conceptTags: zettelHandlesForUnit(unit),
+    conceptTags: conceptTagsForUnit(unit),
     sourceVisualIds: [...new Set(sourceVisualIds)],
     interactiveVisuals,
     learningUnitId: unit.id,
@@ -1552,6 +1606,8 @@ function subsectionFromUnit(unit: LearningUnitContract): LearningSubsectionPlan 
     sourceArtifactAssignments: assignSourceArtifacts([unit]),
     interactiveVisualContract: unit.interactiveVisual,
     zettelNotes: unit.zettelNotes,
+    semanticConcepts: semanticConceptsForUnit(unit),
+    knowledgeClaims: knowledgeClaimsForUnit(unit),
   };
 }
 
@@ -1791,21 +1847,27 @@ export function validateLearningUnitContracts(
     }
   }
 
-  // Zettelkasten quality (Fix 6 / Fix 7).
-  const handleFreq = zettelHandleFrequency(units);
+  // Public concepts and readable claims are validated independently.
   for (const unit of units) {
-    problems.push(...zettelHandleQualityProblems(unit));
-    for (const note of unit.zettelNotes) {
-      if (note.handle.includes("/")) problems.push(`unit "${unit.id}": zettel handle "${note.handle}" uses a slash namespace`);
-      if (!isAtomicZettelHandle(note.handle)) {
-        problems.push(`unit "${unit.id}": zettel handle "${note.handle}" is not an atomic concept handle`);
+    for (const concept of unit.semanticConcepts ?? []) {
+      if (!isValidPublicConceptSlug(normalizeConceptSlug(concept.slug))) {
+        problems.push(`unit "${unit.id}": invalid or claim-shaped public concept "${concept.slug}"`);
       }
     }
-  }
-  const overusedThreshold = Math.max(2, Math.ceil(units.length * 0.4));
-  for (const [handle, count] of handleFreq) {
-    if (count > overusedThreshold) {
-      problems.push(`zettel handle "${handle}" appears on ${count}/${units.length} units (> 40%); likely too broad`);
+    const concepts = semanticConceptsForUnit(unit);
+    if (!concepts.some((concept) => concept.role === "primary")) {
+      problems.push(`unit "${unit.id}": no primary semantic concept`);
+    }
+    if (concepts.length > 5) problems.push(`unit "${unit.id}": more than five public concepts`);
+    for (const concept of concepts) {
+      if (!isValidPublicConceptSlug(concept.slug)) {
+        problems.push(`unit "${unit.id}": invalid or claim-shaped public concept "${concept.slug}"`);
+      }
+    }
+    for (const claim of knowledgeClaimsForUnit(unit)) {
+      if (isGenericFillerClaim(claim.text)) {
+        problems.push(`unit "${unit.id}": generic fallback claim "${claim.text}"`);
+      }
     }
   }
 

@@ -3,7 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { DEFAULT_MODEL } from '@/lib/ai-models';
-import { normalizeTopicTags, refreshClusterIndex, resolveClusterNoteFile } from '@/lib/knowledge';
+import { refreshClusterIndex, resolveClusterNoteFile } from '@/lib/knowledge';
+import { updateLearnerPageConcepts } from '@/lib/garden-semantics';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
@@ -105,39 +106,8 @@ function wantsTagEdit(instruction: string): boolean {
   return /\b(tags?|tagging|frontmatter|yaml|metadata)\b/i.test(instruction);
 }
 
-function yamlArray(values: string[]): string {
-  return `[${values.map((value) => JSON.stringify(value)).join(', ')}]`;
-}
-
-function updateFrontmatterTags(content: string, tags: string[]): string {
-  const field = `tags: ${yamlArray(tags)}`;
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!match) return tags.length > 0 ? `---\n${field}\n---\n\n${content}` : content;
-  const frontmatter = match[1];
-  const body = content.slice(match[0].length).replace(/^\r?\n/, '');
-  const lines = frontmatter.split(/\r?\n/);
-  const nextLines: string[] = [];
-  let found = false;
-  let skippingTagList = false;
-
-  for (const line of lines) {
-    if (line.trimStart().startsWith('tags:')) {
-      found = true;
-      skippingTagList = true;
-      if (tags.length > 0) nextLines.push(field);
-      continue;
-    }
-
-    if (skippingTagList) {
-      if (yamlListItemValue(line) !== null) continue;
-      skippingTagList = false;
-    }
-
-    nextLines.push(line);
-  }
-
-  if (!found && tags.length > 0) nextLines.push(field);
-  return `---\n${nextLines.join('\n').trim()}\n---\n\n${body}`;
+function wantsTagReplacement(instruction: string): boolean {
+  return /\b(replace|overwrite|reset|set\s+tags\s+to)\b/i.test(instruction);
 }
 
 function parseEditResponse(rawContent: string): { content: string; summary: string } | null {
@@ -214,7 +184,7 @@ export async function POST(request: Request) {
             'The "content" value must be the complete updated Markdown file, including YAML frontmatter if present. ' +
             'Preserve all useful existing content unless the user explicitly asks to remove or rewrite it. ' +
             'If the user asks to use "this version", "the version above", "your previous version", or similar, use the recent chat context as the replacement source. ' +
-            'When adding tags, update the YAML frontmatter tags field. Tags are Zettelkasten-style concept handles: normalized lower-case kebab-case graph vocabulary such as "restoring-force", "angular-frequency", or "simple-harmonic-motion", not SEO keywords, title summaries, broad categories, source filenames, or bare nouns like physics, formula, or wave. ' +
+            'When editing tags, suggest only canonical reusable concepts: normalized lower-case kebab-case identities such as "restoring-force", "angular-frequency", or "simple-harmonic-motion". Never use a complete claim, page summary, broad category, source filename, or organizational label as a tag. ' +
             'When fixing math or LaTeX, use $...$ for inline math and $$...$$ for display math, and avoid corrupting prose.',
         },
         {
@@ -243,13 +213,24 @@ export async function POST(request: Request) {
     }
 
     const shouldUpdateTags = wantsTagEdit(instruction) || hasFrontmatterTags(parsed.content);
-    const normalizedTags = shouldUpdateTags
-      ? normalizeTopicTags(parseFrontmatterTags(parsed.content), parsed.content, 12, parsed.content)
-      : [];
-    const nextContent = shouldUpdateTags
-      ? updateFrontmatterTags(parsed.content, normalizedTags)
-      : parsed.content;
-    fs.writeFileSync(filePath, nextContent.endsWith('\n') ? nextContent : `${nextContent}\n`, 'utf-8');
+    let nextContent = parsed.content;
+    if (shouldUpdateTags) {
+      const requestedTerms = parseFrontmatterTags(parsed.content);
+      const assignment = updateLearnerPageConcepts({
+        gardenDir: path.join(contentPath, cluster.slug),
+        pageRelPath: path.relative(path.join(contentPath, cluster.slug), filePath).replace(/\\/g, '/'),
+        requestedTerms,
+        primaryTerms: requestedTerms.slice(0, 1),
+        mode: wantsTagEdit(instruction) && wantsTagReplacement(instruction) ? 'replace' : 'merge',
+        provenance: 'markdown-ai-edit',
+        contentOverride: parsed.content,
+      });
+      void assignment;
+      nextContent = fs.readFileSync(filePath, 'utf8');
+    } else {
+      fs.writeFileSync(filePath, nextContent.endsWith('\n') ? nextContent : `${nextContent}\n`, 'utf-8');
+    }
+    const responseTags = parseFrontmatterTags(nextContent);
     refreshClusterIndex(contentPath, cluster.slug);
     await publishQuartzAfterMutation(`AI edit markdown ${cluster.slug}/${slug}`);
 
@@ -259,7 +240,7 @@ export async function POST(request: Request) {
       title: frontmatterTitle(nextContent, slug),
       summary: parsed.summary || 'Updated the open page.',
       content: nextContent,
-      tags: normalizedTags,
+      tags: responseTags,
     });
   } catch (error) {
     return routeErrorResponse(error);

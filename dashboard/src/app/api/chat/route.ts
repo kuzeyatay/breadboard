@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import path from 'node:path';
 import type {
   EasyInputMessage,
   ResponseCreateParamsStreaming,
   ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
 import { DEFAULT_MODEL } from '@/lib/ai-models';
+import { normalizeAssistantReasoningEffort } from '@/lib/assistant-reasoning';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
+import { retrieveGraphRag } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
@@ -28,31 +31,6 @@ type SsePayload =
   | { type: 'sources'; sources: string[] }
   | { type: 'delta'; text: string }
   | { type: 'thinking'; text: string };
-
-function tokenize(value: string): Set<string> {
-  return new Set(
-    value
-      .toLowerCase()
-      .split(/[^a-z0-9]+/g)
-      .map((word) => word.trim())
-      .filter((word) => word.length > 2),
-  );
-}
-
-function scoreNode(node: KnowledgeNode, queryWords: Set<string>): number {
-  if (queryWords.size === 0) return 0;
-  const titleWords = tokenize(node.title);
-  const metadataWords = tokenize([...node.tags, ...node.locations, node.sourceFile].join(' '));
-  const contentWords = node.content.toLowerCase().split(/[^a-z0-9]+/g);
-
-  let score = 0;
-  for (const word of queryWords) {
-    if (titleWords.has(word)) score += 8;
-    if (metadataWords.has(word)) score += 4;
-  }
-  score += contentWords.filter((word) => queryWords.has(word)).length;
-  return score;
-}
 
 function truncate(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
@@ -243,18 +221,6 @@ function parseActiveMarkdownContext(value: unknown): ActiveMarkdownContext | nul
   return { slug, title, content };
 }
 
-function describeInventoryNode(node: KnowledgeNode): string {
-  const details = [
-    `type: ${node.type}`,
-    `source: ${node.sourceFile || node.sourceDocument || node.fileName}`,
-  ];
-
-  if (node.locations.length > 0) details.push(`locations: ${node.locations.join(', ')}`);
-  if (node.tags.length > 0) details.push(`tags: ${node.tags.join(', ')}`);
-
-  return `- ${node.title} | ${details.join(' | ')}`;
-}
-
 export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
@@ -263,6 +229,7 @@ export async function POST(request: Request) {
       clusterSlug,
       model,
       thinking,
+      reasoningEffort,
       attachments,
       selectedDocumentSlugs,
       activeMarkdown,
@@ -281,7 +248,8 @@ export async function POST(request: Request) {
     const chatAttachments: Attachment[] = Array.isArray(attachments) ? attachments : [];
     const selectedSourceSlugs = parseSelectedDocumentSlugs(selectedDocumentSlugs);
     const activeMarkdownContext = parseActiveMarkdownContext(activeMarkdown);
-    const thinkingEnabled = Boolean(thinking);
+    const selectedReasoningEffort = normalizeAssistantReasoningEffort(reasoningEffort, thinking);
+    const thinkingEnabled = selectedReasoningEffort !== 'none';
 
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
@@ -290,41 +258,22 @@ export async function POST(request: Request) {
 
     const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
     const lastUserMessage = [...chatMessages].reverse().find((message) => message.role === 'user');
-    const queryWords = tokenize(lastUserMessage?.content ?? '');
 
-    const selectedSlugs = new Set<string>();
     const selectedFocusSlugs = new Set<string>();
     for (const slug of selectedSourceSlugs) {
-      selectedSlugs.add(slug);
       selectedFocusSlugs.add(slug);
       for (const edge of knowledge.edges) {
         if (edge.source === slug) {
-          selectedSlugs.add(edge.target);
           selectedFocusSlugs.add(edge.target);
         }
         if (edge.target === slug) {
-          selectedSlugs.add(edge.source);
           selectedFocusSlugs.add(edge.source);
         }
       }
       for (const node of knowledge.nodes) {
         if (node.sourceDocument === slug) {
-          selectedSlugs.add(node.slug);
           selectedFocusSlugs.add(node.slug);
         }
-      }
-    }
-
-    const scored = knowledge.nodes
-      .map((node) => ({ node, score: scoreNode(node, queryWords) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
-
-    for (const { node } of scored) selectedSlugs.add(node.slug);
-    for (const { node } of scored.slice(0, 3)) {
-      for (const edge of knowledge.edges) {
-        if (edge.source === node.slug) selectedSlugs.add(edge.target);
-        if (edge.target === node.slug) selectedSlugs.add(edge.source);
       }
     }
 
@@ -334,44 +283,32 @@ export async function POST(request: Request) {
     const selectedDocumentNodes = knowledge.nodes.filter((node) =>
       selectedFocusSlugs.has(node.slug),
     );
-    const scoredNodes = knowledge.nodes.filter(
-      (node) =>
-        selectedSlugs.has(node.slug) &&
-        !selectedDocumentNodes.some((selected) => selected.slug === node.slug),
-    );
-    const selectedNodes = [
-      ...selectedDocumentNodes,
-      ...scoredNodes,
-    ].slice(0, selectedSourceSlugs.length > 0 ? 18 : 8);
+    const retrieval = await retrieveGraphRag({
+      query: [
+        lastUserMessage?.content ?? '',
+        selectedSourceNodes.length > 0
+          ? `Selected documents: ${selectedSourceNodes.map((node) => node.title).join(', ')}`
+          : '',
+      ].filter(Boolean).join('\n'),
+      gardens: [{
+        slug: cluster.slug,
+        name: cluster.name,
+        rootPath: path.join(contentPath, cluster.slug),
+        knowledge,
+      }],
+      maxChunks: selectedSourceSlugs.length > 0 ? 12 : 8,
+    });
+    const retrievedNodes = retrieval.chunks
+      .map((chunk) => knowledge.nodes.find((node) => node.relPath === chunk.pageRelPath))
+      .filter((node): node is KnowledgeNode => Boolean(node));
+    const selectedNodes = [...new Map(
+      [...selectedDocumentNodes, ...retrievedNodes].map((node) => [node.slug, node]),
+    ).values()];
 
     const graphContext = [
       `Cluster graph summary: ${knowledge.stats.documents} source documents, ${knowledge.stats.topics} extracted topics, ${knowledge.stats.links} links.`,
-      ...knowledge.tree.map(
-        ({ source, topics }) =>
-          `Source "${source.title}" connects to: ${topics.map((topic) => topic.title).join(', ') || 'no extracted topics yet'}.`,
-      ),
     ].join('\n');
-
-    const clusterInventory = truncate(
-      knowledge.nodes
-        .filter((node) => node.type !== 'cluster-index')
-        .map(describeInventoryNode)
-        .join('\n'),
-      12000,
-    );
-
-    const notesContext = selectedNodes
-      .map((node) => {
-        const locations = node.locations.length > 0 ? node.locations.join(', ') : 'not specified';
-        return [
-          `# ${node.title}`,
-          `Type: ${node.type}`,
-          `Source file: ${node.sourceFile || node.fileName}`,
-          `Locations: ${locations}`,
-          truncate(node.content, 7000),
-        ].join('\n');
-      })
-      .join('\n\n---\n\n');
+    const notesContext = retrieval.context || 'No grounded chunk matched this query.';
 
     const selectedDocumentContext =
       selectedSourceNodes.length > 0
@@ -394,7 +331,7 @@ export async function POST(request: Request) {
       'use $...$ for inline math (e.g. $|\\Psi|^2$, $e^{i(kx-\\omega t)}$, $E = mc^2$) ' +
       'and $$...$$ on its own line for display/block equations. ' +
       'Never write math in plain text with ^ or bracket notation - always use proper LaTeX.\n\n' +
-      `${graphContext}${selectedDocumentContext}${activeMarkdownPromptContext}\n\nCluster inventory:\n\n${clusterInventory}\n\nRelevant textbook pages:\n\n${notesContext}`;
+      `${graphContext}${selectedDocumentContext}${activeMarkdownPromptContext}\n\nGraphRAG-lite retrieved evidence (BM25, aliases, optional embeddings, and bounded one-hop relationships):\n\n${notesContext}`;
 
     const urlLinkContext = await buildUrlLinkContext(chatMessages);
     if (urlLinkContext.context) {
@@ -432,7 +369,7 @@ export async function POST(request: Request) {
       ...(thinkingEnabled
         ? {
             reasoning: {
-              effort: 'high' as const,
+              effort: selectedReasoningEffort,
               summary: 'auto' as const,
             },
           }

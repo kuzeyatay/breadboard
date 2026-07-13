@@ -60,10 +60,10 @@
     <description><![CDATA[ 1. ]]></description>
     <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
   </item><item>
-    <title>3.1 Classification Accuracy</title>
-    <link>https://localhost:8081/test-2/learning/3.-How-Performance-Is-Evaluated/3.1-Classification-Accuracy</link>
-    <guid>https://localhost:8081/test-2/learning/3.-How-Performance-Is-Evaluated/3.1-Classification-Accuracy</guid>
-    <description><![CDATA[ Imagine a spiking neural network receiving 100 recordings of hand gestures. ]]></description>
+    <title>2.1 How SNNs Learn</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/2.1-How-SNNs-Learn</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/2.1-How-SNNs-Learn</guid>
+    <description><![CDATA[ How SNNs Learn Once a spiking neuron has integrated its inputs and emitted a spike, the network still faces the familiar training problem: its connections must change so that future outputs better match the desired behavior. ]]></description>
     <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
   </item>
     </channel>

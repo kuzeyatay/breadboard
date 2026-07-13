@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
+import { startNavigationProgress } from "@/app/components/navigation-progress";
 import {
   useCallback,
   useEffect,
@@ -825,6 +826,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
       if (!saved) return;
     }
 
+    startNavigationProgress();
     router.push(`/gardens/${clusterSlug}`);
   }, [clusterSlug, router, saveEditedPdfToServer, saveState]);
 

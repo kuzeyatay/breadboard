@@ -12,17 +12,23 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
+import AssistantComposer from "@/app/components/assistant-composer";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import LearnErrorDialog from "@/app/components/learn-error-dialog";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
 import UsageLimitsPopover from "@/app/components/usage-limits-popover";
+import { startNavigationProgress } from "@/app/components/navigation-progress";
 import {
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
   mergeAssistantModels,
 } from "@/lib/ai-models";
+import {
+  DEFAULT_ASSISTANT_REASONING_EFFORT,
+  type AssistantReasoningEffort,
+} from "@/lib/assistant-reasoning";
 import {
   forgetDismissedLearnErrorsForGarden,
   learnErrorDismissalKey,
@@ -837,8 +843,10 @@ export default function WorkspaceClient({
     string[]
   >(() => loadDismissedLearnErrorKeys());
 
-  // Thinking mode
-  const [thinkingMode, setThinkingMode] = useState(false);
+  // Reasoning effort
+  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
+    DEFAULT_ASSISTANT_REASONING_EFFORT,
+  );
 
   // Prompts
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
@@ -860,7 +868,6 @@ export default function WorkspaceClient({
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [showModelPicker, setShowModelPicker] = useState(false);
   const canViewPublicChats =
     isOwner && clusterVisibility === "public" && chatAccessible;
   const canForkCluster =
@@ -1709,6 +1716,7 @@ export default function WorkspaceClient({
     try {
       const forked = await forkCluster(clusterSlug);
       addToast("Forked into your private gardens", "success");
+      startNavigationProgress();
       router.push(`/gardens/${forked.slug}`);
       router.refresh();
     } catch (err) {
@@ -2131,7 +2139,7 @@ export default function WorkspaceClient({
           ),
           clusterSlug,
           model,
-          thinking: thinkingMode,
+          reasoningEffort,
           attachments: pendingAttachments,
           selectedDocumentSlugs,
         }),
@@ -4371,67 +4379,6 @@ export default function WorkspaceClient({
               </div>
             )}
 
-            {chatAttachments.length > 0 && (
-              <div className="max-w-5xl mx-auto mb-2 flex flex-wrap gap-1.5">
-                {chatAttachments.map((a, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-1.5 px-2.5 py-1 bg-gray-800 border border-gray-700 rounded-lg text-xs text-gray-300 max-w-[200px]"
-                  >
-                    {a.type === "image" ? (
-                      <svg
-                        className="w-3 h-3 shrink-0 text-blue-400"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.5}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
-                        />
-                      </svg>
-                    ) : (
-                      <svg
-                        className="w-3 h-3 shrink-0 text-gray-500"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.5}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                        />
-                      </svg>
-                    )}
-                    <span className="truncate">{a.name}</span>
-                    <button
-                      onClick={() => removeChatAttachment(i)}
-                      className="shrink-0 text-gray-600 hover:text-white transition-colors"
-                    >
-                      <svg
-                        className="w-3 h-3"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M6 18 18 6M6 6l12 12"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Hidden file input for chat attachments */}
             <input
               ref={chatFileInputRef}
               type="file"
@@ -4441,254 +4388,61 @@ export default function WorkspaceClient({
               className="hidden"
             />
 
-            <div className="max-w-5xl mx-auto flex items-end gap-2">
-              {/* Prompts button */}
-              <button
-                onClick={() => {
-                  setShowPrompts((v) => !v);
-                  setPromptSearch("");
-                  setPromptCategory("All");
-                }}
-                title="Prompt library"
-                className={[
-                  "shrink-0 w-9 h-9 flex items-center justify-center rounded-lg border transition-colors",
-                  showPrompts
-                    ? "text-amber-400 bg-amber-950/30 border-amber-800/50"
-                    : "text-gray-600 hover:text-gray-300 hover:bg-gray-800 border-transparent hover:border-gray-700",
-                ].join(" ")}
-              >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.5}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z"
-                  />
-                </svg>
-              </button>
-
-              {/* Attachment button — attaches to THIS message only */}
-              <button
-                onClick={() => chatFileInputRef.current?.click()}
-                disabled={isStreaming || extractingAttachments}
-                title="Attach file to this message"
-                className={[
-                  "shrink-0 w-9 h-9 flex items-center justify-center rounded-lg border transition-colors",
-                  chatAttachments.length > 0
-                    ? "text-blue-400 bg-blue-950/30 border-blue-800/50"
-                    : "text-gray-600 hover:text-gray-300 hover:bg-gray-800 border-transparent hover:border-gray-700",
-                  "disabled:opacity-40",
-                ].join(" ")}
-              >
-                {extractingAttachments ? (
-                  <Spinner className="w-4 h-4" />
-                ) : (
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13"
-                    />
-                  </svg>
-                )}
-              </button>
-
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onPaste={handleChatPaste}
-                rows={1}
-                placeholder="Ask about your documents…"
-                disabled={isStreaming || loadingChats}
-                className="flex-1 resize-none bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500 transition-colors disabled:opacity-50 max-h-40 overflow-y-auto"
-                style={{ fieldSizing: "content" } as React.CSSProperties}
-              />
-              <button
-                onClick={handleSubmit}
-                disabled={
-                  isStreaming ||
-                  loadingChats ||
-                  (!input.trim() && chatAttachments.length === 0)
-                }
-                className="shrink-0 w-9 h-9 flex items-center justify-center bg-gray-100 text-gray-950 rounded-full hover:bg-white transition-colors disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed"
-                aria-label="Send"
-              >
-                {isStreaming ? (
-                  <svg
-                    className="w-4 h-4 animate-spin"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                    />
-                  </svg>
-                ) : (
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M4.5 12h15m0 0-6-6m6 6-6 6"
-                    />
-                  </svg>
-                )}
-              </button>
-            </div>
-
-            {/* Toolbar */}
-            <div className="max-w-5xl mx-auto mt-2 flex items-center justify-between">
-              <p className="text-xs text-gray-700">
-                Enter to send · Shift+Enter for new line
-              </p>
-              <div className="flex items-center gap-1.5">
-                {/* Usage limits */}
-                <UsageLimitsPopover />
-
-                {/* Thinking toggle */}
-                <button
-                  onClick={() => setThinkingMode((v) => !v)}
-                  title="Extended thinking — AI reasons step by step before answering"
-                  className={[
-                    "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-colors border",
-                    thinkingMode
-                      ? "text-purple-400 border-purple-800/60 bg-purple-950/30 hover:bg-purple-950/50"
-                      : "text-gray-600 border-transparent hover:text-gray-300 hover:bg-gray-800",
-                  ].join(" ")}
-                >
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.5}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 18v-5.25m0 0a6.01 6.01 0 0 0 1.5-.189m-1.5.189a6.01 6.01 0 0 1-1.5-.189m3.75 7.478a12.06 12.06 0 0 1-4.5 0m3.75 2.383a14.406 14.406 0 0 1-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 1 0-7.517 0c.85.493 1.509 1.333 1.509 2.316V18"
-                    />
-                  </svg>
-                  Think
-                </button>
-
-                {/* Model picker */}
-                <div className="relative">
+            <AssistantComposer
+              className="mx-auto w-full max-w-5xl"
+              value={input}
+              onChange={setInput}
+              onSubmit={handleSubmit}
+              onKeyDown={handleKeyDown}
+              onPaste={handleChatPaste}
+              textareaRef={textareaRef}
+              textareaStyle={{ fieldSizing: "content" } as React.CSSProperties}
+              placeholder="Ask about your documents…"
+              disabled={isStreaming || loadingChats}
+              isSending={isStreaming}
+              canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
+              model={model}
+              models={models}
+              modelsLoading={modelsLoading}
+              onLoadModels={() => void loadModels()}
+              onModelChange={setModel}
+              reasoningEffort={reasoningEffort}
+              onReasoningEffortChange={setReasoningEffort}
+              onAddDocuments={() => chatFileInputRef.current?.click()}
+              isAddingDocuments={extractingAttachments}
+              attachments={chatAttachments}
+              onRemoveAttachment={removeChatAttachment}
+              utilityActions={
+                <>
                   <button
+                    type="button"
                     onClick={() => {
-                      const next = !showModelPicker;
-                      setShowModelPicker(next);
-                      if (next) void loadModels();
+                      setShowPrompts((value) => !value);
+                      setPromptSearch("");
+                      setPromptCategory("All");
                     }}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors border border-transparent hover:border-gray-700"
+                    className={`flex h-11 w-11 items-center justify-center rounded-full transition ${
+                      showPrompts
+                        ? "bg-[var(--paper-strong)] text-[#8a6f00]"
+                        : "text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
+                    }`}
+                    title="Prompt library"
+                    aria-label="Prompt library"
                   >
-                    <svg
-                      className="w-3 h-3"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={1.5}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 0 0 2.25-2.25V6.75a2.25 2.25 0 0 0-2.25-2.25H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25Zm.75-12h9v9h-9v-9Z"
-                      />
-                    </svg>
-                    {model}
-                    <svg
-                      className="w-3 h-3"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="m19.5 8.25-7.5 7.5-7.5-7.5"
-                      />
+                    <svg className="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
                     </svg>
                   </button>
-
-                  {showModelPicker && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-10"
-                        onClick={() => setShowModelPicker(false)}
-                      />
-                      <div className="absolute bottom-full right-0 mb-1.5 z-20 min-w-48 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden py-1">
-                        {modelsLoading && (
-                          <div className="px-3 py-2 text-xs text-gray-500">
-                            Loading models...
-                          </div>
-                        )}
-                        {models.map((m) => (
-                          <button
-                            key={m}
-                            onClick={() => {
-                              setModel(m);
-                              setShowModelPicker(false);
-                            }}
-                            className={[
-                              "w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between gap-3",
-                              m === model
-                                ? "text-white bg-gray-800"
-                                : "text-gray-400 hover:text-white hover:bg-gray-800",
-                            ].join(" ")}
-                          >
-                            {m}
-                            {m === model && (
-                              <svg
-                                className="w-3.5 h-3.5 text-white shrink-0"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                                strokeWidth={2.5}
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  d="m4.5 12.75 6 6 9-13.5"
-                                />
-                              </svg>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+                  <UsageLimitsPopover
+                    buttonClassName="flex h-11 items-center justify-center gap-1.5 rounded-full px-3 text-xs transition"
+                    activeButtonClassName="bg-[var(--paper-strong)] text-[var(--botanical)]"
+                    inactiveButtonClassName="text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
+                    popoverClassName="absolute bottom-full right-0 z-20 mb-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-4 text-xs text-[var(--ink)] shadow-2xl"
+                    light
+                  />
+                </>
+              }
+            />
           </div>
         </div>
 

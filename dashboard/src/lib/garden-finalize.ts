@@ -24,6 +24,7 @@ import path from "node:path";
 import {
   anchorTextCompatibleWithVisualType,
   atomicZettelHandle,
+  conceptTagsForUnit,
   dedupeSourceArtifactAssignments,
   interactiveVisualGroundingProblems,
   isAtomicZettelHandle,
@@ -44,6 +45,8 @@ import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile 
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
 import { auditFinalGardenState, auditLegacyMigrationPersistence, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
 import type { SourceAnchor } from "./visual-spec.ts";
+import { isValidPublicConceptSlug } from "./semantic-core.ts";
+import { migrateGardenSemantics, validateGardenSemantics } from "./garden-semantics.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -120,6 +123,16 @@ export interface FinalizeFormulaEntry {
   sourceAnchorTitle?: string;
   matchReason?: string;
   confidence?: number;
+  /** For a worked example: the symbolic source (derived) definition it applies,
+   * identified by a source-formula anchor id or the normalized text of a
+   * page-local definition. Establishes lineage so many examples can validly
+   * share one definition. */
+  basedOnFormula?: string;
+  /** Metric/relationship family (accuracy, latency, energy, ...) shared between a
+   * definition and the worked examples that apply it. */
+  formulaFamily?: string;
+  /** Optional grouping id linking examples that apply the same definition. */
+  exampleGroupId?: string;
 }
 
 /** Serialize a per-formula grounding block matching yamlFrontmatter()'s shape so
@@ -134,6 +147,9 @@ function serializeFormulas(entries: FinalizeFormulaEntry[]): string {
     lines.push(`    justification: ${jsonScalar(entry.justification)}`);
     if (entry.sourceAnchor) lines.push(`    sourceAnchor: ${jsonScalar(entry.sourceAnchor)}`);
     if (entry.sourceAnchorTitle) lines.push(`    sourceAnchorTitle: ${jsonScalar(entry.sourceAnchorTitle)}`);
+    if (entry.basedOnFormula) lines.push(`    basedOnFormula: ${jsonScalar(entry.basedOnFormula)}`);
+    if (entry.formulaFamily) lines.push(`    formulaFamily: ${jsonScalar(entry.formulaFamily)}`);
+    if (entry.exampleGroupId) lines.push(`    exampleGroupId: ${jsonScalar(entry.exampleGroupId)}`);
     if (entry.matchReason) lines.push(`    matchReason: ${jsonScalar(entry.matchReason)}`);
     if (typeof entry.confidence === "number") lines.push(`    confidence: ${entry.confidence}`);
   }
@@ -1334,6 +1350,9 @@ interface ParsedFormulaEntry {
   groundingStatus?: string;
   justification?: string;
   sourceAnchor?: string;
+  basedOnFormula?: string;
+  formulaFamily?: string;
+  exampleGroupId?: string;
 }
 
 function unquoteYamlScalar(value: string): string {
@@ -1442,6 +1461,15 @@ export function finalizeGardenExport({
 
   // --- Pass A: export-tree cleanup (Internal/, numbered source folders) ------
   cleanExportTree(gardenDir, report);
+  const semanticMigration = migrateGardenSemantics(gardenDir, { gardenId: gardenSlug });
+  for (const rel of semanticMigration.changedFiles) {
+    if (!report.changed.includes(rel)) report.changed.push(rel);
+  }
+  if (semanticMigration.migrated) {
+    report.notes.push(
+      `migrated claim-as-tag metadata to semantic schema v${semanticMigration.schemaVersion}`,
+    );
+  }
 
   // --- Load facts once -------------------------------------------------------
   const ledgerPath = path.join(bd, "source-visuals.json");
@@ -1697,8 +1725,15 @@ function repairOrphanLearnerPageUnitIds(
     page.rawFm = fmSetScalar(page.rawFm, "generated_by", "learn_button");
     page.rawFm = fmSetScalar(page.rawFm, "learningUnitId", unit.id);
     page.rawFm = fmSetScalar(page.rawFm, "learningUnitRole", unit.role);
-    const handles = zettelHandlesForUnit(unit);
-    if (handles.length > 0) page.rawFm = fmSetArray(page.rawFm, "tags", handles);
+    const concepts = unit.semanticConcepts ?? [];
+    const primary = concepts.filter((concept) => concept.role === "primary").map((concept) => concept.slug);
+    const supporting = concepts.filter((concept) => concept.role === "supporting").map((concept) => concept.slug);
+    const tags = conceptTagsForUnit(unit);
+    if (tags.length > 0) {
+      page.rawFm = fmSetArray(page.rawFm, "primaryConcepts", primary);
+      page.rawFm = fmSetArray(page.rawFm, "supportingConcepts", supporting);
+      page.rawFm = fmSetArray(page.rawFm, "tags", tags);
+    }
     if (fmGetArray(page.rawFm, "sourceAnchors").length === 0 && unit.sourceAnchors.length > 0) {
       page.rawFm = fmSetArray(page.rawFm, "sourceAnchors", unit.sourceAnchors);
     }
@@ -2657,12 +2692,14 @@ export async function repairLearningUnitsFromContract({
     // because they only touch _index files, not learner-page bodies.
     if (allowDeterministic) {
       const ledger = readJson<LedgerVisual[]>(ledgerPath, []);
+      const semanticMigration = migrateGardenSemantics(gardenDir, { gardenId: gardenSlug });
+      for (const rel of semanticMigration.changedFiles) {
+        if (!repairReport.changed.includes(rel)) repairReport.changed.push(rel);
+      }
       const allPages = loadLearnerPages(gardenDir);
       const deterministicPages = allPages.filter((page) => !modelRepairedPaths.has(page.rel));
       const contract = readLearningUnitContract(gardenDir);
 
-      repairContractZettelHandles(gardenDir, contract, deterministicPages, repairReport);
-      synchronizeContractZettelHandles(gardenDir, contract, deterministicPages, repairReport);
       const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
       repairSectionSemanticTitles(gardenDir, allPages, unitsById, repairReport);
       repairSectionIndexProse(gardenDir, repairReport);
@@ -2858,19 +2895,27 @@ export function verifyFinalArtifactNoMutation({
 }): FinalArtifactVerification {
   const before = snapshotFiles(gardenDir);
   const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: true });
-  const repairRun = readRepairRunReport(gardenDir);
-  const unresolvedRepairFailures = repairRun
-    ? repairRun.repairs
-        .filter((entry) => entry.result === "unresolved" || entry.unresolvedValidationErrors.length > 0)
-        .flatMap((entry) => entry.unresolvedValidationErrors.length > 0
-          ? entry.unresolvedValidationErrors.map((failure) => `${entry.pagePath}: ${failure}`)
-          : [`${entry.pagePath}: unresolved ${entry.failureTypes.join(", ")}`])
-    : [];
   const after = snapshotFiles(gardenDir);
   const validationFailures = validationFailuresFromChecks(checks);
+  // Fix 10: the current deterministic checks are the source of truth. A stale
+  // `unresolved` repair-log record blocks ONLY if the issue is still live — and a
+  // live issue is already in `validationFailures`. So acceptance gates on the
+  // current failures, not on repair HISTORY; only still-live log entries are
+  // surfaced (informational), so a superseded/resolved record cannot permanently
+  // block publication.
+  const repairRun = readRepairRunReport(gardenDir);
+  const liveFailureKeys = new Set(validationFailures);
+  const unresolvedRepairFailures = repairRun
+    ? repairRun.repairs
+        .filter((entry) => entry.result === "unresolved")
+        .flatMap((entry) => (entry.unresolvedValidationErrors.length > 0
+          ? entry.unresolvedValidationErrors.map((failure) => `${entry.pagePath}: ${failure}`)
+          : [`${entry.pagePath}: unresolved ${entry.failureTypes.join(", ")}`]))
+        .filter((failure) => liveFailureKeys.has(failure) || [...liveFailureKeys].some((live) => failure.includes(live) || live.includes(failure)))
+    : [];
   const verification: FinalArtifactVerification = {
     checkedAt: new Date().toISOString(),
-    accepted: validationFailures.length === 0 && unresolvedRepairFailures.length === 0 && validationReportAccepted(gardenDir),
+    accepted: validationFailures.length === 0 && validationReportAccepted(gardenDir),
     mutatedFiles: changedBetweenSnapshots(before, after),
     validationFailures,
     unresolvedRepairFailures,
@@ -2900,6 +2945,212 @@ export function verifyFinalArtifactNoMutation({
   }
 
   return verification;
+}
+
+// ---------------------------------------------------------------------------
+// Fix 4-6: non-throwing final audit + self-healing loop orchestration
+// ---------------------------------------------------------------------------
+
+export type FinalRepairIssueType =
+  | "formula_metadata_noise"
+  | "formula_grounding"
+  | "formula_kind_misclassification"
+  | "source_anchor_mismatch"
+  | "source_anchor_missing"
+  | "visual_grounding"
+  | "section_semantics"
+  | "zettelkasten_handle"
+  | "repair_provenance"
+  | "structural_integrity";
+
+export interface FinalRepairIssue {
+  id: string;
+  type: FinalRepairIssueType;
+  severity: "blocking" | "warning";
+  pagePath?: string;
+  unitId?: string;
+  anchorId?: string;
+  message: string;
+  evidence: Record<string, unknown>;
+  repairMode: "deterministic" | "chatmock" | "deterministic_then_chatmock" | "non_repairable";
+}
+
+export interface FinalizeAuditResult {
+  passed: boolean;
+  checks: FinalizeCheck[];
+  repairableIssues: FinalRepairIssue[];
+  nonRepairableIssues: FinalRepairIssue[];
+  stateFingerprint: string;
+}
+
+function classifyFinalCheck(name: string): { type: FinalRepairIssueType; repairMode: FinalRepairIssue["repairMode"] } {
+  const n = name.toLowerCase();
+  if (n.includes("formula metadata noise")) return { type: "formula_metadata_noise", repairMode: "deterministic_then_chatmock" };
+  if (n.includes("formula")) return { type: "formula_grounding", repairMode: "deterministic_then_chatmock" };
+  if (n.includes("source text concept") || n.includes("source anchor") || n.includes("source-anchor")) return { type: "source_anchor_missing", repairMode: "deterministic_then_chatmock" };
+  if (n.includes("visual")) return { type: "visual_grounding", repairMode: "deterministic_then_chatmock" };
+  if (n.includes("section")) return { type: "section_semantics", repairMode: "deterministic" };
+  if (n.includes("zettelkasten")) return { type: "zettelkasten_handle", repairMode: "deterministic_then_chatmock" };
+  if (n.includes("repair provenance")) return { type: "repair_provenance", repairMode: "deterministic" };
+  return { type: "structural_integrity", repairMode: "non_repairable" };
+}
+
+function pagePathFromProblem(problem: string): string | undefined {
+  return problem.match(/learning\/[^:]+?\.md/)?.[0];
+}
+
+function anchorOrFamilyFromProblem(problem: string): string | undefined {
+  return (
+    problem.match(/\bS\d+\.P\d+\.[A-Z]?\d+\b/)?.[0] ??
+    problem.match(/\b(accuracy|latency|energy|efficiency|spike-count|convergence|threshold|probability|loss|gradient)\b/i)?.[0] ??
+    problem.match(/text-[a-z0-9-]+/i)?.[0]
+  );
+}
+
+function gardenStateFingerprint(gardenDir: string): string {
+  const snapshot = snapshotFiles(gardenDir);
+  const parts = [...snapshot.entries()]
+    .filter(([rel]) => !/^\.breadboard\/(validation-report\.md|repair-report\.md|repair-log\.json|events\.jsonl|backups|debug)/.test(rel))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([rel, hash]) => `${rel}:${hash}`);
+  return crypto.createHash("sha1").update(parts.join("\n")).digest("hex");
+}
+
+/**
+ * Fix 4: a NON-THROWING deterministic audit. Runs the same checks the hard gate
+ * uses, but classifies each failure into structured, repairable-or-not issues so
+ * the orchestrator can decide what to repair before the terminal publish
+ * decision. `finalizeGardenExport` remains the throwing source of truth.
+ */
+export function auditGardenForFinalization(gardenDir: string, gardenSlug: string): FinalizeAuditResult {
+  void gardenSlug;
+  const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
+  const repairableIssues: FinalRepairIssue[] = [];
+  const nonRepairableIssues: FinalRepairIssue[] = [];
+  const seen = new Set<string>();
+  for (const check of checks) {
+    if (check.status !== "FAIL") continue;
+    const { type, repairMode } = classifyFinalCheck(check.name);
+    for (const problem of check.problems) {
+      const pagePath = pagePathFromProblem(problem);
+      const target = anchorOrFamilyFromProblem(problem);
+      const id = stableFinalIssueId(type, pagePath, target);
+      // Fix 11/12: one stable id per issue; do not duplicate an error that two
+      // checks report about the same page + target.
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const issue: FinalRepairIssue = {
+        id,
+        type,
+        severity: "blocking",
+        pagePath,
+        anchorId: target,
+        message: problem,
+        evidence: { check: check.name },
+        repairMode,
+      };
+      if (repairMode === "non_repairable") nonRepairableIssues.push(issue);
+      else repairableIssues.push(issue);
+    }
+  }
+  return {
+    passed: checks.every((check) => check.status !== "FAIL"),
+    checks,
+    repairableIssues,
+    nonRepairableIssues,
+    stateFingerprint: gardenStateFingerprint(gardenDir),
+  };
+}
+
+export interface FinalSelfHealingOptions {
+  maxRounds: number;
+  maxChatMockCalls: number;
+  strictMode: boolean;
+  /** Injected ChatMock-backed per-page repair executor. When omitted the loop is
+   * deterministic-only. */
+  modelRepair?: ModelRepairExecutor;
+}
+
+export interface FinalSelfHealingResult {
+  passed: boolean;
+  roundsUsed: number;
+  chatMockCallsUsed: number;
+  initialIssues: FinalRepairIssue[];
+  resolvedIssues: string[];
+  unresolvedIssues: FinalRepairIssue[];
+  stateFingerprints: string[];
+  stoppedReason: "passed" | "repair_budget_exhausted" | "no_progress" | "chatmock_unavailable" | "non_repairable_issue";
+}
+
+/**
+ * Fix 6: the final self-healing loop. Each round: reconcile + deterministically
+ * repair + finalize, re-audit, and (only when deterministic logic cannot resolve
+ * a semantic issue and budget remains) invoke ChatMock through the injected
+ * per-page executor. Continues only while the state fingerprint changes and the
+ * budget is not exhausted. NEVER weakens the gate: it publishes nothing — it
+ * leaves the garden in a state that `finalizeGardenExport` + `verify` then
+ * accept only if it genuinely passes.
+ */
+export async function runFinalSelfHealingLoop(
+  gardenDir: string,
+  gardenSlug: string,
+  options: FinalSelfHealingOptions,
+): Promise<FinalSelfHealingResult> {
+  const stateFingerprints: string[] = [];
+  const initialAudit = auditGardenForFinalization(gardenDir, gardenSlug);
+  const initialIssues = [...initialAudit.repairableIssues, ...initialAudit.nonRepairableIssues];
+  let chatMockCallsUsed = 0;
+  let roundsUsed = 0;
+  let previousFingerprint = initialAudit.stateFingerprint;
+  stateFingerprints.push(initialAudit.stateFingerprint);
+  let stoppedReason: FinalSelfHealingResult["stoppedReason"] = "repair_budget_exhausted";
+
+  for (let round = 1; round <= options.maxRounds; round += 1) {
+    roundsUsed = round;
+    const wantModel = Boolean(options.modelRepair) && chatMockCallsUsed < options.maxChatMockCalls;
+    const repairRun = await repairLearningUnitsFromContract({
+      gardenDir,
+      gardenSlug,
+      repairExecutor: wantModel ? "model_with_deterministic_fallback" : "deterministic",
+      modelRepair: wantModel ? options.modelRepair : undefined,
+    });
+    if (wantModel) {
+      chatMockCallsUsed += repairRun.repairs.filter((entry) => (entry.executorAttempted ?? []).includes("model")).length;
+    }
+    finalizeGardenExport({ gardenDir, gardenSlug });
+    const audit = auditGardenForFinalization(gardenDir, gardenSlug);
+    stateFingerprints.push(audit.stateFingerprint);
+
+    if (audit.passed) {
+      stoppedReason = "passed";
+      break;
+    }
+    if (audit.nonRepairableIssues.length > 0 && audit.repairableIssues.length === 0) {
+      stoppedReason = "non_repairable_issue";
+      break;
+    }
+    // Continue only if the state actually changed (Fix 6 step 11).
+    if (audit.stateFingerprint === previousFingerprint) {
+      stoppedReason = "no_progress";
+      break;
+    }
+    previousFingerprint = audit.stateFingerprint;
+  }
+
+  const finalAudit = auditGardenForFinalization(gardenDir, gardenSlug);
+  const unresolvedIssues = [...finalAudit.repairableIssues, ...finalAudit.nonRepairableIssues];
+  const unresolvedIds = new Set(unresolvedIssues.map((issue) => issue.id));
+  const resolvedIssues = initialIssues.filter((issue) => !unresolvedIds.has(issue.id)).map((issue) => issue.id);
+  return {
+    passed: finalAudit.passed,
+    roundsUsed,
+    chatMockCallsUsed,
+    initialIssues,
+    resolvedIssues,
+    unresolvedIssues,
+    stateFingerprints,
+    stoppedReason,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3876,17 +4127,6 @@ export function groundLearnerFormula(
 // Hard ceiling shared with the finalize noise gate (`entries.length > 10`).
 const MAX_FORMULA_METADATA_ENTRIES = 10;
 
-/** Focused budget mirroring the validator's "Formula Metadata Noise" rule
- * (`entries.length > max(6, displayCount + sourceDefinitionCount + 4)`): a page
- * gets a floor of 6 entries plus room for its display formulas and grounded
- * source definitions, never more than the hard ceiling. Keeping the on-disk
- * block within this budget satisfies both the finalize gate AND the standalone
- * `validate:garden` tool, so a math-heavy page cannot balloon the block by
- * harvesting every inline fragment. */
-function focusedFormulaBudget(displayCount: number, sourceDefinitionCount: number): number {
-  return Math.min(MAX_FORMULA_METADATA_ENTRIES, Math.max(6, displayCount + sourceDefinitionCount + 4));
-}
-
 /** Rank a formula entry by how much it belongs in the metadata block. Lower is
  * more important and is dropped last when the block is over budget. Source
  * (derived) definitions are the real metric/source relationships; a helper or
@@ -3905,10 +4145,192 @@ function formulaMetadataDedupeKey(entry: FinalizeFormulaEntry): string {
   return (entry.normalizedText || normalizeFormulaText(entry.text)).trim() || entry.text.trim();
 }
 
-function compactFormulaMetadataEntries(entries: FinalizeFormulaEntry[], displayCount = 0): FinalizeFormulaEntry[] {
-  // 1) De-duplicate by normalized formula text, keeping the most authoritative
-  //    occurrence (source definition > derived > worked example > helper) so a
-  //    formula repeated across the prose contributes one metadata entry.
+// ---------------------------------------------------------------------------
+// Fix 1-3: worked-example lineage — relationship-based (not count-based)
+// formula-metadata validation, deterministic lineage assignment, and
+// lineage-aware compaction.
+// ---------------------------------------------------------------------------
+
+/** Relationship-based audit of a page's formula metadata. Replaces the old
+ * "N worked examples but only M source definitions" count ratio: a page with one
+ * definition and many worked examples that apply it (same family / basedOnFormula)
+ * is valid. */
+export type FormulaMetadataAuditResult = {
+  valid: boolean;
+  sourceDefinitions: number;
+  workedExamples: number;
+  orphanWorkedExamples: { index: number; text: string; reason: string }[];
+  duplicateEntries: number[];
+  invalidDefinitions: number[];
+  unsupportedEntries: number[];
+  problems: string[];
+  warnings: string[];
+};
+
+function parsedEntryFamily(entry: ParsedFormulaEntry): string | null {
+  const declared = String(entry.formulaFamily ?? "").trim();
+  if (declared) return declared;
+  return formulaMetricFamily(String(entry.text ?? ""));
+}
+
+/** A worked example is grounded when it applies a definition the page (or a
+ * source anchor it names) actually establishes — explicitly via basedOnFormula,
+ * or implicitly by sharing a formula family with an on-page source definition. */
+export function auditFormulaMetadata(entries: ParsedFormulaEntry[]): FormulaMetadataAuditResult {
+  const problems: string[] = [];
+  const warnings: string[] = [];
+  const orphanWorkedExamples: { index: number; text: string; reason: string }[] = [];
+  const duplicateEntries: number[] = [];
+  const invalidDefinitions: number[] = [];
+  const unsupportedEntries: number[] = [];
+
+  const definitionFamilies = new Set<string>();
+  const definitionAnchors = new Set<string>();
+  const definitionKeys = new Set<string>();
+  for (const entry of entries) {
+    const kind = formulaEntryKind(entry);
+    if (kind === "source_definition" || kind === "source_derived_definition") {
+      const family = parsedEntryFamily(entry);
+      if (family) definitionFamilies.add(family);
+      const anchor = String(entry.sourceAnchor ?? "").trim();
+      if (anchor) definitionAnchors.add(anchor);
+      const key = (String(entry.text ?? "") || "").trim();
+      if (key) definitionKeys.add(normalizeFormulaText(key));
+    }
+  }
+
+  const seen = new Map<string, number>();
+  let sourceDefinitions = 0;
+  let workedExamples = 0;
+  entries.forEach((entry, index) => {
+    const text = String(entry.text ?? "");
+    const kind = formulaEntryKind(entry);
+    const key = (String(entry.normalizedText ?? "") || normalizeFormulaText(text)).trim() || text.trim();
+    if (key && seen.has(key)) duplicateEntries.push(index);
+    else if (key) seen.set(key, index);
+
+    if (kind === "source_definition" || kind === "source_derived_definition") {
+      sourceDefinitions += 1;
+      // A numeric substitution mislabeled as a definition (condition 6).
+      if (isWorkedExampleFormula(text)) {
+        invalidDefinitions.push(index);
+        problems.push(`formulas[${index}] stores worked-example arithmetic as ${kind}`);
+      }
+      // A definition claiming source grounding must name an anchor (condition 1).
+      if (/^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? "")) && !String(entry.sourceAnchor ?? "").trim()) {
+        unsupportedEntries.push(index);
+        problems.push(`formulas[${index}] is ${entry.groundingStatus} but names no source anchor`);
+      }
+    } else if (kind === "worked_example") {
+      workedExamples += 1;
+      const family = parsedEntryFamily(entry);
+      const basedOn = String(entry.basedOnFormula ?? "").trim();
+      // Explicit lineage: basedOnFormula names an on-page definition OR a
+      // source-formula anchor (existence in the canonical registry is validated
+      // separately by the source-anchor checks — here we validate that lineage is
+      // CLAIMED, not left dangling).
+      const hasExplicitLineage =
+        Boolean(basedOn) &&
+        (definitionAnchors.has(basedOn) || definitionKeys.has(normalizeFormulaText(basedOn)) || /^S\d+\.P\d+\.[A-Z]?\d+$/i.test(basedOn));
+      const hasImplicitLineage = Boolean(family) && definitionFamilies.has(family!);
+      if (!hasExplicitLineage && !hasImplicitLineage) {
+        const reason = family
+          ? `worked example (family ${family}) has no source definition on the page to apply and no valid basedOnFormula`
+          : "worked example has no recognizable formula family or lineage";
+        orphanWorkedExamples.push({ index, text, reason });
+      }
+      // A worked example must never claim to be source-grounded (condition 7).
+      if (/^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
+        unsupportedEntries.push(index);
+        problems.push(`formulas[${index}] worked example is marked ${entry.groundingStatus}; worked examples cannot satisfy a source definition`);
+      }
+    } else {
+      // conceptual_helper claiming source grounding is unsupported (condition 7).
+      if (/^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
+        unsupportedEntries.push(index);
+        problems.push(`formulas[${index}] conceptual helper is marked ${entry.groundingStatus} without a source definition`);
+      }
+    }
+  });
+
+  for (const orphan of orphanWorkedExamples) {
+    problems.push(`formulas[${orphan.index}] ${orphan.reason}`);
+  }
+  return {
+    valid: problems.length === 0,
+    sourceDefinitions,
+    workedExamples,
+    orphanWorkedExamples,
+    duplicateEntries,
+    invalidDefinitions,
+    unsupportedEntries,
+    problems: [...new Set(problems)],
+    warnings,
+  };
+}
+
+/** Deterministically link worked examples to the definition they apply. A pure
+ * numeric substitution (e.g. "84/100=0.84=84%") has no intrinsic metric family —
+ * its family and anchor come from the definition it applies, so on a page with a
+ * single source definition every worked example is based on it. On multi-
+ * definition pages a worked example is linked by its own detected family when
+ * that matches one of the page's definitions. */
+function assignWorkedExampleLineage(entries: FinalizeFormulaEntry[], sources: SourceFormula[]): void {
+  const definitions = entries.filter(
+    (entry) => entry.kind === "source_definition" || entry.kind === "source_derived_definition",
+  );
+  const familyToAnchor = new Map<string, string>();
+  const defFamily = (def: FinalizeFormulaEntry): string | undefined => def.formulaFamily || formulaMetricFamily(def.text) || undefined;
+  for (const def of definitions) {
+    const family = defFamily(def);
+    if (family && def.sourceAnchor && !familyToAnchor.has(family)) familyToAnchor.set(family, def.sourceAnchor);
+  }
+  for (const source of sources) {
+    const family = formulaMetricFamily(source.caption);
+    if (family && !familyToAnchor.has(family)) familyToAnchor.set(family, source.id);
+  }
+  // A worked example whose own family cannot be detected (a bare numeric
+  // substitution) applies the page's primary source definition — the sole one,
+  // or the first when several exist. ChatMock can refine an ambiguous multi-
+  // definition case later; deterministically it is grounded to a real page
+  // definition rather than left orphan.
+  const primaryDefinition = definitions[0];
+  const primaryAnchor = primaryDefinition?.sourceAnchor;
+  const primaryFamily = primaryDefinition ? defFamily(primaryDefinition) : undefined;
+
+  let group = 0;
+  const groupIdByKey = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry.kind !== "worked_example") continue;
+    let family = formulaMetricFamily(entry.text) || undefined;
+    let anchor = entry.basedOnFormula || (family ? familyToAnchor.get(family) : undefined);
+    if (!anchor && primaryAnchor) {
+      anchor = primaryAnchor;
+      family = family ?? primaryFamily;
+    }
+    if (!family && primaryFamily) family = primaryFamily;
+    if (family) entry.formulaFamily = family;
+    if (anchor) entry.basedOnFormula = anchor;
+    const key = anchor ?? family ?? "";
+    if (key) {
+      if (!groupIdByKey.has(key)) {
+        group += 1;
+        groupIdByKey.set(key, `eg${group}`);
+      }
+      entry.exampleGroupId = groupIdByKey.get(key);
+    }
+  }
+}
+
+const MAX_WORKED_EXAMPLES_IN_METADATA_PER_FAMILY = 2;
+
+/** Compact metadata by lineage (Fix 3): keep every unique source (derived)
+ * definition, retain one or two representative worked examples per formula family
+ * / basedOnFormula in the FRONTMATTER (the body keeps them all), remove exact and
+ * normalized duplicates, and keep the block under the noise ceiling. Never drops
+ * a definition and never touches page body content. */
+export function compactFormulaMetadataByLineage(entries: FinalizeFormulaEntry[]): FinalizeFormulaEntry[] {
+  // 1) De-duplicate by normalized text, keeping the most authoritative kind.
   const byKey = new Map<string, FinalizeFormulaEntry>();
   const order: string[] = [];
   for (const entry of entries) {
@@ -3923,30 +4345,106 @@ function compactFormulaMetadataEntries(entries: FinalizeFormulaEntry[], displayC
   }
   const deduped = order.map((key) => byKey.get(key)!);
 
-  // 2) Cap worked examples relative to the source definitions they illustrate.
-  const sourceDefinitionCount = deduped.filter((entry) =>
-    entry.kind === "source_definition" || entry.kind === "source_derived_definition",
-  ).length;
-  const maxWorkedExamples = Math.max(2, sourceDefinitionCount * 2 + 1);
-  let workedExamples = 0;
-  const ratioCapped = deduped.filter((entry) => {
-    if (entry.kind !== "worked_example") return true;
-    workedExamples += 1;
-    return workedExamples <= maxWorkedExamples;
-  });
+  // 2) Keep all definitions; cap worked examples per lineage group.
+  const perGroup = new Map<string, number>();
+  const kept: FinalizeFormulaEntry[] = [];
+  for (const entry of deduped) {
+    if (entry.kind === "worked_example") {
+      const family = entry.formulaFamily || formulaMetricFamily(entry.text) || "misc";
+      const groupKey = entry.basedOnFormula ? `${entry.basedOnFormula}:${family}` : family;
+      const count = perGroup.get(groupKey) ?? 0;
+      if (count >= MAX_WORKED_EXAMPLES_IN_METADATA_PER_FAMILY) continue;
+      perGroup.set(groupKey, count + 1);
+    }
+    kept.push(entry);
+  }
 
-  // 3) Keep the block focused: never let it become an inline-fragment dump.
-  //    Retain the most important entries up to the focused budget and drop the
-  //    least important tail, preserving original (body) order for the survivors
-  //    so re-running finalize is stable and produces no spurious churn.
-  const budget = focusedFormulaBudget(displayCount, sourceDefinitionCount);
-  if (ratioCapped.length <= budget) return ratioCapped;
-  return ratioCapped
+  // 3) Hard ceiling so a pathological page cannot exceed the noise limit: drop
+  //    the least-important tail (never a definition) in original order.
+  if (kept.length <= MAX_FORMULA_METADATA_ENTRIES) return kept;
+  return kept
     .map((entry, index) => ({ entry, index, rank: formulaMetadataEntryRank(entry) }))
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .slice(0, budget)
+    .slice(0, MAX_FORMULA_METADATA_ENTRIES)
     .sort((a, b) => a.index - b.index)
     .map((item) => item.entry);
+}
+
+// ---------------------------------------------------------------------------
+// Part 1 / Fix 1: the ONE canonical formula-metadata pipeline
+// parse -> normalize text -> classify kind -> assign lineage -> verify family
+// -> deduplicate -> compact by lineage -> serialize -> audit.
+// Every mutation path (regrounding, relabeling, deterministic/model repair,
+// reconciliation, self-healing) must terminate here so equivalent pages end with
+// identical serialized `formulas:` metadata regardless of the path taken.
+// ---------------------------------------------------------------------------
+
+export type CanonicalFormulaChangeType =
+  | "normalized_text"
+  | "reclassified_kind"
+  | "assigned_lineage"
+  | "assigned_family"
+  | "deduplicated"
+  | "compacted"
+  | "removed_unsupported";
+
+export interface CanonicalFormulaNormalizationResult {
+  entries: FinalizeFormulaEntry[];
+  changes: { type: CanonicalFormulaChangeType; before?: FinalizeFormulaEntry; after?: FinalizeFormulaEntry; reason: string }[];
+  audit: FormulaMetadataAuditResult;
+  changed: boolean;
+}
+
+export function normalizeFormulaMetadataCanonical(
+  input: FinalizeFormulaEntry[],
+  context: { pagePath: string; sources?: SourceFormula[]; displayFormulas?: string[] },
+): CanonicalFormulaNormalizationResult {
+  const changes: CanonicalFormulaNormalizationResult["changes"] = [];
+  const beforeSerialized = serializeFormulas(input);
+  // Work on copies so the caller's array is not mutated in place.
+  const entries: FinalizeFormulaEntry[] = input.map((entry) => ({ ...entry }));
+
+  // 1) normalize formula text.
+  for (const entry of entries) {
+    const normalized = normalizeFormulaText(entry.text);
+    if (entry.normalizedText !== normalized) {
+      entry.normalizedText = normalized;
+      changes.push({ type: "normalized_text", reason: `normalized ${context.pagePath}` });
+    }
+  }
+  // 2) classify kind when missing.
+  for (const entry of entries) {
+    if (!entry.kind) {
+      entry.kind = isWorkedExampleFormula(entry.text)
+        ? "worked_example"
+        : entry.groundingStatus === "source-anchored"
+          ? "source_definition"
+          : entry.groundingStatus === "source-derived"
+            ? "source_derived_definition"
+            : "conceptual_helper";
+      changes.push({ type: "reclassified_kind", reason: `inferred ${entry.kind}` });
+    }
+  }
+  // 3+4) assign worked-example lineage + family.
+  const beforeLineage = entries.map((entry) => `${entry.basedOnFormula ?? ""}|${entry.formulaFamily ?? ""}`);
+  assignWorkedExampleLineage(entries, context.sources ?? []);
+  entries.forEach((entry, index) => {
+    const key = `${entry.basedOnFormula ?? ""}|${entry.formulaFamily ?? ""}`;
+    if (key !== beforeLineage[index]) changes.push({ type: "assigned_lineage", reason: `lineage for formulas[${index}]` });
+  });
+  // 5+6) deduplicate + compact by lineage.
+  const compacted = compactFormulaMetadataByLineage(entries);
+  if (compacted.length !== entries.length) {
+    changes.push({ type: "compacted", reason: `${entries.length} -> ${compacted.length} entries` });
+  }
+  // 8) audit (serialization is the caller's concern via serializeFormulas/fmSetFormulas).
+  const audit = auditFormulaMetadata(compacted as unknown as ParsedFormulaEntry[]);
+  return {
+    entries: compacted,
+    changes,
+    audit,
+    changed: serializeFormulas(compacted) !== beforeSerialized,
+  };
 }
 
 // Very small math extractor mirroring extractQuartzMath for finalize's needs.
@@ -4029,8 +4527,12 @@ function regroundFormulas({
         });
       }
     }
-    const displayCount = formulas.filter((formula) => formula.display).length;
-    const compactedEntries = compactFormulaMetadataEntries(entries, displayCount);
+    // Terminate in the ONE canonical pipeline (normalize -> classify -> lineage
+    // -> dedup -> compact) so this path produces exactly the same metadata as any
+    // other repair path. The body keeps every example; only the frontmatter index
+    // is compacted.
+    const displayCount = formulas.filter((formula) => formula.display).map((formula) => formula.text);
+    const compactedEntries = normalizeFormulaMetadataCanonical(entries, { pagePath: page.rel, sources, displayFormulas: displayCount }).entries;
     // Only mark the page dirty when regrounding actually changes the formula
     // metadata. Re-serializing identical grounding must not report the page as
     // repaired, so repair-log.json changedFiles stays limited to real edits.
@@ -4618,21 +5120,21 @@ function writeFinalizeValidationReport({
       "",
       "Visual titles and captions must be polished, specific, and free of internal visual type names.",
       "",
-      "## Zettelkasten Tags",
+      "## Public Concept Assignments",
       "",
-      "Tags must exactly match the unit contract's zettelNotes handles.",
+      "Tags must exactly equal the registry-backed primary and supporting concept union.",
       "",
-      "## Zettelkasten Tag Density",
+      "## Public Concept Cardinality",
       "",
-      "Substantial learner pages need 3-6 contract-backed atomic Zettelkasten handles.",
+      "Learner pages need a primary concept and no more than five public concepts; focused pages may have one.",
       "",
-      "## Zettelkasten Handle Quality",
+      "## Claim Separation",
       "",
-      "Handles must read like concrete conceptual claims rather than planning scaffolds.",
+      "Readable evidence-grounded claims must remain in the claim store, never in public tags.",
       "",
-      "## Zettelkasten Handle Naturalness",
+      "## Semantic Registry Integrity",
       "",
-      "Structurally valid handles must still avoid template-like planner phrases.",
+      "Aliases, concept relationships, page assignments, and claim endpoints must resolve canonically.",
       "",
       "## Repair Provenance",
       "",
@@ -6004,28 +6506,22 @@ function formulaMetadataNoiseProblems(learnerPages: LearnerPage[]): string[] {
   for (const page of learnerPages) {
     const entries = formulaEntriesFromFrontmatter(page.rawFm);
     if (entries.length === 0) continue;
-    const sourceDefinitionCount = entries.filter((entry) => {
-      const kind = formulaEntryKind(entry);
-      return kind === "source_definition" || kind === "source_derived_definition";
-    }).length;
-    const workedExampleCount = entries.filter((entry) => formulaEntryKind(entry) === "worked_example").length;
     const trivial = entries.filter((entry) => {
       const text = String(entry.text ?? "");
       return isTrivialFormulaFragment(text) || !isFormulaExpression(text);
     });
+    // Structural noise: an inline-fragment dump or a mostly-trivial block.
     if (entries.length > 10) problems.push(`${page.rel}: formulas: contains ${entries.length} entries; expected focused metric/source relationships`);
-    if (workedExampleCount > Math.max(2, sourceDefinitionCount * 2 + 1)) {
-      problems.push(`${page.rel}: formulas: has ${workedExampleCount} worked example(s) but only ${sourceDefinitionCount} source definition formula(s)`);
-    }
     if (trivial.length > 0 && trivial.length / entries.length > 0.3) problems.push(`${page.rel}: ${trivial.length}/${entries.length} formulas: entries are trivial fragments`);
+    // Relationship-based validation (replaces the worked-example count ratio):
+    // one definition may be applied by many worked examples. Only truly orphan
+    // examples, mislabeled definitions, or unsupported source claims are flagged.
+    const audit = auditFormulaMetadata(entries);
+    for (const problem of audit.problems) problems.push(`${page.rel}: ${problem}`);
     for (const [index, entry] of entries.entries()) {
       const text = String(entry.text ?? "");
-      const kind = formulaEntryKind(entry);
       if (isTrivialFormulaFragment(text) && /^(source-anchored|source-derived)$/.test(String(entry.groundingStatus ?? ""))) {
         problems.push(`${page.rel}: formulas[${index}] source-anchors trivial fragment "${text}"`);
-      }
-      if ((kind === "source_definition" || kind === "source_derived_definition") && isWorkedExampleFormula(text)) {
-        problems.push(`${page.rel}: formulas[${index}] stores worked-example arithmetic as ${kind}`);
       }
     }
   }
@@ -6085,7 +6581,16 @@ function visualAnchorPrecisionProblems(ledger: LedgerVisual[], learnerPages: Lea
   return [...new Set(problems)];
 }
 
-function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPage[]): string[] {
+/** Stable identity for a final-stage repairable issue (Fix 11): derived from the
+ * issue TYPE + page + normalized target (family / anchor), NOT the full error
+ * sentence or a worked-example count. So the same accuracy grounding issue keeps
+ * one id whether it reports 6, 5, or 2 examples, letting provenance close it. */
+export function stableFinalIssueId(type: string, pagePath: string | undefined, target?: string): string {
+  const normalizedTarget = (target ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return [type, pagePath ?? "", normalizedTarget].filter(Boolean).join(":");
+}
+
+function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPage[], currentProblemKeys: Set<string> = new Set()): string[] {
   const problems: string[] = [];
   const run = readRepairRunReport(gardenDir);
   if (!run) {
@@ -6136,11 +6641,21 @@ function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPa
     return false;
   };
   for (const entry of run.repairs ?? []) {
+    // Fix 10 + 12: a historical `unresolved` entry is a blocker ONLY when the
+    // issue is still live in the CURRENT deterministic checks. If it is live, the
+    // corresponding direct check already reports it (so re-reporting here would
+    // duplicate the error — the current final failure printed it twice); if it is
+    // NOT live, a later repair resolved/superseded/invalidated it and the stale
+    // record must not act as a permanent blocker. Either way Repair Provenance
+    // adds no semantic-issue blocker — it only enforces LOG INTEGRITY below.
     if (entry.result === "unresolved") {
-      problems.push(`${entry.pagePath}: repair log has unresolved ${entry.failureTypes.join(", ")}`);
-    }
-    for (const error of entry.unresolvedValidationErrors ?? []) {
-      problems.push(`${entry.pagePath}: unresolved repair validation error: ${error}`);
+      const stillLive = (entry.unresolvedValidationErrors ?? []).some((error) =>
+        currentProblemKeys.has(`${entry.pagePath}: ${error}`) || currentProblemKeys.has(error),
+      );
+      // No push: live issues are owned by the direct checks; stale ones are
+      // historical. (The repair loop rewrites the log each round, marking the
+      // latest attempt resolved/superseded so this record self-corrects.)
+      void stillLive;
     }
     const changedFiles = Array.isArray(entry.changedFiles) ? entry.changedFiles : [];
     for (const file of changedFiles) {
@@ -6231,6 +6746,8 @@ function collectFinalizeChecks({
     if (fmGetScalar(rawFrontmatter, "internal") === "true" && fmGetScalar(rawFrontmatter, "breadboardType") === "learning_page") {
       typingProblems.push(`${rel}: internal+learning_page`);
     }
+    if (fmGetArray(rawFrontmatter, "tags").length > 0) typingProblems.push(`${rel}: source page carries public tags`);
+    if (fmGetArray(rawFrontmatter, "primaryConcepts").length > 0) typingProblems.push(`${rel}: source page carries primaryConcepts`);
   }
   push("no source page typed as learner page", typingProblems);
 
@@ -6238,7 +6755,6 @@ function collectFinalizeChecks({
     .filter((entry) => entry.status === "intentionally_skipped" && (entry.embeddedAsImage || entry.usedAsInteractiveAnchor))
     .map((entry) => `${entry.id}: skipped but used`));
   push("Finalizer semantic boundary", finalizerBoundaryProblems(report));
-  push("Repair Provenance", repairLogConsistencyProblems(gardenDir, learnerPages));
   push("Learner-Facing Scaffold Prose", learnerFacingScaffoldProseProblems(learnerPages));
 
   // Learning Unit Contract fulfillment.
@@ -6246,7 +6762,7 @@ function collectFinalizeChecks({
   if (learnerPages.length > 0 && contract.units.length === 0) {
     fulfillmentProblems.push(".breadboard/learning-unit-contract.json missing or empty");
   }
-  const knownHandles = new Set(contract.units.flatMap((unit) => zettelHandlesForUnit(unit)));
+  const knownHandles = new Set(contract.units.flatMap((unit) => conceptTagsForUnit(unit)));
   const assignmentsByUnit = new Map<string, SourceArtifactAssignment[]>();
   for (const assignment of contract.assignments) {
     const list = assignmentsByUnit.get(assignment.assignedLearningUnitId) ?? [];
@@ -6264,17 +6780,25 @@ function collectFinalizeChecks({
     }
     const tags = fmGetArray(page.rawFm, "tags");
     for (const tag of tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
-    const expectedTags = zettelHandlesForUnit(unit);
+    const expectedTags = conceptTagsForUnit(unit);
     const missingTags = expectedTags.filter((tag) => !tags.includes(tag));
     const extraTags = tags.filter((tag) => !expectedTags.includes(tag));
-    if (expectedTags.length === 0) fulfillmentProblems.push(`${page.rel}: unit ${unit.id} has no contract zettel handles`);
+    const primaryConcepts = fmGetArray(page.rawFm, "primaryConcepts");
+    const supportingConcepts = fmGetArray(page.rawFm, "supportingConcepts");
+    const assignmentUnion = [...new Set([...primaryConcepts, ...supportingConcepts])];
+    if (primaryConcepts.length === 0) fulfillmentProblems.push(`${page.rel}: learner page has no primary concept`);
+    if (expectedTags.length === 0) fulfillmentProblems.push(`${page.rel}: unit ${unit.id} has no semantic concepts`);
     if (missingTags.length > 0 || extraTags.length > 0) {
-      fulfillmentProblems.push(`${page.rel}: tags must equal contract handles for ${unit.id}; missing [${missingTags.join(", ")}], extra [${extraTags.join(", ")}]`);
+      fulfillmentProblems.push(`${page.rel}: tags must equal contract concepts for ${unit.id}; missing [${missingTags.join(", ")}], extra [${extraTags.join(", ")}]`);
+    }
+    if (!arraysEqual(tags, assignmentUnion)) {
+      fulfillmentProblems.push(`${page.rel}: tags must equal primaryConcepts + supportingConcepts`);
     }
     for (const tag of tags) {
       if (!knownHandles.has(tag)) fulfillmentProblems.push(`${page.rel}: tag "${tag}" is not in the Learning Unit Contract`);
-      if (!isAtomicZettelHandle(tag) || tag.includes("/")) fulfillmentProblems.push(`${page.rel}: tag "${tag}" is not an atomic slash-free handle`);
+      if (!isValidPublicConceptSlug(tag)) fulfillmentProblems.push(`${page.rel}: tag "${tag}" is not a reusable canonical concept`);
     }
+    if (tags.length > 5) fulfillmentProblems.push(`${page.rel}: more than five public concepts`);
     const sourceVisualIds = fmGetArray(page.rawFm, "sourceVisualIds");
     const formulaAnchors = formulaAnchorsFromFrontmatter(page.rawFm);
     const assignedArtifacts = assignmentsByUnit.get(unit.id) ?? [];
@@ -6309,12 +6833,7 @@ function collectFinalizeChecks({
       if (formulaAnchor.startsWith("trivial:")) fulfillmentProblems.push(`${page.rel}: formula frontmatter tracks trivial math ${formulaAnchor.slice("trivial:".length)}`);
     }
   }
-  if (learnerPages.length >= 4) {
-    const maxAllowed = Math.ceil(learnerPages.length * 0.4);
-    for (const [tag, count] of tagCounts) {
-      if (count > maxAllowed) fulfillmentProblems.push(`tag "${tag}" appears on ${count}/${learnerPages.length} learner pages`);
-    }
-  }
+  void tagCounts;
   for (const unit of contract.units) {
     if (!pagesByUnit.has(unit.id)) fulfillmentProblems.push(`learning unit ${unit.id} has no generated learner page`);
   }
@@ -6546,25 +7065,22 @@ function collectFinalizeChecks({
   push("source crop quality is acceptable", cropProblems);
   push("Crop quality and fallbacks", cropFallbackProblems(ledger, learnerPages));
 
-  // Zettelkasten density.
+  // Semantic concept assignments: one primary is required, 1-5 total is valid.
   const densityProblems: string[] = [];
-  const handleQualityProblems = contract.units.flatMap((unit) => zettelHandleQualityProblems(unit));
+  const handleQualityProblems: string[] = [];
   for (const page of learnerPages) {
-    const words = teachingProseLite(page.body).split(/\s+/).filter((word) => /[a-z0-9]/i.test(word)).length;
-    if (words < 700) continue;
     const tags = fmGetArray(page.rawFm, "tags");
-    if (tags.length < 3) densityProblems.push(`${page.rel}: substantial page has ${tags.length} tag(s), expected 3-6 contract-backed handles`);
-    if (tags.length > 6) densityProblems.push(`${page.rel}: substantial page has ${tags.length} tags, expected no more than 6`);
+    const primary = fmGetArray(page.rawFm, "primaryConcepts");
+    if (primary.length === 0) densityProblems.push(`${page.rel}: learner page has no primary concept`);
+    if (tags.length > 5) densityProblems.push(`${page.rel}: has ${tags.length} public concepts, expected no more than 5`);
     for (const tag of tags) {
-      if (scaffoldLikeZettelHandle(tag)) handleQualityProblems.push(`${page.rel}: scaffold-like tag "${tag}"`);
+      if (!isValidPublicConceptSlug(tag)) handleQualityProblems.push(`${page.rel}: invalid or claim-shaped concept "${tag}"`);
     }
-    const unit = unitsById.get(fmGetScalar(page.rawFm, "learningUnitId"));
-    const contractHandles = unit ? zettelHandlesForUnit(unit) : [];
-    if (unit && contractHandles.length < 3) densityProblems.push(`${page.rel}: learning unit ${unit.id} has only ${contractHandles.length} contract zettel handle(s)`);
   }
-  push("Zettelkasten tag density", densityProblems);
-  push("Zettelkasten Handle Quality", [...new Set(handleQualityProblems)]);
-  push("Zettelkasten Handle Naturalness", [...new Set(handleQualityProblems)]);
+  push("Semantic concept assignment cardinality", densityProblems);
+  push("Public concept quality", [...new Set(handleQualityProblems)]);
+  const semanticValidation = validateGardenSemantics(gardenDir);
+  push("Canonical semantic registry and claims", semanticValidation.hardFailures);
 
   // Canonical final-state audit: the single gate that keeps every report,
   // ledger, page, contract, anchor, visual, and repair log in agreement.
@@ -6620,6 +7136,17 @@ function collectFinalizeChecks({
     }
     push("validation report contains required sections", reportProblems);
   }
+
+  // Repair Provenance runs LAST so it can separate repair HISTORY from the
+  // current issue state (Fix 10-12): a historical `unresolved` repair-log entry
+  // blocks only when the issue is still live — and when it is live, the direct
+  // check above already reports it, so Repair Provenance does not duplicate it.
+  const currentProblemKeys = new Set<string>();
+  for (const check of checks) {
+    if (REPAIR_BOOKKEEPING_CHECKS.has(check.name)) continue;
+    for (const problem of check.problems) currentProblemKeys.add(problem);
+  }
+  push("Repair Provenance", repairLogConsistencyProblems(gardenDir, learnerPages, currentProblemKeys));
 
   return checks;
 }

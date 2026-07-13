@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   dedupeSourceArtifactAssignments,
+  conceptTagsForUnit,
   normalizeLearningUnits,
   scaffoldLikeZettelHandle,
   zettelHandlesForUnit,
@@ -25,6 +26,8 @@ import {
   type SourceArtifactAssignment,
 } from "./learning-unit-contract.ts";
 import { formulaMetricFamily } from "./learn-utils.ts";
+import { isValidPublicConceptSlug } from "./semantic-core.ts";
+import { validateGardenSemantics } from "./garden-semantics.ts";
 
 // ---------------------------------------------------------------------------
 // Canonical types
@@ -1413,13 +1416,13 @@ export function buildFinalGardenState(gardenDir: string, slug?: string): FinalGa
     }
   }
 
-  // Zettel handles.
+  // Public canonical concept tags (legacy field name retained in state shape).
   const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
   const zettelHandles: FinalZettelHandleRecord[] = [];
   for (const page of pages) {
     const unit = unitsById.get(page.learningUnitId);
     for (const handle of page.tags) {
-      const reason = zettelHandleNaturalnessReason(handle);
+      const reason = isValidPublicConceptSlug(handle) ? null : "is not a reusable canonical concept slug";
       zettelHandles.push({
         pageRel: page.rel,
         unitId: page.learningUnitId,
@@ -1826,15 +1829,24 @@ export function auditFinalGardenState(state: FinalGardenState): FinalAuditResult
     }
   }
 
-  // Rule F — zettel handles read like durable claims, not planner scaffolds.
-  for (const record of state.zettelHandles) {
-    if (!record.natural) add("zettel_naturalness", `${record.pageRel}: zettel handle "${record.handle}" ${record.reason}`);
-  }
-  for (const unit of state.learningUnitContract.units) {
-    for (const handle of zettelHandlesForUnit(unit)) {
-      const reason = zettelHandleNaturalnessReason(handle);
-      if (reason) add("zettel_naturalness", `contract ${unit.id}: zettel handle "${handle}" ${reason}`);
+  // Rule F — public tags are reusable concepts; readable claims live separately.
+  const hasSemanticRegistry = fs.existsSync(
+    path.join(state.rootPath, ".breadboard", "concept-registry.json"),
+  );
+  if (hasSemanticRegistry) {
+    for (const record of state.zettelHandles) {
+      if (!record.natural) add("semantic_concept", `${record.pageRel}: public concept "${record.handle}" ${record.reason}`);
     }
+    for (const unit of state.learningUnitContract.units) {
+      for (const slug of conceptTagsForUnit(unit)) {
+        if (!isValidPublicConceptSlug(slug)) {
+          add("semantic_concept", `contract ${unit.id}: invalid public concept "${slug}"`);
+        }
+      }
+    }
+    const semanticAudit = validateGardenSemantics(state.rootPath);
+    for (const problem of semanticAudit.hardFailures) add("semantic_registry", problem);
+    warnings.push(...semanticAudit.diagnostics.map((problem) => `semantic diagnostic: ${problem}`));
   }
 
   // Rule G — no paraphrased repeated openings across near-adjacent pages.
@@ -2175,6 +2187,8 @@ interface FullFormulaEntry {
   sourceAnchor?: string;
   sourceAnchorTitle?: string;
   basedOnFormula?: string;
+  formulaFamily?: string;
+  exampleGroupId?: string;
   matchReason?: string;
   confidence?: string;
 }
@@ -2213,6 +2227,8 @@ function serializeFormulas(entries: FullFormulaEntry[]): string {
     if (e.sourceAnchor) lines.push(`    sourceAnchor: ${jsonScalar(e.sourceAnchor)}`);
     if (e.sourceAnchorTitle) lines.push(`    sourceAnchorTitle: ${jsonScalar(e.sourceAnchorTitle)}`);
     if (e.basedOnFormula) lines.push(`    basedOnFormula: ${jsonScalar(e.basedOnFormula)}`);
+    if (e.formulaFamily) lines.push(`    formulaFamily: ${jsonScalar(e.formulaFamily)}`);
+    if (e.exampleGroupId) lines.push(`    exampleGroupId: ${jsonScalar(e.exampleGroupId)}`);
     if (e.matchReason) lines.push(`    matchReason: ${jsonScalar(e.matchReason)}`);
     if (e.confidence) lines.push(`    confidence: ${e.confidence}`);
   }
@@ -2243,6 +2259,59 @@ function workedExampleIsSafelyRelabelable(anchor: string | undefined, symbolicDe
   return !(anchor && requiredAnchors.has(anchor));
 }
 
+const MAX_WORKED_EXAMPLES_PER_LINEAGE = 2;
+
+function normalizeFormulaText(text: string): string {
+  return text
+    .replace(/\\text\{([^}]*)\}/g, "$1")
+    .replace(/\\[a-zA-Z]+/g, " ")
+    .replace(/[{}\\$]/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .trim();
+}
+
+/** Canonical lineage compaction, mirroring garden-finalize's
+ * compactFormulaMetadataByLineage so EVERY repair path ends with the same
+ * formula-metadata shape: keep every source (derived) definition, keep one or
+ * two worked examples per lineage group (basedOnFormula/family), de-duplicate by
+ * normalized text. The page BODY keeps all examples — this only compacts the
+ * frontmatter index. */
+function compactFullFormulaEntriesByLineage(entries: FullFormulaEntry[]): { entries: FullFormulaEntry[]; changed: boolean } {
+  const rank = (e: FullFormulaEntry): number => {
+    if (e.kind === "source_definition") return 0;
+    if (e.kind === "source_derived_definition") return 1;
+    if (e.kind === "worked_example") return 2;
+    return 3;
+  };
+  const byKey = new Map<string, FullFormulaEntry>();
+  const order: string[] = [];
+  for (const entry of entries) {
+    const key = (String(entry.normalizedText ?? "") || normalizeFormulaText(String(entry.text ?? ""))).trim() || String(entry.text ?? "").trim();
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, entry);
+      order.push(key);
+    } else if (rank(entry) < rank(existing)) {
+      byKey.set(key, entry);
+    }
+  }
+  const deduped = order.map((key) => byKey.get(key)!);
+  const perGroup = new Map<string, number>();
+  const kept: FullFormulaEntry[] = [];
+  for (const entry of deduped) {
+    if (entry.kind === "worked_example") {
+      const family = entry.formulaFamily || formulaMetricFamily(String(entry.text ?? "")) || "misc";
+      const groupKey = entry.basedOnFormula ? `${entry.basedOnFormula}:${family}` : family;
+      const count = perGroup.get(groupKey) ?? 0;
+      if (count >= MAX_WORKED_EXAMPLES_PER_LINEAGE) continue;
+      perGroup.set(groupKey, count + 1);
+    }
+    kept.push(entry);
+  }
+  return { entries: kept, changed: kept.length !== entries.length };
+}
+
 function relabelWorkedExamples(rawFm: string, requiredAnchors: Set<string> = new Set()): { rawFm: string; changed: boolean } {
   const entries = parseFullFormulaEntries(rawFm);
   if (entries.length === 0) return { rawFm, changed: false };
@@ -2265,6 +2334,10 @@ function relabelWorkedExamples(rawFm: string, requiredAnchors: Set<string> = new
       // a source anchor. `conceptual-helper` is the only valid grounding status.
       entry.groundingStatus = "conceptual-helper";
       entry.basedOnFormula = anchor;
+      if (!entry.formulaFamily) {
+        const family = formulaMetricFamily(String(entry.text ?? ""));
+        if (family) entry.formulaFamily = family;
+      }
       entry.justification = anchor
         ? `Worked example applying source formula ${anchor}; a specific numeric instance, not the symbolic source definition.`
         : "Worked example: a specific numeric instance, not a symbolic source definition.";
@@ -2274,8 +2347,13 @@ function relabelWorkedExamples(rawFm: string, requiredAnchors: Set<string> = new
       changed = true;
     }
   }
+  // Canonical compaction runs even when nothing was relabeled, so this path ends
+  // with the SAME metadata shape as regroundFormulas (the named inconsistency:
+  // relabel used to leave every example uncompacted in the frontmatter).
+  const compacted = compactFullFormulaEntriesByLineage(entries);
+  changed = changed || compacted.changed;
   if (!changed) return { rawFm, changed: false };
-  return { rawFm: replaceFormulasBlock(rawFm, entries), changed: true };
+  return { rawFm: replaceFormulasBlock(rawFm, compacted.entries), changed: true };
 }
 
 export interface TargetedCriticRepairResult {
@@ -5825,44 +5903,13 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string, opts
     }
   }
 
-  // (2) Naturalize planner-scaffold zettel handles in the contract.
-  const contractPath = fs.existsSync(path.join(bd, "learning-unit-contract.json"))
-    ? path.join(bd, "learning-unit-contract.json")
-    : path.join(bd, "planning", "learning-unit-contract.json");
-  const contractJson = readJson<Record<string, unknown>>(contractPath, {});
-  const contractUnitsRaw = Array.isArray(contractJson.learningUnits)
-    ? (contractJson.learningUnits as Array<Record<string, unknown>>)
-    : Array.isArray(contractJson.units)
-      ? (contractJson.units as Array<Record<string, unknown>>)
-      : [];
-  const newHandlesByUnit = new Map<string, string[]>();
-  let contractChanged = false;
-  for (const unit of state.learningUnitContract.units) {
-    if (!unitNeedsNaturalization(unit)) {
-      newHandlesByUnit.set(unit.id, zettelHandlesForUnit(unit));
-      continue;
-    }
-    const rawUnit = contractUnitsRaw.find((u) => String(u.id ?? "") === unit.id);
-    const notes = Array.isArray(rawUnit?.zettelNotes) ? (rawUnit!.zettelNotes as Array<Record<string, unknown>>) : [];
-    const taken = new Set<string>(notes.map((n) => String(n.handle ?? "")).filter((h) => isNaturalZettelHandle(h)));
-    for (const note of notes) {
-      const handle = String(note.handle ?? "");
-      if (isNaturalZettelHandle(handle)) continue;
-      const replacement = naturalizeHandle(handle, unit, taken);
-      taken.add(replacement);
-      note.handle = replacement;
-      note.claim = `${replacement.replace(/-/g, " ")}.`.replace(/^\w/, (c) => c.toUpperCase());
-      contractChanged = true;
-      result.notes.push(`naturalized zettel handle "${handle}" → "${replacement}" (unit ${unit.id})`);
-    }
-    // Recompute atomic handles for the repaired unit.
-    const repairedUnit: LearningUnitContract = { ...unit, zettelNotes: notes.map((n) => ({ handle: String(n.handle ?? ""), claim: String(n.claim ?? ""), connectedTo: Array.isArray(n.connectedTo) ? (n.connectedTo as string[]) : [] })) };
-    newHandlesByUnit.set(unit.id, zettelHandlesForUnit(repairedUnit));
-  }
-  if (contractChanged) {
-    fs.writeFileSync(contractPath, `${JSON.stringify(contractJson, null, 2)}\n`, "utf-8");
-    markChanged(".breadboard/learning-unit-contract.json");
-  }
+  // (2) Registry-backed concept assignments replace legacy claim handles.
+  const newHandlesByUnit = new Map(
+    state.learningUnitContract.units.map((unit) => [unit.id, conceptTagsForUnit(unit)]),
+  );
+  const conceptRolesByUnit = new Map(
+    state.learningUnitContract.units.map((unit) => [unit.id, unit.semanticConcepts ?? []]),
+  );
 
   // (3) Per-page reconciliation: prune anchors to contract, relabel worked
   //     examples, sync tags to the repaired contract handles.
@@ -5900,8 +5947,11 @@ export function reconcileFinalGardenState(gardenDir: string, slug?: string, opts
       const newTags = newHandlesByUnit.get(unit.id);
       if (newTags && (newTags.length !== page.tags.length || newTags.some((t, i) => t !== page.tags[i]))) {
         rawFm = setFmArrayLine(rawFm, "tags", newTags);
-        result.notes.push(`${page.rel}: synced tags to repaired contract handles for ${unit.id}`);
+        result.notes.push(`${page.rel}: synced public tags to registry-backed concepts for ${unit.id}`);
       }
+      const roles = conceptRolesByUnit.get(unit.id) ?? [];
+      rawFm = setFmArrayLine(rawFm, "primaryConcepts", roles.filter((concept) => concept.role === "primary").map((concept) => concept.slug));
+      rawFm = setFmArrayLine(rawFm, "supportingConcepts", roles.filter((concept) => concept.role === "supporting").map((concept) => concept.slug));
     }
 
     const requiredFormulaAnchors = new Set<string>([

@@ -49,7 +49,7 @@ Requirements for each page:
   * [[wikilinks]] to connect related concepts mentioned in this conversation
   * LaTeX for formulas, symbols, or derivations when it improves clarity: inline math with $...$ and display equations with $$...$$
   * 100-300 words
-- tags: 4-8 reusable Zettelkasten concept handles. Return only normalized lower-case kebab-case tags. Tags are graph vocabulary, not SEO keywords, folder names, title summaries, or broad topic labels. Good: "restoring-force", "stable-equilibrium", "angular-frequency", "simple-harmonic-motion", "zero-isi-condition". Bad: physics, math, formula, important, learning, overview, understanding-the-basics, force, frequency.
+- tags: 2-5 concise concept hints used only to place this internal chat note. They are not public Quartz tags. Return normalized lower-case kebab-case concepts, never claims or planner phrases.
 - related: titles of pages/concepts that should be strongly connected to this page
 - Never use generic, document-type, or learning tags like knowledge, generated, note, topic, source, document, chat, answer, response, general, misc, important, learning, study, formula, definition, or example, and never reference a page/slide/figure in a tag
 
@@ -325,7 +325,7 @@ async function generateChatNoteTags(
         {
           role: 'system',
           content:
-            'Return a JSON array of 4-8 Zettelkasten-style concept tags for the given content. ' +
+            'Return a JSON array of 2-5 reusable concept hints for the given content. ' +
             'Generate tags as reusable conceptual retrieval handles, not SEO keywords, folder names, title summaries, or broad topic labels. ' +
             'Return only normalized lower-case kebab-case tags, e.g. "restoring-force", "angular-frequency", "simple-harmonic-motion". ' +
             'Never use broad categories, document types, generic learning words, title slugs, source filenames, or page/slide/figure references.',
@@ -417,16 +417,9 @@ async function harmonizeChatNote({
   let fm = fmMatch[1];
   fm = fm.replace(/^date:.*$/m, `date: ${yamlQuote(new Date().toISOString())}`);
 
-  const existingTagsMatch = fm.match(/^tags:\s*(\[.*?\])/m);
-  if (existingTagsMatch) {
-    const existingTags = existingTagsMatch[1]
-      .slice(1, -1)
-      .split(',')
-      .map((t) => t.trim().replace(/^["']|["']$/g, ''))
-      .filter(Boolean);
-    const mergedTags = [...new Set([...existingTags, ...newTags])].slice(0, 10);
-    fm = fm.replace(/^tags:.*$/m, `tags: ${yamlArray(mergedTags)}`);
-  }
+  // Public concept assignments on existing learner pages are contract-owned.
+  // Chat-note harmonization may update prose, but never retags the target.
+  void newTags;
 
   return `${fm}${mergedBody}\n`;
 }
@@ -545,7 +538,7 @@ export async function POST(request: Request) {
           saved_from: 'chat',
           generated_by: 'chatmock',
           related: related.map((note) => note.slug),
-          tags,
+          semanticHints: tags,
         }) + buildNoteBody(title, sourceContent, related),
         'utf-8',
       );
@@ -654,7 +647,7 @@ export async function POST(request: Request) {
           saved_from: 'chat',
           generated_by: 'chatmock',
           related: related.map((relatedNote) => relatedNote.slug),
-          tags,
+          semanticHints: tags,
         }) +
         buildNoteBody(note.title, note.content, related);
 

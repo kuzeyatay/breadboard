@@ -14,6 +14,7 @@ import {
   type SourceTableContract,
   type ZettelNote,
 } from "./learning-unit-contract.ts";
+import type { KnowledgeClaimPlan, SemanticConceptPlan } from "./semantic-core.ts";
 
 export const LEARN_STATUSES = [
   "idle",
@@ -94,6 +95,8 @@ export interface LearningSubsectionPlan {
   sourceArtifactAssignments?: SourceArtifactAssignment[];
   interactiveVisualContract?: InteractiveVisualContract;
   zettelNotes?: ZettelNote[];
+  semanticConcepts?: SemanticConceptPlan[];
+  knowledgeClaims?: KnowledgeClaimPlan[];
 }
 
 export interface LearningSectionPlan {
@@ -127,6 +130,13 @@ export interface FormulaGroundingEntry {
   sourceAnchorTitle?: string;
   matchReason?: string;
   confidence?: number;
+  /** Worked-example lineage: the source (derived) definition this example
+   * applies (source-formula anchor id or a page-local definition's text). */
+  basedOnFormula?: string;
+  /** Metric/relationship family shared by a definition and its worked examples. */
+  formulaFamily?: string;
+  /** Groups worked examples that apply the same definition. */
+  exampleGroupId?: string;
 }
 
 export type FormulaRecordKind =
@@ -911,7 +921,7 @@ export function tagIsRelevantToPage(tag: string, context: TagRelevanceContext): 
 }
 
 /**
- * Normalizes learner-page tags into 4-8 stable Zettelkasten concept handles.
+ * Normalizes learner-page tags into at most five reusable public concepts.
  * Tags are graph vocabulary, not page decoration: compact kebab-case concepts
  * that future notes can reuse. They are grounded in the final page body, not
  * the title alone, and unsupported concept tags are rejected.
@@ -1262,6 +1272,9 @@ export function buildLearningPageFrontmatter({
   title,
   sourceAnchors,
   tags,
+  primaryConcepts,
+  supportingConcepts,
+  claimIds,
   visualIds,
   sourceVisualIds,
   sourceFormulaAnchors,
@@ -1277,9 +1290,12 @@ export function buildLearningPageFrontmatter({
   subsectionNumber: number;
   title: string;
   sourceAnchors: string[];
-  /** Zettelkasten concept-handle tags shown to learners (4-8, kebab-case).
+  /** Registry-backed public concept tags shown to learners (1-5, kebab-case).
    * This is the only tag field written to learner pages. */
   tags?: string[];
+  primaryConcepts?: string[];
+  supportingConcepts?: string[];
+  claimIds?: string[];
   visualIds: string[];
   /** Source visuals (S1.P4.F1 style) embedded in this page's body. */
   sourceVisualIds?: string[];
@@ -1306,7 +1322,12 @@ export function buildLearningPageFrontmatter({
     sectionNumber,
     subsectionNumber: `${sectionNumber}.${subsectionNumber}`,
     sourceAnchors,
+    primaryConcepts:
+      primaryConcepts && primaryConcepts.length > 0 ? primaryConcepts : undefined,
+    supportingConcepts:
+      supportingConcepts && supportingConcepts.length > 0 ? supportingConcepts : undefined,
     tags: tags && tags.length > 0 ? tags : undefined,
+    claimIds: claimIds && claimIds.length > 0 ? claimIds : undefined,
     visualIds,
     sourceVisualIds:
       sourceVisualIds && sourceVisualIds.length > 0 ? sourceVisualIds : undefined,

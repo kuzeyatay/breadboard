@@ -38,6 +38,8 @@ const GENERATED_GARDEN_ROOTS = new Set([
   "private-quartz",
   "public-quartz",
 ])
+const LEARNER_GARDEN_FOLDERS = new Set(["learning", "sources"])
+const NON_GARDEN_ROOTS = new Set(["tags", "static", "index", "404"])
 
 function parseJsonArray(value: string | undefined): string[] {
   if (!value) return []
@@ -75,6 +77,16 @@ function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<Cont
     if (!effectiveAllowed) return true
     return effectiveAllowed.includes(node.slugSegment)
   })
+
+  const shouldEnforceGardenTree =
+    hasGardenScope || Boolean(urlCluster && !NON_GARDEN_ROOTS.has(urlCluster))
+  if (!shouldEnforceGardenTree || !effectiveAllowed) return
+  for (const clusterNode of trie.children) {
+    if (!effectiveAllowed.includes(clusterNode.slugSegment)) continue
+    clusterNode.children = clusterNode.children.filter(
+      (child) => child.isFolder && LEARNER_GARDEN_FOLDERS.has(child.slugSegment),
+    )
+  }
 }
 
 function validFlagColor(value: unknown): string {
@@ -265,7 +277,10 @@ function createFileNode(currentSlug: FullSlug, node: FileTrieNode): HTMLLIElemen
   const flagColor = validFlagColor(node.data?.flagColor)
   const isSourceDocument = node.data?.knowledgeType === "source-document"
   const isTextbookPage =
-    node.data?.knowledgeType === "textbook-page" || node.data?.knowledgeType === "learning-page" || node.data?.breadboardType === "textbook_page" || node.data?.breadboardType === "learning_page"
+    node.data?.knowledgeType === "textbook-page" ||
+    node.data?.knowledgeType === "learning-page" ||
+    node.data?.breadboardType === "textbook_page" ||
+    node.data?.breadboardType === "learning_page"
   const isInternalConcept =
     node.data?.knowledgeType === "internal-concept" ||
     node.data?.breadboardType === "internal_concept"

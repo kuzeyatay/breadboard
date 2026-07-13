@@ -116,6 +116,9 @@ export const ContentIndex: QuartzEmitterPlugin<Partial<Options>> = (opts) => {
 
       for (const [tree, file] of content) {
         const slug = file.data.slug!
+        const relativePath = String(file.data.relativePath ?? "").replace(/\\/g, "/")
+        const pathSegments = relativePath.split("/").filter(Boolean)
+        if (pathSegments.includes(".breadboard")) continue
         const date = getDate(ctx.cfg.configuration, file.data) ?? new Date()
         const fm = file.data.frontmatter as Record<string, unknown> | undefined
         if (opts?.includeEmptyFiles || (file.data.text && file.data.text !== "")) {

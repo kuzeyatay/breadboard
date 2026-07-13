@@ -8,6 +8,8 @@
 // isolation and reused by ingestion, Learn generation, manual edits, dashboard
 // display, and Quartz publishing.
 
+import { isValidPublicConceptSlug } from "./semantic-core.ts";
+
 /** Kebab-case slug used for tags, note filenames, and Quartz tag URLs. */
 export function slugify(value: string): string {
   const slug = value
@@ -262,6 +264,8 @@ const CANONICAL_ALIASES: Record<string, string> = {
   "lif-neurons": "lif-neuron",
   "leaky-integrate-and-fire": "lif-neuron",
   "leaky-integrate-fire": "lif-neuron",
+  "latency": "inference-latency",
+  "response-time": "inference-latency",
   "membrane-potentials": "membrane-potential",
   "nyquist-condition": "nyquist-criterion",
   "nyquist-zero-isi": "zero-isi-condition",
@@ -329,7 +333,7 @@ const CONCEPT_LEXICON: Array<[RegExp, string]> = [
   [/\bevent[- ]driven\b|\bevent driven\b/i, "event-driven-processing"],
   [/\bneuromorphic\b|\bloihi\b|\btruenorth\b/i, "neuromorphic-computing"],
   [/\benergy (?:efficiency|efficient|per inference|consumption)\b/i, "energy-efficiency"],
-  [/\blatency\b|\bresponse time\b/i, "latency"],
+  [/\binference latency\b|\blatency\b|\bresponse time\b/i, "inference-latency"],
   [/\bspike count\b/i, "spike-count"],
   [/\bconvergence\b/i, "convergence"],
   [/\bspiking neural networks?\b|\bSNNs?\b/i, "spiking-neural-networks"],
@@ -339,7 +343,7 @@ const CONCEPT_LEXICON: Array<[RegExp, string]> = [
   [/\bhardware (?:pressure|constraints?|costs?)\b/i, "hardware-constraints"],
 ];
 
-export const DEFAULT_MAX_TAGS = 8;
+export const DEFAULT_MAX_TAGS = 5;
 
 export interface ZettelkastenTagOptions {
   title?: string;
@@ -358,10 +362,6 @@ export interface FallbackTagInput {
   sourceTopics?: string[];
   maxTags?: number;
   existingTags?: string[];
-}
-
-function stripLeadingNumber(value: string): string {
-  return value.replace(/^\s*\d+(?:\.\d+)*\.?\s+/, "").trim();
 }
 
 function normalizeTagSegment(value: string): string {
@@ -486,18 +486,6 @@ function isSourceFilenameTag(tag: string, sourceFilenames: string[] = []): boole
   return sourceBases.includes(leaf) || sourceBases.includes(tag);
 }
 
-function titleSlugs(title?: string): Set<string> {
-  if (!title) return new Set();
-  const clean = stripLeadingNumber(title);
-  const titleSlug = normalizeTagSegment(clean);
-  const meaningfulTitleSlug = clean
-    .split(/[^a-zA-Z0-9]+/g)
-    .map((word) => normalizeTagSegment(word))
-    .filter((word) => word && !TAG_STOP_WORDS.has(word) && !BLOCKED_WORDS.has(word))
-    .join("-");
-  return new Set([titleSlug, meaningfulTitleSlug].filter(Boolean));
-}
-
 function hasBadShape(tag: string): boolean {
   if (tag.length > 40) return true;
   if (tag.includes("//")) return true;
@@ -578,7 +566,6 @@ export function validateZettelkastenTags(
   options: ZettelkastenTagOptions = {},
 ): string[] {
   const maxTags = Math.max(0, Math.min(options.maxTags ?? DEFAULT_MAX_TAGS, DEFAULT_MAX_TAGS));
-  const titleSet = titleSlugs(options.title);
   const grounding = [options.title ?? "", options.content ?? "", ...(options.sourceTopics ?? [])].join("\n");
   const output: string[] = [];
   const seen = new Set<string>();
@@ -590,7 +577,7 @@ export function validateZettelkastenTags(
     if (seen.has(canonical)) continue;
     if (hasBadShape(canonical)) continue;
     if (isBlockedTag(canonical)) continue;
-    if (titleSet.has(canonical) || titleSet.has(leafTag(canonical))) continue;
+    if (!isValidPublicConceptSlug(canonical)) continue;
     if (isSourceFilenameTag(canonical, options.sourceFilenames)) continue;
     if (!isGroundedTag(canonical, grounding)) continue;
     seen.add(canonical);
@@ -671,7 +658,7 @@ export function generateFallbackTags(input: FallbackTagInput): string[] {
     sourceTopics: input.sourceTopics,
     maxTags,
   });
-  if (strongTags.length >= Math.min(4, maxTags)) return strongTags;
+  if (strongTags.length >= Math.min(2, maxTags)) return strongTags;
 
   for (const phrase of keywordPhraseCandidates(input.content ?? "")) addCandidate(scores, phrase, 3);
   for (const phrase of keywordPhraseCandidates(input.title ?? "")) addCandidate(scores, phrase, 1);
@@ -719,7 +706,7 @@ export function normalizeTopicTags(
     maxTags: max,
   });
 
-  const minUsefulTags = Math.min(4, max);
+  const minUsefulTags = Math.min(2, max);
   if (firstPass.length >= minUsefulTags || !fallbackText.trim()) {
     return firstPass.slice(0, max);
   }

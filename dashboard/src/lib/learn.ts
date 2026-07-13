@@ -31,20 +31,25 @@ import {
 import {
   assignSourceArtifacts,
   anchorTextCompatibleWithVisualType,
-  atomicZettelHandle,
+  conceptTagsForUnit,
   dedupeSourceArtifactAssignments,
   dropIncompatibleInteractiveVisuals,
-  isAtomicZettelHandle,
+  knowledgeClaimsForUnit,
   learningMapFromUnits,
   normalizeLearningUnits,
+  semanticConceptsForUnit,
   validateLearningUnitContracts,
   visualTypeCompatibleWithUnit,
-  zettelHandlesForUnit,
   type LearningUnitContract,
   type SourceArtifactAssignment,
   type SourceFigurePlacement,
   type SourceFormulaContract,
 } from "@/lib/learning-unit-contract";
+import {
+  claimIdForPlan,
+  ensureGardenConceptRegistry,
+} from "@/lib/garden-semantics";
+import { isValidPublicConceptSlug, normalizeConceptSlug } from "@/lib/semantic-core";
 import {
   IMPLEMENTED_VISUAL_TYPES,
   buildVisualBlock,
@@ -435,11 +440,22 @@ Return ONLY JSON with this shape:
         "sourceAnchors": ["supporting source anchor ids"],
         "duplicateSignature": "stable dedupe key"
       },
-      "zettelNotes": [
+      "semanticConcepts": [
         {
-          "handle": "atomic-lower-kebab-case-claim-handle",
-          "claim": "one reusable concept claim",
-          "connectedTo": ["other-note-handle"]
+          "slug": "stable-reusable-concept-slug",
+          "preferredLabel": "Human-readable concept label",
+          "role": "primary | supporting",
+          "aliases": ["acronym or equivalent label"],
+          "evidenceAnchors": ["source anchor ids"]
+        }
+      ],
+      "knowledgeClaims": [
+        {
+          "text": "One readable source-grounded statement.",
+          "subject": "canonical-concept-slug",
+          "predicate": "prerequisite-of | causes | enables | derived-from | measured-by | contrasts-with | example-of | part-of | applies-to | limits | emits-when | related-to",
+          "object": "optional-canonical-concept-slug",
+          "evidenceAnchors": ["source anchor ids"]
         }
       ],
       "mustNotRepeat": ["motif, framing, or example already used"],
@@ -458,7 +474,11 @@ Contract rules:
 - Interactive visuals are optional. A unit has zero or one. Use one only when interaction teaches something static prose or a source figure cannot.
 - Do not invent custom visual types. If none of the listed interactive visual types fits, omit interactiveVisual for that unit.
 - Do not repeat interactive visual signatures. If a later unit needs a similar visual, link back conceptually or omit it.
-- Zettelkasten handles are atomic claim handles: lower-kebab-case, no slash namespaces, no broad single-word categories. Good: "accuracy-alone-hides-energy-and-latency-cost". Bad: "metric/accuracy", "latency", "snn".
+- Concepts are reusable identities, never complete claims, page-title summaries, filenames, locations, or planner phrases. Reuse an existing canonical slug or alias whenever possible.
+- Mark one or two genuinely central concepts primary. Use supporting concepts only when they materially help retrieval or graph traversal.
+- Plan 1-5 public concepts per learner unit. Never add filler to satisfy a target count.
+- Claims are readable source-grounded statements kept separately from public tags. Zero claims is valid when the material supports none.
+- Never turn claim text into a concept slug and never create role-template claims. Claim endpoints must use concept slugs from semanticConcepts.
 - First job: planning only. Do not generate final prose yet.`;
 
 const OVERVIEW_PROMPT = `Write the Topic Overview page: the first page a learner reads in this Breadboard learning garden.
@@ -1462,39 +1482,66 @@ function sourceFigurePlacementForFallback(figure: SourceFigure): SourceFigurePla
   return "inside_concept_explanation";
 }
 
-function makeFallbackZettel(title: string, claim: string): { handle: string; claim: string; connectedTo: string[] } {
-  return {
-    handle: atomicZettelHandle(claim || title),
-    claim: claim || title,
-    connectedTo: [],
-  };
-}
-
 function fallbackLearningUnitsFromContext(context: LearnSourceContext): LearningUnitContract[] {
   const topic = sanitizeLearnerTitle(context.gardenTitle || context.sources[0]?.title || context.gardenId || "This Topic");
   const sourceAnchors = context.sources.length > 0 ? context.sources.map((source) => source.title) : [topic];
+  const grounding = [
+    topic,
+    ...context.sources.map((source) => `${source.title}\n${source.excerpt ?? ""}\n${source.body ?? ""}`),
+    ...(context.concepts ?? []).map((concept) => `${concept.title}\n${concept.excerpt ?? ""}`),
+  ].join("\n");
+  const fallbackConceptPool = normalizeTopicTags(
+    [
+      ...context.sources.flatMap((source) => source.tags ?? []),
+      ...(context.concepts ?? []).flatMap((concept) => concept.tags ?? []),
+    ],
+    grounding,
+    5,
+    grounding,
+  );
+  const topicSlug = normalizeConceptSlug(topic);
+  if (fallbackConceptPool.length === 0 && isValidPublicConceptSlug(topicSlug)) {
+    fallbackConceptPool.push(topicSlug);
+  }
   const nowRange: [number, number] = [700, 1100];
   const mk = (
     id: string,
     role: LearningUnitContract["role"],
     title: string,
     question: string,
-    claim: string,
-  ): LearningUnitContract => ({
-    id,
-    role,
-    title: sanitizeLearnerTitle(title),
-    learningQuestion: question,
-    prerequisiteConcepts: [],
-    newConcepts: [sanitizeLearnerTitle(title).toLowerCase()],
-    sourceAnchors,
-    sourceFigures: [],
-    sourceFormulas: [],
-    sourceTables: [],
-    zettelNotes: [makeFallbackZettel(title, claim)],
-    mustNotRepeat: [],
-    expectedWordRange: nowRange,
-  });
+    _claim: string,
+  ): LearningUnitContract => {
+    void _claim;
+    const numericId = Math.max(0, Number(id.replace(/\D/g, "")) - 1);
+    const primary = fallbackConceptPool.length > 0
+      ? fallbackConceptPool[numericId % fallbackConceptPool.length]
+      : "";
+    return {
+      id,
+      role,
+      title: sanitizeLearnerTitle(title),
+      learningQuestion: question,
+      prerequisiteConcepts: [],
+      newConcepts: primary ? [primary] : [],
+      sourceAnchors,
+      sourceFigures: [],
+      sourceFormulas: [],
+      sourceTables: [],
+      zettelNotes: [],
+      semanticConcepts: primary
+        ? [{
+            slug: primary,
+            preferredLabel: primary.replace(/-/g, " "),
+            role: "primary",
+            aliases: [],
+            evidenceAnchors: sourceAnchors,
+          }]
+        : [],
+      knowledgeClaims: [],
+      mustNotRepeat: [],
+      expectedWordRange: nowRange,
+    };
+  };
 
   const units: LearningUnitContract[] = [
     mk("U1", "motivation", `Why ${topic} Exists`, `What problem makes ${topic} worth learning?`, `${topic} exists because a practical problem needs a more precise way to reason about it.`),
@@ -1620,6 +1667,12 @@ function writeLearningUnitContractArtifacts({
     ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
   };
   fs.writeFileSync(path.join(bbDir, "learning-unit-contract.json"), JSON.stringify(payload, null, 2), "utf-8");
+  ensureGardenConceptRegistry({
+    gardenDir: clusterDir,
+    gardenId: path.basename(clusterDir),
+    sourceSetHash,
+    concepts: gatedUnits.flatMap(semanticConceptsForUnit),
+  });
   const lines = [
     "# Learning Unit Contract",
     "",
@@ -1640,8 +1693,10 @@ function writeLearningUnitContractArtifacts({
     if (unit.interactiveVisual) {
       lines.push(`  - Interactive: ${unit.interactiveVisual.visualType} (${unit.interactiveVisual.uniqueConcept})`);
     }
-    const handles = zettelHandlesForUnit(unit);
-    if (handles.length > 0) lines.push(`  - Zettel: ${handles.join(", ")}`);
+    const concepts = conceptTagsForUnit(unit);
+    if (concepts.length > 0) lines.push(`  - Concepts: ${concepts.join(", ")}`);
+    const claims = knowledgeClaimsForUnit(unit);
+    if (claims.length > 0) lines.push(`  - Claims: ${claims.map((claim) => claim.text).join(" | ")}`);
   }
   fs.writeFileSync(path.join(planningDir, "Learning Unit Contract.md"), `${lines.join("\n")}\n`, "utf-8");
 }
@@ -1714,7 +1769,7 @@ function learningMapWithConfirmedUnitContracts(
         return {
           ...subsection,
           sourceAnchors: unit.sourceAnchors,
-          conceptTags: zettelHandlesForUnit(unit),
+          conceptTags: conceptTagsForUnit(unit),
           sourceVisualIds: [...new Set([
             ...unit.sourceFigures.filter((figure) => figure.placement !== "not_used_with_reason").map((figure) => figure.id),
             ...unit.sourceFormulas.map((formula) => formula.id),
@@ -1955,7 +2010,7 @@ export async function runLearnPlanning({
     if (contractProblems.length > 0) {
       const deepenNote =
         `\n\nThe previous Learning Unit Contract failed these hard planning checks: ${contractProblems.join("; ")}. ` +
-        `Regenerate the plan as 15-25 precise learningUnits. Assign every important figure/table/formula/result to a precise unit, keep interactive visuals optional and unique, and use slash-free atomic Zettelkasten handles. Do not return sections first.`;
+        `Regenerate the plan as 15-25 precise learningUnits. Assign every important figure/table/formula/result to a precise unit, keep interactive visuals optional and unique, plan reusable semanticConcepts separately from readable grounded knowledgeClaims, and do not return sections first.`;
       try {
         const retryCall = await callPlanningJsonWithRetry({
           client,
@@ -4652,14 +4707,20 @@ export async function runTextbookGeneration({
         pageBody = visualized.markdown;
         throwIfLearnCancelled(job.id);
 
-        // Stage 7: learner tags come only from the Learning Unit Contract's
-        // zettelNotes. Do not backfill from page text, source tags, topic tags,
-        // or generic semantic fallbacks; missing contract handles are a
-        // contract/validation failure rather than a reason to invent tags here.
-        const plannedZettelHandles = (subsection.zettelNotes ?? [])
-          .map((note) => atomicZettelHandle(note.handle || note.claim))
-          .filter((handle) => handle && isAtomicZettelHandle(handle));
-        const zettelTags = [...new Set(plannedZettelHandles)];
+        // Stage 7: public tags are the registry-backed union of primary and
+        // supporting concepts. Readable claims remain in the claim store.
+        const plannedConcepts = subsection.semanticConcepts ?? [];
+        const primaryConcepts = plannedConcepts
+          .filter((concept) => concept.role === "primary")
+          .map((concept) => concept.slug);
+        const supportingConcepts = plannedConcepts
+          .filter((concept) => concept.role === "supporting")
+          .map((concept) => concept.slug)
+          .filter((slug) => !primaryConcepts.includes(slug));
+        const zettelTags = [...new Set([...primaryConcepts, ...supportingConcepts])].slice(0, 5);
+        const claimIds = (subsection.knowledgeClaims ?? []).map((claim) =>
+          claimIdForPlan(subsection.learningUnitId ?? pageId, claim),
+        );
         const assignedVisualIds = assignedVisuals.map((visual) => visual.sourceVisualId);
         const pageMathExpressions = extractQuartzMath(normalizeQuartzMarkdown(pageBody));
         const formulas = ensureContractFormulaGrounding(
@@ -4674,6 +4735,9 @@ export async function runTextbookGeneration({
             title: pageTitle,
             sourceAnchors: anchors,
             tags: zettelTags,
+            primaryConcepts,
+            supportingConcepts,
+            claimIds,
             visualIds: visualized.visualIds,
             sourceVisualIds: assignedVisualIds,
             sourceFormulaAnchors: metricFormulaAnchorIds,

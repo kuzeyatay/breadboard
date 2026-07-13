@@ -5,6 +5,7 @@ import { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import type { FormEvent } from 'react';
+import { startNavigationProgress } from '@/app/components/navigation-progress';
 
 function RegisteredBanner() {
   const searchParams = useSearchParams();
@@ -42,6 +43,7 @@ export default function LoginPage() {
     if (result?.error) {
       setError('Invalid email or password.');
     } else {
+      startNavigationProgress();
       router.push('/dashboard');
     }
   }

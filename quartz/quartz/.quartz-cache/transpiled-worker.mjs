@@ -16724,6 +16724,9 @@ var ContentIndex = /* @__PURE__ */ __name((opts) => {
       const toStringArray = /* @__PURE__ */ __name((value) => Array.isArray(value) ? value.filter((item) => typeof item === "string") : typeof value === "string" && value.length > 0 ? [value] : [], "toStringArray");
       for (const [tree, file] of content) {
         const slug = file.data.slug;
+        const relativePath = String(file.data.relativePath ?? "").replace(/\\/g, "/");
+        const pathSegments = relativePath.split("/").filter(Boolean);
+        if (pathSegments.includes(".breadboard")) continue;
         const date = getDate(ctx.cfg.configuration, file.data) ?? /* @__PURE__ */ new Date();
         const fm = file.data.frontmatter;
         if (opts?.includeEmptyFiles || file.data.text && file.data.text !== "") {

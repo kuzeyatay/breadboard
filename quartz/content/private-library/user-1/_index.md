@@ -1,6 +1,6 @@
 ---
 title: "My garden"
-date: "2026-07-04"
+date: "2026-07-12"
 description: "All the gardens attached to your account."
 knowledge_type: "garden-overview"
 garden_scope: "private"
@@ -13,13 +13,13 @@ cluster_order: ["test-2", "physics-for-ee", "math-2", "signals-and-systems", "co
 All the gardens attached to your account.
 
 - Gardens: 5
-- Lesson pages: 0
-- Graph links: 3599
-- Indexed words: 1798431
+- Lesson pages: 18
+- Graph links: 3641
+- Indexed words: 1832726
 
 ## Gardens
 
-1. [test](/test-2/) - 0 lesson pages, 0 links
+1. [test](/test-2/) - 18 lesson pages, 42 links
 
 ### EE Year 1
 

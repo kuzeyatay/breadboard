@@ -24,6 +24,7 @@ interface UsageLimitsPopoverProps {
   inactiveButtonClassName?: string;
   popoverClassName?: string;
   showIcon?: boolean;
+  light?: boolean;
 }
 
 function clampPercent(value: unknown): number {
@@ -70,6 +71,7 @@ export default function UsageLimitsPopover({
   inactiveButtonClassName = "border-transparent text-gray-600 hover:bg-gray-800 hover:text-gray-300",
   popoverClassName = "absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-xl border border-gray-700 bg-gray-900 p-4 text-xs shadow-2xl",
   showIcon = true,
+  light = false,
 }: UsageLimitsPopoverProps) {
   const [open, setOpen] = useState(false);
   const [usageData, setUsageData] = useState<UsageLimitsPayload | null>(null);
@@ -144,12 +146,12 @@ export default function UsageLimitsPopover({
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className={popoverClassName}>
             <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="font-medium text-gray-300">Usage Limits</p>
+              <p className={`font-medium ${light ? "text-[var(--ink-heading)]" : "text-gray-300"}`}>Usage Limits</p>
               <button
                 type="button"
                 onClick={() => void refreshUsage(false)}
                 disabled={loading}
-                className="rounded-md border border-gray-800 px-2 py-1 text-[11px] text-gray-500 transition hover:border-gray-700 hover:text-gray-300 disabled:cursor-wait disabled:opacity-50"
+                className={`rounded-md border px-2 py-1 text-[11px] transition disabled:cursor-wait disabled:opacity-50 ${light ? "border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)]" : "border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300"}`}
               >
                 Refresh
               </button>
@@ -157,16 +159,16 @@ export default function UsageLimitsPopover({
             {loading ? (
               <p className="text-gray-500">Loading...</p>
             ) : error ? (
-              <p className="text-red-300">{error}</p>
+              <p className={light ? "text-[var(--danger)]" : "text-red-300"}>{error}</p>
             ) : !usageData?.available ? (
               <p className="text-gray-500">No data yet. Send a message first.</p>
             ) : (
               <div className="space-y-3">
                 {updatedAt ? (
                   <div className="space-y-1">
-                    <p className="text-gray-600">Updated: {updatedAt}</p>
+                    <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>Updated: {updatedAt}</p>
                     {usageData.stale ? (
-                      <p className="text-amber-300">
+                      <p className={light ? "text-[#8a6f00]" : "text-amber-300"}>
                         This snapshot is stale. Send a new request or refresh after one finishes.
                       </p>
                     ) : null}
@@ -186,17 +188,17 @@ export default function UsageLimitsPopover({
                     used >= 90 ? "bg-red-500" : used >= 60 ? "bg-yellow-500" : "bg-green-500";
                   return (
                     <div key={key}>
-                      <div className="mb-1 flex justify-between gap-3 text-gray-400">
+                      <div className={`mb-1 flex justify-between gap-3 ${light ? "text-[var(--ink-muted)]" : "text-gray-400"}`}>
                         <span>{key === "primary" ? "5-hour limit" : "Weekly limit"}</span>
                         <span>
                           {used.toFixed(1)}% used, {left.toFixed(1)}% left
                         </span>
                       </div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-gray-800">
+                      <div className={`h-1.5 overflow-hidden rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`}>
                         <div className={`h-full rounded-full ${color}`} style={{ width: `${used}%` }} />
                       </div>
                       {resetSeconds !== null ? (
-                        <p className="mt-1 text-gray-600">Resets in {formatDuration(resetSeconds)}</p>
+                        <p className={`mt-1 ${light ? "text-[var(--ink-muted)]" : "text-gray-600"}`}>Resets in {formatDuration(resetSeconds)}</p>
                       ) : null}
                     </div>
                   );

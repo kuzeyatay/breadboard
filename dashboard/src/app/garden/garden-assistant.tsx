@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  type ChangeEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -10,6 +11,7 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import AssistantComposer from '@/app/components/assistant-composer';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import LearnErrorDialog from '@/app/components/learn-error-dialog';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
@@ -18,6 +20,15 @@ import {
   DEFAULT_MODEL,
   mergeAssistantModels,
 } from '@/lib/ai-models';
+import {
+  DEFAULT_ASSISTANT_REASONING_EFFORT,
+  type AssistantReasoningEffort,
+} from '@/lib/assistant-reasoning';
+import {
+  CHAT_ATTACHMENT_ACCEPT,
+  extractChatAttachments,
+  type ChatAttachment,
+} from '@/lib/chat-attachments';
 import {
   forgetDismissedLearnErrorsForGarden,
   learnErrorDismissalKey,
@@ -30,6 +41,7 @@ interface ChatMessage {
   content: string;
   sources?: string[];
   thinking?: string;
+  attachmentNames?: string[];
 }
 
 interface ChatSession {
@@ -345,12 +357,17 @@ export default function GardenAssistant({
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
-  const [thinkingMode, setThinkingMode] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
+    DEFAULT_ASSISTANT_REASONING_EFFORT,
+  );
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
-  const [showModelPicker, setShowModelPicker] = useState(false);
+  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
+  const [extractingAttachments, setExtractingAttachments] = useState(false);
+  const [attachmentStatus, setAttachmentStatus] = useState('');
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [learnState, setLearnState] = useState<AssistantLearnState | null>(null);
   const [learnBusy, setLearnBusy] = useState(false);
   const [dismissedLearnErrorKeys, setDismissedLearnErrorKeys] = useState<string[]>(
@@ -581,33 +598,39 @@ export default function GardenAssistant({
 
   async function sendMessage(textOverride?: string) {
     const text = (textOverride ?? input).trim();
-    if (!text || isStreaming || !activeClusterSlug) return;
+    if ((!text && chatAttachments.length === 0) || isStreaming || !activeClusterSlug) return;
+
+    const pendingAttachments = chatAttachments;
+    const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
+    const displayText = text || 'Please review the attached document(s).';
 
     let session = activeChat;
     let sessionTitle: string | undefined;
     if (!session || session.isOwn === false) {
-      sessionTitle = chatTitleFromText(text);
+      sessionTitle = chatTitleFromText(text || attachmentNames[0] || 'Document review');
       session = await createChatSession(sessionTitle);
       if (!session) {
         setMessages([
           ...messages,
-          { role: 'user', content: text },
+          { role: 'user', content: displayText, attachmentNames },
           { role: 'assistant', content: 'I could not create a chat history entry yet.', sources: [] },
         ]);
         return;
       }
     }
 
-    const userMessage: ChatMessage = { role: 'user', content: text };
+    const userMessage: ChatMessage = { role: 'user', content: displayText, attachmentNames };
     const nextMessages = [...messages, userMessage];
     let assistantMessage: ChatMessage = { role: 'assistant', content: '', sources: [] };
 
     setInput('');
+    setChatAttachments([]);
+    setAttachmentStatus('');
     setIsStreaming(true);
     setMessages([...nextMessages, assistantMessage]);
 
     try {
-      if (activeMarkdown && wantsOpenMarkdownEdit(text)) {
+      if (activeMarkdown && wantsOpenMarkdownEdit(text) && pendingAttachments.length === 0) {
         const response = await fetch('/api/markdown-edit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -617,7 +640,7 @@ export default function GardenAssistant({
             instruction: text,
             messages: nextMessages.map(({ role, content }) => ({ role, content })).slice(-8),
             model,
-            thinking: thinkingMode,
+            thinking: reasoningEffort !== 'none',
           }),
         });
         const body = await response.json().catch(() => ({}));
@@ -678,7 +701,8 @@ export default function GardenAssistant({
           clusterSlug: activeClusterSlug,
           messages: nextMessages.map(({ role, content }) => ({ role, content })),
           model,
-          thinking: thinkingMode,
+          reasoningEffort,
+          attachments: pendingAttachments,
           activeMarkdown: activeMarkdownContext,
         }),
       });
@@ -760,6 +784,18 @@ export default function GardenAssistant({
     } finally {
       setIsStreaming(false);
     }
+  }
+
+  async function handleAttachmentInput(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (files.length === 0) return;
+    setExtractingAttachments(true);
+    setAttachmentStatus('Reading documents…');
+    const result = await extractChatAttachments(files);
+    setChatAttachments((current) => [...current, ...result.attachments]);
+    setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
+    setExtractingAttachments(false);
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -1063,6 +1099,11 @@ export default function GardenAssistant({
                   ) : (
                     <p className="whitespace-pre-wrap">{message.content}</p>
                   )}
+                  {message.attachmentNames?.length ? (
+                    <p className="mt-1.5 text-[11px] text-gray-500">
+                      {message.attachmentNames.join(' · ')}
+                    </p>
+                  ) : null}
                 </div>
                 {message.thinking ? (
                   <details className="mt-2 rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 text-xs text-gray-400">
@@ -1077,102 +1118,64 @@ export default function GardenAssistant({
         )}
       </div>
 
-      <form
-        className="border-t border-gray-800 p-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void sendMessage();
-        }}
-      >
-        <textarea
+      <div className="border-t border-gray-800 p-3">
+        <input
+          ref={attachmentInputRef}
+          type="file"
+          accept={CHAT_ATTACHMENT_ACCEPT}
+          multiple
+          onChange={handleAttachmentInput}
+          className="hidden"
+        />
+        <AssistantComposer
+          compact
           value={input}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={setInput}
+          onSubmit={() => void sendMessage()}
           onKeyDown={handleInputKeyDown}
           placeholder={hasActiveCluster ? 'Ask about a topic, page, source, or link...' : 'Open a garden first...'}
-          rows={3}
           disabled={!hasActiveCluster}
-          className="block w-full resize-none rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm leading-6 text-gray-100 outline-none transition placeholder:text-gray-600 focus:border-gray-500 disabled:cursor-not-allowed disabled:opacity-60"
-        />
-        <div className="mt-2 flex items-center justify-between gap-3">
-          <span className="text-xs text-gray-500">Enter to send, Shift+Enter for a new line</span>
-          <div className="flex items-center gap-1.5">
-            <UsageLimitsPopover
-              buttonClassName="rounded-md border px-2.5 py-1 text-xs transition"
-              activeButtonClassName="border-blue-700 bg-blue-950/30 text-blue-300"
-              inactiveButtonClassName="border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300"
-              popoverClassName="absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-md border border-gray-700 bg-gray-900 p-4 text-xs shadow-2xl"
-              showIcon={false}
-            />
-            <button
-              type="button"
-              onClick={() => setThinkingMode((value) => !value)}
-              title="Extended thinking"
-              className={`rounded-md border px-2.5 py-1 text-xs transition ${thinkingMode ? 'border-purple-700 bg-purple-950/30 text-purple-300' : 'border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'}`}
-            >
-              Think
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowPrompts(true)}
-              className="rounded-md border border-gray-800 px-2.5 py-1 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
-            >
-              Prompts
-            </button>
-            <div className="relative">
+          isSending={isStreaming}
+          canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
+          model={model}
+          models={models}
+          modelsLoading={modelsLoading}
+          onLoadModels={() => void loadModels()}
+          onModelChange={setModel}
+          reasoningEffort={reasoningEffort}
+          onReasoningEffortChange={setReasoningEffort}
+          onAddDocuments={() => attachmentInputRef.current?.click()}
+          isAddingDocuments={extractingAttachments}
+          attachments={chatAttachments}
+          onRemoveAttachment={(index) =>
+            setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
+          }
+          statusMessage={attachmentStatus}
+          utilityActions={
+            <>
+              <UsageLimitsPopover
+                buttonClassName="flex h-9 items-center justify-center gap-1.5 rounded-full px-2.5 text-xs transition"
+                activeButtonClassName="bg-[var(--paper-strong)] text-[var(--botanical)]"
+                inactiveButtonClassName="text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
+                popoverClassName="absolute bottom-full left-0 z-20 mb-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-4 text-xs text-[var(--ink)] shadow-2xl"
+                showIcon
+                light
+              />
               <button
                 type="button"
-                onClick={() => {
-                  const next = !showModelPicker;
-                  setShowModelPicker(next);
-                  if (next) void loadModels();
-                }}
-                className="rounded-md border border-gray-800 px-2.5 py-1 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
+                onClick={() => setShowPrompts(true)}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
+                title="Prompt library"
+                aria-label="Prompt library"
               >
-                {model}
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
+                </svg>
               </button>
-              {showModelPicker ? (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setShowModelPicker(false)} />
-                  <div className="absolute bottom-full right-0 z-20 mb-1.5 max-h-64 min-w-48 overflow-y-auto rounded-md border border-gray-700 bg-gray-900 py-1 shadow-2xl">
-                    {modelsLoading ? <div className="px-3 py-2 text-xs text-gray-500">Loading models...</div> : null}
-                    {models.map((item) => (
-                      <button
-                        key={item}
-                        type="button"
-                        onClick={() => {
-                          setModel(item);
-                          setShowModelPicker(false);
-                        }}
-                        className={`block w-full px-3 py-2 text-left text-sm transition ${item === model ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : null}
-            </div>
-            <button
-              type="submit"
-              disabled={!input.trim() || isStreaming || !hasActiveCluster}
-              aria-label="Send"
-              title="Send"
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
-            >
-              {isStreaming ? (
-                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-              ) : (
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12h15m0 0-6-6m6 6-6 6" />
-                </svg>
-              )}
-            </button>
-          </div>
-        </div>
-      </form>
+            </>
+          }
+        />
+      </div>
 
     </aside>
   );
