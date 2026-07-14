@@ -33,6 +33,7 @@ export async function POST(
       model: typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
+      autoConfirmTopicMap: body.skipManualReview === true,
     });
 
     return NextResponse.json({ success: true, result });

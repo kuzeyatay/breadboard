@@ -288,11 +288,29 @@ b {
   animation: terminal-boot-conceal 0.32s cubic-bezier(0.55, 0, 0.68, 0.4) both;
 }
 
+@keyframes learn-progress-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.32;
+  }
+}
+
+.learn-progress-pulse {
+  animation: learn-progress-pulse 1.2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .terminal-boot-reveal,
   .terminal-boot-conceal {
     animation-duration: 0.01ms;
     animation-delay: 0ms !important;
+  }
+
+  .learn-progress-pulse {
+    animation: none;
   }
 }
 

@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import OpenAI from 'openai';
 import { DEFAULT_MODEL } from '@/lib/ai-models';
+import { chatTokenUsageFromResponse } from '@/lib/chat-token-usage';
 import { refreshClusterIndex, resolveClusterNoteFile } from '@/lib/knowledge';
 import { updateLearnerPageConcepts } from '@/lib/garden-semantics';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
@@ -231,6 +232,7 @@ export async function POST(request: Request) {
       fs.writeFileSync(filePath, nextContent.endsWith('\n') ? nextContent : `${nextContent}\n`, 'utf-8');
     }
     const responseTags = parseFrontmatterTags(nextContent);
+    const usage = chatTokenUsageFromResponse(response);
     refreshClusterIndex(contentPath, cluster.slug);
     await publishQuartzAfterMutation(`AI edit markdown ${cluster.slug}/${slug}`);
 
@@ -241,6 +243,7 @@ export async function POST(request: Request) {
       summary: parsed.summary || 'Updated the open page.',
       content: nextContent,
       tags: responseTags,
+      ...(usage ? { usage } : {}),
     });
   } catch (error) {
     return routeErrorResponse(error);

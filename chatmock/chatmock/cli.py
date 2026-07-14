@@ -131,6 +131,44 @@ def _format_local_datetime(dt: datetime) -> str:
     return f"{local.strftime('%b %d, %Y %H:%M')} {tz_name}"
 
 
+def _limit_window_label(window: RateLimitWindow, fallback: str) -> str:
+    minutes = window.window_minutes
+    if minutes is None:
+        return fallback
+    if minutes == 24 * 60:
+        return "Daily limit"
+    if minutes == 7 * 24 * 60:
+        return "Weekly limit"
+    if minutes > 0 and minutes % (24 * 60) == 0:
+        return f"{minutes // (24 * 60)}-day limit"
+    if minutes > 0 and minutes % 60 == 0:
+        return f"{minutes // 60}-hour limit"
+    if minutes > 0:
+        return f"{minutes}-minute limit"
+    return fallback
+
+
+def _visible_limit_windows(
+    windows: list[tuple[str, str, RateLimitWindow]],
+) -> list[tuple[str, str, RateLimitWindow]]:
+    visible = [
+        (
+            icon,
+            _limit_window_label(window, description),
+            window,
+        )
+        for icon, description, window in windows
+        if window.window_minutes is None or window.window_minutes > 0
+    ]
+    visible.sort(
+        key=lambda item: (
+            item[2].window_minutes is None,
+            item[2].window_minutes or 0,
+        )
+    )
+    return visible
+
+
 def _print_usage_limits_block() -> None:
     stored = load_rate_limit_snapshot()
     
@@ -147,12 +185,20 @@ def _print_usage_limits_block() -> None:
 
     windows: list[tuple[str, str, RateLimitWindow]] = []
     if stored.snapshot.primary is not None:
-        windows.append(("⚡", "5 hour limit", stored.snapshot.primary))
+        windows.append(("⚡", "Primary limit", stored.snapshot.primary))
     if stored.snapshot.secondary is not None:
-        windows.append(("📅", "Weekly limit", stored.snapshot.secondary))
+        windows.append(("📅", "Secondary limit", stored.snapshot.secondary))
+
+    windows = _visible_limit_windows(windows)
+
+    five_hour_reported = any(window.window_minutes == 5 * 60 for _, _, window in windows)
+    if not five_hour_reported:
+        print("⚡ 5-hour limit")
+        print("    Not reported in the latest response")
+        if windows:
+            print()
 
     if not windows:
-        print("  Usage data was captured but no limit windows were provided.")
         print()
         return
 

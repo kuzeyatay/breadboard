@@ -12,6 +12,17 @@ class ProviderError(RuntimeError):
     embedded verbatim."""
 
 
+@dataclass(frozen=True)
+class ModelTokenUsage:
+    """Authoritative token accounting returned by one upstream model call."""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cached_input_tokens: int = 0
+    reasoning_tokens: int = 0
+
+
 @dataclass
 class ModelCall:
     model: str
@@ -22,6 +33,9 @@ class ModelCall:
     # Out-param: providers set this to the model's reasoning-summary trace (the
     # "thinking") when the upstream streams it, so the council can surface it.
     reasoning_out: Optional[str] = None
+    # Out-param populated from response.completed.response.usage when the
+    # upstream reports authoritative Responses API token accounting.
+    usage_out: Optional[ModelTokenUsage] = None
 
 
 class ModelProvider(Protocol):

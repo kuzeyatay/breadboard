@@ -10,12 +10,14 @@ from unittest.mock import patch
 
 from chatmock import ask
 from chatmock.app import create_app
+from chatmock.council.gateway import _resolved_usage
 from chatmock.council.ledger import JsonlCouncilLedger
 from chatmock.council.policy import CouncilConfig, choose_council_mode
 from chatmock.council.runtime import CouncilRuntime
 from chatmock.council.types import CouncilInput, CouncilRun
 from chatmock.providers.chatgpt_upstream import ChatGptUpstreamProvider
-from chatmock.providers.types import ModelCall, ProviderError
+from chatmock.providers.router import ProviderRouter
+from chatmock.providers.types import ModelCall, ModelTokenUsage, ProviderError
 from chatmock.session import reset_session_state
 
 
@@ -56,18 +58,21 @@ class StubRouter:
         fail_chair=False,
         fail_reviews=False,
         fail_messages=None,
+        usage_per_call: ModelTokenUsage | None = None,
     ) -> None:
         self.calls: list[ModelCall] = []
         self.fail_models = set(fail_models or [])
         self.fail_messages = dict(fail_messages or {})
         self.fail_chair = fail_chair
         self.fail_reviews = fail_reviews
+        self.usage_per_call = usage_per_call
 
     def effective_model(self, model: str) -> str:
         return model
 
     def call_model(self, call: ModelCall) -> str:
         self.calls.append(call)
+        call.usage_out = self.usage_per_call
         system = call.system or ""
         prompt = _prompt_text(call)
 
@@ -121,6 +126,115 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
 
         self.assertEqual(text, "hello")
         mock_record.assert_called_once_with(upstream)
+
+    @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
+    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    def test_captures_responses_token_usage(self, mock_start, _mock_record) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_usage",
+                            "usage": {
+                                "input_tokens": 11,
+                                "input_tokens_details": {"cached_tokens": 3},
+                                "output_tokens": 7,
+                                "output_tokens_details": {"reasoning_tokens": 2},
+                                "total_tokens": 18,
+                            },
+                        },
+                    },
+                ]
+            ),
+            None,
+        )
+        call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
+
+        ChatGptUpstreamProvider().call_model(call)
+
+        self.assertEqual(
+            call.usage_out,
+            ModelTokenUsage(
+                input_tokens=11,
+                output_tokens=7,
+                total_tokens=18,
+                cached_input_tokens=3,
+                reasoning_tokens=2,
+            ),
+        )
+
+    @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
+    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    def test_captures_usage_from_an_incomplete_terminal_response(
+        self,
+        mock_start,
+        _mock_record,
+    ) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "partial"},
+                    {
+                        "type": "response.incomplete",
+                        "response": {
+                            "usage": {
+                                "input_tokens": 14,
+                                "output_tokens": 6,
+                                "total_tokens": 20,
+                            }
+                        },
+                    },
+                ]
+            ),
+            None,
+        )
+        call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
+
+        self.assertEqual(ChatGptUpstreamProvider().call_model(call), "partial")
+        self.assertEqual(call.usage_out, ModelTokenUsage(14, 6, 20))
+
+    @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
+    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    def test_ignores_partial_responses_token_usage(self, mock_start, _mock_record) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_partial_usage",
+                            "usage": {"input_tokens": 11, "output_tokens": 7},
+                        },
+                    },
+                ]
+            ),
+            None,
+        )
+        call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
+
+        ChatGptUpstreamProvider().call_model(call)
+
+        self.assertIsNone(call.usage_out)
+
+    def test_provider_router_propagates_reasoning_and_usage_out_params(self) -> None:
+        usage = ModelTokenUsage(11, 7, 18, 3, 2)
+
+        class UsageUpstream:
+            def call_model(self, routed_call: ModelCall) -> str:
+                routed_call.reasoning_out = "checked"
+                routed_call.usage_out = usage
+                return "answer"
+
+        router = ProviderRouter(CouncilConfig(), upstream=UsageUpstream())
+        call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
+
+        self.assertEqual(router.call_model(call), "answer")
+        self.assertEqual(call.reasoning_out, "checked")
+        self.assertEqual(call.usage_out, usage)
 
 
 class CouncilRuntimeTests(unittest.TestCase):
@@ -184,6 +298,52 @@ class CouncilRuntimeTests(unittest.TestCase):
         self.assertEqual(run.final_answer, "FINAL SYNTHESIZED ANSWER")
         anonymized = {c.anonymized_id for c in run.candidates}
         self.assertEqual(len(anonymized), 3)
+
+    def test_full_council_aggregates_usage_from_every_parallel_call(self) -> None:
+        per_call = ModelTokenUsage(11, 7, 18, 3, 2)
+        runtime, _ = self._runtime(usage_per_call=per_call)
+        run = runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "build the topic map"}],
+                task_type="topic_map",
+            )
+        )
+
+        usage = run.token_usage_snapshot()
+        self.assertEqual(usage.call_count, 9)
+        self.assertEqual(usage.reported_call_count, 9)
+        self.assertTrue(usage.fully_reported)
+        self.assertEqual(usage.input_tokens, 99)
+        self.assertEqual(usage.output_tokens, 63)
+        self.assertEqual(usage.total_tokens, 162)
+        self.assertEqual(usage.cached_input_tokens, 27)
+        self.assertEqual(usage.reasoning_tokens, 18)
+
+    def test_partial_usage_fallback_never_drops_known_authoritative_totals(self) -> None:
+        run = CouncilRun(
+            id="crun_partial_usage",
+            user_prompt="hi",
+            messages=[{"role": "user", "content": "hi"}],
+            council_mode="full_council",
+            final_answer="ok",
+        )
+        run.record_model_call_usage(
+            input_tokens=900,
+            output_tokens=100,
+            total_tokens=1000,
+            cached_input_tokens=400,
+            reasoning_tokens=25,
+        )
+        run.record_model_call_usage()
+
+        usage, estimated = _resolved_usage(run)
+
+        self.assertTrue(estimated)
+        self.assertGreaterEqual(usage.input_tokens, 900)
+        self.assertGreaterEqual(usage.output_tokens, 100)
+        self.assertGreaterEqual(usage.total_tokens, 1000)
+        self.assertEqual(usage.cached_input_tokens, 400)
+        self.assertEqual(usage.reasoning_tokens, 25)
 
     def test_legacy_external_seats_use_requested_chatgpt_model(self) -> None:
         router = StubRouter()
@@ -255,12 +415,26 @@ class CouncilRuntimeTests(unittest.TestCase):
         self.assertIn("synthesisFailure", run.diagnostics)
 
     def test_council_run_is_persisted(self) -> None:
-        runtime, _ = self._runtime()
+        runtime, _ = self._runtime(usage_per_call=ModelTokenUsage(11, 7, 18, 3, 2))
         run = runtime.run(
             CouncilInput(messages=[{"role": "user", "content": "hi"}], requested_model="gpt-test")
         )
         base = Path(self.tmp.name)
-        self.assertTrue((base / f"{run.id}.json").exists())
+        run_file = base / f"{run.id}.json"
+        self.assertTrue(run_file.exists())
+        saved = json.loads(run_file.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["usage"],
+            {
+                "inputTokens": 11,
+                "outputTokens": 7,
+                "totalTokens": 18,
+                "cachedInputTokens": 3,
+                "reasoningTokens": 2,
+                "callCount": 1,
+                "reportedCallCount": 1,
+            },
+        )
         events_file = base / f"{run.id}.events.jsonl"
         self.assertTrue(events_file.exists())
         event_types = [
@@ -416,8 +590,10 @@ class CouncilRouteTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["choices"][0]["message"]["content"], "canned answer")
         self.assertEqual(body["councilRunId"], "crun_test")
+        self.assertTrue(body["usageEstimated"])
 
     def test_response_preserves_shape_and_adds_council_run_id(self) -> None:
+        self.router.usage_per_call = ModelTokenUsage(11, 7, 18, 3, 2)
         response = self.client.post(
             "/v1/chat/completions",
             json={"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
@@ -430,18 +606,30 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertTrue(body["choices"][0]["message"]["content"].startswith("CANDIDATE ANSWER"))
         self.assertEqual(body["choices"][0]["finish_reason"], "stop")
         self.assertEqual(body["model"], "gpt-5.4")
-        self.assertIn("usage", body)
+        self.assertEqual(
+            body["usage"],
+            {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+                "prompt_tokens_details": {"cached_tokens": 3},
+                "completion_tokens_details": {"reasoning_tokens": 2},
+            },
+        )
+        self.assertFalse(body["usageEstimated"])
         # Council extensions.
         self.assertTrue(body["councilRunId"].startswith("crun_"))
         self.assertEqual(body["councilMode"], "direct_council")
         self.assertNotIn("council", body)
 
     def test_streaming_response_carries_final_answer(self) -> None:
+        self.router.usage_per_call = ModelTokenUsage(11, 7, 18, 3, 2)
         response = self.client.post(
             "/v1/chat/completions",
             json={
                 "model": "gpt-5.4",
                 "stream": True,
+                "stream_options": {"include_usage": True},
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
@@ -450,6 +638,16 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertIn("CANDIDATE ANSWER", text)
         self.assertIn("councilRunId", text)
         self.assertIn("data: [DONE]", text)
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in text.splitlines()
+            if line.startswith("data: {")
+        ]
+        usage_event = next(event for event in events if event.get("choices") == [])
+        self.assertEqual(usage_event["usage"]["total_tokens"], 18)
+        self.assertEqual(usage_event["usage"]["prompt_tokens_details"]["cached_tokens"], 3)
+        self.assertEqual(usage_event["usage"]["completion_tokens_details"]["reasoning_tokens"], 2)
+        self.assertFalse(usage_event["usageEstimated"])
 
     def test_diagnostics_only_when_requested(self) -> None:
         response = self.client.post(
@@ -684,6 +882,7 @@ class CouncilResponsesRouteTests(unittest.TestCase):
         self.assertTrue(body["councilRunId"].startswith("crun_"))
         self.assertEqual(body["councilMode"], "direct_council")
         self.assertEqual(body["metadata"]["councilMode"], "direct_council")
+        self.assertTrue(body["usageEstimated"])
         text = body["output"][0]["content"][0]["text"]
         self.assertTrue(text.startswith("CANDIDATE ANSWER"))
 
@@ -710,6 +909,7 @@ class CouncilResponsesRouteTests(unittest.TestCase):
         self.assertEqual(body["output"][0]["content"][0]["text"], "FINAL SYNTHESIZED ANSWER")
 
     def test_streaming_request_fabricates_responses_sse(self) -> None:
+        self.router.usage_per_call = ModelTokenUsage(11, 7, 18, 3, 2)
         response = self.client.post(
             "/v1/responses",
             json={"model": "gpt-5.4", "input": "hello", "stream": True},
@@ -721,6 +921,24 @@ class CouncilResponsesRouteTests(unittest.TestCase):
         self.assertIn("CANDIDATE ANSWER", text)
         self.assertIn("response.completed", text)
         self.assertIn("councilRunId", text)
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in text.splitlines()
+            if line.startswith("data: {")
+        ]
+        completed = next(event for event in events if event.get("type") == "response.completed")
+        completed_response = completed["response"]
+        self.assertEqual(
+            completed_response["usage"],
+            {
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "total_tokens": 18,
+                "input_tokens_details": {"cached_tokens": 3},
+                "output_tokens_details": {"reasoning_tokens": 2},
+            },
+        )
+        self.assertFalse(completed_response["usageEstimated"])
 
     @patch("chatmock.routes_openai.start_upstream_raw_request")
     def test_tool_request_bypasses_and_strips_council_fields(self, mock_start) -> None:

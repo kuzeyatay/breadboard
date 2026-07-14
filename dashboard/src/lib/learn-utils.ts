@@ -534,16 +534,50 @@ export function hasPlaceholderText(markdown: string): boolean {
   return PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(markdown));
 }
 
-/** True when the markdown carries empty or ellipsis-only bullet scaffolds
- * (`- `, `- ...`, `- TBD`) — a sign a draft's outline was never filled in. Two
- * or more such items on a page is a hard failure. */
-export function hasEmptyBulletScaffold(markdown: string): boolean {
-  const body = stripMarkdownFrontmatter(markdown).replace(/```[\s\S]*?```/g, " ");
-  let empties = 0;
+/**
+ * Blank out the block regions of a page that are not markdown — fenced code and
+ * display math — preserving line structure so line-oriented markdown checks
+ * never read their contents as markdown.
+ *
+ * Display math is why this exists: a formula broken across lines puts the
+ * operator on its own line (`E = a\n+\nb`), and a bare `+` or `-` line is valid
+ * LaTeX, not a bullet. Inline math and inline code are deliberately left alone —
+ * they cannot span lines, and blanking them would turn a real bullet like
+ * `- $E = mc^2$` into an apparently empty one.
+ */
+export function blankNonProseBlocks(markdown: string): string {
+  const blank = (match: string) => match.replace(/[^\n]/g, " ");
+  return markdown
+    .replace(/```[\s\S]*?```/g, blank)
+    .replace(/~~~[\s\S]*?~~~/g, blank)
+    .replace(/\$\$[\s\S]*?\$\$/g, blank)
+    .replace(/\\\[[\s\S]*?\\\]/g, blank)
+    .replace(/\\begin\{([a-zA-Z]+\*?)\}[\s\S]*?\\end\{\1\}/g, blank);
+}
+
+/** A markdown thematic break (`---`, `***`, `___`) — a horizontal rule, not a bullet. */
+const THEMATIC_BREAK_RE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
+/** A bullet with nothing after it: `-`, `* `. */
+const BARE_BULLET_RE = /^\s*[-*+]\s*$/;
+/** A bullet whose only content is filler: `- ...`, `- …`, `- TBD`, `- N/A`, `- --`. */
+const FILLER_BULLET_RE = /^\s*[-*+]\s+(?:\.{2,}|…|TBD|N\/A|-{2,})\s*$/i;
+
+/** The empty/filler bullet scaffold lines on a page (`- `, `- ...`, `- TBD`) —
+ * a sign a draft's outline was never filled in. Math and code are excluded, so
+ * a lone `+` or `-` operator inside a formula is never mistaken for a bullet. */
+export function emptyBulletScaffoldLines(markdown: string): string[] {
+  const body = blankNonProseBlocks(stripMarkdownFrontmatter(markdown));
+  const hits: string[] = [];
   for (const line of body.split(/\r?\n/)) {
-    if (/^\s*[-*+]\s*(?:\.{2,}|…|TBD|N\/A|-{2,})?\s*$/i.test(line)) empties += 1;
+    if (THEMATIC_BREAK_RE.test(line)) continue;
+    if (BARE_BULLET_RE.test(line) || FILLER_BULLET_RE.test(line)) hits.push(line.trim() || "-");
   }
-  return empties >= 2;
+  return hits;
+}
+
+/** True when the markdown carries two or more empty/filler bullet scaffolds. */
+export function hasEmptyBulletScaffold(markdown: string): boolean {
+  return emptyBulletScaffoldLines(markdown).length >= 2;
 }
 
 /** Count AI-style discourse patterns in prose. */
@@ -584,6 +618,9 @@ export interface QualityProblem {
   code: string;
   message: string;
   hard: boolean;
+  /** The exact offending snippets, when the gate can point at them. Handed to
+   * the repair call so it fixes the real lines instead of guessing. */
+  evidence?: string[];
 }
 
 /** Minimum words a learner subsection should contain. */
@@ -606,8 +643,14 @@ export function assessLessonQuality(
   if (hasPlaceholderText(body)) {
     problems.push({ code: "placeholder", message: "contains placeholder / meta-instruction text", hard: true });
   }
-  if (hasEmptyBulletScaffold(body)) {
-    problems.push({ code: "empty-bullet-scaffold", message: "contains empty/placeholder bullet scaffolds", hard: true });
+  const scaffoldLines = emptyBulletScaffoldLines(body);
+  if (scaffoldLines.length >= 2) {
+    problems.push({
+      code: "empty-bullet-scaffold",
+      message: "contains empty/placeholder bullet scaffolds",
+      hard: true,
+      evidence: scaffoldLines,
+    });
   }
   if (hasFallbackFingerprint(body)) {
     problems.push({ code: "fallback-fingerprint", message: "contains fallback-template prose", hard: true });

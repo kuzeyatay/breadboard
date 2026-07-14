@@ -1,0 +1,155 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+
+import {
+  currentLearnElapsedMs,
+  formatLearnElapsedTime,
+  transitionLearnTimer,
+} from "../src/lib/learn-timer.ts";
+
+test("Learn timer pauses for map confirmation and resumes for generation", () => {
+  const planning = {
+    elapsedMs: 0,
+    startedAt: "2026-07-14T10:00:00.000Z",
+  };
+  const awaitingConfirmation = transitionLearnTimer(
+    planning,
+    "awaiting_confirmation",
+    "2026-07-14T10:02:00.000Z",
+  );
+
+  assert.deepEqual(awaitingConfirmation, { elapsedMs: 120_000 });
+  assert.equal(
+    currentLearnElapsedMs(
+      awaitingConfirmation,
+      Date.parse("2026-07-14T10:05:00.000Z"),
+    ),
+    120_000,
+  );
+
+  const generating = transitionLearnTimer(
+    awaitingConfirmation,
+    "generating_textbook",
+    "2026-07-14T10:05:00.000Z",
+  );
+  assert.deepEqual(generating, {
+    elapsedMs: 120_000,
+    startedAt: "2026-07-14T10:05:00.000Z",
+  });
+  assert.equal(
+    currentLearnElapsedMs(generating, Date.parse("2026-07-14T10:06:00.000Z")),
+    180_000,
+  );
+
+  const complete = transitionLearnTimer(
+    generating,
+    "complete",
+    "2026-07-14T10:07:00.000Z",
+  );
+  assert.deepEqual(complete, { elapsedMs: 240_000 });
+});
+
+test("Learn timer formats accumulated time as a stable stopwatch", () => {
+  assert.equal(formatLearnElapsedTime(0), "00:00:00");
+  assert.equal(formatLearnElapsedTime(3_723_999), "01:02:03");
+  assert.equal(formatLearnElapsedTime(100 * 60 * 60 * 1000), "100:00:00");
+});
+
+test("Learn timer and skip-review state are persisted and exposed by the panel", () => {
+  const learnSource = fs.readFileSync(
+    new URL("../src/lib/learn.ts", import.meta.url),
+    "utf8",
+  );
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const planRouteSource = fs.readFileSync(
+    new URL(
+      "../src/app/api/gardens/[gardenId]/learn/plan/route.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(learnSource, /active_elapsed_ms\s+INTEGER NOT NULL DEFAULT 0/);
+  assert.match(learnSource, /timer_started_at\s+TEXT/);
+  assert.match(learnSource, /transitionLearnTimer/);
+  assert.match(learnSource, /function learnTimerForWorkflow/);
+  assert.match(workspaceSource, /Skip review/);
+  assert.match(workspaceSource, /skipManualReview:[\s\S]*?endpoint === "plan" \? false/);
+  assert.match(workspaceSource, /formatLearnElapsedTime\(learnElapsedMs\)/);
+  assert.match(workspaceSource, /Paused while the learning map waits for confirmation/);
+  assert.match(planRouteSource, /autoConfirmTopicMap: body\.skipManualReview === true/);
+  assert.match(
+    learnSource,
+    /if \(!autoConfirmTopicMap\) return planning;[\s\S]*?confirmLearningMap[\s\S]*?runTextbookGeneration/,
+  );
+});
+
+test("Skip review remains changeable while the source map is being planned", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    workspaceSource,
+    /skipManualReview:[\s\S]*?endpoint === "plan" \? false : learnSkipManualReviewRef\.current/,
+  );
+  assert.match(workspaceSource, /autoConfirmingLearnJobRef/);
+  assert.match(
+    workspaceSource,
+    /autoConfirmLearnJobStatus !== "awaiting_confirmation"[\s\S]*?postLearnAction\("confirm", \{ generate: true \}\)/,
+  );
+  assert.match(workspaceSource, /active && status !== "planning"/);
+});
+
+test("Learn panel stays outside the independently scrolling chat transcript", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const panelIndex = workspaceSource.indexOf("{renderLearnPanel()}");
+  const chatScrollerIndex = workspaceSource.indexOf(
+    '<main className="flex-1 overflow-y-auto px-4 py-6">',
+  );
+  const transcriptIndex = workspaceSource.indexOf("<ChatTranscript", chatScrollerIndex);
+
+  assert.ok(panelIndex >= 0, "Learn panel should be rendered");
+  assert.ok(chatScrollerIndex > panelIndex, "Learn panel should precede the chat scroller");
+  assert.ok(transcriptIndex > chatScrollerIndex, "chat transcript should remain inside its scroller");
+  assert.match(workspaceSource, /max-h-\[55vh\][\s\S]*?shrink-0 overflow-y-auto/);
+});
+
+test("navbar toggles Learn while a collapsed status indicator remains outside chat scrolling", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const indicatorIndex = workspaceSource.indexOf("{renderCollapsedLearnIndicator()}");
+  const chatScrollerIndex = workspaceSource.indexOf(
+    '<main className="flex-1 overflow-y-auto px-4 py-6">',
+  );
+
+  assert.match(workspaceSource, /learnPanelOpen \? "Close Learn panel" : "Open Learn panel"/);
+  assert.match(workspaceSource, /function renderCollapsedLearnIndicator/);
+  assert.ok(indicatorIndex >= 0, "collapsed Learn status should render");
+  assert.ok(indicatorIndex < chatScrollerIndex, "collapsed status must sit outside chat scrolling");
+  assert.match(workspaceSource, /status === "complete"[\s\S]*?bg-\[#4f8a62\]/);
+  assert.match(workspaceSource, /status === "failed"[\s\S]*?bg-\[#b85c5c\]/);
+  assert.match(workspaceSource, /onClick=\{\(\) => setLearnPanelOpen\(true\)\}/);
+});

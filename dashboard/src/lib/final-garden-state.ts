@@ -2973,7 +2973,7 @@ function semanticAnchorKind(id: string): CanonicalSourceAnchorKind {
   return "text_concept";
 }
 
-interface SourceParagraph {
+export interface SourceParagraph {
   sourceId: string;
   sourceTitle: string;
   page: number;
@@ -2982,7 +2982,7 @@ interface SourceParagraph {
 
 /** Source paragraphs carrying their sourceId and the `# Page N` they appear
  *  under, used to prove/register a semantic anchor from real source prose. */
-function sourceParagraphsWithSource(gardenDir: string): SourceParagraph[] {
+export function sourceParagraphsWithSource(gardenDir: string): SourceParagraph[] {
   const files: Array<{ abs: string; rel: string }> = [];
   walkMarkdown(path.join(gardenDir, "sources"), "sources", files);
   const out: SourceParagraph[] = [];
@@ -3270,7 +3270,7 @@ function literalConceptTokens(anchor: CanonicalSourceAnchor): Set<string> {
  *  LITERAL keyword overlap, or same/adjacent page + ≥1 for a first-class
  *  structural anchor) and is at least as strong — to reuse instead of minting a
  *  near-duplicate, without absorbing a reference into an unrelated anchor (Fix 5). */
-function pickStrongerExistingAnchor(
+export function pickStrongerExistingAnchor(
   anchorId: string,
   keywords: string[],
   inferredPage: number | undefined,
@@ -3672,14 +3672,21 @@ export function buildAnchorEvidenceCriticIssues(state: FinalGardenState): Anchor
 export function recordCriticAnchorConfirmation(gardenDir: string, confirmation: CriticAnchorConfirmation): boolean {
   const ledgerPath = path.join(gardenDir, ".breadboard", "source-anchors.json");
   const ledger = readJson<Record<string, unknown>>(ledgerPath, {});
+  // A referenced weak anchor may live in EITHER ledger array (a generated
+  // text-concept anchor sits in sourceTextConceptAnchors; a structural/formula/
+  // visual anchor sits in sourceStructuralAnchors). Search both so confirming a
+  // text-concept anchor is not silently a no-op.
   const structural = Array.isArray(ledger.sourceStructuralAnchors) ? ledger.sourceStructuralAnchors as Array<Record<string, unknown>> : [];
-  const record = structural.find((a) => String(a.id ?? "") === confirmation.anchorId);
+  const textConcept = Array.isArray(ledger.sourceTextConceptAnchors) ? ledger.sourceTextConceptAnchors as Array<Record<string, unknown>> : [];
+  const record = structural.find((a) => String(a.id ?? "") === confirmation.anchorId)
+    ?? textConcept.find((a) => String(a.id ?? "") === confirmation.anchorId);
   if (!record) return false;
   record.criticConfirmed = confirmation.confirmed;
   record.criticConfirmationReason = confirmation.reason;
   if (confirmation.criticIssueId) record.criticIssueId = confirmation.criticIssueId;
   if (confirmation.confirmedExactText) record.criticConfirmedExactText = confirmation.confirmedExactText;
   ledger.sourceStructuralAnchors = structural;
+  ledger.sourceTextConceptAnchors = textConcept;
   fs.writeFileSync(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf-8");
   return true;
 }
@@ -5073,7 +5080,7 @@ export function classifyAnchorUsage(state: FinalGardenState): Record<string, Anc
 }
 
 /** Snapshot every text artifact under learning/ and .breadboard/ for rollback. */
-function snapshotGardenTextFiles(gardenDir: string): Map<string, string> {
+export function snapshotGardenTextFiles(gardenDir: string): Map<string, string> {
   const snap = new Map<string, string>();
   const walk = (abs: string): void => {
     let entries: fs.Dirent[];
@@ -5096,7 +5103,7 @@ function snapshotGardenTextFiles(gardenDir: string): Map<string, string> {
 }
 
 /** Restore the given files from a snapshot (used to roll a failed plan back). */
-function restoreGardenTextFiles(gardenDir: string, snap: Map<string, string>, files: Iterable<string>): void {
+export function restoreGardenTextFiles(gardenDir: string, snap: Map<string, string>, files: Iterable<string>): void {
   for (const rel of files) {
     if (!snap.has(rel)) continue;
     const abs = path.join(gardenDir, ...rel.split("/"));

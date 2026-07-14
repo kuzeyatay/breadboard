@@ -26,6 +26,11 @@ import {
   extractChatAttachments,
   type ChatAttachment,
 } from '@/lib/chat-attachments';
+import {
+  normalizeChatTokenUsage,
+  summarizeChatTokenUsage,
+  type ChatTokenUsage,
+} from '@/lib/chat-token-usage';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -33,6 +38,7 @@ interface ChatMessage {
   sources?: string[];
   thinking?: string;
   attachmentNames?: string[];
+  usage?: ChatTokenUsage;
 }
 
 interface ChatSession {
@@ -206,6 +212,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const activeSession = sessions.find((session) => session.id === activeId) ?? null;
+  const tokenUsage = summarizeChatTokenUsage(messages);
   const isPublic = scope === 'public';
   const scopeTagline = isPublic ? 'chat across all public gardens' : 'chat across every garden you own';
 
@@ -345,6 +352,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     };
     const nextMessages = [...messages, userMessage];
     let assistantMessage: ChatMessage = { role: 'assistant', content: '', sources: [] };
+    const responseStartedAt = performance.now();
 
     setInput('');
     setChatAttachments([]);
@@ -420,6 +428,19 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 content: `${assistantMessage.content}${event.text}`,
               };
               updateAssistant();
+            }
+            if (event.type === 'usage') {
+              const usage = normalizeChatTokenUsage(event.usage);
+              if (usage) {
+                assistantMessage = {
+                  ...assistantMessage,
+                  usage: {
+                    ...usage,
+                    responseDurationMs: Math.round(performance.now() - responseStartedAt),
+                  },
+                };
+                updateAssistant();
+              }
             }
           } catch {
             // Ignore malformed stream fragments and keep reading.
@@ -782,6 +803,8 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
               }
               statusMessage={attachmentStatus}
+              tokenUsage={tokenUsage}
+              tokenUsagePending={isStreaming}
             />
           </div>
         </div>

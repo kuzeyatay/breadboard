@@ -30,11 +30,22 @@ import {
   type AssistantReasoningEffort,
 } from "@/lib/assistant-reasoning";
 import {
+  formatExactTokenCount,
+  formatTokenCount,
+  normalizeChatTokenUsage,
+  summarizeChatTokenUsage,
+  type ChatTokenUsage,
+} from "@/lib/chat-token-usage";
+import {
   forgetDismissedLearnErrorsForGarden,
   learnErrorDismissalKey,
   loadDismissedLearnErrorKeys,
   rememberDismissedLearnErrorKey,
 } from "@/lib/learn-error-dismissal";
+import {
+  currentLearnElapsedMs,
+  formatLearnElapsedTime,
+} from "@/lib/learn-timer";
 
 interface Message {
   role: "user" | "assistant";
@@ -42,6 +53,7 @@ interface Message {
   sources?: string[];
   thinking?: string;
   attachmentNames?: string[];
+  usage?: ChatTokenUsage;
 }
 
 interface ChatSession {
@@ -138,6 +150,21 @@ interface LearnJobInfo {
   currentSectionTitle?: string;
   currentPageTitle?: string;
   error?: string;
+  elapsedMs: number;
+  timerStartedAt?: string;
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cachedInputTokens: number;
+    reasoningTokens: number;
+    estimated: boolean;
+    startedCalls: number;
+    completedCalls: number;
+    reportedCalls: number;
+    unreportedCalls: number;
+    inFlightCalls: number;
+  };
 }
 
 interface LearnValidationReportInfo {
@@ -223,6 +250,11 @@ const ACCEPTED =
   ".pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.docx,.pptx,.xlsx,.zip";
 const HANDWRITING_FILE_RE = /\.(pdf|jpg|jpeg|png|webp)$/i;
 const EMPTY_MESSAGES: Message[] = [];
+
+function formatLearnTotalTokenCount(value: number): string {
+  const count = Math.max(0, Math.trunc(value));
+  return count < 1_000 ? String(count) : `${(count / 1_000).toFixed(1)}k`;
+}
 
 function Spinner({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -836,9 +868,12 @@ export default function WorkspaceClient({
   const [learnCancelBusy, setLearnCancelBusy] = useState(false);
   const [learnPanelOpen, setLearnPanelOpen] = useState(false);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
-  const [learnIncludeSnapshots, setLearnIncludeSnapshots] = useState(false);
+  const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
+  const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
   const [learnEvents, setLearnEvents] = useState<LearnEventLine[]>([]);
   const learnEventsScrollRef = useRef<HTMLDivElement | null>(null);
+  const learnSkipManualReviewRef = useRef(false);
+  const autoConfirmingLearnJobRef = useRef<string | null>(null);
   const [dismissedLearnErrorKeys, setDismissedLearnErrorKeys] = useState<
     string[]
   >(() => loadDismissedLearnErrorKeys());
@@ -984,6 +1019,13 @@ export default function WorkspaceClient({
     return () => window.clearInterval(id);
   }, [fetchLearnStatus, fetchLearnEvents, learnBusy, learnState?.job?.status]);
 
+  useEffect(() => {
+    setLearnTimerNowMs(Date.now());
+    if (!learnState?.job?.timerStartedAt) return;
+    const id = window.setInterval(() => setLearnTimerNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [learnState?.job?.id, learnState?.job?.timerStartedAt]);
+
   // Keep the council activity log pinned to the newest line.
   useEffect(() => {
     const box = learnEventsScrollRef.current;
@@ -1021,6 +1063,7 @@ export default function WorkspaceClient({
 
   const activeChat = chatSessions.find((s) => s.id === activeChatId) ?? null;
   const messages = activeChat?.messages ?? EMPTY_MESSAGES;
+  const tokenUsage = summarizeChatTokenUsage(messages);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1889,10 +1932,10 @@ export default function WorkspaceClient({
 
   // ── Chat submit ─────────────────────────────────────────────────────────────
 
-  async function postLearnAction(
+  const postLearnAction = useCallback(async (
     endpoint: "plan" | "confirm" | "generate" | "regenerate" | "cancel",
     body: Record<string, unknown> = {},
-  ) {
+  ) => {
     const isCancel = endpoint === "cancel";
     if (!isCancel) {
       setLearnPanelOpen(true);
@@ -1912,7 +1955,11 @@ export default function WorkspaceClient({
           body: JSON.stringify({
             model,
             sourceOnly: learnSourceOnly,
-            includeSourceSnapshots: learnIncludeSnapshots,
+            includeSourceSnapshots: false,
+            // Keep planning interruptible from the UI. The live checkbox is
+            // evaluated when the proposed map reaches the review boundary.
+            skipManualReview:
+              endpoint === "plan" ? false : learnSkipManualReviewRef.current,
             ...body,
           }),
         },
@@ -1927,8 +1974,14 @@ export default function WorkspaceClient({
       setGraphRefreshVersion((value) => value + 1);
 
       if (endpoint === "plan") {
-        addToast("Learning map ready to review", "success");
-      } else if (endpoint === "confirm" || endpoint === "generate" || endpoint === "regenerate") {
+        if (!learnSkipManualReviewRef.current) {
+          addToast("Learning map ready to review", "success");
+        }
+      } else if (
+        endpoint === "confirm" ||
+        endpoint === "generate" ||
+        endpoint === "regenerate"
+      ) {
         addToast("Lessons generated", "success");
       } else if (endpoint === "cancel") {
         setLearnPanelOpen(false);
@@ -1949,7 +2002,14 @@ export default function WorkspaceClient({
         setLearnBusy(false);
       }
     }
-  }
+  }, [
+    addToast,
+    clusterSlug,
+    fetchDocuments,
+    fetchLearnStatus,
+    learnSourceOnly,
+    model,
+  ]);
 
   async function handleCancelLearn() {
     const status = learnState?.job?.status;
@@ -1984,6 +2044,28 @@ export default function WorkspaceClient({
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
     await postLearnAction("plan");
   }
+
+  const autoConfirmLearnJobId = learnState?.job?.id;
+  const autoConfirmLearnJobStatus = learnState?.job?.status;
+  useEffect(() => {
+    if (
+      !learnSkipManualReview ||
+      learnBusy ||
+      autoConfirmLearnJobStatus !== "awaiting_confirmation" ||
+      !autoConfirmLearnJobId ||
+      autoConfirmingLearnJobRef.current === autoConfirmLearnJobId
+    ) {
+      return;
+    }
+    autoConfirmingLearnJobRef.current = autoConfirmLearnJobId;
+    void postLearnAction("confirm", { generate: true });
+  }, [
+    autoConfirmLearnJobId,
+    autoConfirmLearnJobStatus,
+    learnBusy,
+    learnSkipManualReview,
+    postLearnAction,
+  ]);
 
   function dismissLearnError(job: LearnJobInfo) {
     const dismissalKey = learnErrorDismissalKey(clusterSlug, job);
@@ -2126,6 +2208,7 @@ export default function WorkspaceClient({
       return;
     }
 
+    const responseStartedAt = performance.now();
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -2186,7 +2269,8 @@ export default function WorkspaceClient({
             const event = JSON.parse(payload) as
               | { type: "sources"; sources: string[] }
               | { type: "delta"; text: string }
-              | { type: "thinking"; text: string };
+              | { type: "thinking"; text: string }
+              | { type: "usage"; usage: unknown };
 
             if (event.type === "sources") {
               assistantMsg.sources = event.sources;
@@ -2201,6 +2285,16 @@ export default function WorkspaceClient({
                 (assistantMsg.thinking ?? "") + event.text;
               finalMessages = [...nextMessages, { ...assistantMsg }];
               updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "usage") {
+              const usage = normalizeChatTokenUsage(event.usage);
+              if (usage) {
+                assistantMsg.usage = {
+                  ...usage,
+                  responseDurationMs: Math.round(performance.now() - responseStartedAt),
+                };
+                finalMessages = [...nextMessages, { ...assistantMsg }];
+                updateChatMessages(sessionId, finalMessages);
+              }
             }
           } catch {
             // malformed event — skip
@@ -2325,32 +2419,11 @@ export default function WorkspaceClient({
     const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
     const displayProgress = status === "complete" || status === "failed" ? 100 : progress;
     const canStart = Boolean(learnState?.hasSources) && !learnBusy && !active;
-    const shouldShowPanel =
-      learnPanelOpen || active || status === "awaiting_confirmation";
-    const panelExpanded =
-      learnPanelOpen || active || status === "awaiting_confirmation";
+    const shouldShowPanel = learnPanelOpen;
+    const panelExpanded = learnPanelOpen;
     const canClosePanel =
       !active && (status === "complete" || status === "failed" || status === "cancelled");
     const showPrimaryAction = !canClosePanel;
-    const statusLabel = active
-      ? "Learning"
-      : status === "complete"
-        ? "Finished"
-        : status === "failed"
-          ? "Failed"
-          : status === "cancelled"
-            ? "Stopped"
-            : status === "awaiting_confirmation"
-              ? "Review"
-              : null;
-    const statusClass =
-      status === "complete"
-        ? "border-emerald-800/70 bg-emerald-950/40 text-emerald-300"
-        : status === "failed"
-          ? "border-red-900/70 bg-red-950/40 text-red-300"
-          : status === "cancelled"
-            ? "border-amber-900/70 bg-amber-950/30 text-amber-300"
-            : "border-gray-700 bg-gray-900 text-gray-300";
     const statusMessage = active
       ? job?.currentStep || "Working"
       : status === "complete"
@@ -2364,25 +2437,44 @@ export default function WorkspaceClient({
               : learnState?.hasTextbook
                 ? "Refresh the generated lessons from the current sources."
                 : "Generate structured lessons from your sources.";
+    const learnTokenUsage = job?.tokenUsage;
+    const learnElapsedMs = currentLearnElapsedMs(
+      {
+        elapsedMs: job?.elapsedMs ?? 0,
+        startedAt: job?.timerStartedAt,
+      },
+      learnTimerNowMs,
+    );
+    const learnTimerPaused = status === "awaiting_confirmation";
+    const hasLearnTokenActivity = (learnTokenUsage?.startedCalls ?? 0) > 0;
+    const showLearnTokenUsage = Boolean(
+      learnTokenUsage && (active || hasLearnTokenActivity),
+    );
+    const learnUsageCallSummary = learnTokenUsage
+      ? [
+          learnTokenUsage.reportedCalls > 0
+            ? `${learnTokenUsage.reportedCalls} call${learnTokenUsage.reportedCalls === 1 ? "" : "s"}`
+            : null,
+          learnTokenUsage.inFlightCalls > 0
+            ? `${learnTokenUsage.inFlightCalls} active`
+            : null,
+          learnTokenUsage.unreportedCalls > 0
+            ? `${learnTokenUsage.unreportedCalls} unavailable`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "";
 
     if (!isOwner || (!learnState?.hasSources && status !== "failed")) return null;
     if (!shouldShowPanel) return null;
 
     return (
-      <section className="mx-auto mb-4 max-w-5xl rounded-lg border border-gray-800 bg-gray-950/70 p-3 shadow-sm">
+      <section className="mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <p className="text-sm font-semibold text-white">Learn</p>
-              {statusLabel ? (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className={`rounded-md border px-2 py-0.5 text-[10px] font-medium ${statusClass}`}
-                >
-                  {statusLabel}
-                </span>
-              ) : null}
               {learnState?.sourceSetChanged && (
                 <span className="rounded-md border border-amber-700/50 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
                   New sources
@@ -2408,15 +2500,24 @@ export default function WorkspaceClient({
               />
               Source-only
             </label>
-            <label className="flex items-center gap-1.5 text-xs text-gray-500">
+            <label
+              className="flex items-center gap-1.5 text-xs text-gray-500"
+              title="Automatically confirm the learning map and continue generating lessons"
+            >
               <input
                 type="checkbox"
-                checked={learnIncludeSnapshots}
-                onChange={(event) => setLearnIncludeSnapshots(event.target.checked)}
-                disabled={learnBusy || active}
+                checked={learnSkipManualReview}
+                onChange={(event) => {
+                  learnSkipManualReviewRef.current = event.target.checked;
+                  setLearnSkipManualReview(event.target.checked);
+                }}
+                disabled={
+                  status === "awaiting_confirmation" ||
+                  (active && status !== "planning")
+                }
                 className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
               />
-              Snapshots
+              Skip review
             </label>
             {showPrimaryAction && (
               <button
@@ -2469,6 +2570,7 @@ export default function WorkspaceClient({
               <div
                 className={[
                   "h-full rounded-full transition-all",
+                  active ? "learn-progress-pulse" : "",
                   status === "failed"
                     ? "bg-red-500"
                     : status === "complete"
@@ -2488,6 +2590,88 @@ export default function WorkspaceClient({
             ) : null}
           </div>
         )}
+
+        {showLearnTokenUsage && learnTokenUsage ? (
+          <div
+            className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-gray-800 pt-2 text-[11px]"
+            aria-label="Learn token usage"
+          >
+            <span className="font-medium text-gray-300">Tokens</span>
+            <span
+              className="flex items-center gap-1 font-mono tabular-nums text-gray-400"
+              title={
+                learnTimerPaused
+                  ? "Paused while the learning map waits for confirmation"
+                  : job?.timerStartedAt
+                    ? "Learn creation time"
+                    : "Total Learn creation time"
+              }
+              aria-label={`Learn timer ${formatLearnElapsedTime(learnElapsedMs)}${learnTimerPaused ? ", paused" : ""}`}
+            >
+              <svg
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.8}
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="13" r="8" />
+                <path strokeLinecap="round" d="M12 9v4l2.5 1.5M9 2h6M12 2v3" />
+              </svg>
+              {formatLearnElapsedTime(learnElapsedMs)}
+              {learnTimerPaused ? (
+                <span className="font-sans text-[10px] text-amber-500/80">paused</span>
+              ) : null}
+            </span>
+
+            {learnTokenUsage.reportedCalls > 0 ? (
+              <dl className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                {[
+                  {
+                    label: "Input",
+                    value: learnTokenUsage.inputTokens,
+                    title: `${formatExactTokenCount(learnTokenUsage.inputTokens)} input · ${formatExactTokenCount(learnTokenUsage.cachedInputTokens)} cached`,
+                  },
+                  {
+                    label: "Output",
+                    value: learnTokenUsage.outputTokens,
+                    title: `${formatExactTokenCount(learnTokenUsage.outputTokens)} output`,
+                  },
+                  {
+                    label: "Reasoning",
+                    value: learnTokenUsage.reasoningTokens,
+                    title: `${formatExactTokenCount(learnTokenUsage.reasoningTokens)} reasoning (included in output)`,
+                  },
+                  {
+                    label: "Total",
+                    value: learnTokenUsage.totalTokens,
+                    title: `${formatExactTokenCount(learnTokenUsage.totalTokens)} total tokens`,
+                  },
+                ].map((metric) => (
+                  <div key={metric.label} className="flex items-baseline gap-1">
+                    <dt className="text-gray-600">{metric.label}</dt>
+                    <dd
+                      className="font-mono tabular-nums text-gray-200"
+                      title={metric.title}
+                    >
+                      {learnTokenUsage.estimated ? "~" : ""}
+                      {metric.label === "Total"
+                        ? formatLearnTotalTokenCount(metric.value)
+                        : formatTokenCount(metric.value).toLowerCase()}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <span className="text-gray-600">Waiting for usage</span>
+            )}
+
+            {learnUsageCallSummary ? (
+              <span className="ml-auto text-gray-600">{learnUsageCallSummary}</span>
+            ) : null}
+          </div>
+        ) : null}
 
         {(active || (learnEvents.length > 0 && (status === "complete" || status === "failed"))) && (
           <div className="mt-3">
@@ -2622,6 +2806,81 @@ export default function WorkspaceClient({
           </div>
         )}
       </section>
+    );
+  }
+
+  function renderCollapsedLearnIndicator() {
+    const job = learnState?.job;
+    if (!isOwner || learnPanelOpen || (!job && !learnBusy)) return null;
+
+    const status = job?.status;
+    const active = learnBusy || isLearnActive(status);
+    const label = active
+      ? job?.currentStep || "Learn is running"
+      : status === "complete"
+        ? "Learn finished"
+        : status === "failed"
+          ? "Learn failed"
+          : status === "awaiting_confirmation"
+            ? "Learning map is waiting for review"
+            : status === "cancelled"
+              ? "Learn was cancelled"
+              : "Open Learn panel";
+    const tone = status === "complete"
+      ? "border-[#3d7652] bg-[#4f8a62] text-[var(--paper-raised)]"
+      : status === "failed"
+        ? "border-[#934646] bg-[#b85c5c] text-[var(--paper-raised)]"
+        : status === "awaiting_confirmation"
+          ? "border-[#a77f2b] bg-[#c59a3d] text-[var(--paper-raised)]"
+          : "border-gray-700 bg-gray-900 text-gray-400";
+
+    return (
+      <button
+        type="button"
+        onClick={() => setLearnPanelOpen(true)}
+        className={`absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border shadow-md transition hover:scale-105 ${tone}`}
+        aria-label={`Open Learn panel. ${label}`}
+        title={`${label}. Open Learn panel`}
+      >
+        {active ? (
+          <Spinner className="h-5 w-5" />
+        ) : status === "complete" ? (
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.4}
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="m5 12.5 4.2 4.2L19 7" />
+          </svg>
+        ) : status === "failed" ? (
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.4}
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" d="M12 7.5v6M12 17h.01" />
+          </svg>
+        ) : status === "awaiting_confirmation" ? (
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.1}
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" d="M9.5 8.5v7M14.5 8.5v7" />
+          </svg>
+        ) : (
+          <span className="h-3 w-3 rounded-full border-2 border-current" aria-hidden="true" />
+        )}
+      </button>
     );
   }
 
@@ -3691,37 +3950,31 @@ export default function WorkspaceClient({
           {isOwner && (
             <button
               type="button"
-              onClick={handleLearnPrimary}
-              disabled={
-                learnBusy ||
-                isLearnActive(learnState?.job?.status) ||
-                !learnState?.hasSources
-              }
+              onClick={() => setLearnPanelOpen((open) => !open)}
+              disabled={!learnState?.hasSources}
               title={
                 learnState?.hasSources
-                  ? learnState?.buttonLabel ?? "Learn"
+                  ? learnPanelOpen
+                    ? "Close Learn panel"
+                    : "Open Learn panel"
                   : "Upload sources before learning"
               }
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {learnBusy || isLearnActive(learnState?.job?.status) ? (
-                <Spinner className="w-3.5 h-3.5" />
-              ) : (
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.8}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
-                  />
-                </svg>
-              )}
-              {learnState?.buttonLabel ?? "Learn"}
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.8}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                />
+              </svg>
+              {learnPanelOpen ? "Close Learn panel" : "Open Learn panel"}
             </button>
           )}
           <button
@@ -4328,9 +4581,10 @@ export default function WorkspaceClient({
         )}
 
         {/* Chat area — warm paper surface so the green sidebars read as a frame */}
-        <div className="flex-1 flex flex-col min-h-0 bg-gray-900">
+        <div className="relative flex-1 flex flex-col min-h-0 bg-gray-900">
+          {renderLearnPanel()}
+          {renderCollapsedLearnIndicator()}
           <main className="flex-1 overflow-y-auto px-4 py-6">
-            {renderLearnPanel()}
             <ChatTranscript
               clusterName={clusterName}
               isStreaming={isStreaming}
@@ -4412,6 +4666,8 @@ export default function WorkspaceClient({
               isAddingDocuments={extractingAttachments}
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
+              tokenUsage={tokenUsage}
+              tokenUsagePending={isStreaming}
               utilityActions={
                 <>
                   <button

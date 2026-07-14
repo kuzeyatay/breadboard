@@ -30,6 +30,11 @@ import {
   type ChatAttachment,
 } from '@/lib/chat-attachments';
 import {
+  type ChatTokenUsage,
+  normalizeChatTokenUsage,
+  summarizeChatTokenUsage,
+} from '@/lib/chat-token-usage';
+import {
   forgetDismissedLearnErrorsForGarden,
   learnErrorDismissalKey,
   loadDismissedLearnErrorKeys,
@@ -42,6 +47,7 @@ interface ChatMessage {
   sources?: string[];
   thinking?: string;
   attachmentNames?: string[];
+  usage?: ChatTokenUsage;
 }
 
 interface ChatSession {
@@ -316,7 +322,10 @@ function loadQuartzChatSessions(clusterSlug: string | null): ChatSession[] {
               (message) =>
                 (message.role === 'user' || message.role === 'assistant') &&
                 typeof message.content === 'string',
-            )
+            ).map((message) => ({
+              ...message,
+              usage: normalizeChatTokenUsage(message.usage) ?? undefined,
+            }))
           : [],
       }))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
@@ -382,6 +391,7 @@ export default function GardenAssistant({
   const hasActiveCluster = Boolean(activeClusterSlug);
   const clusterLabel = activeClusterName || activeClusterSlug || 'Open a garden';
   const activeChat = chatSessions.find((session) => session.id === activeChatId) ?? null;
+  const tokenUsage = useMemo(() => summarizeChatTokenUsage(messages), [messages]);
 
   useEffect(() => {
     const savedWidth = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
@@ -622,6 +632,7 @@ export default function GardenAssistant({
     const userMessage: ChatMessage = { role: 'user', content: displayText, attachmentNames };
     const nextMessages = [...messages, userMessage];
     let assistantMessage: ChatMessage = { role: 'assistant', content: '', sources: [] };
+    const responseStartedAt = performance.now();
 
     setInput('');
     setChatAttachments([]);
@@ -664,6 +675,13 @@ export default function GardenAssistant({
         const tags = Array.isArray(body.tags)
           ? body.tags.filter((tag: unknown): tag is string => typeof tag === 'string')
           : [];
+        const normalizedUsage = normalizeChatTokenUsage(body.usage);
+        const usage = normalizedUsage
+          ? {
+              ...normalizedUsage,
+              responseDurationMs: Math.round(performance.now() - responseStartedAt),
+            }
+          : null;
         assistantMessage = {
           role: 'assistant',
           content: [
@@ -677,6 +695,7 @@ export default function GardenAssistant({
             .filter(Boolean)
             .join('\n'),
           sources: [title || slug],
+          ...(usage ? { usage } : {}),
         };
         const finalMessages = [...nextMessages, assistantMessage];
         setMessages(finalMessages);
@@ -762,6 +781,19 @@ export default function GardenAssistant({
                 content: `${assistantMessage.content}${event.text}`,
               };
               updateAssistant();
+            }
+            if (event.type === 'usage') {
+              const usage = normalizeChatTokenUsage(event.usage);
+              if (usage) {
+                assistantMessage = {
+                  ...assistantMessage,
+                  usage: {
+                    ...usage,
+                    responseDurationMs: Math.round(performance.now() - responseStartedAt),
+                  },
+                };
+                updateAssistant();
+              }
             }
           } catch {
             // Ignore malformed stream fragments and keep reading.
@@ -1151,6 +1183,8 @@ export default function GardenAssistant({
             setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
           }
           statusMessage={attachmentStatus}
+          tokenUsage={tokenUsage}
+          tokenUsagePending={isStreaming}
           utilityActions={
             <>
               <UsageLimitsPopover

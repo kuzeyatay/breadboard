@@ -84,11 +84,27 @@ const FALLBACK_FINGERPRINTS: RegExp[] = [
   /\bplaceholder\b/i,
 ];
 
-/** Two or more empty/ellipsis bullet items ("- ", "- ...", "- TBD"). */
+/** Blank fenced code and display math, preserving line structure, so a bare `+`
+ * or `-` operator line inside a formula is never read as a bullet. Mirrors
+ * blankNonProseBlocks() in dashboard/src/lib/learn-utils.ts. */
+function blankNonProseBlocks(body: string): string {
+  const blank = (match: string) => match.replace(/[^\n]/g, " ");
+  return body
+    .replace(/```[\s\S]*?```/g, blank)
+    .replace(/~~~[\s\S]*?~~~/g, blank)
+    .replace(/\$\$[\s\S]*?\$\$/g, blank)
+    .replace(/\\\[[\s\S]*?\\\]/g, blank)
+    .replace(/\\begin\{([a-zA-Z]+\*?)\}[\s\S]*?\\end\{\1\}/g, blank);
+}
+
+/** Two or more empty/ellipsis bullet items ("- ", "- ...", "- TBD"). Thematic
+ * breaks ("---") and math operators are not bullets. */
 function hasEmptyBulletScaffold(body: string): boolean {
   let empties = 0;
-  for (const line of body.replace(/```[\s\S]*?```/g, " ").split(/\r?\n/)) {
-    if (/^\s*[-*+]\s*(?:\.{2,}|…|TBD|N\/A|-{2,})?\s*$/i.test(line)) empties += 1;
+  for (const line of blankNonProseBlocks(body).split(/\r?\n/)) {
+    if (/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) continue;
+    if (/^\s*[-*+]\s*$/.test(line)) empties += 1;
+    else if (/^\s*[-*+]\s+(?:\.{2,}|…|TBD|N\/A|-{2,})\s*$/i.test(line)) empties += 1;
   }
   return empties >= 2;
 }

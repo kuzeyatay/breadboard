@@ -65,6 +65,7 @@ if (!globalWithDb.db) {
       role        TEXT    NOT NULL CHECK (role IN ('user', 'assistant')),
       content     TEXT    NOT NULL,
       sources     TEXT,
+      token_usage TEXT,
       order_index INTEGER NOT NULL,
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
@@ -136,6 +137,7 @@ db.exec(`
     role        TEXT    NOT NULL CHECK (role IN ('user', 'assistant')),
     content     TEXT    NOT NULL,
     sources     TEXT,
+    token_usage TEXT,
     order_index INTEGER NOT NULL,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   );
@@ -221,6 +223,7 @@ ensureColumn(
   "fork_allowed",
   "fork_allowed INTEGER NOT NULL DEFAULT 0",
 );
+ensureColumn("chat_messages", "token_usage", "token_usage TEXT");
 // Virtual grouping of clusters into folders on the dashboard / garden overview.
 ensureColumn("clusters", "folder", "folder TEXT");
 ensureColumn("users", "username", "username TEXT");

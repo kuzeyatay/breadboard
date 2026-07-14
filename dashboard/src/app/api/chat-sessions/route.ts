@@ -1,6 +1,10 @@
 import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth-options";
+import {
+  normalizeChatTokenUsage,
+  type ChatTokenUsage,
+} from "@/lib/chat-token-usage";
 import db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +15,7 @@ interface ChatMessage {
   role: ChatRole;
   content: string;
   sources?: string[];
+  usage?: ChatTokenUsage;
 }
 
 interface ChatSessionRow {
@@ -27,6 +32,7 @@ interface ChatMessageRow {
   role: ChatRole;
   content: string;
   sources: string | null;
+  token_usage: string | null;
 }
 
 function cleanTitle(value: unknown): string {
@@ -44,6 +50,15 @@ function parseSources(value: string | null): string[] {
       : [];
   } catch {
     return [];
+  }
+}
+
+function parseTokenUsage(value: string | null): ChatTokenUsage | undefined {
+  if (!value) return undefined;
+  try {
+    return normalizeChatTokenUsage(JSON.parse(value)) ?? undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -127,7 +142,7 @@ function readSessions(
   const placeholders = ids.map(() => "?").join(",");
   const messages = db
     .prepare(
-      `SELECT session_id, role, content, sources
+      `SELECT session_id, role, content, sources, token_usage
        FROM chat_messages
        WHERE session_id IN (${placeholders})
        ORDER BY session_id, order_index`,
@@ -137,10 +152,12 @@ function readSessions(
   const bySession = new Map<number, ChatMessage[]>();
   for (const message of messages) {
     const existing = bySession.get(message.session_id) ?? [];
+    const usage = parseTokenUsage(message.token_usage);
     existing.push({
       role: message.role,
       content: message.content,
       sources: parseSources(message.sources),
+      ...(usage ? { usage } : {}),
     });
     bySession.set(message.session_id, existing);
   }

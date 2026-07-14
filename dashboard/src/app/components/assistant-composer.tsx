@@ -7,9 +7,10 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatAssistantModelName } from '@/lib/ai-models';
 import type { AssistantReasoningEffort } from '@/lib/assistant-reasoning';
+import { formatResponseDuration, formatTokenCount, type ChatTokenUsageSummary } from '@/lib/chat-token-usage';
 
 export interface ComposerAttachment {
   name: string;
@@ -41,6 +42,8 @@ interface Props {
   onRemoveAttachment?: (index: number) => void;
   utilityActions?: ReactNode;
   statusMessage?: string;
+  tokenUsage?: ChatTokenUsageSummary;
+  tokenUsagePending?: boolean;
   className?: string;
   compact?: boolean;
 }
@@ -72,6 +75,20 @@ function Spinner() {
   );
 }
 
+function LiveTokenUsageStatus() {
+  const [durationMs, setDurationMs] = useState(0);
+
+  useEffect(() => {
+    const startedAt = performance.now();
+    const timer = window.setInterval(() => {
+      setDurationMs(performance.now() - startedAt);
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return <>({formatResponseDuration(durationMs)} \u2022 \u2193 counting tokens...)</>;
+}
+
 export default function AssistantComposer({
   value,
   onChange,
@@ -97,6 +114,8 @@ export default function AssistantComposer({
   onRemoveAttachment,
   utilityActions,
   statusMessage,
+  tokenUsage,
+  tokenUsagePending = false,
   className = '',
   compact = false,
 }: Props) {
@@ -111,6 +130,17 @@ export default function AssistantComposer({
 
   return (
     <div className={className}>
+      {tokenUsage ? (
+        <p className="mb-2 px-3 font-mono text-[12px] leading-4 text-[var(--ink-muted)]">
+          {tokenUsagePending
+            ? <LiveTokenUsageStatus />
+            : tokenUsage.latest
+              ? `(${tokenUsage.latest.responseDurationMs !== undefined ? `${formatResponseDuration(tokenUsage.latest.responseDurationMs)} \u2022 ` : ''}\u2193 ${tokenUsage.latest.estimated ? '~' : ''}${formatTokenCount(tokenUsage.latest.totalTokens).toLowerCase()} tokens)`
+              : tokenUsage.unreportedResponses > 0
+                ? '(\u2193 tokens unavailable)'
+                : '(\u2193 0 tokens)'}
+        </p>
+      ) : null}
       <div className="relative rounded-[30px] border border-[var(--line)] bg-[var(--paper-raised)] p-2 shadow-[0_14px_40px_rgba(15,32,27,0.10)] transition focus-within:border-[var(--line-strong)] focus-within:shadow-[0_16px_44px_rgba(15,32,27,0.14)]">
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 px-2 pb-1.5 pt-1">
@@ -265,7 +295,11 @@ export default function AssistantComposer({
           </button>
         </div>
 
-        {statusMessage ? <p className="px-3 pb-1 pt-1.5 text-[11px] text-[#8a6f00]">{statusMessage}</p> : null}
+        {statusMessage ? (
+          <div className="flex min-h-7 items-center gap-3 px-3 pb-1 pt-1.5 text-[11px]">
+            <p className="min-w-0 flex-1 text-[#8a6f00]">{statusMessage}</p>
+          </div>
+        ) : null}
       </div>
     </div>
   );

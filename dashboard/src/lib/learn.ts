@@ -22,6 +22,15 @@ import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
 import { describeMissingAnchorFailure, healDanglingReplacementReferences, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
 import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import {
+  decideFinalAcceptance,
+  runWeakAnchorSelfHealingLoop,
+  writeWeakAnchorSelfHealingReports,
+  type WeakAnchorDecisionKind,
+  type WeakAnchorRepairDecision,
+  type WeakAnchorRepairModel,
+  type WeakAnchorRepairPacket,
+} from "@/lib/weak-anchor-self-healing";
+import {
   appendGardenEvent,
   buildDeterministicVisual,
   generateVisualSpec,
@@ -30,6 +39,7 @@ import {
 } from "@/lib/visuals";
 import {
   assignSourceArtifacts,
+  alignLearningUnitConceptAliasesWithRegistry,
   anchorTextCompatibleWithVisualType,
   conceptTagsForUnit,
   dedupeSourceArtifactAssignments,
@@ -37,6 +47,7 @@ import {
   knowledgeClaimsForUnit,
   learningMapFromUnits,
   normalizeLearningUnits,
+  reconcileLearningUnitConceptAliases,
   semanticConceptsForUnit,
   validateLearningUnitContracts,
   visualTypeCompatibleWithUnit,
@@ -48,8 +59,13 @@ import {
 import {
   claimIdForPlan,
   ensureGardenConceptRegistry,
+  writeGardenConceptRegistryAndContract,
 } from "@/lib/garden-semantics";
-import { isValidPublicConceptSlug, normalizeConceptSlug } from "@/lib/semantic-core";
+import {
+  isValidPublicConceptSlug,
+  normalizeConceptSlug,
+  normalizeLookupText,
+} from "@/lib/semantic-core";
 import {
   IMPLEMENTED_VISUAL_TYPES,
   buildVisualBlock,
@@ -105,6 +121,14 @@ import {
   type ProposedLearningMap,
 } from "@/lib/learn-utils";
 import { extractQuartzMath, normalizeQuartzMarkdown } from "@/lib/quartz-markdown";
+import {
+  attachLearnTokenUsageTracking,
+  emptyLearnTokenUsage,
+  sumLearnTokenUsage,
+  type LearnTokenUsage,
+  type LearnTokenUsageEvent,
+} from "@/lib/learn-token-usage";
+import { transitionLearnTimer } from "@/lib/learn-timer";
 
 export type {
   LearnStatus,
@@ -132,6 +156,9 @@ export interface LearnJob {
   sourceSetHash?: string;
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
+  tokenUsage: LearnTokenUsage;
+  elapsedMs: number;
+  timerStartedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -191,8 +218,24 @@ interface LearnJobRow {
   source_set_hash: string | null;
   source_only: number | null;
   include_source_snapshots: number | null;
+  active_elapsed_ms: number | null;
+  timer_started_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface LearnJobTokenUsageRow {
+  job_id: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  cached_input_tokens: number | null;
+  reasoning_tokens: number | null;
+  started_requests: number | null;
+  completed_requests: number | null;
+  reported_requests: number | null;
+  estimated_requests: number | null;
+  usage_updated_at: string | null;
 }
 
 interface LearnMapRow {
@@ -475,6 +518,7 @@ Contract rules:
 - Do not invent custom visual types. If none of the listed interactive visual types fits, omit interactiveVisual for that unit.
 - Do not repeat interactive visual signatures. If a later unit needs a similar visual, link back conceptually or omit it.
 - Concepts are reusable identities, never complete claims, page-title summaries, filenames, locations, or planner phrases. Reuse an existing canonical slug or alias whenever possible.
+- Every normalized alias must belong to exactly one concept. Never use another concept's slug or preferred label as an alias, and never assign the same alias to multiple concepts.
 - Mark one or two genuinely central concepts primary. Use supporting concepts only when they materially help retrieval or graph traversal.
 - Plan 1-5 public concepts per learner unit. Never add filler to satisfy a target count.
 - Claims are readable source-grounded statements kept separately from public tags. Zero claims is valid when the material supports none.
@@ -576,12 +620,28 @@ function ensureLearnTables(): void {
       source_set_hash            TEXT,
       source_only                INTEGER NOT NULL DEFAULT 1,
       include_source_snapshots   INTEGER NOT NULL DEFAULT 0,
+      active_elapsed_ms          INTEGER NOT NULL DEFAULT 0,
+      timer_started_at           TEXT,
       created_at                 TEXT NOT NULL,
       updated_at                 TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_learn_jobs_garden_updated
       ON learn_jobs(garden_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS learn_job_token_usage (
+      job_id                TEXT PRIMARY KEY REFERENCES learn_jobs(id) ON DELETE CASCADE,
+      input_tokens          INTEGER NOT NULL DEFAULT 0,
+      output_tokens         INTEGER NOT NULL DEFAULT 0,
+      total_tokens          INTEGER NOT NULL DEFAULT 0,
+      cached_input_tokens   INTEGER NOT NULL DEFAULT 0,
+      reasoning_tokens      INTEGER NOT NULL DEFAULT 0,
+      started_requests      INTEGER NOT NULL DEFAULT 0,
+      completed_requests    INTEGER NOT NULL DEFAULT 0,
+      reported_requests     INTEGER NOT NULL DEFAULT 0,
+      estimated_requests    INTEGER NOT NULL DEFAULT 0,
+      usage_updated_at      TEXT
+    );
 
     CREATE TABLE IF NOT EXISTS learn_maps (
       id                        TEXT PRIMARY KEY,
@@ -616,6 +676,20 @@ function ensureLearnTables(): void {
     CREATE INDEX IF NOT EXISTS idx_learn_versions_garden_created
       ON learn_versions(garden_id, created_at DESC);
   `);
+
+  const learnJobColumns = new Set(
+    (db.prepare("PRAGMA table_info(learn_jobs)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  if (!learnJobColumns.has("active_elapsed_ms")) {
+    db.exec(
+      "ALTER TABLE learn_jobs ADD COLUMN active_elapsed_ms INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!learnJobColumns.has("timer_started_at")) {
+    db.exec("ALTER TABLE learn_jobs ADD COLUMN timer_started_at TEXT");
+  }
 }
 
 function nowIso(): string {
@@ -638,6 +712,120 @@ function parseJson(value: string): unknown {
   }
 }
 
+function learnTokenUsageForJob(jobId: string): LearnTokenUsage {
+  const row = db
+    .prepare("SELECT * FROM learn_job_token_usage WHERE job_id = ?")
+    .get(jobId) as LearnJobTokenUsageRow | undefined;
+  if (!row) return emptyLearnTokenUsage();
+
+  const startedCalls = Number(row.started_requests ?? 0);
+  const completedCalls = Number(row.completed_requests ?? 0);
+  const reportedCalls = Number(row.reported_requests ?? 0);
+  return {
+    inputTokens: Number(row.input_tokens ?? 0),
+    outputTokens: Number(row.output_tokens ?? 0),
+    totalTokens: Number(row.total_tokens ?? 0),
+    cachedInputTokens: Number(row.cached_input_tokens ?? 0),
+    reasoningTokens: Number(row.reasoning_tokens ?? 0),
+    estimated: Number(row.estimated_requests ?? 0) > 0,
+    startedCalls,
+    completedCalls,
+    reportedCalls,
+    unreportedCalls: Math.max(0, completedCalls - reportedCalls),
+    inFlightCalls: Math.max(0, startedCalls - completedCalls),
+  };
+}
+
+/** A user-visible Learn workflow crosses two persisted jobs: planning creates
+ * the learning map, then generation consumes that confirmed map. Aggregate the
+ * map's planning job with only the currently visible generation/regeneration
+ * job, so historical generation attempts are not counted again. */
+function learnTokenUsageForWorkflow(job: LearnJob): LearnTokenUsage {
+  const jobIds = new Set([job.id]);
+  const learningMapId = job.confirmedLearningMapId ?? job.proposedLearningMapId;
+  if (learningMapId) {
+    const mapOwner = db
+      .prepare("SELECT garden_id, job_id FROM learn_maps WHERE id = ?")
+      .get(learningMapId) as { garden_id: string; job_id: string } | undefined;
+    if (mapOwner?.garden_id === job.gardenId && mapOwner.job_id) {
+      jobIds.add(mapOwner.job_id);
+    }
+  }
+  return sumLearnTokenUsage(
+    Array.from(jobIds, (jobId) => learnTokenUsageForJob(jobId)),
+  );
+}
+
+function learnTimerForWorkflow(job: LearnJob): {
+  elapsedMs: number;
+  timerStartedAt?: string;
+} {
+  let elapsedMs = job.elapsedMs;
+  const learningMapId = job.confirmedLearningMapId ?? job.proposedLearningMapId;
+  if (learningMapId) {
+    const mapOwner = db
+      .prepare(
+        `SELECT j.id, j.active_elapsed_ms
+         FROM learn_maps m
+         JOIN learn_jobs j ON j.id = m.job_id
+         WHERE m.id = ? AND m.garden_id = ?`,
+      )
+      .get(learningMapId, job.gardenId) as
+      | { id: string; active_elapsed_ms: number | null }
+      | undefined;
+    if (mapOwner && mapOwner.id !== job.id) {
+      elapsedMs += Number(mapOwner.active_elapsed_ms ?? 0);
+    }
+  }
+  return {
+    elapsedMs,
+    ...(job.timerStartedAt ? { timerStartedAt: job.timerStartedAt } : {}),
+  };
+}
+
+function recordLearnTokenUsageEvent(jobId: string, event: LearnTokenUsageEvent): void {
+  const updatedAt = nowIso();
+  db.prepare(
+    `INSERT OR IGNORE INTO learn_job_token_usage (job_id, usage_updated_at)
+     VALUES (?, ?)`,
+  ).run(jobId, updatedAt);
+
+  if (event.type === "started") {
+    db.prepare(
+      `UPDATE learn_job_token_usage
+       SET started_requests = started_requests + 1,
+           usage_updated_at = ?
+       WHERE job_id = ?`,
+    ).run(updatedAt, jobId);
+    return;
+  }
+
+  const usage = event.usage;
+  db.prepare(
+    `UPDATE learn_job_token_usage
+     SET input_tokens = input_tokens + ?,
+         output_tokens = output_tokens + ?,
+         total_tokens = total_tokens + ?,
+         cached_input_tokens = cached_input_tokens + ?,
+         reasoning_tokens = reasoning_tokens + ?,
+         completed_requests = completed_requests + 1,
+         reported_requests = reported_requests + ?,
+         estimated_requests = estimated_requests + ?,
+         usage_updated_at = ?
+     WHERE job_id = ?`,
+  ).run(
+    usage?.inputTokens ?? 0,
+    usage?.outputTokens ?? 0,
+    usage?.totalTokens ?? 0,
+    usage?.cachedInputTokens ?? 0,
+    usage?.reasoningTokens ?? 0,
+    usage ? 1 : 0,
+    usage?.estimated ? 1 : 0,
+    updatedAt,
+    jobId,
+  );
+}
+
 function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
   if (!row) return null;
   return {
@@ -657,6 +845,9 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     sourceSetHash: row.source_set_hash ?? undefined,
     sourceOnly: Boolean(row.source_only ?? 1),
     includeSourceSnapshots: Boolean(row.include_source_snapshots ?? 0),
+    tokenUsage: learnTokenUsageForJob(row.id),
+    elapsedMs: Math.max(0, Number(row.active_elapsed_ms ?? 0)),
+    timerStartedAt: row.timer_started_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -714,14 +905,18 @@ function createLearnJob({
     progressPercent: 0,
     sourceOnly,
     includeSourceSnapshots,
+    tokenUsage: emptyLearnTokenUsage(),
+    elapsedMs: 0,
+    timerStartedAt: date,
     createdAt: date,
     updatedAt: date,
   };
   db.prepare(
     `INSERT INTO learn_jobs (
       id, garden_id, user_id, status, mode, current_step, progress_percent,
-      source_only, include_source_snapshots, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      source_only, include_source_snapshots, active_elapsed_ms, timer_started_at,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     job.id,
     job.gardenId,
@@ -732,9 +927,15 @@ function createLearnJob({
     job.progressPercent,
     job.sourceOnly ? 1 : 0,
     job.includeSourceSnapshots ? 1 : 0,
+    job.elapsedMs,
+    job.timerStartedAt ?? null,
     job.createdAt,
     job.updatedAt,
   );
+  db.prepare(
+    `INSERT OR IGNORE INTO learn_job_token_usage (job_id, usage_updated_at)
+     VALUES (?, ?)`,
+  ).run(job.id, job.createdAt);
   return job;
 }
 
@@ -774,7 +975,20 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
   if (current.status === "cancelled" && updates.status !== "cancelled") {
     return current;
   }
-  const next = { ...current, ...updates, updatedAt: nowIso() };
+  const updatedAt = nowIso();
+  const nextStatus = updates.status ?? current.status;
+  const timer = transitionLearnTimer(
+    { elapsedMs: current.elapsedMs, startedAt: current.timerStartedAt },
+    nextStatus,
+    updatedAt,
+  );
+  const next = {
+    ...current,
+    ...updates,
+    elapsedMs: timer.elapsedMs,
+    timerStartedAt: timer.startedAt,
+    updatedAt,
+  };
   db.prepare(
     `UPDATE learn_jobs
      SET status = ?,
@@ -790,6 +1004,8 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
          source_set_hash = ?,
          source_only = ?,
          include_source_snapshots = ?,
+         active_elapsed_ms = ?,
+         timer_started_at = ?,
          updated_at = ?
      WHERE id = ?`,
   ).run(
@@ -806,6 +1022,8 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     next.sourceSetHash ?? null,
     next.sourceOnly ? 1 : 0,
     next.includeSourceSnapshots ? 1 : 0,
+    next.elapsedMs,
+    next.timerStartedAt ?? null,
     next.updatedAt,
     jobId,
   );
@@ -1633,6 +1851,38 @@ function sourceCoveragePlan(
   };
 }
 
+function registryAlignmentAliasRepairs(
+  before: readonly LearningUnitContract[],
+  after: readonly LearningUnitContract[],
+): Array<{
+  normalizedAlias: string;
+  removedFrom: string[];
+  reason: "registry-ownership";
+}> {
+  const beforeConcepts = before.flatMap((unit) => unit.semanticConcepts ?? []);
+  const afterConcepts = after.flatMap((unit) => unit.semanticConcepts ?? []);
+  const repairs = new Map<string, Set<string>>();
+  beforeConcepts.forEach((concept, index) => {
+    const allowed = new Set(
+      (afterConcepts[index]?.aliases ?? []).map((alias) => normalizeLookupText(alias)),
+    );
+    for (const alias of concept.aliases ?? []) {
+      const normalizedAlias = normalizeLookupText(alias);
+      if (!normalizedAlias || allowed.has(normalizedAlias)) continue;
+      const removedFrom = repairs.get(normalizedAlias) ?? new Set<string>();
+      removedFrom.add(`concept:${normalizeConceptSlug(concept.slug)}`);
+      repairs.set(normalizedAlias, removedFrom);
+    }
+  });
+  return [...repairs.entries()]
+    .map(([normalizedAlias, removedFrom]) => ({
+      normalizedAlias,
+      removedFrom: [...removedFrom].sort(),
+      reason: "registry-ownership" as const,
+    }))
+    .sort((left, right) => left.normalizedAlias.localeCompare(right.normalizedAlias));
+}
+
 function writeLearningUnitContractArtifacts({
   clusterDir,
   units,
@@ -1643,47 +1893,76 @@ function writeLearningUnitContractArtifacts({
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
   sourceSetHash: string;
-}): void {
-  const bbDir = path.join(clusterDir, ".breadboard");
-  const planningDir = path.join(bbDir, "planning");
-  fs.mkdirSync(planningDir, { recursive: true });
+}): {
+  units: LearningUnitContract[];
+  semanticAliasRepairs: Array<{
+    normalizedAlias: string;
+    removedFrom: string[];
+    reason: string;
+  }>;
+} {
   // Fix 7: never attach a raw semantic source anchor the source cannot support.
   // Codes and first-class structural anchors pass through; unresolvable semantic
   // anchors are dropped from the contract before they propagate to pages (the
   // deterministic reconcile enforces the same rule as the final safety net).
   const deferredSourceAnchors: string[] = [];
-  const gatedUnits = units.map((unit) => {
-    if (!Array.isArray(unit.sourceAnchors) || unit.sourceAnchors.length === 0) return unit;
-    const { accepted, deferred } = ingestModelSourceAnchors(clusterDir, unit.sourceAnchors);
-    if (deferred.length === 0) return unit;
+  const gateSourceAnchors = (anchors: string[] | undefined): string[] => {
+    if (!Array.isArray(anchors) || anchors.length === 0) return [];
+    const { accepted, deferred } = ingestModelSourceAnchors(clusterDir, anchors);
     deferredSourceAnchors.push(...deferred);
-    return { ...unit, sourceAnchors: accepted };
-  });
-  const payload = {
-    sourceSetHash,
-    generatedAt: nowIso(),
-    learningUnits: gatedUnits,
-    sourceArtifactAssignments: assignments,
-    ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
+    return accepted;
   };
-  fs.writeFileSync(path.join(bbDir, "learning-unit-contract.json"), JSON.stringify(payload, null, 2), "utf-8");
-  ensureGardenConceptRegistry({
+  const gatedUnits = units.map((unit) => {
+    const sourceAnchors = gateSourceAnchors(unit.sourceAnchors);
+    const semanticConcepts = semanticConceptsForUnit(unit).map((concept) => ({
+      ...concept,
+      evidenceAnchors: gateSourceAnchors(concept.evidenceAnchors),
+    }));
+    return { ...unit, sourceAnchors, semanticConcepts };
+  });
+  const aliasReconciliation = reconcileLearningUnitConceptAliases(gatedUnits);
+  let reconciledUnits = aliasReconciliation.units;
+  // Build and validate the registry before writing the contract. This avoids
+  // leaving a newly written, colliding contract paired with an older registry
+  // if a non-repairable canonical conflict is ever encountered.
+  const registry = ensureGardenConceptRegistry({
     gardenDir: clusterDir,
     gardenId: path.basename(clusterDir),
     sourceSetHash,
-    concepts: gatedUnits.flatMap(semanticConceptsForUnit),
+    concepts: reconciledUnits.flatMap(semanticConceptsForUnit),
+    persist: false,
   });
+  const unitsBeforeRegistryAlignment = reconciledUnits;
+  reconciledUnits = alignLearningUnitConceptAliasesWithRegistry(reconciledUnits, registry);
+  const registryAlignmentRepairs = registryAlignmentAliasRepairs(
+    unitsBeforeRegistryAlignment,
+    reconciledUnits,
+  );
+  const semanticAliasRepairs = [
+    ...aliasReconciliation.repairs,
+    ...registryAlignmentRepairs,
+  ];
+  const payload = {
+    sourceSetHash,
+    generatedAt: nowIso(),
+    learningUnits: reconciledUnits,
+    sourceArtifactAssignments: assignments,
+    ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
+    ...(semanticAliasRepairs.length
+      ? { semanticAliasRepairs }
+      : {}),
+  };
   const lines = [
     "# Learning Unit Contract",
     "",
     `Source set hash: ${sourceSetHash}`,
-    `Learning units: ${units.length}`,
+    `Learning units: ${reconciledUnits.length}`,
     `Source artifact assignments: ${assignments.length}`,
     "",
     "## Units",
     "",
   ];
-  for (const unit of units) {
+  for (const unit of reconciledUnits) {
     lines.push(`- ${unit.id}: ${unit.title} (${unit.role})`);
     lines.push(`  - Question: ${unit.learningQuestion || unit.title}`);
     const artifacts = assignments
@@ -1698,7 +1977,13 @@ function writeLearningUnitContractArtifacts({
     const claims = knowledgeClaimsForUnit(unit);
     if (claims.length > 0) lines.push(`  - Claims: ${claims.map((claim) => claim.text).join(" | ")}`);
   }
-  fs.writeFileSync(path.join(planningDir, "Learning Unit Contract.md"), `${lines.join("\n")}\n`, "utf-8");
+  writeGardenConceptRegistryAndContract({
+    gardenDir: clusterDir,
+    registry,
+    contract: payload,
+    planningMarkdown: `${lines.join("\n")}\n`,
+  });
+  return { units: reconciledUnits, semanticAliasRepairs };
 }
 
 function learningUnitsFromCoveragePlan(plan: unknown): LearningUnitContract[] {
@@ -1817,6 +2102,9 @@ export async function runLearnPlanning({
     mode: "plan",
     sourceOnly,
     includeSourceSnapshots,
+  });
+  attachLearnTokenUsageTracking(client, (event) => {
+    recordLearnTokenUsageEvent(job.id, event);
   });
   const context = collectLearnSourceContext(contentPath, gardenId);
 
@@ -2062,6 +2350,35 @@ export async function runLearnPlanning({
     }
 
     throwIfLearnCancelled(job.id);
+    // Reconcile the final model/fallback plan against the garden's existing
+    // canonical concept ownership before deriving either the visible map or
+    // the database coverage plan. The dry run deliberately carries no model
+    // evidence anchors: source gating occurs when the artifacts are written.
+    const planningAliasReconciliation = reconcileLearningUnitConceptAliases(learningUnits);
+    learningUnits = planningAliasReconciliation.units;
+    const planningRegistry = ensureGardenConceptRegistry({
+      gardenDir: clusterPath(contentPath, gardenId),
+      gardenId,
+      sourceSetHash: context.sourceSetHash,
+      concepts: learningUnits.flatMap(semanticConceptsForUnit).map((concept) => ({
+        ...concept,
+        evidenceAnchors: [],
+      })),
+      persist: false,
+    });
+    const unitsBeforeRegistryAlignment = learningUnits;
+    learningUnits = alignLearningUnitConceptAliasesWithRegistry(
+      learningUnits,
+      planningRegistry,
+    );
+    const planningRegistryAlignmentRepairs = registryAlignmentAliasRepairs(
+      unitsBeforeRegistryAlignment,
+      learningUnits,
+    );
+    const planningSemanticAliasRepairs = [
+      ...planningAliasReconciliation.repairs,
+      ...planningRegistryAlignmentRepairs,
+    ];
     const planRecord = planningRecord(topicMapCall.parsed);
     const sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
     let learningMap = learningMapFromUnits(learningUnits, {
@@ -2088,21 +2405,66 @@ export async function runLearnPlanning({
       };
     }
     const coveragePlan = sourceCoveragePlan(context, learningMap, learningUnits, sourceArtifactAssignments);
-    const storedMap = insertLearnMap({
-      gardenId,
-      jobId: job.id,
-      sourceMap,
-      scopeContract,
-      learningMap,
-      coveragePlan,
-      sourceSetHash: context.sourceSetHash,
-    });
-    writeLearningUnitContractArtifacts({
-      clusterDir: clusterPath(contentPath, gardenId),
-      units: learningUnits,
-      assignments: sourceArtifactAssignments,
-      sourceSetHash: context.sourceSetHash,
-    });
+    let artifactSemanticAliasRepairs: Array<{
+      normalizedAlias: string;
+      removedFrom: string[];
+      reason: string;
+    }> = [];
+    const storedMap = db.transaction(() => {
+      const stored = insertLearnMap({
+        gardenId,
+        jobId: job.id,
+        sourceMap,
+        scopeContract,
+        learningMap,
+        coveragePlan,
+        sourceSetHash: context.sourceSetHash,
+      });
+      // A failed semantic artifact commit rolls this database insert back, so
+      // a failed Learn job cannot leave behind a confirmable orphan map.
+      const contractWrite = writeLearningUnitContractArtifacts({
+        clusterDir: clusterPath(contentPath, gardenId),
+        units: learningUnits,
+        assignments: sourceArtifactAssignments,
+        sourceSetHash: context.sourceSetHash,
+      });
+      learningUnits = contractWrite.units;
+      artifactSemanticAliasRepairs = contractWrite.semanticAliasRepairs;
+      learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
+      const repairedCoveragePlan = sourceCoveragePlan(
+        context,
+        learningMap,
+        learningUnits,
+        sourceArtifactAssignments,
+      );
+      db.prepare(
+        `UPDATE learn_maps
+         SET learning_map_json = ?, proposed_order_json = ?, coverage_plan_json = ?
+         WHERE id = ?`,
+      ).run(
+        jsonString(learningMap),
+        jsonString(learningMap.sections),
+        jsonString(repairedCoveragePlan),
+        stored.id,
+      );
+      return {
+        ...stored,
+        learningMap,
+        proposedOrder: learningMap.sections,
+        coveragePlan: repairedCoveragePlan,
+      };
+    })();
+    const persistedSemanticAliasRepairs = [
+      ...planningSemanticAliasRepairs,
+      ...artifactSemanticAliasRepairs,
+    ];
+    if (persistedSemanticAliasRepairs.length > 0) {
+      appendLearnEvent(contentPath, gardenId, "learn_concept_aliases_reconciled", {
+        jobId: job.id,
+        learningMapId: storedMap.id,
+        repairs: persistedSemanticAliasRepairs,
+      });
+    }
     appendLearnEvent(contentPath, gardenId, "learn_learning_unit_contract_created", {
       jobId: job.id,
       councilRunId: topicMapCall.councilRunId,
@@ -4200,20 +4562,13 @@ export async function runTextbookGeneration({
     sourceOnly,
     includeSourceSnapshots,
   });
+  attachLearnTokenUsageTracking(client, (event) => {
+    recordLearnTokenUsageEvent(job.id, event);
+  });
   const clusterDir = clusterPath(contentPath, gardenId);
   fs.mkdirSync(clusterDir, { recursive: true });
-  const confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
+  let confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
   const confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
-  map = {
-    ...map,
-    learningMap: learningMapWithConfirmedUnitContracts(map.learningMap, confirmedLearningUnits),
-  };
-  writeLearningUnitContractArtifacts({
-    clusterDir,
-    units: confirmedLearningUnits,
-    assignments: confirmedSourceArtifactAssignments,
-    sourceSetHash: context.sourceSetHash,
-  });
   // Version ids are learning_* so nothing named "textbook" can leak into a
   // visible file name, event, or frontmatter value.
   const textbookVersionId = makeId("learning");
@@ -4240,6 +4595,44 @@ export async function runTextbookGeneration({
       latestTextbookVersionId: textbookVersionId,
       sourceSetHash: context.sourceSetHash,
     });
+    const contractWrite = writeLearningUnitContractArtifacts({
+      clusterDir,
+      units: confirmedLearningUnits,
+      assignments: confirmedSourceArtifactAssignments,
+      sourceSetHash: context.sourceSetHash,
+    });
+    confirmedLearningUnits = contractWrite.units;
+    const repairedCoveragePlan = {
+      ...planningRecord(map.coveragePlan),
+      learningUnitContracts: confirmedLearningUnits,
+    };
+    const repairedLearningMap = learningMapWithConfirmedUnitContracts(
+      map.learningMap,
+      confirmedLearningUnits,
+    );
+    map = {
+      ...map,
+      coveragePlan: repairedCoveragePlan,
+      learningMap: repairedLearningMap,
+      proposedOrder: repairedLearningMap.sections,
+    };
+    db.prepare(
+      `UPDATE learn_maps
+       SET coverage_plan_json = ?, learning_map_json = ?, proposed_order_json = ?
+       WHERE id = ?`,
+    ).run(
+      jsonString(repairedCoveragePlan),
+      jsonString(repairedLearningMap),
+      jsonString(repairedLearningMap.sections),
+      map.id,
+    );
+    if (contractWrite.semanticAliasRepairs.length > 0) {
+      appendLearnEvent(contentPath, gardenId, "learn_concept_aliases_reconciled", {
+        jobId: job.id,
+        learningMapId: map.id,
+        repairs: contractWrite.semanticAliasRepairs,
+      });
+    }
     // Stage 2 (idempotent): sources uploaded after planning still get their
     // visuals extracted before any page is written.
     const ledgerVisuals = await ensureSourceVisualsExtracted({
@@ -4609,7 +5002,13 @@ export async function runTextbookGeneration({
                   pageMarkdown: attemptBody,
                   failedProblems: quality.problems
                     .filter((problem) => problem.hard)
-                    .map((problem) => `${problem.code}: ${problem.message}`),
+                    .map((problem) =>
+                      problem.evidence?.length
+                        ? `${problem.code}: ${problem.message} — offending lines: ${problem.evidence
+                            .map((line) => JSON.stringify(line))
+                            .join(", ")}`
+                        : `${problem.code}: ${problem.message}`,
+                    ),
                   dossier: pageDossier,
                   repairRules: [
                     "Fix only the listed hard failures.",
@@ -4677,7 +5076,11 @@ export async function runTextbookGeneration({
           throw new Error(
             `Lesson "${pageTitle}" failed quality gates after ${MAX_PAGE_ATTEMPTS} attempts (${(lastQuality?.problems ?? [])
               .filter((problem) => problem.hard)
-              .map((problem) => problem.message)
+              .map((problem) =>
+                problem.evidence?.length
+                  ? `${problem.message} [${problem.evidence.map((line) => JSON.stringify(line)).join(", ")}]`
+                  : problem.message,
+              )
               .join("; ") || "no usable draft produced"}). No fallback learner page was written.`,
           );
         }
@@ -4886,6 +5289,83 @@ export async function runTextbookGeneration({
     // loop only gives up (and the terminal throw below fires) once ChatMock can
     // no longer make progress, so a healthy model self-heals gate failures
     // rather than ending generation on the first attempt.
+    // Stage 8 (pre-finalize): bounded, deterministic-first / ChatMock-second
+    // weak-anchor self-healing. ACTIVELY referenced low/unsupported source anchors
+    // are repaired from real source evidence — deterministically when a single
+    // candidate is unambiguous, otherwise via a targeted ChatMock decision that is
+    // INDEPENDENTLY verified (excerpt present in source + relevant + right family;
+    // replacement ids must be ones we offered) — BEFORE the terminal finalize gate.
+    // It never fails generation and never invents evidence; unused/historical weak
+    // anchors are ignored so they never spend a ChatMock call. Residual blockers are
+    // caught by the existing deterministic gate + Stage 8c critic.
+    try {
+      const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
+      const weakAnchorRepairModel: WeakAnchorRepairModel | undefined = criticEnabled
+        ? async (packet: WeakAnchorRepairPacket): Promise<WeakAnchorRepairDecision | null> => {
+            const system =
+              "You repair ONE weak source anchor for a learning garden. You are given the anchor, why it is weak, " +
+              "the pages/units that reference it, verbatim candidate source passages, and existing alternative anchors. " +
+              "Return STRICT JSON: {\"decision\": \"confirm_current_grounding\"|\"reground_from_source\"|\"replace_with_existing_anchor\"|\"reject_no_grounding\", " +
+              "\"confidence\": \"high\"|\"medium\"|\"low\", \"reason\": string, \"exactText\"?: string, \"sourceId\"?: string, \"page\"?: number, \"replacementAnchorId\"?: string}. " +
+              "RULES: choose only from the provided candidatePassages or existingAlternativeAnchors; never invent a passage, an id, or a page; " +
+              "for confirm/reground return a VERBATIM exactText that appears in the source; for replace, replacementAnchorId MUST be one of existingAlternativeAnchors; " +
+              "if nothing provided supports the anchor's meaning, return reject_no_grounding.";
+            const { parsed } = await callCouncilJson({
+              client,
+              model,
+              taskType: "critique",
+              gardenId,
+              system,
+              user: JSON.stringify(packet),
+              sourceContext: packet,
+              councilModeOverride: "direct_council",
+              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+            });
+            if (!parsed || typeof parsed !== "object") return null;
+            const d = parsed as Record<string, unknown>;
+            const kind = String(d.decision ?? "");
+            const allowed: WeakAnchorDecisionKind[] = ["confirm_current_grounding", "reground_from_source", "replace_with_existing_anchor", "reject_no_grounding"];
+            if (!allowed.includes(kind as WeakAnchorDecisionKind)) return null;
+            const conf = String(d.confidence ?? "low");
+            return {
+              issueIdentity: packet.issueIdentity,
+              anchorId: packet.anchor.id,
+              decision: kind as WeakAnchorDecisionKind,
+              confidence: (["high", "medium", "low"].includes(conf) ? conf : "low") as "high" | "medium" | "low",
+              reason: typeof d.reason === "string" ? d.reason : "chatmock weak-anchor decision",
+              exactText: typeof d.exactText === "string" ? d.exactText : undefined,
+              sourceId: typeof d.sourceId === "string" ? d.sourceId : undefined,
+              page: typeof d.page === "number" ? d.page : undefined,
+              replacementAnchorId: typeof d.replacementAnchorId === "string" ? d.replacementAnchorId : undefined,
+              origin: "chatmock",
+            };
+          }
+        : undefined;
+      const selfHealing = await runWeakAnchorSelfHealingLoop(clusterDir, gardenId, { anchorRepairModel: weakAnchorRepairModel });
+      if (selfHealing.deterministicRepairs > 0 || selfHealing.chatMockRepairs > 0) {
+        reconcileFinalGardenState(clusterDir, gardenId);
+      }
+      writeWeakAnchorSelfHealingReports(clusterDir, selfHealing);
+      const acceptance = decideFinalAcceptance(selfHealing);
+      appendLearnEvent(contentPath, gardenId, "learn_weak_anchor_self_healing_completed", {
+        jobId: job.id,
+        textbookVersionId,
+        deterministicRepairs: selfHealing.deterministicRepairs,
+        chatMockRepairs: selfHealing.chatMockRepairs,
+        totalChatMockCalls: selfHealing.totalChatMockCalls,
+        resolved: selfHealing.resolvedAnchorIds.length,
+        unresolvedActiveAnchorCount: acceptance.unresolvedActiveAnchorCount,
+        criticAvailable: selfHealing.criticAvailable,
+        publishReady: acceptance.publishReady,
+        primaryReason: acceptance.primaryReason,
+      });
+    } catch (selfHealError) {
+      appendLearnEvent(contentPath, gardenId, "learn_weak_anchor_self_healing_skipped", {
+        jobId: job.id,
+        reason: selfHealError instanceof Error ? selfHealError.message : String(selfHealError),
+      });
+    }
+
     const MAX_FINALIZE_PASSES = 3;
     let repairRun!: Awaited<ReturnType<typeof repairLearningUnitsFromContract>>;
     let finalizeReport!: ReturnType<typeof finalizeGardenExport>;
@@ -5154,7 +5634,7 @@ export async function runLearnPipeline({
   contentPath: string;
 }): Promise<unknown> {
   if (mode === "plan") {
-    return runLearnPlanning({
+    const planning = await runLearnPlanning({
       gardenId,
       userId,
       client,
@@ -5163,6 +5643,25 @@ export async function runLearnPipeline({
       sourceOnly,
       includeSourceSnapshots,
     });
+    if (!autoConfirmTopicMap) return planning;
+
+    const learningMap = confirmLearningMap({
+      gardenId,
+      learningMapId: planning.learningMap.id,
+      contentPath,
+    });
+    const generation = await runTextbookGeneration({
+      gardenId,
+      userId,
+      client,
+      model,
+      contentPath,
+      confirmedLearningMapId: learningMap.id,
+      mode: "generate",
+      sourceOnly,
+      includeSourceSnapshots,
+    });
+    return { planning, learningMap, generation };
   }
   return runTextbookGeneration({
     gardenId,
@@ -5261,6 +5760,15 @@ export function getLearnStatusSnapshot({
     latestJob?.status === "awaiting_confirmation" && !contractProposed
       ? null
       : latestJob;
+  const workflowTimer = visibleJob ? learnTimerForWorkflow(visibleJob) : null;
+  const visibleJobWithWorkflowUsage = visibleJob && workflowTimer
+    ? {
+        ...visibleJob,
+        tokenUsage: learnTokenUsageForWorkflow(visibleJob),
+        elapsedMs: workflowTimer.elapsedMs,
+        timerStartedAt: workflowTimer.timerStartedAt,
+      }
+    : null;
   const latestConfirmed = getLatestConfirmedLearnMap(gardenId);
   const confirmedMap = isContractBackedLearningMap(latestConfirmed) ? latestConfirmed : null;
   const latestVersion = getLatestLearnVersion(gardenId);
@@ -5270,7 +5778,7 @@ export function getLearnStatusSnapshot({
     Boolean(latestVersion) && latestVersion?.source_set_hash !== context.sourceSetHash;
 
   return {
-    job: visibleJob,
+    job: visibleJobWithWorkflowUsage,
     proposedLearningMap:
       visibleJob?.status === "awaiting_confirmation" || contractProposed?.status === "proposed"
         ? contractProposed?.learningMap ?? null

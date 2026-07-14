@@ -35,12 +35,17 @@ class ProviderRouter:
 
     def call_model(self, call: ModelCall) -> str:
         model = self.effective_model(call.model)
-        return self.upstream.call_model(
-            ModelCall(
-                model=model,
-                messages=call.messages,
-                system=call.system,
-                temperature=call.temperature,
-                max_tokens=call.max_tokens,
-            )
+        routed_call = ModelCall(
+            model=model,
+            messages=call.messages,
+            system=call.system,
+            temperature=call.temperature,
+            max_tokens=call.max_tokens,
         )
+        try:
+            return self.upstream.call_model(routed_call)
+        finally:
+            # The runtime owns the original call. Copy provider out-params back
+            # even when a routed model id required a replacement call object.
+            call.reasoning_out = routed_call.reasoning_out
+            call.usage_out = routed_call.usage_out

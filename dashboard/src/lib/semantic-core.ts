@@ -112,6 +112,29 @@ export interface AliasConflict {
   conceptIds: string[];
 }
 
+export type ConceptAliasRepairReason =
+  | 'canonical-term-wins'
+  | 'seeded-alias-wins'
+  | 'ambiguous-alias-removed'
+  | 'canonical-label-relabeled';
+
+export interface ConceptAliasRepair {
+  normalizedAlias: string;
+  removedFrom: string[];
+  ownerConceptId?: string;
+  reason: ConceptAliasRepairReason;
+}
+
+export interface ConceptAliasReconciliation<T extends {
+  slug: string;
+  preferredLabel: string;
+  aliases: string[];
+}> {
+  concepts: T[];
+  repairs: ConceptAliasRepair[];
+  conflicts: AliasConflict[];
+}
+
 export interface SemanticHealthMetrics {
   learnerPages: number;
   conceptAssignments: number;
@@ -257,6 +280,16 @@ function uniqueSorted(values: readonly string[]): string[] {
     .sort((left, right) => left.localeCompare(right));
 }
 
+function uniqueAliasesByLookup(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  return uniqueSorted(values).filter((value) => {
+    const key = normalizeLookupText(value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function createEmptyConceptRegistry(
   gardenId: string,
   sourceSetHash = '',
@@ -283,10 +316,8 @@ export function normalizeConceptRecord(
 ): ConceptRecord {
   const slug = normalizeConceptSlug(input.slug);
   const id = conceptId(slug);
-  const aliases = uniqueSorted([
-    ...(input.aliases ?? []),
-    ...(SEEDED_CONCEPT_ALIASES[slug] ?? []),
-  ]).filter((alias) => normalizeLookupText(alias) !== normalizeLookupText(input.preferredLabel ?? ''));
+  const aliases = uniqueAliasesByLookup(input.aliases ?? [])
+    .filter((alias) => normalizeLookupText(alias) !== normalizeLookupText(input.preferredLabel ?? ''));
   const relations = (input.relations ?? [])
     .map((relation) => ({
       predicate: normalizeRelationPredicate(relation.predicate),
@@ -314,12 +345,62 @@ export function normalizeConceptRecord(
 }
 
 export function sortConceptRegistry(registry: ConceptRegistry): ConceptRegistry {
+  const concepts = registry.concepts
+    .map(normalizeConceptRecord)
+    .sort((left, right) => left.slug.localeCompare(right.slug));
+  const canonicalOwners = new Map<string, Set<string>>();
+  const addCanonicalOwner = (term: string, id: string) => {
+    const key = normalizeLookupText(term);
+    if (!key) return;
+    const ids = canonicalOwners.get(key) ?? new Set<string>();
+    ids.add(id);
+    canonicalOwners.set(key, ids);
+  };
+  for (const concept of concepts) {
+    for (const term of [concept.slug, concept.preferredLabel]) {
+      addCanonicalOwner(term, concept.id);
+    }
+  }
+
+  const seededClaimants = new Map<string, Set<string>>();
+  for (const concept of concepts) {
+    for (const seededAlias of SEEDED_CONCEPT_ALIASES[concept.slug] ?? []) {
+      const key = normalizeLookupText(seededAlias);
+      if (!key) continue;
+      const ids = seededClaimants.get(key) ?? new Set<string>();
+      ids.add(concept.id);
+      seededClaimants.set(key, ids);
+    }
+  }
+  const allowedSeedOwners = new Map<string, Set<string>>();
+  for (const [key, claimants] of seededClaimants) {
+    const canonical = canonicalOwners.get(key) ?? new Set<string>();
+    allowedSeedOwners.set(
+      key,
+      canonical.size > 0
+        ? new Set(canonical)
+        : claimants.size === 1
+          ? new Set(claimants)
+          : new Set<string>(),
+    );
+  }
+
+  const conceptsWithSafeSeeds = concepts.map((concept) => {
+    const aliases = concept.aliases.filter((alias) => {
+      const key = normalizeLookupText(alias);
+      const allowedOwners = allowedSeedOwners.get(key);
+      return !allowedOwners || allowedOwners.has(concept.id);
+    });
+    for (const seededAlias of SEEDED_CONCEPT_ALIASES[concept.slug] ?? []) {
+      const key = normalizeLookupText(seededAlias);
+      if (allowedSeedOwners.get(key)?.has(concept.id)) aliases.push(seededAlias);
+    }
+    return normalizeConceptRecord({ ...concept, aliases });
+  });
   return {
     ...registry,
     schemaVersion: SEMANTIC_SCHEMA_VERSION,
-    concepts: registry.concepts
-      .map(normalizeConceptRecord)
-      .sort((left, right) => left.slug.localeCompare(right.slug)),
+    concepts: conceptsWithSafeSeeds,
   };
 }
 
@@ -341,6 +422,317 @@ export function aliasConflicts(registry: ConceptRegistry): AliasConflict[] {
       conceptIds: [...ids].sort(),
     }))
     .sort((left, right) => left.normalizedAlias.localeCompare(right.normalizedAlias));
+}
+
+/**
+ * Remove unsafe aliases without merging distinct concept identities.
+ *
+ * Canonical slugs and preferred labels always outrank aliases. A curated
+ * seeded alias may own a term when no canonical concept does. If multiple
+ * ordinary aliases claim the same otherwise-unowned term, none is safe, so
+ * the term is removed from every claimant. Canonical-vs-canonical conflicts
+ * remain in `conflicts` for the caller to reject explicitly.
+ */
+/**
+ * Resolve a CANONICAL-vs-CANONICAL collision when — and only when — exactly one
+ * of the colliding concepts owns the term through its SLUG (its canonical
+ * identity). That slug owner is the rightful holder; any OTHER concept that
+ * collides only because its (model-assigned) preferredLabel normalizes to the
+ * same term is deterministically relabeled to its own slug-derived label. This
+ * fixes a mislabeled concept (e.g. `temporal-information` labeled "Spike timing"
+ * colliding with the `spike-timing` slug) without merging or dropping either
+ * concept. A collision among preferredLabels of DISTINCT slugs where no slug
+ * owns the term has no principled winner and is intentionally left for the caller
+ * to reject.
+ */
+function resolveSlugOwnedLabelCollisions<T extends {
+  slug: string;
+  preferredLabel: string;
+  aliases: string[];
+}>(concepts: readonly T[], conflicts: readonly AliasConflict[]): { concepts: T[]; repairs: ConceptAliasRepair[]; changed: boolean } {
+  const next = concepts.map((concept) => ({ ...concept })) as T[];
+  const byId = new Map<string, T>();
+  for (const concept of next) byId.set(conceptId(concept.slug), concept);
+  const repairs: ConceptAliasRepair[] = [];
+  let changed = false;
+  for (const conflict of conflicts) {
+    const term = conflict.normalizedAlias;
+    const members = conflict.conceptIds
+      .map((id) => byId.get(id))
+      .filter((concept): concept is T => Boolean(concept))
+      .filter((concept) =>
+        normalizeLookupText(concept.slug) === term ||
+        normalizeLookupText(concept.preferredLabel) === term,
+      );
+    if (members.length < 2) continue;
+    const slugOwner = members.find((concept) => normalizeLookupText(concept.slug) === term);
+    // No concept OWNS the term through its slug → no principled winner; leave the
+    // conflict so the caller rejects it (a genuine duplicate-identity problem).
+    if (!slugOwner) continue;
+    for (const loser of members) {
+      if (loser === slugOwner) continue;
+      if (normalizeLookupText(loser.slug) === term) continue; // another slug owner: cannot relabel
+      if (normalizeLookupText(loser.preferredLabel) !== term) continue; // collides only via alias (handled elsewhere)
+      const relabeled = preferredLabelFromSlug(normalizeConceptSlug(loser.slug));
+      if (normalizeLookupText(relabeled) === term) continue; // slug-derived label cannot escape the term
+      loser.preferredLabel = relabeled;
+      changed = true;
+      repairs.push({
+        normalizedAlias: term,
+        removedFrom: [conceptId(loser.slug)],
+        ownerConceptId: conceptId(slugOwner.slug),
+        reason: 'canonical-label-relabeled',
+      });
+    }
+  }
+  return { concepts: next, repairs, changed };
+}
+
+export function reconcileSemanticConceptAliases<T extends {
+  slug: string;
+  preferredLabel: string;
+  aliases: string[];
+}>(concepts: readonly T[]): ConceptAliasReconciliation<T> {
+  // Alias reconciliation and canonical-collision relabeling can each expose new
+  // work for the other, so iterate to a fixed point (bounded). A relabel only
+  // ever moves a mislabeled concept onto its own slug-derived label, so the loop
+  // strictly makes progress until no slug-owned collision remains.
+  const maxPasses = concepts.length + 5;
+  let current: readonly T[] = concepts;
+  const repairs: ConceptAliasRepair[] = [];
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const once = reconcileSemanticConceptAliasesOnce(current);
+    repairs.push(...once.repairs);
+    if (once.conflicts.length === 0) {
+      return { concepts: once.concepts, repairs: dedupeAliasRepairs(repairs), conflicts: [] };
+    }
+    const resolved = resolveSlugOwnedLabelCollisions(once.concepts, once.conflicts);
+    if (!resolved.changed) {
+      return { concepts: once.concepts, repairs: dedupeAliasRepairs(repairs), conflicts: once.conflicts };
+    }
+    repairs.push(...resolved.repairs);
+    current = resolved.concepts;
+  }
+  const finalPass = reconcileSemanticConceptAliasesOnce(current);
+  return {
+    concepts: finalPass.concepts,
+    repairs: dedupeAliasRepairs([...repairs, ...finalPass.repairs]),
+    conflicts: finalPass.conflicts,
+  };
+}
+
+function dedupeAliasRepairs(repairs: readonly ConceptAliasRepair[]): ConceptAliasRepair[] {
+  const seen = new Set<string>();
+  const out: ConceptAliasRepair[] = [];
+  for (const repair of repairs) {
+    const key = `${repair.reason}|${repair.normalizedAlias}|${repair.ownerConceptId ?? ''}|${[...repair.removedFrom].sort().join(',')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(repair);
+  }
+  return out;
+}
+
+function reconcileSemanticConceptAliasesOnce<T extends {
+  slug: string;
+  preferredLabel: string;
+  aliases: string[];
+}>(concepts: readonly T[]): ConceptAliasReconciliation<T> {
+  const prepared = concepts.map((concept) => ({
+    ...concept,
+    slug: normalizeConceptSlug(concept.slug),
+    preferredLabel:
+      compactSemanticText(concept.preferredLabel) || preferredLabelFromSlug(concept.slug),
+    aliases: uniqueAliasesByLookup(concept.aliases ?? []),
+  })) as T[];
+  const entriesBySlug = new Map<string, T[]>();
+  for (const concept of prepared) {
+    const entries = entriesBySlug.get(concept.slug) ?? [];
+    entries.push(concept);
+    entriesBySlug.set(concept.slug, entries);
+  }
+  const canonicalLabelBySlug = new Map<string, string>();
+  const alternateLabelsBySlug = new Map<string, string[]>();
+  for (const [slug, entries] of entriesBySlug) {
+    const labelCounts = new Map<string, { label: string; count: number }>();
+    for (const entry of entries) {
+      const key = normalizeLookupText(entry.preferredLabel);
+      const current = labelCounts.get(key);
+      labelCounts.set(key, {
+        // Equivalent surface forms (case, punctuation, spacing) must not make
+        // canonical output depend on which unit happened to appear first.
+        label:
+          current && current.label <= entry.preferredLabel
+            ? current.label
+            : entry.preferredLabel,
+        count: (current?.count ?? 0) + 1,
+      });
+    }
+    const slugTokens = new Set(normalizeLookupText(slug).split(' ').filter(Boolean));
+    const defaultLabelKey = normalizeLookupText(preferredLabelFromSlug(slug));
+    const ranked = [...labelCounts.values()].sort((left, right) => {
+      const score = (label: string) => {
+        if (normalizeLookupText(label) === defaultLabelKey) return 3;
+        const labelTokens = new Set(normalizeLookupText(label).split(' ').filter(Boolean));
+        const overlap = [...slugTokens].filter((token) => labelTokens.has(token)).length;
+        return normalizeConceptSlug(label) === slug
+          ? 2
+          : overlap / Math.max(slugTokens.size, labelTokens.size, 1);
+      };
+      return score(right.label) - score(left.label) ||
+        right.count - left.count ||
+        left.label.length - right.label.length ||
+        left.label.localeCompare(right.label);
+    });
+    const canonicalLabel = ranked[0]?.label ?? preferredLabelFromSlug(slug);
+    canonicalLabelBySlug.set(slug, canonicalLabel);
+    alternateLabelsBySlug.set(
+      slug,
+      ranked.slice(1).map((entry) => entry.label),
+    );
+  }
+  const normalized = prepared.map((concept) => {
+    const preferredLabel = canonicalLabelBySlug.get(concept.slug) ?? concept.preferredLabel;
+    const canonicalKeys = new Set([
+      normalizeLookupText(concept.slug),
+      normalizeLookupText(preferredLabel),
+    ]);
+    return {
+      ...concept,
+      preferredLabel,
+      aliases: uniqueAliasesByLookup([
+        ...concept.aliases,
+        ...(alternateLabelsBySlug.get(concept.slug) ?? []),
+      ]).filter((alias) => !canonicalKeys.has(normalizeLookupText(alias))),
+    } as T;
+  });
+  const canonicalOwners = new Map<string, Set<string>>();
+  const aliasOwners = new Map<string, Set<string>>();
+
+  const addOwner = (owners: Map<string, Set<string>>, key: string, id: string) => {
+    if (!key) return;
+    const ids = owners.get(key) ?? new Set<string>();
+    ids.add(id);
+    owners.set(key, ids);
+  };
+
+  for (const concept of normalized) {
+    const id = conceptId(concept.slug);
+    addOwner(canonicalOwners, normalizeLookupText(concept.slug), id);
+    addOwner(canonicalOwners, normalizeLookupText(concept.preferredLabel), id);
+    for (const alias of concept.aliases) {
+      addOwner(aliasOwners, normalizeLookupText(alias), id);
+    }
+  }
+
+  const allowedAliasOwners = new Map<string, Set<string>>();
+  const repairs: ConceptAliasRepair[] = [];
+  for (const [key, owners] of [...aliasOwners.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const canonical = canonicalOwners.get(key) ?? new Set<string>();
+    let allowed = new Set<string>();
+    let reason: ConceptAliasRepairReason | null = null;
+    let ownerConceptId: string | undefined;
+
+    if (canonical.size > 0) {
+      reason = 'canonical-term-wins';
+      if (canonical.size === 1) ownerConceptId = [...canonical][0];
+    } else if (owners.size === 1) {
+      allowed = new Set(owners);
+    } else {
+      const seededOwners = [...owners].filter((ownerId) => {
+        const concept = normalized.find((candidate) => conceptId(candidate.slug) === ownerId);
+        return Boolean(
+          concept &&
+            (SEEDED_CONCEPT_ALIASES[concept.slug] ?? []).some(
+              (alias) => normalizeLookupText(alias) === key,
+            ),
+        );
+      });
+      if (seededOwners.length === 1) {
+        ownerConceptId = seededOwners[0];
+        allowed = new Set(seededOwners);
+        reason = 'seeded-alias-wins';
+      } else {
+        reason = 'ambiguous-alias-removed';
+      }
+    }
+
+    allowedAliasOwners.set(key, allowed);
+    const removedFrom = [...owners].filter((id) => !allowed.has(id)).sort();
+    if (removedFrom.length > 0 && reason) {
+      repairs.push({
+        normalizedAlias: key,
+        removedFrom,
+        ...(ownerConceptId ? { ownerConceptId } : {}),
+        reason,
+      });
+    }
+  }
+
+  const reconciled = normalized.map((concept) => {
+    const id = conceptId(concept.slug);
+    return {
+      ...concept,
+      aliases: concept.aliases.filter((alias) =>
+        allowedAliasOwners.get(normalizeLookupText(alias))?.has(id),
+      ),
+    } as T;
+  });
+
+  const finalOwners = new Map<string, Set<string>>();
+  for (const concept of reconciled) {
+    const id = conceptId(concept.slug);
+    for (const term of [concept.slug, concept.preferredLabel, ...concept.aliases]) {
+      addOwner(finalOwners, normalizeLookupText(term), id);
+    }
+  }
+  const conflicts = [...finalOwners.entries()]
+    .filter(([, ids]) => ids.size > 1)
+    .map(([normalizedAlias, ids]) => ({
+      normalizedAlias,
+      conceptIds: [...ids].sort(),
+    }))
+    .sort((left, right) => left.normalizedAlias.localeCompare(right.normalizedAlias));
+
+  return { concepts: reconciled, repairs, conflicts };
+}
+
+export function reconcileConceptRegistryAliases(registry: ConceptRegistry): {
+  registry: ConceptRegistry;
+  repairs: ConceptAliasRepair[];
+  conflicts: AliasConflict[];
+} {
+  const normalized = sortConceptRegistry(registry);
+  const reconciled = reconcileSemanticConceptAliases(normalized.concepts);
+  return {
+    registry: { ...normalized, concepts: reconciled.concepts },
+    repairs: reconciled.repairs,
+    conflicts: reconciled.conflicts,
+  };
+}
+
+export function alignSemanticConceptAliasesWithRegistry<T extends {
+  slug: string;
+  preferredLabel: string;
+  aliases: string[];
+}>(concepts: readonly T[], registry: ConceptRegistry): T[] {
+  const safeRegistry = reconcileConceptRegistryAliases(registry).registry;
+  const registryConceptBySlug = new Map(
+    safeRegistry.concepts.map((concept) => [concept.slug, concept]),
+  );
+  return concepts.map((concept) => {
+    const registryConcept = registryConceptBySlug.get(normalizeConceptSlug(concept.slug));
+    const allowedAliases = new Set(
+      (registryConcept?.aliases ?? []).map(normalizeLookupText),
+    );
+    return {
+      ...concept,
+      preferredLabel: registryConcept?.preferredLabel ?? concept.preferredLabel,
+      aliases: uniqueAliasesByLookup(concept.aliases ?? []).filter((alias) =>
+        allowedAliases.has(normalizeLookupText(alias)),
+      ),
+    } as T;
+  });
 }
 
 export function resolveConcept(value: string, registry: ConceptRegistry): ConceptRecord | null {
@@ -374,12 +766,35 @@ export function resolveConcept(value: string, registry: ConceptRegistry): Concep
 export function mergeConcept(
   registry: ConceptRegistry,
   candidate: Partial<ConceptRecord> & { slug: string },
+  options: {
+    aliasCollisionPolicy: 'repair';
+    suppressedAmbiguousAliases: Set<string>;
+  } | {
+    aliasCollisionPolicy?: 'reject';
+    suppressedAmbiguousAliases?: never;
+  } = {},
 ): ConceptRegistry {
-  const normalized = normalizeConceptRecord(candidate);
+  if (options.aliasCollisionPolicy === 'repair' && !options.suppressedAmbiguousAliases) {
+    throw new Error('Repair mode requires shared ambiguous-alias suppression state');
+  }
+  const candidateSlug = normalizeConceptSlug(candidate.slug);
+  const normalized = normalizeConceptRecord({
+    ...candidate,
+    aliases: [
+      ...(candidate.aliases ?? []),
+      ...(SEEDED_CONCEPT_ALIASES[candidateSlug] ?? []),
+    ].filter(
+      (alias) => !options.suppressedAmbiguousAliases?.has(normalizeLookupText(alias)),
+    ),
+  });
   if (!isValidPublicConceptSlug(normalized.slug)) {
     throw new Error(`Invalid public concept slug: ${normalized.slug || '(empty)'}`);
   }
-  const existing = resolveConcept(normalized.slug, registry);
+  // Explicit canonical slugs must never be merged merely because another
+  // concept happens to claim that text as an alias.
+  const existing = registry.concepts.find(
+    (concept) => concept.id === normalized.id || concept.slug === normalized.slug,
+  );
   const nextConcept = existing
     ? normalizeConceptRecord({
         ...existing,
@@ -398,8 +813,40 @@ export function mergeConcept(
       })
     : normalized;
   const concepts = registry.concepts.filter((concept) => concept.id !== nextConcept.id);
-  const next = sortConceptRegistry({ ...registry, concepts: [...concepts, nextConcept] });
-  const conflicts = aliasConflicts(next);
+  const unsortedNext = { ...registry, concepts: [...concepts, nextConcept] };
+  if (options.aliasCollisionPolicy !== 'repair') {
+    // Strict mode observes the candidate exactly as proposed. Registry sorting
+    // may restore curated seed ownership, but that repair must never make a
+    // reject-policy collision disappear before it is reported.
+    const strictNext = {
+      ...unsortedNext,
+      schemaVersion: SEMANTIC_SCHEMA_VERSION,
+      concepts: unsortedNext.concepts
+        .map(normalizeConceptRecord)
+        .sort((left, right) => left.slug.localeCompare(right.slug)),
+    };
+    const strictConflicts = aliasConflicts(strictNext);
+    if (strictConflicts.length > 0) {
+      const conflict = strictConflicts[0];
+      throw new Error(
+        `Alias collision for "${conflict.normalizedAlias}": ${conflict.conceptIds.join(', ')}`,
+      );
+    }
+    return sortConceptRegistry(strictNext);
+  }
+
+  let next = sortConceptRegistry(unsortedNext);
+  let conflicts = aliasConflicts(next);
+  if (conflicts.length > 0) {
+    const reconciled = reconcileConceptRegistryAliases(next);
+    next = reconciled.registry;
+    conflicts = reconciled.conflicts;
+    for (const repair of reconciled.repairs) {
+      if (repair.reason === 'ambiguous-alias-removed') {
+        options.suppressedAmbiguousAliases?.add(repair.normalizedAlias);
+      }
+    }
+  }
   if (conflicts.length > 0) {
     const conflict = conflicts[0];
     throw new Error(
