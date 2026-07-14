@@ -29,11 +29,16 @@ import {
 } from "./section-title.ts";
 import { semanticTagsFromText } from "./tags.ts";
 import {
+  alignSemanticConceptAliasesWithRegistry,
   isGenericFillerClaim,
   isValidPublicConceptSlug,
   normalizeConceptSlug,
   normalizeRelationPredicate,
   preferredLabelFromSlug,
+  reconcileSemanticConceptAliases,
+  type AliasConflict,
+  type ConceptAliasRepair,
+  type ConceptRegistry,
   type KnowledgeClaimPlan,
   type SemanticConceptPlan,
 } from "./semantic-core.ts";
@@ -406,6 +411,49 @@ function deriveKnowledgeClaims(unit: LearningUnitContract): KnowledgeClaimPlan[]
 
 export function semanticConceptsForUnit(unit: LearningUnitContract): SemanticConceptPlan[] {
   return deriveSemanticConcepts(unit);
+}
+
+export function reconcileLearningUnitConceptAliases(
+  units: readonly LearningUnitContract[],
+): {
+  units: LearningUnitContract[];
+  repairs: ConceptAliasRepair[];
+  conflicts: AliasConflict[];
+} {
+  const plansByUnit = units.map(semanticConceptsForUnit);
+  const planCounts = plansByUnit.map((plans) => plans.length);
+  const reconciled = reconcileSemanticConceptAliases(
+    plansByUnit.flat(),
+  );
+  let cursor = 0;
+  const nextUnits = units.map((unit, index) => {
+    const semanticConcepts = reconciled.concepts.slice(cursor, cursor + planCounts[index]);
+    cursor += planCounts[index];
+    return { ...unit, semanticConcepts };
+  });
+  return {
+    units: nextUnits,
+    repairs: reconciled.repairs,
+    conflicts: reconciled.conflicts,
+  };
+}
+
+export function alignLearningUnitConceptAliasesWithRegistry(
+  units: readonly LearningUnitContract[],
+  registry: ConceptRegistry,
+): LearningUnitContract[] {
+  const plansByUnit = units.map(semanticConceptsForUnit);
+  const planCounts = plansByUnit.map((plans) => plans.length);
+  const aligned = alignSemanticConceptAliasesWithRegistry(
+    plansByUnit.flat(),
+    registry,
+  );
+  let cursor = 0;
+  return units.map((unit, index) => {
+    const semanticConcepts = aligned.slice(cursor, cursor + planCounts[index]);
+    cursor += planCounts[index];
+    return { ...unit, semanticConcepts };
+  });
 }
 
 export function knowledgeClaimsForUnit(unit: LearningUnitContract): KnowledgeClaimPlan[] {
@@ -1244,7 +1292,7 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
       knowledgeClaims: deriveKnowledgeClaims(unit),
     });
   });
-  return units;
+  return reconcileLearningUnitConceptAliases(units).units;
 }
 
 function asArray(value: unknown): unknown[] {
@@ -1801,6 +1849,12 @@ export function validateLearningUnitContracts(
   options: ContractValidationOptions = {},
 ): string[] {
   const problems: string[] = [];
+  const aliasReconciliation = reconcileLearningUnitConceptAliases(units);
+  for (const conflict of aliasReconciliation.conflicts) {
+    problems.push(
+      `canonical concept term collision "${conflict.normalizedAlias}": ${conflict.conceptIds.join(", ")}`,
+    );
+  }
   const artifactCount = options.artifactCount ?? 0;
   const minUnits = options.minUnitsForRichSource ?? 12;
 

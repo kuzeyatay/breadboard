@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { usageLimitRowsWithFiveHour } from "@/lib/usage-limit-display";
 
 interface UsageLimitWindow {
   used_percent?: number;
@@ -174,9 +175,21 @@ export default function UsageLimitsPopover({
                     ) : null}
                   </div>
                 ) : null}
-                {(["primary", "secondary"] as const).map((key) => {
-                  const windowData = usageData[key];
-                  if (!windowData) return null;
+                {usageLimitRowsWithFiveHour(usageData).map(({ key, label, window: windowData, reported }) => {
+                  if (!reported) {
+                    return (
+                      <div key={key}>
+                        <div className={`mb-1 flex justify-between gap-3 ${light ? "text-[var(--ink-muted)]" : "text-gray-400"}`}>
+                          <span>{label}</span>
+                          <span>Not reported</span>
+                        </div>
+                        <div className={`h-1.5 rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`} />
+                        <p className={`mt-1 ${light ? "text-[var(--ink-muted)]" : "text-gray-600"}`}>
+                          Unavailable in the latest response
+                        </p>
+                      </div>
+                    );
+                  }
                   const used = clampPercent(windowData.used_percent);
                   const left = Math.max(0, 100 - used);
                   const resetSeconds = remainingResetSeconds(
@@ -189,7 +202,7 @@ export default function UsageLimitsPopover({
                   return (
                     <div key={key}>
                       <div className={`mb-1 flex justify-between gap-3 ${light ? "text-[var(--ink-muted)]" : "text-gray-400"}`}>
-                        <span>{key === "primary" ? "5-hour limit" : "Weekly limit"}</span>
+                        <span>{label}</span>
                         <span>
                           {used.toFixed(1)}% used, {left.toFixed(1)}% left
                         </span>

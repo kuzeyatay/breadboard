@@ -20,7 +20,7 @@ from ..ask import chatmock_ask
 from ..http import build_cors_headers
 from ..model_registry import normalize_model_name
 from .policy import council_enabled
-from .types import CouncilInput, CouncilRun
+from .types import CouncilInput, CouncilRun, CouncilTokenUsage
 
 _STREAM_CHUNK_CHARS = 4000
 
@@ -72,15 +72,43 @@ def _build_council_input(
     )
 
 
-def _estimated_usage(run: CouncilRun) -> Dict[str, int]:
+def _resolved_usage(run: CouncilRun) -> Tuple[CouncilTokenUsage, bool]:
+    reported = run.token_usage_snapshot()
+    if reported.fully_reported:
+        return reported, False
+
+    # Compatibility fallback for mocked, failed, or older upstream calls that
+    # did not include response.completed.response.usage.
     prompt_chars = sum(len(str(m.get("content", ""))) for m in run.messages if isinstance(m, dict))
     completion_chars = len(run.final_answer or "")
     prompt_tokens = max(1, prompt_chars // 4)
     completion_tokens = max(1, completion_chars // 4)
+    # Never throw away authoritative subtotals from the calls that did report
+    # usage. The outer request estimate is only a floor for missing calls and
+    # remains explicitly marked as estimated by every public response shape.
+    resolved_input = max(reported.input_tokens, prompt_tokens)
+    resolved_output = max(reported.output_tokens, completion_tokens)
+    return (
+        CouncilTokenUsage(
+            input_tokens=resolved_input,
+            output_tokens=resolved_output,
+            total_tokens=max(reported.total_tokens, resolved_input + resolved_output),
+            cached_input_tokens=reported.cached_input_tokens,
+            reasoning_tokens=reported.reasoning_tokens,
+            call_count=reported.call_count,
+            reported_call_count=reported.reported_call_count,
+        ),
+        True,
+    )
+
+
+def _chat_completions_usage(usage: CouncilTokenUsage) -> Dict[str, Any]:
     return {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": prompt_tokens + completion_tokens,
+        "prompt_tokens": usage.input_tokens,
+        "completion_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "prompt_tokens_details": {"cached_tokens": usage.cached_input_tokens},
+        "completion_tokens_details": {"reasoning_tokens": usage.reasoning_tokens},
     }
 
 
@@ -109,6 +137,24 @@ def _empty_final_answer_message(run: CouncilRun) -> str:
         return (
             f"The council could not produce an answer because ChatGPT returned HTTP 429{model}. "
             "This is usually a usage or rate-limit issue; try again after the limit resets or choose another model."
+        )
+    if re.search(
+        r"\b(?:read|connect)?\s*timeout\b|\btimed\s+out\b",
+        diagnostics,
+        flags=re.IGNORECASE,
+    ):
+        return (
+            "The council could not produce an answer because the ChatGPT upstream timed out "
+            "after automatic retries. Please try the request again."
+        )
+    if re.search(
+        r"\bHTTP\s+(?:502|503|504)\b|\bupstream unavailable\b",
+        diagnostics,
+        flags=re.IGNORECASE,
+    ):
+        return (
+            "The council could not produce an answer because the ChatGPT upstream was "
+            "temporarily unavailable after automatic retries. Please try the request again."
         )
     return "The council could not produce an answer because all candidate models failed."
 
@@ -145,6 +191,7 @@ def _sse_iter(
         yield _chunk({"content": text[start : start + _STREAM_CHUNK_CHARS]}, None)
     yield _chunk({}, "stop")
     if include_usage:
+        usage, usage_estimated = _resolved_usage(run)
         usage_event = {
             "id": run.id,
             "object": "chat.completion.chunk",
@@ -153,7 +200,8 @@ def _sse_iter(
             "councilRunId": run.id,
             "councilMode": run.council_mode,
             "choices": [],
-            "usage": _estimated_usage(run),
+            "usage": _chat_completions_usage(usage),
+            "usageEstimated": usage_estimated,
         }
         yield f"data: {json.dumps(usage_event, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
@@ -202,6 +250,7 @@ def maybe_handle_with_council(
         )
         return _with_cors(resp)
 
+    usage, usage_estimated = _resolved_usage(run)
     completion: Dict[str, Any] = {
         "id": run.id,
         "object": "chat.completion",
@@ -214,7 +263,8 @@ def maybe_handle_with_council(
                 "finish_reason": "stop",
             }
         ],
-        "usage": _estimated_usage(run),
+        "usage": _chat_completions_usage(usage),
+        "usageEstimated": usage_estimated,
         "councilRunId": run.id,
         "councilMode": run.council_mode,
     }
@@ -337,12 +387,13 @@ def _responses_bypass_reason(payload: Dict[str, Any], fields: Dict[str, Any]) ->
     return None
 
 
-def _responses_usage(run: CouncilRun) -> Dict[str, int]:
-    usage = _estimated_usage(run)
+def _responses_usage(usage: CouncilTokenUsage) -> Dict[str, Any]:
     return {
-        "input_tokens": usage["prompt_tokens"],
-        "output_tokens": usage["completion_tokens"],
-        "total_tokens": usage["total_tokens"],
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "input_tokens_details": {"cached_tokens": usage.cached_input_tokens},
+        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens},
     }
 
 
@@ -357,6 +408,7 @@ def _responses_message_item(run: CouncilRun) -> Dict[str, Any]:
 
 
 def _responses_object(run: CouncilRun, model_name: str, created: int, include_diagnostics: bool) -> Dict[str, Any]:
+    usage, usage_estimated = _resolved_usage(run)
     body: Dict[str, Any] = {
         "id": run.id,
         "object": "response",
@@ -364,7 +416,8 @@ def _responses_object(run: CouncilRun, model_name: str, created: int, include_di
         "status": "completed",
         "model": model_name,
         "output": [_responses_message_item(run)],
-        "usage": _responses_usage(run),
+        "usage": _responses_usage(usage),
+        "usageEstimated": usage_estimated,
         "metadata": {"councilRunId": run.id, "councilMode": run.council_mode},
         "councilRunId": run.id,
         "councilMode": run.council_mode,

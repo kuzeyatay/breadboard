@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Any, Dict, List
 
@@ -10,7 +11,62 @@ from ..model_registry import allowed_efforts_for_model, normalize_model_name, us
 from ..reasoning import build_reasoning_param
 from ..upstream import start_upstream_request
 from ..utils import convert_chat_messages_to_responses_input
-from .types import ModelCall, ProviderError
+from .types import ModelCall, ModelTokenUsage, ProviderError
+
+
+def _error_response_message(response: Any) -> str | None:
+    if response is None:
+        return None
+    try:
+        payload = response.get_json(silent=True)
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    message = error.get("message")
+    return message.strip() if isinstance(message, str) and message.strip() else None
+
+
+def _token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return int(value)
+
+
+def _responses_token_usage(value: Any) -> ModelTokenUsage | None:
+    if not isinstance(value, dict):
+        return None
+
+    input_tokens = _token_count(value.get("input_tokens"))
+    output_tokens = _token_count(value.get("output_tokens"))
+    total_tokens = _token_count(value.get("total_tokens"))
+    if input_tokens is None or output_tokens is None or total_tokens is None:
+        return None
+
+    input_details = value.get("input_tokens_details")
+    output_details = value.get("output_tokens_details")
+    cached_tokens = (
+        _token_count(input_details.get("cached_tokens"))
+        if isinstance(input_details, dict)
+        else None
+    )
+    reasoning_tokens = (
+        _token_count(output_details.get("reasoning_tokens"))
+        if isinstance(output_details, dict)
+        else None
+    )
+    return ModelTokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cached_input_tokens=cached_tokens or 0,
+        reasoning_tokens=reasoning_tokens or 0,
+    )
 
 
 class ChatGptUpstreamProvider:
@@ -68,14 +124,24 @@ class ChatGptUpstreamProvider:
             reasoning_param=reasoning_param,
         )
         if error_resp is not None or upstream is None:
-            raise ProviderError(f"chatgpt upstream unavailable for {model}")
+            detail = _error_response_message(error_resp)
+            suffix = f": {detail}" if detail else ""
+            raise ProviderError(f"chatgpt upstream unavailable for {model}{suffix}")
         record_rate_limits_from_response(upstream)
         if upstream.status_code >= 400:
             try:
                 upstream.close()
             except Exception:
                 pass
-            raise ProviderError(f"chatgpt upstream returned HTTP {upstream.status_code} for {model}")
+            retry_note = (
+                " after automatic retries"
+                if upstream.status_code in (502, 503, 504)
+                else ""
+            )
+            raise ProviderError(
+                f"chatgpt upstream returned HTTP {upstream.status_code} "
+                f"for {model}{retry_note}"
+            )
 
         full_text = ""
         reasoning_text = ""
@@ -97,6 +163,10 @@ class ChatGptUpstreamProvider:
                 except Exception:
                     continue
                 kind = evt.get("type")
+                if kind in ("response.completed", "response.incomplete", "response.failed"):
+                    response = evt.get("response")
+                    if isinstance(response, dict):
+                        call.usage_out = _responses_token_usage(response.get("usage"))
                 if kind == "response.output_text.delta":
                     full_text += evt.get("delta") or ""
                 elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):

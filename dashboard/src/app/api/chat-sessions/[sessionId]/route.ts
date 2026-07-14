@@ -1,6 +1,10 @@
 import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth-options";
+import {
+  normalizeChatTokenUsage,
+  type ChatTokenUsage,
+} from "@/lib/chat-token-usage";
 import db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +15,7 @@ interface ChatMessage {
   role: ChatRole;
   content: string;
   sources?: string[];
+  usage?: ChatTokenUsage;
 }
 
 function cleanTitle(value: unknown): string | null {
@@ -41,7 +46,10 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
         )
       : [];
 
-    messages.push({ role, content, sources });
+    const usage = role === "assistant"
+      ? normalizeChatTokenUsage(record.usage) ?? undefined
+      : undefined;
+    messages.push({ role, content, sources, ...(usage ? { usage } : {}) });
   }
 
   return messages;
@@ -122,8 +130,8 @@ export async function PATCH(
         sessionAccess.id,
       );
       const insert = db.prepare(
-        `INSERT INTO chat_messages (session_id, role, content, sources, order_index)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_messages (session_id, role, content, sources, token_usage, order_index)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       );
       messages.forEach((message, index) => {
         insert.run(
@@ -133,6 +141,7 @@ export async function PATCH(
           message.sources && message.sources.length > 0
             ? JSON.stringify(message.sources)
             : null,
+          message.usage ? JSON.stringify(message.usage) : null,
           index,
         );
       });

@@ -10,6 +10,7 @@
       "Glob(*)",
       "Grep(*)",
       "LS(*)",
+      "Bash(*)",
       "Bash(node -e \"const l=require\\('./.breadboard/source-visuals.json'\\); const f=l.find\\(v=>v.sourceVisualId==='S1.P4.F1'\\); console.log\\(JSON.stringify\\({id:f.sourceVisualId,status:f.usageStatus,page:f.assignedPageId,skip:f.skipReason},null,2\\)\\);\")",
       "Bash(node -e \"const i=require\\('./.breadboard/visual-index.json'\\); console.log\\('in index:', 'vis-4-1-snn-training-paradigms-lif' in i\\);\")",
       "Bash(npx tsc *)",

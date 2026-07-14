@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   MAX_PUBLIC_CONCEPTS,
   SEMANTIC_SCHEMA_VERSION,
+  alignSemanticConceptAliasesWithRegistry,
   aliasConflicts,
   compactSemanticText,
   createEmptyClaimStore,
@@ -15,12 +16,15 @@ import {
   normalizePageConceptAssignment,
   normalizeRelationPredicate,
   preferredLabelFromSlug,
+  reconcileConceptRegistryAliases,
+  reconcileSemanticConceptAliases,
   resolveConcept,
   semanticHealthMetrics,
   sortConceptRegistry,
   stableClaimId,
   type ClaimRecord,
   type ClaimStore,
+  type ConceptAliasRepair,
   type ConceptRegistry,
   type ConceptRole,
   type KnowledgeClaimPlan,
@@ -33,6 +37,7 @@ import { semanticTagsFromText } from './tags.ts';
 export const CONCEPT_REGISTRY_REL_PATH = '.breadboard/concept-registry.json';
 export const CLAIM_STORE_REL_PATH = '.breadboard/claims.json';
 export const SEMANTIC_MIGRATION_REL_PATH = '.breadboard/semantic-migration.json';
+export const LEARNING_UNIT_CONTRACT_REL_PATH = '.breadboard/learning-unit-contract.json';
 
 type Frontmatter = Record<string, string | string[]>;
 
@@ -64,6 +69,11 @@ interface ParsedMarkdown {
 interface PendingWrite {
   relPath: string;
   content: string;
+}
+
+function aliasRepairDiagnostic(repair: ConceptAliasRepair): string {
+  const owner = repair.ownerConceptId ? `; owner ${repair.ownerConceptId}` : '';
+  return `repaired alias "${repair.normalizedAlias}": removed from ${repair.removedFrom.join(', ')}${owner}`;
 }
 
 function normalizedRel(value: string): string {
@@ -181,15 +191,56 @@ function stableJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** Filesystem errors that mean "someone else is holding this file right now",
+ * not "this write is invalid". On Windows a rename over an existing file needs
+ * delete access to the destination, so a sync client (OneDrive), an antivirus
+ * scanner, or the search indexer holding it open for a few hundred milliseconds
+ * surfaces as EPERM/EACCES/EBUSY. */
+const TRANSIENT_FS_ERROR_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const FS_RETRY_DELAYS_MS = [10, 25, 50, 100, 200, 400, 800];
+
+function isTransientFsError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' && TRANSIENT_FS_ERROR_CODES.has(code);
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Run a filesystem mutation, retrying while another process holds the file. */
+function withFsRetry<T>(operation: () => T): T {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      if (!isTransientFsError(error) || attempt >= FS_RETRY_DELAYS_MS.length) throw error;
+      sleepSync(FS_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+/**
+ * Write via a temp file + rename so a reader never sees a half-written page.
+ *
+ * The rename is retried while the destination is locked. If every retry loses
+ * the race, overwrite the destination in place: that gives up atomicity, but a
+ * page written non-atomically beats a generation run aborted by a transient
+ * EPERM from a sync client.
+ */
 function atomicWrite(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temporary, content, 'utf8');
   try {
-    fs.renameSync(temporary, filePath);
-  } catch (error) {
+    try {
+      withFsRetry(() => fs.renameSync(temporary, filePath));
+    } catch (error) {
+      if (!isTransientFsError(error)) throw error;
+      withFsRetry(() => fs.writeFileSync(filePath, content, 'utf8'));
+    }
+  } finally {
     if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
-    throw error;
   }
 }
 
@@ -379,6 +430,7 @@ export function ensureGardenConceptRegistry(input: {
   gardenId: string;
   sourceSetHash?: string;
   concepts: SemanticConceptPlan[];
+  persist?: boolean;
 }): ConceptRegistry {
   let { registry } = readGardenSemanticArtifacts(
     input.gardenDir,
@@ -390,6 +442,13 @@ export function ensureGardenConceptRegistry(input: {
     gardenId: input.gardenId,
     sourceSetHash: input.sourceSetHash ?? registry.sourceSetHash,
   };
+  const initialAliasReconciliation = reconcileConceptRegistryAliases(registry);
+  registry = initialAliasReconciliation.registry;
+  const suppressedAmbiguousAliases = new Set(
+    initialAliasReconciliation.repairs
+      .filter((repair) => repair.reason === 'ambiguous-alias-removed')
+      .map((repair) => repair.normalizedAlias),
+  );
   for (const concept of input.concepts) {
     registry = mergeConcept(registry, {
       slug: concept.slug,
@@ -397,12 +456,21 @@ export function ensureGardenConceptRegistry(input: {
       aliases: concept.aliases,
       evidenceAnchors: concept.evidenceAnchors,
       status: concept.evidenceAnchors.length > 0 ? 'source-verified' : 'unverified',
-    });
+    }, { aliasCollisionPolicy: 'repair', suppressedAmbiguousAliases });
   }
-  registry = sortConceptRegistry(registry);
-  performWritesWithBackup(input.gardenDir, [
-    { relPath: CONCEPT_REGISTRY_REL_PATH, content: stableJson(registry) },
-  ], 'semantic-registry');
+  const reconciled = reconcileConceptRegistryAliases(registry);
+  if (reconciled.conflicts.length > 0) {
+    const conflict = reconciled.conflicts[0];
+    throw new Error(
+      `Alias collision for "${conflict.normalizedAlias}": ${conflict.conceptIds.join(', ')}`,
+    );
+  }
+  registry = reconciled.registry;
+  if (input.persist !== false) {
+    performWritesWithBackup(input.gardenDir, [
+      { relPath: CONCEPT_REGISTRY_REL_PATH, content: stableJson(registry) },
+    ], 'semantic-registry');
+  }
   return registry;
 }
 
@@ -447,6 +515,38 @@ function performWritesWithBackup(
   return { changedFiles: written, backupDir: normalizedRel(backupRel) };
 }
 
+/**
+ * Commit the concept registry, learning-unit contract, and optional derived
+ * planning view as one rollback-backed operation. If a handled replacement
+ * fails, every earlier replacement is restored from backup instead of leaving
+ * a partial result. Each file replacement is atomic; the multi-file operation
+ * is not a filesystem transaction or a concurrent snapshot API.
+ */
+export function writeGardenConceptRegistryAndContract(input: {
+  gardenDir: string;
+  registry: ConceptRegistry;
+  contract: unknown;
+  planningMarkdown?: string;
+}): { changedFiles: string[]; backupDir?: string } {
+  const reconciled = reconcileConceptRegistryAliases(input.registry);
+  if (reconciled.conflicts.length > 0) {
+    const conflict = reconciled.conflicts[0];
+    throw new Error(
+      `Alias collision for "${conflict.normalizedAlias}": ${conflict.conceptIds.join(', ')}`,
+    );
+  }
+  return performWritesWithBackup(input.gardenDir, [
+    { relPath: CONCEPT_REGISTRY_REL_PATH, content: stableJson(reconciled.registry) },
+    { relPath: LEARNING_UNIT_CONTRACT_REL_PATH, content: stableJson(input.contract) },
+    ...(input.planningMarkdown === undefined
+      ? []
+      : [{
+          relPath: '.breadboard/planning/Learning Unit Contract.md',
+          content: input.planningMarkdown,
+        }]),
+  ], 'semantic-contract');
+}
+
 export function migrateGardenSemantics(
   gardenDir: string,
   options: { gardenId?: string; sourceSetHash?: string; migratedAt?: string } = {},
@@ -481,6 +581,52 @@ export function migrateGardenSemantics(
   const ambiguousMappings: string[] = [];
   const diagnostics: string[] = [];
   const pendingPageWrites: PendingWrite[] = [];
+  // Old contracts can repeat one canonical slug with inconsistent display
+  // labels on different units. Consolidate those explicit plans before any
+  // registry merge so a stale label is treated as a repairable alias, never as
+  // a second canonical identity whose outcome depends on page order.
+  const explicitPlansByUnit = units.map((unit) =>
+    asRecords(unit.semanticConcepts).length > 0 ? semanticPlansForUnit(unit, '') : [],
+  );
+  const explicitPlanReconciliation = reconcileSemanticConceptAliases(
+    explicitPlansByUnit.flat(),
+  );
+  diagnostics.push(...explicitPlanReconciliation.repairs.map(aliasRepairDiagnostic));
+  if (explicitPlanReconciliation.conflicts.length > 0) {
+    const conflict = explicitPlanReconciliation.conflicts[0];
+    throw new Error(
+      `Alias collision for "${conflict.normalizedAlias}": ${conflict.conceptIds.join(', ')}`,
+    );
+  }
+  const reconciledExplicitPlansByUnit = new Map<Record<string, unknown>, SemanticConceptPlan[]>();
+  let explicitPlanCursor = 0;
+  units.forEach((unit, index) => {
+    const count = explicitPlansByUnit[index].length;
+    if (count > 0) {
+      reconciledExplicitPlansByUnit.set(
+        unit,
+        explicitPlanReconciliation.concepts.slice(explicitPlanCursor, explicitPlanCursor + count),
+      );
+    }
+    explicitPlanCursor += count;
+  });
+  const plansForUnit = (unit: Record<string, unknown>, grounding: string) =>
+    reconciledExplicitPlansByUnit.get(unit) ??
+    semanticPlansForUnit(unit, grounding);
+  const initialAliasReconciliation = reconcileConceptRegistryAliases(registry);
+  registry = initialAliasReconciliation.registry;
+  diagnostics.push(...initialAliasReconciliation.repairs.map(aliasRepairDiagnostic));
+  if (initialAliasReconciliation.conflicts.length > 0) {
+    const conflict = initialAliasReconciliation.conflicts[0];
+    throw new Error(
+      `Alias collision for "${conflict.normalizedAlias}": ${conflict.conceptIds.join(', ')}`,
+    );
+  }
+  const suppressedAmbiguousAliases = new Set(
+    initialAliasReconciliation.repairs
+      .filter((repair) => repair.reason === 'ambiguous-alias-removed')
+      .map((repair) => repair.normalizedAlias),
+  );
 
   for (const file of pageFiles) {
     const current = fs.readFileSync(file.absPath, 'utf8');
@@ -505,7 +651,7 @@ export function migrateGardenSemantics(
     if (unitId) unitPage.set(unitId, file.relPath);
     const title = semanticFrontmatterString(parsed.data, 'title');
     const existingTags = semanticFrontmatterArray(parsed.data, 'tags');
-    const plans = semanticPlansForUnit(unit, `${title}\n${parsed.body}`);
+    const plans = plansForUnit(unit, `${title}\n${parsed.body}`);
     const fallbackCandidates = conceptCandidates(existingTags, `${title}\n${parsed.body}`);
     const effectivePlans = plans.length > 0
       ? plans
@@ -525,8 +671,11 @@ export function migrateGardenSemantics(
         preferredLabel: plan.preferredLabel,
         aliases: plan.aliases,
         evidenceAnchors: plan.evidenceAnchors,
-        status: plan.evidenceAnchors.length > 0 ? 'source-verified' : 'unverified',
-      });
+        // Legacy contract anchors have not passed the Learn source gate. Keep
+        // their provenance for later repair, but never upgrade verification
+        // status merely because a nonempty string was persisted.
+        status: 'unverified',
+      }, { aliasCollisionPolicy: 'repair', suppressedAmbiguousAliases });
     }
     const primary = effectivePlans.filter((plan) => plan.role === 'primary').map((plan) => plan.slug);
     const supporting = effectivePlans.filter((plan) => plan.role === 'supporting').map((plan) => plan.slug);
@@ -553,15 +702,17 @@ export function migrateGardenSemantics(
     const unitId = compactSemanticText(unit.id);
     const pageRelPath = unitPage.get(unitId) ?? '';
     const page = learnerPages.find((entry) => entry.relPath === pageRelPath);
-    const plans = semanticPlansForUnit(unit, page ? `${semanticFrontmatterString(page.parsed.data, 'title')}\n${page.parsed.body}` : '');
+    const plans = plansForUnit(unit, page ? `${semanticFrontmatterString(page.parsed.data, 'title')}\n${page.parsed.body}` : '');
     for (const plan of plans) {
-      if (!resolveConcept(plan.slug, registry)) {
+      const canonicalSlug = normalizeConceptSlug(plan.slug);
+      if (!registry.concepts.some((concept) => concept.slug === canonicalSlug)) {
         registry = mergeConcept(registry, {
           slug: plan.slug,
           preferredLabel: plan.preferredLabel,
           aliases: plan.aliases,
           evidenceAnchors: plan.evidenceAnchors,
-        });
+          status: 'unverified',
+        }, { aliasCollisionPolicy: 'repair', suppressedAmbiguousAliases });
       }
     }
     for (const claimPlan of claimPlansForUnit(unit, plans)) {
@@ -572,7 +723,10 @@ export function migrateGardenSemantics(
           learningUnitId: unitId,
           pageRelPath,
           registry,
-          status: claimPlan.evidenceAnchors.length > 0 ? 'source-verified' : 'unverified',
+          // Migration preserves legacy evidence references but cannot prove
+          // that model-authored strings resolve to source material. Only the
+          // normal Learn source gate may promote a claim to source-verified.
+          status: 'unverified',
         });
         const existing = nextClaims.get(claim.id);
         nextClaims.set(claim.id, existing ? { ...claim, connectedClaimIds: [...new Set([...existing.connectedClaimIds, ...claim.connectedClaimIds])].sort() } : claim);
@@ -634,10 +788,10 @@ export function migrateGardenSemantics(
     if (next !== page.content) pendingPageWrites.push({ relPath: page.relPath, content: next });
   }
 
-  const updatedUnits = units.map((unit) => {
+  const updatedUnitDrafts = units.map((unit) => {
     const unitId = compactSemanticText(unit.id);
     const page = learnerPages.find((entry) => entry.unitId === unitId);
-    const plans = semanticPlansForUnit(unit, page ? `${semanticFrontmatterString(page.parsed.data, 'title')}\n${page.parsed.body}` : '');
+    const plans = plansForUnit(unit, page ? `${semanticFrontmatterString(page.parsed.data, 'title')}\n${page.parsed.body}` : '');
     const knowledgeClaims = claimPlansForUnit(unit, plans).map((claim) => ({
       text: claim.text,
       subject: normalizeConceptSlug(claim.subject),
@@ -649,7 +803,45 @@ export function migrateGardenSemantics(
       evidenceAnchors: claim.evidenceAnchors,
       derivationAnchors: claim.derivationAnchors,
     }));
-    return { ...unit, semanticConcepts: plans, knowledgeClaims };
+    return { unit, plans, knowledgeClaims };
+  });
+  const contractAliasReconciliation = reconcileSemanticConceptAliases(
+    updatedUnitDrafts.flatMap((draft) => draft.plans),
+  );
+  diagnostics.push(...contractAliasReconciliation.repairs.map(aliasRepairDiagnostic));
+  if (contractAliasReconciliation.conflicts.length > 0) {
+    const conflict = contractAliasReconciliation.conflicts[0];
+    throw new Error(
+      `Alias collision for "${conflict.normalizedAlias}": ${conflict.conceptIds.join(', ')}`,
+    );
+  }
+  const registryAlignedContractConcepts = alignSemanticConceptAliasesWithRegistry(
+    contractAliasReconciliation.concepts,
+    registry,
+  );
+  contractAliasReconciliation.concepts.forEach((concept, index) => {
+    const alignedKeys = new Set(
+      (registryAlignedContractConcepts[index]?.aliases ?? []).map((alias) =>
+        normalizeConceptSlug(alias),
+      ),
+    );
+    for (const alias of concept.aliases) {
+      const normalizedAlias = normalizeConceptSlug(alias).replace(/-/g, ' ');
+      if (!alignedKeys.has(normalizeConceptSlug(alias))) {
+        diagnostics.push(
+          `repaired alias "${normalizedAlias}": removed from concept:${normalizeConceptSlug(concept.slug)}; registry ownership`,
+        );
+      }
+    }
+  });
+  let contractConceptCursor = 0;
+  const updatedUnits = updatedUnitDrafts.map((draft) => {
+    const semanticConcepts = registryAlignedContractConcepts.slice(
+      contractConceptCursor,
+      contractConceptCursor + draft.plans.length,
+    );
+    contractConceptCursor += draft.plans.length;
+    return { ...draft.unit, semanticConcepts, knowledgeClaims: draft.knowledgeClaims };
   });
   const nextContract = Object.keys(contract).length > 0
     ? {
@@ -660,13 +852,27 @@ export function migrateGardenSemantics(
       }
     : contract;
 
-  registry = sortConceptRegistry({
+  const finalAliasReconciliation = reconcileConceptRegistryAliases(sortConceptRegistry({
     ...registry,
     schemaVersion: SEMANTIC_SCHEMA_VERSION,
     gardenId,
     sourceSetHash,
     migration: { fromSchema: 'claim-as-tag-v0', version: SEMANTIC_SCHEMA_VERSION, migratedAt },
-  });
+  }));
+  registry = finalAliasReconciliation.registry;
+  diagnostics.push(...finalAliasReconciliation.repairs.map(aliasRepairDiagnostic));
+  if (finalAliasReconciliation.conflicts.length > 0) {
+    const conflict = finalAliasReconciliation.conflicts[0];
+    throw new Error(
+      `Alias collision for "${conflict.normalizedAlias}": ${conflict.conceptIds.join(', ')}`,
+    );
+  }
+  const aliasRepairAudit = [...new Set(
+    [
+      ...asStrings(existingMigration.aliasRepairs),
+      ...diagnostics.filter((diagnostic) => diagnostic.startsWith('repaired alias "')),
+    ],
+  )].sort();
   const migrationArtifact = {
     schemaVersion: SEMANTIC_SCHEMA_VERSION,
     gardenId,
@@ -674,6 +880,7 @@ export function migrateGardenSemantics(
     fromSchema: 'claim-as-tag-v0',
     migratedAt,
     ambiguousMappings: [...new Set(ambiguousMappings)].sort(),
+    ...(aliasRepairAudit.length > 0 ? { aliasRepairs: aliasRepairAudit } : {}),
   };
 
   const writes: PendingWrite[] = [

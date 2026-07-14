@@ -13,6 +13,7 @@ import {
   validateLearningMapDepth,
   hasPlaceholderText,
   hasEmptyBulletScaffold,
+  emptyBulletScaffoldLines,
   assessLessonQuality,
   countAiisms,
   removeRawVisualPlaceholders,
@@ -369,6 +370,55 @@ describe("anti-placeholder quality gate", () => {
     assert.ok(!hasEmptyBulletScaffold("- a real point\n- another real point"));
     const q = assessLessonQuality(withScaffold("- \n- \n- "), {});
     assert.ok(q.problems.some((p) => p.code === "empty-bullet-scaffold"));
+  });
+
+  test("names the offending lines so the repair call can fix them", () => {
+    const q = assessLessonQuality(withScaffold("- \n- TBD"), {});
+    const problem = q.problems.find((p) => p.code === "empty-bullet-scaffold");
+    assert.deepEqual(problem.evidence, ["-", "- TBD"]);
+  });
+
+  // Regression: display math splits a formula across lines, leaving the operator
+  // alone on its own line. A bare `+`/`-` there is LaTeX, not an empty bullet.
+  test("display-math operator lines are not bullet scaffolds", () => {
+    const math = [
+      "$$",
+      "E_{\\text{total}}",
+      "=",
+      "N_{\\text{spike}}\\varepsilon_{\\text{spike}}",
+      "+",
+      "N_{\\text{synop}}\\varepsilon_{\\text{synop}}",
+      "$$",
+      "",
+      "$$",
+      "E_{\\text{net}}",
+      "=",
+      "E_{\\text{total}}",
+      "-",
+      "E_{\\text{idle}}",
+      "$$",
+    ].join("\n");
+    assert.deepEqual(emptyBulletScaffoldLines(math), []);
+    assert.ok(!hasEmptyBulletScaffold(math));
+    const q = assessLessonQuality(withScaffold(math), {});
+    assert.ok(!q.problems.some((p) => p.code === "empty-bullet-scaffold"));
+  });
+
+  test("aligned/bracket math and fenced code are not bullet scaffolds", () => {
+    const aligned = "\\begin{aligned}\na &= b \\\\\n+\nc\n\\end{aligned}\n\n\\[\nx\n-\ny\n\\]";
+    assert.ok(!hasEmptyBulletScaffold(aligned));
+    assert.ok(!hasEmptyBulletScaffold("```diff\n-\n-\n+\n+\n```"));
+  });
+
+  test("thematic breaks and math-only bullets are not bullet scaffolds", () => {
+    assert.ok(!hasEmptyBulletScaffold("Intro text.\n\n---\n\nMore text.\n\n---\n\nEnd."));
+    assert.ok(!hasEmptyBulletScaffold("- $E = mc^2$\n- $F = ma$"));
+  });
+
+  test("real scaffolds still fail even when the page carries display math", () => {
+    const body = "$$\na\n+\nb\n$$\n\n- \n- ...\n";
+    assert.ok(hasEmptyBulletScaffold(body));
+    assert.deepEqual(emptyBulletScaffoldLines(body), ["-", "- ..."]);
   });
 
   test("a fully written lesson without scaffolds passes these checks", () => {

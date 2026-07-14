@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order How Brain-inspired Computation Works 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 From Encoded Input to Spike Trains 1.5 Winner-Take-All Competition How Non-differentiable Spike Event Is ... ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:48:03 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist From Spike Events to Spike Trains 2.1 Spikes as Units of Neural Communication 2.2 Spike Timing and Temporal Information 2.3 The Leaky Integrate-and-Fire Neuron 2.4 Excitation, Inhibition, and Neural ... ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:41:11 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks process information through discrete events called spikes. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:48:03 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Spiking neural networks, or SNNs, compute with discrete events called spikes. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:41:11 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
     <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:48:03 GMT</pubDate>
+    <pubDate>Tue, 14 Jul 2026 13:41:11 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small sensor watching a doorway. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
+    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a camera watching a quiet hallway. For several seconds, the scene barely changes. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
   </item><item>
-    <title>1.2 Spikes, Timing, and Event-Driven Computation</title>
-    <link>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.2-Spikes,-Timing,-and-Event-Driven-Computation</link>
-    <guid>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.2-Spikes,-Timing,-and-Event-Driven-Computation</guid>
-    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation A neuron activation gives a network a value to pass forward, and a simulation timestep provides a moment at which the network can update that value. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
+    <title>1. Why Spiking Neural Networks Matters</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
+    <description><![CDATA[ 1. Why Spiking Neural Networks Matters This teaching step is conceptually distinct and could not be merged without blurring two different ideas. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
   </item><item>
-    <title>1.3 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.3-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A spike event happens at a particular time, but a neuron needs a way to decide when that event should occur. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
+    <title>2.1 Spikes as Units of Neural Communication</title>
+    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.1-Spikes-as-Units-of-Neural-Communication</link>
+    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.1-Spikes-as-Units-of-Neural-Communication</guid>
+    <description><![CDATA[ Spikes as Units of Neural Communication Event-driven processing becomes useful when a network can turn changing input into messages that occur at particular moments. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
   </item><item>
-    <title>1.4 From Encoded Input to Spike Trains</title>
-    <link>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.4-From-Encoded-Input-to-Spike-Trains</link>
-    <guid>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.4-From-Encoded-Input-to-Spike-Trains</guid>
-    <description><![CDATA[ From Encoded Input to Spike Trains A leaky integrate-and-fire neuron already gives us a way to turn incoming events into an outgoing spike: it accumulates their effects over time, leaks some accumulated state away, and fires when its threshold is reached. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
+    <title>2.2 Spike Timing and Temporal Information</title>
+    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.2-Spike-Timing-and-Temporal-Information</link>
+    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.2-Spike-Timing-and-Temporal-Information</guid>
+    <description><![CDATA[ A spike train gives an SNN more than a record of which neurons became active. It also records when each neuron became active. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
   </item><item>
-    <title>1.5 Winner-Take-All Competition</title>
-    <link>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.5-Winner-Take-All-Competition</link>
-    <guid>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/1.5-Winner-Take-All-Competition</guid>
-    <description><![CDATA[ Winner-Take-All Competition A spike train can carry several possible interpretations into a layer of excitatory neurons. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
+    <title>2.3 The Leaky Integrate-and-Fire Neuron</title>
+    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.3-The-Leaky-Integrate-and-Fire-Neuron</link>
+    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A spike event marks activity at a particular moment, and a spike train arranges many such events across time. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
   </item><item>
-    <title>1. How Brain-inspired Computation Works</title>
-    <link>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-How-Brain-inspired-Computation-Works/</guid>
-    <description><![CDATA[ 1. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
+    <title>2.4 Excitation, Inhibition, and Neural Competition</title>
+    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.4-Excitation,-Inhibition,-and-Neural-Competition</link>
+    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.4-Excitation,-Inhibition,-and-Neural-Competition</guid>
+    <description><![CDATA[ Excitation, Inhibition, and Neural Competition A Leaky Integrate-and-Fire neuron turns accumulated input into a spike when its membrane potential reaches a threshold. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
   </item><item>
-    <title>2.1 How SNNs Learn</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/2.1-How-SNNs-Learn</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/2.1-How-SNNs-Learn</guid>
-    <description><![CDATA[ How SNNs Learn Once a spiking neuron has integrated its inputs and emitted a spike, the network still faces the familiar training problem: its connections must change so that future outputs better match the desired behavior. ]]></description>
-    <pubDate>Sun, 12 Jul 2026 11:47:30 GMT</pubDate>
+    <title>2.5 Sparse Computation and Energy Efficiency</title>
+    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.5-Sparse-Computation-and-Energy-Efficiency</link>
+    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.5-Sparse-Computation-and-Energy-Efficiency</guid>
+    <description><![CDATA[ Sparse Computation and Energy Efficiency A spike train gives each neuron a sequence of event times, and sparse neural activity means that many possible event slots remain silent. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
   </item>
     </channel>
   </rss>

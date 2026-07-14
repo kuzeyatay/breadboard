@@ -140,8 +140,9 @@ class CouncilRuntime:
         system: str,
         messages: List[Dict[str, Any]],
         council_input: CouncilInput,
+        run: CouncilRun,
     ) -> str:
-        text, _ = self._call_with_reasoning(model, system, messages, council_input)
+        text, _ = self._call_with_reasoning(model, system, messages, council_input, run)
         return text
 
     def _call_with_reasoning(
@@ -150,6 +151,7 @@ class CouncilRuntime:
         system: str,
         messages: List[Dict[str, Any]],
         council_input: CouncilInput,
+        run: CouncilRun,
     ) -> Tuple[str, Optional[str]]:
         """Like _call, but also returns the model's reasoning ("thinking") trace
         when the provider streamed one."""
@@ -161,7 +163,17 @@ class CouncilRuntime:
             temperature=council_input.temperature,
             max_tokens=council_input.max_tokens,
         )
-        text = self.router.call_model(call)
+        try:
+            text = self.router.call_model(call)
+        finally:
+            usage = call.usage_out
+            run.record_model_call_usage(
+                input_tokens=usage.input_tokens if usage else None,
+                output_tokens=usage.output_tokens if usage else None,
+                total_tokens=usage.total_tokens if usage else None,
+                cached_input_tokens=usage.cached_input_tokens if usage else None,
+                reasoning_tokens=usage.reasoning_tokens if usage else None,
+            )
         if not isinstance(text, str) or not text.strip():
             raise ProviderError(f"model {call_model} returned an empty answer")
         reasoning = call.reasoning_out if isinstance(call.reasoning_out, str) and call.reasoning_out.strip() else None
@@ -202,7 +214,7 @@ class CouncilRuntime:
                 system += "\n\n" + role_instructions[role]
             try:
                 content, reasoning = self._call_with_reasoning(
-                    model, system, council_input.messages, council_input
+                    model, system, council_input.messages, council_input, run
                 )
                 return (
                     CouncilCandidate(
@@ -309,6 +321,7 @@ class CouncilRuntime:
                     system,
                     [{"role": "user", "content": review_user_prompt}],
                     council_input,
+                    run,
                 )
                 return self._parse_review(raw, reviewer_model, role_name, candidates), None
             except Exception as exc:
@@ -392,6 +405,7 @@ class CouncilRuntime:
                 BREADBOARD_COUNCIL_SYSTEM + "\n\n" + CHAIR_SYNTHESIZER_PROMPT,
                 [{"role": "user", "content": chair_prompt}],
                 council_input,
+                run,
             )
             self.ledger.record_event(
                 run.id,
@@ -427,7 +441,13 @@ class CouncilRuntime:
     def _run_direct(self, council_input: CouncilInput, run: CouncilRun) -> None:
         model = council_input.requested_model or self.config.upstream_fallback_model
         system = BREADBOARD_COUNCIL_SYSTEM + "\n\n" + COMPACT_CHECKLIST
-        final, reasoning = self._call_with_reasoning(model, system, council_input.messages, council_input)
+        final, reasoning = self._call_with_reasoning(
+            model,
+            system,
+            council_input.messages,
+            council_input,
+            run,
+        )
         candidate = CouncilCandidate(
             id=new_id("cand"),
             model=model,
@@ -510,6 +530,7 @@ class CouncilRuntime:
                     BREADBOARD_COUNCIL_SYSTEM + "\n\n" + EVOLUTION_MUTATE_PROMPT,
                     [{"role": "user", "content": mutate_prompt}],
                     council_input,
+                    run,
                 )
                 return CouncilCandidate(id=new_id("cand"), model=model, role=role, content=content), None
             except Exception as exc:

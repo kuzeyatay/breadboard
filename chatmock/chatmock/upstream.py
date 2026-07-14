@@ -17,6 +17,50 @@ from flask import request as flask_request
 from .utils import get_effective_chatgpt_auth
 
 
+_RETRYABLE_UPSTREAM_STATUS_CODES = frozenset({502, 503, 504})
+_DEFAULT_CONNECT_TIMEOUT_SECONDS = 30.0
+_DEFAULT_READ_TIMEOUT_SECONDS = 120.0
+_DEFAULT_MAX_ATTEMPTS = 3
+_DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _retry_delay_seconds(base_delay: float, failed_attempt: int) -> float:
+    return min(30.0, base_delay * (2 ** max(0, failed_attempt - 1)))
+
+
+def _close_quietly(response: Any) -> None:
+    try:
+        response.close()
+    except Exception:
+        pass
+
+
+def _log_upstream_retry(reason: str, failed_attempt: int, max_attempts: int, delay: float) -> None:
+    try:
+        print(
+            f"[ChatMock] upstream {reason}; "
+            f"retrying attempt {failed_attempt + 1}/{max_attempts} in {delay:g}s"
+        )
+    except Exception:
+        pass
+
+
 def _log_json(prefix: str, payload: Any) -> None:
     try:
         print(f"{prefix}\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
@@ -163,28 +207,67 @@ def start_upstream_raw_request(
     # failures. A per-read timeout aborts a stalled stream promptly; the backend
     # emits reasoning/keepalive events far more often than this window, so it
     # never trips on a healthy (if slow) generation.
-    try:
-        connect_timeout = float(os.getenv("CHATMOCK_UPSTREAM_CONNECT_TIMEOUT", "30"))
-    except (TypeError, ValueError):
-        connect_timeout = 30.0
-    try:
-        read_timeout = float(os.getenv("CHATMOCK_UPSTREAM_READ_TIMEOUT", "600"))
-    except (TypeError, ValueError):
-        read_timeout = 600.0
-    try:
-        upstream = requests.post(
-            CHATGPT_RESPONSES_URL,
-            headers=headers,
-            json=responses_payload,
-            stream=stream,
-            timeout=(connect_timeout, read_timeout),
-        )
-    except requests.RequestException as e:
-        resp = make_response(jsonify({"error": {"message": f"Upstream ChatGPT request failed: {e}"}}), 502)
-        for k, v in build_cors_headers().items():
-            resp.headers.setdefault(k, v)
-        return None, resp
-    return upstream, None
+    connect_timeout = _env_float(
+        "CHATMOCK_UPSTREAM_CONNECT_TIMEOUT",
+        _DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        minimum=1.0,
+        maximum=300.0,
+    )
+    read_timeout = _env_float(
+        "CHATMOCK_UPSTREAM_READ_TIMEOUT",
+        _DEFAULT_READ_TIMEOUT_SECONDS,
+        minimum=5.0,
+        maximum=1800.0,
+    )
+    max_attempts = _env_int(
+        "CHATMOCK_UPSTREAM_MAX_ATTEMPTS",
+        _DEFAULT_MAX_ATTEMPTS,
+        minimum=1,
+        maximum=5,
+    )
+    retry_backoff = _env_float(
+        "CHATMOCK_UPSTREAM_RETRY_BACKOFF_SECONDS",
+        _DEFAULT_RETRY_BACKOFF_SECONDS,
+        minimum=0.0,
+        maximum=30.0,
+    )
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            upstream = requests.post(
+                CHATGPT_RESPONSES_URL,
+                headers=headers,
+                json=responses_payload,
+                stream=stream,
+                timeout=(connect_timeout, read_timeout),
+            )
+        except requests.RequestException as exc:
+            if attempt < max_attempts:
+                delay = _retry_delay_seconds(retry_backoff, attempt)
+                _log_upstream_retry(type(exc).__name__, attempt, max_attempts, delay)
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+            message = (
+                f"Upstream ChatGPT request failed after {max_attempts} attempts: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            resp = make_response(jsonify({"error": {"message": message}}), 502)
+            for key, value in build_cors_headers().items():
+                resp.headers.setdefault(key, value)
+            return None, resp
+
+        status_code = getattr(upstream, "status_code", None)
+        if status_code in _RETRYABLE_UPSTREAM_STATUS_CODES and attempt < max_attempts:
+            _close_quietly(upstream)
+            delay = _retry_delay_seconds(retry_backoff, attempt)
+            _log_upstream_retry(f"returned HTTP {status_code}", attempt, max_attempts, delay)
+            if delay > 0:
+                time.sleep(delay)
+            continue
+        return upstream, None
+
+    raise AssertionError("upstream retry loop ended unexpectedly")
 
 
 def build_upstream_websocket_url() -> str:

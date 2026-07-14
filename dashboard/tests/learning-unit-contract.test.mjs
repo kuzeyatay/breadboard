@@ -146,6 +146,43 @@ describe("Learning Unit Contract — atomic Zettelkasten handles (Fix 6/7)", () 
   });
 });
 
+describe("Learning Unit Contract — concept alias ownership", () => {
+  test("normalization removes aliases owned by another concept's canonical slug", () => {
+    const units = normalizeLearningUnits([
+      {
+        id: "U1",
+        role: "core_concept",
+        title: "Spike timing",
+        learningQuestion: "What does spike timing represent?",
+        semanticConcepts: [{
+          slug: "spike-timing",
+          preferredLabel: "Spike timing",
+          role: "primary",
+          aliases: [],
+        }],
+      },
+      {
+        id: "U2",
+        role: "mechanism",
+        title: "Temporal information",
+        learningQuestion: "How can time carry information?",
+        semanticConcepts: [{
+          slug: "temporal-information",
+          preferredLabel: "Temporal information",
+          role: "primary",
+          aliases: ["spike timing", "temporal coding"],
+        }],
+      },
+    ]);
+
+    assert.deepEqual(units[0].semanticConcepts[0].aliases, []);
+    assert.deepEqual(units[1].semanticConcepts[0].aliases, ["temporal coding"]);
+    assert.ok(
+      !validateLearningUnitContracts(units).some((problem) => /alias|collision/i.test(problem)),
+    );
+  });
+});
+
 describe("Learning Unit Contract — interactive visual uniqueness (Fix 4)", () => {
   test("detects duplicate interactive visual signatures", () => {
     const units = normalizeLearningUnits([

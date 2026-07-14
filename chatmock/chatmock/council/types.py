@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import threading
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -143,6 +144,23 @@ class AggregateRanking:
         }
 
 
+@dataclass(frozen=True)
+class CouncilTokenUsage:
+    """Thread-safe CouncilRun usage snapshot across every attempted model call."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cached_input_tokens: int = 0
+    reasoning_tokens: int = 0
+    call_count: int = 0
+    reported_call_count: int = 0
+
+    @property
+    def fully_reported(self) -> bool:
+        return self.call_count > 0 and self.reported_call_count == self.call_count
+
+
 @dataclass
 class CouncilRun:
     id: str
@@ -160,8 +178,49 @@ class CouncilRun:
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=now_iso)
     updated_at: Optional[str] = None
+    _token_usage: CouncilTokenUsage = field(
+        default_factory=CouncilTokenUsage,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _token_usage_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def record_model_call_usage(
+        self,
+        *,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+        cached_input_tokens: Optional[int] = None,
+        reasoning_tokens: Optional[int] = None,
+    ) -> None:
+        """Record one attempted provider call and any usage it reported."""
+
+        reported = input_tokens is not None and output_tokens is not None and total_tokens is not None
+        with self._token_usage_lock:
+            current = self._token_usage
+            self._token_usage = CouncilTokenUsage(
+                input_tokens=current.input_tokens + (input_tokens or 0),
+                output_tokens=current.output_tokens + (output_tokens or 0),
+                total_tokens=current.total_tokens + (total_tokens or 0),
+                cached_input_tokens=current.cached_input_tokens + (cached_input_tokens or 0),
+                reasoning_tokens=current.reasoning_tokens + (reasoning_tokens or 0),
+                call_count=current.call_count + 1,
+                reported_call_count=current.reported_call_count + (1 if reported else 0),
+            )
+
+    def token_usage_snapshot(self) -> CouncilTokenUsage:
+        with self._token_usage_lock:
+            return self._token_usage
 
     def to_dict(self) -> Dict[str, Any]:
+        usage = self.token_usage_snapshot()
         return {
             "id": self.id,
             "gardenId": self.garden_id,
@@ -176,6 +235,15 @@ class CouncilRun:
             "aggregateRanking": self.aggregate_ranking.to_dict() if self.aggregate_ranking else None,
             "finalAnswer": self.final_answer,
             "diagnostics": self.diagnostics or None,
+            "usage": {
+                "inputTokens": usage.input_tokens,
+                "outputTokens": usage.output_tokens,
+                "totalTokens": usage.total_tokens,
+                "cachedInputTokens": usage.cached_input_tokens,
+                "reasoningTokens": usage.reasoning_tokens,
+                "callCount": usage.call_count,
+                "reportedCallCount": usage.reported_call_count,
+            },
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
         }

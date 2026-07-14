@@ -8,6 +8,10 @@ import type {
 } from 'openai/resources/responses/responses';
 import { DEFAULT_MODEL } from '@/lib/ai-models';
 import { normalizeAssistantReasoningEffort } from '@/lib/assistant-reasoning';
+import {
+  chatTokenUsageEventFromResponse,
+  type ChatTokenUsageStreamEvent,
+} from '@/lib/chat-token-usage';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
 import { retrieveGraphRag } from '@/lib/semantic-retrieval';
@@ -30,7 +34,8 @@ type ActiveMarkdownContext = {
 type SsePayload =
   | { type: 'sources'; sources: string[] }
   | { type: 'delta'; text: string }
-  | { type: 'thinking'; text: string };
+  | { type: 'thinking'; text: string }
+  | ChatTokenUsageStreamEvent;
 
 function truncate(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
@@ -429,6 +434,7 @@ export async function POST(request: Request) {
       async start(controller) {
         const encoder = new TextEncoder();
         const emittedImageIds = new Set<string>();
+        let usageEmitted = false;
 
         function emit(payload: SsePayload) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
@@ -450,6 +456,14 @@ export async function POST(request: Request) {
           }
         }
 
+        function emitUsageFromResponse(value: unknown) {
+          if (usageEmitted) return;
+          const payload = chatTokenUsageEventFromResponse(value);
+          if (!payload) return;
+          usageEmitted = true;
+          emit(payload);
+        }
+
         emit({ type: 'sources', sources: sourceNames });
 
         try {
@@ -465,12 +479,16 @@ export async function POST(request: Request) {
               emitImagesFromUnknown([event.item]);
             } else if (event.type === 'response.completed') {
               emitImagesFromUnknown(event.response.output);
+              emitUsageFromResponse(event.response);
+            } else if (event.type === 'response.incomplete') {
+              emitUsageFromResponse(event.response);
             } else if (event.type === 'response.failed') {
               const response = event.response as unknown as JsonRecord | undefined;
               const error = response?.error as JsonRecord | undefined;
               if (typeof error?.message === 'string' && error.message.trim()) {
                 emitText('delta', `\n\n${error.message.trim()}`);
               }
+              emitUsageFromResponse(event.response);
             }
           }
         } catch (error) {
