@@ -39,7 +39,7 @@ export const CLAIM_STORE_REL_PATH = '.breadboard/claims.json';
 export const SEMANTIC_MIGRATION_REL_PATH = '.breadboard/semantic-migration.json';
 export const LEARNING_UNIT_CONTRACT_REL_PATH = '.breadboard/learning-unit-contract.json';
 
-type Frontmatter = Record<string, string | string[]>;
+export type Frontmatter = Record<string, string | string[]>;
 
 export interface GardenSemanticArtifacts {
   registry: ConceptRegistry;
@@ -59,14 +59,14 @@ export interface SemanticMigrationReport {
   metrics: SemanticHealthMetrics;
 }
 
-interface ParsedMarkdown {
+export interface ParsedMarkdown {
   data: Frontmatter;
   rawFrontmatter: string;
   body: string;
   hadFrontmatter: boolean;
 }
 
-interface PendingWrite {
+export interface PendingWrite {
   relPath: string;
   content: string;
 }
@@ -149,7 +149,11 @@ function semanticFrontmatterString(data: Frontmatter, key: string): string {
 }
 
 function setArrayField(rawFrontmatter: string, key: string, values: readonly string[]): string {
-  const field = `${key}: ${JSON.stringify([...values])}`;
+  // One frontmatter array format across every writer. garden-finalize's
+  // fmSetArray emits `key: ["a", "b"]`; the semantic writers must match it
+  // exactly, or two passes over the same page produce byte-different files and
+  // the pipeline never reaches a fixed point.
+  const field = `${key}: [${values.map((value) => JSON.stringify(value)).join(", ")}]`;
   const lines = rawFrontmatter ? rawFrontmatter.split(/\r?\n/) : [];
   const output: string[] = [];
   let found = false;
@@ -171,14 +175,14 @@ function setArrayField(rawFrontmatter: string, key: string, values: readonly str
   return output.filter((line, index, all) => line || index < all.length - 1).join('\n').trimEnd();
 }
 
-function renderSemanticMarkdown(parsed: ParsedMarkdown, fields: Record<string, string[]>): string {
+export function renderSemanticMarkdown(parsed: ParsedMarkdown, fields: Record<string, string[]>): string {
   let raw = parsed.rawFrontmatter;
   for (const [key, values] of Object.entries(fields)) raw = setArrayField(raw, key, values);
   if (!raw && !parsed.hadFrontmatter) return parsed.body;
   return `---\n${raw}\n---\n\n${parsed.body.replace(/^\r?\n/, '')}`;
 }
 
-function readJson<T>(filePath: string, fallback: T): T {
+export function readJson<T>(filePath: string, fallback: T): T {
   if (!fs.existsSync(filePath)) return fallback;
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
@@ -187,7 +191,7 @@ function readJson<T>(filePath: string, fallback: T): T {
   }
 }
 
-function stableJson(value: unknown): string {
+export function stableJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
@@ -244,7 +248,7 @@ function atomicWrite(filePath: string, content: string): void {
   }
 }
 
-function walkMarkdown(root: string): Array<{ relPath: string; absPath: string }> {
+export function walkMarkdown(root: string): Array<{ relPath: string; absPath: string }> {
   const output: Array<{ relPath: string; absPath: string }> = [];
   if (!fs.existsSync(root)) return output;
   const visit = (directory: string) => {
@@ -264,7 +268,7 @@ function walkMarkdown(root: string): Array<{ relPath: string; absPath: string }>
   return output.sort((left, right) => left.relPath.localeCompare(right.relPath));
 }
 
-function isLearnerPage(relPath: string, data: Frontmatter): boolean {
+export function isLearnerPage(relPath: string, data: Frontmatter): boolean {
   const type = semanticFrontmatterString(data, 'knowledge_type');
   const breadboardType = semanticFrontmatterString(data, 'breadboardType');
   return (
@@ -474,7 +478,7 @@ export function ensureGardenConceptRegistry(input: {
   return registry;
 }
 
-function performWritesWithBackup(
+export function performWritesWithBackup(
   gardenDir: string,
   writes: PendingWrite[],
   backupLabel: string,

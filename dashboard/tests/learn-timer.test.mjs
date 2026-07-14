@@ -150,6 +150,48 @@ test("navbar toggles Learn while a collapsed status indicator remains outside ch
   assert.ok(indicatorIndex >= 0, "collapsed Learn status should render");
   assert.ok(indicatorIndex < chatScrollerIndex, "collapsed status must sit outside chat scrolling");
   assert.match(workspaceSource, /status === "complete"[\s\S]*?bg-\[#4f8a62\]/);
-  assert.match(workspaceSource, /status === "failed"[\s\S]*?bg-\[#b85c5c\]/);
+  assert.match(workspaceSource, /status === "failed"[\s\S]*?text-\[#b85c5c\]/);
+  assert.match(workspaceSource, /h-5 w-5 rounded-full border-\[3px\] border-current/);
   assert.match(workspaceSource, /onClick=\{\(\) => setLearnPanelOpen\(true\)\}/);
+});
+
+test("failed Learn jobs expose a regenerate action", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    workspaceSource,
+    /showPrimaryAction =[\s\S]*?status === "failed" \|\| status === "cancelled"/,
+  );
+  assert.match(
+    workspaceSource,
+    /async function handleRegenerateAfterFailure\(\)[\s\S]*?postLearnAction\("regenerate"\)/,
+  );
+  assert.match(workspaceSource, /status === "failed"[\s\S]*?"Regenerate"/);
+  assert.match(workspaceSource, /endpoint === "regenerate" && data\.planning/);
+});
+
+test("cancelled Learn jobs expose a fresh generate action", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    workspaceSource,
+    /showPrimaryAction =[\s\S]*?status === "failed" \|\| status === "cancelled"/,
+  );
+  assert.match(
+    workspaceSource,
+    /async function handleGenerateAfterCancellation\(\)[\s\S]*?postLearnAction\("plan"\)/,
+  );
+  assert.match(workspaceSource, /status === "cancelled"[\s\S]*?"Generate"/);
 });

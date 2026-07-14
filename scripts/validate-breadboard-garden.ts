@@ -43,6 +43,8 @@ import {
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "../dashboard/src/lib/learn-utils.ts";
 import { auditFinalGardenState, buildFinalGardenState } from "../dashboard/src/lib/final-garden-state.ts";
 import { validateGardenSemantics } from "../dashboard/src/lib/garden-semantics.ts";
+import { REQUIRED_VALIDATION_REPORT_SECTIONS as CANONICAL_REPORT_SECTIONS, VALIDATION_REPORT_STATIC_SECTIONS } from "../dashboard/src/lib/garden-finalize.ts";
+import { dedupeSemanticBlockerLines, verifyValidationReportSerialization } from "../dashboard/src/lib/semantic-reconciliation.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -1327,51 +1329,10 @@ export interface CheckResult {
   acceptanceBlocking?: boolean;
 }
 
-const REQUIRED_VALIDATION_REPORT_SECTIONS = [
-  "Export Tree",
-  "Link Resolution",
-  "Semantic Navigation",
-  "Section Title Uniqueness",
-  "Section Folder/Title Consistency",
-  "Section Title Naturalness",
-  "Semantic Navigation Number Matching",
-  "Learning Map Ambiguity",
-  "Learning Unit Contract Fulfillment",
-  "Section Semantic Coherence",
-  "Section Title Grammar",
-  "Section Index Prose Quality",
-  "Interactive Visual Grounding",
-  "Learner-Facing Scaffold Prose",
-  "Source Map Consistency",
-  "Source Map Caveat Reconciliation",
-  "Source Coverage Modes",
-  "Source Anchor Usage vs Crop Status",
-  "Formula Grounding",
-  "Formula Expression Validation",
-  "Formula Meaning Match",
-  "Formula Family Match",
-  "Formula Metadata Noise",
-  "Interactive Visual Fulfillment",
-  "Final Interactive Visual Uniqueness",
-  "Visual Anchor Precision",
-  "Repetition and Opening Flow",
-  "Source Crop Quality",
-  "Crop Quality and Fallbacks",
-  "Source Coverage Mode Precision",
-  "Source Text Concept Anchors",
-  "Contract/Page Source Anchor Synchronization",
-  "Source Coverage / Final Artifact Consistency",
-  "Visual Title and Caption Quality",
-  "Zettelkasten Tags",
-  "Zettelkasten Tag Density",
-  "Zettelkasten Handle Quality",
-  "Zettelkasten Handle Naturalness",
-  "Repair Provenance",
-  "Final Garden State Audit",
-  "Section Title Quality",
-  "Acceptance Decision",
-  "Final Acceptance",
-];
+// Fix 11: the canonical report section list lives with the canonical writer.
+// The standalone validator reuses it so writer and checker can never drift.
+const REQUIRED_VALIDATION_REPORT_SECTIONS = CANONICAL_REPORT_SECTIONS;
+
 
 function statusFromSeverity(severity: ValidationSeverity): CheckResult["status"] {
   switch (severity) {
@@ -2637,6 +2598,13 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
   }
 
   // 30. Exported artifact includes the machine-readable validation report.
+  //
+  // Fix 10: this checks that a report was EXPORTED, not that a possibly stale
+  // report from an earlier generation carries today's headings. Section
+  // completeness is a property of the SERIALIZER and is verified against the
+  // freshly written report by check 66 (verifyReportSerialization), after the
+  // writer has run. An old report missing a newly required heading must never
+  // block an otherwise healthy garden.
   {
     const problems: string[] = [];
     const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
@@ -2649,12 +2617,6 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (!/^Page counts:\s+/m.test(report)) problems.push("validation report missing page counts");
       if (!/\[(?:PASS|WARN|FAIL|SKIP)\]/.test(report)) problems.push("validation report missing check statuses");
       if (!/^Accepted:\s+(?:yes|no)$/im.test(report)) problems.push("validation report missing accepted yes/no");
-      for (const section of REQUIRED_VALIDATION_REPORT_SECTIONS) {
-        const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (!new RegExp(`^##\\s+${escaped}\\s*$`, "m").test(report)) {
-          problems.push(`validation report missing section "${section}"`);
-        }
-      }
     }
     check(30, "validation report is exported", problems);
   }
@@ -3787,178 +3749,30 @@ export function writeValidationReport(
       ? "Summary: artifact is acceptable - all critical checks pass."
       : "Summary: artifact is NOT acceptable - see failing checks and file paths below.",
     "",
-    "## Export Tree",
-    "",
-    "See checks 7, 9, 11, 12, 18, 26, and 30.",
-    "",
-    "## Link Resolution",
-    "",
-    "See check 17.",
-    "",
-    "## Semantic Navigation",
-    "",
-    "See checks 20, 36, and 47.",
-    "",
-    "## Section Title Uniqueness",
-    "",
-    "See check 46.",
-    "",
-    "## Section Folder/Title Consistency",
-    "",
-    "See check 52.",
-    "",
-    "## Section Title Naturalness",
-    "",
-    "See checks 34 and 56.",
-    "",
-    "## Semantic Navigation Number Matching",
-    "",
-    "See check 47.",
-    "",
-    "## Learning Map Ambiguity",
-    "",
-    "See check 48.",
-    "",
-    "## Learning Unit Contract Fulfillment",
-    "",
-    "See checks 8, 23, 31, 32, 33, and 37.",
-    "",
-    "## Section Semantic Coherence",
-    "",
-    "See check 37.",
-    "",
-    "## Section Title Grammar",
-    "",
-    "See checks 34 and 38.",
-    "",
-    "## Section Index Prose Quality",
-    "",
-    "See check 59.",
-    "",
-    "## Interactive Visual Grounding",
-    "",
-    "See checks 23 and 39.",
-    "",
-    "## Learner-Facing Scaffold Prose",
-    "",
-    "See check 3 and check 59.",
-    "",
-    "## Source Map Consistency",
-    "",
-    "See check 21.",
-    "",
-    "## Source Map Caveat Reconciliation",
-    "",
-    "See check 42.",
-    "",
-    "## Source Coverage Modes",
-    "",
-    "See checks 22, 26, 43, and 49.",
-    "",
-    "## Source Anchor Usage vs Crop Status",
-    "",
-    "See check 43.",
-    "",
-    "## Formula Grounding",
-    "",
-    "See checks 25, 40, and 41.",
-    "",
-    "## Formula Expression Validation",
-    "",
-    "See check 40.",
-    "",
-    "## Formula Meaning Match",
-    "",
-    "See check 41.",
-    "",
-    "## Formula Family Match",
-    "",
-    "See check 53.",
-    "",
-    "## Formula Metadata Noise",
-    "",
-    "See check 54.",
-    "",
-    "## Interactive Visual Fulfillment",
-    "",
-    "See check 23.",
-    "",
-    "## Final Interactive Visual Uniqueness",
-    "",
-    "See checks 13, 14, 18, 23, and 31.",
-    "",
-    "## Visual Anchor Precision",
-    "",
-    "See check 55.",
-    "",
-    "## Repetition and Opening Flow",
-    "",
-    "See check 29.",
-    "",
-    "## Source Crop Quality",
-    "",
-    "See checks 12, 35, and 44.",
-    "",
-    "## Crop Quality and Fallbacks",
-    "",
-    "See check 44.",
-    "",
-    "## Source Coverage Mode Precision",
-    "",
-    "See check 49.",
-    "",
-    "## Source Text Concept Anchors",
-    "",
-    "See check 50.",
-    "",
-    "## Contract/Page Source Anchor Synchronization",
-    "",
-    "See check 61.",
-    "",
-    "## Source Coverage / Final Artifact Consistency",
-    "",
-    "See check 62.",
-    "",
-    "## Visual Title and Caption Quality",
-    "",
-    "See check 63.",
-    "",
-    "## Zettelkasten Tags",
-    "",
-    "See checks 8, 24, and 45.",
-    "",
-    "## Zettelkasten Tag Density",
-    "",
-    "See check 45.",
-    "",
-    "## Zettelkasten Handle Quality",
-    "",
-    "See checks 31 and 51.",
-    "",
-    "## Zettelkasten Handle Naturalness",
-    "",
-    "See check 57.",
-    "",
-    "## Repair Provenance",
-    "",
-    "See check 58.",
-    "",
-    "## Final Garden State Audit",
-    "",
-    "See check 64.",
-    "",
-    "## Section Title Quality",
-    "",
-    "See check 34.",
-    "",
+    // Fix 11: same canonical section set as the pipeline writer.
+    ...VALIDATION_REPORT_STATIC_SECTIONS.flatMap((section) => [
+      `## ${section.heading}`,
+      "",
+      section.description,
+      "",
+    ]),
     "## Acceptance Decision",
     "",
     `Accepted: ${accepted ? "yes" : "no"}`,
     "",
     "Blocking failures:",
-    ...(blockingFailures.length > 0
-      ? blockingFailures.map((result) => `- ${result.id}. ${result.name}: ${result.problems[0] ?? "failed"}`)
-      : ["- None."]),
+    // Fix 13: one line per stable semantic issue, not one per validator prefix.
+    ...(() => {
+      const deduped = dedupeSemanticBlockerLines(
+        blockingFailures.flatMap((result) =>
+          (result.problems.length > 0 ? result.problems : ["failed"]).map((problem) => ({
+            check: `${result.id}. ${result.name}`,
+            problem,
+          })),
+        ),
+      );
+      return deduped.length > 0 ? deduped.map((line) => `- ${line}`) : ["- None."];
+    })(),
     "",
     "Blocking warnings:",
     ...(blockingWarnings.length > 0
@@ -4001,6 +3815,41 @@ function resolveGarden(arg: string): { dir: string; slug: string } {
   return { dir: path.join(CONTENT_ROOT, arg), slug: arg };
 }
 
+/**
+ * Fix 9/10: audit → serialize → verify serialization.
+ *
+ * Report completeness is a property of the WRITER, so it is checked against the
+ * report this run just produced, never against whatever stale file happened to
+ * be on disk. If the fresh report cannot serialize every required section, the
+ * report is rewritten once and re-verified; only a genuinely broken writer
+ * blocks acceptance.
+ */
+export function runChecksAndWriteReport(gardenDir: string, gardenSlug: string): CheckResult[] {
+  const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
+  let results = runChecks(gardenDir, gardenSlug);
+  writeValidationReport(gardenDir, gardenSlug, results);
+  // The report exists now, so check 30 ("report is exported") can observe it.
+  results = runChecks(gardenDir, gardenSlug);
+  writeValidationReport(gardenDir, gardenSlug, results);
+
+  let serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
+  if (!serialization.valid) {
+    writeValidationReport(gardenDir, gardenSlug, results);
+    serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
+  }
+  results = [
+    ...results,
+    {
+      id: 66,
+      name: "validation report serializes the canonical audit",
+      status: serialization.valid ? "PASS" : "FAIL",
+      problems: serialization.problems,
+    },
+  ];
+  writeValidationReport(gardenDir, gardenSlug, results);
+  return results;
+}
+
 function main(): void {
   const args = process.argv.slice(2).filter((arg) => arg !== "--");
   const targets = args.includes("--all")
@@ -4016,10 +3865,7 @@ function main(): void {
   let anyFailure = false;
   for (const { dir, slug } of targets) {
     console.log(`\n=== ${slug} ===`);
-    let results = runChecks(dir, slug);
-    writeValidationReport(dir, slug, results);
-    results = runChecks(dir, slug);
-    writeValidationReport(dir, slug, results);
+    const results = runChecksAndWriteReport(dir, slug);
     const normalized = results.map(normalizeCheckResult);
     for (const result of normalized) {
       const badge = result.status;
