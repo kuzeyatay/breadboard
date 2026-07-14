@@ -66,6 +66,7 @@ import {
   normalizeConceptSlug,
   normalizeLookupText,
 } from "@/lib/semantic-core";
+import { reconcileFinalGardenSemantics } from "@/lib/semantic-reconciliation";
 import {
   IMPLEMENTED_VISUAL_TYPES,
   buildVisualBlock,
@@ -5289,6 +5290,50 @@ export async function runTextbookGeneration({
     // loop only gives up (and the terminal throw below fires) once ChatMock can
     // no longer make progress, so a healthy model self-heals gate failures
     // rather than ending generation on the first attempt.
+
+    // Stage 7b (post-structure semantic reconciliation): section titles and page
+    // paths are frozen by now, so the final learner-page filesystem + the final
+    // Learning Unit Contract are authoritative. Rebuild every derived semantic
+    // artifact from them in one atomic transaction BEFORE self-healing, the
+    // critic, and the terminal gate: page primary/supporting concepts, page tags
+    // (= primary + supporting), page claimIds, contract semanticConcepts, the
+    // active claim registry, and the active concept registry. Claims from a
+    // previous page structure are archived, never carried forward pointing at
+    // pages that no longer exist. Fully deterministic: no ChatMock (Fix 14).
+    try {
+      const semantic = reconcileFinalGardenSemantics(clusterDir, gardenId, {
+        archiveHistoricalClaims: true,
+        archiveUnusedConcepts: true,
+        strictMode: false,
+      });
+      if (semantic.changed) reconcileFinalGardenState(clusterDir, gardenId);
+      appendLearnEvent(contentPath, gardenId, "learn_semantic_reconciliation_completed", {
+        jobId: job.id,
+        textbookVersionId,
+        stoppedReason: semantic.stoppedReason,
+        projectionsBuilt: semantic.projectionsBuilt,
+        pagesUpdated: semantic.pagesUpdated.length,
+        contractUnitsUpdated: semantic.contractUnitsUpdated.length,
+        activeClaims: semantic.activeClaims,
+        archivedClaims: semantic.archivedClaims,
+        staleClaimsRemoved: semantic.staleClaimsRemoved,
+        claimsRemappedToNewPaths: semantic.claimsRemappedToNewPaths,
+        activeConcepts: semantic.activeConcepts,
+        archivedConcepts: semantic.archivedConcepts,
+        issuesBefore: semantic.issuesBefore.length,
+        issuesAfter: semantic.issuesAfter.length,
+        stateFingerprintAfter: semantic.stateFingerprintAfter,
+      });
+    } catch (reconciliationError) {
+      appendLearnEvent(contentPath, gardenId, "learn_semantic_reconciliation_failed", {
+        jobId: job.id,
+        reason:
+          reconciliationError instanceof Error
+            ? reconciliationError.message
+            : String(reconciliationError),
+      });
+    }
+
     // Stage 8 (pre-finalize): bounded, deterministic-first / ChatMock-second
     // weak-anchor self-healing. ACTIVELY referenced low/unsupported source anchors
     // are repaired from real source evidence — deterministically when a single

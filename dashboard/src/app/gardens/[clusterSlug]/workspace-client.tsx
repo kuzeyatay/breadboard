@@ -1977,6 +1977,10 @@ export default function WorkspaceClient({
         if (!learnSkipManualReviewRef.current) {
           addToast("Learning map ready to review", "success");
         }
+      } else if (endpoint === "regenerate" && data.planning) {
+        if (!learnSkipManualReviewRef.current) {
+          addToast("Learning map ready to review", "success");
+        }
       } else if (
         endpoint === "confirm" ||
         endpoint === "generate" ||
@@ -2041,6 +2045,16 @@ export default function WorkspaceClient({
   }
 
   async function handleRegenerateLearningMap() {
+    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    await postLearnAction("plan");
+  }
+
+  async function handleRegenerateAfterFailure() {
+    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    await postLearnAction("regenerate");
+  }
+
+  async function handleGenerateAfterCancellation() {
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
     await postLearnAction("plan");
   }
@@ -2423,7 +2437,8 @@ export default function WorkspaceClient({
     const panelExpanded = learnPanelOpen;
     const canClosePanel =
       !active && (status === "complete" || status === "failed" || status === "cancelled");
-    const showPrimaryAction = !canClosePanel;
+    const showPrimaryAction =
+      !canClosePanel || status === "failed" || status === "cancelled";
     const statusMessage = active
       ? job?.currentStep || "Working"
       : status === "complete"
@@ -2522,12 +2537,26 @@ export default function WorkspaceClient({
             {showPrimaryAction && (
               <button
                 type="button"
-                onClick={handleLearnPrimary}
+                onClick={
+                  status === "failed"
+                    ? handleRegenerateAfterFailure
+                    : status === "cancelled"
+                      ? handleGenerateAfterCancellation
+                      : handleLearnPrimary
+                }
                 disabled={!canStart && status !== "awaiting_confirmation"}
                 className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {learnBusy || active ? <Spinner className="h-3.5 w-3.5" /> : null}
-                {learnState?.buttonLabel ?? "Learn"}
+                {status === "failed"
+                  ? learnBusy
+                    ? "Regenerating..."
+                    : "Regenerate"
+                  : status === "cancelled"
+                    ? learnBusy
+                      ? "Generating..."
+                      : "Generate"
+                  : learnState?.buttonLabel ?? "Learn"}
               </button>
             )}
             {active && (
@@ -2829,7 +2858,7 @@ export default function WorkspaceClient({
     const tone = status === "complete"
       ? "border-[#3d7652] bg-[#4f8a62] text-[var(--paper-raised)]"
       : status === "failed"
-        ? "border-[#934646] bg-[#b85c5c] text-[var(--paper-raised)]"
+        ? "border-gray-700 bg-gray-900 text-[#b85c5c]"
         : status === "awaiting_confirmation"
           ? "border-[#a77f2b] bg-[#c59a3d] text-[var(--paper-raised)]"
           : "border-gray-700 bg-gray-900 text-gray-400";
@@ -2856,16 +2885,10 @@ export default function WorkspaceClient({
             <path strokeLinecap="round" strokeLinejoin="round" d="m5 12.5 4.2 4.2L19 7" />
           </svg>
         ) : status === "failed" ? (
-          <svg
-            className="h-5 w-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.4}
+          <span
+            className="h-5 w-5 rounded-full border-[3px] border-current"
             aria-hidden="true"
-          >
-            <path strokeLinecap="round" d="M12 7.5v6M12 17h.01" />
-          </svg>
+          />
         ) : status === "awaiting_confirmation" ? (
           <svg
             className="h-5 w-5"

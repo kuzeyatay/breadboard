@@ -47,6 +47,12 @@ import { auditFinalGardenState, auditLegacyMigrationPersistence, buildFinalGarde
 import type { SourceAnchor } from "./visual-spec.ts";
 import { isValidPublicConceptSlug } from "./semantic-core.ts";
 import { migrateGardenSemantics, validateGardenSemantics } from "./garden-semantics.ts";
+import {
+  dedupeSemanticBlockerLines,
+  finalGardenStateFingerprint,
+  reconcileFinalGardenSemantics,
+  verifyValidationReportSerialization,
+} from "./semantic-reconciliation.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -1517,6 +1523,38 @@ export function finalizeGardenExport({
   registerExistingTextAnchors(gardenDir, finalLearnerPages, new Map(finalContract.units.map((unit) => [unit.id, unit])), report);
   synchronizeContractSourceAnchors(gardenDir, finalContract, finalLearnerPages, report);
 
+  // --- Pass I2: post-structure semantic reconciliation ------------------------
+  // Section/page renames are complete above, so every path is now FINAL. The
+  // final filesystem + final Learning Unit Contract are authoritative: active
+  // claims, the concept registry, and every page concept projection (tags =
+  // primaryConcepts + supportingConcepts, claimIds) are REBUILT from them in
+  // one rollback-backed transaction. Stale records from earlier structures are
+  // archived to claims-history/concept-registry-history — never merged forward
+  // into the active registries.
+  {
+    const semantic = reconcileFinalGardenSemantics(gardenDir, gardenSlug, {
+      archiveHistoricalClaims: true,
+      archiveUnusedConcepts: true,
+      strictMode: false,
+    });
+    for (const rel of semantic.pagesUpdated) if (!report.changed.includes(rel)) report.changed.push(rel);
+    if (semantic.changed) {
+      report.notes.push(
+        `semantic reconciliation: ${semantic.activeClaims} active claims (${semantic.staleClaimsRemoved} stale archived, ` +
+          `${semantic.claimsRemappedToNewPaths} remapped to final paths), ${semantic.activeConcepts} active concepts ` +
+          `(${semantic.archivedConcepts} archived), ${semantic.pagesUpdated.length} page projections rewritten`,
+      );
+    }
+    if (semantic.stoppedReason === "ambiguous_unit_page_mapping") {
+      report.criticalProblems.push(
+        ...semantic.pageIndex.problems.map((problem) => `semantic reconciliation: ${problem}`),
+      );
+    }
+    if (semantic.stoppedReason === "transaction_failed") {
+      report.criticalProblems.push("semantic reconciliation transaction failed and was rolled back");
+    }
+  }
+
   // --- Pass J: canonical final-state reconciliation --------------------------
   // Build one FinalGardenState from the final files and bring every derived
   // artifact (Source Coverage, section indexes, contract handles, anchor
@@ -2146,11 +2184,14 @@ function markSemanticRepairProvenance(
 }
 
 function validationFailuresFromChecks(checks: FinalizeCheck[]): string[] {
-  return checks
-    .filter((check) => check.status === "FAIL")
-    .flatMap((check) => check.problems.length > 0
-      ? check.problems.map((problem) => `${check.name}: ${problem}`)
-      : [`${check.name}: failed`]);
+  // Fix 12/13: one failure per stable semantic issue across validator prefixes.
+  return dedupeSemanticBlockerLines(
+    checks
+      .filter((check) => check.status === "FAIL")
+      .flatMap((check) => check.problems.length > 0
+        ? check.problems.map((problem) => ({ check: check.name, problem }))
+        : [{ check: check.name, problem: "failed" }]),
+  );
 }
 
 // Meta bookkeeping checks that validate the repair log / finalizer boundary
@@ -4968,12 +5009,27 @@ function writeFinalizeValidationReport({
 }): void {
   const bd = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(bd, { recursive: true });
+  const reportPath = path.join(bd, "validation-report.md");
   const write = (checks: FinalizeCheck[]) => {
     const accepted = checks.every((check) => check.status !== "FAIL");
     const passCount = checks.filter((check) => check.status === "PASS").length;
     const failCount = checks.filter((check) => check.status === "FAIL").length;
+    // Fix 13: one blocker per stable semantic issue. The same defect reported
+    // under several validator prefixes collapses into one line carrying every
+    // detector; check-level PASS/FAIL stays untouched.
+    const blockingFailures = dedupeSemanticBlockerLines(
+      checks
+        .filter((check) => check.status === "FAIL")
+        .map((check) => ({ check: check.name, problem: check.problems[0] ?? "failed" })),
+    );
     const lines = [
       "# Breadboard Validation Report",
+      "",
+      "<!--",
+      "generatedBy: canonical-validation-report-writer (dashboard/src/lib/garden-finalize.ts)",
+      `finalStateFingerprint: ${finalGardenStateFingerprint(gardenDir)}`,
+      `auditVersion: ${VALIDATION_REPORT_AUDIT_VERSION}`,
+      "-->",
       "",
       `Generated: ${new Date().toISOString()}`,
       `Root: ${path.resolve(gardenDir)}`,
@@ -4984,178 +5040,18 @@ function writeFinalizeValidationReport({
       `Accepted: ${accepted ? "yes" : "no"}`,
       "Produced by: dashboard/src/lib/garden-finalize.ts (finalizeGardenExport) + scripts/validate-breadboard-garden.ts",
       "",
-      "## Export Tree",
-      "",
-      "See checks: exported tree, no source page typed as learner page.",
-      "",
-      "## Link Resolution",
-      "",
-      "See the standalone validator's wikilink checks.",
-      "",
-      "## Semantic Navigation",
-      "",
-      "Root, learning, source, overview, and learning-map links must point to the expected page family.",
-      "",
-      "## Section Title Uniqueness",
-      "",
-      "Top-level learning section titles must be unique after normalized numbering, punctuation, and case are ignored.",
-      "",
-      "## Section Folder/Title Consistency",
-      "",
-      "Section folder names, _index frontmatter titles, H1 headings, and map labels must describe the same section.",
-      "",
-      "## Section Title Naturalness",
-      "",
-      "Section titles must be polished learner-facing concepts, not source-anchor field lists or planner templates.",
-      "",
-      "## Semantic Navigation Number Matching",
-      "",
-      "Numbered section labels must point to the matching numbered section folder.",
-      "",
-      "## Learning Map Ambiguity",
-      "",
-      "Learning Map section nodes and prerequisite edges must resolve to one unambiguous section.",
-      "",
-      "## Learning Unit Contract Fulfillment",
-      "",
-      "See check: Learning Unit Contract fulfillment.",
-      "",
-      "## Section Semantic Coherence",
-      "",
-      "Section titles must match the roles and concepts of their generated learner pages.",
-      "",
-      "## Section Title Grammar",
-      "",
-      "Section and subsection titles must be learner-facing, grammatical, and free of planning scaffold phrasing.",
-      "",
-      "## Section Index Prose Quality",
-      "",
-      "Section index pages must contain polished learner-facing summaries, not generated template prose.",
-      "",
-      "## Interactive Visual Grounding",
-      "",
-      "Interactive visuals must use semantically compatible source anchors or honest conceptual grounding.",
-      "",
-      "## Learner-Facing Scaffold Prose",
-      "",
-      "Final learner Markdown must not contain deterministic repair scaffold instructions or placeholders.",
-      "",
-      "## Source Map Consistency",
-      "",
-      "Source Map caveats must not contradict extracted figures, tables, formulas, or later source pages.",
-      "",
-      "## Source Map Caveat Reconciliation",
-      "",
-      "Visible/planning caveats about missing formulas, tables, figures, or later pages must be reconciled against extracted evidence.",
-      "",
-      "## Source Coverage Modes",
-      "",
-      "Source Coverage must classify each important anchor as embedded, explained, reused, omitted, missing, or misplaced.",
-      "",
-      "## Source Anchor Usage vs Crop Status",
-      "",
-      "Concept/formula usage is tracked separately from whether a crop was embedded, omitted, or replaced by text fallback.",
-      "",
-      "## Interactive Visual Fulfillment",
-      "",
-      "Planned interactive visuals must be embedded or intentionally omitted with a reason.",
-      "",
-      "## Final Interactive Visual Uniqueness",
-      "",
-      "Rendered interactive visuals must be page-specific and non-duplicative after final block normalization.",
-      "",
-      "## Visual Anchor Precision",
-      "",
-      "Metric visuals must use only the formula anchors needed by their controls, outputs, and learning goal.",
-      "",
-      "## Repetition and Opening Flow",
-      "",
-      "Repeated learner openings must be callbacks, not restarted motivation frames.",
-      "",
-      "## Formula Grounding",
-      "",
-      "Only meaningful formulas are grounded; trivial numbers and standalone percentages are rejected in formulas: metadata.",
-      "",
-      "## Formula Expression Validation",
-      "",
-      "The formulas: frontmatter block may contain mathematical expressions only, not teaching goals or keyword bundles.",
-      "",
-      "## Formula Meaning Match",
-      "",
-      "Source-anchored and source-derived formulas must match the source formula/metric anchor they claim.",
-      "",
-      "## Formula Family Match",
-      "",
-      "Formula families inferred from generated math must match the claimed source formula anchor family.",
-      "",
-      "## Formula Metadata Noise",
-      "",
-      "Formula metadata must track meaningful relationships, not isolated symbols or inline fragments.",
-      "",
-      "## Source Crop Quality",
-      "",
-      "See check: source crop quality is acceptable.",
-      "",
-      "## Crop Quality and Fallbacks",
-      "",
-      "Crop omissions must be reported as text/formula fallbacks rather than accepted crops.",
-      "",
-      "## Source Coverage Mode Precision",
-      "",
-      "Coverage headings must distinguish embedded crops from text formulas, prose explanations, and crop fallbacks.",
-      "",
-      "## Source Text Concept Anchors",
-      "",
-      "Concept visuals should use source-derived prose anchors when the source explains the concept without a figure.",
-      "",
-      "## Contract/Page Source Anchor Synchronization",
-      "",
-      "Page-level source anchors, text-anchor ledger entries, and Learning Unit Contract anchors must agree.",
-      "",
-      "## Source Coverage / Final Artifact Consistency",
-      "",
-      "Source Coverage must match final learner frontmatter, final visual JSON, and final source-anchor ledgers.",
-      "",
-      "## Visual Title and Caption Quality",
-      "",
-      "Visual titles and captions must be polished, specific, and free of internal visual type names.",
-      "",
-      "## Public Concept Assignments",
-      "",
-      "Tags must exactly equal the registry-backed primary and supporting concept union.",
-      "",
-      "## Public Concept Cardinality",
-      "",
-      "Learner pages need a primary concept and no more than five public concepts; focused pages may have one.",
-      "",
-      "## Claim Separation",
-      "",
-      "Readable evidence-grounded claims must remain in the claim store, never in public tags.",
-      "",
-      "## Semantic Registry Integrity",
-      "",
-      "Aliases, concept relationships, page assignments, and claim endpoints must resolve canonically.",
-      "",
-      "## Repair Provenance",
-      "",
-      "Semantic repairs must be recorded in .breadboard/repair-log.json and finalizer semantic actions must remain empty.",
-      "",
-      "## Final Garden State Audit",
-      "",
-      "One canonical FinalGardenState is built from the final files; Source Coverage, contracts, anchors, visuals, formula kinds, section indexes, zettel handles, repair provenance, and planning caveats must all agree with it. Acceptance is blocked on any contradiction.",
-      "",
-      "## Section Title Quality",
-      "",
-      "See check: section titles are learner-facing.",
-      "",
+      ...VALIDATION_REPORT_STATIC_SECTIONS.flatMap((section) => [
+        `## ${section.heading}`,
+        "",
+        section.description,
+        "",
+      ]),
       "## Acceptance Decision",
       "",
       `Accepted: ${accepted ? "yes" : "no"}`,
       "",
       "Blocking failures:",
-      ...(checks.filter((check) => check.status === "FAIL").length > 0
-        ? checks.filter((check) => check.status === "FAIL").map((check) => `- ${check.name}: ${check.problems[0] ?? "failed"}`)
-        : ["- None."]),
+      ...(blockingFailures.length > 0 ? blockingFailures.map((line) => `- ${line}`) : ["- None."]),
       "",
       "Non-blocking warnings:",
       "- None.",
@@ -5176,58 +5072,87 @@ function writeFinalizeValidationReport({
     }
     lines.push("", "## Finalize Notes", "");
     for (const note of report.notes.slice(0, 200)) lines.push(`- ${note}`);
-    fs.writeFileSync(path.join(bd, "validation-report.md"), `${lines.join("\n")}\n`, "utf-8");
+    fs.writeFileSync(reportPath, `${lines.join("\n")}\n`, "utf-8");
   };
 
   write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: false }));
   write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true }));
+  // Fix 10: report completeness is a SERIALIZER test. If the just-written
+  // report cannot serialize every required section, rewrite once from the
+  // current audit and block only if the current writer itself is broken —
+  // never because an old report from an earlier generation lacked a heading.
+  let serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
+  if (!serialization.valid) {
+    write(collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true }));
+    serialization = verifyValidationReportSerialization(reportPath, REQUIRED_VALIDATION_REPORT_SECTIONS);
+    if (!serialization.valid) {
+      report.criticalProblems.push(
+        `canonical validation-report writer cannot serialize the audit: ${serialization.problems.join("; ")}`,
+      );
+    }
+  }
   if (!report.changed.includes(".breadboard/validation-report.md")) {
     report.changed.push(".breadboard/validation-report.md");
   }
 }
 
-const REQUIRED_VALIDATION_REPORT_SECTIONS = [
-  "Export Tree",
-  "Link Resolution",
-  "Semantic Navigation",
-  "Section Title Uniqueness",
-  "Section Folder/Title Consistency",
-  "Section Title Naturalness",
-  "Semantic Navigation Number Matching",
-  "Learning Map Ambiguity",
-  "Learning Unit Contract Fulfillment",
-  "Section Semantic Coherence",
-  "Section Title Grammar",
-  "Section Index Prose Quality",
-  "Interactive Visual Grounding",
-  "Learner-Facing Scaffold Prose",
-  "Source Map Consistency",
-  "Source Map Caveat Reconciliation",
-  "Source Coverage Modes",
-  "Source Anchor Usage vs Crop Status",
-  "Formula Grounding",
-  "Formula Expression Validation",
-  "Formula Meaning Match",
-  "Formula Family Match",
-  "Formula Metadata Noise",
-  "Interactive Visual Fulfillment",
-  "Final Interactive Visual Uniqueness",
-  "Visual Anchor Precision",
-  "Repetition and Opening Flow",
-  "Source Crop Quality",
-  "Crop Quality and Fallbacks",
-  "Source Coverage Mode Precision",
-  "Source Text Concept Anchors",
-  "Contract/Page Source Anchor Synchronization",
-  "Source Coverage / Final Artifact Consistency",
-  "Visual Title and Caption Quality",
-  "Zettelkasten Tags",
-  "Zettelkasten Tag Density",
-  "Zettelkasten Handle Quality",
-  "Zettelkasten Handle Naturalness",
-  "Repair Provenance",
-  "Final Garden State Audit",
-  "Section Title Quality",
+/** Bumped whenever the canonical report layout changes shape. */
+const VALIDATION_REPORT_AUDIT_VERSION = 2;
+
+/**
+ * Fix 9-11: single source of truth for the validation report's static
+ * sections. The canonical writer iterates THIS list and the report self-check
+ * derives its required-section list from THIS list, so the two can never
+ * diverge again (the four Zettelkasten sections were once renamed in the
+ * writer but not in the checker, making every fresh report fail its own
+ * self-check).
+ */
+export const VALIDATION_REPORT_STATIC_SECTIONS: ReadonlyArray<{ heading: string; description: string }> = [
+  { heading: "Export Tree", description: "See checks: exported tree, no source page typed as learner page." },
+  { heading: "Link Resolution", description: "See the standalone validator's wikilink checks." },
+  { heading: "Semantic Navigation", description: "Root, learning, source, overview, and learning-map links must point to the expected page family." },
+  { heading: "Section Title Uniqueness", description: "Top-level learning section titles must be unique after normalized numbering, punctuation, and case are ignored." },
+  { heading: "Section Folder/Title Consistency", description: "Section folder names, _index frontmatter titles, H1 headings, and map labels must describe the same section." },
+  { heading: "Section Title Naturalness", description: "Section titles must be polished learner-facing concepts, not source-anchor field lists or planner templates." },
+  { heading: "Semantic Navigation Number Matching", description: "Numbered section labels must point to the matching numbered section folder." },
+  { heading: "Learning Map Ambiguity", description: "Learning Map section nodes and prerequisite edges must resolve to one unambiguous section." },
+  { heading: "Learning Unit Contract Fulfillment", description: "See check: Learning Unit Contract fulfillment." },
+  { heading: "Section Semantic Coherence", description: "Section titles must match the roles and concepts of their generated learner pages." },
+  { heading: "Section Title Grammar", description: "Section and subsection titles must be learner-facing, grammatical, and free of planning scaffold phrasing." },
+  { heading: "Section Index Prose Quality", description: "Section index pages must contain polished learner-facing summaries, not generated template prose." },
+  { heading: "Interactive Visual Grounding", description: "Interactive visuals must use semantically compatible source anchors or honest conceptual grounding." },
+  { heading: "Learner-Facing Scaffold Prose", description: "Final learner Markdown must not contain deterministic repair scaffold instructions or placeholders." },
+  { heading: "Source Map Consistency", description: "Source Map caveats must not contradict extracted figures, tables, formulas, or later source pages." },
+  { heading: "Source Map Caveat Reconciliation", description: "Visible/planning caveats about missing formulas, tables, figures, or later pages must be reconciled against extracted evidence." },
+  { heading: "Source Coverage Modes", description: "Source Coverage must classify each important anchor as embedded, explained, reused, omitted, missing, or misplaced." },
+  { heading: "Source Anchor Usage vs Crop Status", description: "Concept/formula usage is tracked separately from whether a crop was embedded, omitted, or replaced by text fallback." },
+  { heading: "Formula Grounding", description: "Only meaningful formulas are grounded; trivial numbers and standalone percentages are rejected in formulas: metadata." },
+  { heading: "Formula Expression Validation", description: "The formulas: frontmatter block may contain mathematical expressions only, not teaching goals or keyword bundles." },
+  { heading: "Formula Meaning Match", description: "Source-anchored and source-derived formulas must match the source formula/metric anchor they claim." },
+  { heading: "Formula Family Match", description: "Formula families inferred from generated math must match the claimed source formula anchor family." },
+  { heading: "Formula Metadata Noise", description: "Formula metadata must track meaningful relationships, not isolated symbols or inline fragments." },
+  { heading: "Interactive Visual Fulfillment", description: "Planned interactive visuals must be embedded or intentionally omitted with a reason." },
+  { heading: "Final Interactive Visual Uniqueness", description: "Rendered interactive visuals must be page-specific and non-duplicative after final block normalization." },
+  { heading: "Visual Anchor Precision", description: "Metric visuals must use only the formula anchors needed by their controls, outputs, and learning goal." },
+  { heading: "Repetition and Opening Flow", description: "Repeated learner openings must be callbacks, not restarted motivation frames." },
+  { heading: "Source Crop Quality", description: "See check: source crop quality is acceptable." },
+  { heading: "Crop Quality and Fallbacks", description: "Crop omissions must be reported as text/formula fallbacks rather than accepted crops." },
+  { heading: "Source Coverage Mode Precision", description: "Coverage headings must distinguish embedded crops from text formulas, prose explanations, and crop fallbacks." },
+  { heading: "Source Text Concept Anchors", description: "Concept visuals should use source-derived prose anchors when the source explains the concept without a figure." },
+  { heading: "Contract/Page Source Anchor Synchronization", description: "Page-level source anchors, text-anchor ledger entries, and Learning Unit Contract anchors must agree." },
+  { heading: "Source Coverage / Final Artifact Consistency", description: "Source Coverage must match final learner frontmatter, final visual JSON, and final source-anchor ledgers." },
+  { heading: "Visual Title and Caption Quality", description: "Visual titles and captions must be polished, specific, and free of internal visual type names." },
+  { heading: "Zettelkasten Tags", description: "Page tags must exactly equal the registry-backed primary and supporting concept union projected from the Learning Unit Contract." },
+  { heading: "Zettelkasten Tag Density", description: "Learner pages need a primary concept and no more than five public concepts; focused pages may have one." },
+  { heading: "Zettelkasten Handle Quality", description: "Public concept handles must be reusable canonical concepts — never claim-shaped, generic, or invalid slugs. Readable evidence-grounded claims remain in the claim store." },
+  { heading: "Zettelkasten Handle Naturalness", description: "Concept handles must read as natural domain vocabulary; aliases, relationships, page assignments, and claim endpoints must resolve canonically." },
+  { heading: "Repair Provenance", description: "Semantic repairs must be recorded in .breadboard/repair-log.json and finalizer semantic actions must remain empty." },
+  { heading: "Final Garden State Audit", description: "One canonical FinalGardenState is built from the final files; Source Coverage, contracts, anchors, visuals, formula kinds, section indexes, zettel handles, repair provenance, and planning caveats must all agree with it. Acceptance is blocked on any contradiction." },
+  { heading: "Section Title Quality", description: "See check: section titles are learner-facing." },
+];
+
+export const REQUIRED_VALIDATION_REPORT_SECTIONS = [
+  ...VALIDATION_REPORT_STATIC_SECTIONS.map((section) => section.heading),
   "Acceptance Decision",
   "Final Acceptance",
 ];
@@ -7133,6 +7058,14 @@ function collectFinalizeChecks({
           reportProblems.push(`missing section "${section}"`);
         }
       }
+      // A canonical report records the fingerprint of the state it audited.
+      // If the garden changed after the report was written, the report is
+      // stale and must be regenerated (Fix 11). Reports without a provenance
+      // fingerprint (standalone-validator output) are exempt from this rule.
+      const recorded = validationReport.match(/^finalStateFingerprint:\s*([0-9a-f]{40})$/m)?.[1];
+      if (recorded && recorded !== finalGardenStateFingerprint(gardenDir)) {
+        reportProblems.push("validation report is stale: finalStateFingerprint does not match the current final state");
+      }
     }
     push("validation report contains required sections", reportProblems);
   }
@@ -7215,9 +7148,15 @@ function runCriticalGate({
   if (!fs.existsSync(path.join(gardenDir, ".breadboard", "validation-report.md"))) {
     problems.push(".breadboard/validation-report.md missing");
   }
+  // Fix 12/13: the same underlying semantic defect (stale claim mapping, tag
+  // projection mismatch, unit without page) is reported by several validators.
+  // Flattened blockers collapse to ONE line per stable issue, annotated with
+  // every validator that detected it. Check-level FAILs are not weakened.
+  const failEntries: Array<{ check: string; problem: string }> = [];
   for (const check of collectFinalizeChecks({ gardenDir, report, includeReportSelfCheck: true })) {
     if (check.status !== "FAIL") continue;
-    for (const problem of check.problems) problems.push(`${check.name}: ${problem}`);
+    for (const problem of check.problems) failEntries.push({ check: check.name, problem });
   }
+  problems.push(...dedupeSemanticBlockerLines(failEntries));
   report.criticalProblems.push(...[...new Set(problems)]);
 }

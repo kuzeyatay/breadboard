@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist From Spike Events to Spike Trains 2.1 Spikes as Units of Neural Communication 2.2 Spike Timing and Temporal Information 2.3 The Leaky Integrate-and-Fire Neuron 2.4 Excitation, Inhibition, and Neural ... ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:41:11 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order From Spiking Neural Networks to Biologically Inspired Computation 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 Excitation, Inhibition, and Winner-Take-All Competition Describing Stimulus ... ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:43 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks, or SNNs, compute with discrete events called spikes. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:41:11 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Spiking neural networks, or SNNs, process information through discrete events called spikes. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:43 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:41:11 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spiking neural networks represent and process information, compare their principal learning strategies, calculate and interpret the source-defined evaluation metrics, analyze benchmark results across accuracy, latency, energy, spike activi... ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:43 GMT</pubDate>
   </item><item>
-    <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a camera watching a quiet hallway. For several seconds, the scene barely changes. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
+    <title>1. From Spiking Neural Networks to Biologically Inspired Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Networks-to-Biologically-Inspired-Computation/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Networks-to-Biologically-Inspired-Computation/</guid>
+    <description><![CDATA[ 1. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:04 GMT</pubDate>
   </item><item>
-    <title>1. Why Spiking Neural Networks Matters</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
-    <description><![CDATA[ 1. Why Spiking Neural Networks Matters This teaching step is conceptually distinct and could not be merged without blurring two different ideas. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
+    <title>1.4 Excitation, Inhibition, and Winner-Take-All Competition</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Networks-to-Biologically-Inspired-Computation/1.4-Excitation,-Inhibition,-and-Winner-Take-All-Competition</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Networks-to-Biologically-Inspired-Computation/1.4-Excitation,-Inhibition,-and-Winner-Take-All-Competition</guid>
+    <description><![CDATA[ Excitation, Inhibition, and Winner-Take-All Competition A Leaky Integrate-and-Fire neuron can accumulate incoming spikes, reach its threshold, emit a spike, and reset. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:04 GMT</pubDate>
   </item><item>
-    <title>2.1 Spikes as Units of Neural Communication</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.1-Spikes-as-Units-of-Neural-Communication</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.1-Spikes-as-Units-of-Neural-Communication</guid>
-    <description><![CDATA[ Spikes as Units of Neural Communication Event-driven processing becomes useful when a network can turn changing input into messages that occur at particular moments. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
+    <title>2. Describing Stimulus Onset Time Formally</title>
+    <link>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/</guid>
+    <description><![CDATA[ 2. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:04 GMT</pubDate>
   </item><item>
-    <title>2.2 Spike Timing and Temporal Information</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.2-Spike-Timing-and-Temporal-Information</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.2-Spike-Timing-and-Temporal-Information</guid>
-    <description><![CDATA[ A spike train gives an SNN more than a record of which neurons became active. It also records when each neuron became active. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
+    <title>2.1 Measuring Inference Latency</title>
+    <link>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.1-Measuring-Inference-Latency</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.1-Measuring-Inference-Latency</guid>
+    <description><![CDATA[ Measuring Inference Latency Once an SNN has received spikes and produced a decision, we can ask a practical question: how long did that decision take? Imagine an input stream in which a stimulus begins at a known instant-perhaps the first event in a recorded sample. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:04 GMT</pubDate>
   </item><item>
-    <title>2.3 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.3-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A spike event marks activity at a particular moment, and a spike train arranges many such events across time. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
+    <title>2.2 Spike Count and Inference Energy</title>
+    <link>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.2-Spike-Count-and-Inference-Energy</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.2-Spike-Count-and-Inference-Energy</guid>
+    <description><![CDATA[ Spike Count and Inference Energy Once stimulus onset has been placed on a timeline, the network’s response can be followed timestep by timestep. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:04 GMT</pubDate>
   </item><item>
-    <title>2.4 Excitation, Inhibition, and Neural Competition</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.4-Excitation,-Inhibition,-and-Neural-Competition</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.4-Excitation,-Inhibition,-and-Neural-Competition</guid>
-    <description><![CDATA[ Excitation, Inhibition, and Neural Competition A Leaky Integrate-and-Fire neuron turns accumulated input into a spike when its membrane potential reaches a threshold. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
+    <title>2.3 Accuracy and Normalized Energy Efficiency</title>
+    <link>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.3-Accuracy-and-Normalized-Energy-Efficiency</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.3-Accuracy-and-Normalized-Energy-Efficiency</guid>
+    <description><![CDATA[ Accuracy and Normalized Energy Efficiency Once a network has turned an input into a predicted class label, imagine checking a batch of 100 predictions against the correct labels. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:04 GMT</pubDate>
   </item><item>
-    <title>2.5 Sparse Computation and Energy Efficiency</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.5-Sparse-Computation-and-Energy-Efficiency</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Spike-Events-to-Spike-Trains/2.5-Sparse-Computation-and-Energy-Efficiency</guid>
-    <description><![CDATA[ Sparse Computation and Energy Efficiency A spike train gives each neuron a sequence of event times, and sparse neural activity means that many possible event slots remain silent. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 13:40:29 GMT</pubDate>
+    <title>2.4 Convergence Epoch and Training Progress</title>
+    <link>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.4-Convergence-Epoch-and-Training-Progress</link>
+    <guid>https://localhost:8081/test-2/learning/2.-Describing-Stimulus-Onset-Time-Formally/2.4-Convergence-Epoch-and-Training-Progress</guid>
+    <description><![CDATA[ Convergence Epoch and Training Progress Once accuracy has been tracked across training epochs, the resulting learning curve shows how performance develops over time. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 15:47:04 GMT</pubDate>
   </item>
     </channel>
   </rss>

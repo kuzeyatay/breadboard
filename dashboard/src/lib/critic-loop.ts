@@ -2014,7 +2014,11 @@ async function applyAnchorDecisions(
  */
 export function reconcileValidationReportWithDecision(gardenDir: string, d: FinalAcceptanceDecision): void {
   const p = path.join(gardenDir, ".breadboard", "validation-report.md");
-  let text = fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : "# Breadboard Validation Report\n\nCheck results: 0 PASS, 0 WARN, 0 FAIL, 0 SKIP\nAccepted: yes\n";
+  // Fix 11: the canonical finalize writer is the ONLY report creator. This
+  // function amends an existing report; it never fabricates one from nothing
+  // (a stub would lack the required sections and shadow the real writer).
+  if (!fs.existsSync(p)) return;
+  let text = fs.readFileSync(p, "utf-8");
   const blockerTotal = d.deterministicBlockerCount + d.verifiedCriticBlockerCount;
   text = text.replace(/^Accepted: .*$/m, `Accepted: ${d.accepted ? "yes" : "no"}`);
   text = text.replace(/^Check results: (\d+) PASS, (\d+) WARN, (\d+) FAIL, (\d+) SKIP$/m, (_full, pass, warn, fail, skip) => {
