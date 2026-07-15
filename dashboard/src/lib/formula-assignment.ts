@@ -105,6 +105,22 @@ export type AssignableFormulaIdentity = Omit<CanonicalFormulaIdentity, "family">
   family: FormulaSemanticFamily | (string & {});
 };
 
+/**
+ * Restrict source-formula candidates to the anchors explicitly assigned to a
+ * learning unit. Page grounding and visual generation must share this same
+ * family-safe boundary.
+ */
+export function formulaCandidatesForUnit<
+  TFigure extends { figureId: string },
+  TContract extends { id: string },
+>(
+  candidates: readonly TFigure[],
+  contracts: readonly TContract[],
+): TFigure[] {
+  const allowedIds = new Set(contracts.map((contract) => contract.id).filter(Boolean));
+  return candidates.filter((candidate) => allowedIds.has(candidate.figureId));
+}
+
 // ---------------------------------------------------------------------------
 // Part 2 — Unit formula requirements
 // ---------------------------------------------------------------------------

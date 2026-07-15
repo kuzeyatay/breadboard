@@ -7,6 +7,7 @@ import {
   buildFormulaAssignmentPlan,
   buildFormulaAssignmentRepairPacket,
   deriveUnitFormulaRequirement,
+  formulaCandidatesForUnit,
   formulaAssignmentProvenanceFromPlan,
   resolveFormulaAssignmentAmbiguities,
   scoreFormulaUnitCompatibility,
@@ -566,8 +567,18 @@ test("34. broad multi-metric U11 cannot steal E6 from the focused accuracy unit"
   const active = plan.assignments.filter((assignment) =>
     assignment.status === "assigned" || assignment.status === "reused_with_reason");
   assert.equal(active.some((assignment) => assignment.unitId === "U11"), false);
-  assert.equal(active.find((assignment) => assignment.formulaAnchorId === "S1.P6.E6")?.unitId, "U12");
-  assert.equal(active.find((assignment) => assignment.formulaAnchorId === "S1.P6.E1")?.unitId, "U13");
+  const primaryTargets = Object.fromEntries(
+    active.filter((assignment) => assignment.status === "assigned")
+      .map((assignment) => [assignment.formulaAnchorId, assignment.unitId]),
+  );
+  assert.equal(primaryTargets["S1.P6.E6"], "U12");
+  assert.equal(primaryTargets["S1.P6.E1"], "U13");
+  assert.equal(primaryTargets["S1.P6.E2"], "U14");
+  assert.equal(primaryTargets["S1.P6.E4"], "U16");
+  // Remaining helpful result families may be left unassigned/critic-bound in
+  // this compact fixture, but the broad overview is never their primary home.
+  assert.notEqual(primaryTargets["S1.P6.E3"], "U11");
+  assert.notEqual(primaryTargets["S1.P6.E5"], "U11");
 
   const applied = applyFormulaAssignmentPlanToUnits({ units, plan, formulas });
   assert.equal(applied.result.applied, true, applied.result.reason);
@@ -579,4 +590,32 @@ test("34. broad multi-metric U11 cannot steal E6 from the focused accuracy unit"
       assert.doesNotThrow(() => assertPlannedFormulaAssignment(formulaIdentity, requirement, appliedUnit));
     }
   }
+});
+
+test("35. an energy unit cannot receive another unit's count formula candidate", () => {
+  const countFormula = SPK();
+  const energyFormula = ENE();
+  const sourceFigures = [
+    {
+      figureId: countFormula.anchorId,
+      kind: "formula",
+      caption: `${countFormula.title}: ${countFormula.canonicalText}`,
+    },
+    {
+      figureId: energyFormula.anchorId,
+      kind: "formula",
+      caption: `${energyFormula.title}: ${energyFormula.canonicalText}`,
+    },
+  ];
+  const contracts = [{
+      id: energyFormula.anchorId,
+      teachingGoal: "Define energy per inference",
+      termsToDefine: ["energy cost", "spike energy", "synaptic energy"],
+      placement: "inside_metric_definition",
+  }];
+
+  const candidates = formulaCandidatesForUnit(sourceFigures, contracts);
+  assert.deepEqual(candidates.map((candidate) => candidate.figureId), [energyFormula.anchorId]);
+  assert.equal(candidates.some((candidate) => candidate.figureId === countFormula.anchorId), false);
+  assert.deepEqual(formulaCandidatesForUnit(sourceFigures, []), []);
 });
