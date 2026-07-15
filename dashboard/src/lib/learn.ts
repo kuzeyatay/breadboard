@@ -68,6 +68,11 @@ import {
 } from "@/lib/semantic-core";
 import { reconcileFinalGardenSemantics } from "@/lib/semantic-reconciliation";
 import {
+  reconcileFinalFormulaProjections,
+  type FormulaUsageRepairDecision,
+  type FormulaUsageRepairPacket,
+} from "@/lib/formula-usage-reconciliation";
+import {
   IMPLEMENTED_VISUAL_TYPES,
   buildVisualBlock,
   validateVisualSpec,
@@ -5331,6 +5336,75 @@ export async function runTextbookGeneration({
           reconciliationError instanceof Error
             ? reconciliationError.message
             : String(reconciliationError),
+      });
+    }
+
+    // Stage 7c: formula assignment/metadata/lineage/ledger/coverage are one
+    // canonical projection. Deterministic compatibility and lineage rules run
+    // first; ChatMock sees only a narrow packet when genuine ambiguity remains,
+    // and its structured decision is independently verified before application.
+    try {
+      const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
+      const formulaRepairModel = criticEnabled
+        ? async (packet: FormulaUsageRepairPacket): Promise<FormulaUsageRepairDecision | null> => {
+            const system =
+              "You resolve ONE formula-usage ambiguity in a final learning page. Return STRICT JSON: " +
+              "{\"action\": string, \"entryIndex\"?: number, \"formulaAnchorId\"?: string, \"targetUnitId\"?: string, \"reason\": string}. " +
+              "Choose action only from allowedActions. Never invent a formula, formula anchor, source excerpt, unit, or notation. " +
+              "Never create a source definition from a numeric example, change unrelated prose/titles/tags/visuals/anchors, " +
+              "or silently remove a contract requirement. Use only pageFormulaEntries, contractRequiredFormulas, and candidateDefinitions supplied.";
+            const { parsed } = await callCouncilJson({
+              client,
+              model,
+              taskType: "critique",
+              gardenId,
+              system,
+              user: JSON.stringify(packet),
+              sourceContext: packet,
+              councilModeOverride: "direct_council",
+              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+            });
+            if (!parsed || typeof parsed !== "object") return null;
+            const record = parsed as Record<string, unknown>;
+            const action = String(record.action ?? "") as FormulaUsageRepairDecision["action"];
+            if (!packet.allowedActions.includes(action)) return null;
+            return {
+              action,
+              entryIndex: typeof record.entryIndex === "number" ? record.entryIndex : undefined,
+              formulaAnchorId: typeof record.formulaAnchorId === "string" ? record.formulaAnchorId : undefined,
+              targetUnitId: typeof record.targetUnitId === "string" ? record.targetUnitId : undefined,
+              reason: typeof record.reason === "string" ? record.reason : "ChatMock formula-usage decision",
+            };
+          }
+        : undefined;
+      const formulaReconciliation = await reconcileFinalFormulaProjections(clusterDir, gardenId, {
+        maxChatMockCalls: 2,
+        strictMode: false,
+        formulaRepairModel,
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_formula_projection_reconciliation_completed", {
+        jobId: job.id,
+        textbookVersionId,
+        contractAssignmentsChecked: formulaReconciliation.contractAssignmentsChecked,
+        compatibleMissingAssignmentsRepaired: formulaReconciliation.definitionsAdded + formulaReconciliation.definitionsLinked,
+        incompatibleAssignmentsFound: formulaReconciliation.incompatibleAssignmentsFound,
+        definitionsAdded: formulaReconciliation.definitionsAdded,
+        definitionsLinked: formulaReconciliation.definitionsLinked,
+        orphanWorkedExamplesBefore: formulaReconciliation.orphanWorkedExamplesBefore,
+        workedExamplesRelined: formulaReconciliation.workedExamplesRelined,
+        workedExamplesReclassified: formulaReconciliation.workedExamplesReclassified,
+        metadataEntriesRemoved: formulaReconciliation.metadataEntriesRemoved,
+        chatMockCallsUsed: formulaReconciliation.chatMockCallsUsed,
+        formulaLedgerModesChanged: formulaReconciliation.formulaLedgerModesChanged,
+        sourceCoverageEntriesRegenerated: formulaReconciliation.sourceCoverageEntriesRegenerated,
+        remainingFormulaBlockers: formulaReconciliation.unresolvedIssues.length,
+        passed: formulaReconciliation.passed,
+        rolledBack: formulaReconciliation.rolledBack,
+      });
+    } catch (formulaError) {
+      appendLearnEvent(contentPath, gardenId, "learn_formula_projection_reconciliation_failed", {
+        jobId: job.id,
+        reason: formulaError instanceof Error ? formulaError.message : String(formulaError),
       });
     }
 

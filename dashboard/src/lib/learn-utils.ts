@@ -228,11 +228,14 @@ export type FormulaMetricFamily =
   | "gradient";
 
 const FORMULA_FAMILY_PATTERNS: Array<[FormulaMetricFamily, RegExp]> = [
+  // Convergence formulas contain a target/threshold condition too. Match the
+  // more specific epoch/target-accuracy family before the generic neuronal
+  // threshold family so `min {e | A(e) >= A_target}` is not mislabeled.
+  ["convergence", /\bconverg|\bepochs?\b|\btarget accuracy\b|\btarget\b|t_\{?\\?text\{?conv|t_\{?conv|a\(e\)|\ba_\{?e\}?|\ba_\{?target\}?|arg\s*min|\\arg\s*min|\\min\s*\\?\{/i],
   ["threshold", /\bthreshold\b|\bmembrane potential\b|\bspike occurs\b|v\(t\)|v_t|\\theta|theta|\\vartheta|>=\s*theta|\\geq\s*\\?theta/i],
   ["gradient", /\bgradient\b|\\nabla|d\s*L\s*\/\s*d|\\partial|surrogate/i],
   ["loss", /\bloss\b|\\mathcal\{?L\}?|mse|cross[- ]?entropy|\\ell\b/i],
   ["probability", /\bprobab|\bp\(|p_\{?i\}?|softmax|\\sigma\(|\\Pr\b/i],
-  ["convergence", /\bconverg|\bepochs?\b|\btarget accuracy\b|\btarget\b|t_\{?\\?text\{?conv|t_\{?conv|a\(e\)|\ba_\{?e\}?|\ba_\{?target\}?|arg\s*min|\\arg\s*min|\\min\s*\\?\{/i],
   ["efficiency", /\befficien|\baccuracy per energy\b|normalized energy|\\eta|eta|\bNEE\b|\\mathrm\{?NEE\}?|\\frac\s*\{?\s*A\s*\}?\s*\{?\s*E\s*\}?/i],
   ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|(?:energy|power|joule|synaptic|synop|operation)\s+costs?\b|\bcosts?\s+(?:of\s+)?(?:energy|power|joules?|synaptic|synops?|operations?)\b/i],
   ["spike-count", /\bspike[- ]?count\b|\btotal spikes?\b|\bnumber of spikes?\b|\bspikes?\b|n_\{?\\?text\{?(?:spike|spk)|n_\{?(?:spikes?|spk)\}?|n[_\s]*(?:spikes?|spk)|\\sum(?:_\{?[^}\s]*\}?|\s)*(?:s[_\{]|\bspikes?\b)|s_\{?[a-z](?:,[a-z])?\}?|s_n\(t\)|time ?steps?/i],

@@ -145,6 +145,7 @@ type LearnStatus =
 interface LearnJobInfo {
   id: string;
   status: LearnStatus;
+  updatedAt?: string;
   currentStep?: string;
   progressPercent?: number;
   currentSectionTitle?: string;
@@ -250,6 +251,7 @@ const ACCEPTED =
   ".pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.docx,.pptx,.xlsx,.zip";
 const HANDWRITING_FILE_RE = /\.(pdf|jpg|jpeg|png|webp)$/i;
 const EMPTY_MESSAGES: Message[] = [];
+const LEARN_SETTLED_INDICATOR_VISIBLE_MS = 2 * 60 * 1000;
 
 function formatLearnTotalTokenCount(value: number): string {
   const count = Math.max(0, Math.trunc(value));
@@ -870,6 +872,7 @@ export default function WorkspaceClient({
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
   const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
+  const [showSettledLearnIndicator, setShowSettledLearnIndicator] = useState(false);
   const [learnEvents, setLearnEvents] = useState<LearnEventLine[]>([]);
   const learnEventsScrollRef = useRef<HTMLDivElement | null>(null);
   const learnSkipManualReviewRef = useRef(false);
@@ -1025,6 +1028,36 @@ export default function WorkspaceClient({
     const id = window.setInterval(() => setLearnTimerNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [learnState?.job?.id, learnState?.job?.timerStartedAt]);
+
+  useEffect(() => {
+    const job = learnState?.job;
+    const active = learnBusy || isLearnActive(job?.status);
+    if (active) {
+      setShowSettledLearnIndicator(true);
+      return;
+    }
+    if (!job) {
+      setShowSettledLearnIndicator(false);
+      return;
+    }
+
+    const updatedAtMs = Date.parse(job.updatedAt ?? "");
+    const settledAgeMs = Number.isFinite(updatedAtMs)
+      ? Math.max(0, Date.now() - updatedAtMs)
+      : 0;
+    const remainingMs = Math.max(
+      0,
+      LEARN_SETTLED_INDICATOR_VISIBLE_MS - settledAgeMs,
+    );
+    setShowSettledLearnIndicator(remainingMs > 0);
+    if (remainingMs === 0) return;
+
+    const id = window.setTimeout(
+      () => setShowSettledLearnIndicator(false),
+      remainingMs,
+    );
+    return () => window.clearTimeout(id);
+  }, [learnBusy, learnState?.job]);
 
   // Keep the council activity log pinned to the newest line.
   useEffect(() => {
@@ -2049,7 +2082,7 @@ export default function WorkspaceClient({
     await postLearnAction("plan");
   }
 
-  async function handleRegenerateAfterFailure() {
+  async function handleRegenerateLessons() {
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
     await postLearnAction("regenerate");
   }
@@ -2534,12 +2567,40 @@ export default function WorkspaceClient({
               />
               Skip review
             </label>
+            {status === "complete" && (
+              <button
+                type="button"
+                onClick={handleRegenerateLessons}
+                disabled={!canStart}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {learnBusy ? (
+                  <Spinner className="h-3.5 w-3.5" />
+                ) : (
+                  <svg
+                    className="h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                    />
+                  </svg>
+                )}
+                {learnBusy ? "Regenerating..." : "Regenerate"}
+              </button>
+            )}
             {showPrimaryAction && (
               <button
                 type="button"
                 onClick={
                   status === "failed"
-                    ? handleRegenerateAfterFailure
+                    ? handleRegenerateLessons
                     : status === "cancelled"
                       ? handleGenerateAfterCancellation
                       : handleLearnPrimary
@@ -2844,6 +2905,7 @@ export default function WorkspaceClient({
 
     const status = job?.status;
     const active = learnBusy || isLearnActive(status);
+    if (!active && !showSettledLearnIndicator) return null;
     const label = active
       ? job?.currentStep || "Learn is running"
       : status === "complete"

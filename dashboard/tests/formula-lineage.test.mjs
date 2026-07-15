@@ -243,7 +243,9 @@ describe("repair provenance lifecycle", () => {
       fs.writeFileSync(pagePath, md);
       const audit = auditGardenForFinalization(dir, "test-2");
       assert.equal(audit.passed, false, "a mislabeled numeric definition must still fail");
-      assert.ok(audit.repairableIssues.some((i) => i.type === "formula_metadata_noise" || i.type === "formula_grounding"));
+      assert.ok(audit.repairableIssues.some((i) =>
+        i.type === "formula_usage_projection" || i.type === "formula_metadata_noise" || i.type === "formula_grounding",
+      ));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
