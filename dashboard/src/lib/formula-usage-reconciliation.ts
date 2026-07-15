@@ -19,6 +19,24 @@ import {
 import type { FinalRepairIssue } from "./garden-finalize.ts";
 import type { LearningUnitContract } from "./learning-unit-contract.ts";
 import { formulaMetricFamily, isTrivialFormulaFragment } from "./learn-utils.ts";
+import {
+  assertFormulaAssignmentCompatible,
+  buildFormulaIdentityRepairPacket,
+  buildFormulaIdentityRegistry,
+  findCompatibleFormulaAssignments,
+  formulaFamiliesForAssignmentContext,
+  formulaIdentityRegistryPath,
+  legacyFormulaFamily,
+  normalizeFormulaSemanticFamily,
+  renderFormulaIdentityRegistry,
+  verifyCanonicalFormulaIdentity,
+  verifyFormulaIdentityRepairDecision,
+  type CanonicalFormulaIdentity,
+  type ContractFormulaAssignmentProvenance,
+  type FormulaIdentityConflict,
+  type FormulaIdentityRepairDecision,
+  type FormulaIdentityRepairPacket,
+} from "./formula-identity.ts";
 
 export type CanonicalFormulaUsageMode =
   | "source_definition"
@@ -180,13 +198,25 @@ export type FormulaUsageRepairModel = (
   packet: FormulaUsageRepairPacket,
 ) => Promise<FormulaUsageRepairDecision | null> | FormulaUsageRepairDecision | null;
 
+export type FormulaIdentityRepairModel = (
+  packet: FormulaIdentityRepairPacket,
+) => Promise<FormulaIdentityRepairDecision | null> | FormulaIdentityRepairDecision | null;
+
 export type FormulaProjectionReconciliationResult = {
   passed: boolean;
+  formulaIdentitiesVerified: number;
+  registryFamilyCorrections: number;
   contractAssignmentsChecked: number;
   contractAssignmentsRepaired: number;
+  contractAnchorLeaksRemoved: number;
+  assignmentsReplaced: number;
+  assignmentsMoved: number;
   incompatibleAssignmentsFound: number;
+  ambiguousAssignmentsSentToChatMock: number;
+  identityConflicts: FormulaIdentityConflict[];
   definitionsAdded: number;
   definitionsLinked: number;
+  wrongFamilyPageEntriesRepaired: number;
   workedExamplesRelined: number;
   workedExamplesReclassified: number;
   metadataEntriesRemoved: number;
@@ -202,6 +232,7 @@ export type FormulaProjectionReconciliationResult = {
   rolledBack: boolean;
   formulaLedgerModesChanged: number;
   sourceCoverageEntriesRegenerated: number;
+  remainingFormulaFamilyMismatches: number;
   rollbackReason?: string;
 };
 
@@ -556,36 +587,43 @@ export function verifyContractFormulaCompatibility(
   state: FinalGardenState,
 ): ContractFormulaCompatibilityResult {
   const anchor = state.sourceAnchors[formulaAnchorId];
-  const formulaRecord = unit.sourceFormulas.find((formula) => formula.id === formulaAnchorId);
-  const formulaText = [anchor?.title, anchor?.exactText, anchor?.semanticSummary, anchor?.formulaFamily].filter(Boolean).join(" ");
-  const unitText = [unit.title, unit.learningQuestion, ...unit.newConcepts, ...unit.prerequisiteConcepts].join(" ");
-  const pageText = `${page.title} ${page.body}`;
-  const formulaFamily = anchor?.formulaFamily ?? semanticFamily(formulaText);
-  const unitConceptFamilies = [...new Set([...familiesFromText(unitText), ...familiesFromText(pageText)])];
-  const titleOverlapScore = roundScore(overlapScore(words(anchor?.title ?? formulaAnchorId), words(`${unit.title} ${page.title}`)));
-  const keywordCoverageScore = roundScore(overlapScore(words(formulaText), words(`${unitText} ${pageText}`)));
-  const familyMatch = formulaFamily && unitConceptFamilies.includes(formulaFamily) ? 1 : formulaFamily && unitConceptFamilies.length > 0 ? 0 : 0.5;
-  const explicitConceptMatch = overlapScore(words(formulaRecord?.teachingGoal ?? ""), words(`${unitText} ${pageText}`));
-  const semanticCompatibilityScore = roundScore(
-    titleOverlapScore * 0.25 + keywordCoverageScore * 0.4 + familyMatch * 0.25 + explicitConceptMatch * 0.1,
-  );
-  const conflicts = Boolean(formulaFamily && unitConceptFamilies.length > 0 && !unitConceptFamilies.includes(formulaFamily));
-  const compatible = !conflicts && (semanticCompatibilityScore >= 0.3 || (familyMatch === 1 && keywordCoverageScore >= 0.15));
+  if (!anchor || anchor.kind !== "formula") {
+    return {
+      compatible: false,
+      formulaAnchorId,
+      unitId: unit.id,
+      pagePath: page.rel,
+      unitConceptFamilies: formulaFamiliesForAssignmentContext(unit, page),
+      titleOverlapScore: 0,
+      keywordCoverageScore: 0,
+      semanticCompatibilityScore: 0,
+      reason: "formula anchor does not resolve to canonical source evidence",
+    };
+  }
+  const identity = verifyCanonicalFormulaIdentity(anchor, state.rootPath);
+  const candidates = findCompatibleFormulaAssignments(unit, page, [identity]);
+  const candidate = candidates[0];
+  const unitConceptFamilies = formulaFamiliesForAssignmentContext(unit, page);
+  const formulaText = [identity.title, identity.canonicalText, identity.caption].filter(Boolean).join(" ");
+  const titleOverlapScore = roundScore(overlapScore(words(identity.title), words(`${unit.title} ${page.title}`)));
+  const keywordCoverageScore = roundScore(overlapScore(words(formulaText), words(`${unit.title} ${unit.learningQuestion} ${page.title} ${page.body}`)));
+  const semanticCompatibilityScore = candidate?.totalScore ?? 0;
+  const compatible = Boolean(candidate?.compatible);
   return {
     compatible,
     formulaAnchorId,
     unitId: unit.id,
     pagePath: page.rel,
-    formulaFamily,
+    formulaFamily: identity.family === "other" ? undefined : legacyFormulaFamily(identity.family),
     unitConceptFamilies,
     titleOverlapScore,
     keywordCoverageScore,
     semanticCompatibilityScore,
     reason: compatible
-      ? `compatible final assignment: semantic score ${semanticCompatibilityScore}, family ${formulaFamily ?? "unknown"}, title overlap ${titleOverlapScore}, keyword coverage ${keywordCoverageScore}`
-      : conflicts
-        ? `incompatible formula family ${formulaFamily}; unit/page families are [${unitConceptFamilies.join(", ") || "none"}]`
-        : `insufficient semantic support (score ${semanticCompatibilityScore}, title ${titleOverlapScore}, keywords ${keywordCoverageScore})`,
+      ? `compatible verified identity: score ${semanticCompatibilityScore}, family ${identity.family}, confidence ${identity.evidence.confidence}`
+      : !identity.verified
+        ? `formula identity is unresolved (${identity.evidence.reason})`
+        : `incompatible verified family ${identity.family}; unit/page families are [${unitConceptFamilies.join(", ") || "none"}]`,
   };
 }
 
@@ -804,8 +842,8 @@ export function renderSourceCoverageFromFinalState(
   ].join("\n")}\n`;
 }
 
-function stableFormulaUsageId(anchorId: string, unitId: string): string {
-  return `formula_usage_projection:${anchorId}:${unitId}`;
+function stableFormulaUsageId(anchorId: string, unitId: string, pagePath = "unknown"): string {
+  return `formula_assignment_family_mismatch:unit=${unitId}:page=${pagePath}:anchor=${anchorId}`;
 }
 
 export function stableWorkedExampleIdentity(pagePath: string, entry: FormulaMetadataEntry): string {
@@ -829,10 +867,30 @@ export function auditFormulaProjections(
   const referencedCoverage = coverageSection(coverage, "Referenced Again in Synthesis");
   const ledger = readJson<Array<Record<string, unknown>>>(ledgerPath(state.rootPath), []);
   const ledgerById = new Map(ledger.map((record) => [String(record.sourceVisualId ?? ""), record]));
+  for (const identity of buildFormulaIdentityRegistry(state.sourceAnchors, state.rootPath)) {
+    const usages = index.byAnchorId[identity.anchorId] ?? [];
+    const representative = usages.find((usage) => usage.requiredByContract) ?? usages[0];
+    if (!identity.verified) {
+      add(
+        `formula_identity:anchor=${identity.anchorId}`,
+        "ambiguous_formula_identity",
+        { pagePath: representative?.pagePath, unitId: representative?.unitId, anchorId: identity.anchorId },
+      );
+      continue;
+    }
+    const declared = normalizeFormulaSemanticFamily(state.sourceAnchors[identity.anchorId]?.formulaFamily);
+    if (declared && declared !== identity.family) {
+      add(
+        `formula_identity:anchor=${identity.anchorId}`,
+        "registry_identity_conflict",
+        { pagePath: representative?.pagePath, unitId: representative?.unitId, anchorId: identity.anchorId },
+      );
+    }
+  }
   for (const usages of Object.values(index.byAnchorId)) {
     for (const usage of usages) {
       if (!usage.requiredByContract) continue;
-      const id = stableFormulaUsageId(usage.formulaAnchorId, usage.unitId);
+      const id = stableFormulaUsageId(usage.formulaAnchorId, usage.unitId, usage.pagePath);
       const page = state.pages.find((candidate) => candidate.rel === usage.pagePath);
       const unit = state.learningUnitContract.units.find((candidate) => candidate.id === usage.unitId);
       if (!page || !unit) {
@@ -855,7 +913,7 @@ export function auditFormulaProjections(
     const mode = derivedModeForAnchor(usages);
     const ledgerMode = String(ledgerById.get(anchorId)?.conceptUsage ?? "");
     const representative = usages.find((usage) => usage.requiredByContract) ?? usages[0];
-    const id = stableFormulaUsageId(anchorId, representative?.unitId ?? "unassigned");
+    const id = stableFormulaUsageId(anchorId, representative?.unitId ?? "unassigned", representative?.pagePath ?? "unknown");
     if (ledgerMode && ledgerMode !== mode) add(id, "stale_source_ledger_mode", { pagePath: representative?.pagePath, unitId: representative?.unitId, anchorId });
     if (mode === "explained_as_text_formula" && !new RegExp(`\\b${anchorId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(formulaCoverage)) {
       add(id, "ledger_coverage_mismatch", { pagePath: representative?.pagePath, unitId: representative?.unitId, anchorId });
@@ -915,6 +973,7 @@ function moveContractAssignment(
   anchorId: string,
   fromUnitId: string,
   targetUnitId: string,
+  verifiedFamily?: string,
 ): string | undefined {
   const abs = contractPathFor(gardenDir);
   if (!abs) return undefined;
@@ -927,15 +986,127 @@ function moveContractAssignment(
   const formulas = (Array.isArray(from.sourceFormulas) ? from.sourceFormulas : []) as Array<Record<string, unknown>>;
   const formula = formulas.find((record) => String(record.id ?? record.formulaId ?? "") === anchorId);
   from.sourceFormulas = formulas.filter((record) => String(record.id ?? record.formulaId ?? "") !== anchorId);
+  from.sourceAnchors = ((Array.isArray(from.sourceAnchors) ? from.sourceAnchors : []) as unknown[])
+    .filter((value) => String(value) !== anchorId);
   const targetFormulas = (Array.isArray(target.sourceFormulas) ? target.sourceFormulas : []) as Array<Record<string, unknown>>;
   if (!targetFormulas.some((record) => String(record.id ?? record.formulaId ?? "") === anchorId)) targetFormulas.push(formula ?? { id: anchorId, teachingGoal: "", termsToDefine: [], placement: "before_example" });
   target.sourceFormulas = targetFormulas;
+  const targetAnchors = ((Array.isArray(target.sourceAnchors) ? target.sourceAnchors : []) as unknown[]).map(String);
+  if (!targetAnchors.includes(anchorId)) targetAnchors.push(anchorId);
+  target.sourceAnchors = targetAnchors;
   const assignmentsKey = Array.isArray(artifact.sourceArtifactAssignments) ? "sourceArtifactAssignments" : "assignments";
   const assignments = (Array.isArray(artifact[assignmentsKey]) ? artifact[assignmentsKey] : []) as Array<Record<string, unknown>>;
   for (const assignment of assignments) {
     if (String(assignment.sourceArtifactId ?? assignment.id ?? "") === anchorId) assignment.assignedLearningUnitId = targetUnitId;
   }
+  const provenance = (Array.isArray(artifact.formulaAssignmentProvenance)
+    ? artifact.formulaAssignmentProvenance : []) as Array<Record<string, unknown>>;
+  provenance.push({
+    formulaAnchorId: anchorId,
+    unitId: targetUnitId,
+    status: "moved",
+    verifiedFamily,
+    previousUnitId: fromUnitId,
+    reason: `Verified formula identity is incompatible with ${fromUnitId} and deterministically matches ${targetUnitId}.`,
+  });
+  artifact.formulaAssignmentProvenance = provenance;
   return `${JSON.stringify(artifact, null, 2)}\n`;
+}
+
+function repairContractAnchorLeaksAndProvenance(
+  gardenDir: string,
+  state: FinalGardenState,
+  identities: CanonicalFormulaIdentity[],
+): { content?: string; leaksRemoved: number; provenance: ContractFormulaAssignmentProvenance[] } {
+  const abs = contractPathFor(gardenDir);
+  if (!abs) return { leaksRemoved: 0, provenance: [] };
+  const artifact = readJson<Record<string, unknown>>(abs, {});
+  const unitsKey = Array.isArray(artifact.learningUnits) ? "learningUnits" : "units";
+  const rawUnits = (Array.isArray(artifact[unitsKey]) ? artifact[unitsKey] : []) as Array<Record<string, unknown>>;
+  const identityById = new Map(identities.map((identity) => [identity.anchorId, identity]));
+  const provenance: ContractFormulaAssignmentProvenance[] = [];
+  const historicalProvenance = (Array.isArray(artifact.formulaAssignmentProvenance)
+    ? artifact.formulaAssignmentProvenance : []) as Array<Record<string, unknown>>;
+  let leaksRemoved = 0;
+
+  for (const rawUnit of rawUnits) {
+    const unitId = String(rawUnit.id ?? "");
+    const unit = state.learningUnitContract.units.find((candidate) => candidate.id === unitId);
+    const page = state.pages.find((candidate) => candidate.learningUnitId === unitId);
+    if (!unit || !page) continue;
+    const formal = new Set(contractFormulaIds(state, unit));
+    const sourceAnchors = (Array.isArray(rawUnit.sourceAnchors) ? rawUnit.sourceAnchors : []).map(String);
+    const nextAnchors: string[] = [];
+    for (const anchorId of sourceAnchors) {
+      const identity = identityById.get(anchorId);
+      if (!identity || formal.has(anchorId)) {
+        nextAnchors.push(anchorId);
+        continue;
+      }
+      const projectedAsFormula = page.sourceFormulaAnchors.includes(anchorId)
+        || page.formulas.some((formula) => formula.sourceAnchor === anchorId || formula.basedOnFormula === anchorId);
+      if (!projectedAsFormula) {
+        // Broad source evidence on synthesis/comparison pages is legitimate;
+        // only sanitize a non-contract formula when it actually leaked into
+        // formula metadata/lineage for this page.
+        nextAnchors.push(anchorId);
+        continue;
+      }
+      let compatible = true;
+      try {
+        assertFormulaAssignmentCompatible(identity, unit, page);
+      } catch {
+        compatible = false;
+      }
+      if (compatible) {
+        nextAnchors.push(anchorId);
+        continue;
+      }
+      leaksRemoved += 1;
+      const replacement = findCompatibleFormulaAssignments(unit, page, identities)
+        .find((candidate) => candidate.compatible && formal.has(candidate.anchorId));
+      provenance.push({
+        formulaAnchorId: anchorId,
+        unitId,
+        status: "repaired",
+        verifiedFamily: identity.verified ? identity.family : undefined,
+        replacementAnchorId: replacement?.anchorId,
+        reason: `Removed an incompatible non-assignment formula anchor from unit evidence; verified ${identity.family} does not match the unit/page.`,
+      });
+    }
+    rawUnit.sourceAnchors = [...new Set(nextAnchors)];
+
+    for (const anchorId of formal) {
+      const identity = identityById.get(anchorId);
+      let compatible = false;
+      if (identity) {
+        try {
+          assertFormulaAssignmentCompatible(identity, unit, page);
+          compatible = true;
+        } catch {
+          compatible = false;
+        }
+      }
+      provenance.push({
+        formulaAnchorId: anchorId,
+        unitId,
+        status: compatible ? "verified" : identity?.verified ? "unsupported" : "ambiguous",
+        verifiedFamily: identity?.verified ? identity.family : undefined,
+        reason: compatible
+          ? `Verified ${identity!.family} identity is compatible with the contract unit and final page.`
+          : identity?.verified
+            ? `Verified ${identity.family} identity is incompatible with this contract unit/page.`
+            : "Formula identity is not sufficiently supported for an active assignment.",
+      });
+    }
+  }
+  const preservedHistory = historicalProvenance.filter((record) => ["repaired", "moved"].includes(String(record.status ?? "")));
+  const combinedProvenance = [...preservedHistory, ...provenance].filter((record, index, all) =>
+    all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(record)) === index,
+  );
+  artifact.formulaAssignmentProvenance = combinedProvenance;
+  const content = `${JSON.stringify(artifact, null, 2)}\n`;
+  return { content: content === fs.readFileSync(abs, "utf-8") ? undefined : content, leaksRemoved, provenance };
 }
 
 function bestCompatibleTarget(
@@ -943,17 +1114,129 @@ function bestCompatibleTarget(
   currentUnitId: string,
   state: FinalGardenState,
 ): { unit: LearningUnitContract; page: FinalGardenPage; score: number } | undefined {
+  const anchor = state.sourceAnchors[anchorId];
+  if (!anchor || anchor.kind !== "formula") return undefined;
+  const identity = verifyCanonicalFormulaIdentity(anchor, state.rootPath);
+  if (!identity.verified || !["high", "medium"].includes(identity.evidence.confidence)) return undefined;
   const scored = state.learningUnitContract.units.flatMap((unit) => {
     const pages = state.pages.filter((page) => page.learningUnitId === unit.id);
     if (pages.length !== 1) return [];
-    const result = verifyContractFormulaCompatibility(anchorId, unit, pages[0], state);
-    return result.compatible ? [{ unit, page: pages[0], score: result.semanticCompatibilityScore }] : [];
+    const candidate = findCompatibleFormulaAssignments(unit, pages[0], [identity])[0];
+    return candidate?.compatible ? [{ unit, page: pages[0], score: candidate.totalScore }] : [];
   }).sort((a, b) => b.score - a.score);
   const best = scored[0];
   const second = scored[1];
-  if (!best || best.unit.id === currentUnitId || best.score < 0.4) return undefined;
-  if (second && best.score - second.score < 0.12) return undefined;
+  if (!best || best.unit.id === currentUnitId || best.score < 0.8) return undefined;
+  if (second && best.score - second.score < 0.15) return undefined;
   return best;
+}
+
+function bestReplacementForUnit(
+  currentAnchorId: string,
+  unit: LearningUnitContract,
+  page: FinalGardenPage,
+  state: FinalGardenState,
+  identities: CanonicalFormulaIdentity[],
+): { identity: CanonicalFormulaIdentity; score: number } | undefined {
+  const scored = findCompatibleFormulaAssignments(unit, page, identities)
+    .filter((candidate) => candidate.anchorId !== currentAnchorId && candidate.compatible);
+  const best = scored[0];
+  const second = scored[1];
+  if (!best || best.totalScore < 0.8) return undefined;
+  if (second && best.totalScore - second.totalScore < 0.15) return undefined;
+  // Do not steal a verified formula from an unrelated active unit. Reuse in
+  // the same unit is fine, and an assignment record may be absent for legacy
+  // contracts that only populated sourceFormulas.
+  const conflicting = state.learningUnitContract.assignments.some((assignment) =>
+    assignment.sourceArtifactId === best.anchorId && assignment.assignedLearningUnitId !== unit.id,
+  );
+  if (conflicting) return undefined;
+  return { identity: best.identity, score: best.totalScore };
+}
+
+function replaceContractFormulaAssignment(
+  gardenDir: string,
+  currentAnchorId: string,
+  replacement: CanonicalFormulaIdentity,
+  unitId: string,
+  moveCurrentToUnitId?: string,
+): string | undefined {
+  const abs = contractPathFor(gardenDir);
+  if (!abs) return undefined;
+  const artifact = readJson<Record<string, unknown>>(abs, {});
+  const unitsKey = Array.isArray(artifact.learningUnits) ? "learningUnits" : "units";
+  const units = (Array.isArray(artifact[unitsKey]) ? artifact[unitsKey] : []) as Array<Record<string, unknown>>;
+  const from = units.find((unit) => String(unit.id ?? "") === unitId);
+  if (!from) return undefined;
+  const formulas = (Array.isArray(from.sourceFormulas) ? from.sourceFormulas : []) as Array<Record<string, unknown>>;
+  const previous = formulas.find((formula) => String(formula.id ?? formula.formulaId ?? "") === currentAnchorId);
+  from.sourceFormulas = [
+    ...formulas.filter((formula) => String(formula.id ?? formula.formulaId ?? "") !== currentAnchorId),
+    {
+      id: replacement.anchorId,
+      teachingGoal: `Teach the verified ${replacement.family} relationship represented by ${replacement.title}.`,
+      termsToDefine: replacement.evidence.detectedTerms,
+      placement: "before_example",
+    },
+  ];
+  const fromAnchors = (Array.isArray(from.sourceAnchors) ? from.sourceAnchors : []).map(String)
+    .filter((anchorId) => anchorId !== currentAnchorId);
+  if (!fromAnchors.includes(replacement.anchorId)) fromAnchors.push(replacement.anchorId);
+  from.sourceAnchors = fromAnchors;
+
+  if (moveCurrentToUnitId) {
+    const target = units.find((unit) => String(unit.id ?? "") === moveCurrentToUnitId);
+    if (target) {
+      const targetFormulas = (Array.isArray(target.sourceFormulas) ? target.sourceFormulas : []) as Array<Record<string, unknown>>;
+      if (!targetFormulas.some((formula) => String(formula.id ?? formula.formulaId ?? "") === currentAnchorId)) {
+        targetFormulas.push(previous ?? { id: currentAnchorId, teachingGoal: "Teach the verified source formula.", termsToDefine: [], placement: "before_example" });
+      }
+      target.sourceFormulas = targetFormulas;
+      const targetAnchors = (Array.isArray(target.sourceAnchors) ? target.sourceAnchors : []).map(String);
+      if (!targetAnchors.includes(currentAnchorId)) targetAnchors.push(currentAnchorId);
+      target.sourceAnchors = targetAnchors;
+    }
+  }
+
+  const assignmentsKey = Array.isArray(artifact.sourceArtifactAssignments) ? "sourceArtifactAssignments" : "assignments";
+  const assignments = (Array.isArray(artifact[assignmentsKey]) ? artifact[assignmentsKey] : []) as Array<Record<string, unknown>>;
+  const currentAssignment = assignments.find((assignment) =>
+    String(assignment.sourceArtifactId ?? assignment.id ?? "") === currentAnchorId
+    && String(assignment.assignedLearningUnitId ?? "") === unitId,
+  );
+  if (currentAssignment && moveCurrentToUnitId) currentAssignment.assignedLearningUnitId = moveCurrentToUnitId;
+  else if (currentAssignment) currentAssignment.sourceArtifactId = replacement.anchorId;
+  if (moveCurrentToUnitId && !assignments.some((assignment) =>
+    String(assignment.sourceArtifactId ?? assignment.id ?? "") === replacement.anchorId,
+  )) {
+    assignments.push({
+      sourceArtifactId: replacement.anchorId,
+      assignedLearningUnitId: unitId,
+      placement: "after_formula_introduction",
+      reason: `Replaced incompatible ${currentAnchorId} with verified ${replacement.anchorId}.`,
+      requiredInterpretation: `Teach the verified ${replacement.family} formula represented by ${replacement.title}.`,
+    });
+  }
+  const provenance = (Array.isArray(artifact.formulaAssignmentProvenance)
+    ? artifact.formulaAssignmentProvenance : []) as Array<Record<string, unknown>>;
+  provenance.push({
+    formulaAnchorId: currentAnchorId,
+    unitId,
+    status: "repaired",
+    verifiedFamily: replacement.family,
+    replacementAnchorId: replacement.anchorId,
+    ...(moveCurrentToUnitId ? { previousUnitId: unitId } : {}),
+    reason: `Atomically replaced a wrong-family contract formula with verified ${replacement.family} anchor ${replacement.anchorId}.`,
+  });
+  if (moveCurrentToUnitId) provenance.push({
+    formulaAnchorId: currentAnchorId,
+    unitId: moveCurrentToUnitId,
+    status: "moved",
+    previousUnitId: unitId,
+    reason: `Preserved ${currentAnchorId} on its independently compatible unit instead of deleting its correct usage.`,
+  });
+  artifact.formulaAssignmentProvenance = provenance;
+  return `${JSON.stringify(artifact, null, 2)}\n`;
 }
 
 function normalizeAffectedFormulaMetadata(entries: FormulaMetadataEntry[]): FormulaMetadataEntry[] {
@@ -971,12 +1254,62 @@ function pageFormulaRepair(
   requiredUsages: CanonicalFormulaUsage[],
   state: FinalGardenState,
   index: CanonicalFormulaUsageIndex,
+  identities: CanonicalFormulaIdentity[],
   counts: FormulaProjectionReconciliationResult,
 ): string | undefined {
   const current = fs.readFileSync(page.abs, "utf-8");
   const parsed = parseMarkdown(current);
   let entries = parseFormulaMetadataEntries(parsed.rawFrontmatter);
   let changed = false;
+  const unit = state.learningUnitContract.units.find((candidate) => candidate.id === page.learningUnitId);
+  const identityById = new Map(identities.map((identity) => [identity.anchorId, identity]));
+  const formalIds = new Set(unit ? contractFormulaIds(state, unit) : []);
+  const sourceAnchorRemovals = new Set<string>();
+  const sourceAnchorAdditions = new Set<string>();
+
+  // Repair stale wrong-family projections before satisfying required coverage.
+  // Learner prose/math is preserved: a numerical application becomes a worked
+  // example of the verified on-page formula; unsupported metadata alone is
+  // removed. This is the path that repairs an E2 spike-count label attached to
+  // a latency calculation without deleting the useful latency calculation.
+  for (const entry of entries) {
+    const anchorId = String(entry.sourceAnchor ?? "");
+    if (!FORMULA_ID_RE.test(anchorId) || !unit) continue;
+    const identity = identityById.get(anchorId);
+    if (!identity) continue;
+    let assignmentCompatible = true;
+    try {
+      assertFormulaAssignmentCompatible(identity, unit, page);
+    } catch {
+      assignmentCompatible = false;
+    }
+    const entryFamily = normalizeFormulaSemanticFamily(entry.formulaFamily ?? semanticFamily(entry.text));
+    if (assignmentCompatible && (!entryFamily || entryFamily === identity.family)) continue;
+    const candidates = findCompatibleFormulaAssignments(unit, page, identities)
+      .filter((candidate) => candidate.compatible && formalIds.has(candidate.anchorId));
+    const best = candidates[0];
+    sourceAnchorRemovals.add(anchorId);
+    if (best) sourceAnchorAdditions.add(best.anchorId);
+    if (formulaStructuralKind(entry.text) === "worked_example" && best) {
+      entry.kind = "worked_example";
+      entry.groundingStatus = "conceptual-helper";
+      entry.basedOnFormula = best.anchorId;
+      entry.formulaFamily = legacyFormulaFamily(best.identity.family);
+      entry.matchReason = `repaired wrong-family source label; numerical example is based on verified ${best.anchorId}`;
+      entry.justification = `Worked example retained, with lineage to the verified ${best.identity.family} definition ${best.anchorId}.`;
+    } else {
+      entry.kind = "conceptual_helper";
+      entry.groundingStatus = "conceptual-helper";
+      delete entry.basedOnFormula;
+      entry.matchReason = "removed incompatible source-formula metadata after canonical identity verification";
+      entry.justification = "Learner notation retained, but it no longer claims unsupported source-formula identity.";
+    }
+    delete entry.sourceAnchor;
+    delete entry.sourceAnchorTitle;
+    counts.wrongFamilyPageEntriesRepaired += 1;
+    changed = true;
+  }
+
   for (const usage of requiredUsages) {
     const decision = reconcileContractFormulaUsage(usage, state);
     if (decision.action === "already_present" || decision.action === "needs_chatmock" || decision.action === "unsupported" || decision.action === "moved_contract_assignment") continue;
@@ -1042,6 +1375,17 @@ function pageFormulaRepair(
   entries = entries.filter((entry) => entry.kind !== "__remove__");
   entries = normalizeAffectedFormulaMetadata(entries);
   let rawFm = replaceFormulaMetadata(parsed.rawFrontmatter, entries);
+  if (sourceAnchorRemovals.size > 0 || sourceAnchorAdditions.size > 0) {
+    const previousSourceAnchors = fmArray(rawFm, "sourceAnchors");
+    const nextSourceAnchors = [...new Set([
+      ...previousSourceAnchors.filter((anchorId) => !sourceAnchorRemovals.has(anchorId)),
+      ...sourceAnchorAdditions,
+    ])].sort();
+    if (previousSourceAnchors.slice().sort().join("\0") !== nextSourceAnchors.join("\0")) {
+      rawFm = setFmArray(rawFm, "sourceAnchors", nextSourceAnchors);
+      changed = true;
+    }
+  }
   const definitionAnchors = entries.filter(isDefinition).map((entry) => String(entry.sourceAnchor ?? "")).filter((id) => FORMULA_ID_RE.test(id));
   const previous = fmArray(rawFm, "sourceFormulaAnchors");
   const nextAnchors = [...new Set([...previous.filter((id) => definitionAnchors.includes(id)), ...definitionAnchors])].sort();
@@ -1088,11 +1432,19 @@ function writeIfChanged(abs: string, content: string, changed: string[], gardenD
 function emptyResult(before: string): FormulaProjectionReconciliationResult {
   return {
     passed: false,
+    formulaIdentitiesVerified: 0,
+    registryFamilyCorrections: 0,
     contractAssignmentsChecked: 0,
     contractAssignmentsRepaired: 0,
+    contractAnchorLeaksRemoved: 0,
+    assignmentsReplaced: 0,
+    assignmentsMoved: 0,
     incompatibleAssignmentsFound: 0,
+    ambiguousAssignmentsSentToChatMock: 0,
+    identityConflicts: [],
     definitionsAdded: 0,
     definitionsLinked: 0,
+    wrongFamilyPageEntriesRepaired: 0,
     workedExamplesRelined: 0,
     workedExamplesReclassified: 0,
     metadataEntriesRemoved: 0,
@@ -1108,6 +1460,7 @@ function emptyResult(before: string): FormulaProjectionReconciliationResult {
     rolledBack: false,
     formulaLedgerModesChanged: 0,
     sourceCoverageEntriesRegenerated: 0,
+    remainingFormulaFamilyMismatches: 0,
   };
 }
 
@@ -1125,15 +1478,66 @@ export function reconcileFinalFormulaProjectionsDeterministic(
   const beforeGlobal = auditFinalGardenState(state).problems;
   const coveragePath = path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md");
   const contractPath = contractPathFor(gardenDir);
+  const identityPath = formulaIdentityRegistryPath(gardenDir);
   const touchedCandidates = [
-    ...state.pages.map((page) => page.abs), ledgerPath(gardenDir), coveragePath,
+    ...state.pages.map((page) => page.abs), ledgerPath(gardenDir), coveragePath, identityPath,
     ...(contractPath ? [contractPath] : []),
   ];
   const snapshot = snapshotFiles(touchedCandidates);
 
   try {
+    let identities = buildFormulaIdentityRegistry(state.sourceAnchors, gardenDir);
+    result.formulaIdentitiesVerified = identities.filter((identity) => identity.verified).length;
+    result.registryFamilyCorrections = identities.filter((identity) => {
+      const declared = normalizeFormulaSemanticFamily(state.sourceAnchors[identity.anchorId]?.formulaFamily);
+      return Boolean(identity.verified && declared && declared !== identity.family);
+    }).length;
+    result.identityConflicts = identities.flatMap((identity): FormulaIdentityConflict[] => {
+      const declared = normalizeFormulaSemanticFamily(state.sourceAnchors[identity.anchorId]?.formulaFamily);
+      if (!identity.verified) {
+        return [{
+          anchorId: identity.anchorId,
+          declaredFamily: declared,
+          conflict: "ambiguous_identity",
+          affectedUnitIds: state.learningUnitContract.units.filter((unit) => contractFormulaIds(state, unit).includes(identity.anchorId)).map((unit) => unit.id),
+          affectedPages: state.pages.filter((page) => page.sourceFormulaAnchors.includes(identity.anchorId)).map((page) => page.rel),
+          repairAction: "needs_chatmock",
+          reason: identity.evidence.reason,
+        }];
+      }
+      if (declared && declared !== identity.family) {
+        return [{
+          anchorId: identity.anchorId,
+          declaredFamily: declared,
+          verifiedFamily: identity.family,
+          conflict: "registry_family_wrong",
+          affectedUnitIds: state.learningUnitContract.units.filter((unit) => contractFormulaIds(state, unit).includes(identity.anchorId)).map((unit) => unit.id),
+          affectedPages: state.pages.filter((page) => page.sourceFormulaAnchors.includes(identity.anchorId)).map((page) => page.rel),
+          repairAction: "update_formula_registry",
+          reason: identity.problems.find((problem) => problem.includes("conflicts")) ?? identity.evidence.reason,
+        }];
+      }
+      return [];
+    });
+    writeIfChanged(identityPath, renderFormulaIdentityRegistry(identities, result.identityConflicts), result.changedFiles, gardenDir);
+
+    const contractRepair = repairContractAnchorLeaksAndProvenance(gardenDir, state, identities);
+    if (contractRepair.content && contractPath) {
+      writeIfChanged(contractPath, contractRepair.content, result.changedFiles, gardenDir);
+      result.contractAnchorLeaksRemoved += contractRepair.leaksRemoved;
+      result.contractAssignmentsRepaired += contractRepair.leaksRemoved;
+      state = buildFinalGardenState(gardenDir, gardenSlug);
+      identities = buildFormulaIdentityRegistry(state.sourceAnchors, gardenDir);
+    }
+
     let index = buildCanonicalFormulaUsageIndex(gardenDir, state);
     const contractMoves: Array<{ anchorId: string; fromUnitId: string; targetUnitId: string }> = [];
+    const contractReplacements: Array<{
+      anchorId: string;
+      fromUnitId: string;
+      replacement: CanonicalFormulaIdentity;
+      moveCurrentToUnitId?: string;
+    }> = [];
     for (const unit of state.learningUnitContract.units) {
       const pages = state.pages.filter((page) => page.learningUnitId === unit.id);
       for (const anchorId of contractFormulaIds(state, unit)) {
@@ -1142,24 +1546,50 @@ export function reconcileFinalFormulaProjectionsDeterministic(
         const compatibility = verifyContractFormulaCompatibility(anchorId, unit, pages[0], state);
         if (compatibility.compatible) continue;
         result.incompatibleAssignmentsFound += 1;
+        const replacement = bestReplacementForUnit(anchorId, unit, pages[0], state, identities);
         const target = bestCompatibleTarget(anchorId, unit.id, state);
-        if (target) contractMoves.push({ anchorId, fromUnitId: unit.id, targetUnitId: target.unit.id });
+        if (replacement) {
+          contractReplacements.push({
+            anchorId,
+            fromUnitId: unit.id,
+            replacement: replacement.identity,
+            moveCurrentToUnitId: target?.unit.id,
+          });
+        } else if (target) {
+          contractMoves.push({ anchorId, fromUnitId: unit.id, targetUnitId: target.unit.id });
+        }
       }
     }
-    for (const move of contractMoves) {
-      const next = moveContractAssignment(gardenDir, move.anchorId, move.fromUnitId, move.targetUnitId);
+    for (const repair of contractReplacements) {
+      const next = replaceContractFormulaAssignment(
+        gardenDir,
+        repair.anchorId,
+        repair.replacement,
+        repair.fromUnitId,
+        repair.moveCurrentToUnitId,
+      );
       if (!next || !contractPath) continue;
       writeIfChanged(contractPath, next, result.changedFiles, gardenDir);
       result.contractAssignmentsRepaired += 1;
+      result.assignmentsReplaced += 1;
+      if (repair.moveCurrentToUnitId) result.assignmentsMoved += 1;
     }
-    if (contractMoves.length > 0) {
+    for (const move of contractMoves) {
+      const identity = identities.find((candidate) => candidate.anchorId === move.anchorId);
+      const next = moveContractAssignment(gardenDir, move.anchorId, move.fromUnitId, move.targetUnitId, identity?.verified ? identity.family : undefined);
+      if (!next || !contractPath) continue;
+      writeIfChanged(contractPath, next, result.changedFiles, gardenDir);
+      result.contractAssignmentsRepaired += 1;
+      result.assignmentsMoved += 1;
+    }
+    if (contractMoves.length > 0 || contractReplacements.length > 0) {
       state = buildFinalGardenState(gardenDir, gardenSlug);
       index = buildCanonicalFormulaUsageIndex(gardenDir, state);
     }
 
     for (const page of state.pages) {
       const required = (index.byPagePath[page.rel] ?? []).filter((usage) => usage.requiredByContract);
-      const next = pageFormulaRepair(page, required, state, index, result);
+      const next = pageFormulaRepair(page, required, state, index, identities, result);
       if (next) writeIfChanged(page.abs, next, result.changedFiles, gardenDir);
     }
 
@@ -1199,6 +1629,9 @@ export function reconcileFinalFormulaProjectionsDeterministic(
     const finalState = buildFinalGardenState(gardenDir, gardenSlug);
     const afterFormulaIssues = auditFormulaProjections(finalState);
     const afterGlobal = auditFinalGardenState(finalState).problems;
+    result.remainingFormulaFamilyMismatches = afterFormulaIssues.filter((issue) =>
+      issue.subproblems.some((problem) => /incompatible|family|identity/i.test(problem)),
+    ).length + afterGlobal.filter((problem) => /formula.*(?:incompatible|family)|source formula anchor.*no compatible/i.test(problem)).length;
     const newGlobal = afterGlobal.filter((problem) => !beforeGlobal.includes(problem));
     const changed = result.changedFiles.length > 0;
     const blockersDecreased = afterFormulaIssues.length < beforeFormulaIssues.length;
@@ -1301,6 +1734,17 @@ export function verifyFormulaUsageRepairDecision(
   if (decision.formulaAnchorId && !offeredAnchors.has(decision.formulaAnchorId)) return { accepted: false, reason: "decision invented or selected an unoffered formula anchor" };
   if ((decision.action === "assign_worked_example_lineage" || decision.action === "attach_existing_formula") && !decision.formulaAnchorId) return { accepted: false, reason: "formula action lacks formulaAnchorId" };
   if (typeof decision.entryIndex === "number" && !packet.pageFormulaEntries[decision.entryIndex]) return { accepted: false, reason: "entryIndex does not resolve in the packet" };
+  if (decision.formulaAnchorId && (decision.action === "attach_existing_formula" || decision.action === "assign_worked_example_lineage")) {
+    const page = state.pages.find((candidate) => candidate.rel === packet.pagePath);
+    const unit = state.learningUnitContract.units.find((candidate) => candidate.id === packet.unitId);
+    const anchor = state.sourceAnchors[decision.formulaAnchorId];
+    if (!page || !unit || !anchor) return { accepted: false, reason: "formula assignment target does not resolve" };
+    try {
+      assertFormulaAssignmentCompatible(verifyCanonicalFormulaIdentity(anchor, state.rootPath), unit, page);
+    } catch (error) {
+      return { accepted: false, reason: error instanceof Error ? error.message : "formula compatibility guard rejected the decision" };
+    }
+  }
   if (decision.action === "move_contract_assignment") {
     if (!decision.targetUnitId || !state.learningUnitContract.units.some((unit) => unit.id === decision.targetUnitId)) return { accepted: false, reason: "target unit does not exist" };
     const anchorId = decision.formulaAnchorId ?? packet.contractRequiredFormulas[0]?.anchorId;
@@ -1391,8 +1835,10 @@ function mergeReconciliationResults(
   next: FormulaProjectionReconciliationResult,
 ): FormulaProjectionReconciliationResult {
   const numeric = [
-    "contractAssignmentsChecked", "contractAssignmentsRepaired", "incompatibleAssignmentsFound",
-    "definitionsAdded", "definitionsLinked", "workedExamplesRelined", "workedExamplesReclassified",
+    "formulaIdentitiesVerified", "registryFamilyCorrections", "contractAssignmentsChecked",
+    "contractAssignmentsRepaired", "contractAnchorLeaksRemoved", "assignmentsReplaced", "assignmentsMoved",
+    "incompatibleAssignmentsFound", "ambiguousAssignmentsSentToChatMock", "definitionsAdded",
+    "definitionsLinked", "wrongFamilyPageEntriesRepaired", "workedExamplesRelined", "workedExamplesReclassified",
     "metadataEntriesRemoved", "orphanWorkedExamplesBefore", "formulaLedgerModesChanged",
   ] as const;
   for (const key of numeric) base[key] += next[key];
@@ -1402,6 +1848,8 @@ function mergeReconciliationResults(
   base.stateFingerprintAfter = next.stateFingerprintAfter;
   base.sourceCoverageRegenerated ||= next.sourceCoverageRegenerated;
   base.sourceCoverageEntriesRegenerated = next.sourceCoverageEntriesRegenerated;
+  base.remainingFormulaFamilyMismatches = next.remainingFormulaFamilyMismatches;
+  base.identityConflicts = [...base.identityConflicts, ...next.identityConflicts];
   base.changedFiles = [...new Set([...base.changedFiles, ...next.changedFiles])];
   base.sourceFormulaAnchorArraysUpdated = [...new Set([...base.sourceFormulaAnchorArraysUpdated, ...next.sourceFormulaAnchorArraysUpdated])];
   base.sourceLedgerRecordsUpdated = [...new Set([...base.sourceLedgerRecordsUpdated, ...next.sourceLedgerRecordsUpdated])];
@@ -1419,21 +1867,64 @@ export async function reconcileFinalFormulaProjections(
     maxChatMockCalls: number;
     strictMode: boolean;
     formulaRepairModel?: FormulaUsageRepairModel;
+    formulaIdentityRepairModel?: FormulaIdentityRepairModel;
   },
 ): Promise<FormulaProjectionReconciliationResult> {
   const result = reconcileFinalFormulaProjectionsDeterministic(gardenDir, gardenSlug, { strictMode: options.strictMode });
-  if (result.unresolvedIssues.length === 0 || !options.formulaRepairModel || options.maxChatMockCalls <= 0) return result;
+  if (result.unresolvedIssues.length === 0 || (!options.formulaRepairModel && !options.formulaIdentityRepairModel) || options.maxChatMockCalls <= 0) return result;
   let state = buildFinalGardenState(gardenDir, gardenSlug);
-  const index = buildCanonicalFormulaUsageIndex(gardenDir, state);
+  let index = buildCanonicalFormulaUsageIndex(gardenDir, state);
   const chatSnapshot = snapshotFiles([
     ...state.pages.map((page) => page.abs),
     ...(contractPathFor(gardenDir) ? [contractPathFor(gardenDir)!] : []),
     ledgerPath(gardenDir),
+    formulaIdentityRegistryPath(gardenDir),
     path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"),
   ]);
   const issuesBeforeChat = result.unresolvedIssues.length;
   const modelChanged: string[] = [];
   for (const issue of result.unresolvedIssues.slice(0, options.maxChatMockCalls)) {
+    if (options.formulaIdentityRepairModel && issue.anchorId) {
+      const page = state.pages.find((candidate) => candidate.rel === issue.pagePath);
+      const unit = state.learningUnitContract.units.find((candidate) => candidate.id === (issue.unitId ?? page?.learningUnitId));
+      const anchor = state.sourceAnchors[issue.anchorId];
+      if (page && unit && anchor?.kind === "formula") {
+        const identities = buildFormulaIdentityRegistry(state.sourceAnchors, gardenDir);
+        const currentIdentity = identities.find((identity) => identity.anchorId === issue.anchorId);
+        if (currentIdentity) {
+          const candidates = findCompatibleFormulaAssignments(unit, page, identities);
+          const identityPacket = buildFormulaIdentityRepairPacket({
+            issueId: issue.id,
+            currentIdentity,
+            declaredFamily: anchor.formulaFamily,
+            unit,
+            page,
+            candidates,
+          });
+          result.chatMockCallsUsed += 1;
+          result.ambiguousAssignmentsSentToChatMock += 1;
+          let identityDecision: FormulaIdentityRepairDecision | null = null;
+          try { identityDecision = await options.formulaIdentityRepairModel(identityPacket); } catch { identityDecision = null; }
+          if (identityDecision) {
+            const verified = verifyFormulaIdentityRepairDecision(identityPacket, identityDecision, identities);
+            if (verified.accepted && identityDecision.action === "replace_contract_assignment" && identityDecision.replacementAnchorId) {
+              const replacement = identities.find((identity) => identity.anchorId === identityDecision!.replacementAnchorId);
+              const target = bestCompatibleTarget(issue.anchorId, unit.id, state);
+              if (replacement) {
+                const next = replaceContractFormulaAssignment(gardenDir, issue.anchorId, replacement, unit.id, target?.unit.id);
+                const abs = contractPathFor(gardenDir);
+                if (next && abs) writeIfChanged(abs, next, modelChanged, gardenDir);
+              }
+            }
+          }
+          state = buildFinalGardenState(gardenDir, gardenSlug);
+          index = buildCanonicalFormulaUsageIndex(gardenDir, state);
+          if (result.chatMockCallsUsed >= options.maxChatMockCalls) break;
+          continue;
+        }
+      }
+    }
+    if (!options.formulaRepairModel || result.chatMockCallsUsed >= options.maxChatMockCalls) continue;
     const packet = buildFormulaUsageRepairPacket(issue, state, index);
     if (!packet) continue;
     result.chatMockCallsUsed += 1;

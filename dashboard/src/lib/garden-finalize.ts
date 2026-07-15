@@ -43,7 +43,8 @@ import {
 } from "./learning-unit-contract.ts";
 import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
-import { auditFinalGardenState, auditLegacyMigrationPersistence, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
+import { auditFinalGardenState, auditLegacyMigrationPersistence, buildCanonicalSourceAnchors, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
+import { assertFormulaAssignmentCompatible, buildFormulaIdentityRegistry, legacyFormulaFamily } from "./formula-identity.ts";
 import {
   parseFormulaMetadataEntries,
   reconcileFinalFormulaProjectionsDeterministic,
@@ -1505,7 +1506,7 @@ export function finalizeGardenExport({
   // finalization. The finalizer only performs deterministic export hygiene:
   // filesystem cleanup, source/link normalization, stale-caveat removal,
   // path/label alignment, validation reporting, and hard gating.
-  regroundFormulas({ ledger, learnerPages, report });
+  regroundFormulas({ gardenDir, ledger, learnerPages, report });
   repairLearnerAcronymGrammar(learnerPages, report);
   repairSourceVisualImagePathCasing(gardenDir, learnerPages, report);
   repairVisualAnchorRolesAndReasons(gardenDir, learnerPages, report);
@@ -2776,7 +2777,7 @@ export async function repairLearningUnitsFromContract({
       synchronizeContractSourceAnchors(gardenDir, contract, deterministicPages, repairReport);
       repairMetricCalculatorFocus(gardenDir, deterministicPages, repairReport);
       repairVisualAnchorRolesAndReasons(gardenDir, deterministicPages, repairReport);
-      regroundFormulas({ ledger, learnerPages: deterministicPages, report: repairReport });
+      regroundFormulas({ gardenDir, ledger, learnerPages: deterministicPages, report: repairReport });
       removeRepeatedMotivation(deterministicPages, repairReport);
       repairLearnerAcronymGrammar(deterministicPages, repairReport);
       repairSourceVisualImagePathCasing(gardenDir, deterministicPages, repairReport);
@@ -2820,7 +2821,7 @@ export async function repairLearningUnitsFromContract({
   const contractForAnchorSync = readLearningUnitContract(gardenDir);
   const unitsForAnchorSync = new Map(contractForAnchorSync.units.map((unit) => [unit.id, unit]));
   regroundFormulas(
-    { ledger: readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []), learnerPages: pagesForAnchorSync, report: repairReport },
+    { gardenDir, ledger: readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []), learnerPages: pagesForAnchorSync, report: repairReport },
   );
   repairLearnerAcronymGrammar(pagesForAnchorSync, repairReport);
   repairSourceVisualImagePathCasing(gardenDir, pagesForAnchorSync, repairReport);
@@ -4556,14 +4557,23 @@ function extractBodyFormulaRecords(body: string): Array<{ text: string; display:
 }
 
 function regroundFormulas({
+  gardenDir,
   ledger,
   learnerPages,
   report,
 }: {
+  gardenDir: string;
   ledger: LedgerVisual[];
   learnerPages: LearnerPage[];
   report: FinalizeReport;
 }): void {
+  const finalState = buildFinalGardenState(gardenDir, path.basename(gardenDir));
+  const pageByRel = new Map(finalState.pages.map((page) => [page.rel, page]));
+  const unitById = new Map(finalState.learningUnitContract.units.map((unit) => [unit.id, unit]));
+  const identityById = new Map(
+    buildFormulaIdentityRegistry(buildCanonicalSourceAnchors(gardenDir), gardenDir)
+      .map((identity) => [identity.anchorId, identity]),
+  );
   const sources: SourceFormula[] = ledger
     .filter((visual) => classifyFigure(visual) === "equation")
     .map((visual) => ({
@@ -4587,7 +4597,21 @@ function regroundFormulas({
     const entries: FinalizeFormulaEntry[] = [];
     const anchoredIds = new Set<string>();
     for (const { text, display } of formulas) {
-      const match = matchFormulaToSource(text, sources);
+      let match = matchFormulaToSource(text, sources);
+      if (match) {
+        const finalPage = pageByRel.get(page.rel);
+        const unit = finalPage ? unitById.get(finalPage.learningUnitId) : undefined;
+        const identity = identityById.get(match.id);
+        if (!finalPage || !unit || !identity) {
+          match = null;
+        } else {
+          try {
+            assertFormulaAssignmentCompatible(identity, unit, finalPage);
+          } catch {
+            match = null;
+          }
+        }
+      }
       const family = formulaMetricFamily(text);
       const workedExample = isWorkedExampleFormula(text);
       const keepInlineConceptual = workedExample || (entries.length === 0 && /=|\\frac|\/|\\sum|\\min|\\max/.test(text));
@@ -4601,8 +4625,12 @@ function regroundFormulas({
           justification: workedExample
             ? `Worked example applying source formula ${match.id} (${match.caption}).`
             : `Content matches source metric formula ${match.id} (${match.caption}).`,
-          sourceAnchor: match.id,
+          sourceAnchor: workedExample ? undefined : match.id,
           sourceAnchorTitle: match.caption,
+          basedOnFormula: workedExample ? match.id : undefined,
+          formulaFamily: identityById.get(match.id)?.verified
+            ? legacyFormulaFamily(identityById.get(match.id)!.family)
+            : formulaMetricFamily(text) ?? undefined,
           matchReason: "metric family and source formula anchor text match",
           confidence: 0.9,
         });

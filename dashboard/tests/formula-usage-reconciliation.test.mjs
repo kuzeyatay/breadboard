@@ -166,14 +166,14 @@ test("3. numeric example is not promoted to source definition", () => {
   assert.equal(stateFor(root).pages[0].formulas.some((entry) => entry.declaredKind === "source_definition"), false);
 });
 
-test("4. incompatible contract assignment is not forced onto the page", () => {
+test("4. incompatible contract assignment is replaced by a verified page-family formula", () => {
   const units = [unit("U1", "Normalized Energy Efficiency", "efficiency", [E6])];
   const { root } = makeGarden({ units, pages: [{ unitId: "U1", title: "Normalized Energy Efficiency", entries: [], sourceAnchors: [], sourceFormulaAnchors: [], body: `Efficiency is accuracy per energy. $$${EFFICIENCY}$$` }] });
-  const before = fs.readFileSync(path.join(root, "learning", "1. Metrics", "1.1 Normalized Energy Efficiency.md"), "utf-8");
   const result = reconcileFinalFormulaProjectionsDeterministic(root, "fixture", { strictMode: false });
-  const after = fs.readFileSync(path.join(root, "learning", "1. Metrics", "1.1 Normalized Energy Efficiency.md"), "utf-8");
   assert.equal(result.incompatibleAssignmentsFound, 1);
-  assert.equal(after, before);
+  assert.equal(result.assignmentsReplaced, 1);
+  assert.deepEqual(stateFor(root).pages[0].sourceFormulaAnchors, [E5]);
+  assert.equal(stateFor(root).pages[0].sourceFormulaAnchors.includes(E6), false);
 });
 
 test("5. unambiguous incompatible assignment moves to the correct unit", () => {
@@ -182,7 +182,7 @@ test("5. unambiguous incompatible assignment moves to the correct unit", () => {
     { unitId: "U1", title: "Normalized Energy Efficiency", file: "1.1 Normalized Energy Efficiency.md", entries: [], body: `Efficiency is accuracy per energy. $$${EFFICIENCY}$$` },
     { unitId: "U2", title: "Convergence Epoch", file: "1.2 Convergence Epoch.md", entries: [{ kind: "conceptual_helper", text: CONVERGENCE }], body: `The first epoch reaching target accuracy is convergence. $$${CONVERGENCE}$$` },
   ];
-  const { root } = makeGarden({ units, pages });
+  const { root } = makeGarden({ units, pages, visuals: [{ sourceVisualId: E6, sourceId: "source", pageNumber: 6, type: "equation", caption: "Convergence epoch satisfying the target accuracy threshold", exactText: CONVERGENCE, conceptUsage: "missing" }] });
   const result = reconcileFinalFormulaProjectionsDeterministic(root, "fixture", { strictMode: false });
   const state = stateFor(root);
   assert.equal(result.contractAssignmentsRepaired, 1);
@@ -193,7 +193,7 @@ test("5. unambiguous incompatible assignment moves to the correct unit", () => {
 test("6. ambiguous assignment routes to ChatMock with a narrow packet", async () => {
   const units = [unit("U1", "Energy Efficiency", "efficiency", [E6]), unit("U2", "Convergence One", "convergence", []), unit("U3", "Convergence Two", "convergence", [])];
   const pages = units.map((u, index) => ({ unitId: u.id, title: u.title, file: `1.${index + 1} ${u.title}.md`, entries: [], body: u.id === "U1" ? `Efficiency. $$${EFFICIENCY}$$` : `The convergence epoch is the first epoch reaching target accuracy. $$${CONVERGENCE}$$` }));
-  const { root } = makeGarden({ units, pages });
+  const { root } = makeGarden({ units, pages, visuals: [{ sourceVisualId: E6, sourceId: "source", pageNumber: 6, type: "equation", caption: "Convergence epoch satisfying the target accuracy threshold", exactText: CONVERGENCE, conceptUsage: "missing" }] });
   let packet;
   const result = await reconcileFinalFormulaProjections(root, "fixture", { maxChatMockCalls: 1, strictMode: false, formulaRepairModel: async (value) => { packet = value; return { action: "reject_formula_usage", reason: "ambiguous target units" }; } });
   assert.equal(result.chatMockCallsUsed, 1);
@@ -316,7 +316,7 @@ test("18. page metadata, sourceFormulaAnchors, ledger, and coverage update toget
 
 test("19. failed compatibility validation leaves page and contract unchanged", () => {
   const units = [unit("U1", "Energy Efficiency", "efficiency", [E6])];
-  const { root } = makeGarden({ units, pages: [{ unitId: "U1", title: "Energy Efficiency", entries: [], body: `Efficiency is accuracy per energy. $$${EFFICIENCY}$$` }] });
+  const { root } = makeGarden({ units, pages: [{ unitId: "U1", title: "Energy Efficiency", entries: [], body: `Efficiency is accuracy per energy. $$${EFFICIENCY}$$` }], visuals: [{ sourceVisualId: E6, sourceId: "source", pageNumber: 6, type: "equation", caption: "Convergence epoch satisfying the target accuracy threshold", exactText: CONVERGENCE, conceptUsage: "missing" }] });
   const contractPath = path.join(root, ".breadboard", "learning-unit-contract.json");
   const before = fs.readFileSync(contractPath, "utf-8");
   reconcileFinalFormulaProjectionsDeterministic(root, "fixture", { strictMode: false });

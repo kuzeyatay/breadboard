@@ -703,11 +703,43 @@ describe("contract-driven semantic repair loop", () => {
       fs.writeFileSync(
         path.join(dir, ".breadboard", "source-visuals.json"),
         JSON.stringify([
-          { sourceVisualId: "S1.P6.E3", type: "equation", caption: "Total spike count summed over neurons and time steps" },
-          { sourceVisualId: "S1.P6.E6", type: "equation", caption: "Convergence time as epoch reaching target accuracy" },
+          { sourceVisualId: "S1.P6.E3", type: "equation", caption: "Total spike count summed over neurons and time steps", exactText: "N_{\\mathrm{spk}} = \\sum_{i,t} s_{i,t}" },
+          { sourceVisualId: "S1.P6.E6", type: "equation", caption: "Convergence time as epoch reaching target accuracy", exactText: "e_* = \\min\\{e : A(e) >= A_{target}\\}" },
         ], null, 2),
       );
       fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      fs.writeFileSync(
+        path.join(dir, ".breadboard", "learning-unit-contract.json"),
+        JSON.stringify({
+          learningUnits: [{
+            id: "U1",
+            title: "Spike Count and Energy",
+            role: "metric",
+            learningQuestion: "How is spike count measured?",
+            prerequisiteConcepts: [],
+            newConcepts: ["spike count"],
+            sourceAnchors: ["S1.P6.E3"],
+            sourceFigures: [],
+            sourceFormulas: [{
+              id: "S1.P6.E3",
+              teachingGoal: "Define total spike count.",
+              termsToDefine: ["spike count"],
+              placement: "before_example",
+            }],
+            sourceTables: [],
+            zettelNotes: [],
+            mustNotRepeat: [],
+            expectedWordRange: [100, 500],
+          }],
+          sourceArtifactAssignments: [{
+            sourceArtifactId: "S1.P6.E3",
+            assignedLearningUnitId: "U1",
+            placement: "before_example",
+            reason: "fixture",
+            requiredInterpretation: "Define total spike count.",
+          }],
+        }, null, 2),
+      );
       fs.writeFileSync(
         path.join(dir, "learning", "2. Metrics", "2.3 Spike Count and Energy.md"),
         [
@@ -721,6 +753,7 @@ describe("contract-driven semantic repair loop", () => {
           '    groundingStatus: "source-anchored"',
           '    justification: "stale wrong anchor"',
           '    sourceAnchor: "S1.P6.E6"',
+          'learningUnitId: "U1"',
           'generatedBy: "learn_button"',
           "---",
           "",
@@ -1140,9 +1173,18 @@ describe("content-based formula grounding (H)", () => {
       fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
       fs.writeFileSync(
         path.join(dir, ".breadboard", "source-visuals.json"),
-        JSON.stringify([{ sourceVisualId: "S1.P6.E1", type: "equation", caption: "Accuracy as correct predictions over total predictions" }], null, 2),
+        JSON.stringify([{ sourceVisualId: "S1.P6.E1", type: "equation", caption: "Accuracy as correct predictions over total predictions", exactText: "\\text{Accuracy}=\\frac{N_{correct}}{N_{total}}" }], null, 2),
       );
       fs.writeFileSync(path.join(dir, ".breadboard", "visual-index.json"), "{}");
+      fs.writeFileSync(path.join(dir, ".breadboard", "learning-unit-contract.json"), JSON.stringify({
+        learningUnits: [{
+          id: "U1", title: "Accuracy", role: "metric", learningQuestion: "How is accuracy computed?",
+          prerequisiteConcepts: [], newConcepts: ["classification accuracy"], sourceAnchors: ["S1.P6.E1"],
+          sourceFigures: [], sourceFormulas: [{ id: "S1.P6.E1", teachingGoal: "Define accuracy.", termsToDefine: ["accuracy"], placement: "before_example" }],
+          sourceTables: [], zettelNotes: [], mustNotRepeat: [], expectedWordRange: [100, 500],
+        }],
+        sourceArtifactAssignments: [{ sourceArtifactId: "S1.P6.E1", assignedLearningUnitId: "U1", placement: "after_formula_introduction", reason: "fixture", requiredInterpretation: "Define accuracy." }],
+      }, null, 2));
       fs.writeFileSync(
         path.join(dir, "learning", "3. Metrics", "3.1 Accuracy.md"),
         fm({
@@ -1162,7 +1204,7 @@ describe("content-based formula grounding (H)", () => {
       const out = fs.readFileSync(path.join(dir, "learning", "3. Metrics", "3.1 Accuracy.md"), "utf-8");
       assert.match(out, /kind: "worked_example"/);
       assert.match(out, /groundingStatus: "conceptual-helper"/);
-      assert.match(out, /sourceAnchor: "S1\.P6\.E1"/);
+      assert.match(out, /basedOnFormula: "S1\.P6\.E1"/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

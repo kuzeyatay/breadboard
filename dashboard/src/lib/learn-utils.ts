@@ -168,6 +168,11 @@ export function isWorkedExampleFormula(expr: string): boolean {
   const alpha = withoutUnits.match(/[A-Za-z]/g) ?? [];
   const digits = compacted.match(/\d/g) ?? [];
   if (digits.length < 2) return false;
+  // Chained equality with concrete values is a substitution/result even when
+  // the left-hand variable has a descriptive subscript (for example
+  // L_decision = 35 - 20 = 15 time steps). The old alpha-count heuristic
+  // mislabeled these as source definitions or generic helpers.
+  if ((compacted.match(/=/g) ?? []).length >= 2) return true;
   return alpha.length <= 1 || digits.length >= alpha.length * 3;
 }
 
@@ -237,8 +242,8 @@ const FORMULA_FAMILY_PATTERNS: Array<[FormulaMetricFamily, RegExp]> = [
   ["loss", /\bloss\b|\\mathcal\{?L\}?|mse|cross[- ]?entropy|\\ell\b/i],
   ["probability", /\bprobab|\bp\(|p_\{?i\}?|softmax|\\sigma\(|\\Pr\b/i],
   ["efficiency", /\befficien|\baccuracy per energy\b|normalized energy|\\eta|eta|\bNEE\b|\\mathrm\{?NEE\}?|\\frac\s*\{?\s*A\s*\}?\s*\{?\s*E\s*\}?/i],
-  ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|(?:energy|power|joule|synaptic|synop|operation)\s+costs?\b|\bcosts?\s+(?:of\s+)?(?:energy|power|joules?|synaptic|synops?|operations?)\b/i],
-  ["spike-count", /\bspike[- ]?count\b|\btotal spikes?\b|\bnumber of spikes?\b|\bspikes?\b|n_\{?\\?text\{?(?:spike|spk)|n_\{?(?:spikes?|spk)\}?|n[_\s]*(?:spikes?|spk)|\\sum(?:_\{?[^}\s]*\}?|\s)*(?:s[_\{]|\bspikes?\b)|s_\{?[a-z](?:,[a-z])?\}?|s_n\(t\)|time ?steps?/i],
+  ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|\be(?:total|spike|synapse)\b|(?:energy|power|joule|synaptic|synop|operation)\s+costs?\b|\bcosts?\s+(?:of\s+)?(?:energy|power|joules?|synaptic|synops?|operations?)\b/i],
+  ["spike-count", /\bspike[- ]?count\b|\btotal spikes?\b|\bnumber of spikes?\b|\bspikes?\b|n_\{?\\?text\{?(?:spike|spk)|n_\{?(?:spikes?|spk)\}?|n[_\s]*(?:spikes?|spk)|\\sum(?:_\{?[^}\s]*\}?|\s)*(?:s[_\{]|\bspikes?\b)|s_\{?[a-z](?:,[a-z])?\}?|s_n\(t\)/i],
   ["latency", /\blatency\b|\bdelay\b|\bdecision time\b|\bresponse time\b|t_\{?\\?text\{?(?:latency|decision|stimulus)|t_\{?(?:decision|stimulus)/i],
   ["accuracy", /\baccuracy\b|\bclassification\b|\bcorrect predictions?\b|\bn_\{?\\?text\{?correct|n_\{?correct|n_\{?\\?text\{?total|n_\{?total|correct\s*\/\s*total/i],
 ];

@@ -24,12 +24,6 @@
     <description><![CDATA[ Spiking Neural Networks Learners will explain how spike-based computation works, trace leaky integrate-and-fire dynamics through a competitive network, compare three SNN training paradigms, calculate six evaluation metrics, interpret the reported accuracy-energy-latency-convergence tradeoffs, and se... ]]></description>
     <pubDate>Wed, 15 Jul 2026 07:54:25 GMT</pubDate>
   </item><item>
-    <title>1. From Spiking Neural Network to Brain-inspired Computation</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</guid>
-    <description><![CDATA[ 1. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
-  </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
     <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</link>
     <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</guid>
@@ -60,10 +54,16 @@
     <description><![CDATA[ Excitation, Inhibition, and Winner-Take-All Competition Once an input has been encoded as spikes and those spikes have begun propagating through a network, several neurons may receive evidence at nearly the same time. ]]></description>
     <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item><item>
-    <title>2. How Non-differentiable Spike Event Is Applied</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/</guid>
-    <description><![CDATA[ 2. ]]></description>
+    <title>1. From Spiking Neural Network to Brain-inspired Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</guid>
+    <description><![CDATA[ 1. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
+  </item><item>
+    <title>3.1 Classification Accuracy</title>
+    <link>https://localhost:8081/test-2/learning/3.-How-Performance-Is-Evaluated/3.1-Classification-Accuracy</link>
+    <guid>https://localhost:8081/test-2/learning/3.-How-Performance-Is-Evaluated/3.1-Classification-Accuracy</guid>
+    <description><![CDATA[ Classification Accuracy Once a spiking neural network has produced a predicted class label, evaluation begins by comparing that prediction with the target class label-the correct answer attached to the input. ]]></description>
     <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item>
     </channel>

@@ -834,11 +834,9 @@ function canonicalFormulaExactText(
     if (value) return value;
   }
 
-  const anchorId = String(visual.sourceVisualId ?? "").trim();
-  const equationNumber = anchorId.match(/\.E(\d+)$/i)?.[1];
   const sourceId = String(visual.sourceId ?? "").trim();
   const pageNumber = Number(visual.pageNumber);
-  if (!equationNumber || !sourceId || !Number.isFinite(pageNumber)) return undefined;
+  if (!sourceId || !Number.isFinite(pageNumber)) return undefined;
   const source = readText(path.join(gardenDir, "sources", `${sourceId}.md`));
   if (!source) return undefined;
 
@@ -847,14 +845,23 @@ function canonicalFormulaExactText(
     "i",
   );
   const pageText = pagePattern.exec(source)?.[1] ?? source;
-  const blocks = [...pageText.matchAll(/```(?:text|latex|math)?\s*\r?\n([\s\S]*?)\r?\n```/gi)]
-    .map((match) => String(match[1] ?? "").trim());
-  const numbered = blocks.find((block) => new RegExp(`\\(\\s*${equationNumber}\\s*\\)\\s*$`, "m").test(block));
-  if (!numbered) return undefined;
-  const exact = numbered
-    .replace(new RegExp(`\\s*\\(\\s*${equationNumber}\\s*\\)\\s*$`), "")
-    .trim();
-  return exact || undefined;
+  const candidates = [...pageText.matchAll(/```(?:text|latex|math)?\s*\r?\n([\s\S]*?)\r?\n\s*```/gi)]
+    .map((match) => String(match[1] ?? "").trim())
+    .filter((block) => /\(\s*\d+\s*\)\s*$/m.test(block))
+    .map((block) => block.replace(/\s*\(\s*\d+\s*\)\s*$/, "").trim())
+    .filter(Boolean);
+  // Source-visual equation IDs are extraction identities, not source equation
+  // numbers. Resolve the exact equation by semantic structure/caption instead
+  // of assuming `.E2` means equation (2); that assumption caused the latency
+  // equation and spike-count equation on the same page to be swapped.
+  const declaredFamily = formulaMetricFamily([
+    visual.caption, visual.title, visual.semanticSummary, visual.description,
+  ].filter(Boolean).join(" "));
+  if (declaredFamily) {
+    const matches = candidates.filter((candidate) => formulaMetricFamily(candidate) === declaredFamily);
+    if (matches.length === 1) return matches[0];
+  }
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 /** Read the persisted anchor ledgers and build the canonical registry. */
@@ -876,8 +883,10 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       page: Number.isFinite(Number(visual.pageNumber)) ? Number(visual.pageNumber) : undefined,
       sourceId: String(visual.sourceId ?? "") || undefined,
       origin: "visual_ledger",
-      formulaFamily: kind === "formula" ? (formulaMetricFamily(caption) ?? undefined) : undefined,
       exactText: kind === "formula" ? canonicalFormulaExactText(gardenDir, visual) : undefined,
+      formulaFamily: kind === "formula"
+        ? (formulaMetricFamily(`${canonicalFormulaExactText(gardenDir, visual) ?? ""} ${caption}`) ?? undefined)
+        : undefined,
       semanticSummary: kind === "formula" ? String(visual.semanticSummary ?? caption) : undefined,
     };
   }
@@ -955,6 +964,31 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       criticConfirmationReason: record.criticConfirmationReason ? String(record.criticConfirmationReason) : undefined,
       criticConfirmedExactText: typeof record.criticConfirmedExactText === "string" ? record.criticConfirmedExactText : undefined,
     };
+  }
+
+  // A verified formula-identity registry is the canonical semantic overlay.
+  // The source-visual ledger remains authoritative for source/page/caption,
+  // while verified symbolic evidence may correct a stale caption-derived
+  // family without changing the anchor ID (identity-repair Case B).
+  const formulaIdentityArtifact = readJson<Record<string, unknown>>(
+    path.join(bd, "formula-identities.json"),
+    {},
+  );
+  const formulaIdentities = Array.isArray(formulaIdentityArtifact.identities)
+    ? formulaIdentityArtifact.identities as Array<Record<string, unknown>>
+    : [];
+  for (const identity of formulaIdentities) {
+    if (identity.verified !== true) continue;
+    const id = String(identity.anchorId ?? "").trim();
+    const anchor = registry[id];
+    if (!anchor || anchor.kind !== "formula") continue;
+    const verifiedFamily = String(identity.family ?? "").trim();
+    anchor.formulaFamily = verifiedFamily === "spike_count"
+      ? "spike-count"
+      : verifiedFamily === "energy_efficiency" ? "efficiency" : verifiedFamily || anchor.formulaFamily;
+    if (typeof identity.canonicalText === "string" && identity.canonicalText.trim()) {
+      anchor.exactText = identity.canonicalText.trim();
+    }
   }
 
   return registry;
