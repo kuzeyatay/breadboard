@@ -3,7 +3,8 @@ title: "Sources"
 date: "2026-07-15"
 knowledge_type: "source-index"
 breadboardType: "source_index"
-internal: "true"
+internal: false
+excludeFromLearningPath: true
 ---
 
 # Sources

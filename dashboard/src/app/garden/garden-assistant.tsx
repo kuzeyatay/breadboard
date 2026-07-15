@@ -14,7 +14,6 @@ import {
 import AssistantComposer from '@/app/components/assistant-composer';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import LearnErrorDialog from '@/app/components/learn-error-dialog';
-import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import {
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
@@ -1187,14 +1186,6 @@ export default function GardenAssistant({
           tokenUsagePending={isStreaming}
           utilityActions={
             <>
-              <UsageLimitsPopover
-                buttonClassName="flex h-9 items-center justify-center gap-1.5 rounded-full px-2.5 text-xs transition"
-                activeButtonClassName="bg-[var(--paper-strong)] text-[var(--botanical)]"
-                inactiveButtonClassName="text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
-                popoverClassName="absolute bottom-full left-0 z-20 mb-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-4 text-xs text-[var(--ink)] shadow-2xl"
-                showIcon
-                light
-              />
               <button
                 type="button"
                 onClick={() => setShowPrompts(true)}

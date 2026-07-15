@@ -204,6 +204,25 @@ test("failed Learn jobs expose a regenerate action", () => {
   assert.match(workspaceSource, /endpoint === "regenerate" && data\.planning/);
 });
 
+test("Learn failures stay in the panel without opening a dialog or toast", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const catchStart = workspaceSource.indexOf("    } catch (error) {", workspaceSource.indexOf("const postLearnAction"));
+  const catchEnd = workspaceSource.indexOf("    } finally {", catchStart);
+  const learnActionCatch = workspaceSource.slice(catchStart, catchEnd);
+
+  assert.ok(catchStart >= 0 && catchEnd > catchStart);
+  assert.doesNotMatch(workspaceSource, /LearnErrorDialog/);
+  assert.match(workspaceSource, /status === "failed" && job\?\.error[\s\S]*?\{job\.error\}/);
+  assert.match(learnActionCatch, /if \(isCancel\) \{[\s\S]*?addToast\(message\)/);
+  assert.doesNotMatch(learnActionCatch, /else[\s\S]*?addToast\(message\)/);
+});
+
 test("completed Learn panel exposes a black regenerate action beside Skip review", () => {
   const workspaceSource = fs.readFileSync(
     new URL(

@@ -8,6 +8,7 @@ import type {
   Ref,
 } from 'react';
 import { useEffect, useState } from 'react';
+import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import { formatAssistantModelName } from '@/lib/ai-models';
 import type { AssistantReasoningEffort } from '@/lib/assistant-reasoning';
 import { formatResponseDuration, formatTokenCount, type ChatTokenUsageSummary } from '@/lib/chat-token-usage';
@@ -231,7 +232,7 @@ export default function AssistantComposer({
                   onClick={() => setShowIntelligence(false)}
                   aria-label="Close intelligence menu"
                 />
-                <div className="absolute bottom-full right-0 z-40 mb-2 w-64 overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm shadow-[0_22px_70px_rgba(15,32,27,0.18)]">
+                <div className="absolute bottom-full right-0 z-40 mb-2 w-64 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm shadow-[0_22px_70px_rgba(15,32,27,0.18)]">
                   <div className="px-2.5 pb-1.5 pt-1 text-sm text-[var(--ink-muted)]">Intelligence</div>
                   {EFFORT_OPTIONS.map((option) => (
                     <button
@@ -272,6 +273,15 @@ export default function AssistantComposer({
                       </button>
                     ))}
                   </div>
+
+                  <div className="my-1.5 border-t border-[var(--line)]" />
+                  <UsageLimitsPopover
+                    buttonClassName="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition"
+                    activeButtonClassName="bg-[var(--paper-surface)] text-[var(--botanical)]"
+                    inactiveButtonClassName="text-[var(--ink)] hover:bg-[var(--paper-strong)]"
+                    popoverClassName="absolute bottom-0 right-full z-50 mr-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-4 text-xs text-[var(--ink)] shadow-2xl"
+                    light
+                  />
                 </div>
               </>
             ) : null}

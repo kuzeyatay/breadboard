@@ -15,10 +15,8 @@ import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
-import LearnErrorDialog from "@/app/components/learn-error-dialog";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
-import UsageLimitsPopover from "@/app/components/usage-limits-popover";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
 import {
   DEFAULT_ASSISTANT_MODELS,
@@ -36,12 +34,6 @@ import {
   summarizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
-import {
-  forgetDismissedLearnErrorsForGarden,
-  learnErrorDismissalKey,
-  loadDismissedLearnErrorKeys,
-  rememberDismissedLearnErrorKey,
-} from "@/lib/learn-error-dismissal";
 import {
   currentLearnElapsedMs,
   formatLearnElapsedTime,
@@ -877,10 +869,6 @@ export default function WorkspaceClient({
   const learnEventsScrollRef = useRef<HTMLDivElement | null>(null);
   const learnSkipManualReviewRef = useRef(false);
   const autoConfirmingLearnJobRef = useRef<string | null>(null);
-  const [dismissedLearnErrorKeys, setDismissedLearnErrorKeys] = useState<
-    string[]
-  >(() => loadDismissedLearnErrorKeys());
-
   // Reasoning effort
   const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
     DEFAULT_ASSISTANT_REASONING_EFFORT,
@@ -1972,7 +1960,6 @@ export default function WorkspaceClient({
     const isCancel = endpoint === "cancel";
     if (!isCancel) {
       setLearnPanelOpen(true);
-      setDismissedLearnErrorKeys(forgetDismissedLearnErrorsForGarden(clusterSlug));
     }
     if (isCancel) {
       setLearnCancelBusy(true);
@@ -2028,8 +2015,6 @@ export default function WorkspaceClient({
       await fetchLearnStatus();
       const message = error instanceof Error ? error.message : "Learn action failed";
       if (isCancel) {
-        addToast(message);
-      } else if (!/cancelled|canceled|stopped by the user/i.test(message)) {
         addToast(message);
       }
     } finally {
@@ -2113,11 +2098,6 @@ export default function WorkspaceClient({
     learnSkipManualReview,
     postLearnAction,
   ]);
-
-  function dismissLearnError(job: LearnJobInfo) {
-    const dismissalKey = learnErrorDismissalKey(clusterSlug, job);
-    setDismissedLearnErrorKeys(rememberDismissedLearnErrorKey(dismissalKey));
-  }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -2446,18 +2426,6 @@ export default function WorkspaceClient({
   const graphRefreshKey = `${graphRefreshVersion}:${documents
     .map((d) => `${d.slug}:${d.linkCount}:${d.wordCount}`)
     .join("|")}`;
-  const currentLearnErrorKey =
-    learnState?.job?.status === "failed" && learnState.job.error
-      ? learnErrorDismissalKey(clusterSlug, learnState.job)
-      : null;
-  const learnErrorJob =
-    learnState?.job?.status === "failed" &&
-    learnState.job.error &&
-    currentLearnErrorKey &&
-    !dismissedLearnErrorKeys.includes(currentLearnErrorKey)
-      ? learnState.job
-      : null;
-
   function renderLearnPanel() {
     const job = learnState?.job ?? null;
     const status = job?.status ?? "idle";
@@ -4774,13 +4742,6 @@ export default function WorkspaceClient({
                       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
                     </svg>
                   </button>
-                  <UsageLimitsPopover
-                    buttonClassName="flex h-11 items-center justify-center gap-1.5 rounded-full px-3 text-xs transition"
-                    activeButtonClassName="bg-[var(--paper-strong)] text-[var(--botanical)]"
-                    inactiveButtonClassName="text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
-                    popoverClassName="absolute bottom-full right-0 z-20 mb-2 w-72 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-4 text-xs text-[var(--ink)] shadow-2xl"
-                    light
-                  />
                 </>
               }
             />
@@ -5525,21 +5486,6 @@ export default function WorkspaceClient({
           </div>
         </div>
       )}
-
-      {learnErrorJob ? (
-        <LearnErrorDialog
-          message={learnErrorJob.error ?? "Learn failed while creating a section."}
-          currentStep={learnErrorJob.currentStep}
-          currentSectionTitle={learnErrorJob.currentSectionTitle}
-          currentPageTitle={learnErrorJob.currentPageTitle}
-          validationReport={learnState?.validationReport}
-          onDismiss={() => dismissLearnError(learnErrorJob)}
-          onOpenPanel={() => {
-            setLearnPanelOpen(true);
-            dismissLearnError(learnErrorJob);
-          }}
-        />
-      ) : null}
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>

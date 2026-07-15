@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>test</title>
-    <link>https://localhost:8081/test-2/</link>
-    <guid>https://localhost:8081/test-2/</guid>
-    <description><![CDATA[ Learning garden with 1 source document, 0 lesson pages, and 0 graph links. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 21:00:00 GMT</pubDate>
+    <title>Learning Map</title>
+    <link>https://localhost:8081/test-2/learning/Learning-Map</link>
+    <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
+    <description><![CDATA[ Learning Map Section Order From Spiking Neural Network to Brain-inspired Computation 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 From Input Signals to Network Spikes 1.5 Excitation, Inhibition, and Winner-Take-All... ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:54:25 GMT</pubDate>
   </item><item>
-    <title>Sources</title>
-    <link>https://localhost:8081/test-2/sources/</link>
-    <guid>https://localhost:8081/test-2/sources/</guid>
-    <description><![CDATA[ Sources Spiking Neural Networks: The Future of Brain-Inspired Computing . ]]></description>
-    <pubDate>Tue, 14 Jul 2026 21:00:00 GMT</pubDate>
+    <title>Topic Overview</title>
+    <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
+    <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
+    <description><![CDATA[ Spiking Neural Networks Spiking neural networks process information through discrete events called spikes. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:54:25 GMT</pubDate>
   </item><item>
-    <title>My garden</title>
-    <link>https://localhost:8081/private-library/user-1/</link>
-    <guid>https://localhost:8081/private-library/user-1/</guid>
-    <description><![CDATA[ All the gardens attached to your account. ]]></description>
-    <pubDate>Sat, 11 Jul 2026 21:00:00 GMT</pubDate>
+    <title>Spiking Neural Networks</title>
+    <link>https://localhost:8081/test-2/learning/</link>
+    <guid>https://localhost:8081/test-2/learning/</guid>
+    <description><![CDATA[ Spiking Neural Networks Learners will explain how spike-based computation works, trace leaky integrate-and-fire dynamics through a competitive network, compare three SNN training paradigms, calculate six evaluation metrics, interpret the reported accuracy-energy-latency-convergence tradeoffs, and se... ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:54:25 GMT</pubDate>
   </item><item>
-    <title>Spiking Neural Networks: The Future of Brain-Inspired Computing</title>
-    <link>https://localhost:8081/test-2/sources/2510-27379v1</link>
-    <guid>https://localhost:8081/test-2/sources/2510-27379v1</guid>
-    <description><![CDATA[ Summary Page 1 International Journal of Engineering Trends and Technology Volume 73 Issue 10, 32-48, October 2025 ISSN: 2231-5381 / doi.org/10.14445/22315381/IJETT-V73I10P104 © 2025 Seventh Sense Research Group® This is an open access article under the CC BY-NC-ND license (creativecommons.org/licens... ]]></description>
-    <pubDate>Sat, 04 Jul 2026 18:43:51 GMT</pubDate>
+    <title>1. From Spiking Neural Network to Brain-inspired Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</guid>
+    <description><![CDATA[ 1. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item><item>
-    <title>Communication 1</title>
-    <link>https://localhost:8081/communication-1/</link>
-    <guid>https://localhost:8081/communication-1/</guid>
-    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 2083 graph links. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
+    <title>1.1 Why Spiking Neural Networks Exist</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a camera watching a quiet hallway. For several seconds, almost every part of the scene stays the same. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item><item>
-    <title>Physics for EE</title>
-    <link>https://localhost:8081/physics-for-ee/</link>
-    <guid>https://localhost:8081/physics-for-ee/</guid>
-    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 602 graph links. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
+    <title>1.2 Spikes, Timing, and Event-Driven Computation</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.2-Spikes,-Timing,-and-Event-Driven-Computation</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.2-Spikes,-Timing,-and-Event-Driven-Computation</guid>
+    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation With the basic structure of a spiking neural network in place, imagine its input changing over a short interval. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item><item>
-    <title>Public garden</title>
-    <link>https://localhost:8081/public-library/</link>
-    <guid>https://localhost:8081/public-library/</guid>
-    <description><![CDATA[ Shared gardens ranked by popularity. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
+    <title>1.3 The Leaky Integrate-and-Fire Neuron</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.3-The-Leaky-Integrate-and-Fire-Neuron</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A spike event gives a spiking neural network a precisely timed signal, but a neuron still needs a rule for deciding when to produce that event. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item><item>
-    <title>Math 2</title>
-    <link>https://localhost:8081/math-2/</link>
-    <guid>https://localhost:8081/math-2/</guid>
-    <description><![CDATA[ Learning garden with 24 source documents, 0 lesson pages, and 93 graph links. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
+    <title>1.4 From Input Signals to Network Spikes</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.4-From-Input-Signals-to-Network-Spikes</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.4-From-Input-Signals-to-Network-Spikes</guid>
+    <description><![CDATA[ From Input Signals to Network Spikes A spike train gives a spiking neuron a sequence of events to process, and a leaky integrate-and-fire neuron turns those arriving events into its own outgoing spikes. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item><item>
-    <title>Signals and systems</title>
-    <link>https://localhost:8081/signals-and-systems/</link>
-    <guid>https://localhost:8081/signals-and-systems/</guid>
-    <description><![CDATA[ Learning garden with 2 source documents, 0 lesson pages, and 821 graph links. ]]></description>
-    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
+    <title>1.5 Excitation, Inhibition, and Winner-Take-All Competition</title>
+    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.5-Excitation,-Inhibition,-and-Winner-Take-All-Competition</link>
+    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.5-Excitation,-Inhibition,-and-Winner-Take-All-Competition</guid>
+    <description><![CDATA[ Excitation, Inhibition, and Winner-Take-All Competition Once an input has been encoded as spikes and those spikes have begun propagating through a network, several neurons may receive evidence at nearly the same time. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item><item>
-    <title>Sources</title>
-    <link>https://localhost:8081/communication-1/sources/</link>
-    <guid>https://localhost:8081/communication-1/sources/</guid>
-    <description><![CDATA[ Sources Week 1 Lecture 1 Transcript Week 1 Lecture 1 Transcript - part2 Week 1 Lecture 2 Communications 1 Course Reader - Sampling, PAM, PCM, and Noise Digital and analog communication systems Communications 1 (5ETC0) Topic Map . ]]></description>
-    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
+    <title>2. How Non-differentiable Spike Event Is Applied</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-Non-differentiable-Spike-Event-Is-Applied/</guid>
+    <description><![CDATA[ 2. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
   </item>
     </channel>
   </rss>
