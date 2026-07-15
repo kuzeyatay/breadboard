@@ -44,6 +44,11 @@ import {
 import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile } from "./section-title.ts";
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
 import { auditFinalGardenState, auditLegacyMigrationPersistence, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
+import {
+  parseFormulaMetadataEntries,
+  reconcileFinalFormulaProjectionsDeterministic,
+  stableWorkedExampleIdentity,
+} from "./formula-usage-reconciliation.ts";
 import type { SourceAnchor } from "./visual-spec.ts";
 import { isValidPublicConceptSlug } from "./semantic-core.ts";
 import { migrateGardenSemantics, validateGardenSemantics } from "./garden-semantics.ts";
@@ -1353,6 +1358,7 @@ function formulaEntrySourceAnchors(rawFm: string): string[] {
 interface ParsedFormulaEntry {
   kind?: string;
   text?: string;
+  normalizedText?: string;
   groundingStatus?: string;
   justification?: string;
   sourceAnchor?: string;
@@ -1555,7 +1561,27 @@ export function finalizeGardenExport({
     }
   }
 
-  // --- Pass J: canonical final-state reconciliation --------------------------
+  // --- Pass J: canonical formula-projection reconciliation ------------------
+  // Contract assignments, page formula metadata/lineage, formula anchor arrays,
+  // the source ledger, and Source Coverage are one rollback-backed projection.
+  // This runs before the general final-state audit so the terminal gate is not
+  // the first component to discover deterministic formula drift.
+  {
+    const formula = reconcileFinalFormulaProjectionsDeterministic(gardenDir, gardenSlug, { strictMode: false });
+    for (const rel of formula.changedFiles) if (!report.changed.includes(rel)) report.changed.push(rel);
+    if (formula.changedFiles.length > 0) {
+      report.notes.push(
+        `formula projection reconciliation: checked ${formula.contractAssignmentsChecked} contract assignment(s), ` +
+          `added ${formula.definitionsAdded} and linked ${formula.definitionsLinked} definition(s), ` +
+          `relined ${formula.workedExamplesRelined} and reclassified ${formula.workedExamplesReclassified} worked example(s)`,
+      );
+    }
+    if (formula.rolledBack) {
+      report.criticalProblems.push("formula projection reconciliation regressed final state and was rolled back");
+    }
+  }
+
+  // --- Pass K: canonical final-state reconciliation --------------------------
   // Build one FinalGardenState from the final files and bring every derived
   // artifact (Source Coverage, section indexes, contract handles, anchor
   // ledger, Source Map caveats, repair provenance, worked-example labels) back
@@ -1567,7 +1593,7 @@ export function finalizeGardenExport({
     for (const note of reconcile.notes) report.notes.push(note);
   }
 
-  // --- Pass K: validation report + critical gate -----------------------------
+  // --- Pass L: validation report + critical gate -----------------------------
   writeFinalizeValidationReport({ gardenDir, gardenSlug, report });
   runCriticalGate({ gardenDir, report });
 
@@ -2993,6 +3019,7 @@ export function verifyFinalArtifactNoMutation({
 // ---------------------------------------------------------------------------
 
 export type FinalRepairIssueType =
+  | "formula_usage_projection"
   | "formula_metadata_noise"
   | "formula_grounding"
   | "formula_kind_misclassification"
@@ -3064,18 +3091,39 @@ function gardenStateFingerprint(gardenDir: string): string {
  * decision. `finalizeGardenExport` remains the throwing source of truth.
  */
 export function auditGardenForFinalization(gardenDir: string, gardenSlug: string): FinalizeAuditResult {
-  void gardenSlug;
   const checks = collectFinalizeChecks({ gardenDir, report: emptyFinalizeReport(), includeReportSelfCheck: false });
   const repairableIssues: FinalRepairIssue[] = [];
   const nonRepairableIssues: FinalRepairIssue[] = [];
   const seen = new Set<string>();
+  const finalState = buildFinalGardenState(gardenDir, gardenSlug);
+  const unitByPage = new Map(finalState.pages.map((page) => [page.rel, page.learningUnitId]));
   for (const check of checks) {
     if (check.status !== "FAIL") continue;
-    const { type, repairMode } = classifyFinalCheck(check.name);
+    const classified = classifyFinalCheck(check.name);
     for (const problem of check.problems) {
       const pagePath = pagePathFromProblem(problem);
       const target = anchorOrFamilyFromProblem(problem);
-      const id = stableFinalIssueId(type, pagePath, target);
+      const isFormulaProjection = Boolean(target && /^S\d+\.P\d+\.E\d+$/i.test(target))
+        && /formula|contract fulfillment|source coverage mode precision/i.test(check.name);
+      const orphanEntryIndex = /formula metadata noise/i.test(check.name)
+        ? Number(problem.match(/formulas\[(\d+)\]/)?.[1])
+        : Number.NaN;
+      const type: FinalRepairIssueType = isFormulaProjection ? "formula_usage_projection" : classified.type;
+      const repairMode: FinalRepairIssue["repairMode"] = isFormulaProjection ? "deterministic_then_chatmock" : classified.repairMode;
+      const unitId = (pagePath ? unitByPage.get(pagePath) : undefined)
+        ?? (target
+          ? finalState.learningUnitContract.assignments.find((assignment) => assignment.sourceArtifactId === target)?.assignedLearningUnitId
+            ?? finalState.learningUnitContract.units.find((unit) => unit.sourceFormulas.some((formula) => formula.id === target))?.id
+          : undefined);
+      const pageForIssue = pagePath ? finalState.pages.find((page) => page.rel === pagePath) : undefined;
+      const orphanEntry = Number.isInteger(orphanEntryIndex) && pageForIssue
+        ? parseFormulaMetadataEntries(pageForIssue.rawFrontmatter)[orphanEntryIndex]
+        : undefined;
+      const id = isFormulaProjection
+        ? `formula_usage_projection:${target}:${unitId ?? "unassigned"}`
+        : orphanEntry && pagePath
+          ? stableWorkedExampleIdentity(pagePath, orphanEntry)
+          : stableFinalIssueId(type, pagePath, target);
       // Fix 11/12: one stable id per issue; do not duplicate an error that two
       // checks report about the same page + target.
       if (seen.has(id)) continue;
@@ -3085,6 +3133,7 @@ export function auditGardenForFinalization(gardenDir: string, gardenSlug: string
         type,
         severity: "blocking",
         pagePath,
+        unitId,
         anchorId: target,
         message: problem,
         evidence: { check: check.name },
@@ -4321,7 +4370,11 @@ function assignWorkedExampleLineage(entries: FinalizeFormulaEntry[], sources: So
     (entry) => entry.kind === "source_definition" || entry.kind === "source_derived_definition",
   );
   const familyToAnchor = new Map<string, string>();
-  const defFamily = (def: FinalizeFormulaEntry): string | undefined => def.formulaFamily || formulaMetricFamily(def.text) || undefined;
+  const defFamily = (def: FinalizeFormulaEntry): NonNullable<ReturnType<typeof formulaMetricFamily>> | undefined => {
+    const declared = def.formulaFamily;
+    const recognized = declared ? formulaMetricFamily(declared) : null;
+    return recognized || formulaMetricFamily(def.text) || undefined;
+  };
   for (const def of definitions) {
     const family = defFamily(def);
     if (family && def.sourceAnchor && !familyToAnchor.has(family)) familyToAnchor.set(family, def.sourceAnchor);
@@ -4332,10 +4385,9 @@ function assignWorkedExampleLineage(entries: FinalizeFormulaEntry[], sources: So
   }
   // A worked example whose own family cannot be detected (a bare numeric
   // substitution) applies the page's primary source definition — the sole one,
-  // or the first when several exist. ChatMock can refine an ambiguous multi-
-  // definition case later; deterministically it is grounded to a real page
-  // definition rather than left orphan.
-  const primaryDefinition = definitions[0];
+  // never the first of several definitions. Multiple plausible definitions are
+  // genuine ambiguity for the narrow, independently verified ChatMock packet.
+  const primaryDefinition = definitions.length === 1 ? definitions[0] : undefined;
   const primaryAnchor = primaryDefinition?.sourceAnchor;
   const primaryFamily = primaryDefinition ? defFamily(primaryDefinition) : undefined;
 

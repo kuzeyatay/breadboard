@@ -155,6 +155,34 @@ test("navbar toggles Learn while a collapsed status indicator remains outside ch
   assert.match(workspaceSource, /onClick=\{\(\) => setLearnPanelOpen\(true\)\}/);
 });
 
+test("collapsed Learn indicator expires two minutes after a non-loading state", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.match(
+    workspaceSource,
+    /LEARN_SETTLED_INDICATOR_VISIBLE_MS = 2 \* 60 \* 1000/,
+  );
+  assert.match(workspaceSource, /Date\.parse\(job\.updatedAt \?\? ""\)/);
+  assert.match(
+    workspaceSource,
+    /window\.setTimeout\([\s\S]*?setShowSettledLearnIndicator\(false\)[\s\S]*?remainingMs/,
+  );
+  assert.match(
+    workspaceSource,
+    /if \(!active && !showSettledLearnIndicator\) return null/,
+  );
+  assert.match(
+    workspaceSource,
+    /if \(active\) \{[\s\S]*?setShowSettledLearnIndicator\(true\)/,
+  );
+});
+
 test("failed Learn jobs expose a regenerate action", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
@@ -170,10 +198,43 @@ test("failed Learn jobs expose a regenerate action", () => {
   );
   assert.match(
     workspaceSource,
-    /async function handleRegenerateAfterFailure\(\)[\s\S]*?postLearnAction\("regenerate"\)/,
+    /async function handleRegenerateLessons\(\)[\s\S]*?postLearnAction\("regenerate"\)/,
   );
   assert.match(workspaceSource, /status === "failed"[\s\S]*?"Regenerate"/);
   assert.match(workspaceSource, /endpoint === "regenerate" && data\.planning/);
+});
+
+test("completed Learn panel exposes a black regenerate action beside Skip review", () => {
+  const workspaceSource = fs.readFileSync(
+    new URL(
+      "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const skipReviewIndex = workspaceSource.indexOf("Skip review");
+  const regenerateIndex = workspaceSource.indexOf(
+    '{status === "complete" && (',
+    skipReviewIndex,
+  );
+  const primaryActionIndex = workspaceSource.indexOf(
+    "{showPrimaryAction && (",
+    skipReviewIndex,
+  );
+  const completedFooterIndex = workspaceSource.indexOf(
+    '{panelExpanded && status === "complete" && (',
+  );
+  const completedFooter = workspaceSource.slice(completedFooterIndex);
+
+  assert.ok(skipReviewIndex >= 0);
+  assert.ok(regenerateIndex > skipReviewIndex);
+  assert.ok(primaryActionIndex > regenerateIndex);
+  assert.match(
+    workspaceSource.slice(regenerateIndex, primaryActionIndex),
+    /onClick=\{handleRegenerateLessons\}[\s\S]*?bg-white[\s\S]*?text-gray-950[\s\S]*?M12 6\.75v10\.5[\s\S]*?"Regenerate"/,
+  );
+  assert.match(completedFooter, /Open lessons/);
+  assert.doesNotMatch(completedFooter, /onClick=\{handleRegenerateLessons\}/);
 });
 
 test("cancelled Learn jobs expose a fresh generate action", () => {

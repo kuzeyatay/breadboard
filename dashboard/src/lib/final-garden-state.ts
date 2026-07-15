@@ -321,12 +321,15 @@ export type FormulaStructuralKind = "definition" | "worked_example" | "trivial";
 
 export interface FinalFormulaRecord {
   pageRel: string;
+  entryIndex: number;
   text: string;
   declaredKind: FormulaKind | "";
   structuralKind: FormulaStructuralKind;
   groundingStatus: string;
   sourceAnchor?: string;
   basedOnFormula?: string;
+  formulaFamily?: string;
+  exampleGroupId?: string;
 }
 
 export interface FinalVisualSpec {
@@ -492,6 +495,8 @@ interface RawFormulaEntry {
   justification?: string;
   sourceAnchor?: string;
   basedOnFormula?: string;
+  formulaFamily?: string;
+  exampleGroupId?: string;
 }
 
 function formulaEntriesFromFrontmatter(rawFm: string): RawFormulaEntry[] {
@@ -817,6 +822,41 @@ export function mergeCanonicalSourceAnchor(existing: CanonicalSourceAnchor | und
   };
 }
 
+/** Recover a canonical equation's verbatim symbolic expression. Explicit
+ * ledger evidence wins; otherwise use the matching numbered equation in the
+ * source Markdown page. Never synthesize notation from an id or caption. */
+function canonicalFormulaExactText(
+  gardenDir: string,
+  visual: Record<string, unknown>,
+): string | undefined {
+  for (const key of ["exactText", "formulaText", "equationText", "symbolicFormula", "sourceText"]) {
+    const value = String(visual[key] ?? "").trim();
+    if (value) return value;
+  }
+
+  const anchorId = String(visual.sourceVisualId ?? "").trim();
+  const equationNumber = anchorId.match(/\.E(\d+)$/i)?.[1];
+  const sourceId = String(visual.sourceId ?? "").trim();
+  const pageNumber = Number(visual.pageNumber);
+  if (!equationNumber || !sourceId || !Number.isFinite(pageNumber)) return undefined;
+  const source = readText(path.join(gardenDir, "sources", `${sourceId}.md`));
+  if (!source) return undefined;
+
+  const pagePattern = new RegExp(
+    `(?:^|\\n)#{1,6}\\s*Page\\s+${pageNumber}\\s*(?:\\r?\\n)([\\s\\S]*?)(?=\\r?\\n#{1,6}\\s*Page\\s+\\d+\\b|$)`,
+    "i",
+  );
+  const pageText = pagePattern.exec(source)?.[1] ?? source;
+  const blocks = [...pageText.matchAll(/```(?:text|latex|math)?\s*\r?\n([\s\S]*?)\r?\n```/gi)]
+    .map((match) => String(match[1] ?? "").trim());
+  const numbered = blocks.find((block) => new RegExp(`\\(\\s*${equationNumber}\\s*\\)\\s*$`, "m").test(block));
+  if (!numbered) return undefined;
+  const exact = numbered
+    .replace(new RegExp(`\\s*\\(\\s*${equationNumber}\\s*\\)\\s*$`), "")
+    .trim();
+  return exact || undefined;
+}
+
 /** Read the persisted anchor ledgers and build the canonical registry. */
 export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, CanonicalSourceAnchor> {
   const bd = path.join(gardenDir, ".breadboard");
@@ -837,6 +877,8 @@ export function buildCanonicalSourceAnchors(gardenDir: string): Record<string, C
       sourceId: String(visual.sourceId ?? "") || undefined,
       origin: "visual_ledger",
       formulaFamily: kind === "formula" ? (formulaMetricFamily(caption) ?? undefined) : undefined,
+      exactText: kind === "formula" ? canonicalFormulaExactText(gardenDir, visual) : undefined,
+      semanticSummary: kind === "formula" ? String(visual.semanticSummary ?? caption) : undefined,
     };
   }
 
@@ -1260,14 +1302,17 @@ function parsePage(abs: string, rel: string): FinalGardenPage | null {
   const isLesson = kt === "learning-page" || kt === "textbook-page" || bt === "learning_page" || bt === "textbook_page";
   if (!isLesson || generatedBy !== "learn_button") return null;
 
-  const formulas: FinalFormulaRecord[] = formulaEntriesFromFrontmatter(rawFrontmatter).map((entry) => ({
+  const formulas: FinalFormulaRecord[] = formulaEntriesFromFrontmatter(rawFrontmatter).map((entry, entryIndex) => ({
     pageRel: rel,
+    entryIndex,
     text: String(entry.text ?? ""),
     declaredKind: (String(entry.kind ?? "") as FormulaKind) || "",
     structuralKind: formulaStructuralKind(String(entry.text ?? "")),
     groundingStatus: String(entry.groundingStatus ?? ""),
     sourceAnchor: entry.sourceAnchor ? String(entry.sourceAnchor) : undefined,
     basedOnFormula: entry.basedOnFormula ? String(entry.basedOnFormula) : undefined,
+    formulaFamily: entry.formulaFamily ? String(entry.formulaFamily) : undefined,
+    exampleGroupId: entry.exampleGroupId ? String(entry.exampleGroupId) : undefined,
   }));
 
   return {
@@ -3178,7 +3223,7 @@ export function scoreAnchorEvidence(input: {
   };
 
   const pool = input.paragraphs.length ? input.paragraphs : [];
-  let best = pool.map(evaluate).sort((a, b) => b.totalScore - a.totalScore || b.keywordHits.length - a.keywordHits.length)[0];
+  const best = pool.map(evaluate).sort((a, b) => b.totalScore - a.totalScore || b.keywordHits.length - a.keywordHits.length)[0];
   const sourceId = input.sourceId || best?.para.sourceId || "";
 
   if (!best) {
