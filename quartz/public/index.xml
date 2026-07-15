@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>Learning Map</title>
-    <link>https://localhost:8081/test-2/learning/Learning-Map</link>
-    <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist From Discrete Spike Events to Sparse Activity 2.1 Spikes, Sparsity, and Event-Driven Computation 2.2 Spike Timing and Temporal Information 2.3 The Leaky Integrate-and-Fire Neuron 2.4 Encoding Inputs ... ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:54:26 GMT</pubDate>
+    <title>test</title>
+    <link>https://localhost:8081/test-2/</link>
+    <guid>https://localhost:8081/test-2/</guid>
+    <description><![CDATA[ Learning garden with 1 source document, 0 lesson pages, and 0 graph links. ]]></description>
+    <pubDate>Tue, 14 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>Topic Overview</title>
-    <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
-    <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks process information through discrete events called spikes. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:54:26 GMT</pubDate>
+    <title>Sources</title>
+    <link>https://localhost:8081/test-2/sources/</link>
+    <guid>https://localhost:8081/test-2/sources/</guid>
+    <description><![CDATA[ Sources Spiking Neural Networks: The Future of Brain-Inspired Computing . ]]></description>
+    <pubDate>Tue, 14 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>Spiking Neural Networks</title>
-    <link>https://localhost:8081/test-2/learning/</link>
-    <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain spike-based computation from first principles, analyze LIF neuron and competitive network behavior, distinguish three SNN training strategies, calculate and interpret the source-defined evaluation metrics, and choose approaches according to ac... ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:54:26 GMT</pubDate>
+    <title>My garden</title>
+    <link>https://localhost:8081/private-library/user-1/</link>
+    <guid>https://localhost:8081/private-library/user-1/</guid>
+    <description><![CDATA[ All the gardens attached to your account. ]]></description>
+    <pubDate>Sat, 11 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>1. Why Spiking Neural Networks Matters</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
-    <description><![CDATA[ 1. Why Spiking Neural Networks Matters This teaching step is conceptually distinct and could not be merged without blurring two different ideas. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:53:49 GMT</pubDate>
+    <title>Spiking Neural Networks: The Future of Brain-Inspired Computing</title>
+    <link>https://localhost:8081/test-2/sources/2510-27379v1</link>
+    <guid>https://localhost:8081/test-2/sources/2510-27379v1</guid>
+    <description><![CDATA[ Summary Page 1 International Journal of Engineering Trends and Technology Volume 73 Issue 10, 32-48, October 2025 ISSN: 2231-5381 / doi.org/10.14445/22315381/IJETT-V73I10P104 © 2025 Seventh Sense Research Group® This is an open access article under the CC BY-NC-ND license (creativecommons.org/licens... ]]></description>
+    <pubDate>Sat, 04 Jul 2026 18:43:51 GMT</pubDate>
   </item><item>
-    <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Once a neural model has inputs, weighted connections, and outputs, it can transform raw data into useful decisions. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:53:49 GMT</pubDate>
+    <title>Communication 1</title>
+    <link>https://localhost:8081/communication-1/</link>
+    <guid>https://localhost:8081/communication-1/</guid>
+    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 2083 graph links. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2. From Discrete Spike Events to Sparse Activity</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/</guid>
-    <description><![CDATA[ 2. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:53:49 GMT</pubDate>
+    <title>Physics for EE</title>
+    <link>https://localhost:8081/physics-for-ee/</link>
+    <guid>https://localhost:8081/physics-for-ee/</guid>
+    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 602 graph links. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2.1 Spikes, Sparsity, and Event-Driven Computation</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.1-Spikes,-Sparsity,-and-Event-Driven-Computation</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.1-Spikes,-Sparsity,-and-Event-Driven-Computation</guid>
-    <description><![CDATA[ Spikes, Sparsity, and Event-Driven Computation Once neural communication is understood as information passing from one neuron to another, a practical question appears: when should a neuron send a message? Imagine a sensor watching a quiet doorway. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:53:49 GMT</pubDate>
+    <title>Public garden</title>
+    <link>https://localhost:8081/public-library/</link>
+    <guid>https://localhost:8081/public-library/</guid>
+    <description><![CDATA[ Shared gardens ranked by popularity. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2.2 Spike Timing and Temporal Information</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.2-Spike-Timing-and-Temporal-Information</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.2-Spike-Timing-and-Temporal-Information</guid>
-    <description><![CDATA[ Spike Timing and Temporal Information A discrete spike event marks that a neuron became active at a particular moment, and asynchronous processing allows that event to move through a network when it occurs. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:53:49 GMT</pubDate>
+    <title>Math 2</title>
+    <link>https://localhost:8081/math-2/</link>
+    <guid>https://localhost:8081/math-2/</guid>
+    <description><![CDATA[ Learning garden with 24 source documents, 0 lesson pages, and 93 graph links. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2.3 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.3-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A stream of spike events becomes useful only when a neuron can combine those events into a decision. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:53:49 GMT</pubDate>
+    <title>Signals and systems</title>
+    <link>https://localhost:8081/signals-and-systems/</link>
+    <guid>https://localhost:8081/signals-and-systems/</guid>
+    <description><![CDATA[ Learning garden with 2 source documents, 0 lesson pages, and 821 graph links. ]]></description>
+    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2.4 Encoding Inputs as Spike Trains</title>
-    <link>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.4-Encoding-Inputs-as-Spike-Trains</link>
-    <guid>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.4-Encoding-Inputs-as-Spike-Trains</guid>
-    <description><![CDATA[ Encoding Inputs as Spike Trains A spike train already gives us a way to describe activity across simulation timesteps: a neuron either emits a spike at a particular time or remains silent. ]]></description>
-    <pubDate>Tue, 14 Jul 2026 16:53:49 GMT</pubDate>
+    <title>Sources</title>
+    <link>https://localhost:8081/communication-1/sources/</link>
+    <guid>https://localhost:8081/communication-1/sources/</guid>
+    <description><![CDATA[ Sources Week 1 Lecture 1 Transcript Week 1 Lecture 1 Transcript - part2 Week 1 Lecture 2 Communications 1 Course Reader - Sampling, PAM, PCM, and Noise Digital and analog communication systems Communications 1 (5ETC0) Topic Map . ]]></description>
+    <pubDate>Fri, 03 Jul 2026 21:00:00 GMT</pubDate>
   </item>
     </channel>
   </rss>

@@ -981,7 +981,7 @@
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/</loc>
-    <lastmod>2026-07-13T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-14T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/canvas-quizzes/hard-questions-1781680403859</loc>
     <lastmod>2026-06-17T07:13:23.859Z</lastmod>
@@ -1356,7 +1356,7 @@
     <lastmod>2026-07-04T18:43:51.403Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/sources/</loc>
-    <lastmod>2026-07-13T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-14T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/10-2-10-3-motivation-baseband-and-bandpass-signals-and-up-down-conversion-1781956960173</loc>
     <lastmod>2026-06-20T12:02:40.173Z</lastmod>
@@ -1369,100 +1369,4 @@
   </url><url>
     <loc>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/</loc>
     <lastmod>2026-06-24T08:48:30.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/</loc>
-    <lastmod>2026-07-14T16:54:26.382Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/Learning-Map</loc>
-    <lastmod>2026-07-14T16:54:26.389Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/Topic-Overview</loc>
-    <lastmod>2026-07-14T16:54:26.386Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.1-Spikes,-Sparsity,-and-Event-Driven-Computation</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.2-Spike-Timing-and-Temporal-Information</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.3-The-Leaky-Integrate-and-Fire-Neuron</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.4-Encoding-Inputs-as-Spike-Trains</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/2.-From-Discrete-Spike-Events-to-Sparse-Activity/2.5-Excitatory-Processing-and-Winner-Take-All-Competition</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-How-Differentiable-Approximation-Is-Applied/</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-How-Differentiable-Approximation-Is-Applied/3.1-Surrogate-Gradient-Training</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-How-Differentiable-Approximation-Is-Applied/3.2-Converting-an-ANN-into-an-SNN</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Measuring-Correct-prediction-Ratio/</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/3.-How-Differentiable-Approximation-Is-Applied/3.3-Spike-Timing-Dependent-Plasticity</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Measuring-Correct-prediction-Ratio/4.1-Classification-Accuracy</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Measuring-Correct-prediction-Ratio/4.2-Inference-Latency</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Measuring-Correct-prediction-Ratio/4.3-Spike-Count-and-Estimated-Energy-Consumption</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/4.-Measuring-Correct-prediction-Ratio/4.4-Energy-Efficiency-and-Convergence-Time</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/5.1-Three-Strategies-for-Training-Spiking-Neural-Networks</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/5.2-Accuracy-and-Energy-Across-Neural-Models</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/6.-What-the-Results-Show/</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/5.3-Latency-Across-ANN-and-SNN-Approaches</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/6.-What-the-Results-Show/6.1-Energy-Use-and-Spike-Activity-Across-Models</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/6.-What-the-Results-Show/6.2-Training-Loss-and-Convergence-Behavior</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/6.-What-the-Results-Show/6.3-Learning-Curves-and-Reported-Training-Outcomes</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/7.-Using-Constraint-driven-Model-Selection-in-Practice/</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/7.-Using-Constraint-driven-Model-Selection-in-Practice/7.1-Choosing-an-SNN-Training-Strategy</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/7.-Using-Constraint-driven-Model-Selection-in-Practice/7.2-SNN-Applications-and-Neuromorphic-Deployment</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test-2/learning/7.-Using-Constraint-driven-Model-Selection-in-Practice/7.3-Hardware-Standardization-and-Scalable-Training</loc>
-    <lastmod>2026-07-14T16:53:49.302Z</lastmod>
   </url></urlset>
