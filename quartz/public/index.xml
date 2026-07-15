@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order From Spiking Neural Network to Brain-inspired Computation 1.1 Why Spiking Neural Networks Exist 1.2 Spikes, Timing, and Event-Driven Computation 1.3 The Leaky Integrate-and-Fire Neuron 1.4 From Input Signals to Network Spikes 1.5 Excitation, Inhibition, and Winner-Take-All... ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:54:25 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist How Spike Event Works 2.1 Spikes, Timing, and Event-Driven Computation 2.2 Membrane-Potential Integration and Leakage 2.3 Threshold Crossing, Spike Emission, and Reset 2.4 Encoding Inputs as Spike Tr... ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:50 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks process information through discrete events called spikes. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:54:25 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks A spiking neural network, or SNN, processes information through discrete events called spikes. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:50 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Learners will explain how spike-based computation works, trace leaky integrate-and-fire dynamics through a competitive network, compare three SNN training paradigms, calculate six evaluation metrics, interpret the reported accuracy-energy-latency-convergence tradeoffs, and se... ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:54:25 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spiking neural networks represent and process temporally structured events, trace Leaky Integrate-and-Fire and competitive network dynamics, distinguish three training paradigms, calculate and interpret the source-defined evaluation metric... ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:50 GMT</pubDate>
+  </item><item>
+    <title>5.4 Training Loss, Accuracy, and Convergence</title>
+    <link>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/5.4-Training-Loss,-Accuracy,-and-Convergence</link>
+    <guid>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/5.4-Training-Loss,-Accuracy,-and-Convergence</guid>
+    <description><![CDATA[ Training Loss, Accuracy, and Convergence The three training paradigms-ANN-to-SNN conversion, surrogate-gradient training, and STDP-based learning-produce spiking networks through different learning processes. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+  </item><item>
+    <title>5. Comparing and Interpreting the Results</title>
+    <link>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/</link>
+    <guid>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/</guid>
+    <description><![CDATA[ 5. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+  </item><item>
+    <title>1. Why Spiking Neural Networks Matters</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
+    <description><![CDATA[ 1. Why Spiking Neural Networks Matters This teaching step is conceptually distinct and could not be merged without blurring two different ideas. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a camera watching a quiet hallway. For several seconds, almost every part of the scene stays the same. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
+    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small sensor watching a doorway for movement. For long stretches, the scene remains almost unchanged. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
   </item><item>
-    <title>1.2 Spikes, Timing, and Event-Driven Computation</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.2-Spikes,-Timing,-and-Event-Driven-Computation</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.2-Spikes,-Timing,-and-Event-Driven-Computation</guid>
-    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation With the basic structure of a spiking neural network in place, imagine its input changing over a short interval. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
+    <title>2. How Spike Event Works</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</guid>
+    <description><![CDATA[ 2. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
   </item><item>
-    <title>1.3 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.3-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.3-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A spike event gives a spiking neural network a precisely timed signal, but a neuron still needs a rule for deciding when to produce that event. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
+    <title>2.1 Spikes, Timing, and Event-Driven Computation</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Event-Driven-Computation</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Event-Driven-Computation</guid>
+    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation A spiking neural network still transforms inputs into useful outputs, as earlier neural networks did with continuous-valued activations. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
   </item><item>
-    <title>1.4 From Input Signals to Network Spikes</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.4-From-Input-Signals-to-Network-Spikes</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.4-From-Input-Signals-to-Network-Spikes</guid>
-    <description><![CDATA[ From Input Signals to Network Spikes A spike train gives a spiking neuron a sequence of events to process, and a leaky integrate-and-fire neuron turns those arriving events into its own outgoing spikes. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
-  </item><item>
-    <title>1.5 Excitation, Inhibition, and Winner-Take-All Competition</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.5-Excitation,-Inhibition,-and-Winner-Take-All-Competition</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/1.5-Excitation,-Inhibition,-and-Winner-Take-All-Competition</guid>
-    <description><![CDATA[ Excitation, Inhibition, and Winner-Take-All Competition Once an input has been encoded as spikes and those spikes have begun propagating through a network, several neurons may receive evidence at nearly the same time. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
-  </item><item>
-    <title>1. From Spiking Neural Network to Brain-inspired Computation</title>
-    <link>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-From-Spiking-Neural-Network-to-Brain-inspired-Computation/</guid>
-    <description><![CDATA[ 1. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
-  </item><item>
-    <title>3.1 Classification Accuracy</title>
-    <link>https://localhost:8081/test-2/learning/3.-How-Performance-Is-Evaluated/3.1-Classification-Accuracy</link>
-    <guid>https://localhost:8081/test-2/learning/3.-How-Performance-Is-Evaluated/3.1-Classification-Accuracy</guid>
-    <description><![CDATA[ Classification Accuracy Once a spiking neural network has produced a predicted class label, evaluation begins by comparing that prediction with the target class label-the correct answer attached to the input. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 07:53:48 GMT</pubDate>
+    <title>2.2 Membrane-Potential Integration and Leakage</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Membrane-Potential-Integration-and-Leakage</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Membrane-Potential-Integration-and-Leakage</guid>
+    <description><![CDATA[ Membrane-Potential Integration and Leakage A spike event occurs at a particular time when a neuron reaches its firing threshold. ]]></description>
+    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
   </item>
     </channel>
   </rss>

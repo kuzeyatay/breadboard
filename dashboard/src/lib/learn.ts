@@ -33,9 +33,9 @@ import {
   buildFormulaAssignmentPlan,
   deriveUnitFormulaRequirement,
   finalizeFormulaAssignmentPlanWithoutCritic,
+  formulaCandidatesForUnit,
   formulaAssignmentProvenanceFromPlan,
   resolveFormulaAssignmentAmbiguities,
-  validateFormulaAssignment,
   type FormulaAssignmentPlan,
   type FormulaAssignmentProvenance,
   type FormulaAssignmentRepairDecision,
@@ -157,6 +157,8 @@ import {
   type LearnTokenUsageEvent,
 } from "@/lib/learn-token-usage";
 import { transitionLearnTimer } from "@/lib/learn-timer";
+import { learnBuildStateMode } from "@/lib/garden-build/mode";
+import { runCanonicalGardenShadowBuild } from "@/lib/garden-build/shadow";
 
 export type {
   LearnStatus,
@@ -2822,7 +2824,16 @@ function sourceFormulaFiguresForSubsection(
   context: LearnSourceContext,
   subsection: LearningSubsectionPlan,
 ): SourceFigure[] {
-  const existing = sourceFormulaFigures(context);
+  // A page may only claim source-formula anchors selected for its own stable
+  // learning unit. Supplying every extracted equation here allowed a helper
+  // expression (for example spike count inside an energy derivation) to be
+  // grounded to another unit's formula and then rejected by the pre-write
+  // family guard. Pages without a formula contract get no source-formula
+  // candidates; their math remains honestly conceptual unless reconciled later.
+  const existing = formulaCandidatesForUnit(
+    sourceFormulaFigures(context),
+    subsection.sourceFormulaContracts ?? [],
+  );
   const byId = new Map(existing.map((figure) => [figure.figureId, figure]));
   for (const formula of subsection.sourceFormulaContracts ?? []) {
     if (!formula.id || byId.has(formula.id)) continue;
@@ -5312,7 +5323,7 @@ export async function runTextbookGeneration({
           metricFormulaAnchorIds.length > 0
             ? [
                 ...sourceFigures,
-                ...sourceFormulaFigures(context).filter(
+                ...sourceFormulaFiguresForSubsection(context, subsection).filter(
                   (formula) => !sourceFigures.some((figure) => figure.figureId === formula.figureId),
                 ),
               ]
@@ -6020,6 +6031,49 @@ export async function runTextbookGeneration({
         jobId: job.id,
         reason: selfHealError instanceof Error ? selfHealError.message : String(selfHealError),
       });
+    }
+
+    // Canonical build-state migration is opt-in and diagnostic. Both `shadow`
+    // and the reserved `canonical` value keep the legacy pipeline authoritative
+    // in this phase: canonical state is imported, repaired in memory, rendered
+    // outside the live garden, and parity diagnostics are written under
+    // .breadboard/canonical-shadow. It never publishes or changes learner files.
+    const buildStateMode = learnBuildStateMode();
+    if (buildStateMode !== "legacy") {
+      try {
+        const shadow = await runCanonicalGardenShadowBuild(clusterDir, gardenId, {
+          enableModelRepairs: false,
+          writeDiagnostics: true,
+        });
+        appendLearnEvent(contentPath, gardenId, "learn_canonical_shadow_completed", {
+          jobId: job.id,
+          textbookVersionId,
+          requestedMode: buildStateMode,
+          buildId: shadow.repairedState.buildId,
+          importedIssueCount: shadow.importIssues.length,
+          typedAtSourceIssueCount: shadow.issueMetrics.typedAtSource,
+          legacyAdapterIssueCount: shadow.issueMetrics.producedByLegacyAdapter,
+          canonicalBlockerCount: shadow.finalIssues.filter((issue) => issue.severity === "blocking").length,
+          canonicalWarningCount: shadow.finalIssues.filter((issue) => issue.severity !== "blocking").length,
+          transactionCount: shadow.transactions.length,
+          canonicalDeterministicRepairs: shadow.deterministicRepairCount,
+          canonicalVerifiedModelRepairs: shadow.verifiedModelRepairCount,
+          projectionIssueCount: shadow.projection?.issues.length ?? 0,
+          semanticParityDifferenceCount: shadow.parity.semanticParityDifferenceCount,
+          unexpectedRegressionCount: shadow.parity.unexpectedRegressionCount,
+          acceptanceDisagreement: shadow.parity.acceptanceDisagreement,
+          acceptedSnapshotCreated: Boolean(shadow.snapshot),
+          stoppedReason: shadow.stoppedReason,
+        });
+      } catch (shadowError) {
+        appendLearnEvent(contentPath, gardenId, "learn_canonical_shadow_failed", {
+          jobId: job.id,
+          textbookVersionId,
+          requestedMode: buildStateMode,
+          diagnosticOnly: true,
+          reason: shadowError instanceof Error ? shadowError.message : String(shadowError),
+        });
+      }
     }
 
     const MAX_FINALIZE_PASSES = 3;

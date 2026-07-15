@@ -1,13 +1,13 @@
 ---
 title: "Learning Map"
-date: "2026-07-15T07:54:25.440Z"
+date: "2026-07-15T14:41:50.758Z"
 knowledge_type: "learning-map"
 breadboardType: "learning_map"
 gardenId: "test-2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mrlsa79t_o4mh57x"
-learningVersionId: "learning_mrlsa79t_o4mh57x"
+learningVersion: "learning_mrm6u500_spktt4x"
+learningVersionId: "learning_mrm6u500_spktt4x"
 sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5"
 ---
 
@@ -15,78 +15,76 @@ sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5
 
 ## Section Order
 
-- 1. From Spiking Neural Network to Brain-inspired Computation
-  - 1.1 [[learning/1. From Spiking Neural Network to Brain-inspired Computation/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
-  - 1.2 [[learning/1. From Spiking Neural Network to Brain-inspired Computation/1.2 Spikes, Timing, and Event-Driven Computation|Spikes, Timing, and Event-Driven Computation]]
-  - 1.3 [[learning/1. From Spiking Neural Network to Brain-inspired Computation/1.3 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]]
-  - 1.4 [[learning/1. From Spiking Neural Network to Brain-inspired Computation/1.4 From Input Signals to Network Spikes|From Input Signals to Network Spikes]]
-  - 1.5 [[learning/1. From Spiking Neural Network to Brain-inspired Computation/1.5 Excitation, Inhibition, and Winner-Take-All Competition|Excitation, Inhibition, and Winner-Take-All Competition]]
-- 2. How Non-differentiable Spike Event Is Applied
-  - 2.1 [[learning/2. How Non-differentiable Spike Event Is Applied/2.1 Why Spikes Complicate Gradient-Based Learning|Why Spikes Complicate Gradient-Based Learning]]
-  - 2.2 [[learning/2. How Non-differentiable Spike Event Is Applied/2.2 Direct Training with Surrogate Gradients|Direct Training with Surrogate Gradients]]
-  - 2.3 [[learning/2. How Non-differentiable Spike Event Is Applied/2.3 Converting a Trained ANN into an SNN|Converting a Trained ANN into an SNN]]
-  - 2.4 [[learning/2. How Non-differentiable Spike Event Is Applied/2.4 Learning with Spike-Timing Dependent Plasticity|Learning with Spike-Timing Dependent Plasticity]]
-- 3. How Performance Is Evaluated
-  - 3.1 [[learning/3. How Performance Is Evaluated/3.1 Classification Accuracy|Classification Accuracy]]
-  - 3.2 [[learning/3. How Performance Is Evaluated/3.2 Decision Latency|Decision Latency]]
-  - 3.3 [[learning/3. How Performance Is Evaluated/3.3 Total Spike Count|Total Spike Count]]
+- 1. Why Spiking Neural Networks Matters
+  - 1.1 [[learning/1. Why Spiking Neural Networks Matters/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
+- 2. How Spike Event Works
+  - 2.1 [[learning/2. How Spike Event Works/2.1 Spikes, Timing, and Event-Driven Computation|Spikes, Timing, and Event-Driven Computation]]
+  - 2.2 [[learning/2. How Spike Event Works/2.2 Membrane-Potential Integration and Leakage|Membrane-Potential Integration and Leakage]]
+  - 2.3 [[learning/2. How Spike Event Works/2.3 Threshold Crossing, Spike Emission, and Reset|Threshold Crossing, Spike Emission, and Reset]]
+  - 2.4 [[learning/2. How Spike Event Works/2.4 Encoding Inputs as Spike Trains|Encoding Inputs as Spike Trains]]
+  - 2.5 [[learning/2. How Spike Event Works/2.5 Excitation, Inhibition, and Winner-Take-All Competition|Excitation, Inhibition, and Winner-Take-All Competition]]
+- 3. Measuring Spike-timing-dependent Plasticity
+  - 3.1 [[learning/3. How Total Spike Count Is Applied/3.1 Spike Count and Estimated Energy|Spike Count and Estimated Energy]]
+  - 3.2 [[learning/3. How Total Spike Count Is Applied/3.2 Why Spikes Complicate Gradient-Based Training|Why Spikes Complicate Gradient-Based Training]]
+  - 3.3 [[learning/3. How Total Spike Count Is Applied/3.3 Surrogate-Gradient Training|Surrogate-Gradient Training]]
+  - 3.4 [[learning/3. How Total Spike Count Is Applied/3.4 ANN-to-SNN Conversion|ANN-to-SNN Conversion]]
+  - 3.5 [[learning/3. How Total Spike Count Is Applied/3.5 Spike-Timing-Dependent Plasticity|Spike-Timing-Dependent Plasticity]]
 - 4. Measuring Spike-event Cost
-  - 4.1 [[learning/4. Measuring Spike-event Cost/4.1 Energy per Inference|Energy per Inference]]
-  - 4.2 [[learning/4. Measuring Spike-event Cost/4.2 Normalized Energy Efficiency|Normalized Energy Efficiency]]
-  - 4.3 [[learning/4. Measuring Spike-event Cost/4.3 Convergence Time|Convergence Time]]
+  - 4.1 [[learning/4. Measuring Classification Accuracy/4.1 Classification Accuracy|Classification Accuracy]]
+  - 4.2 [[learning/4. Measuring Classification Accuracy/4.2 Decision Latency|Decision Latency]]
+  - 4.3 [[learning/4. Measuring Classification Accuracy/4.3 Normalized Energy Efficiency|Normalized Energy Efficiency]]
+  - 4.4 [[learning/4. Measuring Classification Accuracy/4.4 Convergence Time|Convergence Time]]
 - 5. Comparing and Interpreting the Results
-  - 5.1 [[learning/5. Comparing and Interpreting the Results/5.1 Accuracy and Energy Across Training Paradigms|Accuracy and Energy Across Training Paradigms]]
-  - 5.2 [[learning/5. Comparing and Interpreting the Results/5.2 Inference Latency Across Model Types|Inference Latency Across Model Types]]
-  - 5.3 [[learning/5. Comparing and Interpreting the Results/5.3 Energy Consumption and Spike Activity|Energy Consumption and Spike Activity]]
+  - 5.1 [[learning/5. Comparing and Interpreting the Results/5.1 Accuracy and Energy Across Training Strategies|Accuracy and Energy Across Training Strategies]]
+  - 5.2 [[learning/5. Comparing and Interpreting the Results/5.2 Latency Across ANN and SNN Models|Latency Across ANN and SNN Models]]
+  - 5.3 [[learning/5. Comparing and Interpreting the Results/5.3 Energy and Spike Count Across SNN Models|Energy and Spike Count Across SNN Models]]
   - 5.4 [[learning/5. Comparing and Interpreting the Results/5.4 Training Loss, Accuracy, and Convergence|Training Loss, Accuracy, and Convergence]]
-  - 5.5 [[learning/5. Comparing and Interpreting the Results/5.5 The Accuracy-Latency-Energy Tradeoff|The Accuracy-Latency-Energy Tradeoff]]
+  - 5.5 [[learning/5. Comparing and Interpreting the Results/5.5 Accuracy, Latency, Energy, and Spike Count|Accuracy, Latency, Energy, and Spike Count]]
 - 6. Using Neuromorphic Hardware in Practice
-  - 6.1 [[learning/6. Using Neuromorphic Hardware in Practice/6.1 Neuromorphic Hardware and Event-Driven Deployment|Neuromorphic Hardware and Event-Driven Deployment]]
-  - 6.2 [[learning/6. Using Neuromorphic Hardware in Practice/6.2 Applications for Sparse Temporal Computation|Applications for Sparse Temporal Computation]]
-  - 6.3 [[learning/6. Using Neuromorphic Hardware in Practice/6.3 Choosing an SNN Training Strategy|Choosing an SNN Training Strategy]]
-  - 6.4 [[learning/6. Using Neuromorphic Hardware in Practice/6.4 Limits to Broad SNN Adoption|Limits to Broad SNN Adoption]]
+  - 6.1 [[learning/6. Using Neuromorphic Computing in Practice/6.1 Neuromorphic Computing and Deployment Domains|Neuromorphic Computing and Deployment Domains]]
+  - 6.2 [[learning/6. Using Neuromorphic Computing in Practice/6.2 Choosing an SNN Training Strategy|Choosing an SNN Training Strategy]]
+  - 6.3 [[learning/6. Using Neuromorphic Computing in Practice/6.3 Scalable Training and Hardware Standardization|Scalable Training and Hardware Standardization]]
 
 ## Prerequisite Chain
 
-- Start here -> From Spiking Neural Network to Brain-inspired Computation
-- From Spiking Neural Network to Brain-inspired Computation -> How Non-differentiable Spike Event Is Applied
-- How Non-differentiable Spike Event Is Applied -> How Performance Is Evaluated
-- How Performance Is Evaluated -> Measuring Spike-event Cost
+- Start here -> Why Spiking Neural Networks Matters
+- Why Spiking Neural Networks Matters -> How Spike Event Works
+- How Spike Event Works -> Measuring Spike-timing-dependent Plasticity
+- Measuring Spike-timing-dependent Plasticity -> Measuring Spike-event Cost
 - Measuring Spike-event Cost -> Comparing and Interpreting the Results
 - Comparing and Interpreting the Results -> Using Neuromorphic Hardware in Practice
 
 ## Trunk, Branch, Leaf Concepts
 
-- Trunk: From Spiking Neural Network to Brain-inspired Computation
+- Trunk: Why Spiking Neural Networks Matters
   - Branch/leaf: Why Spiking Neural Networks Exist
+- Trunk: How Spike Event Works
   - Branch/leaf: Spikes, Timing, and Event-Driven Computation
-  - Branch/leaf: The Leaky Integrate-and-Fire Neuron
-  - Branch/leaf: From Input Signals to Network Spikes
+  - Branch/leaf: Membrane-Potential Integration and Leakage
+  - Branch/leaf: Threshold Crossing, Spike Emission, and Reset
+  - Branch/leaf: Encoding Inputs as Spike Trains
   - Branch/leaf: Excitation, Inhibition, and Winner-Take-All Competition
-- Trunk: How Non-differentiable Spike Event Is Applied
-  - Branch/leaf: Why Spikes Complicate Gradient-Based Learning
-  - Branch/leaf: Direct Training with Surrogate Gradients
-  - Branch/leaf: Converting a Trained ANN into an SNN
-  - Branch/leaf: Learning with Spike-Timing Dependent Plasticity
-- Trunk: How Performance Is Evaluated
+- Trunk: Measuring Spike-timing-dependent Plasticity
+  - Branch/leaf: Spike Count and Estimated Energy
+  - Branch/leaf: Why Spikes Complicate Gradient-Based Training
+  - Branch/leaf: Surrogate-Gradient Training
+  - Branch/leaf: ANN-to-SNN Conversion
+  - Branch/leaf: Spike-Timing-Dependent Plasticity
+- Trunk: Measuring Spike-event Cost
   - Branch/leaf: Classification Accuracy
   - Branch/leaf: Decision Latency
-  - Branch/leaf: Total Spike Count
-- Trunk: Measuring Spike-event Cost
-  - Branch/leaf: Energy per Inference
   - Branch/leaf: Normalized Energy Efficiency
   - Branch/leaf: Convergence Time
 - Trunk: Comparing and Interpreting the Results
-  - Branch/leaf: Accuracy and Energy Across Training Paradigms
-  - Branch/leaf: Inference Latency Across Model Types
-  - Branch/leaf: Energy Consumption and Spike Activity
+  - Branch/leaf: Accuracy and Energy Across Training Strategies
+  - Branch/leaf: Latency Across ANN and SNN Models
+  - Branch/leaf: Energy and Spike Count Across SNN Models
   - Branch/leaf: Training Loss, Accuracy, and Convergence
-  - Branch/leaf: The Accuracy-Latency-Energy Tradeoff
+  - Branch/leaf: Accuracy, Latency, Energy, and Spike Count
 - Trunk: Using Neuromorphic Hardware in Practice
-  - Branch/leaf: Neuromorphic Hardware and Event-Driven Deployment
-  - Branch/leaf: Applications for Sparse Temporal Computation
+  - Branch/leaf: Neuromorphic Computing and Deployment Domains
   - Branch/leaf: Choosing an SNN Training Strategy
-  - Branch/leaf: Limits to Broad SNN Adoption
+  - Branch/leaf: Scalable Training and Hardware Standardization
 
 ## Bridge Concepts
 
@@ -94,7 +92,8 @@ sourceSetHash: "da4e4aa8c56753a3b736ce67191e566a20546815fb4beba56b78a636c1861ef5
 
 ## Warnings
 
-- The supplied source map is compacted and omits some underlying numeric table and graph values. Final prose must recover exact values from the identified anchors before making numerical comparisons.
-- The mapped PDF is the exclusive substantive authority for this garden; broader neuroscience, implementation details, additional neuron models, encoding schemes, hardware platforms, datasets, and benchmark claims must not be introduced without additional sources.
-- The page 4 LIF graph and architecture diagram, all six page 6 equations, and every page 7 through page 11 result table or graph are assigned exactly where they should be interpreted inline.
-- Interactive visuals are limited to concepts where manipulation adds instructional value beyond the static artifacts; they must be regenerated from the cited anchors without inventing unsupported empirical values.
+- The supplied source map is compacted and provides artifact-level anchors plus the source title rather than complete paragraph-level anchors for every conceptual claim; conceptual units therefore use the source title where no more precise anchor was supplied.
+- All 17 supplied source artifacts are assigned exactly once for primary inline teaching: S1.P4.G1 in U3, S1.P4.F1 in U6, S1.P6.E1-E6 in U11-U15, S1.P7.T1 and S1.P7.G1 in U16, S1.P8.T1 and S1.P8.G1 in U17, S1.P9.T1 and S1.P9.G1 in U18, and S1.P10.G1, S1.P10.T1, and S1.P11.G1 in U19.
+- Reported values such as approximately epoch 20, latency as low as 10 milliseconds, accuracy within 1-2% of ANN performance, and energy as low as 5 millijoules per inference must retain their original experimental and dataset context in later prose.
+- The contract must not be expanded into unsupported neuron models, encoding algorithms, surrogate functions, implementation details, hyperparameters, or cross-source benchmark claims.
+- Interactive visuals are regeneration plans grounded in supplied concepts and artifacts; they must not introduce numerical defaults or mechanisms absent from the source.
