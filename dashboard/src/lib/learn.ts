@@ -19,7 +19,15 @@ import {
   type RepairExecutorMode,
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
-import { describeMissingAnchorFailure, healDanglingReplacementReferences, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
+import { buildCanonicalSourceAnchors, describeMissingAnchorFailure, healDanglingReplacementReferences, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
+import {
+  assertFormulaAssignmentCompatible,
+  buildFormulaIdentityRegistry,
+  legacyFormulaFamily,
+  type CanonicalFormulaIdentity,
+  type FormulaIdentityRepairDecision,
+  type FormulaIdentityRepairPacket,
+} from "@/lib/formula-identity";
 import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import {
   decideFinalAcceptance,
@@ -1940,6 +1948,33 @@ function writeLearningUnitContractArtifacts({
   });
   const unitsBeforeRegistryAlignment = reconciledUnits;
   reconciledUnits = alignLearningUnitConceptAliasesWithRegistry(reconciledUnits, registry);
+  // Formula identities are source-derived and outrank model-authored contract
+  // coverage. When the extraction ledger is already available, reject an
+  // incompatible active formula assignment and remove only incompatible broad
+  // formula evidence before either can propagate into a learner page.
+  const formulaIdentities = buildFormulaIdentityRegistry(buildCanonicalSourceAnchors(clusterDir), clusterDir);
+  const identityById = new Map(formulaIdentities.map((identity) => [identity.anchorId, identity]));
+  reconciledUnits = reconciledUnits.map((unit) => {
+    for (const formula of unit.sourceFormulas) {
+      const identity = identityById.get(formula.id);
+      if (!identity) continue; // Source extraction may still be pending; page generation has the strict guard.
+      assertFormulaAssignmentCompatible(identity, unit);
+    }
+    const formalIds = new Set(unit.sourceFormulas.map((formula) => formula.id));
+    return {
+      ...unit,
+      sourceAnchors: unit.sourceAnchors.filter((anchorId) => {
+        const identity = identityById.get(anchorId);
+        if (!identity || formalIds.has(anchorId)) return true;
+        try {
+          assertFormulaAssignmentCompatible(identity, unit);
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    };
+  });
   const registryAlignmentRepairs = registryAlignmentAliasRepairs(
     unitsBeforeRegistryAlignment,
     reconciledUnits,
@@ -2093,6 +2128,7 @@ export async function runLearnPlanning({
   contentPath,
   sourceOnly = true,
   includeSourceSnapshots = false,
+  resetSourceMap = false,
 }: {
   gardenId: string;
   userId?: number;
@@ -2101,14 +2137,31 @@ export async function runLearnPlanning({
   contentPath: string;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
+  resetSourceMap?: boolean;
 }): Promise<{ job: LearnJob; learningMap: StoredLearningMap }> {
+  if (resetSourceMap) {
+    const previousJob = getLatestLearnJob(gardenId);
+    if (previousJob?.status === "failed") {
+      rollbackLearnRun({ gardenId, contentPath, jobId: previousJob.id });
+    }
+  }
   const job = createLearnJob({
     gardenId,
     userId,
-    mode: "plan",
+    mode: resetSourceMap ? "regenerate" : "plan",
     sourceOnly,
     includeSourceSnapshots,
   });
+  createLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+  if (resetSourceMap) {
+    const reset = clearSourceMapForRegeneration({ gardenId, contentPath });
+    appendLearnEvent(contentPath, gardenId, "learn_regeneration_source_map_cleared", {
+      jobId: job.id,
+      removedPathCount: reset.removedPaths.length,
+      deletedMaps: reset.deletedMaps,
+      deletedVersions: reset.deletedVersions,
+    });
+  }
   attachLearnTokenUsageTracking(client, (event) => {
     recordLearnTokenUsageEvent(job.id, event);
   });
@@ -2501,7 +2554,7 @@ export async function runLearnPlanning({
       // The Stop button already flipped the job to cancelled; remove anything
       // planning managed to write before the cancellation checkpoint fired.
       try {
-        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath });
+        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath, jobId: job.id });
       } catch {
         // Cleanup is best-effort during unwind; the cancel endpoint reports its
         // own cleanup errors when the user presses Stop.
@@ -2681,6 +2734,7 @@ function sourceFormulaFiguresForSubsection(
 function ensureContractFormulaGrounding(
   entries: FormulaGroundingEntry[],
   subsection: LearningSubsectionPlan,
+  identityById: Map<string, CanonicalFormulaIdentity> = new Map(),
 ): FormulaGroundingEntry[] {
   const anchors = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id).filter(Boolean);
   if (anchors.length === 0) return entries;
@@ -2692,7 +2746,7 @@ function ensureContractFormulaGrounding(
   const next = [...entries];
   for (const formula of subsection.sourceFormulaContracts ?? []) {
     if (!formula.id || grounded.has(formula.id)) continue;
-    const synthesized = synthesizedFormulaForContract(formula);
+    const synthesized = synthesizedFormulaForContract(formula, identityById.get(formula.id));
     if (!synthesized || !isGroundableFormula(synthesized.text)) continue;
     next.push({
       kind: "source_derived_definition",
@@ -2701,6 +2755,9 @@ function ensureContractFormulaGrounding(
       groundingStatus: "source-derived",
       sourceAnchor: formula.id,
       sourceAnchorTitle: formula.teachingGoal || formula.id,
+      formulaFamily: identityById.get(formula.id)?.verified
+        ? legacyFormulaFamily(identityById.get(formula.id)!.family)
+        : undefined,
       matchReason: synthesized.reason,
       confidence: 0.8,
       justification: `Required by the Learning Unit Contract source formula anchor ${formula.id}; ${synthesized.reason}.`,
@@ -2712,43 +2769,48 @@ function ensureContractFormulaGrounding(
 
 function synthesizedFormulaForContract(
   formula: SourceFormulaContract,
+  identity?: CanonicalFormulaIdentity,
 ): { text: string; reason: string } | null {
-  const id = formula.id.trim();
-  const text = [id, formula.teachingGoal, ...(formula.termsToDefine ?? [])]
+  if (identity?.verified && identity.canonicalText) {
+    return {
+      text: identity.canonicalText,
+      reason: `the verified canonical ${identity.family} equation was recovered from source evidence`,
+    };
+  }
+  const text = [formula.teachingGoal, ...(formula.termsToDefine ?? [])]
     .join(" ")
     .toLowerCase();
-  const byId = (suffix: string) => new RegExp(`\\.${suffix}$`, "i").test(id);
-  if (byId("E1") || /\baccuracy|correct prediction|classification/i.test(text)) {
+  if (/\baccuracy|correct prediction|classification/i.test(text)) {
     return {
       text: "\\text{Accuracy} = \\frac{N_{\\text{correct}}}{N_{\\text{total}}}",
       reason: "the anchor describes accuracy as correct predictions over total predictions",
     };
   }
-  if (byId("E2") || /\blatency|decision time|response time/i.test(text)) {
+  if (/\blatency|decision time|response time/i.test(text)) {
     return {
       text: "T_{\\text{latency}} = t_{\\text{decision}} - t_{\\text{stimulus}}",
       reason: "the anchor describes latency as time to decision",
     };
   }
-  if (byId("E3") || /\bspike count|total spike|number of spikes|spikes summed/i.test(text)) {
+  if (/\bspike count|total spike|number of spikes|spikes summed/i.test(text)) {
     return {
       text: "N_{\\text{spike count}} = \\sum_{n,t} s_n(t)",
       reason: "the anchor describes total spike count summed across neurons and time",
     };
   }
-  if (byId("E5") || /\befficiency|normalized energy|accuracy per energy/i.test(text)) {
+  if (/\befficiency|normalized energy|accuracy per energy/i.test(text)) {
     return {
       text: "\\eta_{\\text{efficiency}} = \\frac{\\text{Accuracy}}{E_{\\text{energy}}}",
       reason: "the anchor describes normalized efficiency as accuracy per energy",
     };
   }
-  if (byId("E4") || /\benergy|synaptic operation|synop|joule/i.test(text)) {
+  if (/\benergy|synaptic operation|synop|joule/i.test(text)) {
     return {
       text: "E_{\\text{energy}} = N_{\\text{spikes}}E_{\\text{spike}} + N_{\\text{synops}}E_{\\text{synop}}",
       reason: "the anchor describes total energy from spike and synaptic operation costs",
     };
   }
-  if (byId("E6") || /\bconvergence|epoch|target accuracy|learning curve/i.test(text)) {
+  if (/\bconvergence|epoch|target accuracy|learning curve/i.test(text)) {
     return {
       text: "T_{\\text{convergence}} = \\min\\{e : A(e) \\geq A_{\\text{target}}\\}",
       reason: "the anchor describes convergence as the first epoch that reaches a target accuracy",
@@ -3214,152 +3276,355 @@ interface LearnCleanupResult {
   deletedVersions: number;
 }
 
+interface LearnRunSnapshotManifest {
+  schemaVersion: 1;
+  gardenId: string;
+  jobId: string;
+  createdAt: string;
+  inheritedFromJobId?: string;
+  capturedPaths?: string[];
+  backupEntries?: string[];
+  learnMaps?: LearnMapRow[];
+  learnVersions?: LearnVersionRow[];
+}
+
+const LEARN_RUN_SNAPSHOT_ROOT = ".breadboard/learn-run-snapshots";
+const LEARN_RUN_ROLLBACK_PATHS = [
+  "_index.md",
+  "sources/_index.md",
+  LEARNING_ROOT,
+  "Learning",
+  "assets/source-visuals",
+  ".breadboard/Internal",
+  ".breadboard/debug/failed-pages",
+  ".breadboard/debug/failed-repairs",
+  ".breadboard/planning",
+  ".breadboard/source-snapshots",
+  ".breadboard/visuals",
+  ".breadboard/learning-unit-contract.json",
+  ".breadboard/concept-registry.json",
+  ".breadboard/claims.json",
+  ".breadboard/claims-history.json",
+  ".breadboard/concept-registry-history.json",
+  ".breadboard/semantic-migration.json",
+  ".breadboard/source-visuals.json",
+  ".breadboard/visual-index.json",
+  ".breadboard/source-anchors.json",
+  ".breadboard/repair-log.json",
+  ".breadboard/repair-report.md",
+  ".breadboard/validation-report.md",
+  ".breadboard/weak-anchor-self-healing.json",
+  ".breadboard/weak-anchor-self-healing.md",
+  ".breadboard/source-anchor-evidence.json",
+  ".breadboard/source-anchor-evidence.md",
+  ".breadboard/source-anchor-migration.json",
+  ".breadboard/source-anchor-migration.md",
+  ".breadboard/anchor-replacement-plan.json",
+  ".breadboard/anchor-replacement-plan.md",
+  ".breadboard/critic-issues.json",
+  ".breadboard/critic-loop.json",
+  ".breadboard/critic-report.md",
+  ".breadboard/anchor-critic-decisions.json",
+] as const;
+
 function normalizeRelPath(value: string): string {
   return value.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
-function learnGeneratedMarkdown(content: string): boolean {
-  return (
-    /^generatedBy:\s*["']?learn_button["']?\s*$/im.test(content) ||
-    /^generated_by:\s*["']?learn_button["']?\s*$/im.test(content) ||
-    /^learningVersion(?:Id)?:\s*.+$/im.test(content) ||
-    /^breadboardType:\s*["']?learning_/im.test(content)
+function clusterRelativePath(clusterDir: string, relPath: string): string {
+  const normalized = normalizeRelPath(relPath);
+  const result = path.join(clusterDir, ...normalized.split("/"));
+  assertInsideCluster(clusterDir, result);
+  return result;
+}
+
+function learnRunSnapshotDir(clusterDir: string, jobId: string): string {
+  return clusterRelativePath(clusterDir, `${LEARN_RUN_SNAPSHOT_ROOT}/${jobId}`);
+}
+
+function readLearnRunSnapshot(clusterDir: string, jobId: string): LearnRunSnapshotManifest | null {
+  const manifestPath = path.join(learnRunSnapshotDir(clusterDir, jobId), "manifest.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as LearnRunSnapshotManifest;
+    return parsed.schemaVersion === 1 && parsed.jobId === jobId ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveLearnRunSnapshot(
+  clusterDir: string,
+  jobId: string,
+): { jobId: string; manifest: LearnRunSnapshotManifest } | null {
+  const visited = new Set<string>();
+  let currentJobId = jobId;
+  while (!visited.has(currentJobId)) {
+    visited.add(currentJobId);
+    const manifest = readLearnRunSnapshot(clusterDir, currentJobId);
+    if (!manifest) return null;
+    if (!manifest.inheritedFromJobId) return { jobId: currentJobId, manifest };
+    currentJobId = manifest.inheritedFromJobId;
+  }
+  return null;
+}
+
+function copySnapshotPath(source: string, destination: string): void {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.cpSync(source, destination, { recursive: true, force: true });
+}
+
+function learnRollbackMarkdownPaths(clusterDir: string): string[] {
+  const results: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      const relPath = normalizeRelPath(path.relative(clusterDir, absolute));
+      if (
+        entry.isDirectory() &&
+        (relPath === ".breadboard/backups" ||
+          relPath.startsWith(".breadboard/backups/") ||
+          relPath === LEARN_RUN_SNAPSHOT_ROOT ||
+          relPath.startsWith(`${LEARN_RUN_SNAPSHOT_ROOT}/`))
+      ) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        visit(absolute);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+        const coveredByManagedRoot = LEARN_RUN_ROLLBACK_PATHS.some(
+          (managed) => relPath === managed || relPath.startsWith(`${managed}/`),
+        );
+        if (!coveredByManagedRoot) results.push(relPath);
+      }
+    }
+  };
+  visit(clusterDir);
+  return results.sort();
+}
+
+function createLearnRunSnapshot({
+  gardenId,
+  contentPath,
+  jobId,
+  inheritFromJobId,
+}: {
+  gardenId: string;
+  contentPath: string;
+  jobId: string;
+  inheritFromJobId?: string;
+}): void {
+  ensureLearnTables();
+  const clusterDir = clusterPath(contentPath, gardenId);
+  fs.mkdirSync(clusterDir, { recursive: true });
+  const snapshotDir = learnRunSnapshotDir(clusterDir, jobId);
+  fs.rmSync(snapshotDir, { recursive: true, force: true });
+  fs.mkdirSync(snapshotDir, { recursive: true });
+
+  const inherited = inheritFromJobId
+    ? resolveLearnRunSnapshot(clusterDir, inheritFromJobId)
+    : null;
+  if (inherited) {
+    const manifest: LearnRunSnapshotManifest = {
+      schemaVersion: 1,
+      gardenId,
+      jobId,
+      createdAt: nowIso(),
+      inheritedFromJobId: inherited.jobId,
+    };
+    fs.writeFileSync(
+      path.join(snapshotDir, "manifest.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      "utf-8",
+    );
+    return;
+  }
+
+  const snapshotCandidates = [
+    ...LEARN_RUN_ROLLBACK_PATHS,
+    ...learnRollbackMarkdownPaths(clusterDir),
+  ];
+  const capturedPaths = Array.from(new Set(snapshotCandidates)).filter((relPath) => {
+    const source = clusterRelativePath(clusterDir, relPath);
+    if (!fs.existsSync(source)) return false;
+    copySnapshotPath(source, path.join(snapshotDir, "files", ...relPath.split("/")));
+    return true;
+  });
+  const backupsRoot = clusterRelativePath(clusterDir, ".breadboard/backups");
+  const backupEntries = fs.existsSync(backupsRoot)
+    ? fs.readdirSync(backupsRoot).sort()
+    : [];
+  const manifest: LearnRunSnapshotManifest = {
+    schemaVersion: 1,
+    gardenId,
+    jobId,
+    createdAt: nowIso(),
+    capturedPaths,
+    backupEntries,
+    learnMaps: db
+      .prepare("SELECT * FROM learn_maps WHERE garden_id = ? ORDER BY created_at ASC")
+      .all(gardenId) as LearnMapRow[],
+    learnVersions: db
+      .prepare("SELECT * FROM learn_versions WHERE garden_id = ? ORDER BY created_at ASC")
+      .all(gardenId) as LearnVersionRow[],
+  };
+  fs.writeFileSync(
+    path.join(snapshotDir, "manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf-8",
   );
 }
 
 function removeClusterPath(clusterDir: string, relPath: string, removedPaths: string[]): void {
-  const normalized = normalizeRelPath(relPath);
-  if (!normalized) return;
-  const target = path.join(clusterDir, ...normalized.split("/"));
-  assertInsideCluster(clusterDir, target);
+  const target = clusterRelativePath(clusterDir, relPath);
   if (!fs.existsSync(target)) return;
   fs.rmSync(target, { recursive: true, force: true });
-  removedPaths.push(normalized);
+  removedPaths.push(normalizeRelPath(relPath));
 }
 
-function removeEmptyParents(clusterDir: string, startDir: string): void {
-  let current = path.resolve(startDir);
-  const root = path.resolve(clusterDir);
-  while (current.startsWith(root + path.sep) && current !== root) {
-    try {
-      if (fs.readdirSync(current).length > 0) return;
-      fs.rmdirSync(current);
-    } catch {
-      return;
+function restoreLearnDatabaseSnapshot(
+  gardenId: string,
+  manifest: LearnRunSnapshotManifest,
+): { deletedMaps: number; deletedVersions: number } {
+  const baselineMaps = manifest.learnMaps ?? [];
+  const baselineVersions = manifest.learnVersions ?? [];
+  const baselineMapIds = new Set(baselineMaps.map((row) => row.id));
+  const baselineVersionIds = new Set(baselineVersions.map((row) => row.id));
+  const currentMaps = db
+    .prepare("SELECT id FROM learn_maps WHERE garden_id = ?")
+    .all(gardenId) as Array<{ id: string }>;
+  const currentVersions = db
+    .prepare("SELECT id FROM learn_versions WHERE garden_id = ?")
+    .all(gardenId) as Array<{ id: string }>;
+
+  db.transaction(() => {
+    db.prepare("DELETE FROM learn_versions WHERE garden_id = ?").run(gardenId);
+    db.prepare("DELETE FROM learn_maps WHERE garden_id = ?").run(gardenId);
+    const insertMap = db.prepare(
+      `INSERT INTO learn_maps (
+        id, garden_id, job_id, status, source_map_json, scope_contract_json,
+        learning_map_json, proposed_order_json, visual_opportunities_json,
+        coverage_plan_json, source_set_hash, created_at, confirmed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of baselineMaps) {
+      insertMap.run(
+        row.id,
+        row.garden_id,
+        row.job_id,
+        row.status,
+        row.source_map_json,
+        row.scope_contract_json,
+        row.learning_map_json,
+        row.proposed_order_json,
+        row.visual_opportunities_json,
+        row.coverage_plan_json,
+        row.source_set_hash,
+        row.created_at,
+        row.confirmed_at,
+      );
     }
-    current = path.dirname(current);
+    const insertVersion = db.prepare(
+      `INSERT INTO learn_versions (
+        id, garden_id, job_id, learning_map_id, source_set_hash, page_count,
+        backup_dir, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of baselineVersions) {
+      insertVersion.run(
+        row.id,
+        row.garden_id,
+        row.job_id,
+        row.learning_map_id,
+        row.source_set_hash,
+        row.page_count,
+        row.backup_dir,
+        row.created_at,
+      );
+    }
+  })();
+
+  return {
+    deletedMaps: currentMaps.filter((row) => !baselineMapIds.has(row.id)).length,
+    deletedVersions: currentVersions.filter((row) => !baselineVersionIds.has(row.id)).length,
+  };
+}
+
+function discardLearnRunSnapshot({
+  gardenId,
+  contentPath,
+  jobId,
+}: {
+  gardenId: string;
+  contentPath: string;
+  jobId: string;
+}): void {
+  const clusterDir = clusterPath(contentPath, gardenId);
+  const resolved = resolveLearnRunSnapshot(clusterDir, jobId);
+  fs.rmSync(learnRunSnapshotDir(clusterDir, jobId), { recursive: true, force: true });
+  if (resolved && resolved.jobId !== jobId) {
+    fs.rmSync(learnRunSnapshotDir(clusterDir, resolved.jobId), {
+      recursive: true,
+      force: true,
+    });
   }
 }
 
-function walkFiles(root: string): string[] {
-  const files: string[] = [];
-  if (!fs.existsSync(root)) return files;
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    const fullPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...walkFiles(fullPath));
-    } else if (entry.isFile()) {
-      files.push(fullPath);
-    }
-  }
-  return files;
-}
-
-function restoreNonLearnBackups(clusterDir: string, restoredPaths: string[]): void {
-  const backupsRoot = path.join(clusterDir, ".breadboard", "backups");
-  if (!fs.existsSync(backupsRoot)) return;
-  const versionDirs = fs
-    .readdirSync(backupsRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && /^learning/i.test(entry.name))
-    .map((entry) => path.join(backupsRoot, entry.name))
-    .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
-
-  const restoreByRelPath = new Map<string, string>();
-  for (const versionDir of versionDirs) {
-    for (const filePath of walkFiles(versionDir).filter((file) => file.toLowerCase().endsWith(".md"))) {
-      const raw = fs.readFileSync(filePath, "utf-8");
-      if (learnGeneratedMarkdown(raw)) continue;
-      const relPath = normalizeRelPath(path.relative(versionDir, filePath));
-      restoreByRelPath.set(relPath, filePath);
-    }
+function rollbackLearnRun({
+  gardenId,
+  contentPath,
+  jobId,
+}: {
+  gardenId: string;
+  contentPath: string;
+  jobId: string;
+}): LearnCleanupResult {
+  ensureLearnTables();
+  const clusterDir = clusterPath(contentPath, gardenId);
+  const resolved = resolveLearnRunSnapshot(clusterDir, jobId);
+  if (!resolved || resolved.manifest.gardenId !== gardenId) {
+    return {
+      removedPaths: [],
+      restoredPaths: [],
+      prunedVisualIds: [],
+      deletedMaps: 0,
+      deletedVersions: 0,
+    };
   }
 
-  for (const [relPath, backupPath] of restoreByRelPath) {
-    const target = path.join(clusterDir, ...relPath.split("/"));
-    assertInsideCluster(clusterDir, target);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.copyFileSync(backupPath, target);
+  const removedPaths: string[] = [];
+  const restoredPaths: string[] = [];
+  for (const relPath of LEARN_RUN_ROLLBACK_PATHS) {
+    removeClusterPath(clusterDir, relPath, removedPaths);
+  }
+  const snapshotDir = learnRunSnapshotDir(clusterDir, resolved.jobId);
+  for (const relPath of resolved.manifest.capturedPaths ?? []) {
+    const source = path.join(snapshotDir, "files", ...relPath.split("/"));
+    if (!fs.existsSync(source)) continue;
+    copySnapshotPath(source, clusterRelativePath(clusterDir, relPath));
     restoredPaths.push(relPath);
   }
-}
 
-function removeLearnGeneratedMarkdown(clusterDir: string, removedPaths: string[]): void {
-  for (const filePath of walkFiles(clusterDir).filter((file) => file.toLowerCase().endsWith(".md"))) {
-    const relPath = normalizeRelPath(path.relative(clusterDir, filePath));
-    if (relPath.startsWith(".breadboard/")) continue;
-    if (relPath.startsWith("sources/")) continue;
-    let raw = "";
-    try {
-      raw = fs.readFileSync(filePath, "utf-8");
-    } catch {
-      continue;
+  const baselineBackupEntries = new Set(resolved.manifest.backupEntries ?? []);
+  const backupsRoot = clusterRelativePath(clusterDir, ".breadboard/backups");
+  if (fs.existsSync(backupsRoot)) {
+    for (const entry of fs.readdirSync(backupsRoot)) {
+      if (!baselineBackupEntries.has(entry)) {
+        removeClusterPath(clusterDir, `.breadboard/backups/${entry}`, removedPaths);
+      }
     }
-    if (!learnGeneratedMarkdown(raw)) continue;
-    fs.rmSync(filePath, { force: true });
-    removedPaths.push(relPath);
-    removeEmptyParents(clusterDir, path.dirname(filePath));
-  }
-}
-
-function cleanupLearnVisualArtifacts(clusterDir: string, removedPaths: string[]): string[] {
-  const bbDir = path.join(clusterDir, ".breadboard");
-  const indexPath = path.join(bbDir, "visual-index.json");
-  let index: Record<string, Record<string, unknown>> = {};
-  try {
-    index = JSON.parse(fs.readFileSync(indexPath, "utf-8")) as Record<string, Record<string, unknown>>;
-  } catch {
-    index = {};
   }
 
-  const isLearnPage = (value: unknown): boolean => {
-    if (typeof value !== "string") return false;
-    const normalized = normalizeRelPath(value).replace(/\.md$/i, "").toLowerCase();
-    return normalized === LEARNING_ROOT || normalized.startsWith(`${LEARNING_ROOT}/`) || normalized.startsWith("learning/");
+  const database = restoreLearnDatabaseSnapshot(gardenId, resolved.manifest);
+  discardLearnRunSnapshot({ gardenId, contentPath, jobId });
+  return {
+    removedPaths: Array.from(new Set(removedPaths)),
+    restoredPaths: Array.from(new Set(restoredPaths)),
+    prunedVisualIds: [],
+    ...database,
   };
-
-  const prunedVisualIds: string[] = [];
-  const nextIndex: Record<string, Record<string, unknown>> = {};
-  for (const [id, entry] of Object.entries(index)) {
-    if (isLearnPage(entry.pageSlug) || isLearnPage(entry.pageId) || isLearnPage(entry.pagePath)) {
-      prunedVisualIds.push(id);
-    } else {
-      nextIndex[id] = entry;
-    }
-  }
-
-  const visualsDir = path.join(bbDir, "visuals");
-  for (const visualId of prunedVisualIds) {
-    removeClusterPath(clusterDir, `.breadboard/visuals/${visualId}.json`, removedPaths);
-  }
-  if (fs.existsSync(indexPath)) {
-    if (Object.keys(nextIndex).length > 0) {
-      fs.writeFileSync(indexPath, `${JSON.stringify(nextIndex, null, 2)}\n`, "utf-8");
-    } else {
-      removeClusterPath(clusterDir, ".breadboard/visual-index.json", removedPaths);
-    }
-  }
-  removeEmptyParents(clusterDir, visualsDir);
-  return prunedVisualIds;
 }
 
-function deleteLearnDatabaseState(gardenId: string): { deletedMaps: number; deletedVersions: number } {
-  ensureLearnTables();
-  const deletedVersions = db.prepare("DELETE FROM learn_versions WHERE garden_id = ?").run(gardenId).changes;
-  const deletedMaps = db.prepare("DELETE FROM learn_maps WHERE garden_id = ?").run(gardenId).changes;
-  return { deletedMaps, deletedVersions };
-}
-
-function cleanupLearnArtifacts({
+function clearSourceMapForRegeneration({
   gardenId,
   contentPath,
 }: {
@@ -3367,40 +3632,15 @@ function cleanupLearnArtifacts({
   contentPath: string;
 }): LearnCleanupResult {
   const clusterDir = clusterPath(contentPath, gardenId);
-  fs.mkdirSync(clusterDir, { recursive: true });
   const removedPaths: string[] = [];
-  const restoredPaths: string[] = [];
-
-  removeClusterPath(clusterDir, LEARNING_ROOT, removedPaths);
-  removeClusterPath(clusterDir, "Learning", removedPaths);
-  removeLearnGeneratedMarkdown(clusterDir, removedPaths);
-  const prunedVisualIds = cleanupLearnVisualArtifacts(clusterDir, removedPaths);
-
-  for (const relPath of [
-    ".breadboard/learning-unit-contract.json",
-    ".breadboard/planning",
-    ".breadboard/debug/failed-pages",
-    ".breadboard/source-visuals.json",
-    "assets/source-visuals",
-  ]) {
-    removeClusterPath(clusterDir, relPath, removedPaths);
-  }
-  restoreNonLearnBackups(clusterDir, restoredPaths);
-  const backupRoot = path.join(clusterDir, ".breadboard", "backups");
-  if (fs.existsSync(backupRoot)) {
-    for (const entry of fs.readdirSync(backupRoot, { withFileTypes: true })) {
-      if (entry.isDirectory() && /^learning/i.test(entry.name)) {
-        removeClusterPath(clusterDir, `.breadboard/backups/${entry.name}`, removedPaths);
-      }
-    }
-    removeEmptyParents(clusterDir, backupRoot);
-  }
-
-  const { deletedMaps, deletedVersions } = deleteLearnDatabaseState(gardenId);
+  removeClusterPath(clusterDir, ".breadboard/planning", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/learning-unit-contract.json", removedPaths);
+  const deletedVersions = db.prepare("DELETE FROM learn_versions WHERE garden_id = ?").run(gardenId).changes;
+  const deletedMaps = db.prepare("DELETE FROM learn_maps WHERE garden_id = ?").run(gardenId).changes;
   return {
-    removedPaths: Array.from(new Set(removedPaths)),
-    restoredPaths: Array.from(new Set(restoredPaths)),
-    prunedVisualIds,
+    removedPaths,
+    restoredPaths: [],
+    prunedVisualIds: [],
     deletedMaps,
     deletedVersions,
   };
@@ -3409,12 +3649,13 @@ function cleanupLearnArtifacts({
 async function cleanupLearnArtifactsAfterCancel({
   gardenId,
   contentPath,
+  jobId,
 }: {
   gardenId: string;
   contentPath: string;
+  jobId: string;
 }): Promise<LearnCleanupResult> {
-  const result = cleanupLearnArtifacts({ gardenId, contentPath });
-  refreshClusterIndex(contentPath, gardenId);
+  const result = rollbackLearnRun({ gardenId, contentPath, jobId });
   await publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`);
   return result;
 }
@@ -4568,6 +4809,12 @@ export async function runTextbookGeneration({
     sourceOnly,
     includeSourceSnapshots,
   });
+  createLearnRunSnapshot({
+    gardenId,
+    contentPath,
+    jobId: job.id,
+    inheritFromJobId: map.jobId,
+  });
   attachLearnTokenUsageTracking(client, (event) => {
     recordLearnTokenUsageEvent(job.id, event);
   });
@@ -4649,6 +4896,24 @@ export async function runTextbookGeneration({
       context,
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
+    // Source extraction is now complete, so every formula that can reach a
+    // learner page must have a verified identity and must match its contract
+    // unit. This is the strict pre-write gate; unresolved identities stop the
+    // run before page frontmatter is created.
+    const sourceFormulaIdentities = buildFormulaIdentityRegistry(
+      buildCanonicalSourceAnchors(clusterDir),
+      clusterDir,
+    );
+    const sourceFormulaIdentityById = new Map(
+      sourceFormulaIdentities.map((identity) => [identity.anchorId, identity]),
+    );
+    for (const unit of confirmedLearningUnits) {
+      for (const formula of unit.sourceFormulas) {
+        const identity = sourceFormulaIdentityById.get(formula.id);
+        if (!identity) throw new Error(`Formula pre-write guard: ${formula.id} has no canonical source record.`);
+        assertFormulaAssignmentCompatible(identity, unit);
+      }
+    }
     throwIfLearnCancelled(job.id);
     updateLearnJob(job.id, {
       status: "generating_learning_pages",
@@ -4831,6 +5096,14 @@ export async function runTextbookGeneration({
           sourceArtifactAssignments: confirmedSourceArtifactAssignments,
         });
         const metricFormulaAnchorIds = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id);
+        const formulaUnit = confirmedLearningUnits.find((unit) => unit.id === subsection.learningUnitId);
+        for (const anchorId of metricFormulaAnchorIds) {
+          const identity = sourceFormulaIdentityById.get(anchorId);
+          if (!identity || !formulaUnit) {
+            throw new Error(`Formula pre-write guard: ${anchorId} cannot be resolved to a verified unit assignment.`);
+          }
+          assertFormulaAssignmentCompatible(identity, formulaUnit);
+        }
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
         const interactiveSourceFigures =
           metricFormulaAnchorIds.length > 0
@@ -5135,7 +5408,22 @@ export async function runTextbookGeneration({
         const formulas = ensureContractFormulaGrounding(
           formulaGroundingEntries(pageMathExpressions, sourceFormulaFiguresForSubsection(context, subsection)),
           subsection,
+          sourceFormulaIdentityById,
         );
+        for (const formula of formulas) {
+          if (!formula.sourceAnchor) continue;
+          const identity = sourceFormulaIdentityById.get(formula.sourceAnchor);
+          if (!identity || !formulaUnit) {
+            throw new Error(`Formula page pre-write guard: ${formula.sourceAnchor} has no verified unit identity.`);
+          }
+          assertFormulaAssignmentCompatible(identity, formulaUnit);
+          const entryFamily = formulaMetricFamily(formula.text);
+          if (entryFamily && entryFamily !== legacyFormulaFamily(identity.family)) {
+            throw new Error(
+              `Formula page pre-write guard: ${formula.sourceAnchor} is ${identity.family}, but learner formula was classified as ${entryFamily}.`,
+            );
+          }
+        }
         const finalContent =
           buildLearningPageFrontmatter({
             gardenId,
@@ -5377,10 +5665,47 @@ export async function runTextbookGeneration({
             };
           }
         : undefined;
+      const formulaIdentityRepairModel = criticEnabled
+        ? async (packet: FormulaIdentityRepairPacket): Promise<FormulaIdentityRepairDecision | null> => {
+            const system =
+              "Resolve ONE canonical formula identity/assignment conflict. Return STRICT JSON: " +
+              "{\"issueId\":string,\"action\":string,\"verifiedFamily\"?:string,\"replacementAnchorId\"?:string," +
+              "\"confidence\":\"high\"|\"medium\"|\"low\",\"justification\":string}. " +
+              "Use only allowedActions and assignmentCandidates in the packet. Never invent formula text, anchor IDs, source pages, " +
+              "or select by page title alone. Exact symbolic structure and source context outrank captions. " +
+              "Never force a wrong-family formula onto the page or alter unrelated formulas.";
+            const { parsed } = await callCouncilJson({
+              client,
+              model,
+              taskType: "critique",
+              gardenId,
+              system,
+              user: JSON.stringify(packet),
+              sourceContext: packet,
+              councilModeOverride: "direct_council",
+              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+            });
+            if (!parsed || typeof parsed !== "object") return null;
+            const record = parsed as Record<string, unknown>;
+            const action = String(record.action ?? "") as FormulaIdentityRepairDecision["action"];
+            const confidence = String(record.confidence ?? "") as FormulaIdentityRepairDecision["confidence"];
+            if (!packet.allowedActions.includes(action) || !["high", "medium", "low"].includes(confidence)) return null;
+            return {
+              issueId: String(record.issueId ?? ""),
+              action,
+              verifiedFamily: typeof record.verifiedFamily === "string"
+                ? record.verifiedFamily as FormulaIdentityRepairDecision["verifiedFamily"] : undefined,
+              replacementAnchorId: typeof record.replacementAnchorId === "string" ? record.replacementAnchorId : undefined,
+              confidence,
+              justification: typeof record.justification === "string" ? record.justification : "",
+            };
+          }
+        : undefined;
       const formulaReconciliation = await reconcileFinalFormulaProjections(clusterDir, gardenId, {
         maxChatMockCalls: 2,
         strictMode: false,
         formulaRepairModel,
+        formulaIdentityRepairModel,
       });
       appendLearnEvent(contentPath, gardenId, "learn_formula_projection_reconciliation_completed", {
         jobId: job.id,
@@ -5388,6 +5713,12 @@ export async function runTextbookGeneration({
         contractAssignmentsChecked: formulaReconciliation.contractAssignmentsChecked,
         compatibleMissingAssignmentsRepaired: formulaReconciliation.definitionsAdded + formulaReconciliation.definitionsLinked,
         incompatibleAssignmentsFound: formulaReconciliation.incompatibleAssignmentsFound,
+        formulaIdentitiesVerified: formulaReconciliation.formulaIdentitiesVerified,
+        registryFamilyCorrections: formulaReconciliation.registryFamilyCorrections,
+        assignmentsReplaced: formulaReconciliation.assignmentsReplaced,
+        assignmentsMoved: formulaReconciliation.assignmentsMoved,
+        ambiguousAssignmentsSentToChatMock: formulaReconciliation.ambiguousAssignmentsSentToChatMock,
+        remainingFormulaFamilyMismatches: formulaReconciliation.remainingFormulaFamilyMismatches,
         definitionsAdded: formulaReconciliation.definitionsAdded,
         definitionsLinked: formulaReconciliation.definitionsLinked,
         orphanWorkedExamplesBefore: formulaReconciliation.orphanWorkedExamplesBefore,
@@ -5697,6 +6028,7 @@ export async function runTextbookGeneration({
       latestTextbookVersionId: textbookVersionId,
       sourceSetHash: context.sourceSetHash,
     });
+    discardLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
     return {
       job: finalJob,
       textbookVersionId,
@@ -5707,7 +6039,7 @@ export async function runTextbookGeneration({
       // The Stop button already flipped the job to cancelled; sweep any
       // partial Learn output that was written before the checkpoint fired.
       try {
-        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath });
+        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath, jobId: job.id });
       } catch {
         // Cleanup is best-effort during unwind; the cancel endpoint reports its
         // own cleanup errors when the user presses Stop.
@@ -5804,28 +6136,29 @@ export async function cancelLatestLearnJob({
   contentPath: string;
 }): Promise<LearnJob | null> {
   const latest = getLatestLearnJob(gardenId);
-  const next = latest
-    ? updateLearnJob(latest.id, {
-        status: "cancelled",
-        currentStep: "Cancelled and cleaned",
-        progressPercent: 0,
-        currentSectionTitle: undefined,
-        currentPageTitle: undefined,
-        proposedLearningMapId: undefined,
-        confirmedLearningMapId: undefined,
-        latestTextbookVersionId: undefined,
-      })
-    : null;
-  const cleanup = await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath });
-  if (latest) {
-    appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
-      jobId: latest.id,
-      removedPathCount: cleanup.removedPaths.length,
-      restoredPathCount: cleanup.restoredPaths.length,
-      deletedMaps: cleanup.deletedMaps,
-      deletedVersions: cleanup.deletedVersions,
-    });
-  }
+  if (!latest) return null;
+  const next = updateLearnJob(latest.id, {
+    status: "cancelled",
+    currentStep: "Cancelled; latest Learn changes rolled back",
+    progressPercent: 0,
+    currentSectionTitle: undefined,
+    currentPageTitle: undefined,
+    proposedLearningMapId: undefined,
+    confirmedLearningMapId: undefined,
+    latestTextbookVersionId: undefined,
+  });
+  const cleanup = await cleanupLearnArtifactsAfterCancel({
+    gardenId,
+    contentPath,
+    jobId: latest.id,
+  });
+  appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
+    jobId: latest.id,
+    removedPathCount: cleanup.removedPaths.length,
+    restoredPathCount: cleanup.restoredPaths.length,
+    deletedMaps: cleanup.deletedMaps,
+    deletedVersions: cleanup.deletedVersions,
+  });
   return next;
 }
 

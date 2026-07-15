@@ -324,22 +324,40 @@ describe("learn route and council wiring", () => {
     assert.doesNotMatch(workspaceSource, /async function handleCancelLearn\(\) \{\s*if \(learnBusy\) return;/);
   });
 
-  test("cancelling Learn rolls back generated learning artifacts", () => {
+  test("cancelling Learn rolls back only the latest Learn workflow", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
     const cancelRouteSource = fs.readFileSync(
       path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "learn", "cancel", "route.ts"),
       "utf8",
     );
 
-    assert.match(learnSource, /cleanupLearnArtifactsAfterCancel/);
-    assert.match(learnSource, /removeClusterPath\(clusterDir, LEARNING_ROOT/);
-    assert.match(learnSource, /removeClusterPath\(clusterDir, "Learning"/);
-    assert.match(learnSource, /DELETE FROM learn_maps WHERE garden_id = \?/);
-    assert.match(learnSource, /DELETE FROM learn_versions WHERE garden_id = \?/);
-    assert.match(learnSource, /\.breadboard\/learning-unit-contract\.json/);
-    assert.match(learnSource, /\.breadboard\/planning/);
-    assert.match(learnSource, /assets\/source-visuals/);
+    assert.match(learnSource, /createLearnRunSnapshot/);
+    assert.match(learnSource, /inheritFromJobId: map\.jobId/);
+    assert.match(learnSource, /rollbackLearnRun\(\{ gardenId, contentPath, jobId/);
+    assert.match(learnSource, /learnMaps: db[\s\S]*?SELECT \* FROM learn_maps WHERE garden_id/);
+    assert.match(learnSource, /learnVersions: db[\s\S]*?SELECT \* FROM learn_versions WHERE garden_id/);
+    assert.match(learnSource, /restoreLearnDatabaseSnapshot/);
+    assert.match(learnSource, /baselineBackupEntries/);
+    assert.match(learnSource, /"_index\.md",[\s\S]*?"sources\/_index\.md"/);
+    assert.doesNotMatch(learnSource, /function deleteLearnDatabaseState/);
     assert.match(cancelRouteSource, /await cancelLatestLearnJob/);
+  });
+
+  test("regenerate clears the source map and always replans", () => {
+    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const regenerateRouteSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "learn", "regenerate", "route.ts"),
+      "utf8",
+    );
+
+    assert.match(learnSource, /function clearSourceMapForRegeneration/);
+    assert.match(learnSource, /removeClusterPath\(clusterDir, "\.breadboard\/planning"/);
+    assert.match(learnSource, /resetSourceMap \? "regenerate" : "plan"/);
+    assert.match(regenerateRouteSource, /runLearnPlanning/);
+    assert.match(regenerateRouteSource, /resetSourceMap: true/);
+    assert.match(regenerateRouteSource, /sourceMapReset: true/);
+    assert.doesNotMatch(regenerateRouteSource, /runTextbookGeneration/);
+    assert.doesNotMatch(regenerateRouteSource, /getLearnStatusSnapshot/);
   });
 });
 

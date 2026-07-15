@@ -99,6 +99,7 @@ function eventLine(event: GardenEvent): string {
   }
   const labels: Record<string, string> = {
     learn_planning_started: "Planning started",
+    learn_regeneration_source_map_cleared: "Previous source map cleared",
     learn_source_map_created: "Council finished the source map",
     learn_source_map_fallback: "Source map fell back to deterministic planning",
     learn_scope_contract_created: "Council finished the scope contract",

@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import {
-  getLearnStatusSnapshot,
-  runLearnPlanning,
-  runTextbookGeneration,
-} from "@/lib/learn";
+import { runLearnPlanning } from "@/lib/learn";
 import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
@@ -34,36 +30,17 @@ export async function POST(
         : DEFAULT_MODEL;
     const sourceOnly = body.sourceOnly !== false;
     const includeSourceSnapshots = body.includeSourceSnapshots === true;
-    const status = getLearnStatusSnapshot({
-      gardenId: cluster.slug,
-      contentPath,
-    });
-
-    if (!status.confirmedLearningMapId) {
-      const planning = await runLearnPlanning({
-        gardenId: cluster.slug,
-        userId,
-        client,
-        model,
-        contentPath,
-        sourceOnly,
-        includeSourceSnapshots,
-      });
-      return NextResponse.json({ success: true, planning });
-    }
-
-    const generation = await runTextbookGeneration({
+    const planning = await runLearnPlanning({
       gardenId: cluster.slug,
       userId,
       client,
       model,
       contentPath,
-      confirmedLearningMapId: status.confirmedLearningMapId,
-      mode: "regenerate",
       sourceOnly,
       includeSourceSnapshots,
+      resetSourceMap: true,
     });
-    return NextResponse.json({ success: true, generation });
+    return NextResponse.json({ success: true, planning, sourceMapReset: true });
   } catch (error) {
     return routeErrorResponse(error);
   }
