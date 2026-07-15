@@ -114,12 +114,46 @@ function buildAccuracyGarden(dir, { withStaleRepairLog = false } = {}) {
   const filler = "Accuracy summarizes how often a classifier is correct, comparing correct predictions to the total predictions made across the evaluation set. ".repeat(12);
   fs.writeFileSync(path.join(dir, "_index.md"), fm({ title: "test-2" }) + "# test-2\n");
   fs.writeFileSync(path.join(dir, "sources", "_index.md"), fm({ title: "Sources", breadboardType: "source_index" }) + "# Sources\n");
-  fs.writeFileSync(path.join(bb, "source-visuals.json"), JSON.stringify([{ sourceVisualId: "S1.P6.E1", type: "equation", caption: "Classification accuracy as correct predictions over total predictions" }], null, 2));
+  fs.writeFileSync(path.join(bb, "source-visuals.json"), JSON.stringify([{
+    sourceVisualId: "S1.P6.E1",
+    type: "equation",
+    caption: "Classification accuracy as correct predictions over total predictions",
+    exactText: "\\text{Accuracy}=\\frac{\\text{Correct Predictions}}{\\text{Total Predictions}}",
+  }], null, 2));
   fs.writeFileSync(path.join(bb, "visual-index.json"), "{}");
+  fs.writeFileSync(path.join(bb, "learning-unit-contract.json"), JSON.stringify({
+    learningUnits: [{
+      id: "U1",
+      title: "Classification Accuracy",
+      role: "metric",
+      learningQuestion: "How is classification accuracy computed?",
+      prerequisiteConcepts: [],
+      newConcepts: ["classification accuracy"],
+      sourceAnchors: ["S1.P6.E1"],
+      sourceFigures: [],
+      sourceFormulas: [{
+        id: "S1.P6.E1",
+        teachingGoal: "Define classification accuracy.",
+        termsToDefine: ["accuracy", "correct predictions", "total predictions"],
+        placement: "before_example",
+      }],
+      sourceTables: [],
+      zettelNotes: [],
+      mustNotRepeat: [],
+      expectedWordRange: [100, 500],
+    }],
+    sourceArtifactAssignments: [{
+      sourceArtifactId: "S1.P6.E1",
+      assignedLearningUnitId: "U1",
+      placement: "before_example",
+      reason: "fixture",
+      requiredInterpretation: "Define classification accuracy.",
+    }],
+  }, null, 2));
   const examples = ["84", "90", "75", "60", "99", "50"].map((n) => `For example, $\\frac{${n}}{100}=0.${n}=${n}\\%$ is one instance.`).join("\n\n");
   fs.writeFileSync(
     path.join(dir, "learning", sectionDir, "3.1 Classification Accuracy.md"),
-    fm({ title: "3.1 Classification Accuracy", knowledge_type: "learning-page", breadboardType: "learning_page", generatedBy: "learn_button", sourceFormulaAnchors: ["S1.P6.E1"] }) +
+    fm({ title: "3.1 Classification Accuracy", knowledge_type: "learning-page", breadboardType: "learning_page", generatedBy: "learn_button", learningUnitId: "U1", sourceAnchors: ["S1.P6.E1"], sourceFormulaAnchors: ["S1.P6.E1"] }) +
       `## Classification Accuracy\n\n${filler}\n\n$$\\text{Accuracy}=\\frac{\\text{Correct Predictions}}{\\text{Total Predictions}}$$\n\n${examples}\n`,
   );
   if (withStaleRepairLog) {
@@ -173,8 +207,7 @@ describe("Classification Accuracy regression (1 definition + 6 examples)", () =>
       buildAccuracyGarden(dir);
       const before = auditGardenForFinalization(dir, "test-2");
       const result = await runFinalSelfHealingLoop(dir, "test-2", { maxRounds: 3, maxChatMockCalls: 2, strictMode: true });
-      // This minimal fixture has no unit contract, so it never fully "passes";
-      // the point is that the FORMULA issues heal deterministically (no ChatMock).
+      // The formula issue must heal deterministically without spending ChatMock.
       const formulaLeft = result.unresolvedIssues.filter((i) => i.type === "formula_grounding" || i.type === "formula_metadata_noise");
       assert.deepEqual(formulaLeft, [], `formula issues resolved deterministically, got: ${formulaLeft.map((i) => i.message).join(" | ")}`);
       assert.equal(result.chatMockCallsUsed, 0, "resolved deterministically, no ChatMock");

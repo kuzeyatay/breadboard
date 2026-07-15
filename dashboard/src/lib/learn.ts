@@ -21,13 +21,27 @@ import {
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
 import { buildCanonicalSourceAnchors, describeMissingAnchorFailure, healDanglingReplacementReferences, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
 import {
-  assertFormulaAssignmentCompatible,
   buildFormulaIdentityRegistry,
   legacyFormulaFamily,
   type CanonicalFormulaIdentity,
   type FormulaIdentityRepairDecision,
   type FormulaIdentityRepairPacket,
 } from "@/lib/formula-identity";
+import {
+  applyFormulaAssignmentPlanToUnits,
+  assertPlannedFormulaAssignment,
+  buildFormulaAssignmentPlan,
+  deriveUnitFormulaRequirement,
+  finalizeFormulaAssignmentPlanWithoutCritic,
+  formulaAssignmentProvenanceFromPlan,
+  resolveFormulaAssignmentAmbiguities,
+  validateFormulaAssignment,
+  type FormulaAssignmentPlan,
+  type FormulaAssignmentProvenance,
+  type FormulaAssignmentRepairDecision,
+  type FormulaAssignmentRepairModel,
+  type FormulaAssignmentRepairPacket,
+} from "@/lib/formula-assignment";
 import { createChatMockAnchorCritic, createChatMockCritic, createChatMockModelRepair, makeCriticArtifactRepair, runCriticLoop } from "@/lib/critic-loop";
 import {
   decideFinalAcceptance,
@@ -1949,16 +1963,56 @@ function writeLearningUnitContractArtifacts({
   const unitsBeforeRegistryAlignment = reconciledUnits;
   reconciledUnits = alignLearningUnitConceptAliasesWithRegistry(reconciledUnits, registry);
   // Formula identities are source-derived and outrank model-authored contract
-  // coverage. When the extraction ledger is already available, reject an
-  // incompatible active formula assignment and remove only incompatible broad
-  // formula evidence before either can propagate into a learner page.
+  // coverage. When the extraction ledger is already available, the verified
+  // family-constrained planner rebuilds the formula assignments GLOBALLY:
+  // incompatible model proposals are rejected (never persisted), compatible
+  // formulas land on their strongest unambiguous unit, and leftovers stay
+  // unassigned with a reason. Anchors extraction has not seen yet pass
+  // through untouched; the post-extraction pass re-plans them strictly.
   const formulaIdentities = buildFormulaIdentityRegistry(buildCanonicalSourceAnchors(clusterDir), clusterDir);
   const identityById = new Map(formulaIdentities.map((identity) => [identity.anchorId, identity]));
+  let formulaAssignmentProvenance: FormulaAssignmentProvenance[] = [];
+  let formulaAssignmentPlan: FormulaAssignmentPlan | undefined;
+  if (formulaIdentities.length > 0) {
+    const knownAnchorIds = new Set(formulaIdentities.map((identity) => identity.anchorId));
+    const previousAssignments = reconciledUnits.flatMap((unit) =>
+      unit.sourceFormulas
+        .filter((formula) => knownAnchorIds.has(formula.id))
+        .map((formula) => ({ formulaAnchorId: formula.id, unitId: unit.id })));
+    formulaAssignmentPlan = finalizeFormulaAssignmentPlanWithoutCritic(
+      buildFormulaAssignmentPlan(formulaIdentities, reconciledUnits, { previousAssignments }),
+    );
+    const application = applyFormulaAssignmentPlanToUnits({
+      units: reconciledUnits,
+      plan: formulaAssignmentPlan,
+      formulas: formulaIdentities,
+      unknownAnchorPolicy: "preserve",
+    });
+    if (application.result.applied) {
+      reconciledUnits = application.units;
+      formulaAssignmentProvenance = formulaAssignmentProvenanceFromPlan(formulaAssignmentPlan, previousAssignments);
+    }
+    const planArtifactDir = path.join(clusterDir, ".breadboard");
+    fs.mkdirSync(planArtifactDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(planArtifactDir, "formula-assignment-plan.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        generatedAt: nowIso(),
+        plan: formulaAssignmentPlan,
+        provenance: formulaAssignmentProvenance,
+        application: application.result,
+      }, null, 2)}\n`,
+    );
+  }
+  // Unweakened backstop: no assignment survives this function unless the
+  // strict compatibility guard passes it. The planner above guarantees this;
+  // if it ever cannot (rolled back), generation fails here exactly as before.
   reconciledUnits = reconciledUnits.map((unit) => {
     for (const formula of unit.sourceFormulas) {
       const identity = identityById.get(formula.id);
       if (!identity) continue; // Source extraction may still be pending; page generation has the strict guard.
-      assertFormulaAssignmentCompatible(identity, unit);
+      assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit), unit);
     }
     const formalIds = new Set(unit.sourceFormulas.map((formula) => formula.id));
     return {
@@ -1967,7 +2021,7 @@ function writeLearningUnitContractArtifacts({
         const identity = identityById.get(anchorId);
         if (!identity || formalIds.has(anchorId)) return true;
         try {
-          assertFormulaAssignmentCompatible(identity, unit);
+          assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit), unit);
           return true;
         } catch {
           return false;
@@ -1989,6 +2043,7 @@ function writeLearningUnitContractArtifacts({
     learningUnits: reconciledUnits,
     sourceArtifactAssignments: assignments,
     ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
+    ...(formulaAssignmentProvenance.length ? { formulaAssignmentProvenance } : {}),
     ...(semanticAliasRepairs.length
       ? { semanticAliasRepairs }
       : {}),
@@ -2025,6 +2080,56 @@ function writeLearningUnitContractArtifacts({
     planningMarkdown: `${lines.join("\n")}\n`,
   });
   return { units: reconciledUnits, semanticAliasRepairs };
+}
+
+/**
+ * Record justified omissions on the source-visuals ledger. A formula the
+ * assignment plan deliberately left without a unit (duplicate, out of scope,
+ * no compatible unit) becomes "Intentionally Omitted" in Source Coverage with
+ * the plan's reason — never "missing". Formulas the plan assigned anywhere
+ * are cleared back to normal usage.
+ */
+function markIntentionallyOmittedFormulasInLedger(
+  clusterDir: string,
+  plan: FormulaAssignmentPlan,
+): void {
+  const ledgerAbs = path.join(clusterDir, ".breadboard", "source-visuals.json");
+  if (!fs.existsSync(ledgerAbs)) return;
+  let ledger: Array<Record<string, unknown>>;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ledgerAbs, "utf-8"));
+    if (!Array.isArray(parsed)) return;
+    ledger = parsed as Array<Record<string, unknown>>;
+  } catch {
+    return;
+  }
+  const assignedIds = new Set(
+    plan.assignments
+      .filter((assignment) => assignment.status === "assigned" || assignment.status === "reused_with_reason")
+      .map((assignment) => assignment.formulaAnchorId),
+  );
+  const omittedReasons = new Map<string, string>();
+  for (const assignment of plan.assignments) {
+    if (assignment.status !== "unassigned_with_reason") continue;
+    if (assignedIds.has(assignment.formulaAnchorId)) continue;
+    omittedReasons.set(assignment.formulaAnchorId, assignment.reason);
+  }
+  let changed = false;
+  for (const record of ledger) {
+    const id = String(record.sourceVisualId ?? "");
+    if (omittedReasons.has(id)) {
+      if (record.conceptUsage !== "intentionally_omitted" || record.skipReason !== omittedReasons.get(id)) {
+        record.conceptUsage = "intentionally_omitted";
+        record.skipReason = omittedReasons.get(id);
+        changed = true;
+      }
+    } else if (assignedIds.has(id) && record.conceptUsage === "intentionally_omitted") {
+      delete record.conceptUsage;
+      delete record.skipReason;
+      changed = true;
+    }
+  }
+  if (changed) fs.writeFileSync(ledgerAbs, `${JSON.stringify(ledger, null, 2)}\n`);
 }
 
 function learningUnitsFromCoveragePlan(plan: unknown): LearningUnitContract[] {
@@ -4848,6 +4953,117 @@ export async function runTextbookGeneration({
       latestTextbookVersionId: textbookVersionId,
       sourceSetHash: context.sourceSetHash,
     });
+    // Stage 2 FIRST (idempotent): the required production order is
+    // extract → verify formula identities → plan assignments → persist
+    // contract → write pages. Extraction therefore precedes the contract
+    // write, so every source formula has a canonical identity BEFORE any
+    // assignment is persisted.
+    const ledgerVisuals = await ensureSourceVisualsExtracted({
+      client,
+      model,
+      contentPath,
+      gardenId,
+      context,
+      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
+    });
+    const sourceFormulaIdentities = buildFormulaIdentityRegistry(
+      buildCanonicalSourceAnchors(clusterDir),
+      clusterDir,
+    );
+    const sourceFormulaIdentityById = new Map(
+      sourceFormulaIdentities.map((identity) => [identity.anchorId, identity]),
+    );
+    // Verified, family-constrained global assignment plan. Deterministic
+    // first; ONLY a genuine tie between compatible candidates goes to
+    // ChatMock, whose decision is independently re-verified against the
+    // compatibility matrix. An unavailable/refused critic leaves the unit
+    // source-formula-free — it never blocks generation and never lets an
+    // incompatible family through.
+    {
+      const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
+      const assignmentRepairModel: FormulaAssignmentRepairModel | undefined = criticEnabled
+        ? async (packet: FormulaAssignmentRepairPacket): Promise<FormulaAssignmentRepairDecision | null> => {
+            const system =
+              "Select the ONE source formula this learning unit should teach, or report that none fits. Return STRICT JSON: " +
+              "{\"action\":\"select_candidate\"|\"no_compatible_formula\",\"anchorId\"?:string,\"justification\":string,\"confidence\":\"high\"|\"medium\"|\"low\"}. " +
+              "You may ONLY pick an anchorId from candidates. rejectedCandidates are listed for context and are FORBIDDEN. " +
+              "Never invent an anchor or formula text, never change the unit's semantic family, and prefer no_compatible_formula over a doubtful pick.";
+            const { parsed } = await callCouncilJson({
+              client,
+              model,
+              taskType: "critique",
+              gardenId,
+              system,
+              user: JSON.stringify(packet),
+              sourceContext: packet,
+              councilModeOverride: "direct_council",
+              timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+            });
+            if (!parsed || typeof parsed !== "object") return null;
+            const record = parsed as Record<string, unknown>;
+            const action = String(record.action ?? "");
+            const confidence = ["high", "medium", "low"].includes(String(record.confidence ?? ""))
+              ? String(record.confidence) as "high" | "medium" | "low" : "low";
+            const justification = typeof record.justification === "string" ? record.justification : "";
+            if (action === "select_candidate" && typeof record.anchorId === "string") {
+              return { action, anchorId: record.anchorId, justification, confidence };
+            }
+            if (action === "no_compatible_formula") {
+              return { action, justification, confidence };
+            }
+            return null;
+          }
+        : undefined;
+      const previousAssignments = confirmedLearningUnits.flatMap((unit) =>
+        unit.sourceFormulas.map((formula) => ({ formulaAnchorId: formula.id, unitId: unit.id })));
+      const initialPlan = buildFormulaAssignmentPlan(sourceFormulaIdentities, confirmedLearningUnits, {
+        previousAssignments,
+      });
+      const ambiguityResolution = await resolveFormulaAssignmentAmbiguities({
+        plan: initialPlan,
+        formulas: sourceFormulaIdentities,
+        units: confirmedLearningUnits,
+        repairModel: assignmentRepairModel,
+        maxCalls: 3,
+      });
+      const assignmentPlan = ambiguityResolution.plan;
+      const planApplication = applyFormulaAssignmentPlanToUnits({
+        units: confirmedLearningUnits,
+        plan: assignmentPlan,
+        formulas: sourceFormulaIdentities,
+        unknownAnchorPolicy: "remove",
+      });
+      if (planApplication.result.applied) {
+        confirmedLearningUnits = planApplication.units;
+      }
+      // Formulas the plan intentionally left unassigned are recorded on the
+      // source-visuals ledger so Source Coverage reports them as justified
+      // omissions instead of missing material.
+      markIntentionallyOmittedFormulasInLedger(clusterDir, assignmentPlan);
+      appendLearnEvent(contentPath, gardenId, "learn_formula_assignment_planned", {
+        jobId: job.id,
+        textbookVersionId,
+        verifiedIdentities: sourceFormulaIdentities.filter((identity) => identity.verified).length,
+        totalIdentities: sourceFormulaIdentities.length,
+        compatibilityPairsEvaluated: sourceFormulaIdentities.length * confirmedLearningUnits.length,
+        assignments: assignmentPlan.assignments
+          .filter((assignment) => assignment.status === "assigned" || assignment.status === "reused_with_reason")
+          .map((assignment) => `${assignment.formulaAnchorId} -> ${assignment.unitId}`),
+        rejectedAssignments: assignmentPlan.rejectedAssignments,
+        formulasIntentionallyUnassigned: assignmentPlan.formulasWithoutCompatibleUnits,
+        unitsWithoutCompatibleFormula: assignmentPlan.unitsMissingRequiredFormulas,
+        ambiguitiesSentToChatMock: ambiguityResolution.packetsSent,
+        chatMockDecisionsApplied: ambiguityResolution.decisionsApplied,
+        planValid: assignmentPlan.valid,
+        planProblems: assignmentPlan.problems,
+        applied: planApplication.result.applied,
+        rolledBack: planApplication.result.rolledBack,
+        blockersBefore: planApplication.result.blockersBefore,
+        blockersAfter: planApplication.result.blockersAfter,
+      });
+    }
+    // Persist the planned contract; the deterministic planner inside the
+    // writer re-validates the (already valid) assignments idempotently.
     const contractWrite = writeLearningUnitContractArtifacts({
       clusterDir,
       units: confirmedLearningUnits,
@@ -4886,32 +5102,15 @@ export async function runTextbookGeneration({
         repairs: contractWrite.semanticAliasRepairs,
       });
     }
-    // Stage 2 (idempotent): sources uploaded after planning still get their
-    // visuals extracted before any page is written.
-    const ledgerVisuals = await ensureSourceVisualsExtracted({
-      client,
-      model,
-      contentPath,
-      gardenId,
-      context,
-      onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
-    });
-    // Source extraction is now complete, so every formula that can reach a
+    // Strict pre-write gate (unchanged): every formula that can reach a
     // learner page must have a verified identity and must match its contract
-    // unit. This is the strict pre-write gate; unresolved identities stop the
-    // run before page frontmatter is created.
-    const sourceFormulaIdentities = buildFormulaIdentityRegistry(
-      buildCanonicalSourceAnchors(clusterDir),
-      clusterDir,
-    );
-    const sourceFormulaIdentityById = new Map(
-      sourceFormulaIdentities.map((identity) => [identity.anchorId, identity]),
-    );
+    // unit. After the assignment plan this is a pure backstop; it stops the
+    // run before page frontmatter is created if anything slipped through.
     for (const unit of confirmedLearningUnits) {
       for (const formula of unit.sourceFormulas) {
         const identity = sourceFormulaIdentityById.get(formula.id);
         if (!identity) throw new Error(`Formula pre-write guard: ${formula.id} has no canonical source record.`);
-        assertFormulaAssignmentCompatible(identity, unit);
+        assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit), unit);
       }
     }
     throwIfLearnCancelled(job.id);
@@ -5097,12 +5296,16 @@ export async function runTextbookGeneration({
         });
         const metricFormulaAnchorIds = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id);
         const formulaUnit = confirmedLearningUnits.find((unit) => unit.id === subsection.learningUnitId);
+        const formulaUnitRequirement = formulaUnit ? deriveUnitFormulaRequirement(formulaUnit) : undefined;
         for (const anchorId of metricFormulaAnchorIds) {
           const identity = sourceFormulaIdentityById.get(anchorId);
-          if (!identity || !formulaUnit) {
+          if (!identity || !formulaUnit || !formulaUnitRequirement) {
             throw new Error(`Formula pre-write guard: ${anchorId} cannot be resolved to a verified unit assignment.`);
           }
-          assertFormulaAssignmentCompatible(identity, formulaUnit);
+          const verdict = assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit);
+          if (verdict.hardRejectionReasons.length > 0) {
+            throw new Error(`Formula assignment rejected at page generation: ${verdict.reason}`);
+          }
         }
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
         const interactiveSourceFigures =
@@ -5413,10 +5616,13 @@ export async function runTextbookGeneration({
         for (const formula of formulas) {
           if (!formula.sourceAnchor) continue;
           const identity = sourceFormulaIdentityById.get(formula.sourceAnchor);
-          if (!identity || !formulaUnit) {
+          if (!identity || !formulaUnit || !formulaUnitRequirement) {
             throw new Error(`Formula page pre-write guard: ${formula.sourceAnchor} has no verified unit identity.`);
           }
-          assertFormulaAssignmentCompatible(identity, formulaUnit);
+          const requirementVerdict = assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit);
+          if (requirementVerdict.hardRejectionReasons.length > 0) {
+            throw new Error(`Formula assignment rejected at page frontmatter: ${requirementVerdict.reason}`);
+          }
           const entryFamily = formulaMetricFamily(formula.text);
           if (entryFamily && entryFamily !== legacyFormulaFamily(identity.family)) {
             throw new Error(

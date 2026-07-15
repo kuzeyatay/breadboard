@@ -45,6 +45,7 @@ import { buildGardenTopicProfile, generateSectionTitle, type GardenTopicProfile 
 import { formulaMeaningMatch, formulaMetricFamily, isFormulaExpression, isGroundableFormula, isTrivialFormulaFragment, isWorkedExampleFormula, safeLearnFileSegment } from "./learn-utils.ts";
 import { auditFinalGardenState, auditLegacyMigrationPersistence, buildCanonicalSourceAnchors, buildFinalGardenState, reconcileFinalGardenState } from "./final-garden-state.ts";
 import { assertFormulaAssignmentCompatible, buildFormulaIdentityRegistry, legacyFormulaFamily } from "./formula-identity.ts";
+import { deriveUnitFormulaRequirement, validateFormulaAssignment } from "./formula-assignment.ts";
 import {
   parseFormulaMetadataEntries,
   reconcileFinalFormulaProjectionsDeterministic,
@@ -4607,6 +4608,21 @@ function regroundFormulas({
         } else {
           try {
             assertFormulaAssignmentCompatible(identity, unit, finalPage);
+            // Requirement-based pre-write guard for NEW attachments: an anchor
+            // this page does not already carry must also fit the unit's own
+            // derived formula requirement before it may enter frontmatter.
+            // Anchors already on the page keep the page-aware guard above;
+            // cleaning those is the reconciliation critic's job, not a silent
+            // drop during finalize.
+            const alreadyAttached = fmGetArray(page.rawFm, "sourceFormulaAnchors").includes(match.id)
+              || page.rawFm.includes(`sourceAnchor: "${match.id}"`)
+              || page.rawFm.includes(`basedOnFormula: "${match.id}"`);
+            if (!alreadyAttached) {
+              const requirement = deriveUnitFormulaRequirement(unit);
+              if (validateFormulaAssignment(identity, requirement, unit).hardRejectionReasons.length > 0) {
+                match = null;
+              }
+            }
           } catch {
             match = null;
           }
