@@ -37,6 +37,10 @@ import {
   type FormulaIdentityRepairDecision,
   type FormulaIdentityRepairPacket,
 } from "./formula-identity.ts";
+import {
+  deriveUnitFormulaRequirement,
+  validateFormulaAssignment,
+} from "./formula-assignment.ts";
 
 export type CanonicalFormulaUsageMode =
   | "source_definition"
@@ -968,12 +972,45 @@ function contractPathFor(gardenDir: string): string | undefined {
   ].find((candidate) => fs.existsSync(candidate));
 }
 
+/** Minimal LearningUnitContract reconstructed from a raw contract JSON record,
+ * enough for the formula-assignment pre-write guard to derive a requirement. */
+function contractUnitFromRawRecord(record: Record<string, unknown>): LearningUnitContract {
+  return {
+    id: String(record.id ?? ""),
+    title: String(record.title ?? ""),
+    role: (typeof record.role === "string" ? record.role : "core_concept") as LearningUnitContract["role"],
+    learningQuestion: String(record.learningQuestion ?? ""),
+    prerequisiteConcepts: Array.isArray(record.prerequisiteConcepts) ? record.prerequisiteConcepts.map(String) : [],
+    newConcepts: Array.isArray(record.newConcepts) ? record.newConcepts.map(String) : [],
+    sourceAnchors: Array.isArray(record.sourceAnchors) ? record.sourceAnchors.map(String) : [],
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    zettelNotes: [],
+    mustNotRepeat: [],
+    expectedWordRange: [0, 0],
+  };
+}
+
+/** Pre-write guard for contract mutations: the identity must be compatible
+ * with the target unit's derived requirement, or the mutation is refused. */
+function contractMutationAllowed(
+  identity: CanonicalFormulaIdentity | undefined,
+  targetRecord: Record<string, unknown>,
+): boolean {
+  if (!identity) return true; // callers without an identity already verified upstream
+  const unit = contractUnitFromRawRecord(targetRecord);
+  const requirement = deriveUnitFormulaRequirement(unit);
+  return validateFormulaAssignment(identity, requirement, unit).hardRejectionReasons.length === 0;
+}
+
 function moveContractAssignment(
   gardenDir: string,
   anchorId: string,
   fromUnitId: string,
   targetUnitId: string,
   verifiedFamily?: string,
+  identity?: CanonicalFormulaIdentity,
 ): string | undefined {
   const abs = contractPathFor(gardenDir);
   if (!abs) return undefined;
@@ -983,6 +1020,7 @@ function moveContractAssignment(
   const from = units.find((unit) => String(unit.id ?? "") === fromUnitId);
   const target = units.find((unit) => String(unit.id ?? "") === targetUnitId);
   if (!from || !target) return undefined;
+  if (!contractMutationAllowed(identity, target)) return undefined;
   const formulas = (Array.isArray(from.sourceFormulas) ? from.sourceFormulas : []) as Array<Record<string, unknown>>;
   const formula = formulas.find((record) => String(record.id ?? record.formulaId ?? "") === anchorId);
   from.sourceFormulas = formulas.filter((record) => String(record.id ?? record.formulaId ?? "") !== anchorId);
@@ -1160,6 +1198,7 @@ function replaceContractFormulaAssignment(
   replacement: CanonicalFormulaIdentity,
   unitId: string,
   moveCurrentToUnitId?: string,
+  currentIdentity?: CanonicalFormulaIdentity,
 ): string | undefined {
   const abs = contractPathFor(gardenDir);
   if (!abs) return undefined;
@@ -1168,6 +1207,13 @@ function replaceContractFormulaAssignment(
   const units = (Array.isArray(artifact[unitsKey]) ? artifact[unitsKey] : []) as Array<Record<string, unknown>>;
   const from = units.find((unit) => String(unit.id ?? "") === unitId);
   if (!from) return undefined;
+  // Pre-write guard: the replacement must fit THIS unit, and a preserved
+  // current formula must fit the unit it moves to.
+  if (!contractMutationAllowed(replacement, from)) return undefined;
+  if (moveCurrentToUnitId) {
+    const moveTarget = units.find((unit) => String(unit.id ?? "") === moveCurrentToUnitId);
+    if (!moveTarget || !contractMutationAllowed(currentIdentity, moveTarget)) return undefined;
+  }
   const formulas = (Array.isArray(from.sourceFormulas) ? from.sourceFormulas : []) as Array<Record<string, unknown>>;
   const previous = formulas.find((formula) => String(formula.id ?? formula.formulaId ?? "") === currentAnchorId);
   from.sourceFormulas = [
@@ -1567,6 +1613,7 @@ export function reconcileFinalFormulaProjectionsDeterministic(
         repair.replacement,
         repair.fromUnitId,
         repair.moveCurrentToUnitId,
+        identities.find((candidate) => candidate.anchorId === repair.anchorId),
       );
       if (!next || !contractPath) continue;
       writeIfChanged(contractPath, next, result.changedFiles, gardenDir);
@@ -1576,7 +1623,7 @@ export function reconcileFinalFormulaProjectionsDeterministic(
     }
     for (const move of contractMoves) {
       const identity = identities.find((candidate) => candidate.anchorId === move.anchorId);
-      const next = moveContractAssignment(gardenDir, move.anchorId, move.fromUnitId, move.targetUnitId, identity?.verified ? identity.family : undefined);
+      const next = moveContractAssignment(gardenDir, move.anchorId, move.fromUnitId, move.targetUnitId, identity?.verified ? identity.family : undefined, identity);
       if (!next || !contractPath) continue;
       writeIfChanged(contractPath, next, result.changedFiles, gardenDir);
       result.contractAssignmentsRepaired += 1;
@@ -1783,7 +1830,11 @@ function applyVerifiedFormulaDecision(
     const anchorId = decision.formulaAnchorId ?? packet.contractRequiredFormulas[0]?.anchorId;
     if (!anchorId || !decision.targetUnitId) return changed;
     const abs = contractPathFor(gardenDir);
-    const next = moveContractAssignment(gardenDir, anchorId, packet.unitId, decision.targetUnitId);
+    const anchor = state.sourceAnchors[anchorId];
+    const identity = anchor?.kind === "formula"
+      ? verifyCanonicalFormulaIdentity(anchor, state.rootPath)
+      : undefined;
+    const next = moveContractAssignment(gardenDir, anchorId, packet.unitId, decision.targetUnitId, identity?.verified ? identity.family : undefined, identity);
     if (abs && next) writeIfChanged(abs, next, changed, gardenDir);
     return changed;
   }
@@ -1911,7 +1962,7 @@ export async function reconcileFinalFormulaProjections(
               const replacement = identities.find((identity) => identity.anchorId === identityDecision!.replacementAnchorId);
               const target = bestCompatibleTarget(issue.anchorId, unit.id, state);
               if (replacement) {
-                const next = replaceContractFormulaAssignment(gardenDir, issue.anchorId, replacement, unit.id, target?.unit.id);
+                const next = replaceContractFormulaAssignment(gardenDir, issue.anchorId, replacement, unit.id, target?.unit.id, currentIdentity);
                 const abs = contractPathFor(gardenDir);
                 if (next && abs) writeIfChanged(abs, next, modelChanged, gardenDir);
               }
