@@ -825,6 +825,100 @@ export function mergeCanonicalSourceAnchor(existing: CanonicalSourceAnchor | und
 /** Recover a canonical equation's verbatim symbolic expression. Explicit
  * ledger evidence wins; otherwise use the matching numbered equation in the
  * source Markdown page. Never synthesize notation from an id or caption. */
+/** Equation-number markers a converted source uses to label a numbered
+ * equation: a trailing "(4)", a `\text{(4)}` / `\qquad \text{(4)}` tag, or a
+ * `\tag{4}`. Presence marks a block as a numbered source equation; the marker
+ * is stripped from the recovered exact text. */
+const EQUATION_NUMBER_MARKER = /\\qquad\s*\\text\{\s*\(?\s*\d+\s*\)?\s*\}|\\text\{\s*\(\s*\d+\s*\)\s*\}|\\tag\{\s*\(?\s*\d+\s*\)?\s*\}|\(\s*\d+\s*\)\s*$/;
+
+function stripEquationNumber(block: string): string {
+  return block
+    .replace(/\\qquad\s*\\text\{\s*\(?\s*\d+\s*\)?\s*\}/g, " ")
+    .replace(/\\text\{\s*\(\s*\d+\s*\)\s*\}/g, " ")
+    .replace(/\\tag\{\s*\(?\s*\d+\s*\)?\s*\}/g, " ")
+    .replace(/\(\s*\d+\s*\)\s*$/, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Recover numbered source equations from a page's markdown. A converted PDF may
+ * render equations as fenced code blocks, `$$ … $$` display math, or LaTeX
+ * environments (`\begin{equation}`, `align`, `gather`) — all are supported. Only
+ * blocks carrying an equation-number marker are returned (as the exact text with
+ * the marker removed), since those are the paper's canonical numbered equations.
+ */
+interface EquationCandidate {
+  /** Exact equation text with the number marker stripped. */
+  equation: string;
+  /** Prose immediately following the equation (describes its symbols). */
+  context: string;
+}
+
+function numberedEquationCandidatesWithContext(pageText: string): EquationCandidate[] {
+  const found: Array<{ block: string; end: number }> = [];
+  const pushMatches = (re: RegExp, group: number) => {
+    for (const match of pageText.matchAll(re)) {
+      const block = String(match[group] ?? "").trim();
+      if (block) found.push({ block, end: (match.index ?? 0) + match[0].length });
+    }
+  };
+  pushMatches(/```(?:text|latex|math)?\s*\r?\n([\s\S]*?)\r?\n\s*```/gi, 1);
+  pushMatches(/\$\$\s*([\s\S]*?)\s*\$\$/g, 1);
+  pushMatches(/\\begin\{(equation|align|aligned|gather|multline)\*?\}([\s\S]*?)\\end\{\1\*?\}/g, 2);
+
+  const seen = new Set<string>();
+  const candidates: EquationCandidate[] = [];
+  for (const { block, end } of found) {
+    if (!EQUATION_NUMBER_MARKER.test(block)) continue;
+    const cleaned = stripEquationNumber(block);
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    // The paragraph right after an equation usually defines its symbols; keep it
+    // as disambiguation context ("where V(t) represents the voltage …").
+    const context = pageText.slice(end, end + 500).replace(/\$\$[\s\S]*$/, "").replace(/\s+/g, " ").trim();
+    candidates.push({ equation: cleaned, context });
+  }
+  return candidates;
+}
+
+function numberedEquationCandidates(pageText: string): string[] {
+  return numberedEquationCandidatesWithContext(pageText).map((candidate) => candidate.equation);
+}
+
+const EQUATION_MATCH_STOP_WORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "equation", "using",
+  "used", "based", "over", "into", "each", "where", "which", "when", "term",
+  "terms", "value", "values", "generic", "update", "model", "models",
+]);
+
+function equationMatchTokens(value: string): Set<string> {
+  return new Set(
+    value.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/)
+      .filter((token) => token.length >= 4 && !EQUATION_MATCH_STOP_WORDS.has(token)),
+  );
+}
+
+/** Best caption→equation match among candidates using overlap between the
+ * caption's content words and each equation's LaTeX + following prose. Returns
+ * the winner only when it is unambiguously ahead of the runner-up. */
+function bestEquationForCaption(caption: string, candidates: EquationCandidate[]): string | undefined {
+  const captionTokens = equationMatchTokens(caption);
+  if (captionTokens.size === 0) return undefined;
+  const scored = candidates
+    .map((candidate) => {
+      const haystack = equationMatchTokens(`${candidate.equation} ${candidate.context}`);
+      let hits = 0;
+      for (const token of captionTokens) if (haystack.has(token)) hits += 1;
+      return { equation: candidate.equation, score: hits };
+    })
+    .sort((left, right) => right.score - left.score);
+  const [best, second] = scored;
+  if (!best || best.score === 0) return undefined;
+  if (second && second.score === best.score) return undefined; // ambiguous tie
+  return best.equation;
+}
+
 function canonicalFormulaExactText(
   gardenDir: string,
   visual: Record<string, unknown>,
@@ -845,23 +939,23 @@ function canonicalFormulaExactText(
     "i",
   );
   const pageText = pagePattern.exec(source)?.[1] ?? source;
-  const candidates = [...pageText.matchAll(/```(?:text|latex|math)?\s*\r?\n([\s\S]*?)\r?\n\s*```/gi)]
-    .map((match) => String(match[1] ?? "").trim())
-    .filter((block) => /\(\s*\d+\s*\)\s*$/m.test(block))
-    .map((block) => block.replace(/\s*\(\s*\d+\s*\)\s*$/, "").trim())
-    .filter(Boolean);
+  const candidatesWithContext = numberedEquationCandidatesWithContext(pageText);
+  const candidates = candidatesWithContext.map((candidate) => candidate.equation);
+  if (candidates.length === 1) return candidates[0];
   // Source-visual equation IDs are extraction identities, not source equation
   // numbers. Resolve the exact equation by semantic structure/caption instead
   // of assuming `.E2` means equation (2); that assumption caused the latency
   // equation and spike-count equation on the same page to be swapped.
-  const declaredFamily = formulaMetricFamily([
-    visual.caption, visual.title, visual.semanticSummary, visual.description,
-  ].filter(Boolean).join(" "));
+  const captionText = [visual.caption, visual.title, visual.semanticSummary, visual.description]
+    .filter(Boolean).join(" ");
+  const declaredFamily = formulaMetricFamily(captionText);
   if (declaredFamily) {
     const matches = candidates.filter((candidate) => formulaMetricFamily(candidate) === declaredFamily);
     if (matches.length === 1) return matches[0];
   }
-  return candidates.length === 1 ? candidates[0] : undefined;
+  // Physics/optimization equations have no metric family; match the caption to
+  // the equation whose LaTeX + following prose best overlaps the caption words.
+  return bestEquationForCaption(captionText, candidatesWithContext);
 }
 
 /** Read the persisted anchor ledgers and build the canonical registry. */

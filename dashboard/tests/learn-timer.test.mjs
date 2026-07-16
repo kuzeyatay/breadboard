@@ -83,6 +83,7 @@ test("Learn timer and skip-review state are persisted and exposed by the panel",
   assert.match(workspaceSource, /Skip review/);
   assert.match(workspaceSource, /skipManualReview:[\s\S]*?endpoint === "plan" \? false/);
   assert.match(workspaceSource, /formatLearnElapsedTime\(learnElapsedMs\)/);
+  assert.doesNotMatch(workspaceSource, />paused<\/span>/);
   assert.match(workspaceSource, /Paused while the learning map waits for confirmation/);
   assert.match(planRouteSource, /autoConfirmTopicMap: body\.skipManualReview === true/);
   assert.match(

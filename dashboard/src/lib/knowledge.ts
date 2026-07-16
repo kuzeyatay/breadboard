@@ -104,6 +104,7 @@ export interface KnowledgeNode {
   folder: string;
   relPath: string;
   title: string;
+  description: string;
   type: string;
   sourceType: string;
   sourceFile: string;
@@ -155,6 +156,42 @@ export interface ClusterKnowledge {
     links: number;
     words: number;
   };
+}
+
+export function normalizeSourceFileIdentity(value: string): string {
+  return path.basename(value.trim()).normalize("NFKC").toLocaleLowerCase();
+}
+
+function withoutSupersededSourceIngests(nodes: KnowledgeNode[]): KnowledgeNode[] {
+  const sourcesByFile = new Map<string, KnowledgeNode[]>();
+  for (const node of nodes) {
+    if (node.type !== "source-document" || node.sourceType === "url") continue;
+    const identity = normalizeSourceFileIdentity(node.sourceFile);
+    if (!identity) continue;
+    const sources = sourcesByFile.get(identity) ?? [];
+    sources.push(node);
+    sourcesByFile.set(identity, sources);
+  }
+
+  const supersededSourceSlugs = new Set<string>();
+  for (const sources of sourcesByFile.values()) {
+    if (sources.length < 2) continue;
+    sources.sort(
+      (left, right) =>
+        (Date.parse(right.date) || 0) - (Date.parse(left.date) || 0) ||
+        right.relPath.localeCompare(left.relPath),
+    );
+    for (const source of sources.slice(1)) {
+      supersededSourceSlugs.add(source.slug);
+    }
+  }
+
+  if (supersededSourceSlugs.size === 0) return nodes;
+  return nodes.filter(
+    (node) =>
+      !supersededSourceSlugs.has(node.slug) &&
+      !supersededSourceSlugs.has(node.sourceDocument),
+  );
 }
 
 interface ClusterKnowledgeCacheEntry {
@@ -2175,16 +2212,20 @@ export async function writeDocumentKnowledge({
   const cleanPages = cleanDocumentPages(pages);
   const outputMarkdownText = cleanGeneratedText(markdownText);
   const outputPlainText = cleanGeneratedText(plainText);
-  // Visible folders and titles must never be named after the raw upload
-  // ("2510.27379v1"). Repair artifact-like titles before anything is written,
-  // and keep the repaired title on the extraction so every later
-  // `extraction.documentTitle` consumer sees the same clean name.
+  // Keep the generated/humanized name for learning structure and descriptions,
+  // but never replace a PDF source's visible identity with it. The Documents
+  // panel should show exactly the uploaded filename while the descriptive name
+  // remains available as source metadata and planning context.
   const sectionTitle = humanizeSourceTitle(
     extraction.documentTitle || sourceTitle,
     sourceFileName,
     outputPlainText || outputMarkdownText,
   );
   extraction.documentTitle = sectionTitle;
+  const visibleSourceTitle =
+    sourceType.toLowerCase() === "pdf"
+      ? sourceFileName.trim() || sourceTitle
+      : sectionTitle || sourceTitle;
   fs.mkdirSync(sourcesDir, { recursive: true });
 
   const usedSlugs = extractExistingSlugs(clusterDir);
@@ -2231,7 +2272,8 @@ export async function writeDocumentKnowledge({
   );
 
   const sourceFrontmatter: Record<string, string | string[]> = {
-    title: extraction.documentTitle || sourceTitle,
+    title: visibleSourceTitle,
+    description: sectionTitle,
     date,
     source: sourceLabel,
     knowledge_type: "source-document",
@@ -2455,7 +2497,7 @@ export async function writeDocumentKnowledge({
   return {
     sourceSlug,
     sourceRelPath,
-    sourceTitle: extraction.documentTitle || sourceTitle,
+    sourceTitle: visibleSourceTitle,
     topics: textbookArtifacts.map((artifact) => ({
       slug: artifact.slug,
       title: artifact.title,
@@ -2543,7 +2585,7 @@ export function scanClusterKnowledge(
   clusterSlug: string,
 ): ClusterKnowledge {
   const clusterDir = path.join(contentPath, clusterSlug.trim());
-  const nodes: KnowledgeNode[] = [];
+  let nodes: KnowledgeNode[] = [];
 
   if (!fs.existsSync(clusterDir)) {
     return {
@@ -2586,6 +2628,7 @@ export function scanClusterKnowledge(
     const { data, body } = parseMarkdownFile(content);
     const slug = entry.replace(/\.md$/, "");
     const title = frontmatterString(data, "title") || slug;
+    const description = frontmatterString(data, "description");
     const sourceType = frontmatterString(data, "source_type");
     const sourceFile = frontmatterString(data, "source_file");
     const sourcePdf = frontmatterString(data, "source_pdf");
@@ -2640,6 +2683,7 @@ export function scanClusterKnowledge(
       folder,
       relPath,
       title,
+      description,
       type,
       sourceType,
       sourceFile,
@@ -2665,6 +2709,12 @@ export function scanClusterKnowledge(
       content,
     });
   }
+
+  // Older versions created a timestamped source and a complete second concept
+  // set when the same local file was uploaded again. Treat the newest ingest as
+  // canonical so existing gardens immediately present one document and one
+  // coherent concept set; the files remain on disk until that source is deleted.
+  nodes = withoutSupersededSourceIngests(nodes);
 
   const slugs = new Set(nodes.map((node) => node.slug));
   const titleToSlug = new Map(

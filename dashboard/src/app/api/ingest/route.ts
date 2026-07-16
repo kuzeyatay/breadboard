@@ -10,12 +10,18 @@ import {
   DEFAULT_MODEL,
   createChatmockClient,
   extractDocumentKnowledge,
+  normalizeSourceFileIdentity,
+  scanClusterKnowledge,
   slugify,
   writeDocumentKnowledge,
   type DocumentPage,
   type KnowledgeExtraction,
 } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
+import {
+  attachIngestTokenUsageTracking,
+  emptyIngestTokenUsage,
+} from "@/lib/ingest-token-usage";
 
 export const dynamic = "force-dynamic";
 
@@ -57,8 +63,30 @@ class UploadAbortedError extends Error {
   }
 }
 
+class ChatmockVisionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatmockVisionError";
+  }
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+function existingSourceDocument(
+  contentPath: string,
+  clusterSlug: string,
+  filename: string,
+) {
+  const sourceFileName = normalizeSourceFileIdentity(filename);
+  if (!sourceFileName) return undefined;
+
+  return scanClusterKnowledge(contentPath, clusterSlug).nodes.find(
+    (node) =>
+      node.type === "source-document" &&
+      normalizeSourceFileIdentity(node.sourceFile) === sourceFileName,
+  );
 }
 
 function isUsageLimitError(error: unknown): boolean {
@@ -1174,6 +1202,29 @@ async function runIngest({
   createdMarkdownPaths: string[];
   emit: (step: string) => void;
 }): Promise<Record<string, unknown>> {
+  // The uploaded filename is the stable identity shown in Documents. Stop a
+  // re-upload before extraction so it cannot create a second source note or a
+  // second set of concept scaffolding for the same document.
+  const existingSource = existingSourceDocument(
+    contentPath,
+    normalizedClusterSlug,
+    filename,
+  );
+  if (existingSource) {
+    emit(`${filename} is already in Documents — skipping duplicate upload.`);
+    return {
+      success: true,
+      duplicate: true,
+      filename,
+      slug: existingSource.slug,
+      sourceRelPath: existingSource.relPath,
+      wordCount: existingSource.wordCount,
+      topicCount: 0,
+      imageCount: 0,
+      mapGenerated: false,
+    };
+  }
+
   // ── Text extraction ──────────────────────────────────────────────────────
 
   emit("Reading the uploaded file…");
@@ -1181,6 +1232,7 @@ async function runIngest({
   let plainText: string;
   let pages: DocumentPage[] = [];
   let screenshotWarning = "";
+  let visionError = "";
   let sourcePdfPath: string | undefined;
   let skipKnowledgeExtraction = false;
 
@@ -1191,14 +1243,22 @@ async function runIngest({
     const dataUrl = `${mimeToBase64Prefix(file.type, ext)}${base64}`;
 
     if (generateMap) emit("Transcribing the image with vision…");
-    plainText = generateMap
-      ? await transcribePageImage({
+    if (generateMap) {
+      try {
+        plainText = await transcribePageImage({
           client: client!,
           dataUrl,
           label: "Image",
           isHandwriting,
-        })
-      : "";
+        });
+      } catch (error) {
+        throw new ChatmockVisionError(
+          `ChatMock vision failed: ${errorMessage(error, "image transcription failed")}`,
+        );
+      }
+    } else {
+      plainText = "";
+    }
     throwIfRequestAborted(request.signal);
     const imageAsset = saveDataUrlAsset({
       contentPath,
@@ -1258,6 +1318,7 @@ async function runIngest({
             request.signal,
             emit,
           );
+          if (transcription.warning) visionError = transcription.warning;
           if (transcription.usageLimitReason) {
             skipKnowledgeExtraction = true;
             screenshotWarning = transcription.warning;
@@ -1505,6 +1566,7 @@ async function runIngest({
     wordCount: saved.wordCount,
     topicCount: saved.topics.length,
     imageCount,
+    visionError: visionError || undefined,
     screenshotWarning: screenshotWarning || undefined,
     mapGenerationWarning: mapGenerationWarning || undefined,
     mapGenerated: generateMap && !mapGenerationWarning && !skipKnowledgeExtraction,
@@ -1594,11 +1656,18 @@ export async function POST(request: Request) {
       };
       const emit = (step: string) =>
         send({ type: "progress", step, elapsedMs: Date.now() - startedAt });
+      let tokenUsage = emptyIngestTokenUsage();
+      const trackedClient = client
+        ? attachIngestTokenUsageTracking(client, (nextUsage) => {
+            tokenUsage = nextUsage;
+            send({ type: "usage", tokenUsage });
+          })
+        : undefined;
 
       try {
         const result = await runIngest({
           request,
-          client,
+          client: trackedClient,
           contentPath,
           file,
           normalizedClusterSlug,
@@ -1612,7 +1681,12 @@ export async function POST(request: Request) {
           createdMarkdownPaths,
           emit,
         });
-        send({ type: "result", ...result, durationMs: Date.now() - startedAt });
+        send({
+          type: "result",
+          ...result,
+          durationMs: Date.now() - startedAt,
+          tokenUsage,
+        });
       } catch (err) {
         if (
           err instanceof UploadAbortedError ||
@@ -1620,7 +1694,12 @@ export async function POST(request: Request) {
         ) {
           cleanupCreatedFiles(createdMarkdownPaths);
           cleanupCreatedFiles(createdFilePaths);
-          send({ type: "error", error: "Upload canceled", canceled: true });
+          send({
+            type: "error",
+            error: "Upload canceled",
+            canceled: true,
+            tokenUsage,
+          });
         } else {
           if (createdMarkdownPaths.length === 0) {
             cleanupCreatedFiles(createdFilePaths);
@@ -1628,7 +1707,10 @@ export async function POST(request: Request) {
           send({
             type: "error",
             error: errorMessage(err, "Upload failed"),
+            visionError:
+              err instanceof ChatmockVisionError ? err.message : undefined,
             durationMs: Date.now() - startedAt,
+            tokenUsage,
           });
         }
       } finally {

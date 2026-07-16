@@ -37,6 +37,7 @@ export interface LearnSourceSummary {
   id: string;
   slug: string;
   title: string;
+  description?: string;
   relPath: string;
   sourceType?: string;
   sourceFile?: string;
@@ -1063,6 +1064,7 @@ export function sourceSetHashForSources(sources: LearnSourceSummary[]): string {
       slug: source.slug,
       relPath: source.relPath,
       title: source.title,
+      description: source.description ?? "",
       sourceFile: source.sourceFile ?? "",
       date: source.date ?? "",
       wordCount: source.wordCount ?? 0,
@@ -1468,6 +1470,10 @@ function headingPlansForSource(source: LearnSourceSummary): LearningSubsectionPl
   }));
 }
 
+function learningLabelForSource(source: LearnSourceSummary): string {
+  return source.description?.trim() || source.title;
+}
+
 export function fallbackLearningMapFromSources(
   context: LearnContextSummary,
   options: { sourceOnly?: boolean; createdAt?: string } = {},
@@ -1485,6 +1491,7 @@ export function fallbackLearningMapFromSources(
       ];
 
   const sections = sources.slice(0, 8).map((source) => {
+    const sourceLabel = learningLabelForSource(source);
     const fromConcepts = conceptPlansForSource(source, concepts);
     const fromHeadings = fromConcepts.length > 0 ? [] : headingPlansForSource(source);
     const subsections =
@@ -1494,7 +1501,7 @@ export function fallbackLearningMapFromSources(
           ? fromHeadings
           : [
               {
-                title: sanitizeLearnerTitle(`${source.title} Foundations`),
+                title: sanitizeLearnerTitle(`${sourceLabel} Foundations`),
                 purpose: "Establish the central ideas and vocabulary.",
                 sourceAnchors: [source.title],
                 visualOpportunities: [],
@@ -1503,7 +1510,7 @@ export function fallbackLearningMapFromSources(
                 interactiveVisuals: [],
               },
               {
-                title: sanitizeLearnerTitle(`${source.title} Core Ideas`),
+                title: sanitizeLearnerTitle(`${sourceLabel} Core Ideas`),
                 purpose: "Connect definitions, formulas, examples, and figures into a learning path.",
                 sourceAnchors: [source.title],
                 visualOpportunities: [],
@@ -1512,7 +1519,7 @@ export function fallbackLearningMapFromSources(
                 interactiveVisuals: [],
               },
               {
-                title: sanitizeLearnerTitle(`${source.title} Practice and Synthesis`),
+                title: sanitizeLearnerTitle(`${sourceLabel} Practice and Synthesis`),
                 purpose: "Use worked examples and questions to consolidate the chain of reasoning.",
                 sourceAnchors: [source.title],
                 visualOpportunities: [],
@@ -1523,8 +1530,8 @@ export function fallbackLearningMapFromSources(
             ];
 
     return {
-      title: sanitizeLearnerTitle(source.title),
-      purpose: `Teach the material of ${source.title} as an ordered lesson sequence.`,
+      title: sanitizeLearnerTitle(sourceLabel),
+      purpose: `Teach the material of ${sourceLabel} as an ordered lesson sequence.`,
       sourceAnchors: [source.title],
       subsections,
     };

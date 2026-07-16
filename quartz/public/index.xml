@@ -7,64 +7,64 @@
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
     <title>Learning Map</title>
-    <link>https://localhost:8081/test-2/learning/Learning-Map</link>
-    <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist 1.2 Why Training Spiking Networks Are Difficult How Spike Event Works 2.1 Spikes, Timing, and Temporal Information 2.2 Event-Driven Computation and Energy Efficiency 2.3 Membrane Potential, Input Int... ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:20:29 GMT</pubDate>
+    <link>https://localhost:8081/test2/learning/Learning-Map</link>
+    <guid>https://localhost:8081/test2/learning/Learning-Map</guid>
+    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist From Neuron Structure to Synaptic Transmission 2.1 Neurons, Synapses, and Membrane Potential 2.2 Action Potentials, Refractory Dynamics, and Spike Trains 2.3 Constraint Geometry in Spiking Networks 2... ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:10:28 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
-    <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
-    <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks A spiking neural network, or SNN, computes with discrete events called spikes. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:20:29 GMT</pubDate>
+    <link>https://localhost:8081/test2/learning/Topic-Overview</link>
+    <guid>https://localhost:8081/test2/learning/Topic-Overview</guid>
+    <description><![CDATA[ Spiking Neural Networks Spiking neural networks (SNNs) process information through discrete events called spikes. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:10:28 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
-    <link>https://localhost:8081/test-2/learning/</link>
-    <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:20:29 GMT</pubDate>
-  </item><item>
-    <title>5. Comparing and Interpreting the Results</title>
-    <link>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/</link>
-    <guid>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/</guid>
-    <description><![CDATA[ 5. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
-  </item><item>
-    <title>1. Why Spiking Neural Networks Matters</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
-    <description><![CDATA[ 1. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
+    <link>https://localhost:8081/test2/learning/</link>
+    <guid>https://localhost:8081/test2/learning/</guid>
+    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spiking neural networks represent and process temporal information, derive their central neuron and training equations, compare learning strategies, evaluate efficiency claims, and interpret benchmark results under hardware and dataset con... ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:10:28 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera watching a quiet doorway. For several seconds, the scene stays almost unchanged. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
+    <link>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Imagine a small sensor watching a quiet room. For long stretches, the scene barely changes. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
   </item><item>
-    <title>1.2 Why Training Spiking Networks Are Difficult</title>
-    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.2-Why-Training-Spiking-Networks-Are-Difficult</link>
-    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.2-Why-Training-Spiking-Networks-Are-Difficult</guid>
-    <description><![CDATA[ Why Training Spiking Networks Is Difficult A spiking neuron has already accumulated incoming signals and compared its internal state with a firing threshold. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
+    <title>1. Why Spiking Neural Networks Matters</title>
+    <link>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
+    <guid>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
+    <description><![CDATA[ 1. Why Spiking Neural Networks Matters This teaching step is conceptually distinct and could not be merged without blurring two different ideas. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
   </item><item>
-    <title>2. How Spike Event Works</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</guid>
-    <description><![CDATA[ 2. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
+    <title>2.1 Neurons, Synapses, and Membrane Potential</title>
+    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.1-Neurons,-Synapses,-and-Membrane-Potential</link>
+    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.1-Neurons,-Synapses,-and-Membrane-Potential</guid>
+    <description><![CDATA[ Neurons, Synapses, and Membrane Potential A spike becomes useful only when one neuron can receive it, respond to it, and pass a new spike onward. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
   </item><item>
-    <title>2.1 Spikes, Timing, and Temporal Information</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Temporal-Information</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Temporal-Information</guid>
-    <description><![CDATA[ Spikes, Timing, and Temporal Information Once computation has been divided into time steps, a spiking neural network can represent a changing signal through events that occur at particular moments. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
+    <title>2.2 Action Potentials, Refractory Dynamics, and Spike Trains</title>
+    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.2-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</link>
+    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.2-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</guid>
+    <description><![CDATA[ Action Potentials, Refractory Dynamics, and Spike Trains A neuron’s membrane potential changes as charged ions move across its membrane through voltage-gated ion channels. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
   </item><item>
-    <title>2.2 Event-Driven Computation and Energy Efficiency</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Event-Driven-Computation-and-Energy-Efficiency</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Event-Driven-Computation-and-Energy-Efficiency</guid>
-    <description><![CDATA[ Event-Driven Computation and Energy Efficiency A spike carries information as a discrete event at a particular time. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
+    <title>2.3 Constraint Geometry in Spiking Networks</title>
+    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.3-Constraint-Geometry-in-Spiking-Networks</link>
+    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.3-Constraint-Geometry-in-Spiking-Networks</guid>
+    <description><![CDATA[ Constraint Geometry in Spiking Networks A leaky integrate-and-fire neuron already gives us a useful picture of controlled accumulation: synaptic input changes a membrane voltage, leakage pulls that voltage downward, and reaching a threshold triggers a spike. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+  </item><item>
+    <title>2.4 Why Spike Derivatives Need Surrogates</title>
+    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.4-Why-Spike-Derivatives-Need-Surrogates</link>
+    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.4-Why-Spike-Derivatives-Need-Surrogates</guid>
+    <description><![CDATA[ Why Spike Derivatives Need Surrogates Backpropagation through time has already given us a way to trace how activity at many time steps contributes to a final error. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+  </item><item>
+    <title>2.5 How Sparse Events Can Save Energy</title>
+    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.5-How-Sparse-Events-Can-Save-Energy</link>
+    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.5-How-Sparse-Events-Can-Save-Energy</guid>
+    <description><![CDATA[ How Sparse Events Can Save Energy A neuron receives signals through synapses, combines their effects in its membrane state, and emits a spike when that state reaches the firing condition. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
   </item>
     </channel>
   </rss>

@@ -1277,6 +1277,7 @@ export function collectLearnSourceContext(
       id: node.slug,
       slug: node.slug,
       title: node.title,
+      description: node.description,
       relPath: node.relPath,
       sourceType: node.sourceType,
       sourceFile: node.sourceFile,
@@ -1412,6 +1413,7 @@ function promptSources(context: LearnSourceContext): unknown {
     sources: context.sources.map((source) => ({
       id: source.slug,
       title: source.title,
+      description: source.description,
       relPath: source.relPath,
       sourceType: source.sourceType,
       sourceFile: source.sourceFile,
@@ -1444,6 +1446,7 @@ function promptSourcesCompact(context: LearnSourceContext): unknown {
     sources: context.sources.map((source) => ({
       id: source.slug,
       title: source.title,
+      description: source.description,
       relPath: source.relPath,
       sourceType: source.sourceType,
       tags: source.tags,
@@ -2043,11 +2046,25 @@ function writeLearningUnitContractArtifacts({
     ...aliasReconciliation.repairs,
     ...registryAlignmentRepairs,
   ];
+  // Keep source-artifact assignments consistent with the planner-cleaned units:
+  // the formula planner removes ungroundable/incompatible formulas from a unit's
+  // sourceFormulas, so a formula assignment survives only when the target unit
+  // still lists that formula. Otherwise a stale assignment (e.g. a caption-only
+  // anchor whose extraction produced no formula text) would make the finalizer
+  // demand a page ground a formula the contract no longer carries. Figure and
+  // table assignments are untouched by the formula planner and pass through.
+  const formulaOwnersByUnit = new Map(
+    reconciledUnits.map((unit) => [unit.id, new Set(unit.sourceFormulas.map((formula) => formula.id))]),
+  );
+  const isFormulaArtifactId = (id: string) => /\.E\d+$/i.test(id);
+  const finalAssignments = assignments.filter((assignment) =>
+    !isFormulaArtifactId(assignment.sourceArtifactId)
+    || (formulaOwnersByUnit.get(assignment.assignedLearningUnitId)?.has(assignment.sourceArtifactId) ?? false));
   const payload = {
     sourceSetHash,
     generatedAt: nowIso(),
     learningUnits: reconciledUnits,
-    sourceArtifactAssignments: assignments,
+    sourceArtifactAssignments: finalAssignments,
     ...(deferredSourceAnchors.length ? { deferredSourceAnchors: [...new Set(deferredSourceAnchors)] } : {}),
     ...(formulaAssignmentProvenance.length ? { formulaAssignmentProvenance } : {}),
     ...(semanticAliasRepairs.length
@@ -2059,7 +2076,7 @@ function writeLearningUnitContractArtifacts({
     "",
     `Source set hash: ${sourceSetHash}`,
     `Learning units: ${reconciledUnits.length}`,
-    `Source artifact assignments: ${assignments.length}`,
+    `Source artifact assignments: ${finalAssignments.length}`,
     "",
     "## Units",
     "",
@@ -2067,7 +2084,7 @@ function writeLearningUnitContractArtifacts({
   for (const unit of reconciledUnits) {
     lines.push(`- ${unit.id}: ${unit.title} (${unit.role})`);
     lines.push(`  - Question: ${unit.learningQuestion || unit.title}`);
-    const artifacts = assignments
+    const artifacts = finalAssignments
       .filter((assignment) => assignment.assignedLearningUnitId === unit.id)
       .map((assignment) => `${assignment.sourceArtifactId} -> ${assignment.placement}`);
     if (artifacts.length > 0) lines.push(`  - Artifacts: ${artifacts.join(", ")}`);
@@ -6164,6 +6181,7 @@ export async function runTextbookGeneration({
         removed: finalizeReport.removed,
         changedCount: finalizeReport.changed.length,
         criticalProblems: finalizeReport.criticalProblems,
+        warnings: finalizeReport.warnings,
       });
       verification = verifyFinalArtifactNoMutation({ gardenDir: clusterDir, gardenSlug: gardenId });
       appendLearnEvent(contentPath, gardenId, "learn_final_artifact_verified", {
@@ -6186,6 +6204,20 @@ export async function runTextbookGeneration({
       ].sort().join("|");
       if (problemSignature === previousProblemSignature) break;
       previousProblemSignature = problemSignature;
+    }
+
+    // Surface incomplete source-formula extraction as a distinct, non-blocking
+    // signal so the cause (usually the vision model being unavailable at
+    // extraction time) is visible rather than silently publishing ungrounded
+    // formulas. Re-running extraction with the vision model recovers them. The
+    // full text is also written to .breadboard/validation-report.md under
+    // "Non-blocking warnings".
+    if (finalizeReport.warnings.length > 0) {
+      appendLearnEvent(contentPath, gardenId, "learn_source_formula_extraction_incomplete", {
+        jobId: job.id,
+        textbookVersionId,
+        warnings: finalizeReport.warnings,
+      });
     }
 
     if (finalizeReport.criticalProblems.length > 0) {
