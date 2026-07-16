@@ -22,4 +22,18 @@ describe("Quartz markdown normalization", () => {
     assert.doesNotMatch(markdown, /\\tag/);
     assert.equal(extractQuartzMath(markdown).length, 1);
   });
+
+  test("never normalizes LaTeX delimiters inside YAML frontmatter", () => {
+    const frontmatter = String.raw`---
+title: "Piecewise surrogate"
+formulas:
+  - text: "\\begin{cases}1, & x > 0,\\\\[6pt]0, & x \\leq 0.\\end{cases}"
+---
+`;
+    const markdown = normalizeQuartzMarkdown(`${frontmatter}\\[\ny = f(x)\n\\]\n`);
+
+    assert.equal(markdown.slice(0, frontmatter.length), frontmatter);
+    assert.doesNotMatch(markdown.slice(0, frontmatter.length), /^\$\$/m);
+    assert.match(markdown.slice(frontmatter.length), /\$\$\ny = f\(x\)\n\$\$/);
+  });
 });

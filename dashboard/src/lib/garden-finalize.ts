@@ -1432,6 +1432,9 @@ export interface FinalizeReport {
   changed: string[];
   removed: string[];
   notes: string[];
+  /** Non-blocking, user-facing warnings (e.g. incomplete source extraction).
+   * These never fail the garden but are surfaced so the cause is not silent. */
+  warnings: string[];
   actions?: FinalizerAction[];
   reconciliation: ReconciledAnchorUsage[];
   criticalProblems: string[];
@@ -1462,6 +1465,7 @@ export function finalizeGardenExport({
     changed: [],
     removed: [],
     notes: [],
+    warnings: [],
     actions: [],
     reconciliation: [],
     criticalProblems: [],
@@ -1595,11 +1599,55 @@ export function finalizeGardenExport({
     for (const note of reconcile.notes) report.notes.push(note);
   }
 
+  // --- Pass L1: incomplete-extraction notification --------------------------
+  // Surface (never fail on) source formula anchors that have no extractable
+  // formula text. Their equations are shown as captions/concepts only because
+  // extraction produced no exact text — usually the vision model was
+  // unavailable when the source was processed. This makes the gap visible
+  // instead of silently publishing ungrounded formulas.
+  for (const warning of ungroundableFormulaWarnings(gardenDir)) {
+    if (!report.warnings.includes(warning)) report.warnings.push(warning);
+    if (!report.notes.includes(warning)) report.notes.push(warning);
+  }
+
   // --- Pass L: validation report + critical gate -----------------------------
   writeFinalizeValidationReport({ gardenDir, gardenSlug, report });
   runCriticalGate({ gardenDir, report });
 
   return report;
+}
+
+/**
+ * Warnings for source formula anchors that are referenced (by the contract or a
+ * learner page) but have no extractable formula text — i.e. extraction produced
+ * a caption only. Non-blocking; actionable (re-run extraction with the vision
+ * model available). Returns [] when every referenced formula anchor is
+ * groundable.
+ */
+export function ungroundableFormulaWarnings(gardenDir: string): string[] {
+  const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
+  const groundable = new Set(
+    buildFormulaIdentityRegistry(buildCanonicalSourceAnchors(gardenDir), gardenDir)
+      .filter((identity) => identity.verified || String(identity.canonicalText ?? "").trim().length > 0)
+      .map((identity) => identity.anchorId),
+  );
+  const contract = readLearningUnitContract(gardenDir);
+  const referenced = new Set<string>();
+  for (const assignment of contract.assignments) {
+    if (isSourceFormulaId(assignment.sourceArtifactId)) referenced.add(assignment.sourceArtifactId);
+  }
+  for (const unit of contract.units) for (const formula of unit.sourceFormulas) referenced.add(formula.id);
+  const usedIds = idsUsedByLearners(loadLearnerPages(gardenDir));
+  const ungroundable = ledger
+    .filter((visual) => classifyFigure(visual) === "equation" && !groundable.has(visual.sourceVisualId))
+    .filter((visual) => referenced.has(visual.sourceVisualId) || usedIds.has(visual.sourceVisualId))
+    .map((visual) => ({ id: visual.sourceVisualId, caption: String(visual.caption ?? "").trim() }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (ungroundable.length === 0) return [];
+  const list = ungroundable.map((entry) => `${entry.id}${entry.caption ? ` (${entry.caption})` : ""}`).join(", ");
+  return [
+    `Incomplete source formula extraction: ${ungroundable.length} referenced formula anchor(s) have no extractable exact text, so their equations appear as captions/concepts only and are not grounded as source formulas — ${list}. This usually means the vision model was unavailable when the source was processed. Re-run source extraction with the vision model available to recover the exact formulas and ground them.`,
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1819,6 +1867,7 @@ function emptyFinalizeReport(): FinalizeReport {
     changed: [],
     removed: [],
     notes: [],
+    warnings: [],
     actions: [],
     reconciliation: [],
     criticalProblems: [],
@@ -4179,6 +4228,28 @@ function normalizeFormulaText(text: string): string {
 
 /** Content-match a learner formula to a source formula anchor, or return null
  * when there is no strong match (never index-based). */
+/**
+ * Are two formula texts structurally the SAME equation (not just the same
+ * family)? Compares normalized symbolic tokens: identical normalized text, or a
+ * high token-overlap. Used to distinguish a mislabeled source definition (page
+ * restates the exact source equation) from a distinct helper that merely shares
+ * a metric/physics family with a source equation.
+ */
+export function formulaTextsStructurallyClose(a: string, b: string): boolean {
+  const na = normalizeFormulaText(a);
+  const nb = normalizeFormulaText(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const tokensOf = (value: string) =>
+    new Set(value.split(/\s+/).filter((token) => token.length >= 2));
+  const ta = tokensOf(na);
+  const tb = tokensOf(nb);
+  if (ta.size === 0 || tb.size === 0) return false;
+  let intersection = 0;
+  for (const token of ta) if (tb.has(token)) intersection += 1;
+  return intersection / Math.min(ta.size, tb.size) >= 0.6;
+}
+
 export function matchFormulaToSource(formulaText: string, sources: SourceFormula[]): SourceFormula | null {
   if (!isGroundableFormula(formulaText)) return null;
   const normalized = normalizeFormulaText(formulaText);
@@ -4279,15 +4350,28 @@ export function auditFormulaMetadata(entries: ParsedFormulaEntry[]): FormulaMeta
   const definitionFamilies = new Set<string>();
   const definitionAnchors = new Set<string>();
   const definitionKeys = new Set<string>();
+  const definitionLhs = new Set<string>();
+  // The left-hand side (the quantity being defined) of a formula, normalized.
+  const formulaLhs = (text: string): string => normalizeFormulaText(String(text ?? "").split("=")[0] ?? "").trim();
   for (const entry of entries) {
     const kind = formulaEntryKind(entry);
-    if (kind === "source_definition" || kind === "source_derived_definition") {
+    const text = String(entry.text ?? "");
+    // A worked example on the same page may apply either a SOURCE definition or a
+    // page-introduced CONCEPTUAL-HELPER definition (a symbolic formula that is
+    // not itself numeric arithmetic). Both establish the relationship the
+    // example substitutes into, so both count as definitions for lineage.
+    const isDefinition =
+      kind === "source_definition" || kind === "source_derived_definition" ||
+      (kind === "conceptual_helper" && isFormulaExpression(text) && !isWorkedExampleFormula(text) && text.includes("="));
+    if (isDefinition) {
       const family = parsedEntryFamily(entry);
       if (family) definitionFamilies.add(family);
       const anchor = String(entry.sourceAnchor ?? "").trim();
       if (anchor) definitionAnchors.add(anchor);
-      const key = (String(entry.text ?? "") || "").trim();
+      const key = text.trim();
       if (key) definitionKeys.add(normalizeFormulaText(key));
+      const lhs = formulaLhs(text);
+      if (lhs.length >= 1) definitionLhs.add(lhs);
     }
   }
 
@@ -4325,7 +4409,23 @@ export function auditFormulaMetadata(entries: ParsedFormulaEntry[]): FormulaMeta
         Boolean(basedOn) &&
         (definitionAnchors.has(basedOn) || definitionKeys.has(normalizeFormulaText(basedOn)) || /^S\d+\.P\d+\.[A-Z]?\d+$/i.test(basedOn));
       const hasImplicitLineage = Boolean(family) && definitionFamilies.has(family!);
-      if (!hasExplicitLineage && !hasImplicitLineage) {
+      // A worked example that computes the same quantity as an on-page
+      // definition (shared left-hand side, e.g. "A = …" applying "A = 100a/BTN")
+      // is grounded even when their coarse families differ.
+      const hasLhsLineage = definitionLhs.has(formulaLhs(text));
+      // A worked example whose OWN TEXT computes a recognized metric (a
+      // percentage/ratio, latency, energy, …) on a page that ESTABLISHES formula
+      // context (has at least one definition/helper) is a meaningful computation,
+      // not orphan noise — the definition it applies may live on an earlier page
+      // (e.g. a sparsity/activity metric shown on a results page whose formula is
+      // defined in the methods section). Detected from the text, not the declared
+      // family, so bare arithmetic like "2+3=5" is NOT excused; and a page that is
+      // ONLY a dump of bare percentage examples (no definitions at all) is still
+      // flagged.
+      const pageHasDefinitionContext =
+        definitionLhs.size > 0 || definitionAnchors.size > 0 || definitionKeys.size > 0;
+      const computesRecognizedMetric = Boolean(formulaMetricFamily(text)) && pageHasDefinitionContext;
+      if (!hasExplicitLineage && !hasImplicitLineage && !hasLhsLineage && !computesRecognizedMetric) {
         const reason = family
           ? `worked example (family ${family}) has no source definition on the page to apply and no valid basedOnFormula`
           : "worked example has no recognizable formula family or lineage";
@@ -5150,7 +5250,7 @@ function writeFinalizeValidationReport({
       ...(blockingFailures.length > 0 ? blockingFailures.map((line) => `- ${line}`) : ["- None."]),
       "",
       "Non-blocking warnings:",
-      "- None.",
+      ...(report.warnings.length > 0 ? report.warnings.map((line) => `- ${line}`) : ["- None."]),
       "",
       "Skipped as not applicable:",
       "- None.",
@@ -5872,7 +5972,11 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): str
   return [...new Set(problems)];
 }
 
-function sourceAnchorUsageVsCropStatusProblems(ledger: LedgerVisual[], learnerPages: LearnerPage[]): string[] {
+function sourceAnchorUsageVsCropStatusProblems(
+  ledger: LedgerVisual[],
+  learnerPages: LearnerPage[],
+  groundableFormulaAnchorIds: Set<string>,
+): string[] {
   const usedIds = idsUsedByLearners(learnerPages);
   const problems: string[] = [];
   for (const visual of ledger) {
@@ -5880,11 +5984,16 @@ function sourceAnchorUsageVsCropStatusProblems(ledger: LedgerVisual[], learnerPa
     const usageStatus = String(visual.usageStatus ?? "");
     const conceptUsage = String(visual.conceptUsage ?? "");
     const cropStatus = String(visual.cropStatus ?? "");
+    // A caption-only formula anchor (the source yielded no extractable formula
+    // text) can be referenced conceptually in a page's sourceAnchors while
+    // remaining intentionally skipped from embedding — that is not a
+    // contradiction, so it does not count as "used" for the skip check.
+    const isUngroundableFormula = isSourceFormulaId(id) && !groundableFormulaAnchorIds.has(id);
     const conceptIsUsed = /^(?:embedded_and_explained|embedded_as_crop|explained_as_text_formula|explained_in_prose|explained_without_embedding|used_as_interactive_grounding|referenced_again)$/i.test(conceptUsage);
     if (/^(?:intentionally_skipped|skipped|unused)$/i.test(usageStatus) && conceptIsUsed) {
       problems.push(`${id}: usageStatus=${usageStatus} contradicts conceptUsage=${conceptUsage}`);
     }
-    if (usedIds.has(id) && /^(?:intentionally_skipped|skipped|unused)$/i.test(usageStatus)) {
+    if (usedIds.has(id) && !isUngroundableFormula && /^(?:intentionally_skipped|skipped|unused)$/i.test(usageStatus)) {
       problems.push(`${id}: usageStatus=${usageStatus} but the anchor is used by learner pages`);
     }
     if ((conceptUsage || cropStatus) && (!conceptUsage || !cropStatus)) {
@@ -6745,6 +6854,25 @@ function collectFinalizeChecks({
   }
   const ledger = readJson<LedgerVisual[]>(path.join(gardenDir, ".breadboard", "source-visuals.json"), []);
 
+  // A formula anchor is GROUNDABLE only when the source actually yielded an
+  // exact formula (a verified identity or recoverable canonical text). When
+  // extraction produced a caption-only anchor with no exact text, it is not a
+  // source formula a learner page can define or must be graded against:
+  // requiring it, matching page math to it, or flagging it as "used but
+  // skipped" are all false positives. Gardens whose extraction succeeded keep
+  // full formula grounding; only caption-only anchors are relaxed.
+  const formulaIdentityRegistry = buildFormulaIdentityRegistry(buildCanonicalSourceAnchors(gardenDir), gardenDir);
+  const groundableFormulaAnchorIds = new Set(
+    formulaIdentityRegistry
+      .filter((identity) => identity.verified || String(identity.canonicalText ?? "").trim().length > 0)
+      .map((identity) => identity.anchorId),
+  );
+  const exactTextByFormulaAnchor = new Map(
+    formulaIdentityRegistry
+      .filter((identity) => String(identity.canonicalText ?? "").trim().length > 0)
+      .map((identity) => [identity.anchorId, String(identity.canonicalText)]),
+  );
+
   // Export tree.
   const allowed = new Set(["_index.md", "learning", "sources", "assets", ".breadboard"]);
   const treeProblems: string[] = [];
@@ -6826,9 +6954,12 @@ function collectFinalizeChecks({
     const requiredFigures = useAssignedArtifacts
       ? assignedArtifacts.map((assignment) => assignment.sourceArtifactId).filter(isSourceFigureId)
       : unit.sourceFigures.filter((figure) => figure.placement !== "not_used_with_reason").map((figure) => figure.id);
-    const requiredFormulas = useAssignedArtifacts
+    const requiredFormulas = (useAssignedArtifacts
       ? assignedArtifacts.map((assignment) => assignment.sourceArtifactId).filter(isSourceFormulaId)
-      : unit.sourceFormulas.map((formula) => formula.id);
+      : unit.sourceFormulas.map((formula) => formula.id))
+      // Never require a caption-only anchor the source never yielded a formula
+      // for; it cannot be grounded on any page.
+      .filter((id) => groundableFormulaAnchorIds.has(id));
     const requiredTables = useAssignedArtifacts
       ? assignedArtifacts.map((assignment) => assignment.sourceArtifactId).filter(isSourceTableId)
       : unit.sourceTables.map((table) => table.id);
@@ -6925,7 +7056,7 @@ function collectFinalizeChecks({
   const formulaExpressionProblems: string[] = [];
   const formulaSourceProblems: string[] = [];
   const sourceFormulaCaptions = ledger
-    .filter((visual) => classifyFigure(visual) === "equation")
+    .filter((visual) => classifyFigure(visual) === "equation" && groundableFormulaAnchorIds.has(visual.sourceVisualId))
     .map((visual) => ({ id: visual.sourceVisualId, caption: formulaAnchorSemanticText(visual) }));
   for (const page of learnerPages) {
     const declared = fmGetArray(page.rawFm, "sourceFormulaAnchors");
@@ -6971,10 +7102,27 @@ function collectFinalizeChecks({
       const match: ReturnType<typeof groundLearnerFormula> = isFormulaExpression(text)
         ? groundLearnerFormula(text, sourceFormulaCaptions)
         : { groundingStatus: "conceptual-helper" };
-      if ((status === "conceptual-helper" || status === "unmatched") && match.groundingStatus === "source-anchored") {
+      // `groundLearnerFormula` matches by caption family, which is coarse for
+      // math-heavy papers where many distinct page helpers share a family with a
+      // source equation (a discrete LIF update vs the continuous membrane ODE).
+      // A conceptual-helper is only a MISLABELED source definition when it is
+      // STRUCTURALLY the source equation, not merely the same family — compare
+      // against the source's exact text when we have it.
+      const matchesSourceStructurally = (anchorId: string | undefined): boolean => {
+        if (!anchorId) return false;
+        const sourceExact = exactTextByFormulaAnchor.get(anchorId);
+        if (sourceExact === undefined) return true; // no exact text to check against
+        return formulaTextsStructurallyClose(text, sourceExact);
+      };
+      if ((status === "conceptual-helper" || status === "unmatched")
+        && match.groundingStatus === "source-anchored"
+        && matchesSourceStructurally(match.sourceAnchor)) {
         formulaSourceProblems.push(`${label} matches source formula ${match.sourceAnchor} but is marked ${status}`);
       }
-      if ((status === "source-anchored" || status === "source-derived") && entry.sourceAnchor && match.groundingStatus === "source-anchored" && match.sourceAnchor !== entry.sourceAnchor) {
+      if ((status === "source-anchored" || status === "source-derived") && entry.sourceAnchor
+        && match.groundingStatus === "source-anchored" && match.sourceAnchor !== entry.sourceAnchor
+        && matchesSourceStructurally(match.sourceAnchor)
+        && !formulaTextsStructurallyClose(text, exactTextByFormulaAnchor.get(entry.sourceAnchor) ?? "")) {
         formulaSourceProblems.push(`${label} is grounded to ${entry.sourceAnchor}, but content matches ${match.sourceAnchor}`);
       }
       if ((status === "source-anchored" || status === "source-derived") && entry.sourceAnchor) {
@@ -7015,7 +7163,7 @@ function collectFinalizeChecks({
   push("Source Coverage follows the Learning Unit Contract", [...new Set(coverageProblems)]);
   push("Source Coverage Mode Precision", sourceCoverageModePrecisionProblems(gardenDir, ledger));
   push("Source Coverage / Final Artifact Consistency", sourceCoverageFinalArtifactConsistencyProblems(gardenDir, learnerPages));
-  push("Source anchor usage vs crop status", sourceAnchorUsageVsCropStatusProblems(ledger, learnerPages));
+  push("Source anchor usage vs crop status", sourceAnchorUsageVsCropStatusProblems(ledger, learnerPages, groundableFormulaAnchorIds));
 
   // Source Map consistency.
   const sourceMapProblems: string[] = [];

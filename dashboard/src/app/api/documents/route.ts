@@ -53,6 +53,7 @@ export async function GET(request: Request) {
         folder: node.folder,
         relPath: node.relPath,
         title: node.title,
+        description: node.description,
         type: node.type,
         sourceType: node.sourceType,
         sourceFile: node.sourceFile,

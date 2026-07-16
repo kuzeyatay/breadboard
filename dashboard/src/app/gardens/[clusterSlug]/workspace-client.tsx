@@ -14,6 +14,8 @@ import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import ChatMarkdown from "@/app/components/chat-markdown";
+import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
+import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
@@ -38,6 +40,10 @@ import {
   currentLearnElapsedMs,
   formatLearnElapsedTime,
 } from "@/lib/learn-timer";
+import {
+  sumIngestTokenUsage,
+  type IngestTokenUsage,
+} from "@/lib/ingest-token-usage";
 
 interface Message {
   role: "user" | "assistant";
@@ -65,6 +71,7 @@ interface DocInfo {
   folder: string;
   relPath: string;
   title: string;
+  description: string;
   type: string;
   sourceType: string;
   sourceFile: string;
@@ -100,6 +107,7 @@ function documentSearchText(doc: DocInfo): string {
   return normalizedSearchText(
     [
       doc.title,
+      doc.description,
       doc.name,
       doc.slug,
       doc.sourceFile,
@@ -423,6 +431,18 @@ const FLAG_COLORS = [
 
 function fileKey(f: File) {
   return `${f.name}-${f.size}`;
+}
+
+function appendUniqueUploadFiles(current: File[], incoming: File[]): File[] {
+  const keys = new Set(current.map(fileKey));
+  const unique = [...current];
+  for (const file of incoming) {
+    const key = fileKey(file);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    unique.push(file);
+  }
+  return unique;
 }
 
 function formatElapsed(ms: number): string {
@@ -835,6 +855,12 @@ export default function WorkspaceClient({
   >({});
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({});
   const [uploadSteps, setUploadSteps] = useState<Record<string, string>>({});
+  const [uploadTokenUsage, setUploadTokenUsage] = useState<
+    Record<string, IngestTokenUsage>
+  >({});
+  const [uploadVisionErrors, setUploadVisionErrors] = useState<
+    Record<string, string>
+  >({});
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
@@ -1238,6 +1264,8 @@ export default function WorkspaceClient({
     setUploadStatuses({});
     setUploadErrors({});
     setUploadSteps({});
+    setUploadTokenUsage({});
+    setUploadVisionErrors({});
     setUploadElapsedMs(0);
     setUploadLabel("");
     setIsHandwriting(false);
@@ -1258,12 +1286,16 @@ export default function WorkspaceClient({
     e.preventDefault();
     setIsDragging(false);
     const dropped = Array.from(e.dataTransfer.files);
-    if (dropped.length) setUploadFiles((prev) => [...prev, ...dropped]);
+    if (dropped.length) {
+      setUploadFiles((prev) => appendUniqueUploadFiles(prev, dropped));
+    }
   }
 
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
-    if (files.length) setUploadFiles((prev) => [...prev, ...files]);
+    if (files.length) {
+      setUploadFiles((prev) => appendUniqueUploadFiles(prev, files));
+    }
     e.target.value = "";
   }
 
@@ -1287,6 +1319,16 @@ export default function WorkspaceClient({
           delete next[key];
           return next;
         });
+        setUploadTokenUsage((usage) => {
+          const next = { ...usage };
+          delete next[key];
+          return next;
+        });
+        setUploadVisionErrors((errors) => {
+          const next = { ...errors };
+          delete next[key];
+          return next;
+        });
       }
       return prev.filter((_, i) => i !== index);
     });
@@ -1307,8 +1349,11 @@ export default function WorkspaceClient({
     setUploadStatuses(initial);
     setUploadErrors({});
     setUploadSteps({});
+    setUploadTokenUsage({});
+    setUploadVisionErrors({});
 
     let successCount = 0;
+    let duplicateCount = 0;
     let snapshotCount = 0;
     let mapGeneratedCount = 0;
     const screenshotWarnings: string[] = [];
@@ -1379,13 +1424,29 @@ export default function WorkspaceClient({
             if (payload === "[DONE]") continue;
 
             try {
-              const event = JSON.parse(payload) as
-                | { type: "progress"; step: string }
-                | ({ type: "result" } & Record<string, unknown>)
-                | { type: "error"; error?: string; canceled?: boolean };
+              const event = JSON.parse(payload) as {
+                type: "progress" | "usage" | "result" | "error";
+                step?: string;
+                error?: string;
+                canceled?: boolean;
+                tokenUsage?: IngestTokenUsage;
+                visionError?: string;
+                [key: string]: unknown;
+              };
 
-              if (event.type === "progress") {
-                setUploadSteps((prev) => ({ ...prev, [key]: event.step }));
+              if (event.tokenUsage) {
+                setUploadTokenUsage((prev) => ({ ...prev, [key]: event.tokenUsage! }));
+              }
+              if (typeof event.visionError === "string" && event.visionError.trim()) {
+                setUploadVisionErrors((prev) => ({
+                  ...prev,
+                  [key]: `${file.name}: ${event.visionError!.trim()}`,
+                }));
+              }
+
+              if (event.type === "progress" && typeof event.step === "string") {
+                const step = event.step;
+                setUploadSteps((prev) => ({ ...prev, [key]: step }));
               } else if (event.type === "result") {
                 result = event;
               } else if (event.type === "error") {
@@ -1411,17 +1472,22 @@ export default function WorkspaceClient({
             delete next[key];
             return next;
           });
-          successCount++;
-          snapshotCount +=
-            typeof result.imageCount === "number" ? result.imageCount : 0;
-          if (result.mapGenerated === true) {
-            mapGeneratedCount++;
-          }
-          if (typeof result.screenshotWarning === "string") {
-            screenshotWarnings.push(`${file.name}: ${result.screenshotWarning}`);
-          }
-          if (typeof result.mapGenerationWarning === "string") {
-            mapWarnings.push(`${file.name}: ${result.mapGenerationWarning}`);
+          if (result.duplicate === true) {
+            duplicateCount++;
+            addToast(`${file.name} is already in Documents; duplicate upload skipped`);
+          } else {
+            successCount++;
+            snapshotCount +=
+              typeof result.imageCount === "number" ? result.imageCount : 0;
+            if (result.mapGenerated === true) {
+              mapGeneratedCount++;
+            }
+            if (typeof result.screenshotWarning === "string") {
+              screenshotWarnings.push(`${file.name}: ${result.screenshotWarning}`);
+            }
+            if (typeof result.mapGenerationWarning === "string") {
+              mapWarnings.push(`${file.name}: ${result.mapGenerationWarning}`);
+            }
           }
         } else {
           const message = streamError || "Upload failed";
@@ -1444,7 +1510,7 @@ export default function WorkspaceClient({
 
     const canceled = uploadCanceledRef.current || abortController.signal.aborted;
 
-    if (!canceled && successCount > 0) {
+    if (!canceled && (successCount > 0 || duplicateCount > 0)) {
       const generationLabel = !generateMap
         ? "no map generation"
         : mapWarnings.length > 0 && mapGeneratedCount === 0
@@ -1454,11 +1520,13 @@ export default function WorkspaceClient({
             : isHandwriting && hasHandwritingCompatibleFile
               ? "handwriting OCR and map generation"
               : "map generation";
-      addToast(
-        `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${generationLabel}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
-      );
-      for (const warning of screenshotWarnings) addToast(warning);
-      for (const warning of mapWarnings) addToast(warning);
+      if (successCount > 0) {
+        addToast(
+          `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${generationLabel}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
+        );
+        for (const warning of screenshotWarnings) addToast(warning);
+        for (const warning of mapWarnings) addToast(warning);
+      }
       fetchDocuments();
       void fetchLearnStatus();
       setSourceDocsExpanded(true);
@@ -1478,6 +1546,7 @@ export default function WorkspaceClient({
       setUploadStatuses({});
       setUploadErrors({});
       setUploadSteps({});
+      setUploadVisionErrors({});
       setUploadFiles([]);
       setUploadLabel("");
       setIsHandwriting(false);
@@ -2400,6 +2469,12 @@ export default function WorkspaceClient({
       const s = uploadStatuses[fileKey(f)];
       return s === "done" || s === "error";
     });
+  const ingestionTokenUsage = sumIngestTokenUsage(
+    Object.values(uploadTokenUsage),
+  );
+  const ingestionVisionErrors = Object.values(uploadVisionErrors).filter(
+    (error) => error.trim().length > 0,
+  );
 
   const sourceDocuments = documents.filter(
     (doc) => doc.type === "source-document",
@@ -2678,9 +2753,6 @@ export default function WorkspaceClient({
                 <path strokeLinecap="round" d="M12 9v4l2.5 1.5M9 2h6M12 2v3" />
               </svg>
               {formatLearnElapsedTime(learnElapsedMs)}
-              {learnTimerPaused ? (
-                <span className="font-sans text-[10px] text-amber-500/80">paused</span>
-              ) : null}
             </span>
 
             {learnTokenUsage.reportedCalls > 0 ? (
@@ -2931,10 +3003,18 @@ export default function WorkspaceClient({
       <ul className="py-1">
         {items.map((doc, index) => {
           const isSource = doc.type === "source-document";
+          const isPdf = isSource && doc.sourceType?.toLowerCase() === "pdf";
           const isPdfSource =
-            isSource &&
-            doc.sourceType?.toLowerCase() === "pdf" &&
-            Boolean(doc.sourcePdf);
+            isPdf && Boolean(doc.sourcePdf);
+          const displayTitle =
+            (isPdf ? doc.sourceFile?.trim() : "") || doc.title || doc.name;
+          // Existing PDF notes predate the explicit description field and have
+          // the generated description in `title`. Preserve it as a UI fallback
+          // so they also adopt the filename-first presentation immediately.
+          const storedDescription = doc.description?.trim() || "";
+          const sourceDescription =
+            (storedDescription !== displayTitle ? storedDescription : "") ||
+            (isPdf && doc.title?.trim() !== displayTitle ? doc.title.trim() : "");
           const documentHref = isPdfSource
             ? `/gardens/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
             : `/garden/${clusterSlug}?note=${encodeURIComponent(doc.slug)}`;
@@ -3055,10 +3135,18 @@ export default function WorkspaceClient({
                   ].join(" ")}
                   title={isPdfSource ? "Open PDF viewer" : "Open note"}
                 >
-                  {doc.title ?? doc.name}
+                  {displayTitle}
                 </Link>
+                {isSource && sourceDescription && (
+                  <p
+                    className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-gray-500"
+                    title={sourceDescription}
+                  >
+                    {sourceDescription}
+                  </p>
+                )}
                 <p className="text-[10px] text-gray-600 mt-0.5">
-                  {isPdfSource
+                  {isPdf
                     ? "PDF source"
                     : isSource
                       ? "full source content"
@@ -5360,6 +5448,15 @@ export default function WorkspaceClient({
                   </div>
                 )}
               </div>
+
+              <DocumentIngestionVisionError errors={ingestionVisionErrors} />
+
+              {(isUploading || ingestionTokenUsage.startedCalls > 0) && (
+                <DocumentIngestionTokenUsage
+                  usage={ingestionTokenUsage}
+                  pending={isUploading}
+                />
+              )}
 
               {/* Handwriting checkbox */}
               {hasHandwritingCompatibleFile && !allDoneOrError && (

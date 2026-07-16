@@ -87,10 +87,20 @@ function normalizeNonCodeMarkdown(text: string): string {
 /** Normalize generated Markdown to Quartz/KaTeX-safe dollar delimiters. Code
  * fences are left byte-for-byte intact. */
 export function normalizeQuartzMarkdown(markdown: string): string {
-  return splitCodeFences(markdown)
+  // Frontmatter is YAML, not Markdown. In particular, a serialized LaTeX value
+  // can legitimately contain `\\[6pt]` as a cases/aligned row separator. Running
+  // the display-math normalizer over that value mistakes its final backslash for
+  // a `\\[` delimiter and can inject newlines/`$$` into the quoted YAML scalar.
+  // Keep a leading frontmatter block byte-for-byte intact and normalize only the
+  // document body.
+  const frontmatter = markdown.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/)?.[0] ?? "";
+  const body = frontmatter ? markdown.slice(frontmatter.length) : markdown;
+  const normalizedBody = splitCodeFences(body)
     .map((part) => (part.code ? part.text : normalizeNonCodeMarkdown(part.text)))
     .join("")
     .replace(/\n{4,}/g, "\n\n\n");
+
+  return `${frontmatter}${normalizedBody}`;
 }
 
 export function extractQuartzMath(markdown: string): MathExpression[] {

@@ -21,7 +21,13 @@ import type { ChatmockTarget } from "@/lib/chatmock-target";
 import NavBar from "@/app/components/navbar";
 import ChatmockTargetSwitch from "@/app/components/chatmock-target-switch";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
+import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
+import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import { useToast, Toaster } from "@/app/components/toast";
+import {
+  sumIngestTokenUsage,
+  type IngestTokenUsage,
+} from "@/lib/ingest-token-usage";
 
 interface Props {
   userEmail: string;
@@ -85,6 +91,18 @@ interface ResizeSession {
 
 function fileKey(f: File) {
   return `${f.name}-${f.size}`;
+}
+
+function appendUniqueUploadFiles(current: File[], incoming: File[]): File[] {
+  const keys = new Set(current.map(fileKey));
+  const unique = [...current];
+  for (const file of incoming) {
+    const key = fileKey(file);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    unique.push(file);
+  }
+  return unique;
 }
 
 // "0:05" / "1:23" style elapsed-time marker; falls back to seconds under a minute.
@@ -172,6 +190,12 @@ export default function DashboardClient({
   const [uploadProgress, setUploadProgress] = useState<Record<string, string>>(
     {},
   );
+  const [uploadTokenUsage, setUploadTokenUsage] = useState<
+    Record<string, IngestTokenUsage>
+  >({});
+  const [uploadVisionErrors, setUploadVisionErrors] = useState<
+    Record<string, string>
+  >({});
   // Final elapsed time per finished file (ms), shown next to its status.
   const [uploadDurations, setUploadDurations] = useState<
     Record<string, number>
@@ -857,6 +881,8 @@ export default function DashboardClient({
     setUploadStatuses({});
     setUploadErrors({});
     setUploadProgress({});
+    setUploadTokenUsage({});
+    setUploadVisionErrors({});
     setUploadDurations({});
     uploadStartedAtRef.current = {};
     setUploadLabel("");
@@ -879,12 +905,16 @@ export default function DashboardClient({
     e.preventDefault();
     setIsDragging(false);
     const dropped = Array.from(e.dataTransfer.files);
-    if (dropped.length) setUploadFiles((prev) => [...prev, ...dropped]);
+    if (dropped.length) {
+      setUploadFiles((prev) => appendUniqueUploadFiles(prev, dropped));
+    }
   }
 
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
-    if (files.length) setUploadFiles((prev) => [...prev, ...files]);
+    if (files.length) {
+      setUploadFiles((prev) => appendUniqueUploadFiles(prev, files));
+    }
     e.target.value = "";
   }
 
@@ -905,6 +935,16 @@ export default function DashboardClient({
         });
         setUploadProgress((progress) => {
           const next = { ...progress };
+          delete next[key];
+          return next;
+        });
+        setUploadTokenUsage((usage) => {
+          const next = { ...usage };
+          delete next[key];
+          return next;
+        });
+        setUploadVisionErrors((errors) => {
+          const next = { ...errors };
           delete next[key];
           return next;
         });
@@ -934,10 +974,13 @@ export default function DashboardClient({
     setUploadStatuses(initial);
     setUploadErrors({});
     setUploadProgress({});
+    setUploadTokenUsage({});
+    setUploadVisionErrors({});
     setUploadDurations({});
     uploadStartedAtRef.current = {};
 
     let successCount = 0;
+    let duplicateCount = 0;
     let snapshotCount = 0;
     const screenshotWarnings: string[] = [];
 
@@ -991,6 +1034,7 @@ export default function DashboardClient({
         const decoder = new TextDecoder();
         let buffer = "";
         let result: {
+          duplicate?: boolean;
           imageCount?: number;
           screenshotWarning?: string;
           durationMs?: number;
@@ -1009,14 +1053,26 @@ export default function DashboardClient({
             type?: string;
             step?: string;
             error?: string;
+            duplicate?: boolean;
             imageCount?: number;
             screenshotWarning?: string;
+            visionError?: string;
             durationMs?: number;
+            tokenUsage?: IngestTokenUsage;
           };
           try {
             event = JSON.parse(payload);
           } catch {
             return;
+          }
+          if (event.tokenUsage) {
+            setUploadTokenUsage((prev) => ({ ...prev, [key]: event.tokenUsage! }));
+          }
+          if (typeof event.visionError === "string" && event.visionError.trim()) {
+            setUploadVisionErrors((prev) => ({
+              ...prev,
+              [key]: `${file.name}: ${event.visionError!.trim()}`,
+            }));
           }
           if (event.type === "progress" && typeof event.step === "string") {
             const step = event.step;
@@ -1051,9 +1107,12 @@ export default function DashboardClient({
           addToast(`${file.name}: ${streamError}`);
         } else if (result) {
           const data = result as {
+            duplicate?: boolean;
             imageCount?: number;
             screenshotWarning?: string;
+            visionError?: string;
             durationMs?: number;
+            tokenUsage?: IngestTokenUsage;
           };
           setUploadStatuses((prev) => ({ ...prev, [key]: "done" }));
           setUploadErrors((prev) => {
@@ -1064,11 +1123,16 @@ export default function DashboardClient({
           if (typeof data.durationMs === "number") {
             setUploadDurations((prev) => ({ ...prev, [key]: data.durationMs! }));
           }
-          successCount++;
-          snapshotCount +=
-            typeof data.imageCount === "number" ? data.imageCount : 0;
-          if (typeof data.screenshotWarning === "string") {
-            screenshotWarnings.push(`${file.name}: ${data.screenshotWarning}`);
+          if (data.duplicate) {
+            duplicateCount++;
+            addToast(`${file.name} is already in Documents; duplicate upload skipped`);
+          } else {
+            successCount++;
+            snapshotCount +=
+              typeof data.imageCount === "number" ? data.imageCount : 0;
+            if (typeof data.screenshotWarning === "string") {
+              screenshotWarnings.push(`${file.name}: ${data.screenshotWarning}`);
+            }
           }
         } else {
           if (controller.signal.aborted) break;
@@ -1095,6 +1159,8 @@ export default function DashboardClient({
         );
         for (const warning of screenshotWarnings) addToast(warning);
         router.refresh();
+      } else if (duplicateCount > 0) {
+        router.refresh();
       }
       setIsUploading(false);
       uploadAbortRef.current = null;
@@ -1106,6 +1172,12 @@ export default function DashboardClient({
   );
   const handwritingUploadEnabled =
     isHandwriting && hasHandwritingCompatibleFile;
+  const ingestionTokenUsage = sumIngestTokenUsage(
+    Object.values(uploadTokenUsage),
+  );
+  const ingestionVisionErrors = Object.values(uploadVisionErrors).filter(
+    (error) => error.trim().length > 0,
+  );
   const allDoneOrError = (cluster: Cluster | null) =>
     cluster !== null &&
     uploadFiles.length > 0 &&
@@ -2004,6 +2076,15 @@ export default function DashboardClient({
                   </div>
                 )}
               </div>
+
+              <DocumentIngestionVisionError errors={ingestionVisionErrors} />
+
+              {(isUploading || ingestionTokenUsage.startedCalls > 0) && (
+                <DocumentIngestionTokenUsage
+                  usage={ingestionTokenUsage}
+                  pending={isUploading}
+                />
+              )}
 
               {hasHandwritingCompatibleFile &&
                 !allDoneOrError(uploadCluster) && (

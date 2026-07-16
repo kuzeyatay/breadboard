@@ -29,6 +29,81 @@ describe("source document ingest path", () => {
     assert.match(ingestRoute, /sourceRelPath: saved\.sourceRelPath/);
   });
 
+  test("PDF sources keep their uploaded filename and expose the generated title as a description", () => {
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+    const documentsRoute = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "documents", "route.ts"),
+      "utf8",
+    );
+    const workspace = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "src",
+        "app",
+        "gardens",
+        "[clusterSlug]",
+        "workspace-client.tsx",
+      ),
+      "utf8",
+    );
+
+    assert.match(knowledgeSource, /sourceType\.toLowerCase\(\) === "pdf"[\s\S]*?sourceFileName\.trim\(\)/);
+    assert.match(knowledgeSource, /title: visibleSourceTitle,[\s\S]*?description: sectionTitle/);
+    assert.match(documentsRoute, /description: node\.description/);
+    assert.match(workspace, /isPdf \? doc\.sourceFile\?\.trim\(\) : ""/);
+    assert.match(workspace, /sourceDescription/);
+    assert.match(workspace, /\{sourceDescription\}/);
+  });
+
+  test("re-uploading the same source filename is idempotent", () => {
+    const ingestRoute = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "ingest", "route.ts"),
+      "utf8",
+    );
+    const dashboard = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "dashboard", "dashboard-client.tsx"),
+      "utf8",
+    );
+    const workspace = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "src",
+        "app",
+        "gardens",
+        "[clusterSlug]",
+        "workspace-client.tsx",
+      ),
+      "utf8",
+    );
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+
+    assert.match(
+      ingestRoute,
+      /normalizeSourceFileIdentity\(node\.sourceFile\) === sourceFileName/,
+    );
+    assert.match(ingestRoute, /duplicate: true/);
+    assert.ok(
+      ingestRoute.indexOf("const existingSource = existingSourceDocument") <
+        ingestRoute.indexOf('emit("Reading the uploaded file'),
+      "duplicate detection must run before extraction and map generation",
+    );
+    assert.match(dashboard, /appendUniqueUploadFiles/);
+    assert.match(workspace, /appendUniqueUploadFiles/);
+    assert.match(dashboard, /duplicate upload skipped/);
+    assert.match(workspace, /duplicate upload skipped/);
+    assert.match(knowledgeSource, /withoutSupersededSourceIngests/);
+    assert.match(
+      knowledgeSource,
+      /!supersededSourceSlugs\.has\(node\.sourceDocument\)/,
+    );
+  });
+
   test("cluster index migrates and links source markdowns from sources", () => {
     const knowledgeSource = fs.readFileSync(
       path.join(repoRoot, "src", "lib", "knowledge.ts"),
