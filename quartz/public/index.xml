@@ -9,62 +9,62 @@
     <title>Learning Map</title>
     <link>https://localhost:8081/test-2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test-2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist How Spike Event Works 2.1 Spikes, Timing, and Event-Driven Computation 2.2 Membrane-Potential Integration and Leakage 2.3 Threshold Crossing, Spike Emission, and Reset 2.4 Encoding Inputs as Spike Tr... ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:50 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist 1.2 Why Training Spiking Networks Are Difficult How Spike Event Works 2.1 Spikes, Timing, and Temporal Information 2.2 Event-Driven Computation and Energy Efficiency 2.3 Membrane Potential, Input Int... ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:20:29 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test-2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test-2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks A spiking neural network, or SNN, processes information through discrete events called spikes. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:50 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks A spiking neural network, or SNN, computes with discrete events called spikes. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:20:29 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test-2/learning/</link>
     <guid>https://localhost:8081/test-2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spiking neural networks represent and process temporally structured events, trace Leaky Integrate-and-Fire and competitive network dynamics, distinguish three training paradigms, calculate and interpret the source-defined evaluation metric... ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:50 GMT</pubDate>
-  </item><item>
-    <title>5.4 Training Loss, Accuracy, and Convergence</title>
-    <link>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/5.4-Training-Loss,-Accuracy,-and-Convergence</link>
-    <guid>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/5.4-Training-Loss,-Accuracy,-and-Convergence</guid>
-    <description><![CDATA[ Training Loss, Accuracy, and Convergence The three training paradigms-ANN-to-SNN conversion, surrogate-gradient training, and STDP-based learning-produce spiking networks through different learning processes. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:20:29 GMT</pubDate>
   </item><item>
     <title>5. Comparing and Interpreting the Results</title>
     <link>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/</link>
     <guid>https://localhost:8081/test-2/learning/5.-Comparing-and-Interpreting-the-Results/</guid>
     <description><![CDATA[ 5. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
   </item><item>
     <title>1. Why Spiking Neural Networks Matters</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
-    <description><![CDATA[ 1. Why Spiking Neural Networks Matters This teaching step is conceptually distinct and could not be merged without blurring two different ideas. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+    <description><![CDATA[ 1. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
     <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
     <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small sensor watching a doorway for movement. For long stretches, the scene remains almost unchanged. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a small camera watching a quiet doorway. For several seconds, the scene stays almost unchanged. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
+  </item><item>
+    <title>1.2 Why Training Spiking Networks Are Difficult</title>
+    <link>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.2-Why-Training-Spiking-Networks-Are-Difficult</link>
+    <guid>https://localhost:8081/test-2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.2-Why-Training-Spiking-Networks-Are-Difficult</guid>
+    <description><![CDATA[ Why Training Spiking Networks Is Difficult A spiking neuron has already accumulated incoming signals and compared its internal state with a firing threshold. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
   </item><item>
     <title>2. How Spike Event Works</title>
     <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</link>
     <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/</guid>
     <description><![CDATA[ 2. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
   </item><item>
-    <title>2.1 Spikes, Timing, and Event-Driven Computation</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Event-Driven-Computation</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Event-Driven-Computation</guid>
-    <description><![CDATA[ Spikes, Timing, and Event-Driven Computation A spiking neural network still transforms inputs into useful outputs, as earlier neural networks did with continuous-valued activations. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+    <title>2.1 Spikes, Timing, and Temporal Information</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Temporal-Information</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.1-Spikes,-Timing,-and-Temporal-Information</guid>
+    <description><![CDATA[ Spikes, Timing, and Temporal Information Once computation has been divided into time steps, a spiking neural network can represent a changing signal through events that occur at particular moments. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
   </item><item>
-    <title>2.2 Membrane-Potential Integration and Leakage</title>
-    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Membrane-Potential-Integration-and-Leakage</link>
-    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Membrane-Potential-Integration-and-Leakage</guid>
-    <description><![CDATA[ Membrane-Potential Integration and Leakage A spike event occurs at a particular time when a neuron reaches its firing threshold. ]]></description>
-    <pubDate>Wed, 15 Jul 2026 14:41:12 GMT</pubDate>
+    <title>2.2 Event-Driven Computation and Energy Efficiency</title>
+    <link>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Event-Driven-Computation-and-Energy-Efficiency</link>
+    <guid>https://localhost:8081/test-2/learning/2.-How-Spike-Event-Works/2.2-Event-Driven-Computation-and-Energy-Efficiency</guid>
+    <description><![CDATA[ Event-Driven Computation and Energy Efficiency A spike carries information as a discrete event at a particular time. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 09:19:43 GMT</pubDate>
   </item>
     </channel>
   </rss>
