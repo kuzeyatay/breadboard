@@ -149,9 +149,11 @@ test("navbar toggles Learn while a collapsed status indicator remains outside ch
   assert.match(workspaceSource, /function renderCollapsedLearnIndicator/);
   assert.ok(indicatorIndex >= 0, "collapsed Learn status should render");
   assert.ok(indicatorIndex < chatScrollerIndex, "collapsed status must sit outside chat scrolling");
-  assert.match(workspaceSource, /status === "complete"[\s\S]*?bg-\[#4f8a62\]/);
+  assert.match(workspaceSource, /status === "complete"[\s\S]*?text-\[#4f8a62\]/);
   assert.match(workspaceSource, /status === "failed"[\s\S]*?text-\[#b85c5c\]/);
+  assert.match(workspaceSource, /status === "complete" \|\| status === "failed"/);
   assert.match(workspaceSource, /h-5 w-5 rounded-full border-\[3px\] border-current/);
+  assert.doesNotMatch(workspaceSource, /d="m5 12\.5 4\.2 4\.2L19 7"/);
   assert.match(workspaceSource, /onClick=\{\(\) => setLearnPanelOpen\(true\)\}/);
 });
 
