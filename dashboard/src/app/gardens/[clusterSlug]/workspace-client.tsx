@@ -2886,7 +2886,7 @@ export default function WorkspaceClient({
               ? "Learn was cancelled"
               : "Open Learn panel";
     const tone = status === "complete"
-      ? "border-[#3d7652] bg-[#4f8a62] text-[var(--paper-raised)]"
+      ? "border-gray-700 bg-gray-900 text-[#4f8a62]"
       : status === "failed"
         ? "border-gray-700 bg-gray-900 text-[#b85c5c]"
         : status === "awaiting_confirmation"
@@ -2903,18 +2903,7 @@ export default function WorkspaceClient({
       >
         {active ? (
           <Spinner className="h-5 w-5" />
-        ) : status === "complete" ? (
-          <svg
-            className="h-5 w-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.4}
-            aria-hidden="true"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="m5 12.5 4.2 4.2L19 7" />
-          </svg>
-        ) : status === "failed" ? (
+        ) : status === "complete" || status === "failed" ? (
           <span
             className="h-5 w-5 rounded-full border-[3px] border-current"
             aria-hidden="true"
