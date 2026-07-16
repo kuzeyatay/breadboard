@@ -6,6 +6,7 @@ import {
   assertPlannedFormulaAssignment,
   buildFormulaAssignmentPlan,
   buildFormulaAssignmentRepairPacket,
+  buildGardenFormulaFamilyRegistry,
   deriveUnitFormulaRequirement,
   formulaCandidatesForUnit,
   formulaAssignmentProvenanceFromPlan,
@@ -618,4 +619,35 @@ test("35. an energy unit cannot receive another unit's count formula candidate",
   assert.deepEqual(candidates.map((candidate) => candidate.figureId), [energyFormula.anchorId]);
   assert.equal(candidates.some((candidate) => candidate.figureId === countFormula.anchorId), false);
   assert.deepEqual(formulaCandidatesForUnit(sourceFigures, []), []);
+});
+
+// ---------------------------------------------------------------------------
+// Garden-derived custom family registry (limitation #2)
+// ---------------------------------------------------------------------------
+
+test("36. a custom garden family is recognized in a title-less unit via the derived registry", () => {
+  // An economics garden whose only formula belongs to the custom "profit_margin"
+  // family. The unit's title/concepts use domain vocabulary that no universal
+  // family knows, so without the derived registry the requirement is undecidable;
+  // with it, the unit resolves and receives the formula.
+  const margin = identity("E1.E1", "profit_margin", "m = profit / revenue", "Net profit margin", ["profit margin", "net margin"]);
+  const registry = buildGardenFormulaFamilyRegistry([margin]);
+  assert.ok(registry.some((entry) => entry.canonicalFamily === "profit_margin"));
+
+  const profitUnit = unit("B1", "Reading the Firm's Bottom Line", "formula", "How healthy is the firm financially?", ["net margin"]);
+  const withoutRegistry = deriveUnitFormulaRequirement(profitUnit);
+  const withRegistry = deriveUnitFormulaRequirement(profitUnit, registry);
+  assert.equal(withoutRegistry.requiredFamilies.includes("profit_margin"), false);
+  assert.ok(withRegistry.requiredFamilies.includes("profit_margin"));
+
+  const plan = buildFormulaAssignmentPlan([margin], [profitUnit], { familyRegistry: registry });
+  const assigned = plan.assignments.find((a) => a.formulaAnchorId === "E1.E1" && a.status === "assigned");
+  assert.equal(assigned.unitId, "B1");
+});
+
+test("37. the derived registry never registers a universal or unverified family", () => {
+  const universalOnly = buildGardenFormulaFamilyRegistry([ACC(), LAT()]);
+  assert.deepEqual(universalOnly, []); // accuracy/latency are universal — not re-registered
+  const unverifiedCustom = identity("Z9.E1", "profit_margin", "m = p/r", "Net profit margin", ["profit margin"], { verified: false });
+  assert.deepEqual(buildGardenFormulaFamilyRegistry([unverifiedCustom]), []);
 });

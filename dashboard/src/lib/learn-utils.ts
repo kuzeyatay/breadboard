@@ -168,6 +168,14 @@ export function isWorkedExampleFormula(expr: string): boolean {
   const alpha = withoutUnits.match(/[A-Za-z]/g) ?? [];
   const digits = compacted.match(/\d/g) ?? [];
   if (digits.length < 2) return false;
+  // A summation/product/integral is a source DEFINITION, never numeric worked-
+  // example arithmetic — even when its inline index bounds (t=1, i=1) and an
+  // equation tag like "(3)" add extra "=" signs and digits. OCR flattening of
+  // \sum_{t=1}^{T}\sum_{i=1}^{N} into "sum sum ... t=1 i=1" previously tripped
+  // the chained-equality rule below and mislabeled the canonical definition as
+  // a worked example. Aggregation notation is excluded from both heuristics.
+  const aggregationNotation = /\\(?:sum|prod|int)/.test(expr) || /\bsum\b|\bprod\b|\bint\b/i.test(expr);
+  if (aggregationNotation) return false;
   // Chained equality with concrete values is a substitution/result even when
   // the left-hand variable has a descriptive subscript (for example
   // L_decision = 35 - 20 = 15 time steps). The old alpha-count heuristic
@@ -241,7 +249,12 @@ const FORMULA_FAMILY_PATTERNS: Array<[FormulaMetricFamily, RegExp]> = [
   ["gradient", /\bgradient\b|\\nabla|d\s*L\s*\/\s*d|\\partial|surrogate/i],
   ["loss", /\bloss\b|\\mathcal\{?L\}?|mse|cross[- ]?entropy|\\ell\b/i],
   ["probability", /\bprobab|\bp\(|p_\{?i\}?|softmax|\\sigma\(|\\Pr\b/i],
-  ["efficiency", /\befficien|\baccuracy per energy\b|normalized energy|\\eta|eta|\bNEE\b|\\mathrm\{?NEE\}?|\\frac\s*\{?\s*A\s*\}?\s*\{?\s*E\s*\}?/i],
+  // Efficiency is a benefit-per-energy ratio. Match the "<accuracy/count/points>
+  // per joule/watt/energy" shape BEFORE the generic energy family so a worked
+  // example like "45 correct classifications per joule" is not mislabeled energy
+  // just because it mentions joules. "energy per inference" keeps "per" AFTER the
+  // energy term, so it does not match here and correctly falls through to energy.
+  ["efficiency", /\befficien|\baccuracy per energy\b|normalized energy|\\eta|eta|\bNEE\b|\\mathrm\{?NEE\}?|\\frac\s*\{?\s*A\s*\}?\s*\{?\s*E\s*\}?|\bper\s+joule\b|\bper\s+watt\b|(?:classifications?|predictions?|points?|accuracy|percentage)\s+per\s+(?:joule|watt|energy)/i],
   ["energy", /\benergy\b|\bjoules?\b|\bpower\b|\bsynaptic\b|\bsynops?\b|\be_\{?\\?text\{?(?:energy|total|spike|syn)|e_\{?(?:total|spike|synop)|\be(?:total|spike|synapse)\b|(?:energy|power|joule|synaptic|synop|operation)\s+costs?\b|\bcosts?\s+(?:of\s+)?(?:energy|power|joules?|synaptic|synops?|operations?)\b/i],
   ["spike-count", /\bspike[- ]?count\b|\btotal spikes?\b|\bnumber of spikes?\b|\bspikes?\b|n_\{?\\?text\{?(?:spike|spk)|n_\{?(?:spikes?|spk)\}?|n[_\s]*(?:spikes?|spk)|\\sum(?:_\{?[^}\s]*\}?|\s)*(?:s[_\{]|\bspikes?\b)|s_\{?[a-z](?:,[a-z])?\}?|s_n\(t\)/i],
   ["latency", /\blatency\b|\bdelay\b|\bdecision time\b|\bresponse time\b|t_\{?\\?text\{?(?:latency|decision|stimulus)|t_\{?(?:decision|stimulus)/i],
@@ -1335,6 +1348,11 @@ export function buildLearningPageFrontmatter({
   learningVersionId,
   sourceSetHash,
   generatedAt,
+  pageId,
+  generatedByBuildId,
+  generatedByJobId,
+  contractFingerprint,
+  generationAttempt,
 }: {
   gardenId: string;
   sectionNumber: number;
@@ -1359,6 +1377,14 @@ export function buildLearningPageFrontmatter({
   learningVersionId: string;
   sourceSetHash?: string;
   generatedAt: string;
+  /** Active-build ownership (convergent finalization). Emitted only when a
+   * build id is supplied, so legacy output is byte-for-byte unchanged. Page
+   * identity is unit+build, never path or title. */
+  pageId?: string;
+  generatedByBuildId?: string;
+  generatedByJobId?: string;
+  contractFingerprint?: string;
+  generationAttempt?: number;
 }): string {
   // No `conceptTags`, no `textbook*` keys or values: learner pages carry clean
   // `tags:` and never contain the word "textbook" anywhere in their
@@ -1393,6 +1419,12 @@ export function buildLearningPageFrontmatter({
     learningVersion: visibleVersionId,
     learningVersionId: visibleVersionId,
     sourceSetHash,
+    // Active-build ownership (only present under convergent finalization).
+    pageId: generatedByBuildId ? (pageId ?? (learningUnitId ? `page:${learningUnitId}` : undefined)) : undefined,
+    generatedByBuildId: generatedByBuildId || undefined,
+    generatedByJobId: generatedByBuildId ? generatedByJobId : undefined,
+    contractFingerprint: generatedByBuildId ? contractFingerprint : undefined,
+    generationAttempt: generatedByBuildId ? (generationAttempt ?? 1) : undefined,
   });
 }
 

@@ -20,6 +20,7 @@ import {
 } from "@/lib/garden-finalize";
 import { createOpenAIRepairExecutor } from "@/lib/repair-executor";
 import { buildCanonicalSourceAnchors, describeMissingAnchorFailure, healDanglingReplacementReferences, ingestModelSourceAnchors, migrateLegacyTextConceptAnchors, missingRegistryAnchorIds, reconcileFinalGardenState } from "@/lib/final-garden-state";
+import { freezeActiveGenerationByVersion } from "@/lib/learn-structure-reconciliation";
 import {
   buildFormulaIdentityRegistry,
   legacyFormulaFamily,
@@ -31,6 +32,7 @@ import {
   applyFormulaAssignmentPlanToUnits,
   assertPlannedFormulaAssignment,
   buildFormulaAssignmentPlan,
+  buildGardenFormulaFamilyRegistry,
   deriveUnitFormulaRequirement,
   finalizeFormulaAssignmentPlanWithoutCritic,
   formulaCandidatesForUnit,
@@ -1975,6 +1977,7 @@ function writeLearningUnitContractArtifacts({
   const identityById = new Map(formulaIdentities.map((identity) => [identity.anchorId, identity]));
   let formulaAssignmentProvenance: FormulaAssignmentProvenance[] = [];
   let formulaAssignmentPlan: FormulaAssignmentPlan | undefined;
+  const contractFamilyRegistry = buildGardenFormulaFamilyRegistry(formulaIdentities);
   if (formulaIdentities.length > 0) {
     const knownAnchorIds = new Set(formulaIdentities.map((identity) => identity.anchorId));
     const previousAssignments = reconciledUnits.flatMap((unit) =>
@@ -1982,12 +1985,13 @@ function writeLearningUnitContractArtifacts({
         .filter((formula) => knownAnchorIds.has(formula.id))
         .map((formula) => ({ formulaAnchorId: formula.id, unitId: unit.id })));
     formulaAssignmentPlan = finalizeFormulaAssignmentPlanWithoutCritic(
-      buildFormulaAssignmentPlan(formulaIdentities, reconciledUnits, { previousAssignments }),
+      buildFormulaAssignmentPlan(formulaIdentities, reconciledUnits, { previousAssignments, familyRegistry: contractFamilyRegistry }),
     );
     const application = applyFormulaAssignmentPlanToUnits({
       units: reconciledUnits,
       plan: formulaAssignmentPlan,
       formulas: formulaIdentities,
+      familyRegistry: contractFamilyRegistry,
       unknownAnchorPolicy: "preserve",
     });
     if (application.result.applied) {
@@ -2014,7 +2018,7 @@ function writeLearningUnitContractArtifacts({
     for (const formula of unit.sourceFormulas) {
       const identity = identityById.get(formula.id);
       if (!identity) continue; // Source extraction may still be pending; page generation has the strict guard.
-      assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit), unit);
+      assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit, contractFamilyRegistry), unit, contractFamilyRegistry);
     }
     const formalIds = new Set(unit.sourceFormulas.map((formula) => formula.id));
     return {
@@ -2023,7 +2027,7 @@ function writeLearningUnitContractArtifacts({
         const identity = identityById.get(anchorId);
         if (!identity || formalIds.has(anchorId)) return true;
         try {
-          assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit), unit);
+          assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit, contractFamilyRegistry), unit, contractFamilyRegistry);
           return true;
         } catch {
           return false;
@@ -4981,6 +4985,9 @@ export async function runTextbookGeneration({
       buildCanonicalSourceAnchors(clusterDir),
       clusterDir,
     );
+    // Garden-derived family registry so custom (non-universal) formula families
+    // are recognized by every requirement/guard on this run.
+    const generationFamilyRegistry = buildGardenFormulaFamilyRegistry(sourceFormulaIdentities);
     const sourceFormulaIdentityById = new Map(
       sourceFormulaIdentities.map((identity) => [identity.anchorId, identity]),
     );
@@ -5029,12 +5036,14 @@ export async function runTextbookGeneration({
         unit.sourceFormulas.map((formula) => ({ formulaAnchorId: formula.id, unitId: unit.id })));
       const initialPlan = buildFormulaAssignmentPlan(sourceFormulaIdentities, confirmedLearningUnits, {
         previousAssignments,
+        familyRegistry: generationFamilyRegistry,
       });
       const ambiguityResolution = await resolveFormulaAssignmentAmbiguities({
         plan: initialPlan,
         formulas: sourceFormulaIdentities,
         units: confirmedLearningUnits,
         repairModel: assignmentRepairModel,
+        familyRegistry: generationFamilyRegistry,
         maxCalls: 3,
       });
       const assignmentPlan = ambiguityResolution.plan;
@@ -5042,6 +5051,7 @@ export async function runTextbookGeneration({
         units: confirmedLearningUnits,
         plan: assignmentPlan,
         formulas: sourceFormulaIdentities,
+        familyRegistry: generationFamilyRegistry,
         unknownAnchorPolicy: "remove",
       });
       if (planApplication.result.applied) {
@@ -5121,7 +5131,7 @@ export async function runTextbookGeneration({
       for (const formula of unit.sourceFormulas) {
         const identity = sourceFormulaIdentityById.get(formula.id);
         if (!identity) throw new Error(`Formula pre-write guard: ${formula.id} has no canonical source record.`);
-        assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit), unit);
+        assertPlannedFormulaAssignment(identity, deriveUnitFormulaRequirement(unit, generationFamilyRegistry), unit, generationFamilyRegistry);
       }
     }
     throwIfLearnCancelled(job.id);
@@ -5307,16 +5317,13 @@ export async function runTextbookGeneration({
         });
         const metricFormulaAnchorIds = (subsection.sourceFormulaContracts ?? []).map((formula) => formula.id);
         const formulaUnit = confirmedLearningUnits.find((unit) => unit.id === subsection.learningUnitId);
-        const formulaUnitRequirement = formulaUnit ? deriveUnitFormulaRequirement(formulaUnit) : undefined;
+        const formulaUnitRequirement = formulaUnit ? deriveUnitFormulaRequirement(formulaUnit, generationFamilyRegistry) : undefined;
         for (const anchorId of metricFormulaAnchorIds) {
           const identity = sourceFormulaIdentityById.get(anchorId);
           if (!identity || !formulaUnit || !formulaUnitRequirement) {
             throw new Error(`Formula pre-write guard: ${anchorId} cannot be resolved to a verified unit assignment.`);
           }
-          const verdict = assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit);
-          if (verdict.hardRejectionReasons.length > 0) {
-            throw new Error(`Formula assignment rejected at page generation: ${verdict.reason}`);
-          }
+          assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit, generationFamilyRegistry);
         }
         const sourceFigures = sourceFiguresFromVisuals(assignedVisuals);
         const interactiveSourceFigures =
@@ -5630,10 +5637,7 @@ export async function runTextbookGeneration({
           if (!identity || !formulaUnit || !formulaUnitRequirement) {
             throw new Error(`Formula page pre-write guard: ${formula.sourceAnchor} has no verified unit identity.`);
           }
-          const requirementVerdict = assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit);
-          if (requirementVerdict.hardRejectionReasons.length > 0) {
-            throw new Error(`Formula assignment rejected at page frontmatter: ${requirementVerdict.reason}`);
-          }
+          assertPlannedFormulaAssignment(identity, formulaUnitRequirement, formulaUnit, generationFamilyRegistry);
           const entryFamily = formulaMetricFamily(formula.text);
           if (entryFamily && entryFamily !== legacyFormulaFamily(identity.family)) {
             throw new Error(
@@ -5800,6 +5804,42 @@ export async function runTextbookGeneration({
     // loop only gives up (and the terminal throw below fires) once ChatMock can
     // no longer make progress, so a healthy model self-heals gate failures
     // rather than ending generation on the first attempt.
+
+    // Stage 7a (structural generation freeze): a Learn run must own exactly ONE
+    // active generation before any semantic reconciliation. If a previous
+    // generation's learner tree is still on disk (in-place generation left the
+    // old pages behind), it now coexists with this run's pages — producing
+    // duplicate unit mappings, obsolete unknown-unit pages (e.g. a dropped U24),
+    // and stale-claim/tag cascades that the finalizer would otherwise surface as
+    // a terminal "failed critical validation". This deterministic pass keeps the
+    // pages whose embedded learningVersionId is THIS run's version and quarantines
+    // every page from any other generation (and any page whose unit is not in the
+    // current contract) out of the active tree, then removes emptied section
+    // folders. It never consults modification time and never calls ChatMock; with
+    // a single generation present it is a no-op.
+    try {
+      const generationFreeze = freezeActiveGenerationByVersion(clusterDir, confirmedLearningUnits, {
+        currentVersion: publicLearningVersionId(textbookVersionId),
+      });
+      if (generationFreeze.changed) {
+        reconcileFinalGardenState(clusterDir, gardenId);
+        appendLearnEvent(contentPath, gardenId, "learn_generation_freeze_completed", {
+          jobId: job.id,
+          textbookVersionId,
+          currentVersion: generationFreeze.currentVersion,
+          versionsSeen: generationFreeze.versionsSeen,
+          pagesKept: generationFreeze.pagesKept.length,
+          pagesQuarantined: generationFreeze.pagesQuarantined.length,
+          staleSectionsRemoved: generationFreeze.staleSectionsRemoved,
+          reason: generationFreeze.reason,
+        });
+      }
+    } catch (freezeError) {
+      appendLearnEvent(contentPath, gardenId, "learn_generation_freeze_skipped", {
+        jobId: job.id,
+        reason: freezeError instanceof Error ? freezeError.message : String(freezeError),
+      });
+    }
 
     // Stage 7b (post-structure semantic reconciliation): section titles and page
     // paths are frozen by now, so the final learner-page filesystem + the final

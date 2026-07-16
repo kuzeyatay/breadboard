@@ -1311,6 +1311,19 @@ export function readFinalContract(gardenDir: string): { units: LearningUnitContr
 // State builder
 // ---------------------------------------------------------------------------
 
+/** Directory names that are never part of an active projection scan: quarantined
+ * obsolete pages, backups, canonical-shadow diagnostics, checkpoints, and
+ * previous-build trees. Guards every walker against mixed-generation leakage. */
+const NON_ACTIVE_WALK_DIRS = new Set([
+  "quarantine",
+  "canonical-shadow",
+  "backups",
+  "checkpoints",
+  ".previous-builds",
+  ".tmp",
+  "node_modules",
+]);
+
 function walkMarkdown(dir: string, relDir: string, out: Array<{ abs: string; rel: string }>): void {
   let entries: fs.Dirent[];
   try {
@@ -1321,8 +1334,10 @@ function walkMarkdown(dir: string, relDir: string, out: Array<{ abs: string; rel
   for (const entry of entries) {
     const abs = path.join(dir, entry.name);
     const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) walkMarkdown(abs, rel, out);
-    else if (entry.name.endsWith(".md")) out.push({ abs, rel });
+    if (entry.isDirectory()) {
+      if (NON_ACTIVE_WALK_DIRS.has(entry.name)) continue;
+      walkMarkdown(abs, rel, out);
+    } else if (entry.name.endsWith(".md")) out.push({ abs, rel });
   }
 }
 

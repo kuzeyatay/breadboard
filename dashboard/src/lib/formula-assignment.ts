@@ -98,6 +98,52 @@ function knownFamilies(familyRegistry: readonly FormulaFamilyIdentity[]): string
   ])];
 }
 
+const GENERIC_EVIDENCE_TERMS = new Set([
+  "formula", "equation", "definition", "value", "total", "source", "figure",
+  "table", "result", "metric", "measure", "quantity", "number", "count",
+]);
+
+/**
+ * Derive a garden-specific `FormulaFamilyIdentity` registry from the verified
+ * source identities themselves. This closes the custom-family gap: a garden
+ * whose formulas belong to a non-universal family (e.g. `profit_margin`,
+ * `reaction_rate`) registers that family with evidence terms recovered from the
+ * formula's own title/caption/detected terms, so `deriveUnitFormulaRequirement`
+ * can recognize it even when the unit's title uses the domain's own vocabulary.
+ * Universal families are left to the built-in vocabulary (adding formula-title
+ * noise to them risks false matches); only genuinely custom families are added.
+ */
+export function buildGardenFormulaFamilyRegistry(
+  identities: readonly AssignableFormulaIdentity[],
+): FormulaFamilyIdentity[] {
+  const universalTokens = new Set(
+    UNIVERSAL_FORMULA_FAMILIES.flatMap((entry) => [
+      normalizeFamilyToken(entry.canonicalFamily),
+      ...entry.aliases.map((alias) => normalizeFamilyToken(alias)),
+    ]),
+  );
+  const byFamily = new Map<string, Set<string>>();
+  for (const identity of identities) {
+    if (!identity.verified) continue;
+    const token = normalizeFamilyToken(String(identity.family));
+    if (!token || token === "other" || universalTokens.has(token)) continue;
+    const terms = byFamily.get(token) ?? new Set<string>();
+    // The family name itself, spaced, is the strongest evidence term.
+    terms.add(token.replace(/_/g, " "));
+    for (const source of [identity.title, identity.caption, ...(identity.evidence?.detectedTerms ?? [])]) {
+      for (const phrase of String(source ?? "").toLowerCase().split(/[,;/]|\band\b/)) {
+        const clean = phrase.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+        const wordCount = clean.split(" ").filter(Boolean).length;
+        if (clean.length >= 5 && wordCount <= 4 && !GENERIC_EVIDENCE_TERMS.has(clean)) terms.add(clean);
+      }
+    }
+    byFamily.set(token, terms);
+  }
+  return [...byFamily.entries()]
+    .map(([canonicalFamily, terms]) => ({ canonicalFamily, aliases: [], evidenceTerms: [...terms] }))
+    .sort((left, right) => left.canonicalFamily.localeCompare(right.canonicalFamily));
+}
+
 /** A verified identity as the planner consumes it. `family` is widened to
  * `string` so garden-derived custom families (velocity, profit_margin, …)
  * flow through the same planner as the built-in FormulaSemanticFamily set. */
