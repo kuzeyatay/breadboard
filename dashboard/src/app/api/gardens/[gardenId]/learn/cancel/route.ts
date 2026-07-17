@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { cancelLatestLearnJob } from "@/lib/learn";
+import { LearnCancelConflictError, cancelLatestLearnJob } from "@/lib/learn";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ gardenId: string }> },
 ) {
   try {
@@ -19,9 +19,21 @@ export async function POST(
       );
     }
 
-    const job = await cancelLatestLearnJob({ gardenId: cluster.slug, contentPath });
+    const body = await request.json().catch(() => ({}));
+    const expectedJobId =
+      typeof body.expectedJobId === "string" && body.expectedJobId.trim()
+        ? body.expectedJobId.trim()
+        : undefined;
+    const job = await cancelLatestLearnJob({
+      gardenId: cluster.slug,
+      contentPath,
+      expectedJobId,
+    });
     return NextResponse.json({ success: true, job });
   } catch (error) {
+    if (error instanceof LearnCancelConflictError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return routeErrorResponse(error);
   }
 }

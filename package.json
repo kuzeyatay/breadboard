@@ -1,0 +1,13 @@
+{
+  "name": "breadboard",
+  "private": true,
+  "description": "Breadboard — second-brain knowledge gardens with an OpenHarness-backed interactive agent runtime.",
+  "scripts": {
+    "dev": "node scripts/dev-all.mjs",
+    "dev:dashboard": "npm --prefix dashboard run dev",
+    "dev:quartz": "node scripts/start-quartz.mjs",
+    "dev:chatmock": "node scripts/start-chatmock.mjs",
+    "dev:openharness": "node scripts/start-openharness.mjs",
+    "test:dashboard": "npm --prefix dashboard test"
+  }
+}

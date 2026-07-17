@@ -32,6 +32,7 @@ import {
   type SemanticConceptPlan,
   type SemanticHealthMetrics,
 } from './semantic-core.ts';
+import { readFileSyncWithRetry } from './resilient-fs.ts';
 import { semanticTagsFromText } from './tags.ts';
 
 export const CONCEPT_REGISTRY_REL_PATH = '.breadboard/concept-registry.json';
@@ -185,7 +186,7 @@ export function renderSemanticMarkdown(parsed: ParsedMarkdown, fields: Record<st
 export function readJson<T>(filePath: string, fallback: T): T {
   if (!fs.existsSync(filePath)) return fallback;
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
+    return JSON.parse(readFileSyncWithRetry(filePath, 'utf8')) as T;
   } catch {
     return fallback;
   }
@@ -485,7 +486,7 @@ export function performWritesWithBackup(
 ): { changedFiles: string[]; backupDir?: string } {
   const changed = writes.filter(({ relPath, content }) => {
     const absolute = path.join(gardenDir, ...normalizedRel(relPath).split('/'));
-    return !fs.existsSync(absolute) || fs.readFileSync(absolute, 'utf8') !== content;
+    return !fs.existsSync(absolute) || readFileSyncWithRetry(absolute, 'utf8') !== content;
   });
   if (changed.length === 0) return { changedFiles: [] };
 
@@ -633,7 +634,7 @@ export function migrateGardenSemantics(
   );
 
   for (const file of pageFiles) {
-    const current = fs.readFileSync(file.absPath, 'utf8');
+    const current = readFileSyncWithRetry(file.absPath, 'utf8');
     const parsed = parseSemanticMarkdown(current);
     if (!isLearnerPage(file.relPath, parsed.data)) {
       const existingTags = semanticFrontmatterArray(parsed.data, 'tags');
@@ -934,7 +935,7 @@ export function updateLearnerPageConcepts(input: {
   if (!absolute.startsWith(`${root}${path.sep}`) || !fs.existsSync(absolute)) {
     throw new Error('Learner page not found');
   }
-  const current = fs.readFileSync(absolute, 'utf8');
+  const current = readFileSyncWithRetry(absolute, 'utf8');
   const currentParsed = parseSemanticMarkdown(current);
   if (!isLearnerPage(relPath, currentParsed.data)) {
     throw new Error('Public concepts may only be edited on learner pages');
@@ -1045,7 +1046,7 @@ export function validateGardenSemantics(gardenDir: string): {
   const registryIds = new Set(registry.concepts.map((concept) => concept.id));
   const claimIds = new Set<string>();
   for (const file of walkMarkdown(gardenDir)) {
-    const parsed = parseSemanticMarkdown(fs.readFileSync(file.absPath, 'utf8'));
+    const parsed = parseSemanticMarkdown(readFileSyncWithRetry(file.absPath, 'utf8'));
     const tags = semanticFrontmatterArray(parsed.data, 'tags');
     if (!isLearnerPage(file.relPath, parsed.data)) {
       if (tags.length > 0) hardFailures.push(`${file.relPath}: non-learner page carries public tags`);

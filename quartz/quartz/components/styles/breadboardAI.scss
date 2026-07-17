@@ -1,0 +1,190 @@
+.breadboard-ai {
+  --bb-ai-bg: #0b0f14;
+  --bb-ai-fg: #e5e7eb;
+  --bb-ai-border: #1f2937;
+  --bb-ai-accent: #5f7f8e;
+
+  .breadboard-ai-toggle {
+    position: fixed;
+    right: 1.25rem;
+    bottom: 1.25rem;
+    z-index: 900;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.55rem 0.9rem;
+    border-radius: 999px;
+    border: 1px solid var(--bb-ai-border);
+    background: var(--bb-ai-bg);
+    color: var(--bb-ai-fg);
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    font-size: 0.85rem;
+
+    &:hover {
+      background: #131a22;
+    }
+    .breadboard-ai-toggle-icon {
+      color: var(--bb-ai-accent);
+    }
+  }
+
+  .breadboard-ai-panel {
+    position: fixed;
+    right: 1.25rem;
+    bottom: 1.25rem;
+    z-index: 950;
+    display: flex;
+    flex-direction: column;
+    width: min(420px, calc(100vw - 2rem));
+    height: min(70vh, 640px);
+    border-radius: 0.85rem;
+    border: 1px solid var(--bb-ai-border);
+    background: var(--bb-ai-bg);
+    color: var(--bb-ai-fg);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+  }
+
+  .breadboard-ai-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.65rem 0.85rem;
+    border-bottom: 1px solid var(--bb-ai-border);
+
+    .breadboard-ai-context {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      color: #9ca3af;
+      min-width: 0;
+    }
+    .breadboard-ai-page-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 260px;
+    }
+    .breadboard-ai-dot {
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 999px;
+      background: var(--bb-ai-accent);
+    }
+    .breadboard-ai-close {
+      background: none;
+      border: none;
+      color: #9ca3af;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+  }
+
+  .breadboard-ai-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0.6rem 0.85rem;
+    border-bottom: 1px solid var(--bb-ai-border);
+
+    button {
+      padding: 0.3rem 0.6rem;
+      border-radius: 999px;
+      border: 1px solid var(--bb-ai-border);
+      background: #111827;
+      color: #d1d5db;
+      cursor: pointer;
+      font-size: 0.72rem;
+
+      &:hover {
+        background: #1f2937;
+      }
+    }
+  }
+
+  .breadboard-ai-messages {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+
+    .breadboard-ai-message {
+      white-space: pre-wrap;
+      line-height: 1.5;
+      font-size: 0.85rem;
+    }
+    .breadboard-ai-user {
+      align-self: flex-end;
+      max-width: 85%;
+      background: #1f2937;
+      padding: 0.5rem 0.7rem;
+      border-radius: 0.75rem 0.75rem 0.15rem 0.75rem;
+    }
+    .breadboard-ai-assistant {
+      align-self: flex-start;
+      color: #e5e7eb;
+    }
+  }
+
+  .breadboard-ai-error {
+    margin: 0 0.85rem;
+    padding: 0.5rem 0.7rem;
+    border-radius: 0.5rem;
+    border: 1px solid #7f1d1d;
+    background: rgba(127, 29, 29, 0.25);
+    color: #fca5a5;
+    font-size: 0.78rem;
+  }
+
+  .breadboard-ai-composer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.65rem 0.85rem;
+    border-top: 1px solid var(--bb-ai-border);
+
+    .breadboard-ai-input {
+      width: 100%;
+      resize: none;
+      border-radius: 0.5rem;
+      border: 1px solid var(--bb-ai-border);
+      background: #0f141b;
+      color: var(--bb-ai-fg);
+      padding: 0.5rem 0.6rem;
+      font: inherit;
+      font-size: 0.85rem;
+    }
+    .breadboard-ai-composer-row {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.5rem;
+    }
+    button {
+      padding: 0.35rem 0.85rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--bb-ai-border);
+      background: #111827;
+      color: var(--bb-ai-fg);
+      cursor: pointer;
+      font-size: 0.8rem;
+
+      &:hover {
+        background: #1f2937;
+      }
+      &:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+    }
+    .breadboard-ai-send {
+      background: var(--bb-ai-accent);
+      color: #0b0f14;
+      border-color: var(--bb-ai-accent);
+    }
+  }
+}

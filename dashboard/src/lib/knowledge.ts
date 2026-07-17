@@ -2583,6 +2583,7 @@ function wikilinkTargets(body: string): string[] {
 export function scanClusterKnowledge(
   contentPath: string,
   clusterSlug: string,
+  options: { migrateSources?: boolean } = {},
 ): ClusterKnowledge {
   const clusterDir = path.join(contentPath, clusterSlug.trim());
   let nodes: KnowledgeNode[] = [];
@@ -2606,7 +2607,9 @@ export function scanClusterKnowledge(
     };
   }
 
-  migrateRootSourceDocumentsToSources(clusterDir);
+  if (options.migrateSources !== false) {
+    migrateRootSourceDocumentsToSources(clusterDir);
+  }
   const markdownEntries = walkClusterMarkdown(clusterDir);
   const semanticArtifacts = readGardenSemanticArtifacts(clusterDir, clusterSlug);
 
@@ -2870,7 +2873,11 @@ function clusterIndexDescription(knowledge: ClusterKnowledge): string {
   )}, and ${countLabel(knowledge.stats.links, "graph link")}.`;
 }
 
-function clusterOverviewText(knowledge: ClusterKnowledge, date: string): string {
+function clusterOverviewText(
+  knowledge: ClusterKnowledge,
+  date: string,
+  emptyLearnState = false,
+): string {
   const sourceText = countLabel(knowledge.stats.documents, "source document");
   const lessonText = countLabel(knowledge.stats.textbookPages, "lesson page");
   const linkText = countLabel(knowledge.stats.links, "graph link");
@@ -2878,7 +2885,9 @@ function clusterOverviewText(knowledge: ClusterKnowledge, date: string): string 
 
   return [
     `This learning garden is organized from ${sourceText} into a sequence of linked lessons. It currently contains ${lessonText}, ${linkText}, and ${wordText}.`,
-    `Start with the Topic Overview, then follow the numbered sections in order.`,
+    emptyLearnState
+      ? `No lessons yet.`
+      : `Start with the Topic Overview, then follow the numbered sections in order.`,
     `Last updated: ${date}.`,
   ].join("\n\n");
 }
@@ -2925,12 +2934,20 @@ function migrateRootSourceDocumentsToSources(clusterDir: string): void {
 export function refreshClusterIndex(
   contentPath: string,
   clusterSlug: string,
+  options: { migrateSources?: boolean } = {},
 ): void {
   const clusterDir = path.join(contentPath, clusterSlug.trim());
   fs.mkdirSync(clusterDir, { recursive: true });
-  migrateRootSourceDocumentsToSources(clusterDir);
+  if (options.migrateSources !== false) {
+    migrateRootSourceDocumentsToSources(clusterDir);
+  }
   const meta = readClusterIndexMeta(clusterDir, clusterSlug);
-  const knowledge = scanClusterKnowledge(contentPath, clusterSlug);
+  // Migration has already run above when enabled. Passing false here also
+  // guarantees a Clear operation can refresh navigation without moving legacy
+  // root source documents.
+  const knowledge = scanClusterKnowledge(contentPath, clusterSlug, {
+    migrateSources: false,
+  });
   const date = new Date().toISOString().split("T")[0];
 
   const byNewest = (a: KnowledgeNode, b: KnowledgeNode) => {
@@ -2958,6 +2975,11 @@ export function refreshClusterIndex(
   const readingPathLines = learnerPages.map(
     (topic, index) => `${index + 1}. ${wikilinkForRelPath(topic.relPath, topic.title)}`,
   );
+  const overviewLink = LEARNING_PAGE_ORDER[0];
+  const hasTopicOverview = knowledge.nodes.some(
+    (node) => node.relPath.replace(/\\/g, "/").toLowerCase() === overviewLink.toLowerCase(),
+  );
+  const emptyLearnState = learnerPages.length === 0 && !hasTopicOverview;
 
   const learnerRelPaths = new Set(learnerPages.map((topic) => topic.relPath));
   // Every learner-visible page that is not a lesson (already in the Reading
@@ -3010,7 +3032,6 @@ export function refreshClusterIndex(
   }
   while (orphanLines.length > 0 && orphanLines[orphanLines.length - 1] === "") orphanLines.pop();
   const description = clusterIndexDescription(knowledge);
-  const overviewLink = LEARNING_PAGE_ORDER[0];
   const sourcesDir = path.join(clusterDir, "sources");
   if (fs.existsSync(sourcesDir)) {
     const sourceLinks = fs
@@ -3051,9 +3072,9 @@ export function refreshClusterIndex(
       knowledge_type: "cluster-index",
     }) +
     `## Garden overview\n\n` +
-    `${clusterOverviewText(knowledge, date)}\n\n` +
+    `${clusterOverviewText(knowledge, date, emptyLearnState)}\n\n` +
     `## Learning\n\n` +
-    `- ${wikilinkForRelPath(overviewLink, "Topic Overview")}\n\n` +
+    `${emptyLearnState ? "- No lessons yet." : `- ${wikilinkForRelPath(overviewLink, "Topic Overview")}`}\n\n` +
     `## Sources\n\n` +
     `- [[sources/_index|Sources]]\n\n` +
     `## Reading Path\n\n${readingPathLines.length > 0 ? readingPathLines.join("\n") : "- No lessons yet."}\n\n` +

@@ -1,97 +1,85 @@
 ---
 title: "Learning Map"
-date: "2026-07-17T09:01:30.369Z"
+date: "2026-07-17T19:28:47.595Z"
 knowledge_type: "learning-map"
 breadboardType: "learning_map"
 gardenId: "test2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mropk339_98vyshq"
-learningVersionId: "learning_mropk339_98vyshq"
-sourceSetHash: "4057720366b4ae7d905fa7ea8376f05cb1ec8ee45821d03953c05063636e7388"
+learningVersion: "learning_mrpbyqf9_0sou0mq"
+learningVersionId: "learning_mrpbyqf9_0sou0mq"
+sourceSetHash: "9dd04069ae974ffd6ed432d1f1210f565e44a61dfe0994a45890c303d71157bc"
 ---
 
 # Learning Map
 
 ## Section Order
 
-- 1. From Spiking Neural Network to Event-driven Computation
-  - 1.1 [[learning/1. From Spiking Neural Network to Event-driven Computation/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
-  - 1.2 [[learning/1. From Spiking Neural Network to Event-driven Computation/1.2 Neurons, Synapses, and Signal Flow|Neurons, Synapses, and Signal Flow]]
-  - 1.3 [[learning/1. From Spiking Neural Network to Event-driven Computation/1.3 Action Potentials, Refractory Dynamics, and Spike Trains|Action Potentials, Refractory Dynamics, and Spike Trains]]
-  - 1.4 [[learning/1. From Spiking Neural Network to Event-driven Computation/1.4 Operations, Memory Access, and Energy Cost|Operations, Memory Access, and Energy Cost]]
-- 2. Describing Membrane Capacitance Formally
-  - 2.1 [[learning/2. Describing Membrane Capacitance Formally/2.1 The Hodgkin-Huxley Conductance Equation|The Hodgkin-Huxley Conductance Equation]]
-  - 2.2 [[learning/2. Describing Membrane Capacitance Formally/2.2 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]]
-  - 2.3 [[learning/2. Describing Membrane Capacitance Formally/2.3 Quadratic Objectives and SNN Voltage Dynamics|Quadratic Objectives and SNN Voltage Dynamics]]
-  - 2.4 [[learning/2. Describing Membrane Capacitance Formally/2.4 Deriving an SNN from Constrained Gradient Dynamics|Deriving an SNN from Constrained Gradient Dynamics]]
-- 3. Describing Temporal Credit Assignment Formally
-  - 3.1 [[learning/3. Describing Temporal Credit Assignment Formally/3.1 Backpropagation Through Time for Spiking Networks|Backpropagation Through Time for Spiking Networks]]
-  - 3.2 [[learning/3. Describing Temporal Credit Assignment Formally/3.2 Surrogate Gradients for Discrete Spikes|Surrogate Gradients for Discrete Spikes]]
-  - 3.3 [[learning/3. Describing Temporal Credit Assignment Formally/3.3 Finite-Difference Gradient Approximation|Finite-Difference Gradient Approximation]]
-  - 3.4 [[learning/3. Describing Temporal Credit Assignment Formally/3.4 Information-Maximizing and Evolutionary Surrogates|Information-Maximizing and Evolutionary Surrogates]]
-- 4. Describing Near-threshold Activity Formally
-  - 4.1 [[learning/4. Describing Near-threshold Activity Formally/4.1 Sparse Surrogate-Gradient Computation|Sparse Surrogate-Gradient Computation]]
-  - 4.2 [[learning/4. Describing Near-threshold Activity Formally/4.2 Spike-Timing-Dependent Plasticity|Spike-Timing-Dependent Plasticity]]
-  - 4.3 [[learning/4. Describing Near-threshold Activity Formally/4.3 Implicit Differentiation for Equilibrium SNNs|Implicit Differentiation for Equilibrium SNNs]]
-  - 4.4 [[learning/4. Describing Near-threshold Activity Formally/4.4 Residual Connections, Initialization, and Temporal Normalization|Residual Connections, Initialization, and Temporal Normalization]]
-  - 4.5 [[learning/4. Describing Near-threshold Activity Formally/4.5 Measuring Sparse Neural Activity|Measuring Sparse Neural Activity]]
-- 5. Rate Encoding and Latency Encoding Compared
-  - 5.1 [[learning/5. Rate Encoding and Latency Encoding Compared/5.1 Rate, Latency, and Delta-Modulation Encoding|Rate, Latency, and Delta-Modulation Encoding]]
-  - 5.2 [[learning/5. Rate Encoding and Latency Encoding Compared/5.2 Biologically Motivated Alternatives to Temporal Backpropagation|Biologically Motivated Alternatives to Temporal Backpropagation]]
-  - 5.3 [[learning/5. Rate Encoding and Latency Encoding Compared/5.3 Choosing Benchmarks and Evaluation Criteria|Choosing Benchmarks and Evaluation Criteria]]
-- 6. Snn Software Framework and Neuromorphic Hardware Compared
-  - 6.1 [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.1 SNN Software Frameworks and Neuromorphic Hardware|SNN Software Frameworks and Neuromorphic Hardware]]
-  - 6.2 [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.2 Encoding and Learning for Event-Based Classification|Encoding and Learning for Event-Based Classification]]
-  - 6.3 [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.3 Deep SNN Performance on CIFAR Benchmarks|Deep SNN Performance on CIFAR Benchmarks]]
-- 7. Using Brain-machine Interface in Practice
-  - 7.1 [[learning/7. Using Brain-machine Interface in Practice/7.1 Low-Power and Hardware-Constrained Applications|Low-Power and Hardware-Constrained Applications]]
-  - 7.2 [[learning/7. Using Brain-machine Interface in Practice/7.2 Choosing an SNN Training and Deployment Strategy|Choosing an SNN Training and Deployment Strategy]]
+- 1. How Spiking Neural Network Works
+  - 1.1 [[learning/1. How Spiking Neural Network Works/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
+  - 1.2 [[learning/1. How Spiking Neural Network Works/1.2 Neurons, Synapses, and Action Potentials|Neurons, Synapses, and Action Potentials]]
+  - 1.3 [[learning/1. How Spiking Neural Network Works/1.3 Why Hard Spikes Break Ordinary Gradients|Why Hard Spikes Break Ordinary Gradients]]
+  - 1.4 [[learning/1. How Spiking Neural Network Works/1.4 Where SNN Efficiency Comes From|Where SNN Efficiency Comes From]]
+- 2. Describing Capacitive Current Formally
+  - 2.1 [[learning/2. Describing Capacitive Current Formally/2.1 The Hodgkin-Huxley Membrane Equation|The Hodgkin-Huxley Membrane Equation]]
+  - 2.2 [[learning/2. Describing Capacitive Current Formally/2.2 Leaky Integration of Synaptic Input|Leaky Integration of Synaptic Input]]
+  - 2.3 [[learning/2. Describing Capacitive Current Formally/2.3 Threshold Crossing, Spiking, and Reset|Threshold Crossing, Spiking, and Reset]]
+  - 2.4 [[learning/2. Describing Capacitive Current Formally/2.4 Voltage Dynamics Across a Spiking Network|Voltage Dynamics Across a Spiking Network]]
+  - 2.5 [[learning/2. Describing Capacitive Current Formally/2.5 A Quadratic Objective with Linear Constraints|A Quadratic Objective with Linear Constraints]]
+- 3. Describing Gradient-descent Dynamics Formally
+  - 3.1 [[learning/3. Describing Gradient-descent Dynamics Formally/3.1 From Constrained Descent to Spiking Dynamics|From Constrained Descent to Spiking Dynamics]]
+  - 3.2 [[learning/3. Describing Gradient-descent Dynamics Formally/3.2 Temporal Credit Assignment with BPTT|Temporal Credit Assignment with BPTT]]
+  - 3.3 [[learning/3. Describing Gradient-descent Dynamics Formally/3.3 Piecewise Surrogate Gradients|Piecewise Surrogate Gradients]]
+  - 3.4 [[learning/3. Describing Gradient-descent Dynamics Formally/3.4 Finite-Difference Gradient Estimation|Finite-Difference Gradient Estimation]]
+  - 3.5 [[learning/3. Describing Gradient-descent Dynamics Formally/3.5 Information-Maximizing Spike Objectives|Information-Maximizing Spike Objectives]]
+- 4. Describing Differentiable Spike Activation Formally
+  - 4.1 [[learning/4. Describing Differentiable Spike Activation Formally/4.1 Differentiable Spikes with Evolving Sharpness|Differentiable Spikes with Evolving Sharpness]]
+  - 4.2 [[learning/4. Describing Differentiable Spike Activation Formally/4.2 Sparse Surrogate-Gradient Updates|Sparse Surrogate-Gradient Updates]]
+  - 4.3 [[learning/4. Describing Differentiable Spike Activation Formally/4.3 Spike-Timing-Dependent Plasticity|Spike-Timing-Dependent Plasticity]]
+  - 4.4 [[learning/4. Describing Differentiable Spike Activation Formally/4.4 Stabilizing Deep Spiking Networks|Stabilizing Deep Spiking Networks]]
+- 5. Rate Coding and Latency Coding Compared
+  - 5.1 [[learning/5. Rate Coding and Latency Coding Compared/5.1 Rate, Latency, and Delta Spike Encoding|Rate, Latency, and Delta Spike Encoding]]
+  - 5.2 [[learning/5. Rate Coding and Latency Coding Compared/5.2 Alternatives to Standard BPTT|Alternatives to Standard BPTT]]
+  - 5.3 [[learning/5. Rate Coding and Latency Coding Compared/5.3 Interpreting SNN Benchmarks Responsibly|Interpreting SNN Benchmarks Responsibly]]
+  - 5.4 [[learning/5. Rate Coding and Latency Coding Compared/5.4 SNN Frameworks, Hardware, and Low-Power Applications|SNN Frameworks, Hardware, and Low-Power Applications]]
 
 ## Prerequisite Chain
 
-- Start here -> From Spiking Neural Network to Event-driven Computation
-- From Spiking Neural Network to Event-driven Computation -> Describing Membrane Capacitance Formally
-- Describing Membrane Capacitance Formally -> Describing Temporal Credit Assignment Formally
-- Describing Temporal Credit Assignment Formally -> Describing Near-threshold Activity Formally
-- Describing Near-threshold Activity Formally -> Rate Encoding and Latency Encoding Compared
-- Rate Encoding and Latency Encoding Compared -> Snn Software Framework and Neuromorphic Hardware Compared
-- Snn Software Framework and Neuromorphic Hardware Compared -> Using Brain-machine Interface in Practice
+- Start here -> How Spiking Neural Network Works
+- How Spiking Neural Network Works -> Describing Capacitive Current Formally
+- Describing Capacitive Current Formally -> Describing Gradient-descent Dynamics Formally
+- Describing Gradient-descent Dynamics Formally -> Describing Differentiable Spike Activation Formally
+- Describing Differentiable Spike Activation Formally -> Rate Coding and Latency Coding Compared
 
 ## Trunk, Branch, Leaf Concepts
 
-- Trunk: From Spiking Neural Network to Event-driven Computation
+- Trunk: How Spiking Neural Network Works
   - Branch/leaf: Why Spiking Neural Networks Exist
-  - Branch/leaf: Neurons, Synapses, and Signal Flow
-  - Branch/leaf: Action Potentials, Refractory Dynamics, and Spike Trains
-  - Branch/leaf: Operations, Memory Access, and Energy Cost
-- Trunk: Describing Membrane Capacitance Formally
-  - Branch/leaf: The Hodgkin-Huxley Conductance Equation
-  - Branch/leaf: The Leaky Integrate-and-Fire Neuron
-  - Branch/leaf: Quadratic Objectives and SNN Voltage Dynamics
-  - Branch/leaf: Deriving an SNN from Constrained Gradient Dynamics
-- Trunk: Describing Temporal Credit Assignment Formally
-  - Branch/leaf: Backpropagation Through Time for Spiking Networks
-  - Branch/leaf: Surrogate Gradients for Discrete Spikes
-  - Branch/leaf: Finite-Difference Gradient Approximation
-  - Branch/leaf: Information-Maximizing and Evolutionary Surrogates
-- Trunk: Describing Near-threshold Activity Formally
-  - Branch/leaf: Sparse Surrogate-Gradient Computation
+  - Branch/leaf: Neurons, Synapses, and Action Potentials
+  - Branch/leaf: Why Hard Spikes Break Ordinary Gradients
+  - Branch/leaf: Where SNN Efficiency Comes From
+- Trunk: Describing Capacitive Current Formally
+  - Branch/leaf: The Hodgkin-Huxley Membrane Equation
+  - Branch/leaf: Leaky Integration of Synaptic Input
+  - Branch/leaf: Threshold Crossing, Spiking, and Reset
+  - Branch/leaf: Voltage Dynamics Across a Spiking Network
+  - Branch/leaf: A Quadratic Objective with Linear Constraints
+- Trunk: Describing Gradient-descent Dynamics Formally
+  - Branch/leaf: From Constrained Descent to Spiking Dynamics
+  - Branch/leaf: Temporal Credit Assignment with BPTT
+  - Branch/leaf: Piecewise Surrogate Gradients
+  - Branch/leaf: Finite-Difference Gradient Estimation
+  - Branch/leaf: Information-Maximizing Spike Objectives
+- Trunk: Describing Differentiable Spike Activation Formally
+  - Branch/leaf: Differentiable Spikes with Evolving Sharpness
+  - Branch/leaf: Sparse Surrogate-Gradient Updates
   - Branch/leaf: Spike-Timing-Dependent Plasticity
-  - Branch/leaf: Implicit Differentiation for Equilibrium SNNs
-  - Branch/leaf: Residual Connections, Initialization, and Temporal Normalization
-  - Branch/leaf: Measuring Sparse Neural Activity
-- Trunk: Rate Encoding and Latency Encoding Compared
-  - Branch/leaf: Rate, Latency, and Delta-Modulation Encoding
-  - Branch/leaf: Biologically Motivated Alternatives to Temporal Backpropagation
-  - Branch/leaf: Choosing Benchmarks and Evaluation Criteria
-- Trunk: Snn Software Framework and Neuromorphic Hardware Compared
-  - Branch/leaf: SNN Software Frameworks and Neuromorphic Hardware
-  - Branch/leaf: Encoding and Learning for Event-Based Classification
-  - Branch/leaf: Deep SNN Performance on CIFAR Benchmarks
-- Trunk: Using Brain-machine Interface in Practice
-  - Branch/leaf: Low-Power and Hardware-Constrained Applications
-  - Branch/leaf: Choosing an SNN Training and Deployment Strategy
+  - Branch/leaf: Stabilizing Deep Spiking Networks
+- Trunk: Rate Coding and Latency Coding Compared
+  - Branch/leaf: Rate, Latency, and Delta Spike Encoding
+  - Branch/leaf: Alternatives to Standard BPTT
+  - Branch/leaf: Interpreting SNN Benchmarks Responsibly
+  - Branch/leaf: SNN Frameworks, Hardware, and Low-Power Applications
 
 ## Bridge Concepts
 
@@ -99,8 +87,10 @@ sourceSetHash: "4057720366b4ae7d905fa7ea8376f05cb1ec8ee45821d03953c05063636e7388
 
 ## Warnings
 
-- The supplied source map is compacted in places. Exact notation, coefficients, inequality conditions, architecture names, framework names, dataset variants, and reported accuracy values must be verified against the extracted source document before learner prose is generated.
-- The review is the sole evidentiary source. No universal accuracy, biological-plausibility, latency, operation-count, or energy-superiority claim should be added without an explicit anchor in that review.
-- S1.P16.T1 must be interpreted row by row as configuration-bound evidence; accuracies from different datasets, architectures, encodings, timesteps, learning rules, frameworks, or hardware contexts must not be ranked as directly comparable.
-- Reported operation reductions and sparse activity do not by themselves establish end-to-end energy savings because memory access, simulation, software, and hardware realization remain relevant.
-- All extracted figures, graphs, diagrams, displayed formulas, and the result table are assigned exactly once in this contract; repeated appearances in later learner units should link back conceptually rather than duplicate the artifact.
+- The contract is grounded in one review article; claims should retain the review's framing and should not be presented as independent experimental verification.
+- The provided source map is compacted, so page and artifact anchors should be checked against the full extracted document before long-form generation.
+- Reported benchmark accuracies are configuration-dependent and must not be converted into a universal ranking.
+- Potential energy efficiency depends on event sparsity, memory traffic, software behavior, and compatible hardware; spike sparsity alone is insufficient.
+- The constrained-optimizer interpretation should be taught as the reviewed mathematical correspondence, not as a claim that every SNN implements every constrained optimization problem.
+- Illustrative numerical examples may clarify equations but must be labeled as constructed examples rather than reported experimental results.
+- All identified figures, graphs, displayed formulas, and the benchmark table are assigned exactly once to an inline teaching unit; none are reserved for a disconnected artifact gallery.

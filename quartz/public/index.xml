@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>Topic Overview</title>
-    <link>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</link>
-    <guid>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</guid>
-    <description><![CDATA[ Generated Visualization Demo This garden follows one source-backed relationship from its source note into a manipulable lesson. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 11:10:57 GMT</pubDate>
-  </item><item>
-    <title>A</title>
-    <link>https://localhost:8081/physics-for-ee/a/</link>
-    <guid>https://localhost:8081/physics-for-ee/a/</guid>
-    <description><![CDATA[  ]]></description>
-    <pubDate>Fri, 17 Jul 2026 11:10:57 GMT</pubDate>
-  </item><item>
     <title>Learning Map</title>
     <link>https://localhost:8081/test2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order From Spiking Neural Network to Event-driven Computation 1.1 Why Spiking Neural Networks Exist 1.2 Neurons, Synapses, and Signal Flow 1.3 Action Potentials, Refractory Dynamics, and Spike Trains 1.4 Operations, Memory Access, and Energy Cost Describing Membrane Capacitance ... ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:01:30 GMT</pubDate>
+    <description><![CDATA[ Learning Map Section Order How Spiking Neural Network Works 1.1 Why Spiking Neural Networks Exist 1.2 Neurons, Synapses, and Action Potentials 1.3 Why Hard Spikes Break Ordinary Gradients 1.4 Where SNN Efficiency Comes From Describing Capacitive Current Formally 2.1 The Hodgkin-Huxley Membrane Equat... ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:47 GMT</pubDate>
   </item><item>
     <title>Topic Overview</title>
     <link>https://localhost:8081/test2/learning/Topic-Overview</link>
     <guid>https://localhost:8081/test2/learning/Topic-Overview</guid>
     <description><![CDATA[ Spiking Neural Networks A spiking neural network, or SNN, processes information through discrete events called spikes. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:01:30 GMT</pubDate>
+    <pubDate>Fri, 17 Jul 2026 19:28:47 GMT</pubDate>
   </item><item>
     <title>Spiking Neural Networks</title>
     <link>https://localhost:8081/test2/learning/</link>
     <guid>https://localhost:8081/test2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:01:30 GMT</pubDate>
+    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spike-based computation grows from biological signaling, derive central neuron and optimization equations, compare encoding and training strategies, analyze efficiency mechanisms, and interpret SNN benchmarks without making unsupported uni... ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:47 GMT</pubDate>
   </item><item>
     <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a wearable sensor monitoring a person throughout the day. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
+    <link>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a sensor watching a mostly still scene. For long stretches, each part of the scene remains unchanged. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:03 GMT</pubDate>
   </item><item>
-    <title>1.2 Neurons, Synapses, and Signal Flow</title>
-    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.2-Neurons,-Synapses,-and-Signal-Flow</link>
-    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.2-Neurons,-Synapses,-and-Signal-Flow</guid>
-    <description><![CDATA[ Neurons, Synapses, and Signal Flow A spiking neural network becomes easier to understand when each neuron is viewed as a small signal-processing cell connected to many others. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
+    <title>1.2 Neurons, Synapses, and Action Potentials</title>
+    <link>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.2-Neurons,-Synapses,-and-Action-Potentials</link>
+    <guid>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.2-Neurons,-Synapses,-and-Action-Potentials</guid>
+    <description><![CDATA[ Neurons, Synapses, and Action Potentials A spiking neural network communicates through the discrete spikes introduced earlier, yet each spike begins with a continuously changing electrical state inside a neuron. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:03 GMT</pubDate>
   </item><item>
-    <title>1.3 Action Potentials, Refractory Dynamics, and Spike Trains</title>
-    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.3-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</link>
-    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.3-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</guid>
-    <description><![CDATA[ A neuron already has a membrane potential, and incoming synaptic signals can push that voltage upward or downward. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
+    <title>1.3 Why Hard Spikes Break Ordinary Gradients</title>
+    <link>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.3-Why-Hard-Spikes-Break-Ordinary-Gradients</link>
+    <guid>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.3-Why-Hard-Spikes-Break-Ordinary-Gradients</guid>
+    <description><![CDATA[ Why Hard Spikes Break Ordinary Gradients A neuron’s membrane value can accumulate incoming signals over time until it crosses a threshold and emits a binary spike. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:03 GMT</pubDate>
   </item><item>
-    <title>1.4 Operations, Memory Access, and Energy Cost</title>
-    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.4-Operations,-Memory-Access,-and-Energy-Cost</link>
-    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.4-Operations,-Memory-Access,-and-Energy-Cost</guid>
-    <description><![CDATA[ Operations, Memory Access, and Energy Cost Once neural activity is expressed as sparse events, computation can follow the same pattern. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
+    <title>1.4 Where SNN Efficiency Comes From</title>
+    <link>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.4-Where-SNN-Efficiency-Comes-From</link>
+    <guid>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/1.4-Where-SNN-Efficiency-Comes-From</guid>
+    <description><![CDATA[ Where SNN Efficiency Comes From Once spikes are understood as discrete events that travel between neurons, the network’s efficiency can be traced through what happens after each event. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:03 GMT</pubDate>
   </item><item>
-    <title>1. From Spiking Neural Network to Event-driven Computation</title>
-    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/</link>
-    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/</guid>
+    <title>1. How Spiking Neural Network Works</title>
+    <link>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/</link>
+    <guid>https://localhost:8081/test2/learning/1.-How-Spiking-Neural-Network-Works/</guid>
     <description><![CDATA[ 1. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
+    <pubDate>Fri, 17 Jul 2026 19:28:03 GMT</pubDate>
+  </item><item>
+    <title>2.1 The Hodgkin-Huxley Membrane Equation</title>
+    <link>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Current-Formally/2.1-The-Hodgkin-Huxley-Membrane-Equation</link>
+    <guid>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Current-Formally/2.1-The-Hodgkin-Huxley-Membrane-Equation</guid>
+    <description><![CDATA[ The Hodgkin-Huxley Membrane Equation With membrane potential, voltage-gated ion channels, capacitance, and conductance already in place, we can combine them into one quantitative description of a membrane. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:03 GMT</pubDate>
+  </item><item>
+    <title>2.2 Leaky Integration of Synaptic Input</title>
+    <link>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Current-Formally/2.2-Leaky-Integration-of-Synaptic-Input</link>
+    <guid>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Current-Formally/2.2-Leaky-Integration-of-Synaptic-Input</guid>
+    <description><![CDATA[ Leaky Integration of Synaptic Input Membrane potential gives a neuron a short-lived memory of earlier synaptic input, while spike encoding turns each incoming event into a precisely timed contribution to that memory. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 19:28:03 GMT</pubDate>
   </item>
     </channel>
   </rss>

@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import {
   getLearnStatusSnapshot,
-  runLearnPlanning,
   runTextbookGeneration,
 } from "@/lib/learn";
 import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
@@ -42,6 +41,23 @@ export async function POST(
       gardenId: cluster.slug,
       contentPath,
     });
+    const mayResumeFailedInitialGeneration =
+      !status.latestTextbookVersionId &&
+      status.hasTextbook &&
+      status.job?.mode === "generate" &&
+      status.job.status === "failed";
+    if (
+      (status.latestTextbookVersionId || status.hasTextbook) &&
+      !mayResumeFailedInitialGeneration
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "This garden already has learner content. Use Repair issues, or explicitly confirm Rebuild entire garden to recreate it.",
+        },
+        { status: 409 },
+      );
+    }
     const requestedSourceIdSet = includedSourceIds ? new Set(includedSourceIds) : null;
     const confirmedSelectionMatches =
       !requestedSourceIdSet ||
@@ -52,17 +68,13 @@ export async function POST(
       (requestedMapId && requestedMapId !== status.confirmedLearningMapId) ||
       !confirmedSelectionMatches
     ) {
-      const planning = await runLearnPlanning({
-        gardenId: cluster.slug,
-        userId,
-        client,
-        model,
-        contentPath,
-        includedSourceIds,
-        sourceOnly,
-        includeSourceSnapshots,
-      });
-      return NextResponse.json({ success: true, planning });
+      return NextResponse.json(
+        {
+          error:
+            "Generate requires the current confirmed Learning Map and matching source selection. Start planning explicitly for a new garden.",
+        },
+        { status: 409 },
+      );
     }
     const generation = await runTextbookGeneration({
       gardenId: cluster.slug,

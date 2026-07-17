@@ -186,6 +186,104 @@ export function ensureSemanticRetrievalSchema(database: SqliteDatabase = db): vo
   `);
 }
 
+/**
+ * Remove indexed learner content for one garden without touching source
+ * chunks or another garden's rows. Passing no page paths clears every indexed
+ * `learning/` page for the garden. A caller that has independently verified a
+ * generated page outside that tree may include it in
+ * `verifiedGeneratedPageRelPaths`.
+ *
+ * FTS rows must be removed while the base rows still exist because their ids
+ * are selected from `semantic_chunks`.
+ */
+export function clearLearnSemanticChunks(
+  input: {
+    gardenSlug: string;
+    pageRelPaths?: readonly string[];
+    verifiedGeneratedPageRelPaths?: readonly string[];
+  },
+  database: SqliteDatabase = db,
+): { deletedChunks: number; deletedFtsRows: number } {
+  ensureSemanticRetrievalSchema(database);
+  const gardenSlug = input.gardenSlug.trim();
+  if (!gardenSlug) return { deletedChunks: 0, deletedFtsRows: 0 };
+
+  const clearAllLearningPages = input.pageRelPaths === undefined;
+  const normalizePaths = (values: readonly string[]): string[] =>
+    values
+      .map((relPath) =>
+        relPath
+          .trim()
+          .replace(/\\/g, '/')
+          .replace(/^\.\//, '')
+          .replace(/^\/+/, ''),
+      )
+      .filter(Boolean);
+  const scopedLearningPaths = input.pageRelPaths
+    ? normalizePaths(input.pageRelPaths).filter((relPath) =>
+        relPath.toLowerCase().startsWith('learning/'))
+    : [];
+  const verifiedGeneratedPaths = normalizePaths(
+    input.verifiedGeneratedPageRelPaths ?? [],
+  ).filter((relPath) => {
+    const lower = relPath.toLowerCase();
+    return lower !== '_index.md' &&
+      !lower.startsWith('sources/') &&
+      !lower.startsWith('assets/') &&
+      !lower.startsWith('.breadboard/');
+  });
+  const normalizedPaths = Array.from(new Set([
+    ...scopedLearningPaths,
+    ...verifiedGeneratedPaths,
+  ]));
+  if (!clearAllLearningPages && normalizedPaths.length === 0) {
+    return { deletedChunks: 0, deletedFtsRows: 0 };
+  }
+
+  const deleteAllLearningFts = database.prepare(`
+    DELETE FROM semantic_chunks_fts
+    WHERE id IN (
+      SELECT id FROM semantic_chunks
+      WHERE garden_slug = ?
+        AND lower(replace(page_rel_path, char(92), '/')) LIKE 'learning/%'
+    )
+  `);
+  const deleteAllLearningChunks = database.prepare(`
+    DELETE FROM semantic_chunks
+    WHERE garden_slug = ?
+      AND lower(replace(page_rel_path, char(92), '/')) LIKE 'learning/%'
+  `);
+  const deletePageFts = database.prepare(`
+    DELETE FROM semantic_chunks_fts
+    WHERE id IN (
+      SELECT id FROM semantic_chunks
+      WHERE garden_slug = ?
+        AND lower(replace(page_rel_path, char(92), '/')) = lower(?)
+    )
+  `);
+  const deletePageChunks = database.prepare(`
+    DELETE FROM semantic_chunks
+    WHERE garden_slug = ?
+      AND lower(replace(page_rel_path, char(92), '/')) = lower(?)
+  `);
+
+  return database.transaction(() => {
+    let deletedFtsRows = clearAllLearningPages
+      ? deleteAllLearningFts.run(gardenSlug).changes
+      : 0;
+    for (const relPath of normalizedPaths) {
+      deletedFtsRows += deletePageFts.run(gardenSlug, relPath).changes;
+    }
+    let deletedChunks = clearAllLearningPages
+      ? deleteAllLearningChunks.run(gardenSlug).changes
+      : 0;
+    for (const relPath of normalizedPaths) {
+      deletedChunks += deletePageChunks.run(gardenSlug, relPath).changes;
+    }
+    return { deletedChunks, deletedFtsRows };
+  })();
+}
+
 function markdownBlocks(value: string): string[] {
   const blocks: string[] = [];
   const lines = value.replace(/\r\n/g, '\n').split('\n');

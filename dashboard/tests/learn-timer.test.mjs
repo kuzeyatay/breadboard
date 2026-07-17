@@ -223,7 +223,10 @@ test("Learn failures stay in the panel without opening a dialog or toast", () =>
   assert.ok(catchStart >= 0 && catchEnd > catchStart);
   assert.doesNotMatch(workspaceSource, /LearnErrorDialog/);
   assert.match(workspaceSource, /status === "failed" && job\?\.error[\s\S]*?\{job\.error\}/);
-  assert.match(learnActionCatch, /if \(isCancel\) \{[\s\S]*?addToast\(message\)/);
+  assert.match(
+    learnActionCatch,
+    /if \(isCancel \|\| endpoint === "clear"\) \{[\s\S]*?addToast\(message\)/,
+  );
   assert.doesNotMatch(learnActionCatch, /else[\s\S]*?addToast\(message\)/);
 });
 

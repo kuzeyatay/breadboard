@@ -54,6 +54,7 @@ import {
 import type { SourceAnchor } from "./visual-spec.ts";
 import { isValidPublicConceptSlug } from "./semantic-core.ts";
 import { migrateGardenSemantics, validateGardenSemantics } from "./garden-semantics.ts";
+import { readFileSyncWithRetry } from "./resilient-fs.ts";
 import {
   dedupeSemanticBlockerLines,
   finalGardenStateFingerprint,
@@ -203,7 +204,7 @@ function slugifyLoose(value: string): string {
 
 function readJson<T>(filePath: string, fallback: T): T {
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+    return JSON.parse(readFileSyncWithRetry(filePath, "utf-8")) as T;
   } catch {
     return fallback;
   }
@@ -440,7 +441,7 @@ function readLearningUnitContract(gardenDir: string): LearningUnitContractArtifa
   ];
   for (const filePath of candidates) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      const parsed = JSON.parse(readFileSyncWithRetry(filePath, "utf-8"));
       const units = normalizeLearningUnits(parsed);
       const assignments = dedupeSourceArtifactAssignments(normalizeSourceArtifactAssignments(parsed), units);
       if (units.length > 0) return { units, assignments, foundPath: filePath };
@@ -557,7 +558,7 @@ function writeSourceAnchorLedger(gardenDir: string, anchors: SourceTextConceptAn
   const content = `${JSON.stringify({ sourceTextConceptAnchors: [...deduped.values()].sort((a, b) => a.id.localeCompare(b.id)) }, null, 2)}\n`;
   const target = sourceAnchorLedgerPath(gardenDir);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf-8") : "";
+  const existing = fs.existsSync(target) ? readFileSyncWithRetry(target, "utf-8") : "";
   if (existing === content) return;
   fs.writeFileSync(target, content, "utf-8");
   if (!report.changed.includes(".breadboard/source-anchors.json")) report.changed.push(".breadboard/source-anchors.json");
@@ -1050,8 +1051,8 @@ function generatedVisualIntegrityProblems(gardenDir: string, pages: LearnerPage[
       let source = "";
       let compiled = "";
       try {
-        source = fs.readFileSync(path.join(dir, "source.tsx"), "utf-8");
-        compiled = fs.readFileSync(path.join(dir, "compiled.js"), "utf-8");
+        source = readFileSyncWithRetry(path.join(dir, "source.tsx"), "utf-8");
+        compiled = readFileSyncWithRetry(path.join(dir, "compiled.js"), "utf-8");
       } catch {
         problems.push(`${page.rel}: generated visual ${id} artifact files are incomplete`);
         continue;
@@ -1206,7 +1207,7 @@ function saveVisualSpecArtifact(gardenDir: string, spec: Record<string, unknown>
   const target = path.join(gardenDir, rel);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const content = `${JSON.stringify(spec, null, 2)}\n`;
-  const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf-8") : "";
+  const existing = fs.existsSync(target) ? readFileSyncWithRetry(target, "utf-8") : "";
   if (existing === content) return;
   fs.writeFileSync(target, content, "utf-8");
   if (!report.changed.includes(rel)) report.changed.push(rel);
@@ -1858,7 +1859,7 @@ function sourcesHaveLaterPages(gardenDir: string): boolean {
   if (!fs.existsSync(sourcesDir)) return false;
   for (const name of fs.readdirSync(sourcesDir)) {
     if (!name.endsWith(".md")) continue;
-    const body = fs.readFileSync(path.join(sourcesDir, name), "utf-8");
+    const body = readFileSyncWithRetry(path.join(sourcesDir, name), "utf-8");
     for (const match of body.matchAll(/^#{1,6}\s+(?:\[\[#?)?\s*Page\s+(\d+)/gim)) {
       if (Number.parseInt(match[1] ?? "0", 10) > 2) return true;
     }
@@ -1876,7 +1877,7 @@ function loadLearnerPages(gardenDir: string): LearnerPage[] {
   listMarkdown(learningDir, "learning", all);
   const pages: LearnerPage[] = [];
   for (const { abs, rel } of all) {
-    const content = fs.readFileSync(abs, "utf-8");
+    const content = readFileSyncWithRetry(abs, "utf-8");
     const { rawFrontmatter, body } = parseFrontmatter(content);
     const kt = fmGetScalar(rawFrontmatter, "knowledge_type");
     const bt = fmGetScalar(rawFrontmatter, "breadboardType");
@@ -1909,7 +1910,7 @@ function loadLessonLikePages(gardenDir: string): Array<LearnerPage & { learnAuth
   const pages: Array<LearnerPage & { learnAuthored: boolean }> = [];
   for (const { abs, rel } of all) {
     if (/(^|\/)_index\.md$/i.test(rel) || /^learning\/(?:Learning Map|Topic Overview)\.md$/i.test(rel)) continue;
-    const content = fs.readFileSync(abs, "utf-8");
+    const content = readFileSyncWithRetry(abs, "utf-8");
     const parsed = parseFrontmatter(content);
     if (!parsed.hadFrontmatter) continue;
     const kt = fmGetScalar(parsed.rawFrontmatter, "knowledge_type");
@@ -2579,7 +2580,7 @@ function writeRepairArtifacts(gardenDir: string, report: LearningUnitRepairRunRe
 
 function readRepairRunReport(gardenDir: string): LearningUnitRepairRunReport | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(repairLogPath(gardenDir), "utf-8"));
+    const parsed = JSON.parse(readFileSyncWithRetry(repairLogPath(gardenDir), "utf-8"));
     if (parsed && typeof parsed === "object" && Array.isArray(parsed.repairs)) {
       return parsed as LearningUnitRepairRunReport;
     }
@@ -2720,7 +2721,7 @@ function repairCandidateScopeProblems(page: LearnerPage, request: UnitRepairRequ
 
 function snapshotFilesForRevert(absPaths: string[]): Map<string, Buffer | null> {
   const snap = new Map<string, Buffer | null>();
-  for (const abs of absPaths) snap.set(abs, fs.existsSync(abs) ? fs.readFileSync(abs) : null);
+  for (const abs of absPaths) snap.set(abs, fs.existsSync(abs) ? readFileSyncWithRetry(abs) : null);
   return snap;
 }
 
@@ -3141,7 +3142,7 @@ function snapshotFiles(root: string): Map<string, string> {
   const snapshot = new Map<string, string>();
   for (const rel of collectAllFiles(root)) {
     const abs = path.join(root, ...rel.split("/"));
-    const hash = crypto.createHash("sha1").update(fs.readFileSync(abs)).digest("hex");
+    const hash = crypto.createHash("sha1").update(readFileSyncWithRetry(abs)).digest("hex");
     snapshot.set(rel, hash);
   }
   return snapshot;
@@ -3159,7 +3160,7 @@ function changedBetweenSnapshots(before: Map<string, string>, after: Map<string,
 function validationReportAccepted(gardenDir: string): boolean {
   const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
   if (!fs.existsSync(reportPath)) return false;
-  return /^Accepted:\s+yes\s*$/m.test(fs.readFileSync(reportPath, "utf-8"));
+  return /^Accepted:\s+yes\s*$/m.test(readFileSyncWithRetry(reportPath, "utf-8"));
 }
 
 export function verifyFinalArtifactNoMutation({
@@ -3496,7 +3497,7 @@ function fixLearnerTitles(pages: LearnerPage[], gardenDir: string, report: Final
   ];
   for (const file of navFiles) {
     if (!fs.existsSync(file)) continue;
-    const text = fs.readFileSync(file, "utf-8");
+    const text = readFileSyncWithRetry(file, "utf-8");
     let next = text;
     for (const { from, to } of renames) next = replaceTitleAliasOnly(next, from, to);
     if (next !== text) {
@@ -3548,7 +3549,7 @@ export function normalizeSourceWikilinks(gardenDir: string, report: FinalizeRepo
   }
 
   for (const { abs, rel } of visible) {
-    const original = fs.readFileSync(abs, "utf-8");
+    const original = readFileSyncWithRetry(abs, "utf-8");
     const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(original);
     const headingSlugs = new Set<string>();
     for (const match of body.matchAll(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm)) {
@@ -3630,7 +3631,7 @@ export function normalizeSourceWikilinks(gardenDir: string, report: FinalizeRepo
 }
 
 function normalizeSourcePageTyping(abs: string, rel: string, report: FinalizeReport): void {
-  const content = fs.readFileSync(abs, "utf-8");
+  const content = readFileSyncWithRetry(abs, "utf-8");
   const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
   if (!hadFrontmatter) return;
   let fm = rawFrontmatter;
@@ -3743,7 +3744,7 @@ function sanitizeStaleCaveatFiles(
   for (const learner of loadLearnerPagePaths(gardenDir)) files.push(learner);
   for (const file of files) {
     if (!fs.existsSync(file)) continue;
-    const content = fs.readFileSync(file, "utf-8");
+    const content = readFileSyncWithRetry(file, "utf-8");
     const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
     const nextBody = sanitizeStaleCaveats(body, facts);
     if (nextBody !== body) {
@@ -3795,7 +3796,7 @@ function repairLearnerNavigationSourceLinks(gardenDir: string, report: FinalizeR
   ];
   for (const file of files) {
     if (!fs.existsSync(file)) continue;
-    const content = fs.readFileSync(file, "utf-8");
+    const content = readFileSyncWithRetry(file, "utf-8");
     const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
     const nextBody = body.replace(/\[\[(sources\/[^\]|#]+(?:#[^\]|]+)?)(?:\|([^\]]+))?\]\]/gi, (whole, target: string, alias?: string) => {
       const label = String(alias ?? "").trim();
@@ -3817,7 +3818,7 @@ function repairLearnerNavigationSourceLinks(gardenDir: string, report: FinalizeR
 
   const rootFile = path.join(gardenDir, "_index.md");
   if (fs.existsSync(rootFile)) {
-    const content = fs.readFileSync(rootFile, "utf-8");
+    const content = readFileSyncWithRetry(rootFile, "utf-8");
     const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
     const nextBody = body.replace(/\[\[sources\/_index(?:\.md)?(?:#[^\]|]+)?\|([^\]]+)\]\]/gi, (whole, alias: string) => {
       const label = String(alias ?? "").trim();
@@ -4102,7 +4103,7 @@ function writeSourceCoverage({
   );
   const content = `${lines.join("\n")}\n`;
   const target = path.join(planningDir, "Source Coverage.md");
-  const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf-8") : "";
+  const existing = fs.existsSync(target) ? readFileSyncWithRetry(target, "utf-8") : "";
   const { rawFrontmatter } = parseFrontmatter(existing);
   const next = rawFrontmatter ? joinFrontmatter(rawFrontmatter, content) : content;
   // Only write + report a touch when the projection actually changes; a
@@ -5282,7 +5283,7 @@ function sectionIndexProseQualityProblems(gardenDir: string): string[] {
   listMarkdown(path.join(gardenDir, "learning"), "learning", pages);
   const problems: string[] = [];
   for (const page of pages.filter((entry) => /\/_index\.md$/i.test(entry.rel))) {
-    const { body } = parseFrontmatter(fs.readFileSync(page.abs, "utf-8"));
+    const { body } = parseFrontmatter(readFileSyncWithRetry(page.abs, "utf-8"));
     const prose = teachingProseLite(body);
     if (/\bBuild up\b[^.\n]{0,120}\bone step at a time\b/i.test(prose)) {
       problems.push(`${page.rel}: contains generic "Build up ... one step at a time" scaffold prose`);
@@ -5300,7 +5301,7 @@ function repairSectionIndexProse(gardenDir: string, report: FinalizeReport): voi
   const pages: Array<{ abs: string; rel: string }> = [];
   listMarkdown(path.join(gardenDir, "learning"), "learning", pages);
   for (const page of pages.filter((entry) => /\/_index\.md$/i.test(entry.rel))) {
-    const content = fs.readFileSync(page.abs, "utf-8");
+    const content = readFileSyncWithRetry(page.abs, "utf-8");
     const { rawFrontmatter, body, hadFrontmatter } = parseFrontmatter(content);
     const prose = teachingProseLite(body);
     if (!/\bBuild up\b[^.\n]{0,120}\bone step at a time\b|\bsnns\b|\bSNNs\s+learns\b|This section is part of the confirmed Breadboard learning map/i.test(prose)) continue;
@@ -5534,7 +5535,7 @@ function assetPathForUrl(gardenDir: string, assetUrl: string): string | null {
 function imageDimensions(filePath: string): { width: number; height: number } | null {
   let buffer: Buffer;
   try {
-    buffer = fs.readFileSync(filePath);
+    buffer = readFileSyncWithRetry(filePath);
   } catch {
     return null;
   }
@@ -5611,7 +5612,7 @@ function semanticNavigationProblems(gardenDir: string): string[] {
   const problems: string[] = [];
   const read = (rel: string) => {
     const file = path.join(gardenDir, ...rel.split("/"));
-    return fs.existsSync(file) ? parseFrontmatter(fs.readFileSync(file, "utf-8")).body : "";
+    return fs.existsSync(file) ? parseFrontmatter(readFileSyncWithRetry(file, "utf-8")).body : "";
   };
   const root = read("_index.md");
   for (const target of wikilinkTargets(markdownSection(root, "Learning"))) {
@@ -5672,7 +5673,7 @@ function semanticNavigationNumberProblems(gardenDir: string): string[] {
   const filePath = path.join(gardenDir, "learning", "_index.md");
   if (!fs.existsSync(filePath)) return problems;
   let currentSection: { number: number; title: string; folder: string } | null = null;
-  const { body } = parseFrontmatter(fs.readFileSync(filePath, "utf-8"));
+  const { body } = parseFrontmatter(readFileSyncWithRetry(filePath, "utf-8"));
   for (const ref of wikilinkRefs(body)) {
     const labelMatch = ref.label.match(/^(\d+)(?:\.(\d+))?\.?\s+(.+)$/);
     const sectionInfo = sectionFolderInfo(ref.target);
@@ -5719,7 +5720,7 @@ function cleanMapNode(value: string): string {
 function learningMapAmbiguityProblems(gardenDir: string, sections: Array<{ rel: string; sectionTitle: string }>): string[] {
   const filePath = path.join(gardenDir, "learning", "Learning Map.md");
   if (!fs.existsSync(filePath)) return [];
-  const markdown = fs.readFileSync(filePath, "utf-8");
+  const markdown = readFileSyncWithRetry(filePath, "utf-8");
   const problems: string[] = [];
   const sectionCounts = new Map<string, number>();
   for (const section of sections) {
@@ -5777,7 +5778,7 @@ function sectionSemanticInputs(
   for (const [rel, entry] of bySection) {
     const indexPath = path.join(gardenDir, ...rel.split("/"), "_index.md");
     const title = fs.existsSync(indexPath)
-      ? fmGetScalar(parseFrontmatter(fs.readFileSync(indexPath, "utf-8")).rawFrontmatter, "title")
+      ? fmGetScalar(parseFrontmatter(readFileSyncWithRetry(indexPath, "utf-8")).rawFrontmatter, "title")
       : rel.split("/").pop() ?? rel;
     inputs.push({
       rel,
@@ -5819,7 +5820,7 @@ function suggestedSectionSemanticTitle(
 }
 
 function rewriteSectionIndexTitle(indexPath: string, nextTitle: string): boolean {
-  const content = fs.readFileSync(indexPath, "utf-8");
+  const content = readFileSyncWithRetry(indexPath, "utf-8");
   const { rawFrontmatter, body } = parseFrontmatter(content);
   const currentTitle = fmGetScalar(rawFrontmatter, "title");
   const nextRaw = fmSetScalar(rawFrontmatter, "title", nextTitle);
@@ -5883,7 +5884,7 @@ function rewriteReferencesAfterSectionRename(gardenDir: string, oldRel: string, 
   };
   collectJson(path.join(gardenDir, ".breadboard"), ".breadboard");
   for (const file of [...files, ...jsonFiles]) {
-    const content = fs.readFileSync(file.abs, "utf-8");
+    const content = readFileSyncWithRetry(file.abs, "utf-8");
     let next = replaceAllLiteral(content, oldRel, newRel);
     next = replaceAllLiteral(next, encodeURI(oldRel), encodeURI(newRel));
     if (next === content) continue;
@@ -5911,7 +5912,7 @@ function currentSectionTitles(gardenDir: string): {
     if (!entry.isDirectory() || !/^\d+\.\s+/.test(entry.name)) continue;
     const indexPath = path.join(learningDir, entry.name, "_index.md");
     if (!fs.existsSync(indexPath)) continue;
-    const title = fmGetScalar(parseFrontmatter(fs.readFileSync(indexPath, "utf-8")).rawFrontmatter, "title") || entry.name;
+    const title = fmGetScalar(parseFrontmatter(readFileSyncWithRetry(indexPath, "utf-8")).rawFrontmatter, "title") || entry.name;
     const rel = `learning/${entry.name}`;
     byRel.set(rel, title);
     const number = title.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1] ?? entry.name.match(/^\s*(\d+(?:\.\d+)*)\.?\s+/)?.[1];
@@ -5934,7 +5935,7 @@ function repairSectionNavigationLabels(gardenDir: string, report: FinalizeReport
   for (const rel of navRels) {
     const abs = path.join(gardenDir, ...rel.split("/"));
     if (!fs.existsSync(abs)) continue;
-    const content = fs.readFileSync(abs, "utf-8");
+    const content = readFileSyncWithRetry(abs, "utf-8");
     const replacements: Array<[string, string]> = [];
     if (rel === "learning/Learning Map.md") {
       for (const match of content.matchAll(/^\s*-\s*(\d+)\.\s+(.+?)\s*$/gm)) {
@@ -5982,7 +5983,7 @@ function alignSectionFoldersWithTitles(gardenDir: string, report: FinalizeReport
     const oldAbs = path.join(learningDir, entry.name);
     const indexPath = path.join(oldAbs, "_index.md");
     if (!fs.existsSync(indexPath)) continue;
-    const title = fmGetScalar(parseFrontmatter(fs.readFileSync(indexPath, "utf-8")).rawFrontmatter, "title");
+    const title = fmGetScalar(parseFrontmatter(readFileSyncWithRetry(indexPath, "utf-8")).rawFrontmatter, "title");
     const nextName = sectionFolderNameForTitle(title || entry.name, entry.name);
     if (nextName === entry.name) continue;
     const nextAbs = path.join(learningDir, nextName);
@@ -6001,7 +6002,7 @@ function alignSectionFoldersWithTitles(gardenDir: string, report: FinalizeReport
 function readGardenTitle(gardenDir: string): string {
   const indexPath = path.join(gardenDir, "_index.md");
   if (fs.existsSync(indexPath)) {
-    const { rawFrontmatter } = parseFrontmatter(fs.readFileSync(indexPath, "utf-8"));
+    const { rawFrontmatter } = parseFrontmatter(readFileSyncWithRetry(indexPath, "utf-8"));
     const title = fmGetScalar(rawFrontmatter, "title");
     if (title) return title;
   }
@@ -6110,14 +6111,14 @@ function sourceMapCaveatProblems(gardenDir: string, ledger: LedgerVisual[]): str
   const sourceDocs: Array<{ abs: string; rel: string }> = [];
   listMarkdown(path.join(gardenDir, "sources"), "sources", sourceDocs);
   const hasFormulaMarkdown = sourceDocs.some(({ abs }) =>
-    /(?:\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\frac|\\sum|\\min|\\max|\\geq|\\leq|[A-Za-z][A-Za-z0-9_{}\\]*\s*=)/.test(fs.readFileSync(abs, "utf-8")),
+    /(?:\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\frac|\\sum|\\min|\\max|\\geq|\\leq|[A-Za-z][A-Za-z0-9_{}\\]*\s*=)/.test(readFileSyncWithRetry(abs, "utf-8")),
   );
   const hasTables = ledger.some((visual) => String(visual.type ?? "") === "table" || /\.T\d+$/i.test(visual.sourceVisualId));
   const hasFigures = ledger.some((visual) => classifyFigure(visual) !== "equation" && String(visual.type ?? "") !== "table" && !/\.T\d+$/i.test(visual.sourceVisualId));
   const hasLaterPages = sourcesHaveLaterPages(gardenDir) || ledger.some((visual) => Number(visual.pageNumber ?? 0) > 2);
   for (const [label, filePath] of docs) {
     if (!fs.existsSync(filePath)) continue;
-    const text = fs.readFileSync(filePath, "utf-8");
+    const text = readFileSyncWithRetry(filePath, "utf-8");
     if ((hasFormulaAnchors || hasFormulaExactText || hasFormulaCrops || hasFormulaMarkdown) && STALE_FORMULA_CAVEAT_RE.test(text)) {
       problems.push(`${label}: stale caveat says formulas/definitions are unavailable despite formula anchors`);
     }
@@ -6216,7 +6217,7 @@ function coverageModeSection(markdown: string, heading: string): string {
 function sourceCoverageModePrecisionProblems(gardenDir: string, ledger: LedgerVisual[]): string[] {
   const filePath = path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md");
   if (!fs.existsSync(filePath)) return [];
-  const coverage = fs.readFileSync(filePath, "utf-8");
+  const coverage = readFileSyncWithRetry(filePath, "utf-8");
   const problems: string[] = [];
   if (/^##\s+Figures,\s*Graphs,\s*Tables,\s*And\s*Formula\s*Displays\s*Used\s*$/im.test(coverage)) {
     problems.push('Source Coverage overclaims embedded/display use with legacy heading "Figures, Graphs, Tables, And Formula Displays Used"');
@@ -6270,7 +6271,7 @@ function proseConceptForVisualType(type: string): { label: string; pattern: RegE
 function sourceCorpusText(gardenDir: string): string {
   const sourcePages: Array<{ abs: string; rel: string }> = [];
   listMarkdown(path.join(gardenDir, "sources"), "sources", sourcePages);
-  return sourcePages.map(({ abs }) => parseFrontmatter(fs.readFileSync(abs, "utf-8")).body).join("\n\n");
+  return sourcePages.map(({ abs }) => parseFrontmatter(readFileSyncWithRetry(abs, "utf-8")).body).join("\n\n");
 }
 
 function sourceTextAnchorForConcept(
@@ -6281,7 +6282,7 @@ function sourceTextAnchorForConcept(
   listMarkdown(path.join(gardenDir, "sources"), "sources", sourcePages);
   for (const { abs, rel } of sourcePages.sort((a, b) => a.rel.localeCompare(b.rel))) {
     if (/\/_index\.md$/i.test(rel) || /(^|\/)_index\.md$/i.test(rel)) continue;
-    const { rawFrontmatter, body } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const { rawFrontmatter, body } = parseFrontmatter(readFileSyncWithRetry(abs, "utf-8"));
     const sourceTitle = fmGetScalar(rawFrontmatter, "title") || path.basename(rel, ".md");
     const sourceId = fmGetScalar(rawFrontmatter, "sourceId") || slugifyLoose(path.basename(rel, ".md")) || "source";
     const chunks = body
@@ -6379,7 +6380,7 @@ function sourcePageParagraphs(gardenDir: string): Array<{ sourceId: string; sour
   const out: Array<{ sourceId: string; sourceTitle: string; page: number; text: string }> = [];
   for (const { abs, rel } of sourcePages) {
     if (/\/_index\.md$/i.test(rel) || /(^|\/)_index\.md$/i.test(rel)) continue;
-    const { rawFrontmatter, body } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const { rawFrontmatter, body } = parseFrontmatter(readFileSyncWithRetry(abs, "utf-8"));
     const sourceTitle = fmGetScalar(rawFrontmatter, "title") || path.basename(rel, ".md");
     const sourceId = fmGetScalar(rawFrontmatter, "sourceId") || slugifyLoose(path.basename(rel, ".md")) || "source";
     let page = 0;
@@ -6720,7 +6721,7 @@ function finalVisualSpecs(gardenDir: string, learnerPages: LearnerPage[]): Array
 function sourceCoverageFinalArtifactConsistencyProblems(gardenDir: string, learnerPages: LearnerPage[]): string[] {
   const coveragePath = path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md");
   if (!fs.existsSync(coveragePath)) return [];
-  const coverage = fs.readFileSync(coveragePath, "utf-8");
+  const coverage = readFileSyncWithRetry(coveragePath, "utf-8");
   const usedInteractive = coverageModeSection(coverage, "Used as Interactive Grounding");
   const problems: string[] = [];
   const visualSpecs = finalVisualSpecs(gardenDir, learnerPages).filter((entry) => entry.id);
@@ -6767,7 +6768,7 @@ function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
       problems.push(`learning/${entry.name}/: section folder is missing _index.md`);
       continue;
     }
-    const { rawFrontmatter, body } = parseFrontmatter(fs.readFileSync(indexPath, "utf-8"));
+    const { rawFrontmatter, body } = parseFrontmatter(readFileSyncWithRetry(indexPath, "utf-8"));
     const title = fmGetScalar(rawFrontmatter, "title") || entry.name;
     const h1 = body.match(/^\s*#\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
     const folderKey = normalizedSectionTitleKey(entry.name);
@@ -6780,7 +6781,7 @@ function sectionFolderTitleConsistencyProblems(gardenDir: string): string[] {
     if (h1 && normalizedSectionTitleKey(h1) !== titleKey) problems.push(`learning/${entry.name}/_index.md: H1 "${h1}" does not match frontmatter title "${title}"`);
   }
   const map = fs.existsSync(path.join(learningDir, "Learning Map.md"))
-    ? parseFrontmatter(fs.readFileSync(path.join(learningDir, "Learning Map.md"), "utf-8")).body
+    ? parseFrontmatter(readFileSyncWithRetry(path.join(learningDir, "Learning Map.md"), "utf-8")).body
     : "";
   for (const line of map.split(/\r?\n/)) {
     const match = line.match(/^\s*-\s*(?:\[\[[^\]]+\|)?(.+?)(?:\]\])?\s*$/);
@@ -7066,7 +7067,7 @@ function collectFinalizeChecks({
   const sourcePages: Array<{ abs: string; rel: string }> = [];
   listMarkdown(path.join(gardenDir, "sources"), "sources", sourcePages);
   for (const { abs, rel } of sourcePages) {
-    const { rawFrontmatter } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const { rawFrontmatter } = parseFrontmatter(readFileSyncWithRetry(abs, "utf-8"));
     if (fmGetScalar(rawFrontmatter, "breadboardType") === "learning_page") typingProblems.push(`${rel}: typed learning_page`);
     if (fmGetScalar(rawFrontmatter, "internal") === "true" && fmGetScalar(rawFrontmatter, "breadboardType") === "learning_page") {
       typingProblems.push(`${rel}: internal+learning_page`);
@@ -7325,7 +7326,7 @@ function collectFinalizeChecks({
   // Source Coverage from contract.
   const coverageProblems: string[] = [];
   const coverage = fs.existsSync(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"))
-    ? fs.readFileSync(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"), "utf-8")
+    ? readFileSyncWithRetry(path.join(gardenDir, ".breadboard", "planning", "Source Coverage.md"), "utf-8")
     : "";
   if (!coverage && contract.assignments.length > 0) coverageProblems.push(".breadboard/planning/Source Coverage.md missing");
   if (/central to\s+\[\[/i.test(coverage)) coverageProblems.push("Source Coverage still uses heuristic 'central to [[page]]' assignments");
@@ -7350,7 +7351,7 @@ function collectFinalizeChecks({
   // Source Map consistency.
   const sourceMapProblems: string[] = [];
   const sourceMap = fs.existsSync(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"))
-    ? fs.readFileSync(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"), "utf-8")
+    ? readFileSyncWithRetry(path.join(gardenDir, ".breadboard", "planning", "Source Map.md"), "utf-8")
     : "";
   const hasFormulaAnchors = ledger.some((visual) => classifyFigure(visual) === "equation");
   const hasTables = ledger.some((visual) => String(visual.type ?? "") === "table" || /^S\d+\.P\d+\.T\d+$/i.test(String(visual.sourceVisualId ?? "")));
@@ -7401,7 +7402,7 @@ function collectFinalizeChecks({
   const sectionPages: Array<{ abs: string; rel: string }> = [];
   listMarkdown(path.join(gardenDir, "learning"), "learning", sectionPages);
   for (const { abs, rel } of sectionPages.filter((page) => /\/_index\.md$/i.test(page.rel))) {
-    const { rawFrontmatter } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const { rawFrontmatter } = parseFrontmatter(readFileSyncWithRetry(abs, "utf-8"));
     const title = fmGetScalar(rawFrontmatter, "title") || rel;
     if (/This Topic/i.test(title)) titleProblems.push(`${rel}: title contains "This Topic"`);
     if (/and the Mechanism Works|and it Is Measured|How It Learns or Changes|The Formal Description/i.test(title)) {
@@ -7475,7 +7476,7 @@ function collectFinalizeChecks({
   if (includeReportSelfCheck) {
     const reportPath = path.join(gardenDir, ".breadboard", "validation-report.md");
     const reportProblems: string[] = [];
-    const validationReport = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf-8") : "";
+    const validationReport = fs.existsSync(reportPath) ? readFileSyncWithRetry(reportPath, "utf-8") : "";
     if (!validationReport) {
       reportProblems.push("missing");
     } else {
@@ -7529,7 +7530,7 @@ function runCriticalGate({
   const sourcePages: Array<{ abs: string; rel: string }> = [];
   listMarkdown(path.join(gardenDir, "sources"), "sources", sourcePages);
   for (const { abs, rel } of sourcePages) {
-    const { rawFrontmatter } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const { rawFrontmatter } = parseFrontmatter(readFileSyncWithRetry(abs, "utf-8"));
     const bt = fmGetScalar(rawFrontmatter, "breadboardType");
     if (bt === "learning_page" || fmGetScalar(rawFrontmatter, "knowledge_type") === "learning-page") {
       problems.push(`source page typed as learner page: ${rel}`);
@@ -7541,7 +7542,7 @@ function runCriticalGate({
   const strayLearners: Array<{ abs: string; rel: string }> = [];
   for (const top of ["sources", "assets"]) listMarkdown(path.join(gardenDir, top), top, strayLearners);
   for (const { abs, rel } of strayLearners) {
-    const { rawFrontmatter } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const { rawFrontmatter } = parseFrontmatter(readFileSyncWithRetry(abs, "utf-8"));
     if (fmGetScalar(rawFrontmatter, "breadboardType") === "learning_page") {
       problems.push(`learner page outside learning/: ${rel}`);
     }
@@ -7554,7 +7555,7 @@ function runCriticalGate({
   listMarkdown(path.join(gardenDir, "learning"), "learning", visible);
   listMarkdown(path.join(gardenDir, "sources"), "sources", visible);
   for (const { abs, rel } of visible) {
-    const { body } = parseFrontmatter(fs.readFileSync(abs, "utf-8"));
+    const { body } = parseFrontmatter(readFileSyncWithRetry(abs, "utf-8"));
     const headingSlugs = new Set<string>();
     for (const match of body.matchAll(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/gm)) headingSlugs.add(slugifyLoose(match[1] ?? ""));
     for (const match of body.matchAll(/(?<!!)\[\[#([^\]|]+?)(?:\|[^\]]*)?\]\]/g)) {

@@ -1,2 +1,7 @@
 # Breadboard Council run ledgers (JSONL/JSON, dev persistence)
 .breadboard/
+
+# OpenHarness runtime workspaces + skill quarantine (server-controlled, transient)
+.runtime/
+openharness-skills/quarantine/
+openharness-skills/approved/

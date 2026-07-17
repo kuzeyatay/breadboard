@@ -16425,6 +16425,77 @@ window.addEventListener("message", (event) => {
 `;
 var FolderPdfExport_default = /* @__PURE__ */ __name((() => FolderPdfExport), "default");
 
+// quartz/components/scripts/breadboardAI.inline.ts
+var breadboardAI_inline_default = "";
+
+// quartz/components/styles/breadboardAI.scss
+var breadboardAI_default = "";
+
+// quartz/components/BreadboardAI.tsx
+import { jsx as jsx41, jsxs as jsxs24 } from "preact/jsx-runtime";
+function dashboardUrl() {
+  return process.env.BREADBOARD_DASHBOARD_URL ?? "http://localhost:3000";
+}
+__name(dashboardUrl, "dashboardUrl");
+var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
+  const slug = String(fileData.slug ?? "");
+  const gardenId = slug.split("/")[0] ?? "";
+  const pageTitle = String(fileData.frontmatter?.title ?? "");
+  if (!gardenId || slug === "index") return null;
+  return /* @__PURE__ */ jsxs24(
+    "div",
+    {
+      class: "breadboard-ai",
+      "data-dashboard": dashboardUrl(),
+      "data-garden": gardenId,
+      "data-page": slug,
+      "data-title": pageTitle,
+      children: [
+        /* @__PURE__ */ jsxs24("button", { class: "breadboard-ai-toggle", "aria-label": "Ask AI about this page", title: "Ask AI about this page", children: [
+          /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-toggle-icon", "aria-hidden": "true", children: "\u2726" }),
+          /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-toggle-label", children: "Ask AI" })
+        ] }),
+        /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-panel", role: "dialog", "aria-label": "Page AI assistant", hidden: true, children: [
+          /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-header", children: [
+            /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-context", "aria-live": "polite", children: [
+              /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-dot", "aria-hidden": "true" }),
+              /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-page-name" })
+            ] }),
+            /* @__PURE__ */ jsx41("button", { class: "breadboard-ai-close", "aria-label": "Close AI panel", children: "\u2715" })
+          ] }),
+          /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-actions", children: [
+            /* @__PURE__ */ jsx41("button", { "data-prompt": "Explain this page from first principles.", children: "Explain" }),
+            /* @__PURE__ */ jsx41("button", { "data-prompt": "Give a concrete worked example based on this page.", children: "Example" }),
+            /* @__PURE__ */ jsx41("button", { "data-prompt": "Quiz me on this page.", children: "Quiz me" }),
+            /* @__PURE__ */ jsx41("button", { "data-prompt": "Show the sources this page is grounded in.", children: "Sources" }),
+            /* @__PURE__ */ jsx41("button", { "data-prompt": "Find connections between this page and related notes.", children: "Connections" })
+          ] }),
+          /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-messages", "aria-live": "polite" }),
+          /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-error", role: "alert", hidden: true }),
+          /* @__PURE__ */ jsxs24("form", { class: "breadboard-ai-composer", children: [
+            /* @__PURE__ */ jsx41(
+              "textarea",
+              {
+                class: "breadboard-ai-input",
+                rows: 2,
+                placeholder: "Ask about this page\u2026",
+                "aria-label": "Ask about this page"
+              }
+            ),
+            /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-composer-row", children: [
+              /* @__PURE__ */ jsx41("button", { type: "button", class: "breadboard-ai-stop", hidden: true, children: "Stop" }),
+              /* @__PURE__ */ jsx41("button", { type: "submit", class: "breadboard-ai-send", children: "Send" })
+            ] })
+          ] })
+        ] })
+      ]
+    }
+  );
+}, "BreadboardAI");
+BreadboardAI.afterDOMLoaded = breadboardAI_inline_default;
+BreadboardAI.css = breadboardAI_default;
+var BreadboardAI_default = /* @__PURE__ */ __name((() => BreadboardAI), "default");
+
 // quartz.layout.ts
 var frontmatterString3 = /* @__PURE__ */ __name((page, key) => {
   const value = page.fileData.frontmatter?.[key];
@@ -16436,7 +16507,10 @@ var isClusterIndex = /* @__PURE__ */ __name((page) => !isGardenOverview(page) &&
 var sharedPageComponents = {
   head: Head_default(),
   header: [],
-  afterBody: [],
+  // Breadboard page-scoped AI panel. It self-gates (renders nothing on the
+  // top-level index or pages without a garden), and only functions when the
+  // dashboard has OpenHarness enabled and the garden permits chat access.
+  afterBody: [BreadboardAI_default()],
   footer: Empty_default()
 };
 var defaultContentPageLayout = {
@@ -16919,7 +16993,7 @@ var FolderPage = /* @__PURE__ */ __name((userOpts) => {
 
 // quartz/plugins/emitters/contentIndex.tsx
 import { toHtml as toHtml2 } from "hast-util-to-html";
-import { jsx as jsx41 } from "preact/jsx-runtime";
+import { jsx as jsx42 } from "preact/jsx-runtime";
 var defaultOptions19 = {
   enableSiteMap: true,
   enableRSS: true,
@@ -17043,7 +17117,7 @@ var ContentIndex = /* @__PURE__ */ __name((opts) => {
       if (opts?.enableRSS) {
         return {
           additionalHead: [
-            /* @__PURE__ */ jsx41(
+            /* @__PURE__ */ jsx42(
               "link",
               {
                 rel: "alternate",

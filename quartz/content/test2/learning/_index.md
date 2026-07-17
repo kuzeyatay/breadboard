@@ -1,50 +1,48 @@
 ---
 title: "Spiking Neural Networks"
-date: "2026-07-17T09:01:30.361Z"
+date: "2026-07-17T19:28:47.586Z"
 knowledge_type: "learning-index"
 breadboardType: "learning_index"
 gardenId: "test2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mropk339_98vyshq"
-learningVersionId: "learning_mropk339_98vyshq"
-sourceSetHash: "4057720366b4ae7d905fa7ea8376f05cb1ec8ee45821d03953c05063636e7388"
+learningVersion: "learning_mrpbyqf9_0sou0mq"
+learningVersionId: "learning_mrpbyqf9_0sou0mq"
+sourceSetHash: "9dd04069ae974ffd6ed432d1f1210f565e44a61dfe0994a45890c303d71157bc"
 ---
 
 # Spiking Neural Networks
 
-Spiking Neural Networks connects Topic Overview with 1. From Spiking Neural Network to Event-driven Computation, 1.1 Why Spiking Neural Networks Exist so the ideas build in a clear order.
+Learners will be able to explain how spike-based computation grows from biological signaling, derive central neuron and optimization equations, compare encoding and training strategies, analyze efficiency mechanisms, and interpret SNN benchmarks without making unsupported universal claims.
 
 Read the sections in order. Start with the [[learning/Topic Overview|Topic Overview]], then work through each numbered section.
-- [[learning/1. From Spiking Neural Network to Event-driven Computation/_index|1. From Spiking Neural Network to Event-driven Computation]]
-  - [[learning/1. From Spiking Neural Network to Event-driven Computation/1.1 Why Spiking Neural Networks Exist|1.1 Why Spiking Neural Networks Exist]]
-  - [[learning/1. From Spiking Neural Network to Event-driven Computation/1.2 Neurons, Synapses, and Signal Flow|1.2 Neurons, Synapses, and Signal Flow]]
-  - [[learning/1. From Spiking Neural Network to Event-driven Computation/1.3 Action Potentials, Refractory Dynamics, and Spike Trains|1.3 Action Potentials, Refractory Dynamics, and Spike Trains]]
-  - [[learning/1. From Spiking Neural Network to Event-driven Computation/1.4 Operations, Memory Access, and Energy Cost|1.4 Operations, Memory Access, and Energy Cost]]
-- [[learning/2. Describing Membrane Capacitance Formally/_index|2. Describing Membrane Capacitance Formally]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.1 The Hodgkin-Huxley Conductance Equation|2.1 The Hodgkin-Huxley Conductance Equation]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.2 The Leaky Integrate-and-Fire Neuron|2.2 The Leaky Integrate-and-Fire Neuron]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.3 Quadratic Objectives and SNN Voltage Dynamics|2.3 Quadratic Objectives and SNN Voltage Dynamics]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.4 Deriving an SNN from Constrained Gradient Dynamics|2.4 Deriving an SNN from Constrained Gradient Dynamics]]
-- [[learning/3. Describing Temporal Credit Assignment Formally/_index|3. Describing Temporal Credit Assignment Formally]]
-  - [[learning/3. Describing Temporal Credit Assignment Formally/3.1 Backpropagation Through Time for Spiking Networks|3.1 Backpropagation Through Time for Spiking Networks]]
-  - [[learning/3. Describing Temporal Credit Assignment Formally/3.2 Surrogate Gradients for Discrete Spikes|3.2 Surrogate Gradients for Discrete Spikes]]
-  - [[learning/3. Describing Temporal Credit Assignment Formally/3.3 Finite-Difference Gradient Approximation|3.3 Finite-Difference Gradient Approximation]]
-  - [[learning/3. Describing Temporal Credit Assignment Formally/3.4 Information-Maximizing and Evolutionary Surrogates|3.4 Information-Maximizing and Evolutionary Surrogates]]
-- [[learning/4. Describing Near-threshold Activity Formally/_index|4. Describing Near-threshold Activity Formally]]
-  - [[learning/4. Describing Near-threshold Activity Formally/4.1 Sparse Surrogate-Gradient Computation|4.1 Sparse Surrogate-Gradient Computation]]
-  - [[learning/4. Describing Near-threshold Activity Formally/4.2 Spike-Timing-Dependent Plasticity|4.2 Spike-Timing-Dependent Plasticity]]
-  - [[learning/4. Describing Near-threshold Activity Formally/4.3 Implicit Differentiation for Equilibrium SNNs|4.3 Implicit Differentiation for Equilibrium SNNs]]
-  - [[learning/4. Describing Near-threshold Activity Formally/4.4 Residual Connections, Initialization, and Temporal Normalization|4.4 Residual Connections, Initialization, and Temporal Normalization]]
-  - [[learning/4. Describing Near-threshold Activity Formally/4.5 Measuring Sparse Neural Activity|4.5 Measuring Sparse Neural Activity]]
-- [[learning/5. Rate Encoding and Latency Encoding Compared/_index|5. Rate Encoding and Latency Encoding Compared]]
-  - [[learning/5. Rate Encoding and Latency Encoding Compared/5.1 Rate, Latency, and Delta-Modulation Encoding|5.1 Rate, Latency, and Delta-Modulation Encoding]]
-  - [[learning/5. Rate Encoding and Latency Encoding Compared/5.2 Biologically Motivated Alternatives to Temporal Backpropagation|5.2 Biologically Motivated Alternatives to Temporal Backpropagation]]
-  - [[learning/5. Rate Encoding and Latency Encoding Compared/5.3 Choosing Benchmarks and Evaluation Criteria|5.3 Choosing Benchmarks and Evaluation Criteria]]
-- [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/_index|6. Snn Software Framework and Neuromorphic Hardware Compared]]
-  - [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.1 SNN Software Frameworks and Neuromorphic Hardware|6.1 SNN Software Frameworks and Neuromorphic Hardware]]
-  - [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.2 Encoding and Learning for Event-Based Classification|6.2 Encoding and Learning for Event-Based Classification]]
-  - [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.3 Deep SNN Performance on CIFAR Benchmarks|6.3 Deep SNN Performance on CIFAR Benchmarks]]
-- [[learning/7. Using Brain-machine Interface in Practice/_index|7. Using Brain-machine Interface in Practice]]
-  - [[learning/7. Using Brain-machine Interface in Practice/7.1 Low-Power and Hardware-Constrained Applications|7.1 Low-Power and Hardware-Constrained Applications]]
-  - [[learning/7. Using Brain-machine Interface in Practice/7.2 Choosing an SNN Training and Deployment Strategy|7.2 Choosing an SNN Training and Deployment Strategy]]
+
+## Sections
+
+- [[learning/1. How Spiking Neural Network Works/_index|1. How Spiking Neural Network Works]]
+  - [[learning/1. How Spiking Neural Network Works/1.1 Why Spiking Neural Networks Exist|1.1 Why Spiking Neural Networks Exist]]
+  - [[learning/1. How Spiking Neural Network Works/1.2 Neurons, Synapses, and Action Potentials|1.2 Neurons, Synapses, and Action Potentials]]
+  - [[learning/1. How Spiking Neural Network Works/1.3 Why Hard Spikes Break Ordinary Gradients|1.3 Why Hard Spikes Break Ordinary Gradients]]
+  - [[learning/1. How Spiking Neural Network Works/1.4 Where SNN Efficiency Comes From|1.4 Where SNN Efficiency Comes From]]
+- [[learning/2. Describing Capacitive Current Formally/_index|2. Describing Capacitive Current Formally]]
+  - [[learning/2. Describing Capacitive Current Formally/2.1 The Hodgkin-Huxley Membrane Equation|2.1 The Hodgkin-Huxley Membrane Equation]]
+  - [[learning/2. Describing Capacitive Current Formally/2.2 Leaky Integration of Synaptic Input|2.2 Leaky Integration of Synaptic Input]]
+  - [[learning/2. Describing Capacitive Current Formally/2.3 Threshold Crossing, Spiking, and Reset|2.3 Threshold Crossing, Spiking, and Reset]]
+  - [[learning/2. Describing Capacitive Current Formally/2.4 Voltage Dynamics Across a Spiking Network|2.4 Voltage Dynamics Across a Spiking Network]]
+  - [[learning/2. Describing Capacitive Current Formally/2.5 A Quadratic Objective with Linear Constraints|2.5 A Quadratic Objective with Linear Constraints]]
+- [[learning/3. Describing Gradient-descent Dynamics Formally/_index|3. Describing Gradient-descent Dynamics Formally]]
+  - [[learning/3. Describing Gradient-descent Dynamics Formally/3.1 From Constrained Descent to Spiking Dynamics|3.1 From Constrained Descent to Spiking Dynamics]]
+  - [[learning/3. Describing Gradient-descent Dynamics Formally/3.2 Temporal Credit Assignment with BPTT|3.2 Temporal Credit Assignment with BPTT]]
+  - [[learning/3. Describing Gradient-descent Dynamics Formally/3.3 Piecewise Surrogate Gradients|3.3 Piecewise Surrogate Gradients]]
+  - [[learning/3. Describing Gradient-descent Dynamics Formally/3.4 Finite-Difference Gradient Estimation|3.4 Finite-Difference Gradient Estimation]]
+  - [[learning/3. Describing Gradient-descent Dynamics Formally/3.5 Information-Maximizing Spike Objectives|3.5 Information-Maximizing Spike Objectives]]
+- [[learning/4. Describing Differentiable Spike Activation Formally/_index|4. Describing Differentiable Spike Activation Formally]]
+  - [[learning/4. Describing Differentiable Spike Activation Formally/4.1 Differentiable Spikes with Evolving Sharpness|4.1 Differentiable Spikes with Evolving Sharpness]]
+  - [[learning/4. Describing Differentiable Spike Activation Formally/4.2 Sparse Surrogate-Gradient Updates|4.2 Sparse Surrogate-Gradient Updates]]
+  - [[learning/4. Describing Differentiable Spike Activation Formally/4.3 Spike-Timing-Dependent Plasticity|4.3 Spike-Timing-Dependent Plasticity]]
+  - [[learning/4. Describing Differentiable Spike Activation Formally/4.4 Stabilizing Deep Spiking Networks|4.4 Stabilizing Deep Spiking Networks]]
+- [[learning/5. Rate Coding and Latency Coding Compared/_index|5. Rate Coding and Latency Coding Compared]]
+  - [[learning/5. Rate Coding and Latency Coding Compared/5.1 Rate, Latency, and Delta Spike Encoding|5.1 Rate, Latency, and Delta Spike Encoding]]
+  - [[learning/5. Rate Coding and Latency Coding Compared/5.2 Alternatives to Standard BPTT|5.2 Alternatives to Standard BPTT]]
+  - [[learning/5. Rate Coding and Latency Coding Compared/5.3 Interpreting SNN Benchmarks Responsibly|5.3 Interpreting SNN Benchmarks Responsibly]]
+  - [[learning/5. Rate Coding and Latency Coding Compared/5.4 SNN Frameworks, Hardware, and Low-Power Applications|5.4 SNN Frameworks, Hardware, and Low-Power Applications]]

@@ -306,6 +306,48 @@ test("46. failed manifest verification preserves the previous published garden",
   assert.ok(fs.existsSync(path.join(dest, "keep.md"))); // previous preserved intact
 });
 
+test("46b. destination concurrency check aborts before swap", async () => {
+  const parent = tmp("promote-concurrent");
+  const staging = path.join(parent, "staging");
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, "new.md"), "new");
+  const dest = path.join(parent, "published");
+  fs.mkdirSync(dest, { recursive: true });
+  fs.writeFileSync(path.join(dest, "keep.md"), "concurrent edit");
+
+  const result = await promoteStagingGarden({
+    stagingGardenDir: staging,
+    destinationGardenDir: dest,
+    verifyCurrentDestination: () => false,
+  });
+
+  assert.equal(result.promoted, false);
+  assert.match(result.reason, /destination changed while staging/);
+  assert.equal(fs.readFileSync(path.join(dest, "keep.md"), "utf8"), "concurrent edit");
+  assert.equal(fs.existsSync(path.join(dest, "new.md")), false);
+});
+
+test("46c. caller may retain the previous tree until a second resource commits", async () => {
+  const parent = tmp("promote-retained");
+  const staging = path.join(parent, "staging");
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, "new.md"), "new");
+  const dest = path.join(parent, "published");
+  fs.mkdirSync(dest, { recursive: true });
+  fs.writeFileSync(path.join(dest, "old.md"), "old");
+
+  const result = await promoteStagingGarden({
+    stagingGardenDir: staging,
+    destinationGardenDir: dest,
+    retainPreviousUntilCallerCommit: true,
+  });
+
+  assert.equal(result.promoted, true);
+  assert.ok(result.previousPreservedAt);
+  assert.equal(fs.readFileSync(path.join(result.previousPreservedAt, "old.md"), "utf8"), "old");
+  assert.equal(fs.readFileSync(path.join(dest, "new.md"), "utf8"), "new");
+});
+
 test("48/50. only one job can own a garden; stale lock is recoverable", () => {
   const garden = tmp("lock");
   const first = acquireGardenLearnLock(garden, { gardenSlug: "g", jobId: "job1", buildId: "b1" });

@@ -1,0 +1,353 @@
+// Persistence helpers for OpenHarness runtime sessions and their messages.
+//
+// Breadboard owns the durable, user-visible conversation. OpenHarness keeps its
+// own runtime session, but must never be the only record of what the user saw.
+// This module maps between Breadboard's chat model and the OpenHarness runtime
+// session, and persists per-message runtime metadata (tool calls, citations,
+// permission decisions, usage, errors, status) without duplicating messages on
+// reconnect.
+
+import db from "../db.ts";
+import type { OpenHarnessSurface } from "./config.ts";
+
+export interface RuntimeSessionRow {
+  id: number;
+  surface: OpenHarnessSurface;
+  user_id: number | null;
+  chat_session_id: number | null;
+  openharness_session_id: string | null;
+  agent_name: string;
+  cluster_id: number | null;
+  garden_id: string | null;
+  page_slug: string | null;
+  workspace_key: string;
+  runtime_metadata: string | null;
+  last_runtime_status: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateRuntimeSessionInput {
+  surface: OpenHarnessSurface;
+  userId: number | null;
+  chatSessionId: number | null;
+  agentName: string;
+  clusterId: number | null;
+  gardenId: string | null;
+  pageSlug: string | null;
+  workspaceKey: string;
+  openHarnessSessionId?: string | null;
+  runtimeMetadata?: Record<string, unknown> | null;
+}
+
+export function createRuntimeSession(input: CreateRuntimeSessionInput): RuntimeSessionRow {
+  const result = db
+    .prepare(
+      `INSERT INTO openharness_runtime_sessions
+         (surface, user_id, chat_session_id, openharness_session_id, agent_name,
+          cluster_id, garden_id, page_slug, workspace_key, runtime_metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.surface,
+      input.userId,
+      input.chatSessionId,
+      input.openHarnessSessionId ?? null,
+      input.agentName,
+      input.clusterId,
+      input.gardenId,
+      input.pageSlug,
+      input.workspaceKey,
+      input.runtimeMetadata ? JSON.stringify(input.runtimeMetadata) : null,
+    );
+  return getRuntimeSessionById(Number(result.lastInsertRowid))!;
+}
+
+export function getRuntimeSessionById(id: number): RuntimeSessionRow | null {
+  const row = db
+    .prepare("SELECT * FROM openharness_runtime_sessions WHERE id = ?")
+    .get(id) as RuntimeSessionRow | undefined;
+  return row ?? null;
+}
+
+export function getRuntimeSessionByChatSession(chatSessionId: number): RuntimeSessionRow | null {
+  const row = db
+    .prepare(
+      "SELECT * FROM openharness_runtime_sessions WHERE chat_session_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .get(chatSessionId) as RuntimeSessionRow | undefined;
+  return row ?? null;
+}
+
+export function setOpenHarnessSessionId(id: number, openHarnessSessionId: string): void {
+  db.prepare(
+    `UPDATE openharness_runtime_sessions
+     SET openharness_session_id = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(openHarnessSessionId, id);
+}
+
+export function setRuntimeStatus(id: number, status: string): void {
+  db.prepare(
+    `UPDATE openharness_runtime_sessions
+     SET last_runtime_status = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(status, id);
+}
+
+export interface PersistMessageInput {
+  chatSessionId: number;
+  role: "user" | "assistant";
+  content: string;
+  sources?: string[];
+  tokenUsage?: unknown;
+  toolCalls?: unknown;
+  permissionDecisions?: unknown;
+  runtimeError?: string | null;
+  runtimeStatus?: string | null;
+  proposal?: unknown;
+}
+
+/**
+ * Append a message to a chat session, computing the next order_index. Idempotent
+ * appends are the caller's responsibility (the routes dedupe by only persisting
+ * a finalized assistant turn once), which keeps reconnects from duplicating
+ * messages.
+ */
+export function appendChatMessage(input: PersistMessageInput): number {
+  const nextIndex = db
+    .prepare("SELECT COALESCE(MAX(order_index) + 1, 0) AS next FROM chat_messages WHERE session_id = ?")
+    .get(input.chatSessionId) as { next: number };
+  const result = db
+    .prepare(
+      `INSERT INTO chat_messages
+         (session_id, role, content, sources, token_usage, tool_calls,
+          permission_decisions, runtime_error, runtime_status, proposal, order_index)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.chatSessionId,
+      input.role,
+      input.content,
+      input.sources && input.sources.length > 0 ? JSON.stringify(input.sources) : null,
+      input.tokenUsage ? JSON.stringify(input.tokenUsage) : null,
+      input.toolCalls ? JSON.stringify(input.toolCalls) : null,
+      input.permissionDecisions ? JSON.stringify(input.permissionDecisions) : null,
+      input.runtimeError ?? null,
+      input.runtimeStatus ?? null,
+      input.proposal ? JSON.stringify(input.proposal) : null,
+      nextIndex.next,
+    );
+  db.prepare("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?").run(
+    input.chatSessionId,
+  );
+  return Number(result.lastInsertRowid);
+}
+
+export interface RuntimeMessageRow {
+  id: number;
+  runtime_session_id: number;
+  role: "user" | "assistant";
+  content: string;
+  sources: string | null;
+  token_usage: string | null;
+  tool_calls: string | null;
+  permission_decisions: string | null;
+  runtime_error: string | null;
+  runtime_status: string | null;
+  proposal: string | null;
+  order_index: number;
+  created_at: string;
+}
+
+/**
+ * Append a message to a runtime session transcript (used by the terminal and
+ * Quartz surfaces, which are not cluster-scoped and so do not map onto the
+ * cluster-bound chat_sessions table). Garden chat uses appendChatMessage.
+ */
+export function appendRuntimeMessage(input: {
+  runtimeSessionId: number;
+  role: "user" | "assistant";
+  content: string;
+  sources?: string[];
+  tokenUsage?: unknown;
+  toolCalls?: unknown;
+  permissionDecisions?: unknown;
+  runtimeError?: string | null;
+  runtimeStatus?: string | null;
+  proposal?: unknown;
+}): number {
+  const nextIndex = db
+    .prepare(
+      "SELECT COALESCE(MAX(order_index) + 1, 0) AS next FROM openharness_messages WHERE runtime_session_id = ?",
+    )
+    .get(input.runtimeSessionId) as { next: number };
+  const result = db
+    .prepare(
+      `INSERT INTO openharness_messages
+         (runtime_session_id, role, content, sources, token_usage, tool_calls,
+          permission_decisions, runtime_error, runtime_status, proposal, order_index)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.runtimeSessionId,
+      input.role,
+      input.content,
+      input.sources && input.sources.length > 0 ? JSON.stringify(input.sources) : null,
+      input.tokenUsage ? JSON.stringify(input.tokenUsage) : null,
+      input.toolCalls ? JSON.stringify(input.toolCalls) : null,
+      input.permissionDecisions ? JSON.stringify(input.permissionDecisions) : null,
+      input.runtimeError ?? null,
+      input.runtimeStatus ?? null,
+      input.proposal ? JSON.stringify(input.proposal) : null,
+      nextIndex.next,
+    );
+  db.prepare(
+    "UPDATE openharness_runtime_sessions SET updated_at = datetime('now') WHERE id = ?",
+  ).run(input.runtimeSessionId);
+  return Number(result.lastInsertRowid);
+}
+
+export function listRuntimeMessages(runtimeSessionId: number): RuntimeMessageRow[] {
+  return db
+    .prepare(
+      "SELECT * FROM openharness_messages WHERE runtime_session_id = ? ORDER BY order_index",
+    )
+    .all(runtimeSessionId) as RuntimeMessageRow[];
+}
+
+export function listRuntimeSessionsForUser(
+  surface: OpenHarnessSurface,
+  userId: number,
+): RuntimeSessionRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM openharness_runtime_sessions
+       WHERE surface = ? AND user_id = ?
+       ORDER BY updated_at DESC, id DESC LIMIT 100`,
+    )
+    .all(surface, userId) as RuntimeSessionRow[];
+}
+
+export function deleteRuntimeSession(id: number): void {
+  db.prepare("DELETE FROM openharness_runtime_sessions WHERE id = ?").run(id);
+}
+
+export interface ProposalRow {
+  id: number;
+  cluster_id: number | null;
+  garden_id: string;
+  surface: string;
+  kind: "note" | "page_revision" | "visualization";
+  page_slug: string | null;
+  rationale: string | null;
+  payload: string;
+  evidence_anchors: string | null;
+  status: "pending" | "applied" | "rejected";
+  created_by_user_id: number | null;
+  runtime_session_id: number | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface CreateProposalInput {
+  clusterId: number | null;
+  gardenId: string;
+  surface: string;
+  kind: "note" | "page_revision" | "visualization";
+  pageSlug?: string | null;
+  rationale?: string | null;
+  payload: unknown;
+  evidenceAnchors?: string[];
+  createdByUserId?: number | null;
+  runtimeSessionId?: number | null;
+}
+
+export function createProposal(input: CreateProposalInput): ProposalRow {
+  const result = db
+    .prepare(
+      `INSERT INTO openharness_proposals
+         (cluster_id, garden_id, surface, kind, page_slug, rationale, payload,
+          evidence_anchors, created_by_user_id, runtime_session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.clusterId,
+      input.gardenId,
+      input.surface,
+      input.kind,
+      input.pageSlug ?? null,
+      input.rationale ?? null,
+      JSON.stringify(input.payload),
+      input.evidenceAnchors && input.evidenceAnchors.length ? JSON.stringify(input.evidenceAnchors) : null,
+      input.createdByUserId ?? null,
+      input.runtimeSessionId ?? null,
+    );
+  return getProposalById(Number(result.lastInsertRowid))!;
+}
+
+export function getProposalById(id: number): ProposalRow | null {
+  const row = db.prepare("SELECT * FROM openharness_proposals WHERE id = ?").get(id) as
+    | ProposalRow
+    | undefined;
+  return row ?? null;
+}
+
+export function listProposalsForGarden(gardenId: string, status?: string): ProposalRow[] {
+  if (status) {
+    return db
+      .prepare(
+        "SELECT * FROM openharness_proposals WHERE garden_id = ? AND status = ? ORDER BY created_at DESC",
+      )
+      .all(gardenId, status) as ProposalRow[];
+  }
+  return db
+    .prepare("SELECT * FROM openharness_proposals WHERE garden_id = ? ORDER BY created_at DESC LIMIT 200")
+    .all(gardenId) as ProposalRow[];
+}
+
+export function setProposalStatus(id: number, status: "applied" | "rejected"): void {
+  db.prepare(
+    "UPDATE openharness_proposals SET status = ?, decided_at = datetime('now') WHERE id = ?",
+  ).run(status, id);
+}
+
+export interface SkillAuditInput {
+  skillName: string;
+  sourceUrl?: string | null;
+  version?: string | null;
+  decision: "quarantined" | "promoted" | "rejected";
+  decidedBy?: number | null;
+  manifest?: unknown;
+  notes?: string | null;
+}
+
+export function recordSkillDecision(input: SkillAuditInput): number {
+  const result = db
+    .prepare(
+      `INSERT INTO openharness_skill_audit
+         (skill_name, source_url, version, decision, decided_by, manifest, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.skillName,
+      input.sourceUrl ?? null,
+      input.version ?? null,
+      input.decision,
+      input.decidedBy ?? null,
+      input.manifest ? JSON.stringify(input.manifest) : null,
+      input.notes ?? null,
+    );
+  return Number(result.lastInsertRowid);
+}
+
+export function listSkillAudit(skillName?: string): Array<Record<string, unknown>> {
+  if (skillName) {
+    return db
+      .prepare("SELECT * FROM openharness_skill_audit WHERE skill_name = ? ORDER BY created_at DESC")
+      .all(skillName) as Array<Record<string, unknown>>;
+  }
+  return db
+    .prepare("SELECT * FROM openharness_skill_audit ORDER BY created_at DESC LIMIT 200")
+    .all() as Array<Record<string, unknown>>;
+}

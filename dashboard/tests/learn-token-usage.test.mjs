@@ -189,7 +189,7 @@ test('Learn panel renders live job usage without Council activity', () => {
   const usagePanelIndex = source.indexOf('aria-label="Learn token usage"');
   const councilActivityIndex = source.indexOf('Council activity');
   const nextPanelSectionIndex = source.indexOf(
-    '{panelExpanded && proposedMap',
+    '{panelExpanded &&',
     usagePanelIndex,
   );
   const usagePanelSource = source.slice(usagePanelIndex, nextPanelSectionIndex);

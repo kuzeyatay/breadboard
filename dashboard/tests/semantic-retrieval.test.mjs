@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import {
+  clearLearnSemanticChunks,
   headingAwareChunks,
   indexRetrievalGarden,
   reciprocalRankFusion,
@@ -219,6 +220,91 @@ $$`, { targetWords: 8, maxWords: 12, overlapWords: 0 });
     assert.ok(expanded);
     assert.ok(expanded.relationshipPaths.some((item) => item.includes("emits-when")));
     assert.match(result.context, /Evidence anchors: S1\.P4/);
+  });
+
+  test("clears only scoped learner chunks, removing FTS rows before base rows", async (t) => {
+    const { root, garden } = makeRetrievalGarden();
+    const database = new Database(":memory:");
+    t.after(() => {
+      database.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const otherGarden = { ...garden, slug: "other", name: "Other garden" };
+    await indexRetrievalGarden({ garden, database, embeddingProvider: null });
+    await indexRetrievalGarden({ garden: otherGarden, database, embeddingProvider: null });
+
+    // A legacy/frontmatter-marked learner page can live outside learning/.
+    // Clear receives this exact path from the independently verified filesystem
+    // cleanup and must remove its semantic rows too.
+    database.prepare(
+      "UPDATE semantic_chunks SET page_rel_path = ? WHERE garden_slug = ? AND page_rel_path = ?",
+    ).run("notes/generated.md", garden.slug, "learning/neurons/threshold.md");
+
+    const count = (sql, ...params) => database.prepare(sql).get(...params).count;
+    const targetChunks = count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ?",
+      garden.slug,
+      "learning/neurons/lif.md",
+    );
+    const fixtureSourceChunks = count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path LIKE 'sources/%'",
+      garden.slug,
+    );
+    const otherChunks = count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ?",
+      otherGarden.slug,
+    );
+
+    const scoped = clearLearnSemanticChunks({
+      gardenSlug: garden.slug,
+      pageRelPaths: [
+        "learning/neurons/lif.md",
+        "learning/neurons/lif.md",
+        "sources/lecture.md",
+      ],
+    }, database);
+    assert.deepEqual(scoped, {
+      deletedChunks: targetChunks,
+      deletedFtsRows: targetChunks,
+    });
+    assert.equal(count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ?",
+      garden.slug,
+      "learning/neurons/lif.md",
+    ), 0);
+    assert.equal(count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path LIKE 'sources/%'",
+      garden.slug,
+    ), fixtureSourceChunks);
+    assert.equal(count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ?",
+      otherGarden.slug,
+    ), otherChunks);
+
+    const remaining = clearLearnSemanticChunks({
+      gardenSlug: garden.slug,
+      verifiedGeneratedPageRelPaths: ["notes/generated.md"],
+    }, database);
+    assert.ok(remaining.deletedChunks > 0);
+    assert.equal(remaining.deletedFtsRows, remaining.deletedChunks);
+    assert.equal(count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path LIKE 'learning/%'",
+      garden.slug,
+    ), 0);
+    assert.equal(count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ? AND page_rel_path = ?",
+      garden.slug,
+      "notes/generated.md",
+    ), 0);
+    assert.equal(count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks_fts WHERE garden_slug = ?",
+      garden.slug,
+    ), fixtureSourceChunks);
+    assert.equal(count(
+      "SELECT COUNT(*) AS count FROM semantic_chunks WHERE garden_slug = ?",
+      otherGarden.slug,
+    ), otherChunks);
   });
 
   test("resolves LIF aliases and exact source anchors through BM25", async (t) => {

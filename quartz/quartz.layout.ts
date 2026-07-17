@@ -17,7 +17,10 @@ const isClusterIndex = (page: QuartzComponentProps) =>
 export const sharedPageComponents: SharedLayout = {
   head: Component.Head(),
   header: [],
-  afterBody: [],
+  // Breadboard page-scoped AI panel. It self-gates (renders nothing on the
+  // top-level index or pages without a garden), and only functions when the
+  // dashboard has OpenHarness enabled and the garden permits chat access.
+  afterBody: [Component.BreadboardAI()],
   footer: Component.Empty(),
 }
 
