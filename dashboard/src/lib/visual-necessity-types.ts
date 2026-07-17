@@ -126,6 +126,72 @@ export interface VisualNecessityReviewPacket {
   )[];
 }
 
+/**
+ * A stage that can fail while resolving a visual. A failure here must surface as
+ * an explicit `unresolved` record so repair logic can act — it must never be
+ * silently reinterpreted as "the visual is pedagogically unnecessary".
+ */
+export interface VisualDecisionFailure {
+  stage:
+    | "necessity_review"
+    | "structured_response"
+    | "contract_creation"
+    | "implementation"
+    | "validation"
+    | "finalization"
+    | string;
+  code: string;
+  message: string;
+}
+
+/**
+ * Structured, human-readable observability record for a single visual decision.
+ * Persisted alongside the necessity artifact so a reader can answer "why did this
+ * garden receive zero, one, or several interactive visualizers?" without rerunning
+ * the pipeline. Its `decision` vocabulary is the reader-facing policy taxonomy
+ * (required / strongly_recommended / optional / not_useful / unresolved); it maps
+ * from the internal InteractiveVisualNecessity plus an explicit unresolved state.
+ */
+export interface VisualDecisionRecord {
+  unitId: string;
+  candidateType: string;
+  decision:
+    | "required"
+    | "strongly_recommended"
+    | "optional"
+    | "not_useful"
+    | "unresolved";
+  pedagogicalBenefit: string;
+  learnerAction?: string;
+  conceptMadeVisible?: string;
+  positiveSignals: string[];
+  negativeSignals: string[];
+  duplicateOf?: string;
+  confidence: number;
+  decisionSource:
+    | "deterministic"
+    | "chatmock_review"
+    | "garden_zero_safeguard"
+    | "author_override"
+    | string;
+  failure?: VisualDecisionFailure;
+}
+
+/**
+ * Result of the garden-level zero-visual safeguard: a diagnostic (never a blind
+ * quota) recording whether an all-zero interactive outcome is consistent with the
+ * content, and — when it is not — which candidate was recovered and why.
+ */
+export interface GardenZeroVisualSafeguard {
+  triggered: boolean;
+  activeInteractiveCount: number;
+  latentStrongCandidateUnitIds: string[];
+  recoveredUnitId?: string;
+  recoveredReason?: string;
+  status: "not_applicable" | "consistent_zero" | "recovered" | "inconsistent_zero";
+  reason: string;
+}
+
 export interface VisualNecessityArtifact {
   schemaVersion: 1;
   gardenId: string;
@@ -136,4 +202,6 @@ export interface VisualNecessityArtifact {
   overrides: VisualDecisionOverride[];
   reviewCalls?: number;
   rejectedReviews?: number;
+  decisionRecords?: VisualDecisionRecord[];
+  zeroVisualSafeguard?: GardenZeroVisualSafeguard;
 }

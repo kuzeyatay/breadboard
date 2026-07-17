@@ -177,12 +177,17 @@ function unitText(unit: LearningUnitContract): string {
 
 function interactionGoalForUnit(unit: LearningUnitContract): VisualizationInteractionGoal {
   const text = unitText(unit);
+  // A unit whose *role* is comparison is fundamentally a compare-cases
+  // interaction, even when its prose incidentally mentions temporal words
+  // ("signals over time"). Checking this before the time/step keyword rules keeps
+  // such units from being misrouted to a time-series renderer and then falling
+  // through to the generated-module path when no time renderer fits.
+  if (unit.role === "comparison" || /compare|versus|trade[- ]?off|alternative/i.test(text)) {
+    return "compare_cases";
+  }
   if (/algorithm|step|sequence|procedure|derivation/i.test(text)) return "step_through_process";
   if (/time|timeline|temporal|dynamic|training|convergence|trajectory|animation/i.test(text)) {
     return "observe_change_over_time";
-  }
-  if (unit.role === "comparison" || /compare|versus|trade[- ]?off|alternative/i.test(text)) {
-    return "compare_cases";
   }
   if (/network|hierarchy|structure|spatial|geometry|node|edge/i.test(text)) return "explore_structure";
   if (unit.role === "mechanism" || /causal|feedback|mechanism|system/i.test(text)) {
