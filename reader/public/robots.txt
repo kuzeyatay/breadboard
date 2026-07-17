@@ -1,0 +1,14 @@
+# ───── Live user-initiated fetches (allow) ─────
+User-agent: Claude-User
+User-agent: ChatGPT-User
+User-agent: Perplexity-User
+User-agent: Meta-ExternalFetcher
+User-agent: DuckAssistBot
+User-agent: MistralAI-User
+User-agent: kagi-fetcher
+User-agent: Manus-User
+Allow: /
+
+# ───── Everything else (block) ─────
+User-agent: *
+Disallow: /
