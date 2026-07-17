@@ -75,6 +75,17 @@ export function describeError(error: unknown): { status: number; body: Record<st
       body: { error: "The agent runtime is unavailable.", code: error.code, recoverable: error.recoverable },
     };
   }
+  // Errors that already carry an HTTP status — notably Breadboard's RouteError
+  // from requireUserId / cluster authorization (server-auth.ts) — must preserve
+  // that status instead of collapsing to 500. Matched defensively (a real Error
+  // with a 4xx/5xx numeric status); the messages these throw are user-safe
+  // ("Unauthorized", "Cluster not found"), and we cap length as a safeguard.
+  if (error instanceof Error) {
+    const status = (error as Error & { status?: unknown }).status;
+    if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) {
+      return { status, body: { error: error.message.slice(0, 200) } };
+    }
+  }
   const message = error instanceof Error ? error.message : "Internal server error";
   // Avoid echoing internal paths/URLs in unexpected errors.
   return { status: 500, body: { error: "Internal server error", detail: message.slice(0, 200) } };

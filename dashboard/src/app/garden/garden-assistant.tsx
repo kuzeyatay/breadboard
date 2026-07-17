@@ -13,7 +13,6 @@ import {
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
 import ChatMarkdown from '@/app/components/chat-markdown';
-import LearnErrorDialog from '@/app/components/learn-error-dialog';
 import {
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
@@ -34,12 +33,6 @@ import {
   summarizeChatTokenUsage,
 } from '@/lib/chat-token-usage';
 import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
-import {
-  forgetDismissedLearnErrorsForGarden,
-  learnErrorDismissalKey,
-  loadDismissedLearnErrorKeys,
-  rememberDismissedLearnErrorKey,
-} from '@/lib/learn-error-dismissal';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -385,9 +378,6 @@ export default function GardenAssistant({
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [learnState, setLearnState] = useState<AssistantLearnState | null>(null);
   const [learnBusy, setLearnBusy] = useState(false);
-  const [dismissedLearnErrorKeys, setDismissedLearnErrorKeys] = useState<string[]>(
-    () => loadDismissedLearnErrorKeys(),
-  );
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
   const [showPrompts, setShowPrompts] = useState(false);
   const [promptSearch, setPromptSearch] = useState('');
@@ -939,7 +929,6 @@ export default function GardenAssistant({
     }
 
     setLearnBusy(true);
-    setDismissedLearnErrorKeys(forgetDismissedLearnErrorsForGarden(activeClusterSlug));
     try {
       const hasExistingLearnContent = Boolean(
         learnState?.latestTextbookVersionId || learnState?.hasTextbook,
@@ -982,29 +971,12 @@ export default function GardenAssistant({
     }
   }
 
-  function dismissLearnError(job: NonNullable<AssistantLearnState['job']>) {
-    if (!activeClusterSlug) return;
-    const dismissalKey = learnErrorDismissalKey(activeClusterSlug, job);
-    setDismissedLearnErrorKeys(rememberDismissedLearnErrorKey(dismissalKey));
-  }
-
   const chatPanelStyle = {
     '--assistant-panel-width': `${panelWidth}px`,
   } as CSSProperties;
   const resizeHandleStyle = {
     right: panelWidth,
   } as CSSProperties;
-  const currentLearnErrorKey =
-    activeClusterSlug && learnState?.job?.status === 'failed' && learnState.job.error
-      ? learnErrorDismissalKey(activeClusterSlug, learnState.job)
-      : null;
-  const learnErrorJob =
-    learnState?.job?.status === 'failed' &&
-    learnState.job.error &&
-    currentLearnErrorKey &&
-    !dismissedLearnErrorKeys.includes(currentLearnErrorKey)
-      ? learnState.job
-      : null;
 
   const chatPanel = (
     <aside
@@ -1514,21 +1486,6 @@ export default function GardenAssistant({
       {historyPanel}
       {promptsPanel}
       {promptEditor}
-      {learnErrorJob ? (
-        <LearnErrorDialog
-          message={learnErrorJob.error ?? 'Learn failed while creating a section.'}
-          currentStep={learnErrorJob.currentStep}
-          currentSectionTitle={learnErrorJob.currentSectionTitle}
-          currentPageTitle={learnErrorJob.currentPageTitle}
-          validationReport={learnState?.validationReport}
-          onDismiss={() => dismissLearnError(learnErrorJob)}
-          onOpenPanel={() => {
-            setChatOpen(true);
-            dismissLearnError(learnErrorJob);
-          }}
-          openPanelLabel="Open assistant"
-        />
-      ) : null}
     </>
   ) : (
     <>
@@ -1542,21 +1499,6 @@ export default function GardenAssistant({
       {historyPanel}
       {promptsPanel}
       {promptEditor}
-      {learnErrorJob ? (
-        <LearnErrorDialog
-          message={learnErrorJob.error ?? 'Learn failed while creating a section.'}
-          currentStep={learnErrorJob.currentStep}
-          currentSectionTitle={learnErrorJob.currentSectionTitle}
-          currentPageTitle={learnErrorJob.currentPageTitle}
-          validationReport={learnState?.validationReport}
-          onDismiss={() => dismissLearnError(learnErrorJob)}
-          onOpenPanel={() => {
-            setChatOpen(true);
-            dismissLearnError(learnErrorJob);
-          }}
-          openPanelLabel="Open assistant"
-        />
-      ) : null}
     </>
   );
 }

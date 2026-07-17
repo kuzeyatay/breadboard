@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import GardenAssistant from '@/app/components/openharness/garden-assistant-switch';
+import GardenAssistant from '@/app/garden/garden-assistant';
 import { QUARTZ_BASE_URL, quartzUrl } from '@/lib/quartz-url';
 import {
   exportFolderPdf,

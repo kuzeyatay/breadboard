@@ -5,10 +5,13 @@ import { TRUSTED_RENDERER_REGISTRY } from "./visualization-registry.ts";
 import type {
   ContractInteractiveVisualPlan,
   GardenVisualBudget,
+  GardenZeroVisualSafeguard,
   InteractiveVisualNecessity,
   PreferredTeachingMedium,
   TeachingMediumPlan,
+  VisualDecisionFailure,
   VisualDecisionOverride,
+  VisualDecisionRecord,
   VisualNecessityArtifact,
   VisualNecessityDecision,
   VisualNecessityReviewPacket,
@@ -17,11 +20,14 @@ import type {
 export type {
   ContractInteractiveVisualPlan,
   GardenVisualBudget,
+  GardenZeroVisualSafeguard,
   InteractiveVisualIntent,
   InteractiveVisualNecessity,
   PreferredTeachingMedium,
   TeachingMediumPlan,
+  VisualDecisionFailure,
   VisualDecisionOverride,
+  VisualDecisionRecord,
   VisualNecessityArtifact,
   VisualNecessityDecision,
   VisualNecessityReviewPacket,
@@ -60,6 +66,10 @@ export interface GardenVisualNecessityPlan {
   overrides: VisualDecisionOverride[];
   reviewCalls?: number;
   rejectedReviews?: number;
+  decisionRecords: VisualDecisionRecord[];
+  zeroVisualSafeguard: GardenZeroVisualSafeguard;
+  /** Set only by the ChatMock review pass: candidates whose review failed. */
+  unresolvedRecords?: VisualDecisionRecord[];
 }
 
 export interface VisualNecessityReviewResponse {
@@ -157,6 +167,53 @@ function evidenceForUnit(
   return [...byId.values()];
 }
 
+const STOPWORD_TOKENS = new Set([
+  "the",
+  "a",
+  "an",
+  "of",
+  "and",
+  "or",
+  "to",
+  "in",
+  "on",
+  "for",
+  "with",
+  "over",
+  "basic",
+  "simple",
+  "general",
+  "concept",
+  "concepts",
+]);
+
+function conceptTokens(value: string): Set<string> {
+  return new Set(
+    normalizedKey(value)
+      .split(" ")
+      .map((token) => token.replace(/s$/, ""))
+      .filter((token) => token.length >= 3 && !STOPWORD_TOKENS.has(token)),
+  );
+}
+
+/**
+ * Prerequisite coverage is matched by token overlap, not exact string equality.
+ * Prerequisites and new-concept labels are authored independently, so a covered
+ * prerequisite ("action-potential phases") rarely equals the concept that taught
+ * it ("action potential"). Exact matching therefore reported nearly every
+ * prerequisite as "missing", which previously saturated cognitive-load risk and
+ * silently vetoed interaction across the whole garden. Overlap matching treats a
+ * prerequisite as met when a meaningful share of its content words already
+ * appears among earlier concepts.
+ */
+function prerequisiteIsCovered(prerequisite: string, availableTokens: Set<string>): boolean {
+  const tokens = conceptTokens(prerequisite);
+  if (tokens.size === 0) return true;
+  let overlap = 0;
+  for (const token of tokens) if (availableTokens.has(token)) overlap += 1;
+  return overlap / tokens.size >= 0.5;
+}
+
 function missingPrerequisiteRatio(
   unit: LearningUnitContract,
   context: VisualNecessityContext,
@@ -165,9 +222,12 @@ function missingPrerequisiteRatio(
   if (!context.availablePrerequisiteConcepts) {
     return context.unitIndex === 0 ? 1 : 0;
   }
-  const available = new Set(context.availablePrerequisiteConcepts.map(normalizedKey));
+  const availableTokens = new Set<string>();
+  for (const concept of context.availablePrerequisiteConcepts) {
+    for (const token of conceptTokens(concept)) availableTokens.add(token);
+  }
   const missing = unit.prerequisiteConcepts.filter(
-    (concept) => !available.has(normalizedKey(concept)),
+    (concept) => !prerequisiteIsCovered(concept, availableTokens),
   ).length;
   return missing / unit.prerequisiteConcepts.length;
 }
@@ -386,10 +446,23 @@ export function decideInteractiveVisualNecessity(
         ? 0.58
         : 0.12,
   );
+  // A source figure only *substitutes* for interaction when it depicts something
+  // static and structural. A static snapshot of dynamic, parameter-driven,
+  // comparative, or spatial behavior — an action-potential trace, an encoding
+  // comparison, a loss landscape — is exactly the material a learner understands
+  // better by manipulating it, so such a figure is only a partial alternative and
+  // must not by itself veto interaction. Treating every assigned figure as a full
+  // substitute was a root cause of gardens finishing with zero interactive
+  // visuals: every figure-bearing dynamic unit was forced to "not_needed".
+  const figureDepictsManipulableBehavior =
+    activeFigures.length > 0 &&
+    (hasDynamicSignal || hasParameterSignal || hasComparisonSignal || hasSpatialSignal);
   const sourceFigureSufficiency = score(
     activeFigures.length === 0
       ? 0.05
-      : 0.86,
+      : figureDepictsManipulableBehavior
+        ? 0.5
+        : 0.86,
   );
   const formulaSufficiency = score(
     unit.sourceFormulas.length === 0
@@ -415,15 +488,32 @@ export function decideInteractiveVisualNecessity(
           : 0.35,
   );
   const missingPrerequisites = missingPrerequisiteRatio(unit, context);
-  const cognitiveLoadRisk = score(
+  // How far into the sequence this unit sits (0 = first … 1 = last). Later units
+  // have, by construction, been preceded by more instruction, so a prerequisite
+  // that looks "unmet" is far more likely a vocabulary mismatch — a thematic
+  // prerequisite ("spike encoding") against granular new concepts ("rate coding",
+  // "spike train") — than a genuine gap. Position therefore relieves the
+  // prerequisite-driven load rather than letting brittle string matching veto
+  // every visual (which previously slammed this to 0.85 across a whole garden,
+  // even for the final synthesis unit).
+  const sequenceProgress =
+    context.unitIndex != null && context.totalUnits && context.totalUnits > 1
+      ? context.unitIndex / (context.totalUnits - 1)
+      : null;
+  const positionRelief = sequenceProgress == null ? 0 : score(sequenceProgress * 0.5);
+  // Unmet prerequisites raise cognitive load, but on their own they cap an
+  // interaction at "optional" (load ≤ 0.70) — they never brand it distracting.
+  // The "harmful_or_distracting" verdict stays reserved for decorative or
+  // duplicate interactions (DECORATIVE_RE / high duplication risk below).
+  const rawPrerequisiteLoad =
     missingPrerequisites >= 0.5
-      ? 0.85
-      : unit.prerequisiteConcepts.length >= 5
-        ? 0.66
+      ? 0.68
+      : missingPrerequisites > 0
+        ? 0.5
         : context.unitIndex === 0 && unit.prerequisiteConcepts.length > 0
-          ? 0.78
-          : 0.28,
-  );
+          ? 0.6
+          : 0.28;
+  const cognitiveLoadRisk = score(Math.max(0.2, rawPrerequisiteLoad - positionRelief));
   const duplication = duplicateRisk(unit, context);
   const supportedTypes = supportedVisualTypes(context);
   // Capability selection happens after coordination; before that point the
@@ -710,6 +800,337 @@ export function coordinateGardenVisualDecisions(
   return coordinated;
 }
 
+const ACTIVE_NECESSITIES = new Set<InteractiveVisualNecessity>(["required", "recommended", "optional"]);
+
+function isActiveNecessity(necessity: InteractiveVisualNecessity): boolean {
+  return ACTIVE_NECESSITIES.has(necessity);
+}
+
+/** Strength of the case *for* interaction, independent of alternative media. */
+function interactiveStrength(decision: VisualNecessityDecision): number {
+  return Math.max(
+    decision.dynamicBehaviorValue,
+    decision.parameterSensitivityValue,
+    decision.comparisonValue,
+    decision.spatialValue,
+  );
+}
+
+function bestAlternativeSufficiency(decision: VisualNecessityDecision): number {
+  return Math.max(
+    decision.sourceFigureSufficiency,
+    decision.proseSufficiency,
+    decision.formulaSufficiency,
+    decision.workedExampleSufficiency,
+  );
+}
+
+/**
+ * Garden-level zero-visual safeguard — a diagnostic, never a blind quota.
+ *
+ * When a garden selects zero interactive visuals we re-examine the rejected
+ * units. If at least one unit still exhibits a strong dynamic, parameter-driven,
+ * comparative, or spatial relationship that interaction would materially clarify
+ * — and was only rejected for a *soft* reason (a static alternative, borderline
+ * load) rather than being decorative or a duplicate — the all-zero outcome is
+ * inconsistent with the content and we recover the single highest-value
+ * candidate. If no such unit exists, an all-zero garden is genuinely consistent
+ * with the content and is left untouched, with a structured reason.
+ */
+/** Minimum garden size for the zero-visual safeguard to even consider acting. */
+export const ZERO_VISUAL_SAFEGUARD_MIN_UNITS = 6;
+
+export function applyGardenZeroVisualSafeguard(input: {
+  decisions: VisualNecessityDecision[];
+  units: LearningUnitContract[];
+  protectedUnitIds?: Set<string>;
+}): { decisions: VisualNecessityDecision[]; safeguard: GardenZeroVisualSafeguard } {
+  const active = input.decisions.filter((decision) => isActiveNecessity(decision.necessity));
+  const protectedUnitIds = input.protectedUnitIds ?? new Set<string>();
+  const latent = input.decisions
+    .map((decision, index) => ({ decision, index, strength: interactiveStrength(decision) }))
+    .filter(
+      ({ decision, strength }) =>
+        decision.necessity === "not_needed" &&
+        // Never resurrect a unit the author explicitly steered away from interaction.
+        !protectedUnitIds.has(decision.unitId) &&
+        strength >= 0.65 &&
+        decision.manipulationValue >= 0.55 &&
+        decision.duplicationRisk < 0.6 &&
+        !DECORATIVE_RE.test(decision.reason),
+    )
+    .sort(
+      (a, b) =>
+        b.strength - a.strength ||
+        b.decision.manipulationValue - a.decision.manipulationValue ||
+        a.index - b.index,
+    );
+
+  // The safeguard targets "a substantial technical garden". A tiny garden that
+  // legitimately selects no interaction (or an explicit single-unit decision) is
+  // never second-guessed.
+  if (active.length === 0 && input.units.length < ZERO_VISUAL_SAFEGUARD_MIN_UNITS) {
+    return {
+      decisions: input.decisions,
+      safeguard: {
+        triggered: false,
+        activeInteractiveCount: 0,
+        latentStrongCandidateUnitIds: latent.map((item) => item.decision.unitId),
+        status: "not_applicable",
+        reason: `The garden has ${input.units.length} unit(s); the zero-visual safeguard only reviews substantial gardens (≥ ${ZERO_VISUAL_SAFEGUARD_MIN_UNITS} units).`,
+      },
+    };
+  }
+
+  if (active.length > 0) {
+    return {
+      decisions: input.decisions,
+      safeguard: {
+        triggered: false,
+        activeInteractiveCount: active.length,
+        latentStrongCandidateUnitIds: latent.map((item) => item.decision.unitId),
+        status: "not_applicable",
+        reason: `The garden already selected ${active.length} interactive visual(s); the zero-visual safeguard did not need to act.`,
+      },
+    };
+  }
+
+  if (latent.length === 0) {
+    return {
+      decisions: input.decisions,
+      safeguard: {
+        triggered: true,
+        activeInteractiveCount: 0,
+        latentStrongCandidateUnitIds: [],
+        status: "consistent_zero",
+        reason:
+          "No unit exhibits a dynamic, parameter-driven, comparative, or spatial relationship that manipulation would materially clarify. A zero-visual garden is consistent with this content.",
+      },
+    };
+  }
+
+  const best = latent[0];
+  const signals = describePositiveSignals(best.decision);
+  const recoveredReason =
+    `Garden-level safeguard: the garden selected no interactive visuals, yet this unit exhibits ${
+      signals.join(", ") || "a manipulable relationship"
+    } that prose and static media do not convey as effectively. Recovered as the garden's highest-value interactive candidate.`;
+  const promoted: VisualNecessityDecision = {
+    ...best.decision,
+    necessity: "recommended",
+    preferredMedium: "interactive_visual",
+    reason: recoveredReason,
+  };
+  const decisions = input.decisions.slice();
+  decisions[best.index] = promoted;
+  return {
+    decisions,
+    safeguard: {
+      triggered: true,
+      activeInteractiveCount: 1,
+      latentStrongCandidateUnitIds: latent.map((item) => item.decision.unitId),
+      recoveredUnitId: best.decision.unitId,
+      recoveredReason,
+      status: "recovered",
+      reason:
+        "An all-zero interactive outcome was inconsistent with the garden's dynamic, comparative, or spatial content; the highest-value candidate was recovered rather than silently shipping zero visuals.",
+    },
+  };
+}
+
+function describePositiveSignals(decision: VisualNecessityDecision): string[] {
+  const signals: string[] = [];
+  const role = decision.evidence.unitRole;
+  if (decision.dynamicBehaviorValue >= 0.6) signals.push("time-dependent behavior");
+  if (decision.dynamicBehaviorValue >= 0.6 && (role === "mechanism" || role === "training_method")) {
+    signals.push("state transitions / a causal mechanism");
+  }
+  if (decision.parameterSensitivityValue >= 0.6) signals.push("parameter sensitivity");
+  if (decision.comparisonValue >= 0.6) signals.push("competing quantities / multiple scenarios");
+  if (decision.spatialValue >= 0.6) signals.push("spatial or geometric structure");
+  if (decision.manipulationValue >= 0.6 && signals.length === 0) {
+    signals.push("a relationship the learner can manipulate");
+  }
+  return unique(signals);
+}
+
+function describeNegativeSignals(decision: VisualNecessityDecision): string[] {
+  const signals: string[] = [];
+  if (decision.proseSufficiency >= 0.8) signals.push("fully conveyed by prose");
+  if (decision.sourceFigureSufficiency >= 0.8) signals.push("covered by a sufficient source figure");
+  if (decision.formulaSufficiency >= 0.8) signals.push("covered by a formula derivation");
+  if (decision.workedExampleSufficiency >= 0.8) signals.push("covered by a worked example");
+  if (decision.duplicationRisk >= 0.6) signals.push("duplicates a nearby interaction");
+  if (decision.cognitiveLoadRisk >= 0.7) signals.push("arrives before prerequisites are established");
+  if (DECORATIVE_RE.test(decision.reason)) signals.push("decorative only");
+  return unique(signals);
+}
+
+const RECORD_DECISION_BY_NECESSITY: Record<InteractiveVisualNecessity, VisualDecisionRecord["decision"]> = {
+  required: "required",
+  recommended: "strongly_recommended",
+  optional: "optional",
+  not_needed: "not_useful",
+  harmful_or_distracting: "not_useful",
+};
+
+/** A display-only category for the observability record — never used for routing. */
+function candidateCategory(decision: VisualNecessityDecision): string {
+  if (decision.recommendedVisualType) return decision.recommendedVisualType;
+  const values: Array<[string, number]> = [
+    ["time_series_simulation", decision.dynamicBehaviorValue],
+    ["parameter_explorer", decision.parameterSensitivityValue],
+    ["scenario_comparison", decision.comparisonValue],
+    ["spatial_diagram", decision.spatialValue],
+  ];
+  values.sort((a, b) => b[1] - a[1]);
+  return values[0][1] >= 0.55 ? values[0][0] : "interactive_visual";
+}
+
+function decisionConfidence(decision: VisualNecessityDecision): number {
+  const strength = interactiveStrength(decision);
+  const alternative = bestAlternativeSufficiency(decision);
+  const margin = isActiveNecessity(decision.necessity)
+    ? strength - alternative
+    : Math.max(alternative, 1 - strength) - strength;
+  return score(0.55 + Math.max(-0.35, Math.min(0.4, margin)) * 0.9);
+}
+
+export function buildVisualDecisionRecord(
+  decision: VisualNecessityDecision,
+  options: { decisionSource?: VisualDecisionRecord["decisionSource"]; duplicateOf?: string } = {},
+): VisualDecisionRecord {
+  const duplicateOf =
+    options.duplicateOf ??
+    (decision.duplicationRisk >= 0.85 ? decision.evidence.nearbyVisualIntentIds[0] : undefined);
+  return {
+    unitId: decision.unitId,
+    candidateType: candidateCategory(decision),
+    decision: RECORD_DECISION_BY_NECESSITY[decision.necessity],
+    pedagogicalBenefit: decision.reason,
+    ...(isActiveNecessity(decision.necessity)
+      ? {
+          learnerAction: `Manipulate ${decision.evidence.concepts.slice(0, 2).join(" and ") || "the key variables"} and observe the response.`,
+          conceptMadeVisible: decision.learningGoal,
+        }
+      : {}),
+    positiveSignals: describePositiveSignals(decision),
+    negativeSignals: describeNegativeSignals(decision),
+    ...(duplicateOf ? { duplicateOf } : {}),
+    confidence: decisionConfidence(decision),
+    decisionSource: options.decisionSource ?? "deterministic",
+  };
+}
+
+/**
+ * An explicit unresolved record. A model call failure, invalid structured
+ * response, timeout, or downstream implementation/validation failure MUST be
+ * represented as `unresolved` so repair logic can retry — it is never evidence
+ * that the visual is pedagogically unnecessary.
+ */
+export function unresolvedVisualDecisionRecord(input: {
+  unitId: string;
+  candidateType?: string;
+  failure: VisualDecisionFailure;
+  positiveSignals?: string[];
+  negativeSignals?: string[];
+}): VisualDecisionRecord {
+  return {
+    unitId: input.unitId,
+    candidateType: input.candidateType ?? "interactive_visual",
+    decision: "unresolved",
+    pedagogicalBenefit:
+      "The pedagogical value is not yet decided because resolving this candidate failed; it awaits repair, not omission.",
+    positiveSignals: input.positiveSignals ?? [],
+    negativeSignals: input.negativeSignals ?? [],
+    confidence: 0.2,
+    decisionSource: "chatmock_review",
+    failure: input.failure,
+  };
+}
+
+export function buildVisualDecisionRecords(
+  decisions: VisualNecessityDecision[],
+  options: { overriddenUnitIds?: Set<string>; safeguard?: GardenZeroVisualSafeguard } = {},
+): VisualDecisionRecord[] {
+  const overridden = options.overriddenUnitIds ?? new Set<string>();
+  const recovered = options.safeguard?.recoveredUnitId;
+  return decisions.map((decision) =>
+    buildVisualDecisionRecord(decision, {
+      decisionSource: overridden.has(decision.unitId)
+        ? "author_override"
+        : recovered === decision.unitId
+          ? "garden_zero_safeguard"
+          : "deterministic",
+    }),
+  );
+}
+
+export type VisualNecessityReviewResolution =
+  | { status: "resolved"; decision: VisualNecessityDecision; record: VisualDecisionRecord }
+  | { status: "unresolved"; decision: VisualNecessityDecision; record: VisualDecisionRecord };
+
+/**
+ * Resolve a single ambiguous-decision review, mapping failure to an explicit
+ * `unresolved` record instead of silently keeping — or worse, downgrading — the
+ * deterministic decision without evidence. On any failure the deterministic
+ * decision is retained as the operating decision (a safe fallback) while the
+ * record marks the candidate unresolved so a repair pass can revisit it.
+ */
+export function resolveVisualNecessityReview(input: {
+  packet: VisualNecessityReviewPacket;
+  response?: VisualNecessityReviewResponse;
+  error?: unknown;
+  supportedVisualTypes?: readonly string[];
+}): VisualNecessityReviewResolution {
+  const deterministic = input.packet.deterministicDecision;
+  const candidateType = candidateCategory(deterministic);
+  if (input.error !== undefined || !input.response) {
+    return {
+      status: "unresolved",
+      decision: deterministic,
+      record: unresolvedVisualDecisionRecord({
+        unitId: deterministic.unitId,
+        candidateType,
+        failure: {
+          stage: "necessity_review",
+          code: "model_call_failed",
+          message:
+            input.error instanceof Error
+              ? input.error.message
+              : String(input.error ?? "the reviewer returned no response"),
+        },
+        positiveSignals: describePositiveSignals(deterministic),
+        negativeSignals: describeNegativeSignals(deterministic),
+      }),
+    };
+  }
+  const problems = validateVisualNecessityReview(input.packet, input.response, input.supportedVisualTypes);
+  if (problems.length > 0) {
+    return {
+      status: "unresolved",
+      decision: deterministic,
+      record: unresolvedVisualDecisionRecord({
+        unitId: deterministic.unitId,
+        candidateType,
+        failure: {
+          stage: "structured_response",
+          code: "invalid_structured_response",
+          message: problems.join("; "),
+        },
+        positiveSignals: describePositiveSignals(deterministic),
+        negativeSignals: describeNegativeSignals(deterministic),
+      }),
+    };
+  }
+  const decision = applyVisualNecessityReview(input.packet, input.response, input.supportedVisualTypes);
+  return {
+    status: "resolved",
+    decision,
+    record: buildVisualDecisionRecord(decision, { decisionSource: "chatmock_review" }),
+  };
+}
+
 export function planGardenVisualNecessity(input: {
   gardenId: string;
   learningUnits: LearningUnitContract[];
@@ -739,11 +1160,25 @@ export function planGardenVisualNecessity(input: {
   );
   const reviewed = deterministic.map((decision) => reviewedByUnit.get(decision.unitId) ?? decision);
   const initialBudget = deriveGardenVisualBudget(input.learningUnits, reviewed);
-  const decisions = coordinateGardenVisualDecisions(reviewed, {
+  const coordinated = coordinateGardenVisualDecisions(reviewed, {
     units: input.learningUnits,
     sectionByUnit: input.sectionByUnit,
     budget: initialBudget,
     overrides,
+  });
+  // Garden-level diagnostic: if a substantial, dynamic garden still selected zero
+  // interactive visuals, re-examine the rejected units and recover the single
+  // highest-value candidate when the all-zero outcome is inconsistent with the
+  // content. Author-forced-none units are never resurrected.
+  const overriddenUnitIds = new Set(overrides.map((override) => override.unitId));
+  const { decisions, safeguard } = applyGardenZeroVisualSafeguard({
+    decisions: coordinated,
+    units: input.learningUnits,
+    protectedUnitIds: overriddenUnitIds,
+  });
+  const decisionRecords = buildVisualDecisionRecords(decisions, {
+    overriddenUnitIds,
+    safeguard,
   });
   const teachingMedia = input.learningUnits.map((unit) =>
     deriveTeachingMediumPlan(
@@ -794,6 +1229,8 @@ export function planGardenVisualNecessity(input: {
     overrides,
     reviewCalls: input.reviewCalls ?? 0,
     rejectedReviews: input.rejectedReviews ?? 0,
+    decisionRecords,
+    zeroVisualSafeguard: safeguard,
   };
 }
 
@@ -1099,10 +1536,16 @@ export async function reviewAmbiguousVisualNecessityDecisions(input: {
   reviewer: (packet: VisualNecessityReviewPacket) => Promise<VisualNecessityReviewResponse>;
   maxReviews?: number;
   supportedVisualTypes?: string[];
-}): Promise<{ decisions: VisualNecessityDecision[]; reviewCalls: number; rejectedReviews: number }> {
+}): Promise<{
+  decisions: VisualNecessityDecision[];
+  reviewCalls: number;
+  rejectedReviews: number;
+  unresolvedRecords: VisualDecisionRecord[];
+}> {
   const next = [...input.decisions];
   let reviewCalls = 0;
   let rejectedReviews = 0;
+  const unresolvedRecords: VisualDecisionRecord[] = [];
   const maxReviews = Math.max(0, input.maxReviews ?? 3);
   for (let index = 0; index < next.length && reviewCalls < maxReviews; index += 1) {
     const decision = next[index];
@@ -1115,14 +1558,28 @@ export async function reviewAmbiguousVisualNecessityDecisions(input: {
       nearbyVisualDecisions: next.slice(0, index),
     });
     reviewCalls += 1;
+    // A reviewer failure or an invalid structured response must not silently keep
+    // the deterministic decision as if the model had agreed. We retain the
+    // deterministic decision as a safe operating fallback but emit an explicit
+    // `unresolved` record so a repair pass can revisit the candidate.
+    let resolution: VisualNecessityReviewResolution;
     try {
       const response = await input.reviewer(packet);
-      next[index] = applyVisualNecessityReview(packet, response, input.supportedVisualTypes);
-    } catch {
+      resolution = resolveVisualNecessityReview({
+        packet,
+        response,
+        supportedVisualTypes: input.supportedVisualTypes,
+      });
+    } catch (error) {
+      resolution = resolveVisualNecessityReview({ packet, error, supportedVisualTypes: input.supportedVisualTypes });
+    }
+    next[index] = resolution.decision;
+    if (resolution.status === "unresolved") {
       rejectedReviews += 1;
+      unresolvedRecords.push(resolution.record);
     }
   }
-  return { decisions: next, reviewCalls, rejectedReviews };
+  return { decisions: next, reviewCalls, rejectedReviews, unresolvedRecords };
 }
 
 export function visualNecessityArtifactPath(gardenDir: string): string {
@@ -1140,8 +1597,22 @@ function markdownEscape(value: string): string {
 export function saveVisualNecessityArtifacts(
   gardenDir: string,
   gardenId: string,
-  plan: Omit<GardenVisualNecessityPlan, "learningUnits">,
+  plan: Omit<GardenVisualNecessityPlan, "learningUnits" | "decisionRecords" | "zeroVisualSafeguard"> & {
+    decisionRecords?: VisualDecisionRecord[];
+    zeroVisualSafeguard?: GardenZeroVisualSafeguard;
+    unresolvedRecords?: VisualDecisionRecord[];
+  },
 ): VisualNecessityArtifact {
+  const overriddenUnitIds = new Set(plan.overrides.map((override) => override.unitId));
+  const decisionRecords = [
+    ...(plan.decisionRecords ??
+      buildVisualDecisionRecords(plan.decisions, {
+        overriddenUnitIds,
+        safeguard: plan.zeroVisualSafeguard,
+      })),
+    ...(plan.unresolvedRecords ?? []),
+  ];
+  const zeroVisualSafeguard = plan.zeroVisualSafeguard;
   const artifact: VisualNecessityArtifact = {
     schemaVersion: 1,
     gardenId,
@@ -1152,10 +1623,17 @@ export function saveVisualNecessityArtifacts(
     overrides: plan.overrides,
     reviewCalls: plan.reviewCalls ?? 0,
     rejectedReviews: plan.rejectedReviews ?? 0,
+    decisionRecords,
+    ...(zeroVisualSafeguard ? { zeroVisualSafeguard } : {}),
   };
   const breadboardDir = path.join(gardenDir, ".breadboard");
   fs.mkdirSync(breadboardDir, { recursive: true });
   fs.writeFileSync(visualNecessityArtifactPath(gardenDir), `${JSON.stringify(artifact, null, 2)}\n`, "utf-8");
+  fs.writeFileSync(
+    path.join(breadboardDir, "visual-decision-records.json"),
+    `${JSON.stringify({ schemaVersion: 1, gardenId, generatedAt: artifact.generatedAt, zeroVisualSafeguard, decisionRecords }, null, 2)}\n`,
+    "utf-8",
+  );
 
   const groups: Array<[string, InteractiveVisualNecessity[]]> = [
     ["Required Interactive Visuals", ["required"]],
@@ -1184,6 +1662,25 @@ export function saveVisualNecessityArtifacts(
         : ["- None."]),
       "",
     );
+  }
+  const unresolved = decisionRecords.filter((record) => record.decision === "unresolved");
+  if (unresolved.length > 0) {
+    lines.push("## Unresolved (awaiting repair, not omission)", "");
+    lines.push(
+      ...unresolved.map(
+        (record) =>
+          `- **${record.unitId}** — ${record.failure?.stage ?? "unknown"} / ${record.failure?.code ?? "unknown"}: ${markdownEscape(record.failure?.message ?? "")}`,
+      ),
+      "",
+    );
+  }
+  if (zeroVisualSafeguard) {
+    lines.push("## Garden-Level Zero-Visual Safeguard", "");
+    lines.push(`- Status: **${zeroVisualSafeguard.status}**`, `- ${markdownEscape(zeroVisualSafeguard.reason)}`);
+    if (zeroVisualSafeguard.recoveredUnitId) {
+      lines.push(`- Recovered candidate: **${zeroVisualSafeguard.recoveredUnitId}**`);
+    }
+    lines.push("");
   }
   fs.writeFileSync(
     path.join(breadboardDir, "visual-necessity-decisions.md"),

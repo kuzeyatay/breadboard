@@ -949,6 +949,15 @@ function recordLearnTokenUsageEvent(jobId: string, event: LearnTokenUsageEvent):
   );
 }
 
+function userFacingLearnText(value: string): string {
+  const text = value
+    .replace(/\bChatMock\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .trim();
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}` : "";
+}
+
 function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
   if (!row) return null;
   return {
@@ -957,11 +966,11 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     userId: row.user_id ?? undefined,
     status: row.status,
     mode: normalizeLearnOperationMode(row.mode),
-    currentStep: row.current_step ?? "",
+    currentStep: userFacingLearnText(row.current_step ?? ""),
     progressPercent: Number(row.progress_percent ?? 0),
     currentSectionTitle: row.current_section_title ?? undefined,
     currentPageTitle: row.current_page_title ?? undefined,
-    error: row.error ?? undefined,
+    error: row.error ? userFacingLearnText(row.error) : undefined,
     proposedLearningMapId: row.proposed_learning_map_id ?? undefined,
     confirmedLearningMapId: row.confirmed_learning_map_id ?? undefined,
     latestTextbookVersionId: row.latest_textbook_version_id ?? undefined,
@@ -1130,7 +1139,7 @@ function attachLearnJobModelTracking({
         signal: controller.signal,
         onDelay: ({ attempt, maxAttempts, delayMs }) => {
           throwIfLearnCancelled(jobId);
-          const currentStep = `ChatMock gateway 502; waiting 4 minutes before retry ${attempt}/${maxAttempts}`;
+          const currentStep = `Gateway 502; waiting 4 minutes before retry ${attempt}/${maxAttempts}`;
           updateLearnJob(jobId, { currentStep });
           appendLearnEvent(contentPath, gardenId, "learn_chatmock_502_retry", {
             jobId,
@@ -1144,7 +1153,7 @@ function attachLearnJobModelTracking({
         onAttempt: ({ attempt, maxAttempts, delayMs }) => {
           throwIfLearnCancelled(jobId);
           if (attempt === 1) return;
-          const currentStep = `Retrying ChatMock request (${attempt}/${maxAttempts})`;
+          const currentStep = `Retrying request (${attempt}/${maxAttempts})`;
           updateLearnJob(jobId, { currentStep });
           appendLearnEvent(contentPath, gardenId, "learn_chatmock_502_retry", {
             jobId,
@@ -1877,6 +1886,7 @@ async function planAndReviewVisualNecessity(input: {
     reviewCalls: reviewed.reviewCalls,
     rejectedReviews: reviewed.rejectedReviews,
   });
+  finalPlan.unresolvedRecords = reviewed.unresolvedRecords;
   appendLearnEvent(input.contentPath, input.gardenId, "learn_visual_necessity_review_completed", {
     jobId: input.jobId,
     ambiguousDecisionsReviewed: reviewed.reviewCalls,
@@ -2219,7 +2229,7 @@ function writeLearningUnitContractArtifacts({
   sourceSetHash: string;
   visualNecessityReview?: Pick<
     GardenVisualNecessityPlan,
-    "decisions" | "reviewCalls" | "rejectedReviews"
+    "decisions" | "reviewCalls" | "rejectedReviews" | "unresolvedRecords"
   >;
 }): {
   units: LearningUnitContract[];
@@ -2372,6 +2382,9 @@ function writeLearningUnitContractArtifacts({
     overrides: visualNecessityPlan.overrides,
     reviewCalls: visualNecessityPlan.reviewCalls,
     rejectedReviews: visualNecessityPlan.rejectedReviews,
+    decisionRecords: visualNecessityPlan.decisionRecords,
+    zeroVisualSafeguard: visualNecessityPlan.zeroVisualSafeguard,
+    unresolvedRecords: visualNecessityReview?.unresolvedRecords,
   });
   const payload = {
     sourceSetHash,
