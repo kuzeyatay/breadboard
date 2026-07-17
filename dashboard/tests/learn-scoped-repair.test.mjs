@@ -146,7 +146,7 @@ describe("mutation and byte boundaries", () => {
     const newBlock = '```breadboard-visual\n{"id":"v1","type":"new"}\n```';
     fs.writeFileSync(path.join(before, "learning/s1/U1.md"), page("U1", `Intro.\n\n${oldBlock}\nTail.`, ["v1"]));
     fs.writeFileSync(path.join(after, "learning/s1/U1.md"), page("U1", `Intro.\n\n${newBlock}\nTail.`, ["v1"]));
-    for (const root of [before, after]) fs.writeFileSync(path.join(root, "learning/s1/U2.md"), page("U2", "Unchanged."));
+    for (const root of [before, after]) fs.writeFileSync(path.join(root, "learning/s2/U2.md"), page("U2", "Unchanged."));
     const checked = verifyPageByteIdentity({ state, scope, issues: [problem], beforeRoot: before, afterRoot: after });
     assert.equal(checked.passed, true, JSON.stringify(checked));
   });
@@ -157,7 +157,7 @@ describe("mutation and byte boundaries", () => {
     const { before, after } = roots(t);
     fs.writeFileSync(path.join(before, "learning/s1/U1.md"), `---\ntags: [old]\n---\nExact body.\n`);
     fs.writeFileSync(path.join(after, "learning/s1/U1.md"), `---\ntags: [new]\n---\nExact body.\n`);
-    for (const root of [before, after]) fs.writeFileSync(path.join(root, "learning/s1/U2.md"), page("U2", "Unchanged."));
+    for (const root of [before, after]) fs.writeFileSync(path.join(root, "learning/s2/U2.md"), page("U2", "Unchanged."));
     const checked = verifyPageByteIdentity({ state, scope, issues: [problem], beforeRoot: before, afterRoot: after });
     assert.equal(checked.passed, true, JSON.stringify(checked));
   });

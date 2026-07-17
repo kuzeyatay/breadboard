@@ -1062,12 +1062,13 @@ export class LearnCancelledError extends Error {
   }
 }
 
+const activeLearnAbortControllers = new Map<string, AbortController>();
+
 function jobStatusById(jobId: string): LearnStatus | null {
-  ensureLearnTables();
   const row = db
-    .prepare("SELECT * FROM learn_jobs WHERE id = ?")
-    .get(jobId) as LearnJobRow | undefined;
-  return row ? (row.status as LearnStatus) : null;
+    .prepare("SELECT status FROM learn_jobs WHERE id = ?")
+    .get(jobId) as { status?: LearnStatus } | undefined;
+  return row?.status ?? null;
 }
 
 /** Cooperative cancellation checkpoint. The Stop button flips the job row to
@@ -1075,6 +1076,80 @@ function jobStatusById(jobId: string): LearnStatus | null {
  * the run actually halts instead of finishing in the background. */
 function throwIfLearnCancelled(jobId: string): void {
   if (jobStatusById(jobId) === "cancelled") throw new LearnCancelledError();
+}
+
+function isLearnCancellation(jobId: string, error: unknown): boolean {
+  return error instanceof LearnCancelledError || jobStatusById(jobId) === "cancelled";
+}
+
+function attachLearnJobModelTracking({
+  client,
+  jobId,
+  gardenId,
+  contentPath,
+}: {
+  client: OpenAI;
+  jobId: string;
+  gardenId: string;
+  contentPath: string;
+}): () => void {
+  const controller = new AbortController();
+  activeLearnAbortControllers.set(jobId, controller);
+  const cancellationPoll = setInterval(() => {
+    try {
+      if (jobStatusById(jobId) === "cancelled" && !controller.signal.aborted) {
+        controller.abort(new LearnCancelledError());
+      }
+    } catch {
+      // The request still has the immediate cancel-path abort. Ignore polling
+      // failures during process/database teardown rather than throwing from a timer.
+    }
+  }, 500);
+  cancellationPoll.unref();
+
+  attachLearnTokenUsageTracking(
+    client,
+    (event) => recordLearnTokenUsageEvent(jobId, event),
+    {
+      retry502: {
+        signal: controller.signal,
+        onDelay: ({ attempt, maxAttempts, delayMs }) => {
+          throwIfLearnCancelled(jobId);
+          const currentStep = `ChatMock gateway 502; waiting 4 minutes before retry ${attempt}/${maxAttempts}`;
+          updateLearnJob(jobId, { currentStep });
+          appendLearnEvent(contentPath, gardenId, "learn_chatmock_502_retry", {
+            jobId,
+            phase: "waiting",
+            attempt,
+            maxAttempts,
+            delayMs,
+            currentStep,
+          });
+        },
+        onAttempt: ({ attempt, maxAttempts, delayMs }) => {
+          throwIfLearnCancelled(jobId);
+          if (attempt === 1) return;
+          const currentStep = `Retrying ChatMock request (${attempt}/${maxAttempts})`;
+          updateLearnJob(jobId, { currentStep });
+          appendLearnEvent(contentPath, gardenId, "learn_chatmock_502_retry", {
+            jobId,
+            phase: "attempting",
+            attempt,
+            maxAttempts,
+            delayMs,
+            currentStep,
+          });
+        },
+      },
+    },
+  );
+
+  return () => {
+    clearInterval(cancellationPoll);
+    if (activeLearnAbortControllers.get(jobId) === controller) {
+      activeLearnAbortControllers.delete(jobId);
+    }
+  };
 }
 
 function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
@@ -2558,8 +2633,11 @@ export async function runLearnPlanning({
       deletedVersions: reset.deletedVersions,
     });
   }
-  attachLearnTokenUsageTracking(client, (event) => {
-    recordLearnTokenUsageEvent(job.id, event);
+  const disposeModelTracking = attachLearnJobModelTracking({
+    client,
+    jobId: job.id,
+    gardenId,
+    contentPath,
   });
 
   try {
@@ -3023,7 +3101,7 @@ export async function runLearnPlanning({
     });
     return { job: nextJob, learningMap: storedMap };
   } catch (error) {
-    if (error instanceof LearnCancelledError) {
+    if (isLearnCancellation(job.id, error)) {
       // The Stop button already flipped the job to cancelled; remove anything
       // planning managed to write before the cancellation checkpoint fired.
       try {
@@ -3032,7 +3110,7 @@ export async function runLearnPlanning({
         // Cleanup is best-effort during unwind; the cancel endpoint reports its
         // own cleanup errors when the user presses Stop.
       }
-      throw error;
+      throw new LearnCancelledError();
     }
     const message = error instanceof Error ? error.message : "Learn planning failed";
     const failedJob = getLatestLearnJob(gardenId);
@@ -3049,6 +3127,8 @@ export async function runLearnPlanning({
       error: message,
     });
     throw error;
+  } finally {
+    disposeModelTracking();
   }
 }
 
@@ -5471,8 +5551,11 @@ export async function runTextbookGeneration({
     jobId: job.id,
     inheritFromJobId: map.jobId,
   });
-  attachLearnTokenUsageTracking(client, (event) => {
-    recordLearnTokenUsageEvent(job.id, event);
+  const disposeModelTracking = attachLearnJobModelTracking({
+    client,
+    jobId: job.id,
+    gardenId,
+    contentPath,
   });
   const clusterDir = clusterPath(contentPath, gardenId);
   fs.mkdirSync(clusterDir, { recursive: true });
@@ -7004,7 +7087,7 @@ export async function runTextbookGeneration({
       pageCount: generatedPages.length,
     };
   } catch (error) {
-    if (error instanceof LearnCancelledError) {
+    if (isLearnCancellation(job.id, error)) {
       // The Stop button already flipped the job to cancelled; sweep any
       // partial Learn output that was written before the checkpoint fired.
       try {
@@ -7013,7 +7096,7 @@ export async function runTextbookGeneration({
         // Cleanup is best-effort during unwind; the cancel endpoint reports its
         // own cleanup errors when the user presses Stop.
       }
-      throw error;
+      throw new LearnCancelledError();
     }
     const message = error instanceof Error ? error.message : "Lesson generation failed";
     const failedJob = getLatestLearnJob(gardenId);
@@ -7031,6 +7114,8 @@ export async function runTextbookGeneration({
       error: message,
     });
     throw error;
+  } finally {
+    disposeModelTracking();
   }
 }
 
@@ -7112,7 +7197,6 @@ export async function runLearnRepairOperation({
     sourceOnly: true,
     includeSourceSnapshots: false,
   });
-  attachLearnTokenUsageTracking(client, (event) => recordLearnTokenUsageEvent(job.id, event));
   const gardenDir = clusterPath(contentPath, gardenId);
   const lock = acquireGardenLearnLock(gardenDir, { gardenSlug: gardenId, jobId: job.id, buildId: `repair:${job.id}` });
   if (!lock.acquired) {
@@ -7120,7 +7204,14 @@ export async function runLearnRepairOperation({
     updateLearnJob(job.id, { status: "failed", currentStep: "Repair could not start", error: message });
     throw new Error(message);
   }
+  let disposeModelTracking = () => {};
   try {
+    disposeModelTracking = attachLearnJobModelTracking({
+      client,
+      jobId: job.id,
+      gardenId,
+      contentPath,
+    });
     updateLearnJob(job.id, { status: "analyzing_issues", currentStep: "Analyzing validation issues", progressPercent: 5 });
     appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_started", { jobId: job.id, request });
     const repair = await executeLearnScopedRepair({
@@ -7151,6 +7242,7 @@ export async function runLearnRepairOperation({
         return result.parsed;
       },
       onProgress: ({ step, issue, scope }) => {
+        throwIfLearnCancelled(job.id);
         const lower = step.toLowerCase();
         const status: LearnStatus = lower.includes("analyzing") ? "analyzing_issues"
           : lower.includes("revalidating") ? "revalidating"
@@ -7163,6 +7255,7 @@ export async function runLearnRepairOperation({
         });
       },
     });
+    throwIfLearnCancelled(job.id);
     if (!repair.transaction.committed) {
       const remaining = repair.transaction.blockersAfter.length;
       throw new Error(`Scoped repair stopped without publishing because its safety/progress gate failed. ${remaining} blocker(s) remain. Inspect .breadboard/scoped-repair.md; Full rebuild remains a separate action.`);
@@ -7181,12 +7274,16 @@ export async function runLearnRepairOperation({
     });
     return { job: finalJob, repair };
   } catch (error) {
+    if (isLearnCancellation(job.id, error)) {
+      throw new LearnCancelledError();
+    }
     const raw = error instanceof Error ? error.message : String(error);
     const message = raw.length > 700 ? `${raw.slice(0, 697)}...` : raw;
     appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_failed", { jobId: job.id, error: message });
     updateLearnJob(job.id, { status: "failed", currentStep: "Repair stopped with remaining blockers", error: message });
     throw error;
   } finally {
+    disposeModelTracking();
     releaseGardenLearnLock(gardenDir, job.id);
   }
 }
@@ -7290,6 +7387,7 @@ export async function cancelLatestLearnJob({
     confirmedLearningMapId: undefined,
     latestTextbookVersionId: undefined,
   });
+  activeLearnAbortControllers.get(latest.id)?.abort(new LearnCancelledError());
   const cleanup = await cleanupLearnArtifactsAfterCancel({
     gardenId,
     contentPath,

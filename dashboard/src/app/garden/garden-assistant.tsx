@@ -97,6 +97,7 @@ interface AssistantLearnState {
     error?: string;
   } | null;
   confirmedLearningMapId?: string;
+  latestTextbookVersionId?: string;
   hasSources?: boolean;
   selectedSourceIds?: string[];
   hasTextbook?: boolean;
@@ -940,13 +941,23 @@ export default function GardenAssistant({
     setLearnBusy(true);
     setDismissedLearnErrorKeys(forgetDismissedLearnErrorsForGarden(activeClusterSlug));
     try {
-      const endpoint = learnState?.confirmedLearningMapId ? 'regenerate' : 'plan';
+      const hasExistingLearnContent = Boolean(
+        learnState?.latestTextbookVersionId || learnState?.hasTextbook,
+      );
+      const endpoint = hasExistingLearnContent
+        ? 'regenerate'
+        : learnState?.confirmedLearningMapId
+          ? 'generate'
+          : 'plan';
       const response = await fetch(`/api/gardens/${encodeURIComponent(activeClusterSlug)}/learn/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model,
           ...(endpoint === 'regenerate' ? { mode: 'repair' } : {}),
+          ...(endpoint === 'generate'
+            ? { confirmedLearningMapId: learnState?.confirmedLearningMapId }
+            : {}),
           sourceOnly: true,
           ...(Array.isArray(learnState?.selectedSourceIds)
             ? { includedSourceIds: learnState.selectedSourceIds }
@@ -960,7 +971,9 @@ export default function GardenAssistant({
       await appendAssistantNotice(
         endpoint === 'plan'
           ? `Learning map drafted. Open the garden dashboard to confirm the lesson order: [${clusterLabel}](/gardens/${activeClusterSlug}).`
-          : `Current validation issues were repaired for [${clusterLabel}](/garden/${activeClusterSlug}); unaffected pages were preserved.`,
+          : endpoint === 'generate'
+            ? `Lessons generated for [${clusterLabel}](/garden/${activeClusterSlug}).`
+            : `Current validation issues were repaired for [${clusterLabel}](/garden/${activeClusterSlug}); unaffected pages were preserved.`,
       );
     } catch (error) {
       await appendAssistantNotice(error instanceof Error ? error.message : 'Learn action failed.');

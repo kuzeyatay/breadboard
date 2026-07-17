@@ -261,7 +261,7 @@ test("completed Learn panel exposes scoped repair beside Skip review", () => {
   assert.doesNotMatch(completedFooter, /onClick=\{handleRepairIssues\}/);
 });
 
-test("cancelled Learn jobs expose a fresh generate action", () => {
+test("cancelled Learn jobs recover according to the current garden state", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -274,9 +274,33 @@ test("cancelled Learn jobs expose a fresh generate action", () => {
     workspaceSource,
     /showPrimaryAction =[\s\S]*?status === "failed" \|\| status === "cancelled"/,
   );
+  const primaryStart = workspaceSource.indexOf("async function handleLearnPrimary()");
+  const primaryEnd = workspaceSource.indexOf("async function handleConfirmAndGenerate()", primaryStart);
+  const primaryHandler = workspaceSource.slice(primaryStart, primaryEnd);
+  const repairIndex = primaryHandler.indexOf('postLearnAction("regenerate", { mode: "repair" })');
+  const generateIndex = primaryHandler.indexOf('postLearnAction("generate"');
+  const planIndex = primaryHandler.indexOf('postLearnAction("plan")');
+
+  assert.ok(primaryStart >= 0 && primaryEnd > primaryStart);
+  assert.ok(repairIndex >= 0, "existing learner content must recover through repair");
+  assert.ok(generateIndex > repairIndex, "a map-only garden may generate its first pages");
+  assert.ok(planIndex > generateIndex, "only an empty garden may start planning");
   assert.match(
     workspaceSource,
-    /async function handleGenerateAfterCancellation\(\)[\s\S]*?postLearnAction\("plan"\)/,
+    /async function handleGenerateAfterCancellation\(\)[\s\S]*?await handleLearnPrimary\(\)/,
   );
-  assert.match(workspaceSource, /status === "cancelled"[\s\S]*?"Generate"/);
+  assert.match(workspaceSource, /status === "cancelled"[\s\S]*?"Repair issues"[\s\S]*?"Generate"/);
+  assert.match(
+    workspaceSource,
+    /status === "complete" \|\| status === "failed" \|\| status === "cancelled"[\s\S]*?Rebuild entire garden/,
+  );
+
+  const assistantSource = fs.readFileSync(
+    new URL("../src/app/garden/garden-assistant.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    assistantSource,
+    /const hasExistingLearnContent = Boolean\([\s\S]*?latestTextbookVersionId[\s\S]*?hasTextbook[\s\S]*?const endpoint = hasExistingLearnContent[\s\S]*?'regenerate'[\s\S]*?confirmedLearningMapId[\s\S]*?'generate'[\s\S]*?'plan'/,
+  );
 });
