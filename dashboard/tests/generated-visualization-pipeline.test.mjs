@@ -1,0 +1,500 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  buildVisualizationCoverageReport,
+  buildVisualizationPlan,
+} from "../src/lib/visualization-opportunities.ts";
+import {
+  buildGeneratedVisualBlock,
+  compileGeneratedVisualization,
+  createGeneratedVisualization,
+  loadGeneratedVisualDefinition,
+  loadGeneratedVisualManifest,
+  parseGeneratedVisualBlock,
+  rollbackGeneratedVisualization,
+  runGeneratedVisualBrowserTests,
+  runGeneratedVisualDeterministicTests,
+  validateGeneratedVisualizationManifest,
+} from "../src/lib/generated-visuals.ts";
+
+function unit(overrides = {}) {
+  return {
+    id: "U1",
+    title: "Explore an unusual state machine",
+    role: "application",
+    learningQuestion: "How do coupled states propagate under intervention?",
+    prerequisiteConcepts: [],
+    newConcepts: ["coupled state propagation"],
+    sourceAnchors: ["S1.P2.F1"],
+    sourceFigures: [],
+    sourceFormulas: [],
+    sourceTables: [],
+    interactiveVisual: {
+      id: "state-propagation",
+      uniqueConcept: "intervening on coupled state propagation",
+      visualType: "coupled_state_intervention",
+      whyStaticSourceFigureIsNotEnough: "The learner must change one state and inspect propagation.",
+      learnerManipulates: ["gain"],
+      expectedInsight: "local interventions can amplify or damp downstream states",
+      sourceAnchors: ["S1.P2.F1"],
+      duplicateSignature: "coupled-state-intervention",
+    },
+    zettelNotes: [],
+    semanticConcepts: [{ slug: "coupled-state-propagation", preferredLabel: "Coupled state propagation", role: "primary", aliases: [], evidenceAnchors: ["S1.P2.F1"] }],
+    knowledgeClaims: [],
+    mustNotRepeat: [],
+    expectedWordRange: [700, 1100],
+    ...overrides,
+  };
+}
+
+function learningMap(units) {
+  return {
+    gardenId: "demo",
+    title: "State propagation",
+    summary: "Learn through intervention.",
+    sourceOnly: true,
+    createdAt: "2026-07-16T00:00:00.000Z",
+    warnings: [],
+    sections: [{
+      id: "section-1",
+      title: "Coupled states",
+      purpose: "Understand propagation.",
+      sourceAnchors: ["S1.P2.F1"],
+      subsections: units.map((candidate, index) => ({
+        id: `subsection-${index + 1}`,
+        title: candidate.title,
+        purpose: candidate.learningQuestion,
+        sourceAnchors: candidate.sourceAnchors,
+        conceptTags: candidate.newConcepts,
+        learningUnitId: candidate.id,
+      })),
+    }],
+  };
+}
+
+test("opportunity analysis covers every unit and routes a non-catalog interaction to generation", () => {
+  const units = [unit()];
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap(units), learningUnits: units });
+  assert.equal(plan.opportunities.length, 1);
+  assert.equal(plan.opportunities[0].learningUnitId, "U1");
+  assert.equal(plan.decisions[0].route, "generated_module");
+  assert.equal(plan.opportunities[0].requiresGeneratedModule, true);
+});
+
+test("seven representative learning fixtures receive six visual routes and one pedagogical omission", () => {
+  const customVisual = (id, concept) => ({
+    id,
+    uniqueConcept: concept,
+    visualType: `${id}_custom`,
+    whyStaticSourceFigureIsNotEnough: "The learner must manipulate or step through the relationship.",
+    learnerManipulates: ["parameter"],
+    expectedInsight: `Understand ${concept} by experimentation`,
+    sourceAnchors: [`S1.${id}.E1`],
+    duplicateSignature: id,
+  });
+  const fixture = (id, title, role, extra = {}) => unit({
+    id,
+    title,
+    role,
+    learningQuestion: `How does ${title.toLowerCase()} work?`,
+    newConcepts: [title],
+    semanticConcepts: [{ slug: id.toLowerCase(), preferredLabel: title, role: "primary", aliases: [], evidenceAnchors: [`S1.${id}.E1`] }],
+    sourceAnchors: [`S1.${id}.E1`],
+    interactiveVisual: undefined,
+    ...extra,
+  });
+  const fixtures = [
+    fixture("MATH", "Nonlinear parameter equation", "formula", {
+      sourceFormulas: [{ id: "S1.MATH.E1", teachingGoal: "inspect the curve", termsToDefine: ["parameter"], placement: "before_example" }],
+    }),
+    fixture("TIME", "Time-dependent signal trajectory", "mechanism", { interactiveVisual: customVisual("time", "signal evolution") }),
+    fixture("BIO", "Biological membrane mechanism", "mechanism", { interactiveVisual: customVisual("bio", "membrane feedback") }),
+    fixture("ALGO", "Algorithm execution step by step", "application", { interactiveVisual: customVisual("algo", "algorithm state") }),
+    fixture("COMPARE", "Architecture comparison trade-off", "comparison", { interactiveVisual: customVisual("compare", "architecture trade-off") }),
+    fixture("FIGURE", "Reconstructing a source figure", "core_concept", {
+      sourceFigures: [{ id: "S1.FIGURE.F1", placement: "inside_concept_explanation", mustBeDiscussedWith: "the source trend", interpretationGoal: "inspect the source relationship" }],
+      interactiveVisual: customVisual("figure", "source-figure reconstruction"),
+    }),
+    fixture("NOVIS", "Historical terminology", "motivation", {
+      learningQuestion: "What terminology is used in the chapter?",
+      newConcepts: ["terminology"],
+      semanticConcepts: [{ slug: "terminology", preferredLabel: "Terminology", role: "primary", aliases: [], evidenceAnchors: ["S1.NOVIS.T1"] }],
+    }),
+  ];
+  const plan = buildVisualizationPlan({ gardenId: "fixtures", learningMap: learningMap(fixtures), learningUnits: fixtures });
+  assert.equal(plan.opportunities.length, 7);
+  assert.ok(plan.decisions.slice(0, 6).every((decision) => decision.route !== "intentional_omission"), JSON.stringify(plan.decisions));
+  assert.equal(plan.decisions[6].route, "intentional_omission");
+  assert.match(plan.decisions[6].reason, /primarily explanatory|no manipulable/i);
+  assert.deepEqual(plan.opportunities[5].sourceVisualRelationships.map((relationship) => relationship.fidelity), ["illustrative"]);
+});
+
+test("semantic duplicate opportunities are explicitly omitted instead of generated twice", () => {
+  const first = unit();
+  const second = unit({ id: "U2" });
+  const units = [first, second];
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap(units), learningUnits: units });
+  assert.equal(plan.opportunities.length, 2);
+  assert.equal(plan.decisions[1].route, "intentional_omission");
+  assert.equal(plan.decisions[1].duplicateOf, plan.opportunities[0].id);
+});
+
+test("coverage gate fails uncovered critical opportunities and reports zero published visuals", () => {
+  const critical = unit({
+    role: "formula",
+    sourceFormulas: [{ id: "S1.P3.E1", teachingGoal: "derive propagation", termsToDefine: ["gain"], placement: "before_example" }],
+  });
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([critical]), learningUnits: [critical] });
+  const report = buildVisualizationCoverageReport({ plan, outcomes: [], gate: "fail" });
+  assert.equal(report.status, "fail");
+  assert.equal(report.generatedVisualsPublished + report.trustedVisualsPublished, 0);
+  assert.ok(report.uncoveredCriticalOpportunityIds.length > 0);
+});
+
+const validSource = `import { defineVisualization } from "@breadboard/visual-sdk";
+export default defineVisualization({
+  schemaVersion: 1,
+  sdkVersion: "1.0.0",
+  title: "Coupled state intervention",
+  description: "Change the gain and inspect how the propagated state changes.",
+  accessibilityDescription: "A gain slider updates a numeric propagated-state result and a plotted response curve.",
+  controls: [{ id: "gain", label: "Gain", type: "slider", min: 0, max: 3, step: 0.1, defaultValue: 1 }],
+  outputs: [{
+    id: "main_output",
+    label: "Propagated state",
+    representation: "chart",
+    expression: { kind: "binary", op: "add", left: { kind: "input", id: "gain" }, right: { kind: "input", id: "x" } }
+  }],
+  scenes: [{
+    kind: "plot",
+    title: "Propagation response",
+    xLabel: "Input state",
+    yLabel: "Output state",
+    xMin: 0,
+    xMax: 4,
+    samples: 48,
+    series: [{ id: "response", label: "output", expression: { kind: "binary", op: "multiply", left: { kind: "input", id: "gain" }, right: { kind: "input", id: "x" } } }]
+  }],
+  animation: { durationMs: 3000, loop: true, autoplay: false },
+  theme: { accent: "green" }
+});`;
+
+test("strict AST compiler emits only the fixed JSON envelope and deterministic tests pass", () => {
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = plan.opportunities[0];
+  const compiled = compileGeneratedVisualization(validSource, opportunity);
+  assert.equal(compiled.validation.valid, true, compiled.validation.errors.join("; "));
+  assert.ok(compiled.compiledJavaScript.startsWith("globalThis.__BREADBOARD_GENERATED_VISUAL__ = Object.freeze("));
+  assert.equal(compiled.compiledJavaScript.includes("fetch("), false);
+  const tests = runGeneratedVisualDeterministicTests({
+    definition: compiled.definition,
+    opportunity,
+    availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+    testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+  });
+  assert.equal(tests.passed, true, JSON.stringify(tests));
+});
+
+test("AST validator rejects network calls, callbacks, and extra executable statements", () => {
+  const malicious = `import { defineVisualization } from "@breadboard/visual-sdk";
+fetch("https://example.com");
+export default defineVisualization({ schemaVersion: 1, sdkVersion: "1.0.0", title: "Bad", description: "Bad", accessibilityDescription: "A deliberately invalid networked visual.", controls: [], outputs: [], scenes: [] });`;
+  const compiled = compileGeneratedVisualization(malicious);
+  assert.equal(compiled.validation.valid, false);
+  assert.ok(compiled.validation.errors.some((error) => /forbidden|executable|URL/i.test(error)), compiled.validation.errors.join("; "));
+});
+
+test("AST validator rejects arbitrary imports and privileged application or browser access", () => {
+  const cases = [
+    `import { defineVisualization } from "d3"; export default defineVisualization({});`,
+    `import { defineVisualization } from "@breadboard/visual-sdk"; process.env.SECRET; export default defineVisualization({});`,
+    `import { defineVisualization } from "@breadboard/visual-sdk"; window.localStorage.clear(); export default defineVisualization({});`,
+    `import { defineVisualization } from "@breadboard/visual-sdk"; import("https://example.com/x.js"); export default defineVisualization({});`,
+    `import { defineVisualization } from "@breadboard/visual-sdk"; while (true) {} export default defineVisualization({});`,
+  ];
+  for (const source of cases) {
+    const compiled = compileGeneratedVisualization(source);
+    assert.equal(compiled.validation.valid, false, source);
+    assert.ok(compiled.validation.errors.length > 0, source);
+  }
+});
+
+test("compilation cache is source-, opportunity-, and SDK-version aware", () => {
+  const uniqueSource = validSource.replace("Coupled state intervention", "Cached coupled state intervention");
+  const first = compileGeneratedVisualization(uniqueSource);
+  const second = compileGeneratedVisualization(uniqueSource);
+  assert.equal(first.cacheHit, false);
+  assert.equal(second.cacheHit, true);
+  assert.equal(first.compiledHash, second.compiledHash);
+});
+
+test("generated Markdown block identity round-trips", () => {
+  const block = buildGeneratedVisualBlock("visual-u1-deadbeef", 3);
+  const value = block.replace(/^```[^\n]+\n/, "").replace(/\n```$/, "");
+  assert.deepEqual(parseGeneratedVisualBlock(value), { id: "visual-u1-deadbeef", version: 3 });
+});
+
+test("manifest validation rejects path, hash, status, and identity mismatches", () => {
+  const checked = validateGeneratedVisualizationManifest({
+    schemaVersion: 1,
+    sdkVersion: "1.0.0",
+    id: "visual-valid-id",
+    gardenId: "demo",
+    learningUnitId: "U1",
+    title: "Visual",
+    description: "Description",
+    learningObjective: "Learn",
+    sourceAnchorIds: [],
+    sourceVisualIds: [],
+    conceptIds: [],
+    insertionAnchor: "learning-unit:U1:after-introduction",
+    targetPage: "sources/not-allowed.md",
+    targetHeading: "Visual",
+    sourceHash: "bad",
+    compiledHash: "bad",
+    status: "published",
+    generatedAt: "not-a-date",
+    generatorModel: "test",
+    generationAttempt: 1,
+    version: 1,
+    artifactPath: ".breadboard/visuals/wrong",
+    similarityFingerprint: "fingerprint",
+  }, "visual-different-id");
+  assert.equal(checked.manifest, null);
+  assert.match(checked.errors.join("; "), /does not match|targetPage|sourceHash|compiledHash|artifactPath|generatedAt/);
+});
+
+const browserAvailable = [
+  process.env.BREADBOARD_VISUAL_BROWSER_PATH,
+  "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+  "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+].some((candidate) => candidate && fs.existsSync(candidate));
+
+test("isolated browser runtime mounts at mobile and desktop sizes without overflow", { skip: !browserAvailable }, () => {
+  const compiled = compileGeneratedVisualization(validSource);
+  assert.ok(compiled.definition);
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-browser-"));
+  try {
+    const result = runGeneratedVisualBrowserTests({ definition: compiled.definition, outputDir });
+    assert.ok(result.tests.every((candidate) => candidate.passed), JSON.stringify(result.tests));
+    assert.equal(fs.existsSync(path.join(outputDir, "preview.png")), true);
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("versioned generated artifacts preserve evidence and support validated rollback", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    targetPage: "learning/1. Coupled states/1.1 Explore an unusual state machine.md",
+    targetHeading: "Explore an unusual state machine",
+    insertionAnchor: "learning-unit:U1:after-introduction",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-artifact-"));
+  const candidateProvider = async () => ({
+    title: "Coupled state intervention",
+    explanation: "A source-grounded intervention explorer.",
+    sourceCode: validSource,
+    testCases: [{ name: "gain doubles state", inputs: { gain: 2, x: 2 }, expected: { main_output: 4 } }],
+    accessibilityDescription: "A gain slider changes both a numeric output and the plotted propagation response.",
+    pedagogicalClaims: ["The propagated state changes with gain."],
+  });
+  const criticProvider = async () => ({
+    approved: true,
+    checkedAt: new Date().toISOString(),
+    reason: "The control changes the intended relationship.",
+    requestedChanges: [],
+    scores: { pedagogicalValue: 0.9, sourceFidelity: 0.9, usability: 0.9, accessibility: 0.9 },
+  });
+  try {
+    const common = {
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: `Introduction.\n\n<!-- ${opportunity.insertionAnchor} -->`,
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      candidateProvider,
+      criticProvider,
+      runBrowserTests: false,
+    };
+    const first = await createGeneratedVisualization(common);
+    assert.equal(first.manifest?.version, 1, first.errors.join("; "));
+    const second = await createGeneratedVisualization(common);
+    assert.equal(second.manifest?.version, 2, second.errors.join("; "));
+    assert.equal(second.manifest?.previousVersion, 1);
+    const publishedDir = path.join(gardenDir, ".breadboard", "visuals", opportunity.id);
+    const publishedSource = fs.readFileSync(path.join(publishedDir, "source.tsx"));
+    const publishedCompiled = fs.readFileSync(path.join(publishedDir, "compiled.js"));
+    assert.equal(second.manifest?.sourceHash, crypto.createHash("sha256").update(publishedSource).digest("hex"));
+    assert.equal(second.manifest?.compiledHash, crypto.createHash("sha256").update(publishedCompiled).digest("hex"));
+    assert.ok(loadGeneratedVisualDefinition(gardenDir, opportunity.id, 1));
+    assert.ok(loadGeneratedVisualDefinition(gardenDir, opportunity.id, 2));
+    const lifecycle = JSON.parse(fs.readFileSync(path.join(
+      gardenDir, ".breadboard", "visuals", opportunity.id, "versions", "2", "lifecycle.json",
+    ), "utf8"));
+    assert.deepEqual(lifecycle.map((entry) => entry.status), ["draft", "validated", "compiled", "tested", "critic_approved", "published"]);
+    const restored = rollbackGeneratedVisualization({ gardenDir, id: opportunity.id, version: 1 });
+    assert.equal(restored.version, 1);
+    assert.equal(loadGeneratedVisualManifest(gardenDir, opportunity.id)?.version, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("a deterministic runtime-test failure is recorded and repaired on the next bounded attempt", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "repair", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = {
+    ...plan.opportunities[0],
+    gardenId: "repair",
+    targetPage: "learning/1/repair.md",
+    targetHeading: "Repair",
+  };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-repair-"));
+  let calls = 0;
+  const events = [];
+  try {
+    const result = await createGeneratedVisualization({
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "An anchored explanation.",
+      availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+      maxAttempts: 2,
+      runBrowserTests: false,
+      onEvent: (event) => events.push(event),
+      candidateProvider: async () => {
+        calls += 1;
+        return {
+          title: "Coupled state intervention",
+          explanation: "A repaired intervention explorer.",
+          sourceCode: validSource,
+          testCases: [{
+            name: "gain doubles state",
+            inputs: { gain: 2, x: 2 },
+            expected: { main_output: calls === 1 ? 999 : 4 },
+          }],
+          accessibilityDescription: "A labeled gain control changes the response.",
+          pedagogicalClaims: ["Gain changes the propagated state."],
+        };
+      },
+      criticProvider: async () => ({
+        approved: true,
+        checkedAt: new Date().toISOString(),
+        reason: "Approved after deterministic repair.",
+        requestedChanges: [],
+        scores: { pedagogicalValue: 0.9, sourceFidelity: 0.9, usability: 0.9, accessibility: 0.9 },
+      }),
+    });
+    assert.equal(result.manifest?.generationAttempt, 2, result.errors.join("; "));
+    assert.equal(calls, 2);
+    assert.ok(events.some((event) => event.type === "visual_runtime_test_failed"));
+    assert.ok(events.some((event) => event.type === "visual_repair_started"));
+    const attemptsRoot = path.join(gardenDir, ".breadboard", "visuals", opportunity.id, "attempts");
+    const rejectionFiles = fs.readdirSync(attemptsRoot, { recursive: true }).filter((entry) => String(entry).endsWith("rejection.json"));
+    assert.equal(rejectionFiles.length, 1);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("exhausted repairs reject safely without publishing a broken artifact", async () => {
+  const plan = buildVisualizationPlan({ gardenId: "reject", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+  const opportunity = { ...plan.opportunities[0], gardenId: "reject", targetPage: "learning/reject.md" };
+  const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-visual-reject-"));
+  const events = [];
+  try {
+    const result = await createGeneratedVisualization({
+      client: {},
+      model: "test-model",
+      gardenDir,
+      opportunity,
+      pageMarkdown: "An explanation remains available without the visual.",
+      maxAttempts: 2,
+      runBrowserTests: false,
+      onEvent: (event) => events.push(event),
+      candidateProvider: async () => ({
+        title: "Unsafe visual",
+        explanation: "This candidate must never publish.",
+        sourceCode: `import { defineVisualization } from "unsafe-package"; export default defineVisualization({});`,
+        testCases: [],
+        accessibilityDescription: "Rejected visual.",
+        pedagogicalClaims: [],
+      }),
+      criticProvider: async () => { throw new Error("critic must not run"); },
+    });
+    assert.equal(result.manifest, null);
+    assert.equal(result.failureCategory, "validation");
+    assert.ok(events.some((event) => event.type === "visual_fallback_used"));
+    assert.equal(loadGeneratedVisualManifest(gardenDir, opportunity.id), null);
+  } finally {
+    fs.rmSync(gardenDir, { recursive: true, force: true });
+  }
+});
+
+test("generated visualization work obeys the configured concurrency limit", async () => {
+  const previousLimit = process.env.LEARN_GENERATED_VISUAL_CONCURRENCY;
+  process.env.LEARN_GENERATED_VISUAL_CONCURRENCY = "1";
+  const roots = [];
+  let active = 0;
+  let peak = 0;
+  try {
+    const basePlan = buildVisualizationPlan({ gardenId: "queue", learningMap: learningMap([unit()]), learningUnits: [unit()] });
+    const work = [1, 2, 3].map(async (number) => {
+      const gardenDir = fs.mkdtempSync(path.join(os.tmpdir(), `breadboard-visual-queue-${number}-`));
+      roots.push(gardenDir);
+      const opportunity = {
+        ...basePlan.opportunities[0],
+        id: `visual-queued-${number}`,
+        gardenId: `queue-${number}`,
+        targetPage: `learning/${number}.md`,
+      };
+      return createGeneratedVisualization({
+        client: {},
+        model: "test-model",
+        gardenDir,
+        opportunity,
+        pageMarkdown: "Queued visualization.",
+        availableSourceAnchorIds: new Set(["S1.P2.F1"]),
+        maxAttempts: 1,
+        runBrowserTests: false,
+        candidateProvider: async () => {
+          active += 1;
+          peak = Math.max(peak, active);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          active -= 1;
+          return {
+            title: "Queued visual",
+            explanation: "A queued visual.",
+            sourceCode: validSource,
+            testCases: [{ name: "finite", inputs: { gain: 1, x: 1 }, expected: { main_output: 2 } }],
+            accessibilityDescription: "A queued visual with labeled controls.",
+            pedagogicalClaims: ["The output is finite."],
+          };
+        },
+        criticProvider: async () => ({
+          approved: true,
+          checkedAt: new Date().toISOString(),
+          reason: "Approved.",
+          requestedChanges: [],
+          scores: { pedagogicalValue: 0.9, sourceFidelity: 0.9, usability: 0.9, accessibility: 0.9 },
+        }),
+      });
+    });
+    const results = await Promise.all(work);
+    assert.ok(results.every((result) => result.manifest));
+    assert.equal(peak, 1);
+  } finally {
+    if (previousLimit === undefined) delete process.env.LEARN_GENERATED_VISUAL_CONCURRENCY;
+    else process.env.LEARN_GENERATED_VISUAL_CONCURRENCY = previousLimit;
+    for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+  }
+});

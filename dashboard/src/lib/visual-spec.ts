@@ -1,3 +1,5 @@
+import { TRUSTED_RENDERER_IDS } from "./visualization-registry.ts";
+
 /**
  * Breadboard VisualSpec: the typed, data-driven contract between LLM-generated
  * visualization specs and the trusted Quartz renderer.
@@ -11,47 +13,13 @@
  * sync.
  */
 
-export const VISUAL_TYPES = [
-  "function_plot",
-  "linked_time_plots",
-  "phase_space",
-  "mass_spring",
-  "pendulum",
-  "energy_exchange",
-  "damping_envelope",
-  "resonance_curve",
-  "travelling_wave",
-  "standing_wave",
-  "ray_diagram",
-  "lif_neuron",
-  "neural_coding",
-  "stdp_window",
-  "metric_calculator",
-  "training_curve",
-  "tradeoff_explorer",
-  "source_figure_explainer",
-  "formula_derivation",
-  "concept_diagram",
-  "comparison_table",
-] as const
+export const VISUAL_TYPES = TRUSTED_RENDERER_IDS
 
-export type VisualType = (typeof VISUAL_TYPES)[number]
+export type VisualType = string
 
 /** Visual types the Quartz renderer can draw interactively today. Everything
  * else in VISUAL_TYPES is schema-valid and degrades to a readable card. */
-export const IMPLEMENTED_VISUAL_TYPES = [
-  "function_plot",
-  "linked_time_plots",
-  "mass_spring",
-  "energy_exchange",
-  "resonance_curve",
-  "lif_neuron",
-  "neural_coding",
-  "stdp_window",
-  "metric_calculator",
-  "training_curve",
-  "tradeoff_explorer",
-] as const
+export const IMPLEMENTED_VISUAL_TYPES = TRUSTED_RENDERER_IDS
 
 export interface SourceAnchor {
   sourceId?: string

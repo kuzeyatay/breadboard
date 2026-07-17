@@ -132,6 +132,7 @@ import {
   sanitizeLearnerTitle,
   scrubSourceCommentaryProse,
   scrubLearnerProse,
+  selectLearnSources,
   sourceAppearsVisualRich,
   sourceSetHashForSources,
   stripMarkdownFence,
@@ -161,6 +162,19 @@ import {
 import { transitionLearnTimer } from "@/lib/learn-timer";
 import { learnBuildStateMode } from "@/lib/garden-build/mode";
 import { runCanonicalGardenShadowBuild } from "@/lib/garden-build/shadow";
+import {
+  buildVisualizationCoverageReport,
+  buildVisualizationPlan,
+  coverageGateMode,
+  saveVisualizationCoverageReport,
+  saveVisualizationPlan,
+  type VisualizationPlan,
+  type VisualizationPublicationOutcome,
+} from "@/lib/visualization-opportunities";
+import {
+  buildGeneratedVisualBlock,
+  createGeneratedVisualization,
+} from "@/lib/generated-visuals";
 
 export type {
   LearnStatus,
@@ -186,6 +200,7 @@ export interface LearnJob {
   confirmedLearningMapId?: string;
   latestTextbookVersionId?: string;
   sourceSetHash?: string;
+  sourceIds: string[];
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
   tokenUsage: LearnTokenUsage;
@@ -207,6 +222,7 @@ export interface StoredLearningMap {
   visualOpportunities: unknown[];
   coveragePlan: unknown;
   sourceSetHash: string;
+  sourceIds: string[];
   createdAt: string;
   confirmedAt?: string;
 }
@@ -218,6 +234,8 @@ export interface LearnStatusSnapshot {
   latestTextbookVersionId?: string;
   hasSources: boolean;
   sourceCount: number;
+  selectedSourceIds: string[];
+  selectedSourceCount: number;
   hasTextbook: boolean;
   sourceSetChanged: boolean;
   buttonLabel: string;
@@ -248,6 +266,7 @@ interface LearnJobRow {
   confirmed_learning_map_id: string | null;
   latest_textbook_version_id: string | null;
   source_set_hash: string | null;
+  source_ids_json: string | null;
   source_only: number | null;
   include_source_snapshots: number | null;
   active_elapsed_ms: number | null;
@@ -282,6 +301,7 @@ interface LearnMapRow {
   visual_opportunities_json: string;
   coverage_plan_json: string;
   source_set_hash: string;
+  source_ids_json: string | null;
   created_at: string;
   confirmed_at: string | null;
 }
@@ -508,7 +528,7 @@ Return ONLY JSON with this shape:
       "interactiveVisual": {
         "id": "optional stable id",
         "uniqueConcept": "the exact concept interaction teaches",
-        "visualType": "lif_neuron | neural_coding | stdp_window | metric_calculator | training_curve | tradeoff_explorer",
+        "visualType": "short semantic interaction name; use a known renderer name only when it is a genuine fit",
         "whyStaticSourceFigureIsNotEnough": "why prose/source image is insufficient",
         "learnerManipulates": ["control names"],
         "expectedInsight": "what changes in the learner's understanding",
@@ -547,7 +567,7 @@ Contract rules:
 - Every important source figure, graph, table, displayed formula, result, example, limitation, or recommendation must be assigned to the one precise unit where it teaches best, or marked unused with a reason.
 - Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
 - Interactive visuals are optional. A unit has zero or one. Use one only when interaction teaches something static prose or a source figure cannot.
-- Do not invent custom visual types. If none of the listed interactive visual types fits, omit interactiveVisual for that unit.
+- Plan the pedagogical interaction need, not the renderer catalog. When no known renderer fits, keep a concise custom semantic visualType so Breadboard can route it through the constrained generated-module path.
 - Do not repeat interactive visual signatures. If a later unit needs a similar visual, link back conceptually or omit it.
 - Concepts are reusable identities, never complete claims, page-title summaries, filenames, locations, or planner phrases. Reuse an existing canonical slug or alias whenever possible.
 - Every normalized alias must belong to exactly one concept. Never use another concept's slug or preferred label as an alias, and never assign the same alias to multiple concepts.
@@ -650,6 +670,7 @@ function ensureLearnTables(): void {
       confirmed_learning_map_id  TEXT,
       latest_textbook_version_id TEXT,
       source_set_hash            TEXT,
+      source_ids_json            TEXT NOT NULL DEFAULT '[]',
       source_only                INTEGER NOT NULL DEFAULT 1,
       include_source_snapshots   INTEGER NOT NULL DEFAULT 0,
       active_elapsed_ms          INTEGER NOT NULL DEFAULT 0,
@@ -687,6 +708,7 @@ function ensureLearnTables(): void {
       visual_opportunities_json TEXT NOT NULL,
       coverage_plan_json        TEXT NOT NULL,
       source_set_hash           TEXT NOT NULL,
+      source_ids_json           TEXT NOT NULL DEFAULT '[]',
       created_at                TEXT NOT NULL,
       confirmed_at              TEXT
     );
@@ -722,6 +744,18 @@ function ensureLearnTables(): void {
   if (!learnJobColumns.has("timer_started_at")) {
     db.exec("ALTER TABLE learn_jobs ADD COLUMN timer_started_at TEXT");
   }
+  if (!learnJobColumns.has("source_ids_json")) {
+    db.exec("ALTER TABLE learn_jobs ADD COLUMN source_ids_json TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  const learnMapColumns = new Set(
+    (db.prepare("PRAGMA table_info(learn_maps)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  if (!learnMapColumns.has("source_ids_json")) {
+    db.exec("ALTER TABLE learn_maps ADD COLUMN source_ids_json TEXT NOT NULL DEFAULT '[]'");
+  }
 }
 
 function nowIso(): string {
@@ -742,6 +776,19 @@ function parseJson(value: string): unknown {
   } catch {
     return null;
   }
+}
+
+function parseSourceIds(value: string | null | undefined): string[] {
+  const parsed = value ? parseJson(value) : null;
+  if (!Array.isArray(parsed)) return [];
+  return Array.from(
+    new Set(
+      parsed
+        .filter((sourceId): sourceId is string => typeof sourceId === "string")
+        .map((sourceId) => sourceId.trim())
+        .filter(Boolean),
+    ),
+  );
 }
 
 function learnTokenUsageForJob(jobId: string): LearnTokenUsage {
@@ -875,6 +922,7 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     confirmedLearningMapId: row.confirmed_learning_map_id ?? undefined,
     latestTextbookVersionId: row.latest_textbook_version_id ?? undefined,
     sourceSetHash: row.source_set_hash ?? undefined,
+    sourceIds: parseSourceIds(row.source_ids_json),
     sourceOnly: Boolean(row.source_only ?? 1),
     includeSourceSnapshots: Boolean(row.include_source_snapshots ?? 0),
     tokenUsage: learnTokenUsageForJob(row.id),
@@ -907,6 +955,7 @@ function rowToMap(row: LearnMapRow | undefined): StoredLearningMap | null {
       (parseJson(row.visual_opportunities_json) as unknown[] | null) ?? [],
     coveragePlan: parseJson(row.coverage_plan_json),
     sourceSetHash: row.source_set_hash,
+    sourceIds: parseSourceIds(row.source_ids_json),
     createdAt: row.created_at,
     confirmedAt: row.confirmed_at ?? undefined,
   };
@@ -916,12 +965,14 @@ function createLearnJob({
   gardenId,
   userId,
   mode,
+  sourceIds,
   sourceOnly,
   includeSourceSnapshots,
 }: {
   gardenId: string;
   userId?: number;
   mode: LearnMode;
+  sourceIds: string[];
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
 }): LearnJob {
@@ -935,6 +986,7 @@ function createLearnJob({
     mode,
     currentStep: "",
     progressPercent: 0,
+    sourceIds: [...sourceIds],
     sourceOnly,
     includeSourceSnapshots,
     tokenUsage: emptyLearnTokenUsage(),
@@ -946,9 +998,9 @@ function createLearnJob({
   db.prepare(
     `INSERT INTO learn_jobs (
       id, garden_id, user_id, status, mode, current_step, progress_percent,
-      source_only, include_source_snapshots, active_elapsed_ms, timer_started_at,
+      source_ids_json, source_only, include_source_snapshots, active_elapsed_ms, timer_started_at,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     job.id,
     job.gardenId,
@@ -957,6 +1009,7 @@ function createLearnJob({
     job.mode,
     job.currentStep,
     job.progressPercent,
+    jsonString(job.sourceIds),
     job.sourceOnly ? 1 : 0,
     job.includeSourceSnapshots ? 1 : 0,
     job.elapsedMs,
@@ -1034,6 +1087,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
          confirmed_learning_map_id = ?,
          latest_textbook_version_id = ?,
          source_set_hash = ?,
+         source_ids_json = ?,
          source_only = ?,
          include_source_snapshots = ?,
          active_elapsed_ms = ?,
@@ -1052,6 +1106,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     next.confirmedLearningMapId ?? null,
     next.latestTextbookVersionId ?? null,
     next.sourceSetHash ?? null,
+    jsonString(next.sourceIds),
     next.sourceOnly ? 1 : 0,
     next.includeSourceSnapshots ? 1 : 0,
     next.elapsedMs,
@@ -1104,6 +1159,7 @@ function insertLearnMap({
   learningMap,
   coveragePlan,
   sourceSetHash,
+  sourceIds,
 }: {
   gardenId: string;
   jobId: string;
@@ -1112,6 +1168,7 @@ function insertLearnMap({
   learningMap: ProposedLearningMap;
   coveragePlan: unknown;
   sourceSetHash: string;
+  sourceIds: string[];
 }): StoredLearningMap {
   ensureLearnTables();
   const createdAt = nowIso();
@@ -1135,6 +1192,7 @@ function insertLearnMap({
     ),
     coveragePlan,
     sourceSetHash,
+    sourceIds: [...sourceIds],
     createdAt,
   };
 
@@ -1142,8 +1200,8 @@ function insertLearnMap({
     `INSERT INTO learn_maps (
       id, garden_id, job_id, status, source_map_json, scope_contract_json,
       learning_map_json, proposed_order_json, visual_opportunities_json,
-      coverage_plan_json, source_set_hash, created_at, confirmed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      coverage_plan_json, source_set_hash, source_ids_json, created_at, confirmed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     stored.id,
     stored.gardenId,
@@ -1156,6 +1214,7 @@ function insertLearnMap({
     jsonString(stored.visualOpportunities),
     jsonString(stored.coveragePlan),
     stored.sourceSetHash,
+    jsonString(stored.sourceIds),
     stored.createdAt,
     null,
   );
@@ -1268,10 +1327,11 @@ function sourceFiguresFromVisuals(visuals: SourceVisual[]): SourceFigure[] {
 export function collectLearnSourceContext(
   contentPath: string,
   gardenId: string,
+  includedSourceIds?: readonly string[],
 ): LearnSourceContext {
   const knowledge = scanClusterKnowledge(contentPath, gardenId);
   const gardenTitle = gardenTitleFromDb(gardenId);
-  const sources: LearnSourceSummary[] = knowledge.nodes
+  const availableSources: LearnSourceSummary[] = knowledge.nodes
     .filter((node) => node.type === "source-document")
     .map((node) => ({
       id: node.slug,
@@ -1288,8 +1348,16 @@ export function collectLearnSourceContext(
       tags: node.tags,
       sourceImages: sourcePageImageUrls(node.content),
     }));
+  const sources = selectLearnSources(availableSources, includedSourceIds);
+  const selectedSourceIdSet = new Set(sources.map((source) => source.slug));
   const conceptNodes: LearnConceptSummary[] = knowledge.nodes
-    .filter((node) => node.type === "internal-concept")
+    .filter(
+      (node) =>
+        node.type === "internal-concept" &&
+        (includedSourceIds === undefined
+          ? true
+          : Boolean(node.sourceDocument && selectedSourceIdSet.has(node.sourceDocument))),
+    )
     .map((node) => ({
       title: node.title,
       excerpt: node.excerpt,
@@ -1314,7 +1382,9 @@ export function collectLearnSourceContext(
   // Before extraction has run the list is simply empty — full-page snapshots
   // are never presented as figures.
   const sourceFigures = sourceFiguresFromVisuals(
-    loadSourceVisuals(contentPath, gardenId),
+    loadSourceVisuals(contentPath, gardenId).filter((visual) =>
+      selectedSourceIdSet.has(visual.sourceId),
+    ),
   );
 
   return {
@@ -1377,7 +1447,10 @@ async function ensureSourceVisualsExtracted({
     }
   }
 
-  const visuals = loadSourceVisuals(contentPath, gardenId);
+  const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
+  const visuals = loadSourceVisuals(contentPath, gardenId).filter((visual) =>
+    selectedSourceIds.has(visual.sourceId),
+  );
   context.sourceFigures = sourceFiguresFromVisuals(visuals);
 
   if (visualRichSlugs.size > 0) {
@@ -2254,6 +2327,7 @@ export async function runLearnPlanning({
   client,
   model = DEFAULT_MODEL,
   contentPath,
+  includedSourceIds,
   sourceOnly = true,
   includeSourceSnapshots = false,
   resetSourceMap = false,
@@ -2263,6 +2337,7 @@ export async function runLearnPlanning({
   client: OpenAI;
   model?: string;
   contentPath: string;
+  includedSourceIds?: readonly string[];
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
   resetSourceMap?: boolean;
@@ -2273,10 +2348,12 @@ export async function runLearnPlanning({
       rollbackLearnRun({ gardenId, contentPath, jobId: previousJob.id });
     }
   }
+  const context = collectLearnSourceContext(contentPath, gardenId, includedSourceIds);
   const job = createLearnJob({
     gardenId,
     userId,
     mode: resetSourceMap ? "regenerate" : "plan",
+    sourceIds: context.sources.map((source) => source.slug),
     sourceOnly,
     includeSourceSnapshots,
   });
@@ -2293,7 +2370,6 @@ export async function runLearnPlanning({
   attachLearnTokenUsageTracking(client, (event) => {
     recordLearnTokenUsageEvent(job.id, event);
   });
-  const context = collectLearnSourceContext(contentPath, gardenId);
 
   try {
     updateLearnJob(job.id, {
@@ -2606,6 +2682,7 @@ export async function runLearnPlanning({
         learningMap,
         coveragePlan,
         sourceSetHash: context.sourceSetHash,
+        sourceIds: context.sources.map((source) => source.slug),
       });
       // A failed semantic artifact commit rolls this database insert back, so
       // a failed Learn job cannot leave behind a confirmable orphan map.
@@ -2645,6 +2722,42 @@ export async function runLearnPlanning({
       ...planningSemanticAliasRepairs,
       ...artifactSemanticAliasRepairs,
     ];
+    const visualizationPlanningStartedAt = Date.now();
+    const visualizationPlan = buildVisualizationPlan({
+      gardenId,
+      learningMap,
+      learningUnits,
+    });
+    saveVisualizationPlan(clusterPath(contentPath, gardenId), visualizationPlan);
+    appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
+      jobId: job.id,
+      learningMapId: storedMap.id,
+      opportunitiesDetected: visualizationPlan.opportunities.length,
+      durationMs: Date.now() - visualizationPlanningStartedAt,
+    });
+    for (const opportunity of visualizationPlan.opportunities) {
+      appendLearnEvent(contentPath, gardenId, "visual_opportunity_detected", {
+        jobId: job.id,
+        learningMapId: storedMap.id,
+        visualizationId: opportunity.id,
+        learningUnitId: opportunity.learningUnitId,
+        priority: opportunity.priority,
+        interactionGoal: opportunity.interactionGoal,
+        sourceAnchors: opportunity.sourceAnchorIds,
+      });
+    }
+    for (const decision of visualizationPlan.decisions) {
+      appendLearnEvent(contentPath, gardenId, "visual_route_selected", {
+        jobId: job.id,
+        learningMapId: storedMap.id,
+        visualizationId: decision.opportunityId,
+        route: decision.route,
+        selectedRenderer: decision.selectedRenderer,
+        compatibilityScore: decision.compatibilityScore,
+        reason: decision.reason,
+        duplicateOf: decision.duplicateOf,
+      });
+    }
     if (persistedSemanticAliasRepairs.length > 0) {
       appendLearnEvent(contentPath, gardenId, "learn_concept_aliases_reconciled", {
         jobId: job.id,
@@ -3446,6 +3559,9 @@ const LEARN_RUN_ROLLBACK_PATHS = [
   ".breadboard/semantic-migration.json",
   ".breadboard/source-visuals.json",
   ".breadboard/visual-index.json",
+  ".breadboard/visualization-plan.json",
+  ".breadboard/visualization-coverage.json",
+  ".breadboard/visualization-report.md",
   ".breadboard/source-anchors.json",
   ".breadboard/repair-log.json",
   ".breadboard/repair-report.md",
@@ -3772,6 +3888,9 @@ function clearSourceMapForRegeneration({
   const removedPaths: string[] = [];
   removeClusterPath(clusterDir, ".breadboard/planning", removedPaths);
   removeClusterPath(clusterDir, ".breadboard/learning-unit-contract.json", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/visualization-plan.json", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/visualization-coverage.json", removedPaths);
+  removeClusterPath(clusterDir, ".breadboard/visualization-report.md", removedPaths);
   const deletedVersions = db.prepare("DELETE FROM learn_versions WHERE garden_id = ?").run(gardenId).changes;
   const deletedMaps = db.prepare("DELETE FROM learn_maps WHERE garden_id = ?").run(gardenId).changes;
   return {
@@ -4271,6 +4390,9 @@ async function reconcileInteractiveVisuals({
   subsection,
   sourceContext,
   sourceFigures,
+  visualizationPlan,
+  visualizationOutcomes,
+  generatedVisualBudget,
 }: {
   client: OpenAI;
   model: string;
@@ -4285,11 +4407,30 @@ async function reconcileInteractiveVisuals({
   subsection: LearningSubsectionPlan;
   sourceContext: unknown;
   sourceFigures: SourceFigure[];
+  visualizationPlan: VisualizationPlan;
+  visualizationOutcomes: VisualizationPublicationOutcome[];
+  generatedVisualBudget: { published: number; max: number; maxPerPage: number; perPage: Map<string, number> };
 }): Promise<{ markdown: string; visualIds: string[] }> {
   const pageSlug = pageRelPath.replace(/\.md$/i, "");
   const keptIds: string[] = [];
   const intent = pageVisualIntent({ gardenId, pageSlug, sectionTitle, subsection });
   const pageAnchorIds = visualAnchorIdsForPage({ subsection, sourceFigures });
+  const opportunity = visualizationPlan.opportunities.find(
+    (candidate) => candidate.learningUnitId === subsection.learningUnitId,
+  );
+  const routeDecision = opportunity
+    ? visualizationPlan.decisions.find((candidate) => candidate.opportunityId === opportunity.id)
+    : undefined;
+  if (opportunity) {
+    opportunity.targetPage = pageRelPath;
+    opportunity.targetHeading = subsection.title;
+    opportunity.insertionAnchor = `learning-unit:${opportunity.learningUnitId}:after-introduction`;
+  }
+  const recordOutcome = (outcome: VisualizationPublicationOutcome) => {
+    const index = visualizationOutcomes.findIndex((candidate) => candidate.opportunityId === outcome.opportunityId);
+    if (index >= 0) visualizationOutcomes[index] = outcome;
+    else visualizationOutcomes.push(outcome);
+  };
 
   const enrichVisualSpec = (spec: VisualSpec): VisualSpec => {
     spec = focusMetricCalculatorSpec(spec, subsection);
@@ -4379,45 +4520,27 @@ async function reconcileInteractiveVisuals({
   // 1) Reconcile blocks the model wrote inline despite instructions. Only
   //    genuinely interactive types survive — there is no static-card fallback
   //    in the renderer, so anything else is removed rather than embedded.
-  let nextMarkdown = markdown.replace(EMBEDDED_VISUAL_BLOCK_RE, (fullMatch, json: string) => {
-    const { spec } = validateVisualSpec(json);
-    if (intent.suppressGeneric || intent.spec) return "";
-    if (
-      spec &&
-      (IMPLEMENTED_VISUAL_TYPES as readonly string[]).includes(spec.type) &&
-      !keptIds.includes(spec.id)
-    ) {
-      spec.gardenId = gardenId;
-      spec.pageId = pageSlug;
-      recordVisual(spec);
-      return buildVisualBlock(spec);
-    }
-    return "";
-  });
+  let nextMarkdown = markdown.replace(EMBEDDED_VISUAL_BLOCK_RE, "");
 
   // 2) Legacy bracket placeholders are removed, never replaced by filler.
   if (containsRawVisualPlaceholder(nextMarkdown)) {
     nextMarkdown = removeRawVisualPlaceholders(nextMarkdown, "");
   }
 
-  if (intent.spec && keptIds.length === 0) {
-    const paragraphs = nextMarkdown.trim().split(/\n{2,}/);
-    const index = bestParagraphIndex(paragraphs, `${intent.spec.title} ${intent.spec.pedagogicalPurpose}`);
-    recordVisual(intent.spec);
-    nextMarkdown = [
-      ...paragraphs.slice(0, index + 1),
-      buildVisualBlock(enrichVisualSpec(intent.spec)),
-      ...paragraphs.slice(index + 1),
-    ].join("\n\n");
-  }
-
-  if (intent.suppressGeneric) {
+  if (!opportunity || !routeDecision || routeDecision.route === "intentional_omission") {
     if (intent.reason) {
       appendLearnEvent(contentPath, gardenId, "learn_visual_skipped", {
         jobId,
         textbookVersionId,
         pageId,
         reason: intent.reason,
+      });
+    }
+    if (opportunity) {
+      recordOutcome({
+        opportunityId: opportunity.id,
+        status: "intentional_omission",
+        reason: routeDecision?.reason ?? intent.reason ?? "No pedagogically useful interaction was planned.",
       });
     }
     return { markdown: nextMarkdown, visualIds: keptIds };
@@ -4454,7 +4577,7 @@ async function reconcileInteractiveVisuals({
         {
           concept: contractVisual.uniqueConcept,
           reason: contractVisual.whyStaticSourceFigureIsNotEnough,
-          preferredType: contractVisual.visualType,
+          preferredType: routeDecision.selectedRenderer ?? contractVisual.visualType,
         },
       ]
     : (subsection.interactiveVisuals ?? []).map((plan) => ({
@@ -4462,6 +4585,120 @@ async function reconcileInteractiveVisuals({
         reason: plan.reason,
         preferredType: HARD_CONCEPTS.find((c) => c.test.test(`${plan.concept} ${plan.reason}`))?.visualType,
       }));
+  if (opportunities.length === 0) {
+    opportunities.push({
+      concept: opportunity.learningObjective,
+      reason: opportunity.pedagogicalReason,
+      preferredType: routeDecision.selectedRenderer,
+    });
+  }
+
+  if (routeDecision.route === "generated_module") {
+    if (generatedVisualBudget.published >= generatedVisualBudget.max) {
+      const reason = `Generated visualization garden limit (${generatedVisualBudget.max}) reached.`;
+      recordOutcome({ opportunityId: opportunity.id, status: "failed_validation", reason });
+      appendLearnEvent(contentPath, gardenId, "visual_resource_limit_reached", {
+        jobId,
+        textbookVersionId,
+        pageId,
+        visualizationId: opportunity.id,
+        limit: generatedVisualBudget.max,
+      });
+      return { markdown: nextMarkdown, visualIds: keptIds };
+    }
+    const publishedOnPage = generatedVisualBudget.perPage.get(pageRelPath) ?? 0;
+    if (publishedOnPage >= generatedVisualBudget.maxPerPage) {
+      const reason = `Generated visualization page limit (${generatedVisualBudget.maxPerPage}) reached.`;
+      recordOutcome({ opportunityId: opportunity.id, status: "failed_validation", reason });
+      appendLearnEvent(contentPath, gardenId, "visual_resource_limit_reached", {
+        jobId,
+        textbookVersionId,
+        pageId,
+        visualizationId: opportunity.id,
+        limitScope: "page",
+        limit: generatedVisualBudget.maxPerPage,
+      });
+      return { markdown: nextMarkdown, visualIds: keptIds };
+    }
+
+    const marker = `<!-- ${opportunity.insertionAnchor} -->`;
+    if (!nextMarkdown.includes(marker)) {
+      const blocks = nextMarkdown.trim().split(/\n{2,}/);
+      const introductionIndex = blocks.findIndex((block) => {
+        const trimmed = block.trim();
+        return Boolean(trimmed) && !trimmed.startsWith("#") && !trimmed.startsWith("![") && !trimmed.startsWith("<!--");
+      });
+      const insertionIndex = introductionIndex >= 0 ? introductionIndex + 1 : Math.min(1, blocks.length);
+      blocks.splice(insertionIndex, 0, marker);
+      nextMarkdown = blocks.join("\n\n");
+    }
+
+    const result = await createGeneratedVisualization({
+      client,
+      model,
+      gardenDir: path.join(contentPath, gardenId),
+      opportunity,
+      pageMarkdown: nextMarkdown,
+      sourceContext,
+      sourceFigureSummaries: sourceFigures,
+      formulaDefinitions: subsection.sourceFormulaContracts ?? [],
+      availableSourceAnchorIds: new Set([
+        ...(subsection.sourceAnchors ?? []),
+        ...pageAnchorIds,
+        ...sourceFigures.map((figure) => figure.figureId),
+      ]),
+      onEvent: (event) => appendLearnEvent(contentPath, gardenId, event.type, {
+        ...event.data,
+        jobId,
+        textbookVersionId,
+        pageId,
+      }),
+      checkCancelled: () => throwIfLearnCancelled(jobId),
+    });
+    if (result.manifest) {
+      const block = buildGeneratedVisualBlock(result.manifest.id, result.manifest.version);
+      nextMarkdown = nextMarkdown.replace(marker, `${marker}\n\n${block}`);
+      keptIds.push(result.manifest.id);
+      generatedVisualBudget.published += 1;
+      generatedVisualBudget.perPage.set(pageRelPath, publishedOnPage + 1);
+      recordOutcome({ opportunityId: opportunity.id, status: "generated_published" });
+    } else {
+      const fallbackType = routeDecision.selectedRenderer;
+      const fallback = fallbackType
+        ? buildDeterministicVisual(fallbackType, { gardenId, pageSlug })
+        : null;
+      if (fallback) {
+        recordVisual(fallback);
+        nextMarkdown = nextMarkdown.replace(marker, `${marker}\n\n${buildVisualBlock(fallback)}`);
+        recordOutcome({
+          opportunityId: opportunity.id,
+          status: "trusted_published",
+          reason: `Generated module attempts were exhausted; used compatible trusted renderer ${fallbackType}.`,
+        });
+        appendLearnEvent(contentPath, gardenId, "visual_fallback_used", {
+          jobId,
+          textbookVersionId,
+          pageId,
+          visualizationId: opportunity.id,
+          route: "trusted_renderer",
+          renderer: fallbackType,
+          failureCategory: result.failureCategory,
+          reason: result.errors.join("; "),
+        });
+        return { markdown: nextMarkdown, visualIds: keptIds };
+      }
+      const status: VisualizationPublicationOutcome["status"] =
+        result.failureCategory === "runtime"
+          ? "failed_runtime_tests"
+          : result.failureCategory === "critic"
+            ? "failed_critic"
+            : result.failureCategory === "compilation"
+              ? "failed_compilation"
+              : "failed_validation";
+      recordOutcome({ opportunityId: opportunity.id, status, reason: result.errors.join("; ") });
+    }
+    return { markdown: nextMarkdown, visualIds: keptIds };
+  }
 
   const embedSpec = (spec: VisualSpec, near: string) => {
     recordVisual(spec);
@@ -4474,21 +4711,22 @@ async function reconcileInteractiveVisuals({
     ].join("\n\n");
   };
 
-  for (const opportunity of opportunities.slice(0, 2)) {
+  for (const visualRequest of opportunities.slice(0, 2)) {
     if (keptIds.length > 0) break; // page already has a working interactive
 
     // Deterministic builder first for hard dynamic concepts: guaranteed valid,
     // never declines. Only fall back to the model when no builder matches.
-    if (opportunity.preferredType) {
-      const built = buildDeterministicVisual(opportunity.preferredType, { gardenId, pageSlug });
+    if (visualRequest.preferredType) {
+      const built = buildDeterministicVisual(visualRequest.preferredType, { gardenId, pageSlug });
       if (built) {
-        embedSpec(built, `${opportunity.concept} ${opportunity.reason}`);
+        embedSpec(built, `${visualRequest.concept} ${visualRequest.reason}`);
+        recordOutcome({ opportunityId: opportunity.id, status: "trusted_published" });
         continue;
       }
     }
 
-    const typeHint = opportunity.preferredType
-      ? ` Use the interactive visual type "${opportunity.preferredType}".`
+    const typeHint = visualRequest.preferredType
+      ? ` Use the interactive visual type "${visualRequest.preferredType}".`
       : "";
     try {
       const generated = await generateVisualSpec(client, model, {
@@ -4499,16 +4737,25 @@ async function reconcileInteractiveVisuals({
         pageMarkdown: nextMarkdown,
         sourceContext,
         sourceFigures,
-        visualOpportunity: `${opportunity.concept}${opportunity.reason ? ` — ${opportunity.reason}` : ""}.${typeHint}`,
+        visualOpportunity: `${visualRequest.concept}${visualRequest.reason ? ` — ${visualRequest.reason}` : ""}.${typeHint}`,
         councilModeOverride: sourceFigures.length > 0 ? "full_council" : "lite_council",
       });
       const spec = generated.spec;
       if (!spec) continue;
-      embedSpec(spec, `${opportunity.concept} ${opportunity.reason}`);
+      embedSpec(spec, `${visualRequest.concept} ${visualRequest.reason}`);
+      recordOutcome({ opportunityId: opportunity.id, status: "trusted_published" });
     } catch {
       // Model visual failed; a hard concept still gets its deterministic builder
       // below, other opportunities may simply produce no visual.
     }
+  }
+
+  if (keptIds.length === 0) {
+    recordOutcome({
+      opportunityId: opportunity.id,
+      status: "failed_validation",
+      reason: `The selected trusted renderer ${routeDecision.selectedRenderer ?? ""} did not produce a valid interactive spec.`,
+    });
   }
 
   return { markdown: nextMarkdown, visualIds: keptIds };
@@ -4938,11 +5185,19 @@ export async function runTextbookGeneration({
     );
   }
 
-  const context = collectLearnSourceContext(contentPath, gardenId);
+  // A confirmed map owns its document selection. Reusing that persisted set
+  // prevents excluded PDFs from leaking back in during confirmation, retries,
+  // or lesson regeneration.
+  const context = collectLearnSourceContext(
+    contentPath,
+    gardenId,
+    map.sourceIds.length > 0 ? map.sourceIds : undefined,
+  );
   const job = createLearnJob({
     gardenId,
     userId,
     mode,
+    sourceIds: context.sources.map((source) => source.slug),
     sourceOnly,
     includeSourceSnapshots,
   });
@@ -4969,6 +5224,18 @@ export async function runTextbookGeneration({
   // Stage 3 bookkeeping: which SourceVisual landed on which page.
   const visualAssignments = new Map<string, { pageId: string; sectionId?: string }>();
   const claimedVisualIds = new Set<string>();
+  let visualizationPlan: VisualizationPlan | null = null;
+  const visualizationOutcomes: VisualizationPublicationOutcome[] = [];
+  const generatedVisualBudget = {
+    published: 0,
+    max: Math.max(1, Math.min(50, Number(
+      process.env.LEARN_GENERATED_VISUAL_MAX_PER_GARDEN ??
+      process.env.LEARN_MAX_GENERATED_VISUALS_PER_GARDEN ??
+      12,
+    ) || 12)),
+    maxPerPage: Math.max(1, Math.min(6, Number(process.env.LEARN_GENERATED_VISUAL_MAX_PER_PAGE ?? 3) || 3)),
+    perPage: new Map<string, number>(),
+  };
 
   try {
     appendLearnEvent(contentPath, gardenId, "learn_generation_started", {
@@ -4998,8 +5265,14 @@ export async function runTextbookGeneration({
       context,
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
     });
+    const selectedSourceIds = new Set(context.sources.map((source) => source.slug));
+    const selectedCanonicalSourceAnchors = Object.fromEntries(
+      Object.entries(buildCanonicalSourceAnchors(clusterDir)).filter(([, anchor]) =>
+        typeof anchor.sourceId === "string" && selectedSourceIds.has(anchor.sourceId),
+      ),
+    );
     const sourceFormulaIdentities = buildFormulaIdentityRegistry(
-      buildCanonicalSourceAnchors(clusterDir),
+      selectedCanonicalSourceAnchors,
       clusterDir,
     );
     // Garden-derived family registry so custom (non-universal) formula families
@@ -5123,6 +5396,42 @@ export async function runTextbookGeneration({
       learningMap: repairedLearningMap,
       proposedOrder: repairedLearningMap.sections,
     };
+    // Rebuild after formula assignment reconciliation so visualization
+    // opportunities see the exact confirmed contracts that page generation
+    // will use. The saved plan is the auditable routing control plane for this
+    // run; page-specific target paths are filled as each unit is written.
+    const visualizationPlanningStartedAt = Date.now();
+    visualizationPlan = buildVisualizationPlan({
+      gardenId,
+      learningMap: repairedLearningMap,
+      learningUnits: confirmedLearningUnits,
+    });
+    saveVisualizationPlan(clusterDir, visualizationPlan);
+    appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
+      jobId: job.id,
+      textbookVersionId,
+      opportunitiesDetected: visualizationPlan.opportunities.length,
+      durationMs: Date.now() - visualizationPlanningStartedAt,
+    });
+    for (const decision of visualizationPlan.decisions) {
+      appendLearnEvent(contentPath, gardenId, "visual_route_selected", {
+        jobId: job.id,
+        textbookVersionId,
+        visualizationId: decision.opportunityId,
+        route: decision.route,
+        selectedRenderer: decision.selectedRenderer,
+        compatibilityScore: decision.compatibilityScore,
+        reason: decision.reason,
+        duplicateOf: decision.duplicateOf,
+      });
+      if (decision.route === "intentional_omission") {
+        visualizationOutcomes.push({
+          opportunityId: decision.opportunityId,
+          status: "intentional_omission",
+          reason: decision.reason,
+        });
+      }
+    }
     db.prepare(
       `UPDATE learn_maps
        SET coverage_plan_json = ?, learning_map_json = ?, proposed_order_json = ?
@@ -5623,6 +5932,9 @@ export async function runTextbookGeneration({
           subsection,
           sourceContext: pageDossier,
           sourceFigures: interactiveSourceFigures,
+          visualizationPlan,
+          visualizationOutcomes,
+          generatedVisualBudget,
         });
         pageBody = visualized.markdown;
         throwIfLearnCancelled(job.id);
@@ -5740,6 +6052,33 @@ export async function runTextbookGeneration({
           removedSpecFiles: pruned.removedSpecFiles,
         });
       }
+    }
+
+    if (!visualizationPlan) throw new Error("Visualization plan was not initialized.");
+    saveVisualizationPlan(clusterDir, visualizationPlan);
+    const visualizationCoverage = buildVisualizationCoverageReport({
+      plan: visualizationPlan,
+      outcomes: visualizationOutcomes,
+      gate: coverageGateMode(),
+    });
+    saveVisualizationCoverageReport(clusterDir, visualizationCoverage);
+    appendLearnEvent(contentPath, gardenId, "visual_coverage_completed", {
+      jobId: job.id,
+      textbookVersionId,
+      ...visualizationCoverage,
+    });
+    if (visualizationCoverage.trustedVisualsPublished + visualizationCoverage.generatedVisualsPublished === 0) {
+      appendLearnEvent(contentPath, gardenId, "visual_zero_publish_warning", {
+        jobId: job.id,
+        textbookVersionId,
+        opportunitiesDetected: visualizationCoverage.opportunitiesDetected,
+        explanations: visualizationCoverage.explanations,
+      });
+    }
+    if (visualizationCoverage.status === "fail") {
+      throw new Error(
+        `Visualization coverage gate failed: ${visualizationCoverage.explanations.join(" ") || "critical opportunities are uncovered"}`,
+      );
     }
 
     // Stage 3 closeout: every extracted visual is either assigned to the page
@@ -6398,6 +6737,7 @@ export async function runLearnPipeline({
   userId,
   mode,
   confirmedLearningMapId,
+  includedSourceIds,
   sourceOnly = true,
   includeSourceSnapshots = false,
   autoConfirmTopicMap = false,
@@ -6409,6 +6749,7 @@ export async function runLearnPipeline({
   userId?: number;
   mode: LearnMode;
   confirmedLearningMapId?: string;
+  includedSourceIds?: readonly string[];
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
   autoConfirmTopicMap?: boolean;
@@ -6423,6 +6764,7 @@ export async function runLearnPipeline({
       client,
       model,
       contentPath,
+      includedSourceIds,
       sourceOnly,
       includeSourceSnapshots,
     });
@@ -6558,8 +6900,30 @@ export function getLearnStatusSnapshot({
   const latestVersion = getLatestLearnVersion(gardenId);
   const knowledge = scanClusterKnowledge(contentPath, gardenId);
   const hasTextbook = knowledge.stats.textbookPages > 0;
-  const sourceSetChanged =
-    Boolean(latestVersion) && latestVersion?.source_set_hash !== context.sourceSetHash;
+  const availableSourceIdSet = new Set(context.sources.map((source) => source.slug));
+  const persistedSelectedSourceIds =
+    (visibleJob?.sourceIds.length ? visibleJob.sourceIds : undefined) ??
+    (contractProposed?.sourceIds.length ? contractProposed.sourceIds : undefined) ??
+    (confirmedMap?.sourceIds.length ? confirmedMap.sourceIds : undefined);
+  const selectedSourceIds = persistedSelectedSourceIds
+    ? persistedSelectedSourceIds.filter((sourceId) => availableSourceIdSet.has(sourceId))
+    : context.sources.map((source) => source.slug);
+
+  let sourceSetChanged = false;
+  if (latestVersion) {
+    const versionMap = getLearnMapById(latestVersion.learning_map_id);
+    try {
+      const comparableContext = collectLearnSourceContext(
+        contentPath,
+        gardenId,
+        versionMap?.sourceIds.length ? versionMap.sourceIds : undefined,
+      );
+      sourceSetChanged = latestVersion.source_set_hash !== comparableContext.sourceSetHash;
+    } catch {
+      // A selected source was removed after the last Learn version.
+      sourceSetChanged = true;
+    }
+  }
 
   return {
     job: visibleJobWithWorkflowUsage,
@@ -6571,6 +6935,8 @@ export function getLearnStatusSnapshot({
     latestTextbookVersionId: latestVersion?.id,
     hasSources: context.sources.length > 0,
     sourceCount: context.sources.length,
+    selectedSourceIds,
+    selectedSourceCount: selectedSourceIds.length,
     hasTextbook,
     sourceSetChanged,
     buttonLabel: buttonLabelForSnapshot({

@@ -950,6 +950,110 @@ interface LearnerPage {
 
 const IMAGE_RE = /!\[[^\]]*\]\(([^)]*)\)/g;
 const VISUAL_BLOCK_RE = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
+const GENERATED_VISUAL_BLOCK_RE = /```breadboard-generated-visual\r?\n([\s\S]*?)\r?\n```/g;
+
+function embeddedGeneratedVisualIds(body: string): string[] {
+  const ids: string[] = [];
+  const re = new RegExp(GENERATED_VISUAL_BLOCK_RE.source, GENERATED_VISUAL_BLOCK_RE.flags);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    const id = match[1].match(/^id:\s*([A-Za-z][A-Za-z0-9_-]{1,79})\s*$/m)?.[1];
+    const version = Number(match[1].match(/^version:\s*(\d+)\s*$/m)?.[1] ?? 0);
+    if (id && Number.isInteger(version) && version > 0) ids.push(id);
+  }
+  return [...new Set(ids)];
+}
+
+function embeddedGeneratedVisualVersions(body: string): Map<string, number> {
+  const versions = new Map<string, number>();
+  const re = new RegExp(GENERATED_VISUAL_BLOCK_RE.source, GENERATED_VISUAL_BLOCK_RE.flags);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    const id = match[1].match(/^id:\s*([A-Za-z][A-Za-z0-9_-]{1,79})\s*$/m)?.[1];
+    const version = Number(match[1].match(/^version:\s*(\d+)\s*$/m)?.[1] ?? 0);
+    if (id && Number.isInteger(version) && version > 0) versions.set(id, version);
+  }
+  return versions;
+}
+
+function generatedVisualIntegrityProblems(gardenDir: string, pages: LearnerPage[]): string[] {
+  const problems: string[] = [];
+  const index = readJson<Record<string, Record<string, unknown>>>(
+    path.join(gardenDir, ".breadboard", "visual-index.json"),
+    {},
+  );
+  const sha = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
+  for (const page of pages) {
+    const re = new RegExp(GENERATED_VISUAL_BLOCK_RE.source, GENERATED_VISUAL_BLOCK_RE.flags);
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(page.body)) !== null) {
+      const id = match[1].match(/^id:\s*([A-Za-z][A-Za-z0-9_-]{1,79})\s*$/m)?.[1] ?? "";
+      const version = Number(match[1].match(/^version:\s*(\d+)\s*$/m)?.[1] ?? 0);
+      if (!id || !Number.isInteger(version) || version < 1) {
+        problems.push(`${page.rel}: malformed generated visualization block`);
+        continue;
+      }
+      if (!fmGetArray(page.rawFm, "visualIds").includes(id)) {
+        problems.push(`${page.rel}: generated visual ${id} missing from frontmatter visualIds`);
+      }
+      if (!index[id] || index[id].kind !== "generated_module") {
+        problems.push(`${page.rel}: generated visual ${id} missing generated_module visual-index entry`);
+      }
+      const dir = path.join(gardenDir, ".breadboard", "visuals", id, "versions", String(version));
+      const manifest = readJson<Record<string, unknown>>(path.join(dir, "manifest.json"), {});
+      const validation = readJson<Record<string, unknown>>(path.join(dir, "validation.json"), {});
+      const tests = readJson<Record<string, unknown>>(path.join(dir, "tests.json"), {});
+      const critic = readJson<Record<string, unknown>>(path.join(dir, "critic.json"), {});
+      let source = "";
+      let compiled = "";
+      try {
+        source = fs.readFileSync(path.join(dir, "source.tsx"), "utf-8");
+        compiled = fs.readFileSync(path.join(dir, "compiled.js"), "utf-8");
+      } catch {
+        problems.push(`${page.rel}: generated visual ${id} artifact files are incomplete`);
+        continue;
+      }
+      if (manifest.id !== id || manifest.version !== version || manifest.status !== "published") {
+        problems.push(`${page.rel}: generated visual ${id} manifest identity/status does not match v${version}`);
+      }
+      if (String(manifest.targetPage ?? "").replace(/\\/g, "/") !== page.rel) {
+        problems.push(`${page.rel}: generated visual ${id} manifest targets another page`);
+      }
+      const targetHeading = String(manifest.targetHeading ?? "").trim().toLowerCase();
+      if (!targetHeading || !page.title.trim().toLowerCase().endsWith(targetHeading)) {
+        problems.push(`${page.rel}: generated visual ${id} manifest heading does not match the lesson`);
+      }
+      const anchor = String(manifest.insertionAnchor ?? "");
+      const anchorIndex = anchor ? page.body.indexOf(`<!-- ${anchor} -->`) : -1;
+      if (anchorIndex < 0 || anchorIndex > match.index) {
+        problems.push(`${page.rel}: generated visual ${id} is detached from its insertion anchor`);
+      }
+      if (sha(source) !== manifest.sourceHash || sha(compiled) !== manifest.compiledHash) {
+        problems.push(`${page.rel}: generated visual ${id} artifact hash mismatch`);
+      }
+      if (validation.valid !== true || tests.passed !== true || critic.approved !== true) {
+        problems.push(`${page.rel}: generated visual ${id} lacks passing validation, runtime tests, or critic approval`);
+      }
+      const prefix = "globalThis.__BREADBOARD_GENERATED_VISUAL__ = Object.freeze(";
+      const suffix = ");\n";
+      try {
+        if (!compiled.startsWith(prefix) || !compiled.endsWith(suffix)) throw new Error("bad envelope");
+        const definition = JSON.parse(compiled.slice(prefix.length, -suffix.length)) as Record<string, unknown>;
+        if (definition.schemaVersion !== 1 || definition.sdkVersion !== "1.0.0") throw new Error("bad version");
+      } catch {
+        problems.push(`${page.rel}: generated visual ${id} compiler envelope is invalid`);
+      }
+    }
+  }
+  const coverage = readJson<Record<string, unknown>>(
+    path.join(gardenDir, ".breadboard", "visualization-coverage.json"),
+    {},
+  );
+  if (pages.some((page) => embeddedGeneratedVisualIds(page.body).length > 0) && coverage.status === "fail") {
+    problems.push("visualization coverage report is in fail state");
+  }
+  return [...new Set(problems)];
+}
 
 function embeddedVisualTypes(body: string): string[] {
   const types: string[] = [];
@@ -2492,6 +2596,7 @@ function changedFilesForRequest(
   const ownedVisualIds = new Set<string>();
   if (page) {
     for (const id of fmGetArray(page.rawFm, "visualIds")) ownedVisualIds.add(id);
+    for (const id of embeddedGeneratedVisualIds(page.body)) ownedVisualIds.add(id);
     for (const spec of embeddedVisualSpecs(page.body)) {
       const id = String(spec.id ?? "").trim();
       if (id) ownedVisualIds.add(id);
@@ -2525,6 +2630,7 @@ function changedFilesForRequest(
  * candidate that writes any other spec id is out of scope. */
 function pageAllowedVisualIds(page: LearnerPage): Set<string> {
   const ids = new Set<string>(fmGetArray(page.rawFm, "visualIds"));
+  for (const id of embeddedGeneratedVisualIds(page.body)) ids.add(id);
   for (const spec of embeddedVisualSpecs(page.body)) {
     const id = String(spec.id ?? "").trim();
     if (id) ids.add(id);
@@ -2548,6 +2654,15 @@ function repairCandidateScopeProblems(page: LearnerPage, request: UnitRepairRequ
     problems.push(`candidate changed learningUnitId ${currentUnitId} -> ${candidateUnitId}`);
   }
   const allowedVisualIds = pageAllowedVisualIds(page);
+  const currentGeneratedVersions = embeddedGeneratedVisualVersions(page.body);
+  const candidateGeneratedVersions = embeddedGeneratedVisualVersions(parsed.body);
+  for (const [id, version] of currentGeneratedVersions) {
+    if (!candidateGeneratedVersions.has(id)) {
+      problems.push(`candidate removed generated visual ${id} owned by ${request.pagePath}`);
+    } else if (candidateGeneratedVersions.get(id) !== version) {
+      problems.push(`candidate changed generated visual ${id} from v${version} to v${candidateGeneratedVersions.get(id)}`);
+    }
+  }
   for (const entry of candidate.visualSpecs ?? []) {
     if (!allowedVisualIds.has(entry.id)) {
       problems.push(`candidate writes unsupported visual spec ${entry.id} not owned by ${request.pagePath}`);
@@ -4037,6 +4152,7 @@ function repairInteractiveVisuals({
     let bodyChanged = false;
 
     const blocks = [...page.body.matchAll(VISUAL_BLOCK_RE)];
+    const generatedIds = embeddedGeneratedVisualIds(page.body);
     const keptIds: string[] = [];
     for (const match of blocks) {
       let spec: Record<string, unknown>;
@@ -4117,8 +4233,8 @@ function repairInteractiveVisuals({
     }
 
     // Reconcile frontmatter visualIds with the blocks that survived.
-    page.rawFm = fmSetArray(page.rawFm, "visualIds", keptIds);
-    if (keptIds.length > 0) {
+    page.rawFm = fmSetArray(page.rawFm, "visualIds", [...keptIds, ...generatedIds]);
+    if (keptIds.length + generatedIds.length > 0) {
       page.rawFm = removeKeyLine(page.rawFm, "visualSkipReason");
     }
     if (bodyChanged) page.dirty = true;
@@ -5317,6 +5433,7 @@ export const VALIDATION_REPORT_STATIC_SECTIONS: ReadonlyArray<{ heading: string;
   { heading: "Section Title Grammar", description: "Section and subsection titles must be learner-facing, grammatical, and free of planning scaffold phrasing." },
   { heading: "Section Index Prose Quality", description: "Section index pages must contain polished learner-facing summaries, not generated template prose." },
   { heading: "Interactive Visual Grounding", description: "Interactive visuals must use semantically compatible source anchors or honest conceptual grounding." },
+  { heading: "Generated Visual Integrity", description: "Generated modules must match their page, manifest, hashes, compiler envelope, runtime tests, critic approval, and coverage plan." },
   { heading: "Learner-Facing Scaffold Prose", description: "Final learner Markdown must not contain deterministic repair scaffold instructions or placeholders." },
   { heading: "Source Map Consistency", description: "Source Map caveats must not contradict extracted figures, tables, formulas, or later source pages." },
   { heading: "Source Map Caveat Reconciliation", description: "Visible/planning caveats about missing formulas, tables, figures, or later pages must be reconciled against extracted evidence." },
@@ -6531,6 +6648,16 @@ function finalVisualSpecs(gardenDir: string, learnerPages: LearnerPage[]): Array
     for (const spec of embeddedVisualSpecs(page.body)) {
       specs.push({ pageRel: page.rel, id: String(spec.id ?? "").trim(), anchorIds: visualSpecAnchorIds(spec) });
     }
+    for (const [id, version] of embeddedGeneratedVisualVersions(page.body)) {
+      const manifest = readJson<Record<string, unknown>>(
+        path.join(gardenDir, ".breadboard", "visuals", id, "versions", String(version), "manifest.json"),
+        {},
+      );
+      const anchorIds = Array.isArray(manifest.sourceAnchorIds)
+        ? manifest.sourceAnchorIds.map(String).filter(Boolean)
+        : [];
+      specs.push({ pageRel: page.rel, id, anchorIds });
+    }
   }
   const visualDir = path.join(gardenDir, ".breadboard", "visuals");
   if (fs.existsSync(visualDir)) {
@@ -6762,6 +6889,7 @@ function repairLogConsistencyProblems(gardenDir: string, learnerPages: LearnerPa
     if (page && file.startsWith(".breadboard/visuals/")) {
       const visualId = file.match(/^\.breadboard\/visuals\/(.+)\.json$/)?.[1] ?? "";
       const owned = new Set(fmGetArray(page.rawFm, "visualIds"));
+      for (const id of embeddedGeneratedVisualIds(page.body)) owned.add(id);
       for (const spec of embeddedVisualSpecs(page.body)) {
         const id = String(spec.id ?? "").trim();
         if (id) owned.add(id);
@@ -6974,10 +7102,11 @@ function collectFinalizeChecks({
     }
     if (unit.interactiveVisual) {
       const types = embeddedVisualTypes(page.body);
+      const generatedIds = embeddedGeneratedVisualIds(page.body);
       const omitted = Boolean(fmGetScalar(page.rawFm, "interactiveVisualOmissionReason")) || /interactive visual intentionally omitted/i.test(page.body);
-      if (types.length === 0 && !omitted) {
+      if (types.length === 0 && generatedIds.length === 0 && !omitted) {
         fulfillmentProblems.push(`${page.rel}: unit ${unit.id} planned ${unit.interactiveVisual.visualType}, but no interactive visual was embedded`);
-      } else if (types.length > 0 && !types.some((type) => type.toLowerCase() === unit.interactiveVisual!.visualType.toLowerCase())) {
+      } else if (generatedIds.length === 0 && types.length > 0 && !types.some((type) => type.toLowerCase() === unit.interactiveVisual!.visualType.toLowerCase())) {
         fulfillmentProblems.push(`${page.rel}: embedded visual type(s) [${types.join(", ")}] do not match contract type ${unit.interactiveVisual.visualType}`);
       }
     }
@@ -7043,6 +7172,7 @@ function collectFinalizeChecks({
     }
   }
   push("Interactive visual grounding", visualGroundingProblems);
+  push("Generated Visual Integrity", generatedVisualIntegrityProblems(gardenDir, learnerPages));
   push("Source Text Concept Anchors", [
     ...sourceTextConceptAnchorProblems(gardenDir, learnerPages),
     ...sourceTextBodyAnchorProblems(gardenDir, learnerPages, unitsById),

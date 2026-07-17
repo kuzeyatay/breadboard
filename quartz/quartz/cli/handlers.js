@@ -287,6 +287,21 @@ export async function handleBuild(argv) {
               minify: true,
               platform: "browser",
               format: "esm",
+              plugins: [
+                {
+                  name: "raw-source-loader",
+                  setup(innerBuild) {
+                    innerBuild.onResolve({ filter: /\?raw$/ }, (args) => ({
+                      path: path.resolve(args.resolveDir, args.path.slice(0, -4)),
+                      namespace: "raw-source",
+                    }))
+                    innerBuild.onLoad({ filter: /.*/, namespace: "raw-source" }, async (args) => ({
+                      contents: `export default ${JSON.stringify(await promises.readFile(args.path, "utf8"))}`,
+                      loader: "js",
+                    }))
+                  },
+                },
+              ],
             })
             const rawMod = transpiled.outputFiles[0].text
             return {

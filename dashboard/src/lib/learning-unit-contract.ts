@@ -1052,19 +1052,13 @@ const VISUAL_TYPE_REQUIREMENTS: Record<string, VisualTypeRequirement> = {
   },
 };
 
-const SUPPORTED_INTERACTIVE_VISUAL_TYPES = new Set([
-  "lif_neuron",
-  "neural_coding",
-  "stdp_window",
-  "metric_calculator",
-  "training_curve",
-  "tradeoff_explorer",
-]);
-
 /**
  * Is this visual type justified by the learning unit? Returns an ok flag and a
- * reason when incompatible. Unsupported renderer types are rejected so the
- * contract never requires a visual the page writer cannot embed.
+ * reason when incompatible. A type without a legacy trusted-renderer rule is
+ * retained as a semantic interaction request: the visualization router will
+ * either find a compatible trusted renderer or send it through the constrained
+ * generated-module path. Planning must not silently erase a useful need merely
+ * because the fixed catalog cannot express it yet.
  */
 export function visualTypeCompatibleWithUnit(
   visualType: string,
@@ -1084,8 +1078,10 @@ export function visualTypeCompatibleWithUnit(
 
   if (!req) {
     return {
-      ok: false,
-      reason: `visual type "${type}" is not supported by an implemented interactive renderer`,
+      ok: Boolean(type && unit.interactiveVisual?.uniqueConcept && unit.interactiveVisual.expectedInsight),
+      ...(!type || !unit.interactiveVisual?.uniqueConcept || !unit.interactiveVisual.expectedInsight
+        ? { reason: "a generated interaction needs a type, unique concept, and expected learner insight" }
+        : { reason: `visual type "${type}" requires generated-module routing` }),
     };
   }
 
@@ -1174,7 +1170,7 @@ function normalizeInteractiveVisual(raw: unknown): InteractiveVisualContract | u
   const visualType = normalizeInteractiveVisualType(compact(record.visualType ?? record.type));
   const uniqueConcept = compact(record.uniqueConcept ?? record.concept);
   if (!visualType && !uniqueConcept) return undefined;
-  if (!SUPPORTED_INTERACTIVE_VISUAL_TYPES.has(visualType)) return undefined;
+  if (!/^[a-z][a-z0-9_]{1,79}$/.test(visualType) || !uniqueConcept) return undefined;
   const learnerManipulates = asStringArray(record.learnerManipulates ?? record.controls ?? record.manipulates);
   const sourceAnchors = asStringArray(record.sourceAnchors ?? record.anchors);
   const expectedInsight = compact(record.expectedInsight ?? record.insight);

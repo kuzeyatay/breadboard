@@ -1,0 +1,121 @@
+pre:has(> code.breadboard-generated-visual-block) {
+  margin: 0;
+}
+
+.breadboard-generated-visual-card,
+.breadboard-generated-visual-fallback {
+  margin: 1.4rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--light) 92%, white);
+  color: var(--dark);
+  overflow: hidden;
+}
+
+.breadboard-generated-visual-card {
+  .bgv-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.1rem 0.8rem;
+  }
+
+  .bgv-kicker {
+    margin: 0 0 0.12rem;
+    color: var(--secondary);
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .bgv-title {
+    margin: 0;
+    font-size: 1.08rem;
+  }
+
+  .bgv-description,
+  .bgv-sources {
+    margin: 0.25rem 0 0;
+    color: var(--gray);
+    font-size: 0.87rem;
+  }
+
+  .bgv-version {
+    flex: none;
+    border: 1px solid var(--lightgray);
+    border-radius: 999px;
+    padding: 0.15rem 0.48rem;
+    color: var(--gray);
+    font: 0.72rem var(--codeFont);
+  }
+
+  .bgv-frame {
+    display: block;
+    width: 100%;
+    min-height: 360px;
+    border: 0;
+    border-block: 1px solid var(--lightgray);
+    background: #fbfaf5;
+  }
+
+  .bgv-sources {
+    padding: 0.65rem 1.1rem 0;
+    overflow-wrap: anywhere;
+  }
+
+  .bgv-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem;
+    min-height: 3.2rem;
+    padding: 0.7rem 1.1rem 0.85rem;
+  }
+
+  .bgv-action {
+    border: 1px solid var(--lightgray);
+    border-radius: 8px;
+    background: var(--light);
+    color: var(--dark);
+    padding: 0.38rem 0.72rem;
+    cursor: pointer;
+  }
+
+  .bgv-action-primary {
+    border-color: var(--dark);
+    background: var(--dark);
+    color: var(--light);
+  }
+
+  .bgv-action:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
+  .bgv-action:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--secondary) 48%, transparent);
+    outline-offset: 2px;
+  }
+
+  .bgv-status {
+    color: var(--gray);
+    font-size: 0.82rem;
+  }
+}
+
+.breadboard-generated-visual-fallback {
+  padding: 0.9rem 1rem;
+
+  p {
+    margin: 0.3rem 0 0;
+    color: var(--gray);
+  }
+}
+
+@media (max-width: 520px) {
+  .breadboard-generated-visual-card .bgv-header {
+    gap: 0.5rem;
+  }
+}

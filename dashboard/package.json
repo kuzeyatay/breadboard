@@ -33,6 +33,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "svg-to-pdfkit": "^0.1.8",
+    "typescript": "^5",
     "undici": "^7.28.0"
   },
   "devDependencies": {
@@ -47,7 +48,6 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "tailwindcss": "^4"
   }
 }

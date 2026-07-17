@@ -1,0 +1,600 @@
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import type { LearningUnitContract, LearningUnitRole } from "./learning-unit-contract.ts";
+import type { ProposedLearningMap } from "./learn-utils.ts";
+import {
+  TRUSTED_RENDERER_REGISTRY,
+  trustedRenderer,
+  type TrustedRendererDefinition,
+  type VisualizationInteractionGoal,
+} from "./visualization-registry.ts";
+
+export type VisualizationInputType = "slider" | "number" | "select" | "toggle" | "button";
+export type VisualizationOutputRepresentation =
+  | "value"
+  | "chart"
+  | "diagram"
+  | "animation"
+  | "timeline"
+  | "table"
+  | "annotation";
+
+export interface VisualizationOpportunityInput {
+  id: string;
+  label: string;
+  type: VisualizationInputType;
+  unit?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: string[];
+  defaultValue: unknown;
+}
+
+export interface VisualizationOpportunityOutput {
+  id: string;
+  label: string;
+  representation: VisualizationOutputRepresentation;
+}
+
+export interface SourceVisualRelationship {
+  sourceVisualId: string;
+  treatment:
+    | "direct_source_embed"
+    | "source_embed_plus_interactive_reconstruction"
+    | "interactive_reconstruction_with_source_link"
+    | "intentional_omission";
+  fidelity: "exact_source_image" | "reconstructed" | "normalized" | "illustrative";
+  explanation: string;
+}
+
+export interface VisualizationOpportunity {
+  id: string;
+  gardenId: string;
+  learningUnitId: string;
+  targetPage: string;
+  targetHeading: string;
+  insertionAnchor: string;
+  conceptIds: string[];
+  sourceAnchorIds: string[];
+  sourceVisualIds: string[];
+  sourceVisualRelationships: SourceVisualRelationship[];
+  learningObjective: string;
+  learnerQuestion: string;
+  pedagogicalReason: string;
+  interactionGoal: VisualizationInteractionGoal;
+  requiredInputs: VisualizationOpportunityInput[];
+  requiredOutputs: VisualizationOpportunityOutput[];
+  preferredRenderer?: string;
+  requiresGeneratedModule: boolean;
+  priority: "critical" | "high" | "medium" | "low";
+  confidence: number;
+  similarityFingerprint: string;
+}
+
+export interface VisualizationRouteDecision {
+  opportunityId: string;
+  route: "trusted_renderer" | "generated_module" | "intentional_omission";
+  selectedRenderer?: string;
+  compatibilityScore?: number;
+  reason: string;
+  duplicateOf?: string;
+}
+
+export interface VisualizationCoverageReport {
+  opportunitiesDetected: number;
+  criticalOpportunities: number;
+  highPriorityOpportunities: number;
+  trustedVisualsPublished: number;
+  generatedVisualsPublished: number;
+  omittedAsPedagogicallyUnhelpful: number;
+  failedValidation: number;
+  failedCompilation: number;
+  failedRuntimeTests: number;
+  failedCritic: number;
+  uncoveredCriticalOpportunityIds: string[];
+  uncoveredHighPriorityOpportunityIds: string[];
+  coverageScore: number;
+  status: "pass" | "warning" | "fail";
+  explanations: string[];
+}
+
+export interface VisualizationPlan {
+  schemaVersion: 1;
+  gardenId: string;
+  generatedAt: string;
+  opportunities: VisualizationOpportunity[];
+  decisions: VisualizationRouteDecision[];
+}
+
+export interface VisualizationPublicationOutcome {
+  opportunityId: string;
+  status:
+    | "trusted_published"
+    | "generated_published"
+    | "intentional_omission"
+    | "failed_validation"
+    | "failed_compilation"
+    | "failed_runtime_tests"
+    | "failed_critic";
+  reason?: string;
+}
+
+const INTERACTION_TERMS =
+  /formula|equation|variable|parameter|curve|graph|distribution|causal|feedback|process|step|timeline|state|transition|algorithm|mechanism|simulate|dynamic|compare|trade[- ]?off|network|hierarchy|geometry|boundary|optimization/i;
+
+function stableHash(value: unknown, length = 20): string {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, length);
+}
+
+function safeId(value: string): string {
+  const normalized = value
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 52);
+  return normalized || "visual";
+}
+
+function unitText(unit: LearningUnitContract): string {
+  return [
+    unit.title,
+    unit.learningQuestion,
+    ...unit.newConcepts,
+    ...unit.prerequisiteConcepts,
+    ...(unit.semanticConcepts ?? []).flatMap((concept) => [concept.slug, concept.preferredLabel]),
+    ...(unit.knowledgeClaims ?? []).map((claim) => claim.text),
+    unit.interactiveVisual?.uniqueConcept ?? "",
+    unit.interactiveVisual?.expectedInsight ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function interactionGoalForUnit(unit: LearningUnitContract): VisualizationInteractionGoal {
+  const text = unitText(unit);
+  if (/algorithm|step|sequence|procedure|derivation/i.test(text)) return "step_through_process";
+  if (/time|timeline|temporal|dynamic|training|convergence|trajectory|animation/i.test(text)) {
+    return "observe_change_over_time";
+  }
+  if (unit.role === "comparison" || /compare|versus|trade[- ]?off|alternative/i.test(text)) {
+    return "compare_cases";
+  }
+  if (/network|hierarchy|structure|spatial|geometry|node|edge/i.test(text)) return "explore_structure";
+  if (unit.role === "mechanism" || /causal|feedback|mechanism|system/i.test(text)) {
+    return "simulate_system";
+  }
+  if (unit.role === "formula" || unit.sourceFormulas.length > 0) return "manipulate_variables";
+  if (/predict|boundary|optimization|hypothesis/i.test(text)) return "test_prediction";
+  return "inspect_relationship";
+}
+
+function priorityForUnit(unit: LearningUnitContract): VisualizationOpportunity["priority"] {
+  if (unit.sourceFormulas.length > 0 && unit.role === "formula") return "critical";
+  if (
+    unit.interactiveVisual ||
+    unit.role === "mechanism" ||
+    unit.role === "comparison" ||
+    unit.role === "training_method"
+  ) {
+    return "high";
+  }
+  if (unit.sourceFigures.length > 0 || unit.sourceTables.length > 0 || INTERACTION_TERMS.test(unitText(unit))) {
+    return "medium";
+  }
+  return "low";
+}
+
+function inputId(label: string, index: number): string {
+  return safeId(label).replace(/-/g, "_") || `input_${index + 1}`;
+}
+
+function requiredInputsForUnit(unit: LearningUnitContract): VisualizationOpportunityInput[] {
+  const declared = unit.interactiveVisual?.learnerManipulates ?? [];
+  const formulaTerms = unit.sourceFormulas.flatMap((formula) => formula.termsToDefine);
+  const labels = [...new Set([...declared, ...formulaTerms])].filter(Boolean).slice(0, 8);
+  if (unit.role === "comparison" && labels.length === 0) {
+    return [
+      {
+        id: "case",
+        label: "Case to inspect",
+        type: "select",
+        options: ["Case A", "Case B"],
+        defaultValue: "Case A",
+      },
+    ];
+  }
+  if (labels.length === 0 && priorityForUnit(unit) !== "low") {
+    return [
+      {
+        id: "step",
+        label: interactionGoalForUnit(unit) === "step_through_process" ? "Process step" : "Exploration level",
+        type: "slider",
+        min: 0,
+        max: 1,
+        step: 0.05,
+        defaultValue: 0.5,
+      },
+    ];
+  }
+  return labels.map((label, index) => ({
+    id: inputId(label, index),
+    label,
+    type: "slider",
+    min: 0,
+    max: 1,
+    step: 0.01,
+    defaultValue: 0.5,
+  }));
+}
+
+function outputRepresentation(
+  goal: VisualizationInteractionGoal,
+  unit: LearningUnitContract,
+): VisualizationOutputRepresentation {
+  if (goal === "observe_change_over_time") return "animation";
+  if (goal === "step_through_process") return "timeline";
+  if (goal === "explore_structure" || goal === "simulate_system") return "diagram";
+  if (goal === "compare_cases" && unit.sourceTables.length > 0) return "table";
+  if (unit.role === "formula" || goal === "manipulate_variables") return "chart";
+  return "annotation";
+}
+
+function subsectionTarget(map: ProposedLearningMap, unitId: string, fallbackTitle: string) {
+  for (let sectionIndex = 0; sectionIndex < map.sections.length; sectionIndex += 1) {
+    const section = map.sections[sectionIndex];
+    for (let subsectionIndex = 0; subsectionIndex < section.subsections.length; subsectionIndex += 1) {
+      const subsection = section.subsections[subsectionIndex];
+      if (subsection.learningUnitId !== unitId) continue;
+      return {
+        targetPage: `learning/${sectionIndex + 1}/${subsectionIndex + 1}-${safeId(subsection.title)}`,
+        targetHeading: subsection.title,
+        insertionAnchor: `learning-unit:${unitId}:after-introduction`,
+      };
+    }
+  }
+  return {
+    targetPage: `learning/${safeId(unitId)}`,
+    targetHeading: fallbackTitle,
+    insertionAnchor: `learning-unit:${unitId}:after-introduction`,
+  };
+}
+
+export function analyzeVisualizationOpportunities(input: {
+  gardenId: string;
+  learningMap: ProposedLearningMap;
+  learningUnits: LearningUnitContract[];
+}): VisualizationOpportunity[] {
+  return input.learningUnits.map((unit) => {
+    const priority = priorityForUnit(unit);
+    const interactionGoal = interactionGoalForUnit(unit);
+    const target = subsectionTarget(input.learningMap, unit.id, unit.title);
+    const conceptIds = [
+      ...(unit.semanticConcepts ?? []).map((concept) => concept.slug),
+      ...unit.newConcepts.map(safeId),
+    ].filter(Boolean);
+    // Source figures are visual provenance. Formula and table contracts remain
+    // represented by their canonical source anchors and must not be mislabeled
+    // as source-image relationships in the generated artifact manifest.
+    const sourceVisualIds = unit.sourceFigures.map((figure) => figure.id);
+    const sourceVisualRelationships: SourceVisualRelationship[] = unit.sourceFigures.map((figure) => {
+      if (figure.placement === "not_used_with_reason") {
+        return {
+          sourceVisualId: figure.id,
+          treatment: "intentional_omission",
+          fidelity: "exact_source_image",
+          explanation: figure.notUsedReason || figure.interpretationGoal,
+        };
+      }
+      return {
+        sourceVisualId: figure.id,
+        treatment: "source_embed_plus_interactive_reconstruction",
+        fidelity: "illustrative",
+        explanation: `The original source figure remains available; any interactive reconstruction is illustrative and supports: ${figure.interpretationGoal}`,
+      };
+    });
+    const learningObjective =
+      unit.interactiveVisual?.expectedInsight || unit.learningQuestion || `Understand ${unit.title}`;
+    const pedagogicalReason =
+      unit.interactiveVisual?.whyStaticSourceFigureIsNotEnough ||
+      (priority === "low"
+        ? "The subsection is primarily explanatory and has no manipulable relationship, process, comparison, or structure that interaction would clarify."
+        : `Interaction lets the learner ${interactionGoal.replace(/_/g, " ")} instead of only reading a static explanation.`);
+    const fingerprint = stableHash({
+      concepts: [...conceptIds].sort(),
+      formulas: unit.sourceFormulas.map((formula) => formula.id).sort(),
+      figures: unit.sourceFigures.map((figure) => figure.id).sort(),
+      learningObjective: learningObjective.toLowerCase(),
+      interactionGoal,
+    });
+    const id = `visual-${safeId(unit.id)}-${fingerprint.slice(0, 8)}`;
+    return {
+      id,
+      gardenId: input.gardenId,
+      learningUnitId: unit.id,
+      ...target,
+      conceptIds: [...new Set(conceptIds)],
+      sourceAnchorIds: [...new Set(unit.sourceAnchors)],
+      sourceVisualIds: [...new Set(sourceVisualIds)],
+      sourceVisualRelationships,
+      learningObjective,
+      learnerQuestion: unit.learningQuestion || unit.title,
+      pedagogicalReason,
+      interactionGoal,
+      requiredInputs: requiredInputsForUnit(unit),
+      requiredOutputs: [
+        {
+          id: "main_output",
+          label: unit.interactiveVisual?.expectedInsight || unit.title,
+          representation: outputRepresentation(interactionGoal, unit),
+        },
+      ],
+      ...(unit.interactiveVisual?.visualType
+        ? { preferredRenderer: unit.interactiveVisual.visualType }
+        : {}),
+      requiresGeneratedModule: false,
+      priority,
+      confidence: unit.interactiveVisual ? 0.95 : priority === "low" ? 0.65 : 0.82,
+      similarityFingerprint: fingerprint,
+    };
+  });
+}
+
+function compatibilityScore(
+  opportunity: VisualizationOpportunity,
+  unit: LearningUnitContract,
+  renderer: TrustedRendererDefinition,
+): number {
+  let score = 0;
+  if (renderer.interactionGoals.includes(opportunity.interactionGoal)) score += 0.35;
+  if (renderer.roles.includes(unit.role)) score += 0.25;
+  const text = `${unitText(unit)} ${opportunity.learningObjective}`.toLowerCase();
+  const matchingKeywords = renderer.keywords.filter((keyword) => text.includes(keyword.toLowerCase()));
+  score += Math.min(0.25, matchingKeywords.length * 0.1);
+  if (opportunity.preferredRenderer === renderer.id) score += 0.2;
+  const unsupportedControl = opportunity.requiredInputs.some(
+    (control) => control.type === "number" || control.type === "button",
+  );
+  if (!unsupportedControl) score += 0.05;
+  return Math.max(0, Math.min(1, Number(score.toFixed(3))));
+}
+
+export function selectVisualizationRoutes(input: {
+  opportunities: VisualizationOpportunity[];
+  learningUnits: LearningUnitContract[];
+}): { opportunities: VisualizationOpportunity[]; decisions: VisualizationRouteDecision[] } {
+  const units = new Map(input.learningUnits.map((unit) => [unit.id, unit]));
+  const firstByFingerprint = new Map<string, VisualizationOpportunity>();
+  const decisions: VisualizationRouteDecision[] = [];
+  const opportunities = input.opportunities.map((opportunity) => ({ ...opportunity }));
+
+  for (const opportunity of opportunities) {
+    const duplicate = firstByFingerprint.get(opportunity.similarityFingerprint);
+    if (duplicate) {
+      decisions.push({
+        opportunityId: opportunity.id,
+        route: "intentional_omission",
+        duplicateOf: duplicate.id,
+        reason: `Merged with ${duplicate.id}; it teaches the same objective, source relationship, and interaction pattern.`,
+      });
+      continue;
+    }
+    firstByFingerprint.set(opportunity.similarityFingerprint, opportunity);
+
+    const unit = units.get(opportunity.learningUnitId);
+    if (!unit) {
+      decisions.push({
+        opportunityId: opportunity.id,
+        route: "intentional_omission",
+        reason: "The learning unit no longer exists in the confirmed contract.",
+      });
+      continue;
+    }
+
+    const scored = TRUSTED_RENDERER_REGISTRY.renderers
+      .map((renderer) => ({ renderer, score: compatibilityScore(opportunity, unit, renderer) }))
+      .sort((left, right) => right.score - left.score || left.renderer.id.localeCompare(right.renderer.id));
+    const best = scored[0];
+    if (best && best.score >= TRUSTED_RENDERER_REGISTRY.compatibilityThreshold) {
+      decisions.push({
+        opportunityId: opportunity.id,
+        route: "trusted_renderer",
+        selectedRenderer: best.renderer.id,
+        compatibilityScore: best.score,
+        reason: `${best.renderer.label} satisfies the learning objective, unit role, and ${opportunity.interactionGoal.replace(/_/g, " ")} interaction.`,
+      });
+      continue;
+    }
+
+    if (opportunity.priority === "low") {
+      decisions.push({
+        opportunityId: opportunity.id,
+        route: "intentional_omission",
+        compatibilityScore: best?.score,
+        reason: opportunity.pedagogicalReason,
+      });
+      continue;
+    }
+
+    opportunity.requiresGeneratedModule = true;
+    decisions.push({
+      opportunityId: opportunity.id,
+      route: "generated_module",
+      ...(best && best.score >= TRUSTED_RENDERER_REGISTRY.compatibilityThreshold * 0.75
+        ? { selectedRenderer: best.renderer.id }
+        : {}),
+      compatibilityScore: best?.score,
+      reason: best
+        ? `Best trusted renderer (${best.renderer.id}, ${best.score.toFixed(2)}) is below the ${TRUSTED_RENDERER_REGISTRY.compatibilityThreshold.toFixed(2)} pedagogical compatibility threshold.`
+        : "No trusted renderer can express the required interaction.",
+    });
+  }
+  return { opportunities, decisions };
+}
+
+export function buildVisualizationPlan(input: {
+  gardenId: string;
+  learningMap: ProposedLearningMap;
+  learningUnits: LearningUnitContract[];
+}): VisualizationPlan {
+  const opportunities = analyzeVisualizationOpportunities(input);
+  const selected = selectVisualizationRoutes({ opportunities, learningUnits: input.learningUnits });
+  return {
+    schemaVersion: 1,
+    gardenId: input.gardenId,
+    generatedAt: new Date().toISOString(),
+    opportunities: selected.opportunities,
+    decisions: selected.decisions,
+  };
+}
+
+export function visualizationPlanPath(gardenDir: string): string {
+  return path.join(gardenDir, ".breadboard", "visualization-plan.json");
+}
+
+export function saveVisualizationPlan(gardenDir: string, plan: VisualizationPlan): void {
+  const filePath = visualizationPlanPath(gardenDir);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(plan, null, 2)}\n`, "utf-8");
+}
+
+export function loadVisualizationPlan(gardenDir: string): VisualizationPlan | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(visualizationPlanPath(gardenDir), "utf-8"));
+    if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.opportunities) || !Array.isArray(parsed.decisions)) {
+      return null;
+    }
+    return parsed as VisualizationPlan;
+  } catch {
+    return null;
+  }
+}
+
+export function coverageGateMode(
+  env: NodeJS.ProcessEnv = process.env,
+): "off" | "warning" | "fail" {
+  const value = String(env.LEARN_VISUAL_COVERAGE_GATE ?? "warning").trim().toLowerCase();
+  return value === "off" || value === "fail" ? value : "warning";
+}
+
+export function buildVisualizationCoverageReport(input: {
+  plan: VisualizationPlan;
+  outcomes: VisualizationPublicationOutcome[];
+  gate?: "off" | "warning" | "fail";
+}): VisualizationCoverageReport {
+  const outcomeByOpportunity = new Map(input.outcomes.map((outcome) => [outcome.opportunityId, outcome]));
+  const decisions = new Map(input.plan.decisions.map((decision) => [decision.opportunityId, decision]));
+  const covered = new Set(
+    input.outcomes
+      .filter((outcome) => outcome.status === "trusted_published" || outcome.status === "generated_published")
+      .map((outcome) => outcome.opportunityId),
+  );
+  const approvedOmissions = new Set(
+    input.outcomes
+      .filter((outcome) => outcome.status === "intentional_omission")
+      .map((outcome) => outcome.opportunityId),
+  );
+  const actionable = input.plan.opportunities.filter(
+    (opportunity) => decisions.get(opportunity.id)?.route !== "intentional_omission",
+  );
+  const uncoveredCriticalOpportunityIds = actionable
+    .filter((opportunity) => opportunity.priority === "critical" && !covered.has(opportunity.id))
+    .map((opportunity) => opportunity.id);
+  const uncoveredHighPriorityOpportunityIds = actionable
+    .filter((opportunity) => opportunity.priority === "high" && !covered.has(opportunity.id))
+    .map((opportunity) => opportunity.id);
+  const weightedTotal = actionable.reduce(
+    (sum, opportunity) => sum + (opportunity.priority === "critical" ? 3 : opportunity.priority === "high" ? 2 : 1),
+    0,
+  );
+  const weightedCovered = actionable.reduce(
+    (sum, opportunity) =>
+      sum +
+      (covered.has(opportunity.id)
+        ? opportunity.priority === "critical"
+          ? 3
+          : opportunity.priority === "high"
+            ? 2
+            : 1
+        : 0),
+    0,
+  );
+  const gate = input.gate ?? coverageGateMode();
+  const publishedCount = covered.size;
+  const explanations: string[] = [];
+  if (publishedCount === 0) explanations.push("No interactive visualizations were published.");
+  if (uncoveredCriticalOpportunityIds.length > 0) {
+    explanations.push(`${uncoveredCriticalOpportunityIds.length} critical opportunity or opportunities remain uncovered.`);
+  }
+  if (uncoveredHighPriorityOpportunityIds.length > 0) {
+    explanations.push(`${uncoveredHighPriorityOpportunityIds.length} high-priority opportunity or opportunities remain uncovered.`);
+  }
+  const status: VisualizationCoverageReport["status"] =
+    gate === "fail" && uncoveredCriticalOpportunityIds.length > 0
+      ? "fail"
+      : publishedCount === 0 ||
+          uncoveredCriticalOpportunityIds.length > 0 ||
+          uncoveredHighPriorityOpportunityIds.length > 0
+        ? "warning"
+        : "pass";
+  const count = (statusName: VisualizationPublicationOutcome["status"]) =>
+    input.outcomes.filter((outcome) => outcome.status === statusName).length;
+  return {
+    opportunitiesDetected: input.plan.opportunities.length,
+    criticalOpportunities: input.plan.opportunities.filter((item) => item.priority === "critical").length,
+    highPriorityOpportunities: input.plan.opportunities.filter((item) => item.priority === "high").length,
+    trustedVisualsPublished: count("trusted_published"),
+    generatedVisualsPublished: count("generated_published"),
+    omittedAsPedagogicallyUnhelpful: approvedOmissions.size,
+    failedValidation: count("failed_validation"),
+    failedCompilation: count("failed_compilation"),
+    failedRuntimeTests: count("failed_runtime_tests"),
+    failedCritic: count("failed_critic"),
+    uncoveredCriticalOpportunityIds,
+    uncoveredHighPriorityOpportunityIds,
+    coverageScore: weightedTotal === 0 ? 1 : Number((weightedCovered / weightedTotal).toFixed(3)),
+    status,
+    explanations,
+  };
+}
+
+export function saveVisualizationCoverageReport(
+  gardenDir: string,
+  report: VisualizationCoverageReport,
+): void {
+  const breadboardDir = path.join(gardenDir, ".breadboard");
+  fs.mkdirSync(breadboardDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(breadboardDir, "visualization-coverage.json"),
+    `${JSON.stringify(report, null, 2)}\n`,
+    "utf-8",
+  );
+  const lines = [
+    "# Visualization generation report",
+    "",
+    `- Opportunities detected: ${report.opportunitiesDetected}`,
+    `- Trusted visuals published: ${report.trustedVisualsPublished}`,
+    `- Generated visuals published: ${report.generatedVisualsPublished}`,
+    `- Intentional omissions: ${report.omittedAsPedagogicallyUnhelpful}`,
+    `- Validation failures: ${report.failedValidation}`,
+    `- Compilation failures: ${report.failedCompilation}`,
+    `- Runtime failures: ${report.failedRuntimeTests}`,
+    `- Critic rejections: ${report.failedCritic}`,
+    `- Uncovered critical opportunities: ${report.uncoveredCriticalOpportunityIds.length}`,
+    `- Final coverage status: ${report.status}`,
+    "",
+    ...report.explanations.map((explanation) => `- ${explanation}`),
+    "",
+  ];
+  fs.writeFileSync(path.join(breadboardDir, "visualization-report.md"), lines.join("\n"), "utf-8");
+}
+
+export function preferredTrustedRenderer(opportunity: VisualizationOpportunity) {
+  return opportunity.preferredRenderer ? trustedRenderer(opportunity.preferredRenderer) : undefined;
+}
+
+export function roleSupportsVisualInteraction(role: LearningUnitRole): boolean {
+  return !["motivation", "limitation"].includes(role);
+}

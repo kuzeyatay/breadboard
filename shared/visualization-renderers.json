@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "compatibilityThreshold": 0.72,
+  "renderers": [
+    {
+      "id": "function_plot",
+      "label": "Function plot",
+      "roles": ["formula", "metric", "core_concept"],
+      "interactionGoals": ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      "keywords": ["function", "equation", "curve", "parameter", "distribution", "relationship"]
+    },
+    {
+      "id": "linked_time_plots",
+      "label": "Linked time plots",
+      "roles": ["mechanism", "formula", "core_concept"],
+      "interactionGoals": ["observe_change_over_time", "inspect_relationship", "simulate_system"],
+      "keywords": ["time", "velocity", "acceleration", "signal", "trajectory", "dynamics"]
+    },
+    {
+      "id": "mass_spring",
+      "label": "Mass-spring simulator",
+      "roles": ["mechanism", "formula", "core_concept"],
+      "interactionGoals": ["observe_change_over_time", "manipulate_variables", "simulate_system"],
+      "keywords": ["mass", "spring", "oscillation", "force", "displacement"]
+    },
+    {
+      "id": "energy_exchange",
+      "label": "Energy exchange",
+      "roles": ["mechanism", "formula", "result_interpretation"],
+      "interactionGoals": ["observe_change_over_time", "compare_cases", "simulate_system"],
+      "keywords": ["energy", "kinetic", "potential", "conservation", "exchange"]
+    },
+    {
+      "id": "resonance_curve",
+      "label": "Resonance curve",
+      "roles": ["mechanism", "formula", "result_interpretation"],
+      "interactionGoals": ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      "keywords": ["resonance", "frequency", "damping", "amplitude", "response"]
+    },
+    {
+      "id": "lif_neuron",
+      "label": "Leaky integrate-and-fire neuron",
+      "roles": ["core_concept", "mechanism"],
+      "interactionGoals": ["observe_change_over_time", "manipulate_variables", "simulate_system"],
+      "keywords": ["membrane", "threshold", "reset", "leak", "neuron", "integrate and fire", "lif"]
+    },
+    {
+      "id": "neural_coding",
+      "label": "Neural coding explorer",
+      "roles": ["core_concept", "mechanism", "comparison"],
+      "interactionGoals": ["compare_cases", "inspect_relationship", "test_prediction"],
+      "keywords": ["spike", "timing", "temporal", "rate coding", "encoding", "event driven"]
+    },
+    {
+      "id": "stdp_window",
+      "label": "STDP timing window",
+      "roles": ["training_method", "mechanism"],
+      "interactionGoals": ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      "keywords": ["stdp", "spike timing", "plasticity", "pre", "post", "hebbian"]
+    },
+    {
+      "id": "metric_calculator",
+      "label": "Metric calculator",
+      "roles": ["metric", "formula", "result_interpretation"],
+      "interactionGoals": ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      "keywords": ["metric", "accuracy", "latency", "energy", "efficiency", "spike count", "score"]
+    },
+    {
+      "id": "training_curve",
+      "label": "Training curve",
+      "roles": ["training_method", "metric", "result_interpretation"],
+      "interactionGoals": ["observe_change_over_time", "compare_cases", "test_prediction"],
+      "keywords": ["training", "convergence", "loss", "learning curve", "epoch", "accuracy"]
+    },
+    {
+      "id": "tradeoff_explorer",
+      "label": "Trade-off explorer",
+      "roles": ["comparison", "application", "result_interpretation", "metric"],
+      "interactionGoals": ["compare_cases", "inspect_relationship", "test_prediction"],
+      "keywords": ["tradeoff", "comparison", "deployment", "priority", "energy", "latency", "accuracy", "budget"]
+    }
+  ]
+}

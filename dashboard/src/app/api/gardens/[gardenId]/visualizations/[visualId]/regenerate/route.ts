@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
+import path from 'path';
 import { DEFAULT_MODEL, createChatmockClient, resolveClusterNoteFile } from '@/lib/knowledge';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
@@ -13,6 +14,14 @@ import {
   replaceVisualBlock,
   saveVisualSpec,
 } from '@/lib/visuals';
+import {
+  createGeneratedVisualization,
+  findGeneratedVisualBlockById,
+  loadGeneratedVisualManifest,
+  replaceGeneratedVisualBlock,
+  rollbackGeneratedVisualization,
+} from '@/lib/generated-visuals';
+import { loadVisualizationPlan } from '@/lib/visualization-opportunities';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,6 +70,116 @@ export async function POST(
     const body = await request.json().catch(() => ({}));
     const pageSlug = typeof body.pageSlug === 'string' ? body.pageSlug.trim() : '';
     const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+
+    // Generated modules have an explicit version reference in Markdown. Build
+    // and validate a replacement artifact first; the current page stays on the
+    // old version until every generation, AST, browser, and critic gate passes.
+    const gardenDir = path.join(contentPath, cluster.slug);
+    let generatedFilePath: string | null = null;
+    let generatedContent = '';
+    let generatedBlock: ReturnType<typeof findGeneratedVisualBlockById> = null;
+    if (pageSlug) {
+      const resolved = resolveClusterNoteFile(contentPath, cluster.slug, pageSlug);
+      if (resolved && fs.existsSync(resolved.filePath)) {
+        const candidate = fs.readFileSync(resolved.filePath, 'utf-8');
+        const found = findGeneratedVisualBlockById(candidate, visualId);
+        if (found) {
+          generatedFilePath = resolved.filePath;
+          generatedContent = candidate;
+          generatedBlock = found;
+        }
+      }
+    }
+    if (!generatedFilePath) {
+      for (const candidatePath of listGardenMarkdownFiles(contentPath, cluster.slug)) {
+        const candidate = fs.readFileSync(candidatePath, 'utf-8');
+        if (!candidate.includes(visualId)) continue;
+        const found = findGeneratedVisualBlockById(candidate, visualId);
+        if (found) {
+          generatedFilePath = candidatePath;
+          generatedContent = candidate;
+          generatedBlock = found;
+          break;
+        }
+      }
+    }
+    if (generatedFilePath && generatedBlock) {
+      const requestedCurrentVersion = Number(body.currentVersion ?? generatedBlock.version);
+      if (requestedCurrentVersion !== generatedBlock.version) {
+        return NextResponse.json(
+          { error: `Visualization changed from v${requestedCurrentVersion} to v${generatedBlock.version}; reload before regenerating.` },
+          { status: 409, headers },
+        );
+      }
+      const currentManifest = loadGeneratedVisualManifest(gardenDir, visualId, generatedBlock.version);
+      const plan = loadVisualizationPlan(gardenDir);
+      const plannedOpportunity = plan?.opportunities.find((candidate) => candidate.id === visualId);
+      if (!currentManifest || !plannedOpportunity) {
+        return NextResponse.json(
+          { error: 'The generated visualization manifest or opportunity plan is missing.' },
+          { status: 409, headers },
+        );
+      }
+      const relativePage = path.relative(gardenDir, generatedFilePath).replace(/\\/g, '/');
+      const opportunity = {
+        ...plannedOpportunity,
+        targetPage: relativePage,
+        targetHeading: currentManifest.targetHeading,
+        insertionAnchor: currentManifest.insertionAnchor,
+      };
+      const surrounding = generatedContent.slice(
+        Math.max(0, generatedBlock.index - 4000),
+        generatedBlock.index + generatedBlock.fullMatch.length + 2500,
+      );
+      const { baseURL } = resolveChatmockBaseUrl(request);
+      const client = createChatmockClient(baseURL);
+      const result = await createGeneratedVisualization({
+        client,
+        model: DEFAULT_MODEL,
+        gardenDir,
+        opportunity,
+        pageMarkdown: surrounding,
+        availableSourceAnchorIds: new Set(opportunity.sourceAnchorIds),
+        onEvent: (event) => appendGardenEvent(contentPath, cluster.slug, event.type, {
+          ...event.data,
+          pageId: relativePage.replace(/\.md$/i, ''),
+          regenerationReason: reason || 'Learner requested regeneration',
+        }),
+      });
+      if (!result.manifest) {
+        return NextResponse.json(
+          { error: `Replacement did not pass validation; v${generatedBlock.version} remains active.`, details: result.errors },
+          { status: 422, headers },
+        );
+      }
+      const nextContent = replaceGeneratedVisualBlock(
+        generatedContent,
+        generatedBlock,
+        visualId,
+        result.manifest.version,
+      );
+      const temporaryPath = `${generatedFilePath}.visual-${process.pid}-${Date.now()}.tmp`;
+      try {
+        fs.writeFileSync(temporaryPath, nextContent, 'utf-8');
+        fs.renameSync(temporaryPath, generatedFilePath);
+        await publishQuartzAfterMutation(`regenerate generated visual ${visualId} in ${cluster.slug}`);
+      } catch (error) {
+        fs.rmSync(temporaryPath, { force: true });
+        fs.writeFileSync(generatedFilePath, generatedContent, 'utf-8');
+        rollbackGeneratedVisualization({ gardenDir, id: visualId, version: generatedBlock.version });
+        throw error;
+      }
+      appendGardenEvent(contentPath, cluster.slug, 'visualization_regenerated', {
+        visualId,
+        pageId: relativePage.replace(/\.md$/i, ''),
+        kind: 'generated_module',
+        oldVersion: generatedBlock.version,
+        newVersion: result.manifest.version,
+        reason,
+        sourceAnchors: result.manifest.sourceAnchorIds,
+      });
+      return NextResponse.json({ success: true, visual: result.manifest }, { headers });
+    }
 
     // Locate the markdown file carrying this visual block.
     let filePath: string | null = null;
