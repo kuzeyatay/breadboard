@@ -20,6 +20,7 @@ export interface GardenIssueTarget {
   conceptId?: string;
   claimId?: string;
   visualId?: string;
+  visualIntentId?: string;
 }
 
 export interface GardenIssueBase {
@@ -55,12 +56,22 @@ export interface FormulaAssignmentMismatchIssue extends GardenIssueBase {
 
 export type FormulaUsageProjectionIssue = Issue<"formula_usage_projection", { semanticCategory?: string; [key: string]: unknown }>;
 export type FormulaLineageIssue = Issue<"formula_lineage", { semanticCategory?: string; [key: string]: unknown }>;
+export type FormulaLineageMissingIssue = Issue<"formula_lineage_missing", { semanticCategory?: string; [key: string]: unknown }>;
 export type UnitPageMappingIssue = Issue<"unit_page_mapping", { semanticCategory?: string; [key: string]: unknown }>;
 export type TagProjectionIssue = Issue<"tag_projection", { semanticCategory?: string; [key: string]: unknown }>;
+export type TagProjectionMismatchIssue = Issue<"tag_projection_mismatch", { semanticCategory?: string; [key: string]: unknown }>;
 export type ClaimMappingIssue = Issue<"claim_page_mapping", { semanticCategory?: string; [key: string]: unknown }>;
 export type ConceptReferenceIssue = Issue<"concept_reference", { semanticCategory?: string; [key: string]: unknown }>;
 export type VisualGroundingIssue = Issue<"visual_grounding", { semanticCategory?: string; [key: string]: unknown }>;
+export type MissingPlannedVisualIssue = Issue<"missing_planned_visual", { semanticCategory?: string; [key: string]: unknown }>;
+export type VisualTypeMismatchIssue = Issue<"visual_type_mismatch", { expectedTypes?: string[]; actualType?: string; semanticCategory?: string; [key: string]: unknown }>;
+export type DuplicateVisualSignatureIssue = Issue<"duplicate_visual_signature", { visualIds?: string[]; pageIds?: string[]; semanticCategory?: string; [key: string]: unknown }>;
+export type VisualGroundingMismatchIssue = Issue<"visual_grounding_mismatch", { semanticCategory?: string; [key: string]: unknown }>;
+export type ContractPageAnchorMismatchIssue = Issue<"contract_page_anchor_mismatch", { semanticCategory?: string; [key: string]: unknown }>;
 export type SectionSemanticIssue = Issue<"section_semantic", { semanticCategory?: string; [key: string]: unknown }>;
+export type SectionSemanticMismatchIssue = Issue<"section_semantic_mismatch", { unitIds?: string[]; semanticCategory?: string; [key: string]: unknown }>;
+export type ScaffoldProseIssue = Issue<"scaffold_prose", { semanticCategory?: string; [key: string]: unknown }>;
+export type RepeatedOpeningIssue = Issue<"repeated_opening", { semanticCategory?: string; [key: string]: unknown }>;
 export type CriticSemanticIssue = Issue<"critic_semantic", { semanticCategory?: string; [key: string]: unknown }>;
 export type ReportSerializationIssue = Issue<"report_serialization", { semanticCategory?: string; [key: string]: unknown }>;
 export type IllegalStageMutationIssue = Issue<"illegal_stage_mutation", { field: string; operationType?: string; [key: string]: unknown }>;
@@ -82,12 +93,22 @@ export type GardenIssue =
   | FormulaAssignmentMismatchIssue
   | FormulaUsageProjectionIssue
   | FormulaLineageIssue
+  | FormulaLineageMissingIssue
   | UnitPageMappingIssue
   | TagProjectionIssue
+  | TagProjectionMismatchIssue
   | ClaimMappingIssue
   | ConceptReferenceIssue
   | VisualGroundingIssue
+  | MissingPlannedVisualIssue
+  | VisualTypeMismatchIssue
+  | DuplicateVisualSignatureIssue
+  | VisualGroundingMismatchIssue
+  | ContractPageAnchorMismatchIssue
   | SectionSemanticIssue
+  | SectionSemanticMismatchIssue
+  | ScaffoldProseIssue
+  | RepeatedOpeningIssue
   | ProjectionIntegrityIssue
   | CriticSemanticIssue
   | ReportSerializationIssue

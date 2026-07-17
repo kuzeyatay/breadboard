@@ -46,6 +46,7 @@ import { auditFinalGardenState, buildFinalGardenState } from "../dashboard/src/l
 import { validateGardenSemantics } from "../dashboard/src/lib/garden-semantics.ts";
 import { REQUIRED_VALIDATION_REPORT_SECTIONS as CANONICAL_REPORT_SECTIONS, VALIDATION_REPORT_STATIC_SECTIONS } from "../dashboard/src/lib/garden-finalize.ts";
 import { dedupeSemanticBlockerLines, verifyValidationReportSerialization } from "../dashboard/src/lib/semantic-reconciliation.ts";
+import { assessInteractiveVisualFulfillment } from "../dashboard/src/lib/visual-necessity.ts";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT_ROOT = path.resolve(SCRIPT_DIR, "..", "quartz", "content");
@@ -2296,14 +2297,19 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
         specsByUnit.set(unitId, list);
       }
       if (unit) {
-        if (!unit.interactiveVisual) {
-          problems.push(`${page.relPath}: embeds visual ${id}, but learning unit ${unit.id} has no interactiveVisual contract`);
+        const requirement = unit.interactiveVisualPlan?.requirement ??
+          (unit.interactiveVisual ? "recommended" : "none");
+        const assessment = assessInteractiveVisualFulfillment({
+          unit,
+          embeddedVisualTypes: [type],
+        });
+        if (assessment.severity === "blocker") {
+          problems.push(`${page.relPath}: visual ${id}: ${assessment.reason}`);
+        }
+        if (requirement === "none") {
+          // Non-harmful unexpected visuals are a finalizer warning, not a
+          // standalone-validator blocker. Harmful visuals were added above.
         } else {
-          if (String(unit.interactiveVisual.visualType ?? "").toLowerCase() !== type.toLowerCase()) {
-            problems.push(
-              `${page.relPath}: visual ${id} type ${type} does not match learning unit ${unit.id} contract type ${unit.interactiveVisual.visualType}`,
-            );
-          }
           const compat = visualTypeCompatibleWithUnit(type, unit);
           if (!compat.ok) problems.push(`${page.relPath}: visual ${id} incompatible with unit ${unit.id}: ${compat.reason}`);
         }
@@ -2338,18 +2344,26 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       if (unitId) pageByUnit.set(unitId, page);
     }
     for (const unit of learningUnits) {
-      if (!unit.interactiveVisual) continue;
       const page = pageByUnit.get(unit.id);
       if (!page) continue;
       const specs = specsByUnit.get(unit.id) ?? [];
       const omissionReason =
         fmString(page.frontmatter, "interactiveVisualOmissionReason") ||
         (/interactive visual intentionally omitted/i.test(page.body) ? "body notes intentional omission" : "");
-      if (specs.length === 0 && !omissionReason) {
-        problems.push(`${page.relPath}: learning unit ${unit.id} planned ${unit.interactiveVisual.visualType}, but no interactive visual was embedded`);
+      const assessment = assessInteractiveVisualFulfillment({
+        unit,
+        embeddedVisualTypes: specs.map(({ spec }) => String(spec.type ?? "")),
+        intentionallyOmitted: Boolean(omissionReason),
+      });
+      if (assessment.severity === "blocker") {
+        problems.push(`${page.relPath}: learning unit ${unit.id}: ${assessment.reason}`);
       }
     }
-    const plannedInteractiveCount = learningUnits.filter((unit) => unit.interactiveVisual).length;
+    const plannedInteractiveCount = learningUnits.filter((unit) =>
+      unit.interactiveVisualPlan?.requirement === "required" ||
+      unit.interactiveVisualPlan?.requirement === "recommended" ||
+      unit.interactiveVisualPlan?.requirement === "optional"
+    ).length;
     check(23, "interactive visuals fulfill the Learning Unit Contract", problems, embeddedVisualSpecs.length === 0 && plannedInteractiveCount === 0);
   }
 

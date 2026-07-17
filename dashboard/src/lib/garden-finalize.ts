@@ -60,6 +60,12 @@ import {
   reconcileFinalGardenSemantics,
   verifyValidationReportSerialization,
 } from "./semantic-reconciliation.ts";
+import {
+  assessInteractiveVisualFulfillment,
+  loadVisualDecisionOverrides,
+  planGardenVisualNecessity,
+  saveVisualNecessityArtifacts,
+} from "./visual-necessity.ts";
 
 // ---------------------------------------------------------------------------
 // Frontmatter + fs helpers
@@ -962,6 +968,43 @@ function embeddedGeneratedVisualIds(body: string): string[] {
     if (id && Number.isInteger(version) && version > 0) ids.push(id);
   }
   return [...new Set(ids)];
+}
+
+/** Rerun necessity before scoped repair and persist only the contract planning fields. */
+function replanContractVisualNecessity(gardenDir: string, gardenSlug: string): void {
+  const contract = readLearningUnitContract(gardenDir);
+  if (!contract.foundPath || contract.units.length === 0) return;
+  const plan = planGardenVisualNecessity({
+    gardenId: gardenSlug,
+    learningUnits: contract.units,
+    overrides: loadVisualDecisionOverrides(gardenDir),
+  });
+  const parsed = readJson<Record<string, unknown>>(contract.foundPath, {});
+  const rawUnits = Array.isArray(parsed.learningUnits)
+    ? parsed.learningUnits as Array<Record<string, unknown>>
+    : [];
+  const plannedById = new Map(plan.learningUnits.map((unit) => [unit.id, unit]));
+  parsed.learningUnits = rawUnits.map((raw) => {
+    const unit = plannedById.get(stringField(raw.id));
+    if (!unit) return raw;
+    const next: Record<string, unknown> = {
+      ...raw,
+      interactiveVisualPlan: unit.interactiveVisualPlan,
+      teachingMediumPlan: unit.teachingMediumPlan,
+    };
+    if (unit.interactiveVisual) next.interactiveVisual = unit.interactiveVisual;
+    else delete next.interactiveVisual;
+    return next;
+  });
+  fs.writeFileSync(contract.foundPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
+  saveVisualNecessityArtifacts(gardenDir, gardenSlug, {
+    decisions: plan.decisions,
+    teachingMedia: plan.teachingMedia,
+    budget: plan.budget,
+    overrides: plan.overrides,
+    reviewCalls: plan.reviewCalls,
+    rejectedReviews: plan.rejectedReviews,
+  });
 }
 
 function embeddedGeneratedVisualVersions(body: string): Map<string, number> {
@@ -2114,7 +2157,8 @@ function repairRequiredChanges(type: UnitRepairFailureType, problem: string): st
       ];
     case "visual_grounding":
       return [
-        "Regenerate the visual plan from the Learning Unit Contract using minimal compatible anchors and explicit source-anchor roles/reasons.",
+        "Rerun visual necessity first; repair only a still-required interaction, or remove/downgrade a stale, optional, or duplicative requirement.",
+        "Regenerate a retained visual plan from the Learning Unit Contract using minimal compatible anchors and explicit source-anchor roles/reasons.",
         "Update the page block, visual spec artifact, visual index, and source coverage consistently.",
       ];
     case "source_text_anchor":
@@ -2863,6 +2907,7 @@ export async function repairLearningUnitsFromContract({
   modelRepair?: ModelRepairExecutor;
 }): Promise<LearningUnitRepairRunReport> {
   const requestedAt = new Date().toISOString();
+  replanContractVisualNecessity(gardenDir, gardenSlug);
   const reportForChecks = emptyFinalizeReport();
   const firstChecks = collectFinalizeChecks({ gardenDir, report: reportForChecks, includeReportSelfCheck: false });
   const requests = collectUnitRepairRequests({ gardenDir, checks: firstChecks });
@@ -5444,7 +5489,7 @@ export const VALIDATION_REPORT_STATIC_SECTIONS: ReadonlyArray<{ heading: string;
   { heading: "Formula Meaning Match", description: "Source-anchored and source-derived formulas must match the source formula/metric anchor they claim." },
   { heading: "Formula Family Match", description: "Formula families inferred from generated math must match the claimed source formula anchor family." },
   { heading: "Formula Metadata Noise", description: "Formula metadata must track meaningful relationships, not isolated symbols or inline fragments." },
-  { heading: "Interactive Visual Fulfillment", description: "Planned interactive visuals must be embedded or intentionally omitted with a reason." },
+  { heading: "Interactive Visual Fulfillment", description: "Only required interactive visuals are blocking when missing; recommended omissions warn, optional omissions pass, and rejected interactions must not remain embedded." },
   { heading: "Final Interactive Visual Uniqueness", description: "Rendered interactive visuals must be page-specific and non-duplicative after final block normalization." },
   { heading: "Visual Anchor Precision", description: "Metric visuals must use only the formula anchors needed by their controls, outputs, and learning goal." },
   { heading: "Repetition and Opening Flow", description: "Repeated learner openings must be callbacks, not restarted motivation frames." },
@@ -6972,6 +7017,9 @@ function collectFinalizeChecks({
 }): FinalizeCheck[] {
   const checks: FinalizeCheck[] = [];
   const push = (name: string, problems: string[]) => checks.push({ name, status: problems.length ? "FAIL" : "PASS", problems });
+  const warn = (message: string) => {
+    if (!report.warnings.includes(message)) report.warnings.push(message);
+  };
   const learnerPages = loadLearnerPages(gardenDir);
   const contract = readLearningUnitContract(gardenDir);
   const unitsById = new Map(contract.units.map((unit) => [unit.id, unit]));
@@ -7100,15 +7148,19 @@ function collectFinalizeChecks({
     for (const id of requiredFormulas) {
       if (!formulaAnchors.includes(id)) fulfillmentProblems.push(`${page.rel}: missing contract source formula ${id}`);
     }
-    if (unit.interactiveVisual) {
+    {
       const types = embeddedVisualTypes(page.body);
       const generatedIds = embeddedGeneratedVisualIds(page.body);
       const omitted = Boolean(fmGetScalar(page.rawFm, "interactiveVisualOmissionReason")) || /interactive visual intentionally omitted/i.test(page.body);
-      if (types.length === 0 && generatedIds.length === 0 && !omitted) {
-        fulfillmentProblems.push(`${page.rel}: unit ${unit.id} planned ${unit.interactiveVisual.visualType}, but no interactive visual was embedded`);
-      } else if (generatedIds.length === 0 && types.length > 0 && !types.some((type) => type.toLowerCase() === unit.interactiveVisual!.visualType.toLowerCase())) {
-        fulfillmentProblems.push(`${page.rel}: embedded visual type(s) [${types.join(", ")}] do not match contract type ${unit.interactiveVisual.visualType}`);
-      }
+      const assessment = assessInteractiveVisualFulfillment({
+        unit,
+        embeddedVisualTypes: types,
+        generatedVisualIds: generatedIds,
+        intentionallyOmitted: omitted,
+      });
+      const message = `${page.rel}: ${assessment.reason}`;
+      if (assessment.severity === "blocker") fulfillmentProblems.push(message);
+      else if (assessment.severity === "warning") warn(message);
     }
     for (const formulaAnchor of formulaAnchors) {
       if (formulaAnchor.startsWith("trivial:")) fulfillmentProblems.push(`${page.rel}: formula frontmatter tracks trivial math ${formulaAnchor.slice("trivial:".length)}`);

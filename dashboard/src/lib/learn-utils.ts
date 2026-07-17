@@ -15,11 +15,19 @@ import {
   type ZettelNote,
 } from "./learning-unit-contract.ts";
 import type { KnowledgeClaimPlan, SemanticConceptPlan } from "./semantic-core.ts";
+import type {
+  ContractInteractiveVisualPlan,
+  TeachingMediumPlan,
+} from "./visual-necessity-types.ts";
 
 export const LEARN_STATUSES = [
   "idle",
   "planning",
   "awaiting_confirmation",
+  "analyzing_issues",
+  "repairing",
+  "revalidating",
+  "publishing_repair",
   "generating_learning_pages",
   // Legacy name for generating_learning_pages; still read from old job rows.
   "generating_textbook",
@@ -131,6 +139,8 @@ export interface LearningSubsectionPlan {
   sourceTableContracts?: SourceTableContract[];
   sourceArtifactAssignments?: SourceArtifactAssignment[];
   interactiveVisualContract?: InteractiveVisualContract;
+  interactiveVisualPlan?: ContractInteractiveVisualPlan;
+  teachingMediumPlan?: TeachingMediumPlan;
   zettelNotes?: ZettelNote[];
   semanticConcepts?: SemanticConceptPlan[];
   knowledgeClaims?: KnowledgeClaimPlan[];

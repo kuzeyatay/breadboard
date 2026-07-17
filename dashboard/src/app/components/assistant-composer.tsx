@@ -54,9 +54,11 @@ const EFFORT_OPTIONS: Array<{
   label: string;
   detail: string;
 }> = [
-  { value: 'none', label: 'Instant', detail: 'Fastest response' },
+  { value: 'low', label: 'Light', detail: 'Quick, light reasoning' },
   { value: 'medium', label: 'Medium', detail: 'Balanced reasoning' },
   { value: 'high', label: 'High', detail: 'Deeper thinking' },
+  { value: 'xhigh', label: 'Extra high', detail: 'Extended thinking' },
+  { value: 'max', label: 'Ultra', detail: 'Maximum reasoning depth' },
 ];
 
 function CheckIcon() {
@@ -121,7 +123,9 @@ export default function AssistantComposer({
   compact = false,
 }: Props) {
   const [showIntelligence, setShowIntelligence] = useState(false);
-  const selectedEffort = EFFORT_OPTIONS.find((option) => option.value === reasoningEffort)!;
+  const selectedEffort =
+    EFFORT_OPTIONS.find((option) => option.value === reasoningEffort) ??
+    EFFORT_OPTIONS[2];
 
   function toggleIntelligence() {
     const next = !showIntelligence;

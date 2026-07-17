@@ -15,6 +15,7 @@ import {
   assignSourceArtifacts,
   normalizeLearningUnits,
 } from "../src/lib/learning-unit-contract.ts";
+import { planGardenVisualNecessity } from "../src/lib/visual-necessity.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture builder: a small but structurally-complete SNN garden on disk.
@@ -828,10 +829,17 @@ describe("garden validator regression fixture", () => {
     }
   });
 
-  test("contract visual fulfillment rejects a missing planned visual", () => {
+  test("contract visual fulfillment rejects only a missing required visual", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-missing-visual-"));
     try {
       const dir = buildGoodGarden(root);
+      const contractPath = path.join(dir, ".breadboard", "learning-unit-contract.json");
+      const contract = JSON.parse(fs.readFileSync(contractPath, "utf-8"));
+      contract.learningUnits = planGardenVisualNecessity({
+        gardenId: "snn-fixture",
+        learningUnits: normalizeLearningUnits(contract.learningUnits),
+      }).learningUnits;
+      fs.writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`);
       const pagePath = path.join(dir, "learning", "4. Evaluating SNNs", "4.1 Accuracy, Latency, and Energy.md");
       fs.writeFileSync(
         pagePath,
@@ -839,7 +847,7 @@ describe("garden validator regression fixture", () => {
       );
       const result = checkById(runChecksWithReport(dir, "snn-fixture"), 23);
       assert.equal(result.status, "FAIL");
-      assert.match(result.problems.join("\n"), /planned tradeoff_explorer, but no interactive visual was embedded/);
+      assert.match(result.problems.join("\n"), /required interactive visual is missing/i);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

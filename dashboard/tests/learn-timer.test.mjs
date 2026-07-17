@@ -186,7 +186,7 @@ test("collapsed Learn indicator expires two minutes after a non-loading state", 
   );
 });
 
-test("failed Learn jobs expose a regenerate action", () => {
+test("failed Learn jobs expose scoped repair and a separate full rebuild action", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -201,10 +201,11 @@ test("failed Learn jobs expose a regenerate action", () => {
   );
   assert.match(
     workspaceSource,
-    /async function handleRegenerateLessons\(\)[\s\S]*?postLearnAction\("regenerate"\)/,
+    /async function handleRepairIssues\(\)[\s\S]*?postLearnAction\("regenerate", \{ mode: "repair" \}\)/,
   );
-  assert.match(workspaceSource, /status === "failed"[\s\S]*?"Regenerate"/);
-  assert.match(workspaceSource, /endpoint === "regenerate" && data\.planning/);
+  assert.match(workspaceSource, /status === "failed"[\s\S]*?"Repair issues"/);
+  assert.match(workspaceSource, /endpoint === "regenerate"[\s\S]*?unaffected pages were preserved/);
+  assert.match(workspaceSource, /handleFullRebuild[\s\S]*?forceFullRebuild: true/);
 });
 
 test("Learn failures stay in the panel without opening a dialog or toast", () => {
@@ -226,7 +227,7 @@ test("Learn failures stay in the panel without opening a dialog or toast", () =>
   assert.doesNotMatch(learnActionCatch, /else[\s\S]*?addToast\(message\)/);
 });
 
-test("completed Learn panel exposes a black regenerate action beside Skip review", () => {
+test("completed Learn panel exposes scoped repair beside Skip review", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -235,7 +236,7 @@ test("completed Learn panel exposes a black regenerate action beside Skip review
     "utf8",
   );
   const skipReviewIndex = workspaceSource.indexOf("Skip review");
-  const regenerateIndex = workspaceSource.indexOf(
+  const repairIndex = workspaceSource.indexOf(
     '{status === "complete" && (',
     skipReviewIndex,
   );
@@ -249,14 +250,15 @@ test("completed Learn panel exposes a black regenerate action beside Skip review
   const completedFooter = workspaceSource.slice(completedFooterIndex);
 
   assert.ok(skipReviewIndex >= 0);
-  assert.ok(regenerateIndex > skipReviewIndex);
-  assert.ok(primaryActionIndex > regenerateIndex);
+  assert.ok(repairIndex > skipReviewIndex);
+  assert.ok(primaryActionIndex > repairIndex);
   assert.match(
-    workspaceSource.slice(regenerateIndex, primaryActionIndex),
-    /onClick=\{handleRegenerateLessons\}[\s\S]*?bg-white[\s\S]*?text-gray-950[\s\S]*?M12 6\.75v10\.5[\s\S]*?"Regenerate"/,
+    workspaceSource.slice(repairIndex, primaryActionIndex),
+    /onClick=\{handleRepairIssues\}[\s\S]*?bg-white[\s\S]*?text-gray-950[\s\S]*?M12 6\.75v10\.5[\s\S]*?"Repair issues"/,
   );
+  assert.match(workspaceSource.slice(repairIndex, primaryActionIndex), /Rebuild entire garden/);
   assert.match(completedFooter, /Open lessons/);
-  assert.doesNotMatch(completedFooter, /onClick=\{handleRegenerateLessons\}/);
+  assert.doesNotMatch(completedFooter, /onClick=\{handleRepairIssues\}/);
 });
 
 test("cancelled Learn jobs expose a fresh generate action", () => {

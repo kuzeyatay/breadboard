@@ -29,6 +29,20 @@ function replaceAll(values: string[], oldId: string, newId: string): string[] {
   return [...new Set(values.map((value) => value === oldId ? newId : value))];
 }
 
+function mutateOwnedVisualBlock(body: string, visualId: string, replacement: string | null): string {
+  const blockPattern = /```breadboard-(?:generated-)?visual\r?\n([\s\S]*?)\r?\n```/g;
+  let found = false;
+  const next = body.replace(blockPattern, (block, payload: string) => {
+    let id = "";
+    try { id = String((JSON.parse(payload) as { id?: unknown }).id ?? ""); } catch { /* malformed blocks are not claimed */ }
+    if (id !== visualId) return block;
+    found = true;
+    return replacement ?? "";
+  });
+  if (replacement && !found) return `${next.replace(/\s*$/, "")}\n\n${replacement.trim()}\n`;
+  return next.replace(/\n{3,}/g, "\n\n");
+}
+
 function applyOperation(state: GardenBuildState, operation: GardenBuildOperation): void {
   switch (operation.type) {
     case "replace_source_anchor": {
@@ -106,6 +120,11 @@ function applyOperation(state: GardenBuildState, operation: GardenBuildOperation
       if (page) { page.body = operation.body; page.contentFingerprint = contentFingerprint(operation.body); }
       break;
     }
+    case "set_page_formula_entries": {
+      const page = state.pages[operation.pageId];
+      if (page) page.formulaEntries = structuredClone(operation.formulaEntries);
+      break;
+    }
     case "set_visual_grounding": {
       const visual = state.visuals[operation.visualId];
       if (visual) {
@@ -116,7 +135,59 @@ function applyOperation(state: GardenBuildState, operation: GardenBuildOperation
       if (operation.unitId && state.units[operation.unitId] && !state.units[operation.unitId].visualIds.includes(operation.visualId)) state.units[operation.unitId].visualIds.push(operation.visualId);
       break;
     }
+    case "set_visual_type": {
+      const visual = state.visuals[operation.visualId];
+      if (visual) visual.type = operation.visualType;
+      break;
+    }
+    case "set_visual_body": {
+      const visual = state.visuals[operation.visualId];
+      if (visual) visual.body = operation.body;
+      break;
+    }
+    case "replace_page_visual_block": {
+      const page = state.pages[operation.pageId];
+      if (page) {
+        page.body = mutateOwnedVisualBlock(page.body, operation.visualId, operation.block);
+        page.contentFingerprint = contentFingerprint(page.body);
+        if (!page.embeddedVisualIds.includes(operation.visualId)) page.embeddedVisualIds.push(operation.visualId);
+      }
+      const visual = state.visuals[operation.visualId];
+      if (visual && page) {
+        visual.pageId = page.id;
+        visual.unitId = page.unitId;
+        if (visual.status === "unresolved" || visual.status === "omitted") visual.status = "grounded";
+      }
+      if (page && state.units[page.unitId] && !state.units[page.unitId].visualIds.includes(operation.visualId)) state.units[page.unitId].visualIds.push(operation.visualId);
+      break;
+    }
+    case "remove_page_visual": {
+      const page = state.pages[operation.pageId];
+      if (page) {
+        page.body = mutateOwnedVisualBlock(page.body, operation.visualId, null);
+        page.contentFingerprint = contentFingerprint(page.body);
+        page.embeddedVisualIds = page.embeddedVisualIds.filter((id) => id !== operation.visualId);
+        const unit = state.units[page.unitId];
+        if (unit) unit.visualIds = unit.visualIds.filter((id) => id !== operation.visualId);
+      }
+      const visual = state.visuals[operation.visualId];
+      if (visual) visual.status = "omitted";
+      break;
+    }
     case "rename_section": { const section = state.sections[operation.sectionId]; if (section) section.title = operation.title; break; }
+    case "move_unit_to_section": {
+      const unit = state.units[operation.unitId];
+      const from = state.sections[operation.fromSectionId];
+      const to = state.sections[operation.toSectionId];
+      if (unit && from && to && unit.sectionId === from.id) {
+        from.unitIds = from.unitIds.filter((id) => id !== unit.id);
+        if (!to.unitIds.includes(unit.id)) to.unitIds.push(unit.id);
+        unit.sectionId = to.id;
+        const page = state.pages[unit.pageId];
+        if (page) page.sectionId = to.id;
+      }
+      break;
+    }
     case "mark_entity_historical": {
       if (operation.entityType === "sourceAnchor" && state.sourceAnchors[operation.entityId]) state.sourceAnchors[operation.entityId].status = "historical";
       if (operation.entityType === "unit" && state.units[operation.entityId]) state.units[operation.entityId].status = "historical";
@@ -145,11 +216,19 @@ function operationAddressesIssue(operation: GardenBuildOperation, issue: GardenI
     case "replace_claims":
       return issue.type === "claim_page_mapping" && issue.target.unitId === operation.unitId;
     case "set_page_body":
-      return issue.target.pageId === operation.pageId && issue.type === "section_semantic";
+      return issue.target.pageId === operation.pageId && ["section_semantic", "section_semantic_mismatch", "scaffold_prose", "repeated_opening", "critic_semantic"].includes(issue.type);
+    case "set_page_formula_entries":
+      return issue.target.pageId === operation.pageId && ["formula_lineage", "formula_lineage_missing", "formula_usage_projection"].includes(issue.type);
     case "set_visual_grounding":
-      return issue.type === "visual_grounding" && issue.target.visualId === operation.visualId;
+      return ["visual_grounding", "visual_grounding_mismatch", "missing_planned_visual", "contract_page_anchor_mismatch"].includes(issue.type) && issue.target.visualId === operation.visualId;
+    case "set_visual_type": case "set_visual_body":
+      return ["visual_type_mismatch", "missing_planned_visual", "duplicate_visual_signature", "visual_grounding_mismatch"].includes(issue.type) && issue.target.visualId === operation.visualId;
+    case "replace_page_visual_block": case "remove_page_visual":
+      return issue.target.pageId === operation.pageId && ["missing_planned_visual", "visual_type_mismatch", "duplicate_visual_signature", "visual_grounding", "visual_grounding_mismatch"].includes(issue.type);
     case "rename_section":
-      return issue.type === "section_semantic" && issue.target.sectionId === operation.sectionId;
+      return ["section_semantic", "section_semantic_mismatch"].includes(issue.type) && issue.target.sectionId === operation.sectionId;
+    case "move_unit_to_section":
+      return ["section_semantic", "section_semantic_mismatch"].includes(issue.type) && issue.target.unitId === operation.unitId;
     case "mark_entity_historical":
       return issue.target.anchorId === operation.entityId || issue.target.claimId === operation.entityId || issue.target.visualId === operation.entityId || issue.target.formulaAssignmentId === operation.entityId || issue.target.unitId === operation.entityId;
   }

@@ -160,11 +160,23 @@ import {
   type LearnTokenUsageEvent,
 } from "@/lib/learn-token-usage";
 import { transitionLearnTimer } from "@/lib/learn-timer";
+import {
+  applyVisualNecessityDecisionsToUnits,
+  loadVisualDecisionOverrides,
+  planGardenVisualNecessity,
+  reviewAmbiguousVisualNecessityDecisions,
+  saveVisualNecessityArtifacts,
+  type GardenVisualNecessityPlan,
+  type PreferredTeachingMedium,
+  type VisualNecessityReviewPacket,
+  type VisualNecessityReviewResponse,
+} from "@/lib/visual-necessity";
 import { learnBuildStateMode } from "@/lib/garden-build/mode";
 import { runCanonicalGardenShadowBuild } from "@/lib/garden-build/shadow";
 import {
   buildVisualizationCoverageReport,
   buildVisualizationPlan,
+  applyVisualizationRoutesToLearningUnits,
   coverageGateMode,
   saveVisualizationCoverageReport,
   saveVisualizationPlan,
@@ -175,6 +187,15 @@ import {
   buildGeneratedVisualBlock,
   createGeneratedVisualization,
 } from "@/lib/generated-visuals";
+import {
+  normalizeLearnOperationMode,
+  type LearnOperationMode,
+  type LegacyLearnOperationMode,
+  type StartLearnOperationRequest,
+} from "@/lib/learn-operation-mode";
+import { executeLearnScopedRepair, type LearnScopedRepairResult } from "@/lib/learn-scoped-repair";
+import { acquireGardenLearnLock, releaseGardenLearnLock } from "@/lib/learn-atomic-promotion";
+import type { GardenIssue } from "@/lib/garden-build/issues";
 
 export type {
   LearnStatus,
@@ -183,7 +204,7 @@ export type {
   ProposedLearningMap,
 };
 
-export type LearnMode = "plan" | "generate" | "update" | "regenerate";
+export type LearnMode = LearnOperationMode;
 
 export interface LearnJob {
   id: string;
@@ -240,6 +261,25 @@ export interface LearnStatusSnapshot {
   sourceSetChanged: boolean;
   buttonLabel: string;
   validationReport?: LearnValidationReport | null;
+  scopedRepair?: LearnScopedRepairSummary | null;
+}
+
+export interface LearnScopedRepairSummary {
+  repairId: string;
+  issueCount: number;
+  unitIds: string[];
+  pageIds: string[];
+  sectionIds: string[];
+  visualIds: string[];
+  allowedFiles: string[];
+  changedFiles: string[];
+  modelCalls: number;
+  blockersBefore: number;
+  blockersAfter: number;
+  unaffectedPageHashesVerified: boolean;
+  accepted: boolean;
+  publishReady: boolean;
+  reason: string;
 }
 
 export interface LearnValidationReport {
@@ -408,8 +448,8 @@ const LEARN_PLANNING_RETRY_COUNCIL_MODE = envCouncilMode(
   "LEARN_PLANNING_RETRY_COUNCIL_MODE",
   "direct_council",
 );
-/** Full-regeneration attempts per page. Clamped to [1, 2]: a failed page gets
- * one focused repair call, then one fresh rewrite if the repair still fails. */
+/** Explicit full-generation attempts per page. This loop is never entered by
+ * scoped repair; only generate/full_rebuild may create fresh page drafts. */
 const MAX_PAGE_ATTEMPTS = Math.max(
   1,
   Math.min(2, envPositiveInt("LEARN_MAX_PAGE_ATTEMPTS", 2)),
@@ -525,16 +565,6 @@ Return ONLY JSON with this shape:
           "placement": "inside_comparison | inside_result_interpretation"
         }
       ],
-      "interactiveVisual": {
-        "id": "optional stable id",
-        "uniqueConcept": "the exact concept interaction teaches",
-        "visualType": "short semantic interaction name; use a known renderer name only when it is a genuine fit",
-        "whyStaticSourceFigureIsNotEnough": "why prose/source image is insufficient",
-        "learnerManipulates": ["control names"],
-        "expectedInsight": "what changes in the learner's understanding",
-        "sourceAnchors": ["supporting source anchor ids"],
-        "duplicateSignature": "stable dedupe key"
-      },
       "semanticConcepts": [
         {
           "slug": "stable-reusable-concept-slug",
@@ -566,9 +596,8 @@ Contract rules:
 - Normal source-rich gardens need 15-25 units; never produce an 8-section/1-subsection outline.
 - Every important source figure, graph, table, displayed formula, result, example, limitation, or recommendation must be assigned to the one precise unit where it teaches best, or marked unused with a reason.
 - Source figures must be planned for inline placement near their interpretation. Never plan a generic "Source Figures" dump.
-- Interactive visuals are optional. A unit has zero or one. Use one only when interaction teaches something static prose or a source figure cannot.
-- Plan the pedagogical interaction need, not the renderer catalog. When no known renderer fits, keep a concise custom semantic visualType so Breadboard can route it through the constrained generated-module path.
-- Do not repeat interactive visual signatures. If a later unit needs a similar visual, link back conceptually or omit it.
+- Do not assign an interactiveVisual or visualType in this response. Breadboard runs a deterministic visual-necessity decision, alternative-medium comparison, garden-level coordination, and only then renderer/type selection.
+- Describe each unit's learning question, dynamic behavior, comparisons, parameters, source figures, formulas, tables, and prerequisites precisely enough for that downstream decision.
 - Concepts are reusable identities, never complete claims, page-title summaries, filenames, locations, or planner phrases. Reuse an existing canonical slug or alias whenever possible.
 - Every normalized alias must belong to exactly one concept. Never use another concept's slug or preferred label as an alias, and never assign the same alias to multiple concepts.
 - Mark one or two genuinely central concepts primary. Use supporting concepts only when they materially help retrieval or graph traversal.
@@ -912,7 +941,7 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     gardenId: row.garden_id,
     userId: row.user_id ?? undefined,
     status: row.status,
-    mode: row.mode,
+    mode: normalizeLearnOperationMode(row.mode),
     currentStep: row.current_step ?? "",
     progressPercent: Number(row.progress_percent ?? 0),
     currentSectionTitle: row.current_section_title ?? undefined,
@@ -1675,6 +1704,102 @@ async function callCouncilJson({
   return { ...result, parsed: parseJsonCandidate(result.content) };
 }
 
+const VISUAL_REVIEW_ACTIONS = [
+  "confirm_required",
+  "downgrade_to_recommended",
+  "downgrade_to_optional",
+  "select_noninteractive_medium",
+  "reject_as_distracting",
+] as const;
+const VISUAL_REVIEW_MEDIA: PreferredTeachingMedium[] = [
+  "source_figure",
+  "generated_static_diagram",
+  "formula_derivation",
+  "worked_example",
+  "comparison_table",
+  "timeline",
+  "prose",
+  "no_additional_visual",
+];
+
+async function planAndReviewVisualNecessity(input: {
+  client: OpenAI;
+  model: string;
+  gardenId: string;
+  contentPath: string;
+  jobId: string;
+  learningUnits: LearningUnitContract[];
+  maxReviews?: number;
+}): Promise<GardenVisualNecessityPlan> {
+  const gardenDir = clusterPath(input.contentPath, input.gardenId);
+  const deterministic = planGardenVisualNecessity({
+    gardenId: input.gardenId,
+    learningUnits: input.learningUnits,
+    overrides: loadVisualDecisionOverrides(gardenDir),
+  });
+  const criticEnabled = (process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false";
+  if (!criticEnabled) return deterministic;
+
+  const reviewed = await reviewAmbiguousVisualNecessityDecisions({
+    units: deterministic.learningUnits,
+    decisions: deterministic.decisions,
+    maxReviews: input.maxReviews ?? 3,
+    reviewer: async (packet: VisualNecessityReviewPacket): Promise<VisualNecessityReviewResponse> => {
+      const { parsed } = await callCouncilJson({
+        client: input.client,
+        model: input.model,
+        taskType: "visual_necessity_review",
+        gardenId: input.gardenId,
+        system:
+          "Review only the supplied ambiguous interactive-visual necessity decision. Return STRICT JSON: " +
+          "{\"action\":\"confirm_required\"|\"downgrade_to_recommended\"|\"downgrade_to_optional\"|\"select_noninteractive_medium\"|\"reject_as_distracting\",\"preferredMedium\"?:string,\"visualType\"?:string,\"reason\":string}. " +
+          "Use only allowedActions, supportedAlternatives, and an already-supported visual type. A sufficient source figure/formula/example, nearby duplicate, aesthetics, or a quota cannot justify interaction.",
+        user: JSON.stringify(packet),
+        sourceContext: packet,
+        councilModeOverride: "direct_council",
+        timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+      });
+      if (!parsed || typeof parsed !== "object") throw new Error("Visual necessity reviewer returned no JSON object.");
+      const record = parsed as Record<string, unknown>;
+      const action = String(record.action ?? "") as VisualNecessityReviewResponse["action"];
+      if (!(VISUAL_REVIEW_ACTIONS as readonly string[]).includes(action)) {
+        throw new Error(`Visual necessity reviewer returned unsupported action ${action || "(empty)"}.`);
+      }
+      const preferredMedium = typeof record.preferredMedium === "string"
+        ? record.preferredMedium as PreferredTeachingMedium
+        : undefined;
+      if (preferredMedium && !VISUAL_REVIEW_MEDIA.includes(preferredMedium)) {
+        throw new Error(`Visual necessity reviewer returned unsupported medium ${preferredMedium}.`);
+      }
+      return {
+        action,
+        ...(preferredMedium ? { preferredMedium } : {}),
+        ...(typeof record.visualType === "string" ? { visualType: record.visualType } : {}),
+        reason: typeof record.reason === "string" ? record.reason : "",
+      };
+    },
+  });
+  const finalPlan = applyVisualNecessityDecisionsToUnits({
+    gardenId: input.gardenId,
+    learningUnits: deterministic.learningUnits,
+    decisions: reviewed.decisions,
+    overrides: deterministic.overrides,
+    reviewCalls: reviewed.reviewCalls,
+    rejectedReviews: reviewed.rejectedReviews,
+  });
+  appendLearnEvent(input.contentPath, input.gardenId, "learn_visual_necessity_review_completed", {
+    jobId: input.jobId,
+    ambiguousDecisionsReviewed: reviewed.reviewCalls,
+    rejectedReviews: reviewed.rejectedReviews,
+    required: finalPlan.decisions.filter((decision) => decision.necessity === "required").length,
+    recommended: finalPlan.decisions.filter((decision) => decision.necessity === "recommended").length,
+    optional: finalPlan.decisions.filter((decision) => decision.necessity === "optional").length,
+    noInteraction: finalPlan.decisions.filter((decision) =>
+      decision.necessity === "not_needed" || decision.necessity === "harmful_or_distracting").length,
+  });
+  return finalPlan;
+}
+
 /**
  * Planning call with a timeout ladder: one attempt at the configured planning
  * council mode with a generous timeout, then one retry at the (lighter, faster)
@@ -1996,11 +2121,16 @@ function writeLearningUnitContractArtifacts({
   units,
   assignments,
   sourceSetHash,
+  visualNecessityReview,
 }: {
   clusterDir: string;
   units: LearningUnitContract[];
   assignments: SourceArtifactAssignment[];
   sourceSetHash: string;
+  visualNecessityReview?: Pick<
+    GardenVisualNecessityPlan,
+    "decisions" | "reviewCalls" | "rejectedReviews"
+  >;
 }): {
   units: LearningUnitContract[];
   semanticAliasRepairs: Array<{
@@ -2133,6 +2263,26 @@ function writeLearningUnitContractArtifacts({
   const finalAssignments = assignments.filter((assignment) =>
     !isFormulaArtifactId(assignment.sourceArtifactId)
     || (formulaOwnersByUnit.get(assignment.assignedLearningUnitId)?.has(assignment.sourceArtifactId) ?? false));
+  // Necessity is the final gate before the contract is persisted. It is rerun
+  // after formula/source reconciliation so alternative-media sufficiency is
+  // based on the same artifacts page generation will actually receive.
+  const visualNecessityPlan = planGardenVisualNecessity({
+    gardenId: path.basename(clusterDir),
+    learningUnits: reconciledUnits,
+    overrides: loadVisualDecisionOverrides(clusterDir),
+    reviewedDecisions: visualNecessityReview?.decisions,
+    reviewCalls: visualNecessityReview?.reviewCalls,
+    rejectedReviews: visualNecessityReview?.rejectedReviews,
+  });
+  reconciledUnits = visualNecessityPlan.learningUnits;
+  saveVisualNecessityArtifacts(clusterDir, path.basename(clusterDir), {
+    decisions: visualNecessityPlan.decisions,
+    teachingMedia: visualNecessityPlan.teachingMedia,
+    budget: visualNecessityPlan.budget,
+    overrides: visualNecessityPlan.overrides,
+    reviewCalls: visualNecessityPlan.reviewCalls,
+    rejectedReviews: visualNecessityPlan.rejectedReviews,
+  });
   const payload = {
     sourceSetHash,
     generatedAt: nowIso(),
@@ -2164,6 +2314,14 @@ function writeLearningUnitContractArtifacts({
     if (unit.interactiveVisual) {
       lines.push(`  - Interactive: ${unit.interactiveVisual.visualType} (${unit.interactiveVisual.uniqueConcept})`);
     }
+    if (unit.interactiveVisualPlan) {
+      lines.push(
+        `  - Interactive requirement: ${unit.interactiveVisualPlan.requirement} (${unit.interactiveVisualPlan.decision.reason})`,
+      );
+    }
+    if (unit.teachingMediumPlan) {
+      lines.push(`  - Preferred medium: ${unit.teachingMediumPlan.preferredMedium}`);
+    }
     const concepts = conceptTagsForUnit(unit);
     if (concepts.length > 0) lines.push(`  - Concepts: ${concepts.join(", ")}`);
     const claims = knowledgeClaimsForUnit(unit);
@@ -2176,6 +2334,33 @@ function writeLearningUnitContractArtifacts({
     planningMarkdown: `${lines.join("\n")}\n`,
   });
   return { units: reconciledUnits, semanticAliasRepairs };
+}
+
+function persistRoutedVisualPlans(
+  clusterDir: string,
+  units: LearningUnitContract[],
+): void {
+  const filePath = path.join(clusterDir, ".breadboard", "learning-unit-contract.json");
+  if (!fs.existsSync(filePath)) return;
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, unknown>;
+  const rawUnits = Array.isArray(parsed.learningUnits)
+    ? parsed.learningUnits as Array<Record<string, unknown>>
+    : [];
+  const byId = new Map(units.map((unit) => [unit.id, unit]));
+  parsed.learningUnits = rawUnits.map((raw) => {
+    const id = typeof raw.id === "string" ? raw.id : "";
+    const unit = byId.get(id);
+    if (!unit) return raw;
+    const next: Record<string, unknown> = {
+      ...raw,
+      interactiveVisualPlan: unit.interactiveVisualPlan,
+      teachingMediumPlan: unit.teachingMediumPlan,
+    };
+    if (unit.interactiveVisual) next.interactiveVisual = unit.interactiveVisual;
+    else delete next.interactiveVisual;
+    return next;
+  });
+  fs.writeFileSync(filePath, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
 }
 
 /**
@@ -2257,7 +2442,11 @@ function sanitizeModelLearningUnits(
       dropped,
     });
   }
-  return sanitized;
+  return planGardenVisualNecessity({
+    gardenId,
+    learningUnits: sanitized,
+    overrides: loadVisualDecisionOverrides(clusterPath(contentPath, gardenId)),
+  }).learningUnits;
 }
 
 function isContractBackedLearningMap(map: StoredLearningMap | null | undefined): map is StoredLearningMap {
@@ -2314,6 +2503,8 @@ function learningMapWithConfirmedUnitContracts(
           sourceTableContracts: unit.sourceTables,
           sourceArtifactAssignments: assignSourceArtifacts([unit]),
           interactiveVisualContract: unit.interactiveVisual,
+          interactiveVisualPlan: unit.interactiveVisualPlan,
+          teachingMediumPlan: unit.teachingMediumPlan,
           zettelNotes: unit.zettelNotes,
         };
       }),
@@ -2352,7 +2543,7 @@ export async function runLearnPlanning({
   const job = createLearnJob({
     gardenId,
     userId,
-    mode: resetSourceMap ? "regenerate" : "plan",
+    mode: resetSourceMap ? "full_rebuild" : "plan",
     sourceIds: context.sources.map((source) => source.slug),
     sourceOnly,
     includeSourceSnapshots,
@@ -2605,7 +2796,11 @@ export async function runLearnPlanning({
       planningWarnings.push(
         `Model Learning Unit Contract rejected: ${contractProblems.join("; ")}. Used deterministic source-grounded unit fallback.`,
       );
-      learningUnits = fallbackLearningUnitsFromContext(context);
+      learningUnits = planGardenVisualNecessity({
+        gardenId,
+        learningUnits: fallbackLearningUnitsFromContext(context),
+        overrides: loadVisualDecisionOverrides(clusterPath(contentPath, gardenId)),
+      }).learningUnits;
       contractProblems = validateLearningUnitContracts(learningUnits, { artifactCount });
       if (contractProblems.length > 0) {
         planningWarnings.push(`Fallback contract warnings: ${contractProblems.join("; ")}`);
@@ -2642,6 +2837,15 @@ export async function runLearnPlanning({
       ...planningAliasReconciliation.repairs,
       ...planningRegistryAlignmentRepairs,
     ];
+    const visualNecessityReview = await planAndReviewVisualNecessity({
+      client,
+      model,
+      gardenId,
+      contentPath,
+      jobId: job.id,
+      learningUnits,
+    });
+    learningUnits = visualNecessityReview.learningUnits;
     const planRecord = planningRecord(topicMapCall.parsed);
     const sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
     let learningMap = learningMapFromUnits(learningUnits, {
@@ -2691,6 +2895,7 @@ export async function runLearnPlanning({
         units: learningUnits,
         assignments: sourceArtifactAssignments,
         sourceSetHash: context.sourceSetHash,
+        visualNecessityReview,
       });
       learningUnits = contractWrite.units;
       artifactSemanticAliasRepairs = contractWrite.semanticAliasRepairs;
@@ -2727,6 +2932,33 @@ export async function runLearnPlanning({
       gardenId,
       learningMap,
       learningUnits,
+      necessityReviewCalls: visualNecessityReview.reviewCalls,
+      rejectedNecessityReviews: visualNecessityReview.rejectedReviews,
+      visualDecisionOverrides: visualNecessityReview.overrides,
+    });
+    learningUnits = applyVisualizationRoutesToLearningUnits(learningUnits, visualizationPlan);
+    persistRoutedVisualPlans(clusterPath(contentPath, gardenId), learningUnits);
+    learningMap = learningMapWithConfirmedUnitContracts(learningMap, learningUnits);
+    const routedCoveragePlan = sourceCoveragePlan(
+      context,
+      learningMap,
+      learningUnits,
+      sourceArtifactAssignments,
+    );
+    db.prepare(
+      `UPDATE learn_maps
+       SET learning_map_json = ?, proposed_order_json = ?, coverage_plan_json = ?
+       WHERE id = ?`,
+    ).run(
+      jsonString(learningMap),
+      jsonString(learningMap.sections),
+      jsonString(routedCoveragePlan),
+      storedMap.id,
+    );
+    Object.assign(storedMap, {
+      learningMap,
+      proposedOrder: learningMap.sections,
+      coveragePlan: routedCoveragePlan,
     });
     saveVisualizationPlan(clusterPath(contentPath, gardenId), visualizationPlan);
     appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
@@ -3474,6 +3706,27 @@ export function getLearnValidationReport({
     ...(acceptedRaw ? { accepted: acceptedRaw === "yes" } : {}),
     ...(generatedAt ? { generatedAt } : {}),
   };
+}
+
+function getLearnScopedRepairSummary(gardenId: string, contentPath: string): LearnScopedRepairSummary | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(clusterPath(contentPath, gardenId), ".breadboard", "scoped-repair.json"), "utf8")) as Record<string, unknown>;
+    const scope = raw.scope && typeof raw.scope === "object" ? raw.scope as Record<string, unknown> : {};
+    const policy = raw.policy && typeof raw.policy === "object" ? raw.policy as Record<string, unknown> : {};
+    const ids = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+    return {
+      repairId: String(raw.repairId ?? scope.repairId ?? ""),
+      issueCount: ids(scope.issueIds).length,
+      unitIds: ids(scope.unitIds), pageIds: ids(scope.pageIds), sectionIds: ids(scope.sectionIds), visualIds: ids(scope.visualIds),
+      allowedFiles: ids(policy.allowedFiles), changedFiles: ids(raw.filesActuallyChanged),
+      modelCalls: Number(raw.modelCalls ?? 0), blockersBefore: ids(raw.blockersBefore).length, blockersAfter: ids(raw.blockersAfter).length,
+      unaffectedPageHashesVerified: raw.unaffectedPageHashesVerified === true,
+      accepted: raw.accepted === true, publishReady: raw.publishReady === true,
+      reason: String(raw.reason ?? ""),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function assertInsideCluster(clusterDir: string, filePath: string): void {
@@ -4925,6 +5178,8 @@ type PageDossier = {
     sourceTables?: LearningSubsectionPlan["sourceTableContracts"];
     sourceArtifactAssignments?: SourceArtifactAssignment[];
     interactiveVisual?: LearningSubsectionPlan["interactiveVisualContract"];
+    interactiveVisualPlan?: LearningSubsectionPlan["interactiveVisualPlan"];
+    teachingMediumPlan?: LearningSubsectionPlan["teachingMediumPlan"];
     zettelNotes?: LearningSubsectionPlan["zettelNotes"];
     mustNotRepeat?: string[];
     expectedWordRange?: [number, number];
@@ -5092,6 +5347,8 @@ function buildPageDossier({
           sourceTables: subsection.sourceTableContracts,
           sourceArtifactAssignments: assignedArtifactsForUnit,
           interactiveVisual: subsection.interactiveVisualContract,
+          interactiveVisualPlan: subsection.interactiveVisualPlan,
+          teachingMediumPlan: subsection.teachingMediumPlan,
           zettelNotes: subsection.zettelNotes,
           mustNotRepeat: subsection.mustNotRepeat,
           expectedWordRange: subsection.expectedWordRange,
@@ -5164,6 +5421,9 @@ export async function runTextbookGeneration({
    */
   autoConfirmTopicMap?: boolean;
 }): Promise<{ job: LearnJob; textbookVersionId: string; pageCount: number }> {
+  if (mode === "repair") {
+    throw new Error("Scoped repair must use runLearnRepairOperation; it cannot enter the full page-generation loop.");
+  }
   let map =
     (confirmedLearningMapId ? getLearnMapById(confirmedLearningMapId) : null) ??
     getLatestConfirmedLearnMap(gardenId);
@@ -5377,6 +5637,17 @@ export async function runTextbookGeneration({
         blockersAfter: planApplication.result.blockersAfter,
       });
     }
+    // Rerun necessity against the post-formula contract. Only ambiguous cases
+    // use the bounded reviewer; every response is independently validated.
+    const generationVisualNecessityReview = await planAndReviewVisualNecessity({
+      client,
+      model,
+      gardenId,
+      contentPath,
+      jobId: job.id,
+      learningUnits: confirmedLearningUnits,
+    });
+    confirmedLearningUnits = generationVisualNecessityReview.learningUnits;
     // Persist the planned contract; the deterministic planner inside the
     // writer re-validates the (already valid) assignments idempotently.
     const contractWrite = writeLearningUnitContractArtifacts({
@@ -5384,13 +5655,14 @@ export async function runTextbookGeneration({
       units: confirmedLearningUnits,
       assignments: confirmedSourceArtifactAssignments,
       sourceSetHash: context.sourceSetHash,
+      visualNecessityReview: generationVisualNecessityReview,
     });
     confirmedLearningUnits = contractWrite.units;
-    const repairedCoveragePlan = {
+    let repairedCoveragePlan = {
       ...planningRecord(map.coveragePlan),
       learningUnitContracts: confirmedLearningUnits,
     };
-    const repairedLearningMap = learningMapWithConfirmedUnitContracts(
+    let repairedLearningMap = learningMapWithConfirmedUnitContracts(
       map.learningMap,
       confirmedLearningUnits,
     );
@@ -5409,7 +5681,29 @@ export async function runTextbookGeneration({
       gardenId,
       learningMap: repairedLearningMap,
       learningUnits: confirmedLearningUnits,
+      necessityReviewCalls: generationVisualNecessityReview.reviewCalls,
+      rejectedNecessityReviews: generationVisualNecessityReview.rejectedReviews,
+      visualDecisionOverrides: generationVisualNecessityReview.overrides,
     });
+    confirmedLearningUnits = applyVisualizationRoutesToLearningUnits(
+      confirmedLearningUnits,
+      visualizationPlan,
+    );
+    persistRoutedVisualPlans(clusterDir, confirmedLearningUnits);
+    repairedCoveragePlan = {
+      ...repairedCoveragePlan,
+      learningUnitContracts: confirmedLearningUnits,
+    };
+    repairedLearningMap = learningMapWithConfirmedUnitContracts(
+      repairedLearningMap,
+      confirmedLearningUnits,
+    );
+    map = {
+      ...map,
+      coveragePlan: repairedCoveragePlan,
+      learningMap: repairedLearningMap,
+      proposedOrder: repairedLearningMap.sections,
+    };
     saveVisualizationPlan(clusterDir, visualizationPlan);
     appendLearnEvent(contentPath, gardenId, "visual_opportunity_analysis_completed", {
       jobId: job.id,
@@ -6740,6 +7034,163 @@ export async function runTextbookGeneration({
   }
 }
 
+export interface FullRebuildOptions {
+  userId?: number;
+  client: OpenAI;
+  model?: string;
+  contentPath: string;
+  includedSourceIds?: readonly string[];
+  sourceOnly?: boolean;
+  includeSourceSnapshots?: boolean;
+  /** Destructive confirmation. The literal true is required at runtime too. */
+  forceFullRebuild: true;
+}
+
+/** The only Learn flow allowed to discard and recreate the plan, contract,
+ * learner pages, and visuals. It is never called as a repair fallback. */
+export async function rebuildEntireGarden(
+  gardenId: string,
+  options: FullRebuildOptions,
+): Promise<LearnJob> {
+  if (options.forceFullRebuild !== true) {
+    throw new Error("Rebuilding the entire garden requires explicit confirmation.");
+  }
+  const planning = await runLearnPlanning({
+    gardenId,
+    userId: options.userId,
+    client: options.client,
+    model: options.model ?? DEFAULT_MODEL,
+    contentPath: options.contentPath,
+    includedSourceIds: options.includedSourceIds,
+    sourceOnly: options.sourceOnly ?? true,
+    includeSourceSnapshots: options.includeSourceSnapshots ?? false,
+    resetSourceMap: true,
+  });
+  const confirmed = confirmLearningMap({
+    gardenId,
+    learningMapId: planning.learningMap.id,
+    contentPath: options.contentPath,
+  });
+  const generation = await runTextbookGeneration({
+    gardenId,
+    userId: options.userId,
+    client: options.client,
+    model: options.model ?? DEFAULT_MODEL,
+    contentPath: options.contentPath,
+    confirmedLearningMapId: confirmed.id,
+    mode: "full_rebuild",
+    sourceOnly: options.sourceOnly ?? true,
+    includeSourceSnapshots: options.includeSourceSnapshots ?? false,
+  });
+  return generation.job;
+}
+
+export async function runLearnRepairOperation({
+  gardenId,
+  userId,
+  client,
+  model = DEFAULT_MODEL,
+  contentPath,
+  request,
+}: {
+  gardenId: string;
+  userId?: number;
+  client: OpenAI;
+  model?: string;
+  contentPath: string;
+  request: StartLearnOperationRequest;
+}): Promise<{ job: LearnJob; repair: LearnScopedRepairResult }> {
+  if (request.mode !== "repair" || request.gardenId !== gardenId) {
+    throw new Error("Repair request garden/mode does not match the Learn operation.");
+  }
+  const context = collectLearnSourceContext(contentPath, gardenId);
+  const job = createLearnJob({
+    gardenId,
+    userId,
+    mode: "repair",
+    sourceIds: context.sources.map((source) => source.slug),
+    sourceOnly: true,
+    includeSourceSnapshots: false,
+  });
+  attachLearnTokenUsageTracking(client, (event) => recordLearnTokenUsageEvent(job.id, event));
+  const gardenDir = clusterPath(contentPath, gardenId);
+  const lock = acquireGardenLearnLock(gardenDir, { gardenSlug: gardenId, jobId: job.id, buildId: `repair:${job.id}` });
+  if (!lock.acquired) {
+    const message = `Another Learn operation (${lock.conflict.jobId}) is already active for this garden.`;
+    updateLearnJob(job.id, { status: "failed", currentStep: "Repair could not start", error: message });
+    throw new Error(message);
+  }
+  try {
+    updateLearnJob(job.id, { status: "analyzing_issues", currentStep: "Analyzing validation issues", progressPercent: 5 });
+    appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_started", { jobId: job.id, request });
+    const repair = await executeLearnScopedRepair({
+      gardenDir,
+      gardenId,
+      request,
+      modelRepair: async (packet: unknown, issue: GardenIssue) => {
+        const result = await callCouncilJson({
+          client,
+          model,
+          taskType: "critique",
+          gardenId,
+          system: [
+            "Repair exactly one typed Breadboard validation issue.",
+            "Return STRICT JSON: {\"operations\":[typed operations] }.",
+            "Use only entity IDs, source anchors, actions, and context present in the packet.",
+            "Never return a directory, Markdown tree, replacement garden, unrestricted page, or invented source anchor.",
+            "For visual-only failures, modify only the owned visual spec/block. For metadata failures, never rewrite prose.",
+          ].join(" "),
+          user: JSON.stringify(packet),
+          sourceContext: packet,
+          councilModeOverride: "direct_council",
+          timeoutMs: LEARN_PLANNING_TIMEOUT_MS,
+        });
+        appendLearnEvent(contentPath, gardenId, "learn_scoped_model_decision", {
+          jobId: job.id, issueId: issue.issueId, issueType: issue.type, returnedTypedDecision: Boolean(result.parsed),
+        });
+        return result.parsed;
+      },
+      onProgress: ({ step, issue, scope }) => {
+        const lower = step.toLowerCase();
+        const status: LearnStatus = lower.includes("analyzing") ? "analyzing_issues"
+          : lower.includes("revalidating") ? "revalidating"
+            : lower.includes("publishing") ? "publishing_repair" : "repairing";
+        const progressPercent = status === "analyzing_issues" ? 10 : status === "repairing" ? 55 : status === "revalidating" ? 85 : 95;
+        updateLearnJob(job.id, {
+          status, currentStep: step, progressPercent,
+          currentPageTitle: issue?.target.pageId,
+          currentSectionTitle: scope?.sectionIds.join(", ") || undefined,
+        });
+      },
+    });
+    if (!repair.transaction.committed) {
+      const remaining = repair.transaction.blockersAfter.length;
+      throw new Error(`Scoped repair stopped without publishing because its safety/progress gate failed. ${remaining} blocker(s) remain. Inspect .breadboard/scoped-repair.md; Full rebuild remains a separate action.`);
+    }
+    updateLearnJob(job.id, { status: "publishing_repair", currentStep: "Publishing repaired projection", progressPercent: 96 });
+    await publishQuartzAfterMutation(`scoped Learn repair in ${gardenId}`);
+    appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_completed", {
+      jobId: job.id, repairId: repair.scope.repairId, changedFiles: repair.files.changedFiles,
+      preservedPageCount: repair.scope.explicitlyExcludedPageIds.length,
+      modelCalls: repair.transaction.modelCalls, blockersBefore: repair.transaction.blockersBefore.length,
+      blockersAfter: repair.transaction.blockersAfter.length, accepted: repair.accepted, publishReady: repair.publishReady,
+    });
+    const finalJob = updateLearnJob(job.id, {
+      status: "complete", currentStep: "Repair complete", progressPercent: 100,
+      sourceSetHash: context.sourceSetHash,
+    });
+    return { job: finalJob, repair };
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    const message = raw.length > 700 ? `${raw.slice(0, 697)}...` : raw;
+    appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_failed", { jobId: job.id, error: message });
+    updateLearnJob(job.id, { status: "failed", currentStep: "Repair stopped with remaining blockers", error: message });
+    throw error;
+  } finally {
+    releaseGardenLearnLock(gardenDir, job.id);
+  }
+}
+
 export async function runLearnPipeline({
   gardenId,
   userId,
@@ -6755,7 +7206,7 @@ export async function runLearnPipeline({
 }: {
   gardenId: string;
   userId?: number;
-  mode: LearnMode;
+  mode: LegacyLearnOperationMode;
   confirmedLearningMapId?: string;
   includedSourceIds?: readonly string[];
   sourceOnly?: boolean;
@@ -6765,7 +7216,17 @@ export async function runLearnPipeline({
   model?: string;
   contentPath: string;
 }): Promise<unknown> {
-  if (mode === "plan") {
+  const operationMode = normalizeLearnOperationMode(mode);
+  if (operationMode === "repair") {
+    return runLearnRepairOperation({
+      gardenId, userId, client, model, contentPath,
+      request: { gardenId, mode: "repair" },
+    });
+  }
+  if (operationMode === "full_rebuild") {
+    throw new Error("Use rebuildEntireGarden with explicit destructive confirmation.");
+  }
+  if (operationMode === "plan") {
     const planning = await runLearnPlanning({
       gardenId,
       userId,
@@ -6803,7 +7264,7 @@ export async function runLearnPipeline({
     model,
     contentPath,
     confirmedLearningMapId,
-    mode,
+    mode: operationMode,
     sourceOnly,
     includeSourceSnapshots,
     autoConfirmTopicMap,
@@ -6847,6 +7308,10 @@ export async function cancelLatestLearnJob({
 function activeStatus(status: LearnStatus): boolean {
   return [
     "planning",
+    "analyzing_issues",
+    "repairing",
+    "revalidating",
+    "publishing_repair",
     "generating_learning_pages",
     "generating_textbook",
     "generating_visuals",
@@ -6872,7 +7337,7 @@ function buttonLabelForSnapshot({
   if (latestJob?.status === "awaiting_confirmation") return "Review Learning Map";
   if (sourceSetChanged && (hasTextbook || latestVersion)) return "Learn";
   if (confirmedMap && !latestVersion) return "Learn";
-  if (hasTextbook || latestVersion) return "Learn";
+  if (hasTextbook || latestVersion) return "Repair issues";
   return "Learn";
 }
 
@@ -6957,5 +7422,6 @@ export function getLearnStatusSnapshot({
     validationReport: visibleJob?.status === "failed"
       ? getLearnValidationReport({ gardenId, contentPath })
       : null,
+    scopedRepair: getLearnScopedRepairSummary(gardenId, contentPath),
   };
 }

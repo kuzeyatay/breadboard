@@ -110,6 +110,20 @@ describe("vocabulary provenance", () => {
 // ---------------------------------------------------------------------------
 
 describe("cross-domain section titles", () => {
+  test("mixed formalism, training, and evaluation does not collapse to a formalism-only title", () => {
+    const rawUnits = [
+      u("formula", "Describing the update rule", ["update equation"]),
+      u("training_method", "Training with an approximate gradient", ["training method"]),
+      u("metric", "Evaluating the learned result", ["evaluation metric"]),
+    ];
+    const { title } = titleFor("Event-driven Models", rawUnits);
+    const units = normalizeLearningUnits(rawUnits);
+    const profile = sectionSemanticProfile({ sectionTitle: title, units });
+    assert.deepEqual(profile.problems, [], `${title}: ${profile.problems.join("; ")}`);
+    assert.match(title, /method|train|strateg|approach/i);
+    assert.match(title, /evaluat|measur|metric|formal|mathematical|result/i);
+  });
+
   // 1. Spiking neural networks (the reference STEM garden).
   test("1. spiking neural networks — application/limitation section is topic-neutral", () => {
     const { title } = titleFor("Spiking Neural Networks", [

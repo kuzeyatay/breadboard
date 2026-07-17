@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  applyVisualizationRoutesToLearningUnits,
   buildVisualizationCoverageReport,
   buildVisualizationPlan,
 } from "../src/lib/visualization-opportunities.ts";
@@ -27,7 +28,7 @@ function unit(overrides = {}) {
     id: "U1",
     title: "Explore an unusual state machine",
     role: "application",
-    learningQuestion: "How do coupled states propagate under intervention?",
+    learningQuestion: "How does changing gain alter coupled-state propagation under intervention?",
     prerequisiteConcepts: [],
     newConcepts: ["coupled state propagation"],
     sourceAnchors: ["S1.P2.F1"],
@@ -87,7 +88,7 @@ test("opportunity analysis covers every unit and routes a non-catalog interactio
   assert.equal(plan.opportunities[0].requiresGeneratedModule, true);
 });
 
-test("seven representative learning fixtures receive six visual routes and one pedagogical omission", () => {
+test("representative fixtures route only the units that pass visual necessity", () => {
   const customVisual = (id, concept) => ({
     id,
     uniqueConcept: concept,
@@ -113,8 +114,14 @@ test("seven representative learning fixtures receive six visual routes and one p
     fixture("MATH", "Nonlinear parameter equation", "formula", {
       sourceFormulas: [{ id: "S1.MATH.E1", teachingGoal: "inspect the curve", termsToDefine: ["parameter"], placement: "before_example" }],
     }),
-    fixture("TIME", "Time-dependent signal trajectory", "mechanism", { interactiveVisual: customVisual("time", "signal evolution") }),
-    fixture("BIO", "Biological membrane mechanism", "mechanism", { interactiveVisual: customVisual("bio", "membrane feedback") }),
+    fixture("TIME", "Time-dependent signal trajectory", "mechanism", {
+      learningQuestion: "How does changing signal rate alter the trajectory over time?",
+      interactiveVisual: customVisual("time", "signal evolution"),
+    }),
+    fixture("BIO", "Biological membrane mechanism", "mechanism", {
+      learningQuestion: "How does changing membrane current alter voltage feedback?",
+      interactiveVisual: customVisual("bio", "membrane feedback"),
+    }),
     fixture("ALGO", "Algorithm execution step by step", "application", { interactiveVisual: customVisual("algo", "algorithm state") }),
     fixture("COMPARE", "Architecture comparison trade-off", "comparison", { interactiveVisual: customVisual("compare", "architecture trade-off") }),
     fixture("FIGURE", "Reconstructing a source figure", "core_concept", {
@@ -128,33 +135,63 @@ test("seven representative learning fixtures receive six visual routes and one p
     }),
   ];
   const plan = buildVisualizationPlan({ gardenId: "fixtures", learningMap: learningMap(fixtures), learningUnits: fixtures });
-  assert.equal(plan.opportunities.length, 7);
-  assert.ok(plan.decisions.slice(0, 6).every((decision) => decision.route !== "intentional_omission"), JSON.stringify(plan.decisions));
-  assert.equal(plan.decisions[6].route, "intentional_omission");
-  assert.match(plan.decisions[6].reason, /primarily explanatory|no manipulable/i);
-  assert.deepEqual(plan.opportunities[5].sourceVisualRelationships.map((relationship) => relationship.fidelity), ["illustrative"]);
+  assert.equal(plan.opportunities.length, 4);
+  assert.deepEqual(
+    plan.opportunities.map((opportunity) => opportunity.learningUnitId),
+    ["MATH", "TIME", "BIO", "COMPARE"],
+  );
+  assert.ok(plan.decisions.every((decision) => decision.route !== "intentional_omission"), JSON.stringify(plan.decisions));
+  const nonInteractive = new Map(plan.teachingMedia.map((medium) => [medium.unitId, medium.preferredMedium]));
+  assert.equal(nonInteractive.get("FIGURE"), "source_figure");
+  assert.ok(["prose", "timeline"].includes(nonInteractive.get("NOVIS")));
 });
 
-test("semantic duplicate opportunities are explicitly omitted instead of generated twice", () => {
+test("semantic duplicate opportunities are removed by garden coordination before routing", () => {
   const first = unit();
   const second = unit({ id: "U2" });
   const units = [first, second];
   const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap(units), learningUnits: units });
-  assert.equal(plan.opportunities.length, 2);
-  assert.equal(plan.decisions[1].route, "intentional_omission");
-  assert.equal(plan.decisions[1].duplicateOf, plan.opportunities[0].id);
+  assert.equal(plan.opportunities.length, 1);
+  const duplicateDecision = plan.visualNecessityDecisions.find((decision) => decision.unitId === "U2");
+  assert.ok(["not_needed", "harmful_or_distracting"].includes(duplicateDecision.necessity));
+  assert.ok(duplicateDecision.duplicationRisk >= 0.85);
 });
 
 test("coverage gate fails uncovered critical opportunities and reports zero published visuals", () => {
-  const critical = unit({
-    role: "formula",
-    sourceFormulas: [{ id: "S1.P3.E1", teachingGoal: "derive propagation", termsToDefine: ["gain"], placement: "before_example" }],
-  });
+  const critical = unit();
   const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([critical]), learningUnits: [critical] });
   const report = buildVisualizationCoverageReport({ plan, outcomes: [], gate: "fail" });
   assert.equal(report.status, "fail");
   assert.equal(report.generatedVisualsPublished + report.trustedVisualsPublished, 0);
   assert.ok(report.uncoveredCriticalOpportunityIds.length > 0);
+});
+
+test("route selection never chooses a trusted renderer rejected by contract compatibility", () => {
+  const sparse = unit({
+    id: "SPARSE",
+    title: "How Sparse Events Can Reduce Computation",
+    role: "mechanism",
+    learningQuestion: "How does changing event sparsity alter computation over time?",
+    newConcepts: ["event sparsity", "computational activity"],
+    interactiveVisual: undefined,
+  });
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([sparse]), learningUnits: [sparse] });
+  const route = plan.decisions[0];
+  assert.notEqual(route?.selectedRenderer, "lif_neuron");
+});
+
+test("generated routes clear stale incompatible contract types", () => {
+  const comparison = unit({
+    id: "DATA",
+    title: "Datasets for Static and Event-Based Tasks",
+    role: "comparison",
+    learningQuestion: "How do static and event-based datasets compare over time?",
+    newConcepts: ["event-based datasets"],
+    interactiveVisual: { ...unit().interactiveVisual, visualType: "neural_coding" },
+  });
+  const plan = buildVisualizationPlan({ gardenId: "demo", learningMap: learningMap([comparison]), learningUnits: [comparison] });
+  const routed = applyVisualizationRoutesToLearningUnits([comparison], plan);
+  assert.notEqual(routed[0].interactiveVisual?.visualType, "neural_coding");
 });
 
 const validSource = `import { defineVisualization } from "@breadboard/visual-sdk";
