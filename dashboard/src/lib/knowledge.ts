@@ -2960,10 +2960,55 @@ export function refreshClusterIndex(
   );
 
   const learnerRelPaths = new Set(learnerPages.map((topic) => topic.relPath));
-  const orphanLines = [...knowledge.orphanTopics]
-    .filter((topic) => !learnerRelPaths.has(topic.relPath))
-    .sort(byNewest)
-    .map((topic) => `- ${wikilinkForRelPath(topic.relPath, topic.title)}`);
+  // Every learner-visible page that is not a lesson (already in the Reading
+  // Path), a source, or internal — including user-authored notes in
+  // user-created folders. Without this, a folder the user creates inside a
+  // garden (and every note in it) is invisible in the garden index, even though
+  // it is published. Group by top-level folder so user-created folders surface
+  // with their pages.
+  const standalonePages = knowledge.nodes.filter((node) => {
+    const rel = node.relPath.replace(/\\/g, "/").toLowerCase();
+    return (
+      node.type !== "source-document" &&
+      node.type !== INTERNAL_CONCEPT_TYPE &&
+      node.internal !== "true" &&
+      node.draft !== "true" &&
+      !rel.startsWith(`${LEARNING_FOLDER.toLowerCase()}/`) &&
+      !rel.startsWith("sources/") &&
+      !isLegacySubtopicRelPath(node.relPath) &&
+      !learnerRelPaths.has(node.relPath)
+    );
+  });
+  const pagesByTopFolder = new Map<string, typeof standalonePages>();
+  for (const node of standalonePages) {
+    const top = (node.folder ?? "").split("/")[0] ?? "";
+    const list = pagesByTopFolder.get(top) ?? [];
+    list.push(node);
+    pagesByTopFolder.set(top, list);
+  }
+  const folderHeading = (folder: string): string =>
+    folder
+      .split("/")
+      .pop()!
+      .split("-")
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  const orphanLines: string[] = [];
+  // Root-level standalone pages first (no heading), then each folder as a
+  // sub-section. Folders are alphabetical for stable, navigable output.
+  const topFolders = [...pagesByTopFolder.keys()].sort((a, b) =>
+    a === "" ? -1 : b === "" ? 1 : a.localeCompare(b),
+  );
+  for (const folder of topFolders) {
+    const pages = [...pagesByTopFolder.get(folder)!].sort(byNewest);
+    if (folder) orphanLines.push(`### ${folderHeading(folder)}`, "");
+    for (const page of pages) {
+      orphanLines.push(`- ${wikilinkForRelPath(page.relPath, page.title)}`);
+    }
+    orphanLines.push("");
+  }
+  while (orphanLines.length > 0 && orphanLines[orphanLines.length - 1] === "") orphanLines.pop();
   const description = clusterIndexDescription(knowledge);
   const overviewLink = LEARNING_PAGE_ORDER[0];
   const sourcesDir = path.join(clusterDir, "sources");

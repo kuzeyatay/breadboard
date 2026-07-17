@@ -12,6 +12,10 @@ import {
   usageLimitWindowLabel,
   visibleUsageLimitRows,
 } from "../src/lib/usage-limit-display.ts";
+import {
+  buildUsageRefreshRequest,
+  USAGE_REFRESH_MESSAGE,
+} from "../src/lib/usage-refresh.ts";
 
 function writeUsage(filePath, capturedAt, usedPercent) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -133,5 +137,21 @@ describe("usage limit display", () => {
     assert.equal(rows[0].label, "5-hour limit");
     assert.equal(rows[0].reported, true);
     assert.equal(rows[0].window.used_percent, 12);
+  });
+});
+
+describe("usage limit refresh", () => {
+  test("uses one minimal council-free request", () => {
+    const request = buildUsageRefreshRequest();
+
+    assert.equal(request.model, "gpt-5.6-sol");
+    assert.deepEqual(request.messages, [
+      { role: "user", content: USAGE_REFRESH_MESSAGE },
+    ]);
+    assert.equal(request.council, false);
+    assert.equal(request.reasoning.effort, "none");
+    assert.equal(request.fast_mode, false);
+    assert.equal(request.stream, false);
+    assert.ok(USAGE_REFRESH_MESSAGE.length < 25);
   });
 });

@@ -31,6 +31,7 @@ import {
   summarizeChatTokenUsage,
   type ChatTokenUsage,
 } from '@/lib/chat-token-usage';
+import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -93,10 +94,6 @@ function maxHeight(): number {
 
 function clampHeight(height: number): number {
   return Math.min(maxHeight(), Math.max(MIN_HEIGHT, Math.round(height)));
-}
-
-function chatTitleFromText(text: string): string {
-  return text.trim().replace(/\s+/g, ' ').slice(0, 64) || 'New chat';
 }
 
 function formatChatTime(value: string): string {
@@ -337,12 +334,17 @@ export default function KnowledgeTerminal({ scope }: Props) {
     const pendingAttachments = chatAttachments;
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
     const displayText = text || 'Please review the attached document(s).';
+    const firstMessageTitle = chatTitleFromFirstMessage(
+      text || attachmentNames[0] || 'Document review',
+    );
 
     let session = activeSession;
     let sessionTitle: string | undefined;
     if (!session) {
-      sessionTitle = chatTitleFromText(text || attachmentNames[0] || 'Document review');
+      sessionTitle = firstMessageTitle;
       session = createSession(sessionTitle);
+    } else if (session.messages.length === 0) {
+      sessionTitle = firstMessageTitle;
     }
 
     const userMessage: ChatMessage = {

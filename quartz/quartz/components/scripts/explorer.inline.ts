@@ -1,4 +1,5 @@
 import { FileTrieNode } from "../../util/fileTrie"
+import { isVisibleGardenRootFolder } from "../../util/explorerScope"
 import { FullSlug, resolveRelative, simplifySlug } from "../../util/path"
 import { ContentDetails } from "../../plugins/emitters/contentIndex"
 
@@ -38,7 +39,6 @@ const GENERATED_GARDEN_ROOTS = new Set([
   "private-quartz",
   "public-quartz",
 ])
-const LEARNER_GARDEN_FOLDERS = new Set(["learning", "sources"])
 const NON_GARDEN_ROOTS = new Set(["tags", "static", "index", "404"])
 
 function parseJsonArray(value: string | undefined): string[] {
@@ -83,9 +83,7 @@ function applyGardenExplorerScope(explorer: HTMLElement, trie: FileTrieNode<Cont
   if (!shouldEnforceGardenTree || !effectiveAllowed) return
   for (const clusterNode of trie.children) {
     if (!effectiveAllowed.includes(clusterNode.slugSegment)) continue
-    clusterNode.children = clusterNode.children.filter(
-      (child) => child.isFolder && LEARNER_GARDEN_FOLDERS.has(child.slugSegment),
-    )
+    clusterNode.children = clusterNode.children.filter(isVisibleGardenRootFolder)
   }
 }
 
@@ -138,6 +136,177 @@ function sendCreateFolder(cluster: string, folder: string) {
 
 function sendDeleteFolder(cluster: string, folder: string) {
   window.parent?.postMessage({ type: "second-brain:delete-folder", cluster, folder }, "*")
+}
+
+interface CreateFolderDialog {
+  overlay: HTMLDivElement
+  panel: HTMLDivElement
+  form: HTMLFormElement
+  input: HTMLInputElement
+  error: HTMLParagraphElement
+  cancel: HTMLButtonElement
+  close: HTMLButtonElement
+  submit: HTMLButtonElement
+  cluster: string
+  relFolder: string
+  pendingFolder: string
+  pending: boolean
+  returnFocus: HTMLElement | null
+}
+
+let createFolderDialog: CreateFolderDialog | null = null
+let createFolderResultListenerBound = false
+
+function setCreateFolderDialogError(dialog: CreateFolderDialog, message = "") {
+  dialog.error.textContent = message
+  dialog.error.hidden = !message
+}
+
+function setCreateFolderDialogPending(dialog: CreateFolderDialog, pending: boolean) {
+  dialog.pending = pending
+  dialog.panel.setAttribute("aria-busy", String(pending))
+  dialog.input.disabled = pending
+  dialog.cancel.disabled = pending
+  dialog.close.disabled = pending
+  dialog.submit.disabled = pending || !dialog.input.value.trim()
+  dialog.submit.textContent = pending ? "Creating..." : "Create folder"
+}
+
+function closeCreateFolderDialog(force = false) {
+  const dialog = createFolderDialog
+  if (!dialog || (dialog.pending && !force)) return
+  dialog.overlay.hidden = true
+  dialog.input.value = ""
+  dialog.pendingFolder = ""
+  setCreateFolderDialogError(dialog)
+  setCreateFolderDialogPending(dialog, false)
+  document.documentElement.classList.remove("explorer-modal-open")
+  if (!force) dialog.returnFocus?.focus()
+  dialog.returnFocus = null
+}
+
+function bindCreateFolderResultListener() {
+  if (createFolderResultListenerBound) return
+  createFolderResultListenerBound = true
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return
+    const data = event.data as
+      | { type?: string; folder?: string; ok?: boolean; error?: string }
+      | undefined
+    const dialog = createFolderDialog
+    if (
+      !dialog?.pending ||
+      data?.type !== "second-brain:create-folder-result" ||
+      data.folder !== dialog.pendingFolder
+    ) {
+      return
+    }
+
+    if (data.ok) {
+      closeCreateFolderDialog(true)
+      return
+    }
+
+    setCreateFolderDialogPending(dialog, false)
+    setCreateFolderDialogError(dialog, data.error || "Could not create folder.")
+    dialog.input.focus()
+  })
+}
+
+function ensureCreateFolderDialog(): CreateFolderDialog {
+  if (createFolderDialog && document.body.contains(createFolderDialog.overlay)) {
+    return createFolderDialog
+  }
+
+  const overlay = document.createElement("div")
+  overlay.className = "explorer-folder-modal"
+  overlay.hidden = true
+  overlay.innerHTML = `
+    <div class="explorer-folder-panel" role="dialog" aria-modal="true" aria-labelledby="explorer-folder-title">
+      <div class="explorer-folder-header">
+        <h2 id="explorer-folder-title">New folder</h2>
+        <button class="explorer-folder-close" type="button" aria-label="Close new folder dialog">&times;</button>
+      </div>
+      <form class="explorer-folder-form">
+        <label for="explorer-folder-name">Folder name</label>
+        <input id="explorer-folder-name" type="text" maxlength="80" autocomplete="off" />
+        <p class="explorer-folder-error" role="alert" hidden></p>
+        <div class="explorer-folder-actions">
+          <button class="explorer-folder-cancel" type="button">Cancel</button>
+          <button class="explorer-folder-submit" type="submit" disabled>Create folder</button>
+        </div>
+      </form>
+    </div>`
+  document.body.appendChild(overlay)
+
+  const panel = overlay.querySelector(".explorer-folder-panel") as HTMLDivElement
+  const form = overlay.querySelector(".explorer-folder-form") as HTMLFormElement
+  const input = overlay.querySelector("#explorer-folder-name") as HTMLInputElement
+  const error = overlay.querySelector(".explorer-folder-error") as HTMLParagraphElement
+  const cancel = overlay.querySelector(".explorer-folder-cancel") as HTMLButtonElement
+  const close = overlay.querySelector(".explorer-folder-close") as HTMLButtonElement
+  const submit = overlay.querySelector(".explorer-folder-submit") as HTMLButtonElement
+
+  createFolderDialog = {
+    overlay,
+    panel,
+    form,
+    input,
+    error,
+    cancel,
+    close,
+    submit,
+    cluster: "",
+    relFolder: "",
+    pendingFolder: "",
+    pending: false,
+    returnFocus: null,
+  }
+
+  input.addEventListener("input", () => {
+    if (!createFolderDialog) return
+    setCreateFolderDialogError(createFolderDialog)
+    createFolderDialog.submit.disabled = !input.value.trim()
+  })
+  form.addEventListener("submit", (event) => {
+    event.preventDefault()
+    const dialog = createFolderDialog
+    if (!dialog || dialog.pending) return
+    const name = dialog.input.value.trim()
+    if (!name) {
+      setCreateFolderDialogError(dialog, "Enter a folder name.")
+      dialog.input.focus()
+      return
+    }
+    const folder = dialog.relFolder ? `${dialog.relFolder}/${name}` : name
+    dialog.pendingFolder = folder
+    setCreateFolderDialogPending(dialog, true)
+    sendCreateFolder(dialog.cluster, folder)
+  })
+  cancel.addEventListener("click", () => closeCreateFolderDialog())
+  close.addEventListener("click", () => closeCreateFolderDialog())
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeCreateFolderDialog()
+  })
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeCreateFolderDialog()
+  })
+
+  bindCreateFolderResultListener()
+  return createFolderDialog
+}
+
+function openCreateFolderDialog(cluster: string, relFolder: string, trigger: HTMLElement) {
+  const dialog = ensureCreateFolderDialog()
+  dialog.cluster = cluster
+  dialog.relFolder = relFolder
+  dialog.returnFocus = trigger
+  dialog.input.value = ""
+  setCreateFolderDialogError(dialog)
+  setCreateFolderDialogPending(dialog, false)
+  dialog.overlay.hidden = false
+  document.documentElement.classList.add("explorer-modal-open")
+  window.requestAnimationFrame(() => dialog.input.focus())
 }
 
 function makeFileDraggable(li: HTMLElement, slug: FullSlug) {
@@ -412,10 +581,7 @@ function createFolderNode(
     addBtn.addEventListener("click", (event) => {
       event.preventDefault()
       event.stopPropagation()
-      const name = window.prompt("New folder name")
-      if (!name || !name.trim()) return
-      const folder = relFolder ? `${relFolder}/${name.trim()}` : name.trim()
-      sendCreateFolder(cluster, folder)
+      openCreateFolderDialog(cluster, relFolder, addBtn)
     })
     folderContainer.appendChild(addBtn)
 

@@ -9,6 +9,7 @@ import {
   normalizeZettelTags,
   validateLearningMapDepth,
   publicLearningVersionId,
+  selectLearnSources,
   sourceAppearsVisualRich,
 } from "../src/lib/learn-utils.ts";
 import {
@@ -194,6 +195,21 @@ describe("learning-map depth validation", () => {
 });
 
 describe("routing + terminology helpers", () => {
+  test("selectLearnSources keeps only explicitly included documents", () => {
+    const sources = [
+      { id: "paper-a", slug: "paper-a", title: "Paper A", relPath: "sources/paper-a.md" },
+      { id: "paper-b", slug: "paper-b", title: "Paper B", relPath: "sources/paper-b.md" },
+    ];
+
+    assert.deepEqual(
+      selectLearnSources(sources, ["paper-b", "paper-b"]).map((source) => source.slug),
+      ["paper-b"],
+    );
+    assert.equal(selectLearnSources(sources).length, 2, "an omitted selection means all documents");
+    assert.throws(() => selectLearnSources(sources, []), /Select at least one document/);
+    assert.throws(() => selectLearnSources(sources, ["deleted-paper"]), /no longer available/);
+  });
+
   test("publicLearningVersionId strips a textbook_ prefix", () => {
     assert.equal(publicLearningVersionId("textbook_abc123"), "learning_abc123");
     assert.equal(publicLearningVersionId("learning_abc123"), "learning_abc123");

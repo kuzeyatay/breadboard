@@ -36,6 +36,7 @@ import {
   summarizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
+import { chatTitleFromFirstMessage } from "@/lib/chat-session-title";
 import {
   currentLearnElapsedMs,
   formatLearnElapsedTime,
@@ -206,29 +207,13 @@ interface LearnStatusResponse {
   latestTextbookVersionId?: string;
   hasSources?: boolean;
   sourceCount?: number;
+  selectedSourceIds?: string[];
+  selectedSourceCount?: number;
   hasTextbook?: boolean;
   sourceSetChanged?: boolean;
   buttonLabel?: string;
   validationReport?: LearnValidationReportInfo | null;
   error?: string;
-}
-
-interface LearnCouncilDetail {
-  councilMode?: string;
-  taskType?: string;
-  reasoning?: string;
-  output?: string;
-  candidateReasonings?: string[];
-  error?: string;
-}
-
-interface LearnEventLine {
-  at: string;
-  type: string;
-  line: string;
-  jobId?: string;
-  councilRunId?: string;
-  detail?: LearnCouncilDetail | null;
 }
 
 interface MarkdownTagUpdateResult {
@@ -255,7 +240,12 @@ const LEARN_SETTLED_INDICATOR_VISIBLE_MS = 2 * 60 * 1000;
 
 function formatLearnTotalTokenCount(value: number): string {
   const count = Math.max(0, Math.trunc(value));
+  if (count >= 1_000_000) return formatTokenCount(count);
   return count < 1_000 ? String(count) : `${(count / 1_000).toFixed(1)}k`;
+}
+
+function formatLearnMetricTokenCount(value: number): string {
+  return formatTokenCount(value).replace(/K$/, "k");
 }
 
 function Spinner({ className = "w-4 h-4" }: { className?: string }) {
@@ -280,12 +270,6 @@ function Spinner({ className = "w-4 h-4" }: { className?: string }) {
       />
     </svg>
   );
-}
-
-function chatTitleFrom(text: string): string {
-  const compact = text.trim().replace(/\s+/g, " ");
-  if (!compact) return "New chat";
-  return compact.length > 48 ? `${compact.slice(0, 47)}...` : compact;
 }
 
 function isGardenSaveCommand(text: string): boolean {
@@ -820,6 +804,7 @@ export default function WorkspaceClient({
   const [selectedDocumentSlugs, setSelectedDocumentSlugs] = useState<string[]>(
     [],
   );
+  const documentColorClickTimersRef = useRef<Map<string, number>>(new Map());
   const showInternalConceptGraph = false;
   const [openFlagPaletteSlug, setOpenFlagPaletteSlug] = useState<string | null>(
     null,
@@ -889,11 +874,12 @@ export default function WorkspaceClient({
   const [learnPanelOpen, setLearnPanelOpen] = useState(false);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
+  const [learnIncludedSourceSlugs, setLearnIncludedSourceSlugs] = useState<string[] | null>(null);
+  const [learnDocumentMenuOpen, setLearnDocumentMenuOpen] = useState(false);
   const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
   const [showSettledLearnIndicator, setShowSettledLearnIndicator] = useState(false);
-  const [learnEvents, setLearnEvents] = useState<LearnEventLine[]>([]);
-  const learnEventsScrollRef = useRef<HTMLDivElement | null>(null);
   const learnSkipManualReviewRef = useRef(false);
+  const lastSyncedLearnSelectionRef = useRef<string | null>(null);
   const autoConfirmingLearnJobRef = useRef<string | null>(null);
   // Reasoning effort
   const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
@@ -957,7 +943,11 @@ export default function WorkspaceClient({
     try {
       const params = new URLSearchParams({ clusterSlug });
       if (showInternalConceptGraph) params.set("includeInternalConcepts", "1");
-      const res = await fetch(`/api/documents?${params.toString()}`);
+      // The document/folder listing is derived live from the filesystem and
+      // changes whenever a folder or note is added, moved, or removed. Never let
+      // the browser serve a cached response, or newly created folders and pages
+      // (and folders synced in from disk) stay invisible until a hard refresh.
+      const res = await fetch(`/api/documents?${params.toString()}`, { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents ?? []);
@@ -1011,30 +1001,41 @@ export default function WorkspaceClient({
     void fetchLearnStatus();
   }, [fetchLearnStatus]);
 
-  const fetchLearnEvents = useCallback(async () => {
-    const jobId = learnState?.job?.id ?? "";
-    try {
-      const params = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
-      const res = await fetch(
-        `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/events${params}`,
-      );
-      const data = (await res.json().catch(() => ({}))) as { events?: LearnEventLine[] };
-      if (res.ok && Array.isArray(data.events)) setLearnEvents(data.events);
-    } catch {
-      // The activity log must never interrupt the workspace.
-    }
-  }, [clusterSlug, learnState?.job?.id]);
+  useEffect(() => {
+    if (!Array.isArray(learnState?.selectedSourceIds)) return;
+    const syncKey = `${learnState.job?.id ?? learnState.confirmedLearningMapId ?? "idle"}:${learnState.selectedSourceIds.join("|")}`;
+    if (lastSyncedLearnSelectionRef.current === syncKey) return;
+    lastSyncedLearnSelectionRef.current = syncKey;
+    setLearnIncludedSourceSlugs([...learnState.selectedSourceIds]);
+  }, [
+    learnState?.confirmedLearningMapId,
+    learnState?.job?.id,
+    learnState?.selectedSourceIds,
+  ]);
+
+  useEffect(() => {
+    if (loadingDocs) return;
+    const availableSourceSlugs = new Set(
+      documents
+        .filter((doc) => doc.type === "source-document")
+        .map((doc) => doc.slug),
+    );
+    setLearnIncludedSourceSlugs((current) =>
+      current === null
+        ? null
+        : current.filter((sourceSlug) => availableSourceSlugs.has(sourceSlug)),
+    );
+  }, [documents, loadingDocs]);
 
   useEffect(() => {
     const active = isLearnActive(learnState?.job?.status) || learnBusy;
     if (!active) return;
-    void fetchLearnEvents();
+    void fetchLearnStatus();
     const id = window.setInterval(() => {
       void fetchLearnStatus();
-      void fetchLearnEvents();
     }, 2000);
     return () => window.clearInterval(id);
-  }, [fetchLearnStatus, fetchLearnEvents, learnBusy, learnState?.job?.status]);
+  }, [fetchLearnStatus, learnBusy, learnState?.job?.status]);
 
   useEffect(() => {
     setLearnTimerNowMs(Date.now());
@@ -1072,12 +1073,6 @@ export default function WorkspaceClient({
     );
     return () => window.clearTimeout(id);
   }, [learnBusy, learnState?.job]);
-
-  // Keep the council activity log pinned to the newest line.
-  useEffect(() => {
-    const box = learnEventsScrollRef.current;
-    if (box) box.scrollTop = box.scrollHeight;
-  }, [learnEvents]);
 
   const fetchChatSessions = useCallback(async () => {
     try {
@@ -2044,6 +2039,9 @@ export default function WorkspaceClient({
           body: JSON.stringify({
             model,
             sourceOnly: learnSourceOnly,
+            ...(learnIncludedSourceSlugs !== null
+              ? { includedSourceIds: learnIncludedSourceSlugs }
+              : {}),
             includeSourceSnapshots: false,
             // Keep planning interruptible from the UI. The live checkbox is
             // evaluated when the proposed map reaches the review boundary.
@@ -2098,6 +2096,7 @@ export default function WorkspaceClient({
     clusterSlug,
     fetchDocuments,
     fetchLearnStatus,
+    learnIncludedSourceSlugs,
     learnSourceOnly,
     model,
   ]);
@@ -2181,13 +2180,16 @@ export default function WorkspaceClient({
     if ((!text && chatAttachments.length === 0) || isStreaming) return;
 
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
+    const firstMessageTitle = chatTitleFromFirstMessage(
+      text || chatAttachments[0]?.name || "Document review",
+    );
     const session =
-      writableActiveChat ?? (await createChatSession(chatTitleFrom(text)));
+      writableActiveChat ?? (await createChatSession(firstMessageTitle));
     if (!session) return;
 
     const sessionId = session.id;
     const title =
-      session.messages.length === 0 ? chatTitleFrom(text) : undefined;
+      session.messages.length === 0 ? firstMessageTitle : undefined;
 
     // Snapshot attachments and clear them immediately
     const pendingAttachments = chatAttachments;
@@ -2497,6 +2499,31 @@ export default function WorkspaceClient({
     selectedDocumentSlugs.includes(doc.slug),
   );
   const primarySourceDocument = sourceDocuments[0];
+  const availableLearnSourceSlugSet = new Set(
+    sourceDocuments.map((doc) => doc.slug),
+  );
+  const effectiveLearnIncludedSourceSlugs =
+    learnIncludedSourceSlugs === null
+      ? sourceDocuments.map((doc) => doc.slug)
+      : learnIncludedSourceSlugs.filter((sourceSlug) =>
+          availableLearnSourceSlugSet.has(sourceSlug),
+        );
+  const effectiveLearnIncludedSourceSlugSet = new Set(
+    effectiveLearnIncludedSourceSlugs,
+  );
+
+  function toggleLearnSourceDocument(sourceSlug: string) {
+    setLearnIncludedSourceSlugs((current) => {
+      const selected = new Set(
+        current ?? sourceDocuments.map((doc) => doc.slug),
+      );
+      if (selected.has(sourceSlug)) selected.delete(sourceSlug);
+      else selected.add(sourceSlug);
+      return sourceDocuments
+        .map((doc) => doc.slug)
+        .filter((slug) => selected.has(slug));
+    });
+  }
 
   const graphRefreshKey = `${graphRefreshVersion}:${documents
     .map((d) => `${d.slug}:${d.linkCount}:${d.wordCount}`)
@@ -2508,26 +2535,54 @@ export default function WorkspaceClient({
     const proposedMap = learnState?.proposedLearningMap ?? null;
     const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
     const displayProgress = status === "complete" || status === "failed" ? 100 : progress;
-    const canStart = Boolean(learnState?.hasSources) && !learnBusy && !active;
+    const hasSelectedLearnSources = effectiveLearnIncludedSourceSlugs.length > 0;
+    const canStart =
+      Boolean(learnState?.hasSources) &&
+      hasSelectedLearnSources &&
+      !learnBusy &&
+      !active;
     const shouldShowPanel = learnPanelOpen;
     const panelExpanded = learnPanelOpen;
     const canClosePanel =
       !active && (status === "complete" || status === "failed" || status === "cancelled");
     const showPrimaryAction =
       !canClosePanel || status === "failed" || status === "cancelled";
+    const learnDocumentSelectionLocked =
+      learnBusy || active || status === "awaiting_confirmation";
+    const activeStageMessage: Partial<Record<LearnStatus, string>> = {
+      planning: "Planning the Learning Map",
+      generating_learning_pages: "Writing lesson pages",
+      generating_textbook: "Writing lesson pages",
+      generating_visuals: "Generating lesson visuals",
+      writing_quartz: "Writing Quartz files",
+      building_navigation: "Validating and rebuilding navigation",
+    };
     const statusMessage = active
-      ? job?.currentStep || "Working"
+      ? null
       : status === "complete"
-        ? job?.currentStep || "Lessons complete"
+        ? "Lessons complete."
         : status === "failed"
-          ? "Learn failed before lessons were finished."
+          ? "Learn failed before completion."
           : status === "cancelled"
-            ? job?.currentStep || "Learn stopped and generated files were cleaned up."
+            ? "Learn run cancelled."
             : status === "awaiting_confirmation"
-              ? "Confirm the section order to generate your lessons."
+              ? "Learning Map ready for review."
               : learnState?.hasTextbook
-                ? "Refresh the generated lessons from the current sources."
-                : "Generate structured lessons from your sources.";
+                ? "Ready to regenerate lessons."
+                : "Ready to generate lessons.";
+    const stageMessage =
+      job?.currentStep || activeStageMessage[status] || (active ? "Creating lessons" : "");
+    const statusDetails = [
+      stageMessage || null,
+      job?.currentSectionTitle ? `Section: ${job.currentSectionTitle}.` : null,
+      job?.currentPageTitle ? `Page: ${job.currentPageTitle}.` : null,
+      !hasSelectedLearnSources
+        ? `No source documents selected from ${sourceDocuments.length} available.`
+        : null,
+      status === "awaiting_confirmation"
+        ? "Pipeline paused for review; timer stopped."
+        : null,
+    ].filter((detail): detail is string => Boolean(detail));
     const learnTokenUsage = job?.tokenUsage;
     const learnElapsedMs = currentLearnElapsedMs(
       {
@@ -2572,15 +2627,111 @@ export default function WorkspaceClient({
                 </span>
               )}
             </div>
-            <p className="mt-1 text-xs text-gray-500">{statusMessage}</p>
-            {job?.currentSectionTitle || job?.currentPageTitle ? (
-              <p className="mt-1 truncate text-xs text-gray-600">
-                {[job.currentSectionTitle, job.currentPageTitle].filter(Boolean).join(" / ")}
-              </p>
-            ) : null}
+            <div className="mt-1" aria-live="polite" aria-atomic="true">
+              {statusMessage ? (
+                <p className="text-xs leading-5 text-gray-400">{statusMessage}</p>
+              ) : null}
+              {statusDetails.length > 0 ? (
+                <p className="text-[11px] leading-5 text-gray-600">
+                  {statusDetails.join(" ")}
+                </p>
+              ) : null}
+            </div>
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setLearnDocumentMenuOpen((open) => !open)}
+                className="flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                aria-expanded={learnDocumentMenuOpen}
+                aria-haspopup="menu"
+                title="Choose which source documents Learn may use"
+              >
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3.75h7.5l3 3v13.5H6.75z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 3.75v3h3M9.5 11h5M9.5 14.5h5" />
+                </svg>
+                Documents {effectiveLearnIncludedSourceSlugs.length}/{sourceDocuments.length}
+                <svg
+                  className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
+                </svg>
+              </button>
+              {learnDocumentMenuOpen ? (
+                <div
+                  className="absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl"
+                  role="menu"
+                  aria-label="Documents included in Learn"
+                >
+                  <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-2">
+                    <div>
+                      <p className="text-xs font-medium text-gray-200">Documents for Learn</p>
+                      <p className="mt-0.5 text-[10px] text-gray-600">Unchecked documents are excluded from this run.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setLearnIncludedSourceSlugs(
+                          effectiveLearnIncludedSourceSlugs.length === sourceDocuments.length
+                            ? []
+                            : sourceDocuments.map((doc) => doc.slug),
+                        )
+                      }
+                      disabled={learnDocumentSelectionLocked}
+                      className="text-[10px] text-gray-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {effectiveLearnIncludedSourceSlugs.length === sourceDocuments.length
+                        ? "Clear all"
+                        : "Select all"}
+                    </button>
+                  </div>
+                  <div className="max-h-56 space-y-1 overflow-y-auto">
+                    {sourceDocuments.map((doc) => {
+                      const checked = effectiveLearnIncludedSourceSlugSet.has(doc.slug);
+                      const fileLabel = doc.sourcePdf || doc.sourceFile || doc.name || doc.title;
+                      return (
+                        <label
+                          key={doc.slug}
+                          className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleLearnSourceDocument(doc.slug)}
+                            disabled={learnDocumentSelectionLocked}
+                            className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate text-xs text-gray-300">{fileLabel}</span>
+                            {doc.description ? (
+                              <span className="mt-0.5 block truncate text-[10px] text-gray-600">{doc.description}</span>
+                            ) : null}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {learnDocumentSelectionLocked ? (
+                    <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
+                      This selection is locked for the current Learning Map.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             <label className="flex items-center gap-1.5 text-xs text-gray-500">
               <input
                 type="checkbox"
@@ -2697,6 +2848,12 @@ export default function WorkspaceClient({
           </div>
         </div>
 
+        {!hasSelectedLearnSources ? (
+          <p className="mt-2 text-xs text-amber-400">
+            Select at least one document before starting Learn.
+          </p>
+        ) : null}
+
         {(active || status === "complete" || status === "failed") && (
           <div className="mt-3">
             <div className="h-1.5 overflow-hidden rounded-full bg-gray-800">
@@ -2788,7 +2945,7 @@ export default function WorkspaceClient({
                       {learnTokenUsage.estimated ? "~" : ""}
                       {metric.label === "Total"
                         ? formatLearnTotalTokenCount(metric.value)
-                        : formatTokenCount(metric.value).toLowerCase()}
+                        : formatLearnMetricTokenCount(metric.value)}
                     </dd>
                   </div>
                 ))}
@@ -2802,41 +2959,6 @@ export default function WorkspaceClient({
             ) : null}
           </div>
         ) : null}
-
-        {(active || (learnEvents.length > 0 && (status === "complete" || status === "failed"))) && (
-          <div className="mt-3">
-            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-600">
-              Council activity
-            </p>
-            <div
-              ref={learnEventsScrollRef}
-              className="max-h-40 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/80 px-3 py-2 font-mono text-[11px] leading-5 text-gray-400"
-            >
-              {learnEvents.length === 0 ? (
-                <p className="text-gray-600">Waiting for the first council event…</p>
-              ) : (
-                learnEvents.map((event, index) => {
-                  return (
-                    <div key={`${event.at}-${event.type}-${index}`}>
-                      <p
-                        className={
-                          /fallback|failed|timed out|rejected|dropped/i.test(event.line)
-                            ? "text-amber-400/90"
-                            : undefined
-                        }
-                      >
-                        <span className="text-gray-600">
-                          {event.at ? new Date(event.at).toLocaleTimeString() : "--:--:--"}
-                        </span>{" "}
-                        {event.line}
-                      </p>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
 
         {panelExpanded && proposedMap && status === "awaiting_confirmation" && (
           <div className="mt-4 border-t border-gray-800 pt-3">
@@ -2939,6 +3061,39 @@ export default function WorkspaceClient({
     );
   }
 
+  function handleDocumentColorButtonClick(slug: string, selectableForChat: boolean) {
+    const pendingTimer = documentColorClickTimersRef.current.get(slug);
+    if (pendingTimer !== undefined) {
+      window.clearTimeout(pendingTimer);
+      documentColorClickTimersRef.current.delete(slug);
+      if (!selectableForChat) {
+        setOpenFlagPaletteSlug((openSlug) =>
+          openSlug === slug ? null : slug,
+        );
+        return;
+      }
+      setOpenFlagPaletteSlug(null);
+      toggleSelectedDocument(slug);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      documentColorClickTimersRef.current.delete(slug);
+      setOpenFlagPaletteSlug((openSlug) =>
+        openSlug === slug ? null : slug,
+      );
+    }, 250);
+    documentColorClickTimersRef.current.set(slug, timer);
+  }
+
+  useEffect(() => {
+    const clickTimers = documentColorClickTimersRef.current;
+    return () => {
+      for (const timer of clickTimers.values()) window.clearTimeout(timer);
+      clickTimers.clear();
+    };
+  }, []);
+
   function renderCollapsedLearnIndicator() {
     const job = learnState?.job;
     if (!isOwner || learnPanelOpen || (!job && !learnBusy)) return null;
@@ -3003,6 +3158,8 @@ export default function WorkspaceClient({
       <ul className="py-1">
         {items.map((doc, index) => {
           const isSource = doc.type === "source-document";
+          const isSelectedForChat =
+            isSource && selectedDocumentSlugs.includes(doc.slug);
           const isPdf = isSource && doc.sourceType?.toLowerCase() === "pdf";
           const isPdfSource =
             isPdf && Boolean(doc.sourcePdf);
@@ -3028,44 +3185,38 @@ export default function WorkspaceClient({
                   : "hover:bg-gray-900",
               ].join(" ")}
             >
-              {isSource && (
-                <label
-                  className="mt-0.5 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center"
-                  title={
-                    selectedDocumentSlugs.includes(doc.slug)
-                      ? "Selected for chat context"
-                      : "Select this document for chat"
-                  }
-                  aria-label="Select document for chat"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedDocumentSlugs.includes(doc.slug)}
-                    onChange={() => toggleSelectedDocument(doc.slug)}
-                    className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-cyan-300"
-                  />
-                </label>
-              )}
               <div className="relative shrink-0 mt-0.5">
                 <button
                   type="button"
-                  onClick={() =>
-                    setOpenFlagPaletteSlug((slug) =>
-                      slug === doc.slug ? null : doc.slug,
-                    )
-                  }
+                  onClick={() => handleDocumentColorButtonClick(doc.slug, isSource)}
                   disabled={savingFlagSlug === doc.slug}
                   className={[
                     "h-5 w-5 rounded border border-gray-700 bg-gray-950",
                     "flex items-center justify-center transition-colors hover:border-gray-500",
+                    isSelectedForChat
+                      ? "border-cyan-300 ring-2 ring-cyan-300/80 ring-offset-1 ring-offset-gray-950"
+                      : "",
                     savingFlagSlug === doc.slug
                       ? "opacity-50 cursor-wait"
                       : "cursor-pointer",
                   ].join(" ")}
                   title={
-                    doc.flagColor ? `Flagged ${doc.flagColor}` : "Flag note"
+                    `${doc.flagColor ? `Flagged ${doc.flagColor}. ` : ""}${
+                      isSelectedForChat
+                        ? "Selected for chat; click twice to remove."
+                        : isSource
+                          ? "Click twice to select for chat."
+                          : ""
+                    } Click once to choose a color.`
                   }
-                  aria-label="Flag note"
+                  aria-label={
+                    isSource
+                      ? isSelectedForChat
+                        ? "Document color; selected for chat"
+                        : "Document color; click twice to select for chat"
+                      : "Document color"
+                  }
+                  aria-pressed={isSource ? isSelectedForChat : undefined}
                   aria-expanded={openFlagPaletteSlug === doc.slug}
                 >
                   <span

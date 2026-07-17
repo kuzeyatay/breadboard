@@ -22,6 +22,9 @@ export async function POST(
     }
 
     const body = await request.json().catch(() => ({}));
+    const includedSourceIds = Array.isArray(body.includedSourceIds)
+      ? body.includedSourceIds.filter((sourceId: unknown): sourceId is string => typeof sourceId === "string")
+      : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
     const client = createChatmockClient(baseURL);
     const result = await runLearnPipeline({
@@ -30,6 +33,7 @@ export async function POST(
       mode: "plan",
       client,
       contentPath,
+      includedSourceIds,
       model: typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,

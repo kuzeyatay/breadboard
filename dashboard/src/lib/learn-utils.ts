@@ -65,6 +65,42 @@ export interface LearnContextSummary {
   concepts?: LearnConceptSummary[];
 }
 
+/**
+ * Resolve an explicit Learn source selection against the currently available
+ * source documents. `undefined` preserves the legacy "all documents" behavior;
+ * an explicit list is validated so a stale or empty UI selection cannot start
+ * a misleading Learn run.
+ */
+export function selectLearnSources(
+  sources: LearnSourceSummary[],
+  includedSourceIds?: readonly string[],
+): LearnSourceSummary[] {
+  if (includedSourceIds === undefined) return sources;
+
+  const requestedIds = Array.from(
+    new Set(
+      includedSourceIds
+        .filter((sourceId): sourceId is string => typeof sourceId === "string")
+        .map((sourceId) => sourceId.trim())
+        .filter(Boolean),
+    ),
+  );
+  if (requestedIds.length === 0) {
+    throw new Error("Select at least one document for Learn.");
+  }
+
+  const availableIds = new Set(sources.map((source) => source.slug));
+  const missingIds = requestedIds.filter((sourceId) => !availableIds.has(sourceId));
+  if (missingIds.length > 0) {
+    throw new Error(
+      `The selected Learn document${missingIds.length === 1 ? " is" : "s are"} no longer available: ${missingIds.join(", ")}. Refresh the garden and choose the documents again.`,
+    );
+  }
+
+  const requestedIdSet = new Set(requestedIds);
+  return sources.filter((source) => requestedIdSet.has(source.slug));
+}
+
 /** An interactive visual the planner explicitly decided this page needs.
  * Interactive visuals are opt-in: no entry here means the page gets none. */
 export interface InteractiveVisualPlan {

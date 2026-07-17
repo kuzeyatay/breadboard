@@ -2803,13 +2803,17 @@ export async function runLearnPlanning({
       throw error;
     }
     const message = error instanceof Error ? error.message : "Learn planning failed";
+    const failedJob = getLatestLearnJob(gardenId);
+    const lastInternalStep = failedJob?.id === job.id ? failedJob.currentStep.trim() : "";
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
       jobId: job.id,
       error: message,
     });
     updateLearnJob(job.id, {
       status: "failed",
-      currentStep: "Planning failed",
+      currentStep: lastInternalStep
+        ? `Planning failed; last internal step: ${lastInternalStep}`
+        : "Planning failed",
       error: message,
     });
     throw error;
@@ -6718,6 +6722,8 @@ export async function runTextbookGeneration({
       throw error;
     }
     const message = error instanceof Error ? error.message : "Lesson generation failed";
+    const failedJob = getLatestLearnJob(gardenId);
+    const lastInternalStep = failedJob?.id === job.id ? failedJob.currentStep.trim() : "";
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
       jobId: job.id,
       textbookVersionId,
@@ -6725,7 +6731,9 @@ export async function runTextbookGeneration({
     });
     updateLearnJob(job.id, {
       status: "failed",
-      currentStep: "Lesson generation failed",
+      currentStep: lastInternalStep
+        ? `Lesson generation failed; last internal step: ${lastInternalStep}`
+        : "Lesson generation failed",
       error: message,
     });
     throw error;
