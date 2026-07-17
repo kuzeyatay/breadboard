@@ -32,10 +32,23 @@ test("Learn panel reports the active step without a redundant running subtitle",
   assert.match(learnSource, /Lesson generation failed; last internal step:/);
 });
 
-test("Learn repair summary uses the readable yellow status color", () => {
+test("Learn keeps controls up and current-step copy below the progress bar", () => {
   assert.match(
     workspaceSource,
-    /Last repair:[\s\S]*?className="mt-1 text-\[11px\] leading-5 text-yellow-300\/80"|className="mt-1 text-\[11px\] leading-5 text-yellow-300\/80"[\s\S]*?Last repair:/,
+    /<div className="flex flex-col gap-2">[\s\S]*?<div className="flex min-h-8 items-center justify-between gap-3">[\s\S]*?<div className="flex shrink-0 items-center gap-2">[\s\S]*?<p className="text-sm font-medium text-white">Learn<\/p>[\s\S]*?<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">/,
   );
-  assert.doesNotMatch(workspaceSource, /text-cyan-300\/80/);
+  assert.match(
+    workspaceSource,
+    /learn-progress-pulse[\s\S]*?<div className="mt-2 min-w-0" aria-live="polite" aria-atomic="true">[\s\S]*?statusDetails\.join\(" "\)/,
+  );
+  assert.match(
+    workspaceSource,
+    /status === "cancelled" \|\| staleReviewForExistingGarden[\s\S]*?\? ""/,
+  );
+});
+
+test("Learn panel omits the old colored repair summary", () => {
+  assert.doesNotMatch(workspaceSource, /Last repair:/);
+  assert.doesNotMatch(workspaceSource, /Existing learner pages are protected/);
+  assert.doesNotMatch(workspaceSource, /proposedMap\.warnings\.map/);
 });

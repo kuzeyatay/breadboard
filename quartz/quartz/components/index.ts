@@ -28,6 +28,7 @@ import MarkdownActions from "./MarkdownActions"
 import Empty from "./Empty"
 import HomeOverview from "./HomeOverview"
 import FolderPdfExport from "./FolderPdfExport"
+import BreadboardAI from "./BreadboardAI"
 
 export {
   ArticleTitle,
@@ -60,4 +61,5 @@ export {
   Empty,
   HomeOverview,
   FolderPdfExport,
+  BreadboardAI,
 }

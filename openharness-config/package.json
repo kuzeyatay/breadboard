@@ -1,0 +1,9 @@
+{
+  "name": "breadboard-openharness-config",
+  "private": true,
+  "type": "module",
+  "description": "Breadboard's OpenHarness runtime configuration: agents, scoped garden/quartz tools, and provider wiring. Loaded via OPENCODE_CONFIG_DIR.",
+  "dependencies": {
+    "@opencode-ai/plugin": "*"
+  }
+}

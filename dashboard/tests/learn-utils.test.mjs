@@ -210,7 +210,16 @@ describe("learn route and council wiring", () => {
   const repoRoot = path.resolve(process.cwd());
 
   test("learn API routes exist", () => {
-    for (const route of ["plan", "confirm", "generate", "status", "cancel", "regenerate"]) {
+    for (const route of [
+      "plan",
+      "confirm",
+      "generate",
+      "status",
+      "cancel",
+      "regenerate",
+      "rebuild",
+      "clear",
+    ]) {
       assert.equal(
         fs.existsSync(
           path.join(
@@ -288,7 +297,7 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /visibleJob/);
   });
 
-  test("generate route replans when a posted confirmed map id is stale", () => {
+  test("generate route refuses a stale confirmed map instead of silently replanning", () => {
     const routeSource = fs.readFileSync(
       path.join(
         repoRoot,
@@ -305,8 +314,99 @@ describe("learn route and council wiring", () => {
     );
 
     assert.match(routeSource, /getLearnStatusSnapshot/);
-    assert.match(routeSource, /runLearnPlanning/);
+    assert.doesNotMatch(routeSource, /runLearnPlanning/);
     assert.match(routeSource, /requestedMapId && requestedMapId !== status\.confirmedLearningMapId/);
+    assert.match(routeSource, /Generate requires the current confirmed Learning Map/);
+    assert.match(routeSource, /\{ status: 409 \}/);
+  });
+
+  test("creation routes reject existing learner content while full rebuild stays explicit", () => {
+    const route = (action) => fs.readFileSync(
+      path.join(
+        repoRoot,
+        "src",
+        "app",
+        "api",
+        "gardens",
+        "[gardenId]",
+        "learn",
+        action,
+        "route.ts",
+      ),
+      "utf8",
+    );
+    const existingGardenGuard = /status\.latestTextbookVersionId \|\| status\.hasTextbook/;
+
+    assert.match(route("plan"), existingGardenGuard);
+    assert.match(route("confirm"), existingGardenGuard);
+    assert.match(route("generate"), /status\.latestTextbookVersionId \|\| status\.hasTextbook/);
+    assert.match(route("plan"), /Use Repair issues/);
+    assert.match(route("confirm"), /Use Repair issues/);
+    assert.match(route("generate"), /Use Repair issues/);
+    assert.match(route("rebuild"), /forceFullRebuild/);
+  });
+
+  test("Learn panel exposes a separately confirmed garden-scoped clear action", () => {
+    const workspaceSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+      "utf8",
+    );
+    const clearRouteSource = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "src",
+        "app",
+        "api",
+        "gardens",
+        "[gardenId]",
+        "learn",
+        "clear",
+        "route.ts",
+      ),
+      "utf8",
+    );
+
+    assert.match(workspaceSource, /Clear Learn data/);
+    assert.match(workspaceSource, /confirmClearLearnData: true/);
+    assert.match(workspaceSource, /Uploaded source documents/);
+    assert.match(workspaceSource, /notes outside the generated Learning folder will remain/);
+    assert.match(
+      workspaceSource,
+      /!learnState\?\.hasSources && status !== "failed" && !hasLearnData/,
+    );
+    assert.match(clearRouteSource, /requireOwnedClusterFromSlug/);
+    assert.match(clearRouteSource, /body\.confirmClearLearnData !== true/);
+    assert.match(clearRouteSource, /clearAllLearnData/);
+    assert.match(clearRouteSource, /LearnClearConflictError/);
+    assert.match(clearRouteSource, /status: 409/);
+  });
+
+  test("existing gardens escape stale Learning Map review through scoped repair", () => {
+    const workspaceSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+      "utf8",
+    );
+    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+
+    assert.match(
+      workspaceSource,
+      /status === "awaiting_confirmation" && hasExistingLearnContent/,
+    );
+    assert.match(
+      workspaceSource,
+      /expectedJobId: learnState\.job\.id[\s\S]*?if \(!cancelled\) return;[\s\S]*?postLearnAction\("regenerate", \{ mode: "repair" \}\)/,
+    );
+    assert.match(
+      workspaceSource,
+      /status === "failed" \|\| staleReviewForExistingGarden\s*\? handleRepairIssues/,
+    );
+    assert.match(
+      learnSource,
+      /return hasTextbook \|\| latestVersion \? "Repair issues" : "Review Learning Map"/,
+    );
+    assert.doesNotMatch(workspaceSource, /Last repair:/);
+    assert.doesNotMatch(workspaceSource, /Existing learner pages are protected/);
+    assert.doesNotMatch(workspaceSource, /proposedMap\.warnings\.map/);
   });
 
   test("learn panel hides raw council output and allows stop while busy", () => {
@@ -340,7 +440,14 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /baselineBackupEntries/);
     assert.match(learnSource, /"_index\.md",[\s\S]*?"sources\/_index\.md"/);
     assert.doesNotMatch(learnSource, /function deleteLearnDatabaseState/);
+    assert.match(learnSource, /activeLearnAbortControllers\.get\(latest\.id\)\?\.abort/);
+    assert.match(learnSource, /isLearnCancellation\(job\.id, error\)/);
+    assert.match(learnSource, /latest\.id !== expectedJobId/);
+    assert.match(learnSource, /void publishQuartzAfterMutation\(`learn cancellation cleanup/);
     assert.match(cancelRouteSource, /await cancelLatestLearnJob/);
+    assert.match(cancelRouteSource, /expectedJobId/);
+    assert.match(cancelRouteSource, /LearnCancelConflictError/);
+    assert.match(cancelRouteSource, /status: 409/);
   });
 
   test("legacy regenerate maps to scoped repair and never replans", () => {
@@ -353,9 +460,12 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /resetSourceMap \? "full_rebuild" : "plan"/);
     assert.match(regenerateRouteSource, /runLearnRepairOperation/);
     assert.match(regenerateRouteSource, /legacyDefault: "repair"/);
+    assert.match(regenerateRouteSource, /LearnRepairPendingMapError/);
+    assert.match(regenerateRouteSource, /status: 409/);
     assert.doesNotMatch(regenerateRouteSource, /runLearnPlanning/);
     assert.doesNotMatch(regenerateRouteSource, /resetSourceMap: true/);
     assert.doesNotMatch(regenerateRouteSource, /runTextbookGeneration/);
+    assert.match(learnSource, /latestJob\?\.status === "awaiting_confirmation"/);
     assert.match(learnSource, /Scoped repair must use runLearnRepairOperation; it cannot enter the full page-generation loop/);
   });
 });

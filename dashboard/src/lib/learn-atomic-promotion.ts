@@ -64,6 +64,12 @@ export async function promoteStagingGarden(input: {
   stagingGardenDir: string;
   destinationGardenDir: string;
   verifyManifest?: (promotedDir: string) => boolean;
+  /** Last-moment optimistic-concurrency check, run after the incoming tree is
+   * ready and immediately before the destination is renamed. */
+  verifyCurrentDestination?: (destinationDir: string) => boolean;
+  /** Keep the previous tree after a successful swap so a caller can complete
+   * a second transactional resource (for example SQLite) before discarding it. */
+  retainPreviousUntilCallerCommit?: boolean;
   options?: Partial<AtomicPromotionOptions>;
 }): Promise<AtomicPromotionResult> {
   const options = { ...DEFAULT_PROMOTION_OPTIONS, ...input.options };
@@ -97,6 +103,19 @@ export async function promoteStagingGarden(input: {
       //    second move fails, restore the old dest so we never leave a
       //    half-old/half-new tree.
       const destExists = fs.existsSync(destination);
+      if (
+        destExists &&
+        input.verifyCurrentDestination &&
+        !input.verifyCurrentDestination(destination)
+      ) {
+        fs.rmSync(incoming, { recursive: true, force: true });
+        return {
+          promoted: false,
+          destination,
+          attempts,
+          reason: "destination changed while staging; destination untouched",
+        };
+      }
       if (destExists) fs.renameSync(destination, backup);
       try {
         fs.renameSync(incoming, destination);
@@ -112,7 +131,9 @@ export async function promoteStagingGarden(input: {
       let previousPreservedAt: string | undefined;
       if (destExists) {
         previousPreservedAt = backup;
-        try { fs.rmSync(backup, { recursive: true, force: true }); previousPreservedAt = undefined; } catch { /* keep backup */ }
+        if (!input.retainPreviousUntilCallerCommit) {
+          try { fs.rmSync(backup, { recursive: true, force: true }); previousPreservedAt = undefined; } catch { /* keep backup */ }
+        }
       }
       return {
         promoted: true,

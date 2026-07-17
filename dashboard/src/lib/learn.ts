@@ -1,4 +1,6 @@
 import fs from "fs";
+import { createHash } from "crypto";
+import os from "os";
 import path from "path";
 import type OpenAI from "openai";
 import db from "@/lib/db";
@@ -194,7 +196,20 @@ import {
   type StartLearnOperationRequest,
 } from "@/lib/learn-operation-mode";
 import { executeLearnScopedRepair, type LearnScopedRepairResult } from "@/lib/learn-scoped-repair";
-import { acquireGardenLearnLock, releaseGardenLearnLock } from "@/lib/learn-atomic-promotion";
+import {
+  acquireGardenLearnLock,
+  promoteStagingGarden,
+  releaseGardenLearnLock,
+} from "@/lib/learn-atomic-promotion";
+import {
+  clearGeneratedLearnState,
+  type LearnFilesystemClearResult,
+} from "@/lib/learn-clear";
+import {
+  clearLearnDatabaseRecords,
+  type LearnDatabaseClearResult,
+} from "@/lib/learn-clear-database";
+import { clearLearnSemanticChunks } from "@/lib/semantic-retrieval";
 import type { GardenIssue } from "@/lib/garden-build/issues";
 
 export type {
@@ -4249,7 +4264,14 @@ async function cleanupLearnArtifactsAfterCancel({
   jobId: string;
 }): Promise<LearnCleanupResult> {
   const result = rollbackLearnRun({ gardenId, contentPath, jobId });
-  await publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`);
+  // The rollback above is the cancellation commit point. Rebuilding Quartz can
+  // take minutes and must not keep the Cancel request (or its UI) stuck after
+  // the database and garden have already returned to the prior valid state.
+  void publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`).catch(
+    (error) => {
+      console.error("[learn] Background cancellation publication failed:", error);
+    },
+  );
   return result;
 }
 
@@ -7170,6 +7192,15 @@ export async function rebuildEntireGarden(
   return generation.job;
 }
 
+export class LearnRepairPendingMapError extends Error {
+  constructor(jobId: string) {
+    super(
+      `Discard pending Learning Map ${jobId} before starting scoped repair.`,
+    );
+    this.name = "LearnRepairPendingMapError";
+  }
+}
+
 export async function runLearnRepairOperation({
   gardenId,
   userId,
@@ -7187,6 +7218,10 @@ export async function runLearnRepairOperation({
 }): Promise<{ job: LearnJob; repair: LearnScopedRepairResult }> {
   if (request.mode !== "repair" || request.gardenId !== gardenId) {
     throw new Error("Repair request garden/mode does not match the Learn operation.");
+  }
+  const latestJob = getLatestLearnJob(gardenId);
+  if (latestJob?.status === "awaiting_confirmation") {
+    throw new LearnRepairPendingMapError(latestJob.id);
   }
   const context = collectLearnSourceContext(contentPath, gardenId);
   const job = createLearnJob({
@@ -7368,15 +7403,36 @@ export async function runLearnPipeline({
   });
 }
 
+export class LearnCancelConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LearnCancelConflictError";
+  }
+}
+
 export async function cancelLatestLearnJob({
   gardenId,
   contentPath,
+  expectedJobId,
 }: {
   gardenId: string;
   contentPath: string;
+  expectedJobId?: string;
 }): Promise<LearnJob | null> {
   const latest = getLatestLearnJob(gardenId);
-  if (!latest) return null;
+  if (!latest) {
+    if (expectedJobId) {
+      throw new LearnCancelConflictError(
+        "The pending Learn operation no longer exists. Refresh and try again.",
+      );
+    }
+    return null;
+  }
+  if (expectedJobId && latest.id !== expectedJobId) {
+    throw new LearnCancelConflictError(
+      `The visible Learn operation (${expectedJobId}) is no longer current. Refresh before cancelling ${latest.id}.`,
+    );
+  }
   const next = updateLearnJob(latest.id, {
     status: "cancelled",
     currentStep: "Cancelled; latest Learn changes rolled back",
@@ -7401,6 +7457,529 @@ export async function cancelLatestLearnJob({
     deletedVersions: cleanup.deletedVersions,
   });
   return next;
+}
+
+export class LearnClearConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LearnClearConflictError";
+  }
+}
+
+export interface ClearLearnDataResult {
+  gardenId: string;
+  removedPaths: string[];
+  removedLearnerPagePaths: string[];
+  removedVisualIds: string[];
+  removedEventCount: number;
+  resetSourceVisualCount: number;
+  deletedJobs: number;
+  deletedTokenUsageRows: number;
+  deletedMaps: number;
+  deletedVersions: number;
+  deletedSemanticChunks: number;
+  deletedSemanticFtsRows: number;
+  preservedFileCount: number;
+  publicationAttempts: number;
+}
+
+interface GardenFileFingerprints {
+  [relativePath: string]: string;
+}
+
+interface ClearLearnDatabaseResult extends LearnDatabaseClearResult {
+  deletedChunks: number;
+  deletedFtsRows: number;
+}
+
+const STATIC_LEARN_CLEAR_REMOVAL_ROOTS = [
+  ".breadboard/internal",
+  ".breadboard/backups",
+  ".breadboard/build-workspace.json",
+  ".breadboard/canonical-shadow",
+  ".breadboard/debug/failed-pages",
+  ".breadboard/debug/failed-repairs",
+  ".breadboard/learn-run-snapshots",
+  ".breadboard/planning",
+  ".breadboard/quarantine",
+  ".breadboard/source-snapshots",
+  ".breadboard/acceptance-status.json",
+  ".breadboard/active-build-manifest.json",
+  ".breadboard/anchor-critic-decisions.json",
+  ".breadboard/anchor-replacement-plan.json",
+  ".breadboard/anchor-replacement-plan.md",
+  ".breadboard/claims.json",
+  ".breadboard/claims-history.json",
+  ".breadboard/concept-registry.json",
+  ".breadboard/concept-registry-history.json",
+  ".breadboard/critic-issues.json",
+  ".breadboard/critic-loop.json",
+  ".breadboard/critic-report.md",
+  ".breadboard/formula-assignment-plan.json",
+  ".breadboard/formula-identities.json",
+  ".breadboard/learn-build.lock.json",
+  ".breadboard/learning-unit-contract.json",
+  ".breadboard/repair-log.json",
+  ".breadboard/repair-report.md",
+  ".breadboard/render-manifest.json",
+  ".breadboard/scoped-repair.json",
+  ".breadboard/scoped-repair.md",
+  ".breadboard/semantic-migration.json",
+  ".breadboard/source-anchor-evidence.json",
+  ".breadboard/source-anchor-evidence.md",
+  ".breadboard/source-anchor-migration.json",
+  ".breadboard/source-anchor-migration.md",
+  ".breadboard/source-anchors.json",
+  ".breadboard/validation-report.md",
+  ".breadboard/visual-necessity-decisions.json",
+  ".breadboard/visual-necessity-decisions.md",
+  ".breadboard/visualization-plan.json",
+  ".breadboard/visualization-coverage.json",
+  ".breadboard/visualization-coverage.md",
+  ".breadboard/visualization-events.json",
+  ".breadboard/visualization-report.md",
+  ".breadboard/weak-anchor-self-healing.json",
+  ".breadboard/weak-anchor-self-healing.md",
+] as const;
+
+const STATIC_LEARN_CLEAR_MODIFIED_FILES = new Set([
+  ".breadboard/events.jsonl",
+  ".breadboard/source-visuals.json",
+  ".breadboard/visual-index.json",
+]);
+
+function hasIndependentLearnFrontmatter(gardenDir: string, relativePath: string): boolean {
+  if (!relativePath.toLowerCase().endsWith(".md")) return false;
+  const root = path.resolve(gardenDir);
+  const target = path.resolve(root, ...relativePath.split("/"));
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) return false;
+  let markdown: string;
+  try {
+    markdown = fs.readFileSync(target, "utf8");
+  } catch {
+    return false;
+  }
+  const raw = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(markdown)?.[1];
+  if (!raw) return false;
+  if (/^generated(?:By|_by)\s*:\s*["']?(?:learn|learn_button|breadboard_learn)["']?\s*$/im.test(raw)) {
+    return true;
+  }
+  if (/^generatedByBuildId\s*:\s*\S+/im.test(raw)) return true;
+  const hasPageId = /^pageId\s*:\s*\S+/im.test(raw);
+  const hasUnitId = /^(?:learningUnitId|generatedFromUnitId)\s*:\s*\S+/im.test(raw);
+  const hasVersion = /^learningVersion(?:Id)?\s*:\s*\S+/im.test(raw);
+  return (hasPageId && hasUnitId) || (hasUnitId && hasVersion);
+}
+
+function learnClearMutationPolicyViolations(
+  gardenDir: string,
+  result: LearnFilesystemClearResult,
+): string[] {
+  const removedLearnerPages = new Set(
+    result.removedLearnerPagePaths.map((item) => normalizeRelPath(item).toLowerCase()),
+  );
+  const removedVisualRoots = result.removedVisualIds.map(
+    (visualId) => `.breadboard/visuals/${visualId}`.toLowerCase(),
+  );
+  const isStaticRemoval = (relativePath: string): boolean =>
+    STATIC_LEARN_CLEAR_REMOVAL_ROOTS.some(
+      (root) => relativePath === root || relativePath.startsWith(`${root}/`),
+    );
+  const violations: string[] = [];
+
+  for (const item of result.removedPaths) {
+    const normalized = normalizeRelPath(item).toLowerCase();
+    const isLearningTree = normalized === "learning" || normalized.startsWith("learning/");
+    const isOwnedVisual = removedVisualRoots.some(
+      (root) => normalized === root || normalized === `${root}.json` || normalized.startsWith(`${root}/`),
+    );
+    const isVerifiedExternalPage =
+      removedLearnerPages.has(normalized) &&
+      !normalized.startsWith("sources/") &&
+      !normalized.startsWith("assets/") &&
+      !normalized.startsWith(".breadboard/") &&
+      hasIndependentLearnFrontmatter(gardenDir, normalizeRelPath(item));
+    if (!isLearningTree && !isStaticRemoval(normalized) && !isOwnedVisual && !isVerifiedExternalPage) {
+      violations.push(`cleanup requested an unauthorized removal: ${item}`);
+    }
+  }
+  for (const item of result.modifiedPaths) {
+    const normalized = normalizeRelPath(item).toLowerCase();
+    if (!STATIC_LEARN_CLEAR_MODIFIED_FILES.has(normalized)) {
+      violations.push(`cleanup requested an unauthorized modification: ${item}`);
+    }
+  }
+  return violations;
+}
+
+function fingerprintGardenFiles(gardenDir: string): GardenFileFingerprints {
+  const fingerprints: GardenFileFingerprints = {};
+  if (!fs.existsSync(gardenDir)) return fingerprints;
+
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolutePath);
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        const relativePath = normalizeRelPath(path.relative(gardenDir, absolutePath));
+        fingerprints[relativePath] = createHash("sha256")
+          .update(`symlink:${fs.readlinkSync(absolutePath)}`)
+          .digest("hex");
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relativePath = normalizeRelPath(path.relative(gardenDir, absolutePath));
+      fingerprints[relativePath] = createHash("sha256")
+        .update(fs.readFileSync(absolutePath))
+        .digest("hex");
+    }
+  };
+  visit(gardenDir);
+  return fingerprints;
+}
+
+function pathWithinAllowedMutation(
+  relativePath: string,
+  allowedMutationRoots: readonly string[],
+): boolean {
+  const normalized = normalizeRelPath(relativePath).toLowerCase();
+  return allowedMutationRoots.some((root) => {
+    const normalizedRoot = normalizeRelPath(root).replace(/\/$/, "").toLowerCase();
+    return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}/`);
+  });
+}
+
+function gardenClearBoundaryViolations({
+  before,
+  candidateGardenDir,
+  allowedMutationRoots,
+}: {
+  before: GardenFileFingerprints;
+  candidateGardenDir: string;
+  allowedMutationRoots: readonly string[];
+}): string[] {
+  const after = fingerprintGardenFiles(candidateGardenDir);
+  const violations: string[] = [];
+
+  for (const [relativePath, fingerprint] of Object.entries(before)) {
+    if (pathWithinAllowedMutation(relativePath, allowedMutationRoots)) continue;
+    if (!after[relativePath]) violations.push(`protected file was removed: ${relativePath}`);
+    else if (after[relativePath] !== fingerprint) {
+      violations.push(`protected file changed: ${relativePath}`);
+    }
+  }
+  for (const relativePath of Object.keys(after)) {
+    if (before[relativePath] || pathWithinAllowedMutation(relativePath, allowedMutationRoots)) {
+      continue;
+    }
+    violations.push(`unexpected file was created: ${relativePath}`);
+  }
+  return violations;
+}
+
+async function restoreGardenAfterClearDatabaseFailure({
+  gardenDir,
+  previousGardenDir,
+  clearId,
+}: {
+  gardenDir: string;
+  previousGardenDir: string;
+  clearId: string;
+}): Promise<{ restored: boolean; reason: string }> {
+  const parent = path.dirname(path.resolve(gardenDir));
+  const previous = path.resolve(previousGardenDir);
+  if (path.dirname(previous) !== parent) {
+    return { restored: false, reason: "previous garden path escaped the garden parent" };
+  }
+  const displaced = path.resolve(
+    parent,
+    `.${path.basename(gardenDir)}.failed-clear-${clearId}`,
+  );
+  if (path.dirname(displaced) !== parent) {
+    return { restored: false, reason: "computed recovery path escaped the garden parent" };
+  }
+
+  let lastError = "";
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    let currentMovedAside = false;
+    try {
+      fs.rmSync(displaced, { recursive: true, force: true });
+      if (fs.existsSync(gardenDir)) {
+        fs.renameSync(gardenDir, displaced);
+        currentMovedAside = true;
+      }
+      fs.renameSync(previous, gardenDir);
+      try {
+        fs.rmSync(displaced, { recursive: true, force: true });
+      } catch {
+        // The previous garden is already restored. A locked discarded clear
+        // projection can be cleaned up later without risking source content.
+      }
+      return { restored: true, reason: `restored previous garden on attempt ${attempt}` };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      if (currentMovedAside && !fs.existsSync(gardenDir) && fs.existsSync(displaced)) {
+        try {
+          fs.renameSync(displaced, gardenDir);
+        } catch {
+          // Retry can still recover from either sibling copy.
+        }
+      }
+      if (attempt < 6) {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, Math.min(1_500, 100 * 2 ** (attempt - 1))));
+      }
+    }
+  }
+  return {
+    restored: false,
+    reason: `could not restore the previous garden after 6 attempts: ${lastError}`,
+  };
+}
+
+/**
+ * Permanently remove generated Learn state for one garden. Source documents,
+ * extracted source assets, and ordinary notes outside the generated Learning
+ * tree are protected by a byte-fingerprint boundary before atomic promotion.
+ */
+export async function clearAllLearnData({
+  gardenId,
+  contentPath,
+  confirmClearLearnData,
+}: {
+  gardenId: string;
+  contentPath: string;
+  confirmClearLearnData: true;
+}): Promise<ClearLearnDataResult> {
+  if (confirmClearLearnData !== true) {
+    throw new Error("Clearing Learn data requires explicit confirmation.");
+  }
+  ensureLearnTables();
+
+  const jobsAtStart = db
+    .prepare("SELECT id, status FROM learn_jobs WHERE garden_id = ? ORDER BY updated_at DESC")
+    .all(gardenId) as Array<{ id: string; status: LearnStatus }>;
+  const jobIdsAtStart = new Set(jobsAtStart.map((job) => job.id));
+  const activeJob = jobsAtStart.find((job) => activeStatus(job.status));
+  if (activeJob) {
+    throw new LearnClearConflictError(
+      `Stop the active Learn operation (${activeJob.id}) before clearing Learn data.`,
+    );
+  }
+
+  const gardenDir = clusterPath(contentPath, gardenId);
+  fs.mkdirSync(gardenDir, { recursive: true });
+  const clearId = makeId("learn_clear");
+  const lock = acquireGardenLearnLock(gardenDir, {
+    gardenSlug: gardenId,
+    jobId: clearId,
+    buildId: `clear:${clearId}`,
+  });
+  if (!lock.acquired) {
+    throw new LearnClearConflictError(
+      `Another Learn operation (${lock.conflict.jobId}) is still writing this garden. Stop it before clearing Learn data.`,
+    );
+  }
+
+  let temporaryRoot: string | undefined;
+  try {
+    temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-learn-clear-"));
+    const jobsAfterLock = db
+      .prepare("SELECT id, status FROM learn_jobs WHERE garden_id = ? ORDER BY updated_at DESC")
+      .all(gardenId) as Array<{ id: string; status: LearnStatus }>;
+    const racingJob = jobsAfterLock.find(
+      (job) => !jobIdsAtStart.has(job.id) || activeStatus(job.status),
+    );
+    if (racingJob) {
+      throw new LearnClearConflictError(
+        `A Learn operation (${racingJob.id}) started while Clear was acquiring the garden. Stop it and try again.`,
+      );
+    }
+
+    const fingerprintsBefore = fingerprintGardenFiles(gardenDir);
+    const stagingContentPath = path.join(temporaryRoot, "content");
+    const stagingGardenDir = path.join(stagingContentPath, gardenId);
+    fs.mkdirSync(stagingContentPath, { recursive: true });
+    fs.cpSync(gardenDir, stagingGardenDir, { recursive: true, force: true });
+
+    const filesystemResult = clearGeneratedLearnState(stagingGardenDir);
+    const mutationPolicyViolations = learnClearMutationPolicyViolations(
+      gardenDir,
+      filesystemResult,
+    );
+    if (mutationPolicyViolations.length > 0) {
+      throw new Error(
+        `Learn clear was rolled back by the static mutation policy: ${mutationPolicyViolations
+          .slice(0, 6)
+          .join("; ")}`,
+      );
+    }
+    const stagingLock = acquireGardenLearnLock(stagingGardenDir, {
+      gardenSlug: gardenId,
+      jobId: clearId,
+      buildId: `clear:${clearId}`,
+    });
+    if (!stagingLock.acquired) {
+      throw new LearnClearConflictError(
+        `The staged garden unexpectedly contains another Learn lock (${stagingLock.conflict.jobId}).`,
+      );
+    }
+    refreshClusterIndex(stagingContentPath, gardenId, { migrateSources: false });
+
+    const allowedMutationRoots = Array.from(
+      new Set([
+        ...filesystemResult.removedPaths,
+        ...filesystemResult.modifiedPaths,
+        "_index.md",
+        "sources/_index.md",
+      ]),
+    );
+    const stagingViolations = gardenClearBoundaryViolations({
+      before: fingerprintsBefore,
+      candidateGardenDir: stagingGardenDir,
+      allowedMutationRoots,
+    });
+    if (stagingViolations.length > 0) {
+      throw new Error(
+        `Learn clear was rolled back because protected garden content changed: ${stagingViolations
+          .slice(0, 6)
+          .join("; ")}`,
+      );
+    }
+
+    let promotedViolations: string[] = [];
+    let destinationViolations: string[] = [];
+    let concurrentLearnJobId: string | undefined;
+    const publication = await promoteStagingGarden({
+      stagingGardenDir,
+      destinationGardenDir: gardenDir,
+      retainPreviousUntilCallerCommit: true,
+      verifyManifest: (candidateDir) => {
+        promotedViolations = gardenClearBoundaryViolations({
+          before: fingerprintsBefore,
+          candidateGardenDir: candidateDir,
+          allowedMutationRoots,
+        });
+        return promotedViolations.length === 0;
+      },
+      verifyCurrentDestination: (currentDestinationDir) => {
+        const currentJobs = db
+          .prepare("SELECT id, status FROM learn_jobs WHERE garden_id = ?")
+          .all(gardenId) as Array<{ id: string; status: LearnStatus }>;
+        concurrentLearnJobId = currentJobs.find(
+          (job) => !jobIdsAtStart.has(job.id) || activeStatus(job.status),
+        )?.id;
+        if (concurrentLearnJobId) return false;
+        destinationViolations = gardenClearBoundaryViolations({
+          before: fingerprintsBefore,
+          candidateGardenDir: currentDestinationDir,
+          allowedMutationRoots: [],
+        });
+        return destinationViolations.length === 0;
+      },
+    });
+    if (!publication.promoted) {
+      const violations = [...destinationViolations, ...promotedViolations];
+      const violationDetail = concurrentLearnJobId
+        ? ` A concurrent Learn operation started (${concurrentLearnJobId}).`
+        : violations.length > 0
+        ? ` ${violations.slice(0, 6).join("; ")}`
+        : "";
+      throw new Error(`${publication.reason}${violationDetail}`);
+    }
+
+    let databaseResult: ClearLearnDatabaseResult;
+    try {
+      databaseResult = db.transaction(() => {
+        const currentJobs = db
+          .prepare("SELECT id, status FROM learn_jobs WHERE garden_id = ?")
+          .all(gardenId) as Array<{ id: string; status: LearnStatus }>;
+        const concurrentJob = currentJobs.find(
+          (job) => !jobIdsAtStart.has(job.id) || activeStatus(job.status),
+        );
+        if (concurrentJob) {
+          throw new LearnClearConflictError(
+            `A concurrent Learn operation started (${concurrentJob.id}); its database state was not cleared.`,
+          );
+        }
+        const semantic = clearLearnSemanticChunks(
+          {
+            gardenSlug: gardenId,
+            verifiedGeneratedPageRelPaths: filesystemResult.removedLearnerPagePaths,
+          },
+          db,
+        );
+        const learnRows = clearLearnDatabaseRecords(db, gardenId);
+        return {
+          ...semantic,
+          ...learnRows,
+        };
+      })();
+    } catch (error) {
+      const previousGardenDir = publication.previousPreservedAt;
+      const recovery = previousGardenDir
+        ? await restoreGardenAfterClearDatabaseFailure({
+            gardenDir,
+            previousGardenDir,
+            clearId,
+          })
+        : { restored: false, reason: "atomic promotion did not retain a previous garden" };
+      if (!recovery.restored) {
+        const databaseMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Learn data database cleanup failed (${databaseMessage}), and filesystem recovery failed: ${recovery.reason}`,
+        );
+      }
+      throw error;
+    }
+
+    if (publication.previousPreservedAt) {
+      const previousGardenDir = path.resolve(publication.previousPreservedAt);
+      try {
+        if (path.dirname(previousGardenDir) !== path.dirname(path.resolve(gardenDir))) {
+          throw new Error("previous garden cleanup path escaped the garden parent");
+        }
+        fs.rmSync(previousGardenDir, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(
+          `[learn] Previous garden cleanup remains at ${publication.previousPreservedAt}:`,
+          error,
+        );
+      }
+    }
+
+    await publishQuartzAfterMutation(`cleared Learn data in ${gardenId}`);
+    const preservedFileCount = Object.keys(fingerprintsBefore).filter(
+      (relativePath) => !pathWithinAllowedMutation(relativePath, allowedMutationRoots),
+    ).length;
+    return {
+      gardenId,
+      removedPaths: filesystemResult.removedPaths,
+      removedLearnerPagePaths: filesystemResult.removedLearnerPagePaths,
+      removedVisualIds: filesystemResult.removedVisualIds,
+      removedEventCount: filesystemResult.removedEventCount,
+      resetSourceVisualCount: filesystemResult.resetSourceVisualCount,
+      deletedJobs: databaseResult.deletedJobs,
+      deletedTokenUsageRows: databaseResult.deletedTokenUsageRows,
+      deletedMaps: databaseResult.deletedMaps,
+      deletedVersions: databaseResult.deletedVersions,
+      deletedSemanticChunks: databaseResult.deletedChunks,
+      deletedSemanticFtsRows: databaseResult.deletedFtsRows,
+      preservedFileCount,
+      publicationAttempts: publication.attempts,
+    };
+  } finally {
+    try {
+      if (temporaryRoot) fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    } catch {
+      // The clear result is already committed; a locked temp copy can be
+      // reclaimed by the operating system later.
+    }
+    releaseGardenLearnLock(gardenDir, clearId);
+  }
 }
 
 function activeStatus(status: LearnStatus): boolean {
@@ -7432,7 +8011,9 @@ function buttonLabelForSnapshot({
   sourceSetChanged: boolean;
 }): string {
   if (latestJob && activeStatus(latestJob.status)) return "Learning...";
-  if (latestJob?.status === "awaiting_confirmation") return "Review Learning Map";
+  if (latestJob?.status === "awaiting_confirmation") {
+    return hasTextbook || latestVersion ? "Repair issues" : "Review Learning Map";
+  }
   if (sourceSetChanged && (hasTextbook || latestVersion)) return "Learn";
   if (confirmedMap && !latestVersion) return "Learn";
   if (hasTextbook || latestVersion) return "Repair issues";

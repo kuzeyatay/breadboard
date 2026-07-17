@@ -122,6 +122,34 @@ describe("source document ingest path", () => {
     assert.match(knowledgeSource, /internal: "true"/);
   });
 
+  test("cluster index refresh can preserve root sources and renders an honest empty Learn state", () => {
+    const knowledgeSource = fs.readFileSync(
+      path.join(repoRoot, "src", "lib", "knowledge.ts"),
+      "utf8",
+    );
+
+    assert.match(
+      knowledgeSource,
+      /export function refreshClusterIndex\([\s\S]*?options: \{ migrateSources\?: boolean \} = \{\}/,
+    );
+    assert.match(
+      knowledgeSource,
+      /if \(options\.migrateSources !== false\) \{[\s\S]*?migrateRootSourceDocumentsToSources\(clusterDir\)/,
+    );
+    assert.match(
+      knowledgeSource,
+      /scanClusterKnowledge\(contentPath, clusterSlug, \{[\s\S]*?migrateSources: false/,
+    );
+    assert.match(
+      knowledgeSource,
+      /const emptyLearnState = learnerPages\.length === 0 && !hasTopicOverview/,
+    );
+    assert.match(
+      knowledgeSource,
+      /emptyLearnState \? "- No lessons yet\." : `- \$\{wikilinkForRelPath\(overviewLink, "Topic Overview"\)\}`/,
+    );
+  });
+
   test("markdown uploads go through the source ingest path", () => {
     const ingestRoute = fs.readFileSync(
       path.join(repoRoot, "src", "app", "api", "ingest", "route.ts"),

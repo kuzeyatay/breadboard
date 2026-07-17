@@ -1052,14 +1052,15 @@ export default function WorkspaceClient({
   }, [documents, loadingDocs]);
 
   useEffect(() => {
-    const active = isLearnActive(learnState?.job?.status) || learnBusy;
+    const active =
+      isLearnActive(learnState?.job?.status) || learnBusy || learnCancelBusy;
     if (!active) return;
     void fetchLearnStatus();
     const id = window.setInterval(() => {
       void fetchLearnStatus();
     }, 2000);
     return () => window.clearInterval(id);
-  }, [fetchLearnStatus, learnBusy, learnState?.job?.status]);
+  }, [fetchLearnStatus, learnBusy, learnCancelBusy, learnState?.job?.status]);
 
   useEffect(() => {
     setLearnTimerNowMs(Date.now());
@@ -2042,7 +2043,7 @@ export default function WorkspaceClient({
   // ── Chat submit ─────────────────────────────────────────────────────────────
 
   const postLearnAction = useCallback(async (
-    endpoint: "plan" | "confirm" | "generate" | "regenerate" | "rebuild" | "cancel",
+    endpoint: "plan" | "confirm" | "generate" | "regenerate" | "rebuild" | "clear" | "cancel",
     body: Record<string, unknown> = {},
   ) => {
     const isCancel = endpoint === "cancel";
@@ -2080,6 +2081,14 @@ export default function WorkspaceClient({
         throw new Error(data.error ?? "Learn action failed");
       }
 
+      if (endpoint === "clear") {
+        lastSyncedLearnSelectionRef.current = null;
+        autoConfirmingLearnJobRef.current = null;
+        learnSkipManualReviewRef.current = false;
+        setLearnIncludedSourceSlugs(null);
+        setLearnSkipManualReview(false);
+        setLearnDocumentMenuOpen(false);
+      }
       await fetchLearnStatus();
       await fetchDocuments();
       setGraphRefreshVersion((value) => value + 1);
@@ -2092,6 +2101,11 @@ export default function WorkspaceClient({
         addToast("Issues repaired; unaffected pages were preserved", "success");
       } else if (endpoint === "rebuild") {
         addToast("Garden rebuilt", "success");
+      } else if (endpoint === "clear") {
+        addToast(
+          "Learn data cleared; sources and non-Learn notes were preserved",
+          "success",
+        );
       } else if (
         endpoint === "confirm" ||
         endpoint === "generate"
@@ -2101,12 +2115,14 @@ export default function WorkspaceClient({
         setLearnPanelOpen(false);
         addToast("Learn job cancelled");
       }
+      return true;
     } catch (error) {
       await fetchLearnStatus();
       const message = error instanceof Error ? error.message : "Learn action failed";
-      if (isCancel) {
+      if (isCancel || endpoint === "clear") {
         addToast(message);
       }
+      return false;
     } finally {
       if (isCancel) {
         setLearnCancelBusy(false);
@@ -2131,12 +2147,16 @@ export default function WorkspaceClient({
   async function handleCancelLearn() {
     const status = learnState?.job?.status;
     if (learnCancelBusy || (!isLearnActive(status) && status !== "awaiting_confirmation")) return;
-    await postLearnAction("cancel");
+    await postLearnAction("cancel", { expectedJobId: learnState?.job?.id });
   }
 
   async function handleLearnPrimary() {
-    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status)) return;
     if (learnState?.job?.status === "awaiting_confirmation") {
+      if (hasExistingLearnContent) {
+        await handleRepairIssues();
+        return;
+      }
       setLearnPanelOpen(true);
       return;
     }
@@ -2167,7 +2187,13 @@ export default function WorkspaceClient({
   }
 
   async function handleRepairIssues() {
-    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnState?.job?.status === "awaiting_confirmation") {
+      const cancelled = await postLearnAction("cancel", {
+        expectedJobId: learnState.job.id,
+      });
+      if (!cancelled) return;
+    }
     await postLearnAction("regenerate", { mode: "repair" });
   }
 
@@ -2178,6 +2204,19 @@ export default function WorkspaceClient({
     );
     if (!confirmed) return;
     await postLearnAction("rebuild", { mode: "full_rebuild", forceFullRebuild: true });
+  }
+
+  async function handleClearLearnData() {
+    if (
+      learnBusy ||
+      learnCancelBusy ||
+      isLearnActive(learnState?.job?.status)
+    ) return;
+    const confirmed = window.confirm(
+      "Clear all Learn data for this garden?\n\nThis permanently removes the Learning Map, Learning Unit Contract, generated learner pages and interactive visuals, validation and repair reports, Learn job history, and Learn snapshots.\n\nUploaded source documents and notes outside the generated Learning folder will remain. This cannot be undone.",
+    );
+    if (!confirmed) return;
+    await postLearnAction("clear", { confirmClearLearnData: true });
   }
 
   async function handleGenerateAfterCancellation() {
@@ -2574,6 +2613,14 @@ export default function WorkspaceClient({
     const status = job?.status ?? "idle";
     const active = isLearnActive(status);
     const proposedMap = learnState?.proposedLearningMap ?? null;
+    const hasLearnData = Boolean(
+      job ||
+      proposedMap ||
+      learnState?.confirmedLearningMapId ||
+      learnState?.latestTextbookVersionId ||
+      learnState?.hasTextbook ||
+      learnState?.scopedRepair,
+    );
     const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
     const displayProgress = status === "complete" || status === "failed" ? 100 : progress;
     const hasSelectedLearnSources = effectiveLearnIncludedSourceSlugs.length > 0;
@@ -2581,13 +2628,25 @@ export default function WorkspaceClient({
       Boolean(learnState?.hasSources) &&
       hasSelectedLearnSources &&
       !learnBusy &&
+      !learnCancelBusy &&
       !active;
     const shouldShowPanel = learnPanelOpen;
     const panelExpanded = learnPanelOpen;
+    const staleReviewForExistingGarden =
+      status === "awaiting_confirmation" && hasExistingLearnContent;
     const canClosePanel =
-      !active && (status === "complete" || status === "failed" || status === "cancelled");
+      !active &&
+      (status === "idle" ||
+        status === "complete" ||
+        status === "failed" ||
+        status === "cancelled" ||
+        staleReviewForExistingGarden);
     const showPrimaryAction =
-      !canClosePanel || status === "failed" || status === "cancelled";
+      status === "idle" ||
+      !canClosePanel ||
+      status === "failed" ||
+      status === "cancelled" ||
+      staleReviewForExistingGarden;
     const learnDocumentSelectionLocked =
       learnBusy || active || status === "awaiting_confirmation";
     const activeStageMessage: Partial<Record<LearnStatus, string>> = {
@@ -2611,12 +2670,16 @@ export default function WorkspaceClient({
           : status === "cancelled"
             ? "Learn run cancelled."
             : status === "awaiting_confirmation"
-              ? "Learning Map ready for review."
+              ? staleReviewForExistingGarden
+                ? "Ready to repair current validation issues."
+                : "Learning Map ready for review."
               : learnState?.hasTextbook
                 ? "Ready to repair current validation issues."
                 : "Ready to generate lessons.";
     const stageMessage =
-      job?.currentStep || activeStageMessage[status] || (active ? "Creating lessons" : "");
+      status === "cancelled" || staleReviewForExistingGarden
+        ? ""
+        : job?.currentStep || activeStageMessage[status] || (active ? "Creating lessons" : "");
     const statusDetails = [
       stageMessage || null,
       job?.currentSectionTitle ? `Section: ${job.currentSectionTitle}.` : null,
@@ -2624,7 +2687,7 @@ export default function WorkspaceClient({
       !hasSelectedLearnSources
         ? `No source documents selected from ${sourceDocuments.length} available.`
         : null,
-      status === "awaiting_confirmation"
+      status === "awaiting_confirmation" && !staleReviewForExistingGarden
         ? "Pipeline paused for review; timer stopped."
         : null,
     ].filter((detail): detail is string => Boolean(detail));
@@ -2657,39 +2720,26 @@ export default function WorkspaceClient({
           .join(" · ")
       : "";
 
-    if (!isOwner || (!learnState?.hasSources && status !== "failed")) return null;
+    if (
+      !isOwner ||
+      (!learnState?.hasSources && status !== "failed" && !hasLearnData)
+    ) return null;
     if (!shouldShowPanel) return null;
 
     return (
       <section className="mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-white">Learn</p>
+        <div className="flex flex-col gap-2">
+          <div className="flex min-h-8 items-center justify-between gap-3">
+            <div className="flex shrink-0 items-center gap-2">
+              <p className="text-sm font-medium text-white">Learn</p>
               {learnState?.sourceSetChanged && (
                 <span className="rounded-md border border-amber-700/50 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
                   New sources
                 </span>
               )}
             </div>
-            <div className="mt-1" aria-live="polite" aria-atomic="true">
-              {statusMessage ? (
-                <p className="text-xs leading-5 text-gray-400">{statusMessage}</p>
-              ) : null}
-              {statusDetails.length > 0 ? (
-                <p className="text-[11px] leading-5 text-gray-600">
-                  {statusDetails.join(" ")}
-                </p>
-              ) : null}
-              {learnState?.scopedRepair ? (
-                <p className="mt-1 text-[11px] leading-5 text-yellow-300/80">
-                  Last repair: {learnState.scopedRepair.issueCount} issue{learnState.scopedRepair.issueCount === 1 ? "" : "s"}, {learnState.scopedRepair.visualIds.length} visual block{learnState.scopedRepair.visualIds.length === 1 ? "" : "s"}, {learnState.scopedRepair.pageIds.length} affected page{learnState.scopedRepair.pageIds.length === 1 ? "" : "s"}; {learnState.scopedRepair.unaffectedPageHashesVerified ? "unaffected pages preserved" : "preservation check failed"}. Blockers {learnState.scopedRepair.blockersBefore} → {learnState.scopedRepair.blockersAfter}.
-                </p>
-              ) : null}
-            </div>
-          </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
             <div className="relative">
               <button
                 type="button"
@@ -2840,7 +2890,7 @@ export default function WorkspaceClient({
                 {learnBusy ? "Repairing..." : "Repair issues"}
               </button>
             )}
-            {(status === "complete" || status === "failed" || status === "cancelled") && (
+            {(status === "complete" || status === "failed" || status === "cancelled" || status === "awaiting_confirmation") && (
               <button
                 type="button"
                 onClick={handleFullRebuild}
@@ -2851,21 +2901,35 @@ export default function WorkspaceClient({
                 Rebuild entire garden
               </button>
             )}
+            {hasLearnData && (
+              <button
+                type="button"
+                onClick={handleClearLearnData}
+                disabled={learnBusy || learnCancelBusy || active}
+                className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
+              >
+                Clear Learn data
+              </button>
+            )}
             {showPrimaryAction && (
               <button
                 type="button"
                 onClick={
-                  status === "failed"
+                  status === "failed" || staleReviewForExistingGarden
                     ? handleRepairIssues
                     : status === "cancelled"
                       ? handleGenerateAfterCancellation
                       : handleLearnPrimary
                 }
-                disabled={!canStart && status !== "awaiting_confirmation"}
+                disabled={
+                  learnCancelBusy ||
+                  (!canStart && status !== "awaiting_confirmation")
+                }
                 className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {learnBusy || active ? <Spinner className="h-3.5 w-3.5" /> : null}
-                {status === "failed"
+                {status === "failed" || staleReviewForExistingGarden
                   ? learnBusy
                     ? "Repairing..."
                     : "Repair issues"
@@ -2892,7 +2956,8 @@ export default function WorkspaceClient({
                 {learnCancelBusy ? "Stopping..." : "Stop"}
               </button>
             )}
-            {!active && status !== "awaiting_confirmation" && (
+            {!active &&
+              (status !== "awaiting_confirmation" || staleReviewForExistingGarden) && (
               <button
                 type="button"
                 onClick={() => setLearnPanelOpen(false)}
@@ -2912,6 +2977,8 @@ export default function WorkspaceClient({
               </button>
             )}
           </div>
+          </div>
+
         </div>
 
         {!hasSelectedLearnSources ? (
@@ -2943,6 +3010,19 @@ export default function WorkspaceClient({
             ) : null}
             {status === "failed" && job?.error ? (
               <p className="mt-2 text-xs text-red-300">{job.error}</p>
+            ) : null}
+          </div>
+        )}
+
+        {(statusMessage || statusDetails.length > 0) && (
+          <div className="mt-2 min-w-0" aria-live="polite" aria-atomic="true">
+            {statusMessage ? (
+              <p className="text-xs leading-5 text-gray-400">{statusMessage}</p>
+            ) : null}
+            {statusDetails.length > 0 ? (
+              <p className="text-[11px] leading-5 text-gray-600">
+                {statusDetails.join(" ")}
+              </p>
             ) : null}
           </div>
         )}
@@ -3026,7 +3106,10 @@ export default function WorkspaceClient({
           </div>
         ) : null}
 
-        {panelExpanded && proposedMap && status === "awaiting_confirmation" && (
+        {panelExpanded &&
+          proposedMap &&
+          status === "awaiting_confirmation" &&
+          !staleReviewForExistingGarden && (
           <div className="mt-4 border-t border-gray-800 pt-3">
             <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -3036,31 +3119,23 @@ export default function WorkspaceClient({
                 ) : null}
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
-                {hasExistingLearnContent ? (
-                  <span className="max-w-sm text-xs leading-5 text-yellow-300/80">
-                    Existing learner pages are protected. Cancel this map, then use Repair issues.
-                  </span>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handleConfirmAndGenerate}
-                      disabled={learnBusy}
-                      className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                      Confirm and Learn
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleRegenerateLearningMap}
-                      disabled={learnBusy}
-                      className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Regenerate Learning Map
-                    </button>
-                  </>
-                )}
+                <button
+                  type="button"
+                  onClick={handleConfirmAndGenerate}
+                  disabled={learnBusy}
+                  className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
+                  Confirm and Learn
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRegenerateLearningMap}
+                  disabled={learnBusy}
+                  className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Regenerate Learning Map
+                </button>
                 <button
                   type="button"
                   onClick={handleCancelLearn}
@@ -3106,15 +3181,6 @@ export default function WorkspaceClient({
                 </li>
               ))}
             </ol>
-            {proposedMap.warnings && proposedMap.warnings.length > 0 ? (
-              <div className="mt-3 rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2">
-                {proposedMap.warnings.map((warning, index) => (
-                  <p key={`${warning}-${index}`} className="text-xs text-amber-200">
-                    {warning}
-                  </p>
-                ))}
-              </div>
-            ) : null}
           </div>
         )}
 

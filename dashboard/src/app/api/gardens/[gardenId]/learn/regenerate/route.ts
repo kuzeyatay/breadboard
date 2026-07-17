@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { runLearnRepairOperation } from "@/lib/learn";
+import { LearnRepairPendingMapError, runLearnRepairOperation } from "@/lib/learn";
 import { InvalidLearnOperationRequestError, parseStartLearnOperationRequest } from "@/lib/learn-operation-mode";
 import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
@@ -38,6 +38,9 @@ export async function POST(
     });
     return NextResponse.json({ success: true, operation: "repair", repair: result.repair, job: result.job });
   } catch (error) {
+    if (error instanceof LearnRepairPendingMapError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return routeErrorResponse(error);
   }
 }

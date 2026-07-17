@@ -316,7 +316,18 @@ start.bat
 This starts:
 - **ChatMock** on port `8765`
 - **Quartz** on port `8081`
+- **OpenHarness** on port `4096` (interactive agent runtime; requires Bun)
 - **Dashboard** on port `3000`
+
+> **OpenHarness** is the interactive AI agent runtime behind the dashboard AI
+> terminal, garden chat, and Quartz page AI. It runs as a separate local service
+> and is optional: with `OPENHARNESS_ENABLED=false` (the default) the dashboard
+> starts normally and the interactive surfaces fall back to their prior behavior.
+> Generation/learning workflows never route through OpenHarness. See
+> [docs/OPENHARNESS_INTEGRATION.md](docs/OPENHARNESS_INTEGRATION.md).
+>
+> Cross-platform: `npm run dev` (root) starts all four services; `npm run
+> dev:openharness` starts only OpenHarness.
 
 #### Manual Startup
 

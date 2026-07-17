@@ -261,14 +261,15 @@ describe("loop policy, UI, and regression scope", () => {
     assert.match(source, /auditFinalGardenState\(buildFinalGardenState\(staging/);
     assert.doesNotMatch(source, /runTextbookGeneration|runLearnPlanning|rebuildEntireGarden/);
   });
-  test("30-34. UI explains repair, separates rebuild, previews scope, and reports preservation", () => {
+  test("30-34. UI explains repair, separates rebuild, and hides stale yellow diagnostics", () => {
     const source = fs.readFileSync(path.join(repoRoot, "src/app/gardens/[clusterSlug]/workspace-client.tsx"), "utf8");
     assert.match(source, /Repair issues/);
     assert.match(source, /unaffected content is preserved/);
     assert.match(source, /Rebuild entire garden/);
     assert.match(source, /This will regenerate the Learning Map, Learning Unit Contract, all learner pages, and interactive visuals/);
-    assert.match(source, /Last repair:[\s\S]*?visual block[\s\S]*?affected page[\s\S]*?unaffected pages preserved/);
-    assert.match(source, /Blockers \{learnState\.scopedRepair\.blockersBefore\} → \{learnState\.scopedRepair\.blockersAfter\}/);
+    assert.doesNotMatch(source, /Last repair:/);
+    assert.doesNotMatch(source, /Existing learner pages are protected/);
+    assert.doesNotMatch(source, /proposedMap\.warnings\.map/);
   });
   test("current test2 visual regression selects only the named stable units", () => {
     const state = canonicalState(25);

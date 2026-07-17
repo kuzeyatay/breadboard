@@ -20,7 +20,7 @@ import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
 import type { ChatmockTarget } from "@/lib/chatmock-target";
 import NavBar from "@/app/components/navbar";
 import ChatmockTargetSwitch from "@/app/components/chatmock-target-switch";
-import KnowledgeTerminal from "@/app/components/knowledge-terminal";
+import DashboardAgentTerminal from "@/app/components/openharness/dashboard-agent-terminal";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import { useToast, Toaster } from "@/app/components/toast";
@@ -2424,7 +2424,7 @@ export default function DashboardClient({
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
 
-      <KnowledgeTerminal scope={clusterView === "public" ? "public" : "mine"} />
+      <DashboardAgentTerminal scope={clusterView === "public" ? "public" : "mine"} />
     </div>
   );
 }

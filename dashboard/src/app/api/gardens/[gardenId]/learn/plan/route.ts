@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { runLearnPipeline } from "@/lib/learn";
+import { getLearnStatusSnapshot, runLearnPipeline } from "@/lib/learn";
 import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
@@ -22,6 +22,19 @@ export async function POST(
     }
 
     const body = await request.json().catch(() => ({}));
+    const status = getLearnStatusSnapshot({
+      gardenId: cluster.slug,
+      contentPath,
+    });
+    if (status.latestTextbookVersionId || status.hasTextbook) {
+      return NextResponse.json(
+        {
+          error:
+            "This garden already has learner content. Use Repair issues, or explicitly confirm Rebuild entire garden to recreate it.",
+        },
+        { status: 409 },
+      );
+    }
     const includedSourceIds = Array.isArray(body.includedSourceIds)
       ? body.includedSourceIds.filter((sourceId: unknown): sourceId is string => typeof sourceId === "string")
       : undefined;

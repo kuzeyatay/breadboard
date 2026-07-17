@@ -17,7 +17,7 @@ test("two color-button clicks toggle document chat selection", () => {
   assert.match(workspaceSource, /pendingTimer !== undefined[\s\S]*?toggleSelectedDocument\(slug\)/);
   assert.match(workspaceSource, /handleDocumentColorButtonClick\(doc\.slug, isSource\)/);
   assert.match(workspaceSource, /Click twice to select for chat/);
-  assert.match(workspaceSource, /border-cyan-300 ring-1 ring-cyan-300\/50/);
+  assert.match(workspaceSource, /border-cyan-300 ring-2 ring-cyan-300\/80/);
 });
 
 test("one color-button click still opens the color palette", () => {
