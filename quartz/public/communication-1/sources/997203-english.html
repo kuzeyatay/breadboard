@@ -1,0 +1,1348 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr"><head><title>Week 1 Lecture 2</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;family=IBM Plex Mono:wght@400;600&amp;display=swap"/><link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin="anonymous"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><script type="application/javascript" data-persist="true">(() => {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("embed") === "graph") {
+      document.documentElement.classList.add("quartz-graph-preview")
+    }
+  } catch {}
+})()</script><meta name="og:site_name" content="breadboard"/><meta property="og:title" content="Week 1 Lecture 2"/><meta property="og:type" content="website"/><meta name="twitter:card" content="summary_large_image"/><meta name="twitter:title" content="Week 1 Lecture 2"/><meta name="twitter:description" content="Summary This lecture chunk begins with a recap quiz on logarithmic power and voltage units, including dB, dBm, negative dB values, and the correct way to add logarithmic power quantities by converting to linear scale first."/><meta property="og:description" content="Summary This lecture chunk begins with a recap quiz on logarithmic power and voltage units, including dB, dBm, negative dB values, and the correct way to add logarithmic power quantities by converting to linear scale first."/><meta property="og:image:alt" content="Summary This lecture chunk begins with a recap quiz on logarithmic power and voltage units, including dB, dBm, negative dB values, and the correct way to add logarithmic power quantities by converting to linear scale first."/><meta property="twitter:domain" content="localhost:8081"/><meta property="og:url" content="https://localhost:8081/communication-1/sources/997203-english"/><meta property="twitter:url" content="https://localhost:8081/communication-1/sources/997203-english"/><link rel="icon" href="../../static/icon.png"/><meta name="description" content="Summary This lecture chunk begins with a recap quiz on logarithmic power and voltage units, including dB, dBm, negative dB values, and the correct way to add logarithmic power quantities by converting to linear scale first."/><meta name="generator" content="Quartz"/><link href="../../index.css" rel="stylesheet" type="text/css" data-persist="true"/><style>.expand-button {
+  position: absolute;
+  display: flex;
+  float: right;
+  padding: 0.4rem;
+  margin: 0.3rem;
+  right: 0;
+  color: var(--gray);
+  border-color: var(--dark);
+  background-color: var(--light);
+  border: 1px solid;
+  border-radius: 5px;
+  opacity: 0;
+  transition: 0.2s;
+}
+.expand-button > svg {
+  fill: var(--light);
+  filter: contrast(0.3);
+}
+.expand-button:hover {
+  cursor: pointer;
+  border-color: var(--secondary);
+}
+.expand-button:focus {
+  outline: 0;
+}
+
+pre:hover > .expand-button {
+  opacity: 1;
+  transition: 0.2s;
+}
+
+#mermaid-container {
+  position: fixed;
+  contain: layout;
+  z-index: 999;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: none;
+  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
+}
+#mermaid-container.active {
+  display: inline-block;
+}
+#mermaid-container > #mermaid-space {
+  border: 1px solid var(--lightgray);
+  background-color: var(--light);
+  border-radius: 5px;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  height: 80vh;
+  width: 80vw;
+  overflow: hidden;
+}
+#mermaid-container > #mermaid-space > .mermaid-content {
+  position: relative;
+  transform-origin: 0 0;
+  transition: transform 0.1s ease;
+  overflow: visible;
+  min-height: 200px;
+  min-width: 200px;
+}
+#mermaid-container > #mermaid-space > .mermaid-content pre {
+  margin: 0;
+  border: none;
+}
+#mermaid-container > #mermaid-space > .mermaid-content svg {
+  max-width: none;
+  height: auto;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: var(--light);
+  border: 1px solid var(--lightgray);
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 2;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--lightgray);
+  background: var(--light);
+  color: var(--dark);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  font-family: var(--bodyFont);
+  transition: all 0.2s ease;
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:hover {
+  background: var(--lightgray);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:active {
+  transform: translateY(1px);
+}
+#mermaid-container > #mermaid-space > .mermaid-controls .mermaid-control-button:nth-child(2) {
+  width: auto;
+  padding: 0 12px;
+  font-size: 14px;
+}
+/*# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VSb290IjoiQzpcXFVzZXJzXFwyMDI1MjA4MlxcT25lRHJpdmUgLSBUVSBFaW5kaG92ZW5cXERlc2t0b3BcXGJyZWFkYm9hcmRcXHF1YXJ0elxccXVhcnR6XFxjb21wb25lbnRzXFxzdHlsZXMiLCJzb3VyY2VzIjpbIm1lcm1haWQuaW5saW5lLnNjc3MiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUdGO0VBQ0U7OztBQUtGO0VBQ0U7RUFDQTs7O0FBSUo7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUVBO0VBQ0U7O0FBR0Y7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUlKO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFFQTtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7O0FBRUE7RUFDRTs7QUFHRjtFQUNFOztBQUlGO0VBQ0U7RUFDQTtFQUNBIiwic291cmNlc0NvbnRlbnQiOlsiLmV4cGFuZC1idXR0b24ge1xuICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gIGRpc3BsYXk6IGZsZXg7XG4gIGZsb2F0OiByaWdodDtcbiAgcGFkZGluZzogMC40cmVtO1xuICBtYXJnaW46IDAuM3JlbTtcbiAgcmlnaHQ6IDA7IC8vIE5PVEU6IHJpZ2h0IHdpbGwgYmUgc2V0IGluIG1lcm1haWQuaW5saW5lLnRzXG4gIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgYm9yZGVyLWNvbG9yOiB2YXIoLS1kYXJrKTtcbiAgYmFja2dyb3VuZC1jb2xvcjogdmFyKC0tbGlnaHQpO1xuICBib3JkZXI6IDFweCBzb2xpZDtcbiAgYm9yZGVyLXJhZGl1czogNXB4O1xuICBvcGFjaXR5OiAwO1xuICB0cmFuc2l0aW9uOiAwLjJzO1xuXG4gICYgPiBzdmcge1xuICAgIGZpbGw6IHZhcigtLWxpZ2h0KTtcbiAgICBmaWx0ZXI6IGNvbnRyYXN0KDAuMyk7XG4gIH1cblxuICAmOmhvdmVyIHtcbiAgICBjdXJzb3I6IHBvaW50ZXI7XG4gICAgYm9yZGVyLWNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICB9XG5cbiAgJjpmb2N1cyB7XG4gICAgb3V0bGluZTogMDtcbiAgfVxufVxuXG5wcmUge1xuICAmOmhvdmVyID4gLmV4cGFuZC1idXR0b24ge1xuICAgIG9wYWNpdHk6IDE7XG4gICAgdHJhbnNpdGlvbjogMC4ycztcbiAgfVxufVxuXG4jbWVybWFpZC1jb250YWluZXIge1xuICBwb3NpdGlvbjogZml4ZWQ7XG4gIGNvbnRhaW46IGxheW91dDtcbiAgei1pbmRleDogOTk5O1xuICBsZWZ0OiAwO1xuICB0b3A6IDA7XG4gIHdpZHRoOiAxMDB2dztcbiAgaGVpZ2h0OiAxMDB2aDtcbiAgb3ZlcmZsb3c6IGhpZGRlbjtcbiAgZGlzcGxheTogbm9uZTtcbiAgYmFja2Ryb3AtZmlsdGVyOiBibHVyKDRweCk7XG4gIGJhY2tncm91bmQ6IHJnYmEoMCwgMCwgMCwgMC41KTtcblxuICAmLmFjdGl2ZSB7XG4gICAgZGlzcGxheTogaW5saW5lLWJsb2NrO1xuICB9XG5cbiAgJiA+ICNtZXJtYWlkLXNwYWNlIHtcbiAgICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgIGJhY2tncm91bmQtY29sb3I6IHZhcigtLWxpZ2h0KTtcbiAgICBib3JkZXItcmFkaXVzOiA1cHg7XG4gICAgcG9zaXRpb246IGZpeGVkO1xuICAgIHRvcDogNTAlO1xuICAgIGxlZnQ6IDUwJTtcbiAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZSgtNTAlLCAtNTAlKTtcbiAgICBoZWlnaHQ6IDgwdmg7XG4gICAgd2lkdGg6IDgwdnc7XG4gICAgb3ZlcmZsb3c6IGhpZGRlbjtcblxuICAgICYgPiAubWVybWFpZC1jb250ZW50IHtcbiAgICAgIHBvc2l0aW9uOiByZWxhdGl2ZTtcbiAgICAgIHRyYW5zZm9ybS1vcmlnaW46IDAgMDtcbiAgICAgIHRyYW5zaXRpb246IHRyYW5zZm9ybSAwLjFzIGVhc2U7XG4gICAgICBvdmVyZmxvdzogdmlzaWJsZTtcbiAgICAgIG1pbi1oZWlnaHQ6IDIwMHB4O1xuICAgICAgbWluLXdpZHRoOiAyMDBweDtcblxuICAgICAgcHJlIHtcbiAgICAgICAgbWFyZ2luOiAwO1xuICAgICAgICBib3JkZXI6IG5vbmU7XG4gICAgICB9XG5cbiAgICAgIHN2ZyB7XG4gICAgICAgIG1heC13aWR0aDogbm9uZTtcbiAgICAgICAgaGVpZ2h0OiBhdXRvO1xuICAgICAgfVxuICAgIH1cblxuICAgICYgPiAubWVybWFpZC1jb250cm9scyB7XG4gICAgICBwb3NpdGlvbjogYWJzb2x1dGU7XG4gICAgICBib3R0b206IDIwcHg7XG4gICAgICByaWdodDogMjBweDtcbiAgICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgICBnYXA6IDhweDtcbiAgICAgIHBhZGRpbmc6IDhweDtcbiAgICAgIGJhY2tncm91bmQ6IHZhcigtLWxpZ2h0KTtcbiAgICAgIGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLWxpZ2h0Z3JheSk7XG4gICAgICBib3JkZXItcmFkaXVzOiA2cHg7XG4gICAgICBib3gtc2hhZG93OiAwIDJweCA0cHggcmdiYSgwLCAwLCAwLCAwLjEpO1xuICAgICAgei1pbmRleDogMjtcblxuICAgICAgLm1lcm1haWQtY29udHJvbC1idXR0b24ge1xuICAgICAgICBkaXNwbGF5OiBmbGV4O1xuICAgICAgICBhbGlnbi1pdGVtczogY2VudGVyO1xuICAgICAgICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjtcbiAgICAgICAgd2lkdGg6IDMycHg7XG4gICAgICAgIGhlaWdodDogMzJweDtcbiAgICAgICAgcGFkZGluZzogMDtcbiAgICAgICAgYm9yZGVyOiAxcHggc29saWQgdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHQpO1xuICAgICAgICBjb2xvcjogdmFyKC0tZGFyayk7XG4gICAgICAgIGJvcmRlci1yYWRpdXM6IDRweDtcbiAgICAgICAgY3Vyc29yOiBwb2ludGVyO1xuICAgICAgICBmb250LXNpemU6IDE2cHg7XG4gICAgICAgIGZvbnQtZmFtaWx5OiB2YXIoLS1ib2R5Rm9udCk7XG4gICAgICAgIHRyYW5zaXRpb246IGFsbCAwLjJzIGVhc2U7XG5cbiAgICAgICAgJjpob3ZlciB7XG4gICAgICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHRncmF5KTtcbiAgICAgICAgfVxuXG4gICAgICAgICY6YWN0aXZlIHtcbiAgICAgICAgICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMXB4KTtcbiAgICAgICAgfVxuXG4gICAgICAgIC8vIFN0eWxlIHRoZSByZXNldCBidXR0b24gZGlmZmVyZW50bHlcbiAgICAgICAgJjpudGgtY2hpbGQoMikge1xuICAgICAgICAgIHdpZHRoOiBhdXRvO1xuICAgICAgICAgIHBhZGRpbmc6IDAgMTJweDtcbiAgICAgICAgICBmb250LXNpemU6IDE0cHg7XG4gICAgICAgIH1cbiAgICAgIH1cbiAgICB9XG4gIH1cbn1cbiJdfQ== */</style><style>pre:has(> code.breadboard-visual-invalid),
+pre:has(> code.breadboard-visual-noninteractive),
+code.breadboard-visual-invalid,
+code.breadboard-visual-noninteractive {
+  display: none;
+}
+
+.breadboard-visual-card {
+  margin: 1.4rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--light) 90%, transparent);
+  padding: 1rem 1.1rem 0.9rem 1.1rem;
+}
+.breadboard-visual-card .bv-kicker {
+  margin: 0 0 0.1rem 0;
+  color: var(--secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.breadboard-visual-card .bv-title {
+  margin: 0 0 0.2rem 0;
+  font-size: 1.05rem;
+  color: var(--dark);
+}
+.breadboard-visual-card .bv-subtitle {
+  margin: 0 0 0.4rem 0;
+  color: var(--gray);
+  font-size: 0.88rem;
+}
+.breadboard-visual-card .bv-figure {
+  margin: 0.5rem 0;
+}
+.breadboard-visual-card .bv-figure .bv-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.breadboard-visual-card .bv-axis {
+  stroke: var(--gray);
+  stroke-width: 1;
+  opacity: 0.65;
+}
+.breadboard-visual-card .bv-frame {
+  stroke: var(--lightgray);
+  stroke-width: 1;
+}
+.breadboard-visual-card .bv-marker {
+  stroke: var(--tertiary);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+.breadboard-visual-card .bv-tick {
+  fill: var(--gray);
+  font-size: 12px;
+}
+.breadboard-visual-card .bv-solid {
+  fill: var(--gray);
+}
+.breadboard-visual-card .bv-mass {
+  fill: color-mix(in srgb, var(--secondary) 24%, var(--light));
+  stroke: var(--secondary);
+  stroke-width: 2;
+}
+.breadboard-visual-card .bv-mass-label {
+  fill: var(--dark);
+  font-size: 15px;
+  font-weight: 600;
+}
+.breadboard-visual-card .bv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--gray);
+}
+.breadboard-visual-card .bv-legend .bv-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.breadboard-visual-card .bv-legend .bv-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+}
+.breadboard-visual-card .bv-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.4rem;
+}
+.breadboard-visual-card .bv-metric-card {
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  padding: 0.55rem 0.6rem;
+  background: color-mix(in srgb, var(--light) 82%, transparent);
+}
+.breadboard-visual-card .bv-metric-label {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--gray);
+}
+.breadboard-visual-card .bv-metric-value {
+  display: block;
+  margin-top: 0.1rem;
+  color: var(--dark);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+.breadboard-visual-card .bv-metric-bar {
+  display: block;
+  height: 5px;
+  margin-top: 0.4rem;
+  border-radius: 999px;
+  background: var(--lightgray);
+  overflow: hidden;
+}
+.breadboard-visual-card .bv-metric-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+.breadboard-visual-card .bv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.4rem;
+  margin: 0.55rem 0 0.2rem 0;
+  padding-top: 0.55rem;
+  border-top: 1px dashed var(--lightgray);
+}
+.breadboard-visual-card .bv-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.84rem;
+  color: var(--darkgray);
+}
+.breadboard-visual-card .bv-control input[type=range] {
+  width: 130px;
+  accent-color: var(--secondary);
+}
+.breadboard-visual-card .bv-control input[type=checkbox] {
+  accent-color: var(--secondary);
+}
+.breadboard-visual-card .bv-control select {
+  font: inherit;
+  font-size: 0.84rem;
+  border: 1px solid var(--lightgray);
+  border-radius: 6px;
+  background: var(--light);
+  color: var(--dark);
+  padding: 0.15rem 0.3rem;
+}
+.breadboard-visual-card .bv-control .bv-control-value {
+  min-width: 2.6rem;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+}
+.breadboard-visual-card .bv-caption {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.88rem;
+  color: var(--darkgray);
+  font-style: italic;
+}
+.breadboard-visual-card .bv-source {
+  margin: 0.3rem 0 0 0;
+  font-size: 0.8rem;
+  color: var(--gray);
+}
+.breadboard-visual-card .bv-readout {
+  margin: 0.3rem 0 0 0;
+  font-size: 0.82rem;
+  color: var(--gray);
+  font-variant-numeric: tabular-nums;
+}
+.breadboard-visual-card .bv-why {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--darkgray);
+}
+.breadboard-visual-card .bv-why summary {
+  cursor: pointer;
+  color: var(--secondary);
+  font-weight: 500;
+}
+.breadboard-visual-card .bv-why p {
+  margin: 0.35rem 0 0 0;
+}
+.breadboard-visual-card .bv-why .bv-annotation {
+  color: var(--gray);
+}
+.breadboard-visual-card .bv-unsupported {
+  margin: 0.3rem 0;
+  color: var(--gray);
+  font-size: 0.9rem;
+}
+.breadboard-visual-card .bv-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 0.7rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--lightgray);
+}
+.breadboard-visual-card .bv-regenerate {
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  color: var(--secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0.42rem 0.6rem;
+}
+.breadboard-visual-card .bv-regenerate:hover {
+  color: var(--tertiary);
+  border-color: var(--secondary);
+}
+.breadboard-visual-card .bv-regenerate:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.breadboard-visual-card .bv-status {
+  font-size: 0.8rem;
+  color: var(--gray);
+}
+/*# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VSb290IjoiQzpcXFVzZXJzXFwyMDI1MjA4MlxcT25lRHJpdmUgLSBUVSBFaW5kaG92ZW5cXERlc2t0b3BcXGJyZWFkYm9hcmRcXHF1YXJ0elxccXVhcnR6XFxjb21wb25lbnRzXFxzdHlsZXMiLCJzb3VyY2VzIjpbImJyZWFkYm9hcmRWaXN1YWwuaW5saW5lLnNjc3MiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBR0E7QUFBQTtBQUFBO0FBQUE7RUFJRTs7O0FBR0Y7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUVBO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7O0FBRUE7RUFDRTtFQUNBO0VBQ0E7O0FBSUo7RUFDRTtFQUNBO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTs7QUFHRjtFQUNFOztBQUdGO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUVBO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7O0FBSUo7RUFDRTtFQUNBO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7O0FBRUE7RUFDRTtFQUNBOztBQUdGO0VBQ0U7O0FBR0Y7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTs7QUFJSjtFQUNFO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBO0VBQ0E7O0FBRUE7RUFDRTtFQUNBO0VBQ0E7O0FBR0Y7RUFDRTs7QUFHRjtFQUNFOztBQUlKO0VBQ0U7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7O0FBRUE7RUFDRTtFQUNBOztBQUdGO0VBQ0U7RUFDQTs7QUFJSjtFQUNFO0VBQ0EiLCJzb3VyY2VzQ29udGVudCI6WyIvLyBJbnRlcmFjdGl2ZSBvciBub3RoaW5nOiBibG9ja3MgdGhlIHRyYW5zZm9ybWVyIHRhZ2dlZCBhcyBpbnZhbGlkIG9yXG4vLyBub24taW50ZXJhY3RpdmUgYXJlIHJlbW92ZWQgYnkgdGhlIGlubGluZSBzY3JpcHQgYW5kIG11c3QgbmV2ZXIgZmxhc2ggYVxuLy8gc3RhdGljIGNhcmQgKG9yIGFuIGVtcHR5IGNvZGUgYm94KSBiZWZvcmUgaHlkcmF0aW9uLlxucHJlOmhhcyg+IGNvZGUuYnJlYWRib2FyZC12aXN1YWwtaW52YWxpZCksXG5wcmU6aGFzKD4gY29kZS5icmVhZGJvYXJkLXZpc3VhbC1ub25pbnRlcmFjdGl2ZSksXG5jb2RlLmJyZWFkYm9hcmQtdmlzdWFsLWludmFsaWQsXG5jb2RlLmJyZWFkYm9hcmQtdmlzdWFsLW5vbmludGVyYWN0aXZlIHtcbiAgZGlzcGxheTogbm9uZTtcbn1cblxuLmJyZWFkYm9hcmQtdmlzdWFsLWNhcmQge1xuICBtYXJnaW46IDEuNHJlbSAwO1xuICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICBib3JkZXItcmFkaXVzOiAxMHB4O1xuICBiYWNrZ3JvdW5kOiBjb2xvci1taXgoaW4gc3JnYiwgdmFyKC0tbGlnaHQpIDkwJSwgdHJhbnNwYXJlbnQpO1xuICBwYWRkaW5nOiAxcmVtIDEuMXJlbSAwLjlyZW0gMS4xcmVtO1xuXG4gIC5idi1raWNrZXIge1xuICAgIG1hcmdpbjogMCAwIDAuMXJlbSAwO1xuICAgIGNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICAgIGZvbnQtc2l6ZTogMC43MnJlbTtcbiAgICBmb250LXdlaWdodDogNjAwO1xuICAgIHRleHQtdHJhbnNmb3JtOiB1cHBlcmNhc2U7XG4gICAgbGV0dGVyLXNwYWNpbmc6IDAuMDVlbTtcbiAgfVxuXG4gIC5idi10aXRsZSB7XG4gICAgbWFyZ2luOiAwIDAgMC4ycmVtIDA7XG4gICAgZm9udC1zaXplOiAxLjA1cmVtO1xuICAgIGNvbG9yOiB2YXIoLS1kYXJrKTtcbiAgfVxuXG4gIC5idi1zdWJ0aXRsZSB7XG4gICAgbWFyZ2luOiAwIDAgMC40cmVtIDA7XG4gICAgY29sb3I6IHZhcigtLWdyYXkpO1xuICAgIGZvbnQtc2l6ZTogMC44OHJlbTtcbiAgfVxuXG4gIC5idi1maWd1cmUge1xuICAgIG1hcmdpbjogMC41cmVtIDA7XG5cbiAgICAuYnYtc3ZnIHtcbiAgICAgIHdpZHRoOiAxMDAlO1xuICAgICAgaGVpZ2h0OiBhdXRvO1xuICAgICAgZGlzcGxheTogYmxvY2s7XG4gICAgfVxuICB9XG5cbiAgLmJ2LWF4aXMge1xuICAgIHN0cm9rZTogdmFyKC0tZ3JheSk7XG4gICAgc3Ryb2tlLXdpZHRoOiAxO1xuICAgIG9wYWNpdHk6IDAuNjU7XG4gIH1cblxuICAuYnYtZnJhbWUge1xuICAgIHN0cm9rZTogdmFyKC0tbGlnaHRncmF5KTtcbiAgICBzdHJva2Utd2lkdGg6IDE7XG4gIH1cblxuICAuYnYtbWFya2VyIHtcbiAgICBzdHJva2U6IHZhcigtLXRlcnRpYXJ5KTtcbiAgICBzdHJva2Utd2lkdGg6IDEuNTtcbiAgICBzdHJva2UtZGFzaGFycmF5OiA1IDQ7XG4gIH1cblxuICAuYnYtdGljayB7XG4gICAgZmlsbDogdmFyKC0tZ3JheSk7XG4gICAgZm9udC1zaXplOiAxMnB4O1xuICB9XG5cbiAgLmJ2LXNvbGlkIHtcbiAgICBmaWxsOiB2YXIoLS1ncmF5KTtcbiAgfVxuXG4gIC5idi1tYXNzIHtcbiAgICBmaWxsOiBjb2xvci1taXgoaW4gc3JnYiwgdmFyKC0tc2Vjb25kYXJ5KSAyNCUsIHZhcigtLWxpZ2h0KSk7XG4gICAgc3Ryb2tlOiB2YXIoLS1zZWNvbmRhcnkpO1xuICAgIHN0cm9rZS13aWR0aDogMjtcbiAgfVxuXG4gIC5idi1tYXNzLWxhYmVsIHtcbiAgICBmaWxsOiB2YXIoLS1kYXJrKTtcbiAgICBmb250LXNpemU6IDE1cHg7XG4gICAgZm9udC13ZWlnaHQ6IDYwMDtcbiAgfVxuXG4gIC5idi1sZWdlbmQge1xuICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgZmxleC13cmFwOiB3cmFwO1xuICAgIGdhcDogMC40cmVtIDFyZW07XG4gICAgbWFyZ2luLXRvcDogMC4zNXJlbTtcbiAgICBmb250LXNpemU6IDAuOHJlbTtcbiAgICBjb2xvcjogdmFyKC0tZ3JheSk7XG5cbiAgICAuYnYtbGVnZW5kLWl0ZW0ge1xuICAgICAgZGlzcGxheTogaW5saW5lLWZsZXg7XG4gICAgICBhbGlnbi1pdGVtczogY2VudGVyO1xuICAgICAgZ2FwOiAwLjM1cmVtO1xuICAgIH1cblxuICAgIC5idi1zd2F0Y2gge1xuICAgICAgZGlzcGxheTogaW5saW5lLWJsb2NrO1xuICAgICAgd2lkdGg6IDE0cHg7XG4gICAgICBoZWlnaHQ6IDRweDtcbiAgICAgIGJvcmRlci1yYWRpdXM6IDJweDtcbiAgICB9XG4gIH1cblxuICAuYnYtbWV0cmljLWdyaWQge1xuICAgIGRpc3BsYXk6IGdyaWQ7XG4gICAgZ3JpZC10ZW1wbGF0ZS1jb2x1bW5zOiByZXBlYXQoYXV0by1maXQsIG1pbm1heCgxMjBweCwgMWZyKSk7XG4gICAgZ2FwOiAwLjU1cmVtO1xuICAgIG1hcmdpbi10b3A6IDAuNHJlbTtcbiAgfVxuXG4gIC5idi1tZXRyaWMtY2FyZCB7XG4gICAgYm9yZGVyOiAxcHggc29saWQgdmFyKC0tbGlnaHRncmF5KTtcbiAgICBib3JkZXItcmFkaXVzOiA4cHg7XG4gICAgcGFkZGluZzogMC41NXJlbSAwLjZyZW07XG4gICAgYmFja2dyb3VuZDogY29sb3ItbWl4KGluIHNyZ2IsIHZhcigtLWxpZ2h0KSA4MiUsIHRyYW5zcGFyZW50KTtcbiAgfVxuXG4gIC5idi1tZXRyaWMtbGFiZWwge1xuICAgIGRpc3BsYXk6IGJsb2NrO1xuICAgIGZvbnQtc2l6ZTogMC43MnJlbTtcbiAgICBjb2xvcjogdmFyKC0tZ3JheSk7XG4gIH1cblxuICAuYnYtbWV0cmljLXZhbHVlIHtcbiAgICBkaXNwbGF5OiBibG9jaztcbiAgICBtYXJnaW4tdG9wOiAwLjFyZW07XG4gICAgY29sb3I6IHZhcigtLWRhcmspO1xuICAgIGZvbnQtc2l6ZTogMXJlbTtcbiAgICBmb250LXZhcmlhbnQtbnVtZXJpYzogdGFidWxhci1udW1zO1xuICB9XG5cbiAgLmJ2LW1ldHJpYy1iYXIge1xuICAgIGRpc3BsYXk6IGJsb2NrO1xuICAgIGhlaWdodDogNXB4O1xuICAgIG1hcmdpbi10b3A6IDAuNHJlbTtcbiAgICBib3JkZXItcmFkaXVzOiA5OTlweDtcbiAgICBiYWNrZ3JvdW5kOiB2YXIoLS1saWdodGdyYXkpO1xuICAgIG92ZXJmbG93OiBoaWRkZW47XG4gIH1cblxuICAuYnYtbWV0cmljLWZpbGwge1xuICAgIGRpc3BsYXk6IGJsb2NrO1xuICAgIGhlaWdodDogMTAwJTtcbiAgICBib3JkZXItcmFkaXVzOiBpbmhlcml0O1xuICB9XG5cbiAgLmJ2LWNvbnRyb2xzIHtcbiAgICBkaXNwbGF5OiBmbGV4O1xuICAgIGZsZXgtd3JhcDogd3JhcDtcbiAgICBnYXA6IDAuNHJlbSAxLjRyZW07XG4gICAgbWFyZ2luOiAwLjU1cmVtIDAgMC4ycmVtIDA7XG4gICAgcGFkZGluZy10b3A6IDAuNTVyZW07XG4gICAgYm9yZGVyLXRvcDogMXB4IGRhc2hlZCB2YXIoLS1saWdodGdyYXkpO1xuICB9XG5cbiAgLmJ2LWNvbnRyb2wge1xuICAgIGRpc3BsYXk6IGlubGluZS1mbGV4O1xuICAgIGFsaWduLWl0ZW1zOiBjZW50ZXI7XG4gICAgZ2FwOiAwLjVyZW07XG4gICAgZm9udC1zaXplOiAwLjg0cmVtO1xuICAgIGNvbG9yOiB2YXIoLS1kYXJrZ3JheSk7XG5cbiAgICBpbnB1dFt0eXBlPVwicmFuZ2VcIl0ge1xuICAgICAgd2lkdGg6IDEzMHB4O1xuICAgICAgYWNjZW50LWNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICAgIH1cblxuICAgIGlucHV0W3R5cGU9XCJjaGVja2JveFwiXSB7XG4gICAgICBhY2NlbnQtY29sb3I6IHZhcigtLXNlY29uZGFyeSk7XG4gICAgfVxuXG4gICAgc2VsZWN0IHtcbiAgICAgIGZvbnQ6IGluaGVyaXQ7XG4gICAgICBmb250LXNpemU6IDAuODRyZW07XG4gICAgICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgICAgYm9yZGVyLXJhZGl1czogNnB4O1xuICAgICAgYmFja2dyb3VuZDogdmFyKC0tbGlnaHQpO1xuICAgICAgY29sb3I6IHZhcigtLWRhcmspO1xuICAgICAgcGFkZGluZzogMC4xNXJlbSAwLjNyZW07XG4gICAgfVxuXG4gICAgLmJ2LWNvbnRyb2wtdmFsdWUge1xuICAgICAgbWluLXdpZHRoOiAyLjZyZW07XG4gICAgICBjb2xvcjogdmFyKC0tc2Vjb25kYXJ5KTtcbiAgICAgIGZvbnQtdmFyaWFudC1udW1lcmljOiB0YWJ1bGFyLW51bXM7XG4gICAgfVxuICB9XG5cbiAgLmJ2LWNhcHRpb24ge1xuICAgIG1hcmdpbjogMC41cmVtIDAgMCAwO1xuICAgIGZvbnQtc2l6ZTogMC44OHJlbTtcbiAgICBjb2xvcjogdmFyKC0tZGFya2dyYXkpO1xuICAgIGZvbnQtc3R5bGU6IGl0YWxpYztcbiAgfVxuXG4gIC5idi1zb3VyY2Uge1xuICAgIG1hcmdpbjogMC4zcmVtIDAgMCAwO1xuICAgIGZvbnQtc2l6ZTogMC44cmVtO1xuICAgIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgfVxuXG4gIC5idi1yZWFkb3V0IHtcbiAgICBtYXJnaW46IDAuM3JlbSAwIDAgMDtcbiAgICBmb250LXNpemU6IDAuODJyZW07XG4gICAgY29sb3I6IHZhcigtLWdyYXkpO1xuICAgIGZvbnQtdmFyaWFudC1udW1lcmljOiB0YWJ1bGFyLW51bXM7XG4gIH1cblxuICAuYnYtd2h5IHtcbiAgICBtYXJnaW4tdG9wOiAwLjVyZW07XG4gICAgZm9udC1zaXplOiAwLjg1cmVtO1xuICAgIGNvbG9yOiB2YXIoLS1kYXJrZ3JheSk7XG5cbiAgICBzdW1tYXJ5IHtcbiAgICAgIGN1cnNvcjogcG9pbnRlcjtcbiAgICAgIGNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICAgICAgZm9udC13ZWlnaHQ6IDUwMDtcbiAgICB9XG5cbiAgICBwIHtcbiAgICAgIG1hcmdpbjogMC4zNXJlbSAwIDAgMDtcbiAgICB9XG5cbiAgICAuYnYtYW5ub3RhdGlvbiB7XG4gICAgICBjb2xvcjogdmFyKC0tZ3JheSk7XG4gICAgfVxuICB9XG5cbiAgLmJ2LXVuc3VwcG9ydGVkIHtcbiAgICBtYXJnaW46IDAuM3JlbSAwO1xuICAgIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgICBmb250LXNpemU6IDAuOXJlbTtcbiAgfVxuXG4gIC5idi1mb290ZXIge1xuICAgIGRpc3BsYXk6IGZsZXg7XG4gICAgYWxpZ24taXRlbXM6IGNlbnRlcjtcbiAgICBnYXA6IDAuN3JlbTtcbiAgICBtYXJnaW4tdG9wOiAwLjdyZW07XG4gICAgcGFkZGluZy10b3A6IDAuNnJlbTtcbiAgICBib3JkZXItdG9wOiAxcHggc29saWQgdmFyKC0tbGlnaHRncmF5KTtcbiAgfVxuXG4gIC5idi1yZWdlbmVyYXRlIHtcbiAgICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgIGJvcmRlci1yYWRpdXM6IDhweDtcbiAgICBiYWNrZ3JvdW5kOiBjb2xvci1taXgoaW4gc3JnYiwgdmFyKC0tbGlnaHQpIDg4JSwgdHJhbnNwYXJlbnQpO1xuICAgIGNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICAgIGN1cnNvcjogcG9pbnRlcjtcbiAgICBmb250OiBpbmhlcml0O1xuICAgIGZvbnQtc2l6ZTogMC44MnJlbTtcbiAgICBmb250LXdlaWdodDogNTAwO1xuICAgIGxpbmUtaGVpZ2h0OiAxO1xuICAgIHBhZGRpbmc6IDAuNDJyZW0gMC42cmVtO1xuXG4gICAgJjpob3ZlciB7XG4gICAgICBjb2xvcjogdmFyKC0tdGVydGlhcnkpO1xuICAgICAgYm9yZGVyLWNvbG9yOiB2YXIoLS1zZWNvbmRhcnkpO1xuICAgIH1cblxuICAgICY6ZGlzYWJsZWQge1xuICAgICAgY3Vyc29yOiB3YWl0O1xuICAgICAgb3BhY2l0eTogMC42O1xuICAgIH1cbiAgfVxuXG4gIC5idi1zdGF0dXMge1xuICAgIGZvbnQtc2l6ZTogMC44cmVtO1xuICAgIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgfVxufVxuIl19 */</style><style>pre:has(> code.breadboard-generated-visual-block) {
+  margin: 0;
+}
+
+.breadboard-generated-visual-card,
+.breadboard-generated-visual-fallback {
+  margin: 1.4rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--light) 92%, white);
+  color: var(--dark);
+  overflow: hidden;
+}
+
+.breadboard-generated-visual-card .bgv-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.1rem 0.8rem;
+}
+.breadboard-generated-visual-card .bgv-kicker {
+  margin: 0 0 0.12rem;
+  color: var(--secondary);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.breadboard-generated-visual-card .bgv-title {
+  margin: 0;
+  font-size: 1.08rem;
+}
+.breadboard-generated-visual-card .bgv-description,
+.breadboard-generated-visual-card .bgv-sources {
+  margin: 0.25rem 0 0;
+  color: var(--gray);
+  font-size: 0.87rem;
+}
+.breadboard-generated-visual-card .bgv-version {
+  flex: none;
+  border: 1px solid var(--lightgray);
+  border-radius: 999px;
+  padding: 0.15rem 0.48rem;
+  color: var(--gray);
+  font: 0.72rem var(--codeFont);
+}
+.breadboard-generated-visual-card .bgv-frame {
+  display: block;
+  width: 100%;
+  min-height: 360px;
+  border: 0;
+  border-block: 1px solid var(--lightgray);
+  background: #fbfaf5;
+}
+.breadboard-generated-visual-card .bgv-sources {
+  padding: 0.65rem 1.1rem 0;
+  overflow-wrap: anywhere;
+}
+.breadboard-generated-visual-card .bgv-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 3.2rem;
+  padding: 0.7rem 1.1rem 0.85rem;
+}
+.breadboard-generated-visual-card .bgv-action {
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: var(--light);
+  color: var(--dark);
+  padding: 0.38rem 0.72rem;
+  cursor: pointer;
+}
+.breadboard-generated-visual-card .bgv-action-primary {
+  border-color: var(--dark);
+  background: var(--dark);
+  color: var(--light);
+}
+.breadboard-generated-visual-card .bgv-action:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.breadboard-generated-visual-card .bgv-action:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--secondary) 48%, transparent);
+  outline-offset: 2px;
+}
+.breadboard-generated-visual-card .bgv-status {
+  color: var(--gray);
+  font-size: 0.82rem;
+}
+
+.breadboard-generated-visual-fallback {
+  padding: 0.9rem 1rem;
+}
+.breadboard-generated-visual-fallback p {
+  margin: 0.3rem 0 0;
+  color: var(--gray);
+}
+
+@media (max-width: 520px) {
+  .breadboard-generated-visual-card .bgv-header {
+    gap: 0.5rem;
+  }
+}
+/*# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VSb290IjoiQzpcXFVzZXJzXFwyMDI1MjA4MlxcT25lRHJpdmUgLSBUVSBFaW5kaG92ZW5cXERlc2t0b3BcXGJyZWFkYm9hcmRcXHF1YXJ0elxccXVhcnR6XFxjb21wb25lbnRzXFxzdHlsZXMiLCJzb3VyY2VzIjpbImJyZWFkYm9hcmRHZW5lcmF0ZWRWaXN1YWwuaW5saW5lLnNjc3MiXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7RUFDRTs7O0FBR0Y7QUFBQTtFQUVFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7O0FBSUE7RUFDRTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTs7QUFHRjtBQUFBO0VBRUU7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBOztBQUdGO0VBQ0U7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7RUFDQTs7QUFHRjtFQUNFO0VBQ0E7O0FBR0Y7RUFDRTtFQUNBOztBQUdGO0VBQ0U7RUFDQTs7O0FBSUo7RUFDRTs7QUFFQTtFQUNFO0VBQ0E7OztBQUlKO0VBQ0U7SUFDRSIsInNvdXJjZXNDb250ZW50IjpbInByZTpoYXMoPiBjb2RlLmJyZWFkYm9hcmQtZ2VuZXJhdGVkLXZpc3VhbC1ibG9jaykge1xuICBtYXJnaW46IDA7XG59XG5cbi5icmVhZGJvYXJkLWdlbmVyYXRlZC12aXN1YWwtY2FyZCxcbi5icmVhZGJvYXJkLWdlbmVyYXRlZC12aXN1YWwtZmFsbGJhY2sge1xuICBtYXJnaW46IDEuNHJlbSAwO1xuICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICBib3JkZXItcmFkaXVzOiAxMnB4O1xuICBiYWNrZ3JvdW5kOiBjb2xvci1taXgoaW4gc3JnYiwgdmFyKC0tbGlnaHQpIDkyJSwgd2hpdGUpO1xuICBjb2xvcjogdmFyKC0tZGFyayk7XG4gIG92ZXJmbG93OiBoaWRkZW47XG59XG5cbi5icmVhZGJvYXJkLWdlbmVyYXRlZC12aXN1YWwtY2FyZCB7XG4gIC5iZ3YtaGVhZGVyIHtcbiAgICBkaXNwbGF5OiBmbGV4O1xuICAgIGFsaWduLWl0ZW1zOiBmbGV4LXN0YXJ0O1xuICAgIGp1c3RpZnktY29udGVudDogc3BhY2UtYmV0d2VlbjtcbiAgICBnYXA6IDFyZW07XG4gICAgcGFkZGluZzogMXJlbSAxLjFyZW0gMC44cmVtO1xuICB9XG5cbiAgLmJndi1raWNrZXIge1xuICAgIG1hcmdpbjogMCAwIDAuMTJyZW07XG4gICAgY29sb3I6IHZhcigtLXNlY29uZGFyeSk7XG4gICAgZm9udC1zaXplOiAwLjcycmVtO1xuICAgIGZvbnQtd2VpZ2h0OiA2NTA7XG4gICAgbGV0dGVyLXNwYWNpbmc6IDAuMDVlbTtcbiAgICB0ZXh0LXRyYW5zZm9ybTogdXBwZXJjYXNlO1xuICB9XG5cbiAgLmJndi10aXRsZSB7XG4gICAgbWFyZ2luOiAwO1xuICAgIGZvbnQtc2l6ZTogMS4wOHJlbTtcbiAgfVxuXG4gIC5iZ3YtZGVzY3JpcHRpb24sXG4gIC5iZ3Ytc291cmNlcyB7XG4gICAgbWFyZ2luOiAwLjI1cmVtIDAgMDtcbiAgICBjb2xvcjogdmFyKC0tZ3JheSk7XG4gICAgZm9udC1zaXplOiAwLjg3cmVtO1xuICB9XG5cbiAgLmJndi12ZXJzaW9uIHtcbiAgICBmbGV4OiBub25lO1xuICAgIGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLWxpZ2h0Z3JheSk7XG4gICAgYm9yZGVyLXJhZGl1czogOTk5cHg7XG4gICAgcGFkZGluZzogMC4xNXJlbSAwLjQ4cmVtO1xuICAgIGNvbG9yOiB2YXIoLS1ncmF5KTtcbiAgICBmb250OiAwLjcycmVtIHZhcigtLWNvZGVGb250KTtcbiAgfVxuXG4gIC5iZ3YtZnJhbWUge1xuICAgIGRpc3BsYXk6IGJsb2NrO1xuICAgIHdpZHRoOiAxMDAlO1xuICAgIG1pbi1oZWlnaHQ6IDM2MHB4O1xuICAgIGJvcmRlcjogMDtcbiAgICBib3JkZXItYmxvY2s6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgIGJhY2tncm91bmQ6ICNmYmZhZjU7XG4gIH1cblxuICAuYmd2LXNvdXJjZXMge1xuICAgIHBhZGRpbmc6IDAuNjVyZW0gMS4xcmVtIDA7XG4gICAgb3ZlcmZsb3ctd3JhcDogYW55d2hlcmU7XG4gIH1cblxuICAuYmd2LWZvb3RlciB7XG4gICAgZGlzcGxheTogZmxleDtcbiAgICBmbGV4LXdyYXA6IHdyYXA7XG4gICAgYWxpZ24taXRlbXM6IGNlbnRlcjtcbiAgICBnYXA6IDAuNTVyZW07XG4gICAgbWluLWhlaWdodDogMy4ycmVtO1xuICAgIHBhZGRpbmc6IDAuN3JlbSAxLjFyZW0gMC44NXJlbTtcbiAgfVxuXG4gIC5iZ3YtYWN0aW9uIHtcbiAgICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1saWdodGdyYXkpO1xuICAgIGJvcmRlci1yYWRpdXM6IDhweDtcbiAgICBiYWNrZ3JvdW5kOiB2YXIoLS1saWdodCk7XG4gICAgY29sb3I6IHZhcigtLWRhcmspO1xuICAgIHBhZGRpbmc6IDAuMzhyZW0gMC43MnJlbTtcbiAgICBjdXJzb3I6IHBvaW50ZXI7XG4gIH1cblxuICAuYmd2LWFjdGlvbi1wcmltYXJ5IHtcbiAgICBib3JkZXItY29sb3I6IHZhcigtLWRhcmspO1xuICAgIGJhY2tncm91bmQ6IHZhcigtLWRhcmspO1xuICAgIGNvbG9yOiB2YXIoLS1saWdodCk7XG4gIH1cblxuICAuYmd2LWFjdGlvbjpkaXNhYmxlZCB7XG4gICAgY3Vyc29yOiB3YWl0O1xuICAgIG9wYWNpdHk6IDAuNTU7XG4gIH1cblxuICAuYmd2LWFjdGlvbjpmb2N1cy12aXNpYmxlIHtcbiAgICBvdXRsaW5lOiAzcHggc29saWQgY29sb3ItbWl4KGluIHNyZ2IsIHZhcigtLXNlY29uZGFyeSkgNDglLCB0cmFuc3BhcmVudCk7XG4gICAgb3V0bGluZS1vZmZzZXQ6IDJweDtcbiAgfVxuXG4gIC5iZ3Ytc3RhdHVzIHtcbiAgICBjb2xvcjogdmFyKC0tZ3JheSk7XG4gICAgZm9udC1zaXplOiAwLjgycmVtO1xuICB9XG59XG5cbi5icmVhZGJvYXJkLWdlbmVyYXRlZC12aXN1YWwtZmFsbGJhY2sge1xuICBwYWRkaW5nOiAwLjlyZW0gMXJlbTtcblxuICBwIHtcbiAgICBtYXJnaW46IDAuM3JlbSAwIDA7XG4gICAgY29sb3I6IHZhcigtLWdyYXkpO1xuICB9XG59XG5cbkBtZWRpYSAobWF4LXdpZHRoOiA1MjBweCkge1xuICAuYnJlYWRib2FyZC1nZW5lcmF0ZWQtdmlzdWFsLWNhcmQgLmJndi1oZWFkZXIge1xuICAgIGdhcDogMC41cmVtO1xuICB9XG59XG4iXX0= */</style><link href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" rel="stylesheet" type="text/css" data-persist="true"/><script src="../../prescript.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">const fetchData = fetch("../../static/contentIndex.json").then(data => data.json())</script><link rel="alternate" type="application/rss+xml" title="RSS Feed" href="https://localhost:8081/index.xml"/><meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/><meta property="og:image" content="https://localhost:8081/communication-1/sources/997203-english-og-image.webp"/><meta property="og:image:url" content="https://localhost:8081/communication-1/sources/997203-english-og-image.webp"/><meta name="twitter:image" content="https://localhost:8081/communication-1/sources/997203-english-og-image.webp"/><meta property="og:image:type" content="image/.webp"/></head><body data-slug="communication-1/sources/997203-english"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="/dashboard" class="page-title-link" data-dashboard-base-url data-dashboard-href="/dashboard">breadboard</a></h2><a class=" dashboard-back-link" href="/clusters/communication-1" target="_top" data-dashboard-base-url data-cluster-slug="communication-1">Back to cluster</a><div class="spacer mobile-only"></div><div class="flex-component" style="flex-direction: row; flex-wrap: nowrap; gap: 1rem;"><div style="flex-grow: 1; flex-shrink: 1; flex-basis: auto; order: 0; align-self: center; justify-self: center;"><div class="search"><button class="search-button"><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg><p>Search</p></button><div class="search-container"><div class="search-space"><input autocomplete="off" class="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div class="search-layout" data-preview="true"></div></div></div></div></div></div><div class="explorer" data-behavior="link" data-collapsed="collapsed" data-savestate="true" data-garden-scope data-graph-clusters="[]" data-data-fns="{&quot;order&quot;:[&quot;filter&quot;,&quot;map&quot;,&quot;sort&quot;],&quot;sortFn&quot;:&quot;(a,b)=>{let rank=__name(node=>{let segment=node.slugSegment.toLowerCase(),slug=String(node.slug??\&quot;\&quot;).toLowerCase(),knowledgeType2=node.data?.knowledgeType??\&quot;\&quot;,breadboardType2=node.data?.breadboardType??\&quot;\&quot;;return segment===\&quot;learning\&quot;||slug.endsWith(\&quot;/learning/index\&quot;)?0:knowledgeType2===\&quot;topic-overview\&quot;||knowledgeType2===\&quot;learning-map\&quot;||knowledgeType2===\&quot;source-map\&quot;||knowledgeType2===\&quot;scope-contract\&quot;?1:/^\\d+\\b/.test(segment)||knowledgeType2===\&quot;textbook-section\&quot;||knowledgeType2===\&quot;learning-section\&quot;?2:knowledgeType2===\&quot;textbook-page\&quot;||knowledgeType2===\&quot;learning-page\&quot;||breadboardType2===\&quot;textbook_page\&quot;||breadboardType2===\&quot;learning_page\&quot;?3:segment===\&quot;sources\&quot;||knowledgeType2===\&quot;source-document\&quot;?4:segment===\&quot;legacy\&quot;?8:knowledgeType2===\&quot;internal-concept\&quot;||breadboardType2===\&quot;internal_concept\&quot;?9:5},\&quot;rank\&quot;),rankDiff=rank(a)-rank(b);return rankDiff!==0?rankDiff:!a.isFolder&amp;&amp;!b.isFolder||a.isFolder&amp;&amp;b.isFolder?a.displayName.localeCompare(b.displayName,void 0,{numeric:!0,sensitivity:\&quot;base\&quot;}):!a.isFolder&amp;&amp;b.isFolder?1:-1}&quot;,&quot;filterFn&quot;:&quot;node=>{let knowledgeType2=node.data?.knowledgeType??\&quot;\&quot;,breadboardType2=node.data?.breadboardType??\&quot;\&quot;;return node.slugSegment!==\&quot;tags\&quot;&amp;&amp;knowledgeType2!==\&quot;internal-concept\&quot;&amp;&amp;breadboardType2!==\&quot;internal_concept\&quot;}&quot;,&quot;mapFn&quot;:&quot;node=>{node.isFolder&amp;&amp;String(node.slugSegment??\&quot;\&quot;).toLowerCase()===\&quot;learning\&quot;&amp;&amp;(node.displayName=\&quot;Learning\&quot;)}&quot;}"><button type="button" class="explorer-toggle mobile-explorer hide-until-loaded" data-mobile="true" aria-controls="explorer-306"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide-menu"><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line></svg></button><button type="button" class="title-button explorer-toggle desktop-explorer" data-mobile="false" aria-expanded="true"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-306" class="explorer-content" aria-expanded="false" role="group"><ul class="explorer-ul overflow" id="list-0"><li class="overflow-end"></li></ul></div><template id="template-file"><li><a href="#"></a></li></template><template id="template-folder"><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div><button class="folder-button"><span class="folder-title"></span></button></div></div><div class="folder-outer"><ul class="content"></ul></div></li></template></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../../communication-1/">Communication 1</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../../communication-1/sources/">Sources</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>Week 1 Lecture 2</a></div></nav><h1 class="article-title">Week 1 Lecture 2</h1><p show-comma="true" class="content-meta"><time datetime="2026-04-26T07:24:06.018Z">Apr 26, 2026</time><span>59 min read</span></p><div class="markdown-actions" data-dashboard-url data-note-slug="communication-1/sources/997203-english"><button class="markdown-action-button markdown-edit-button" type="button">Edit markdown</button><button class="markdown-action-button markdown-delete-button danger" type="button">Delete</button><span class="markdown-action-status" aria-live="polite"></span><div class="markdown-editor-modal" hidden><div class="markdown-editor-panel"><div class="markdown-editor-header"><div><p class="markdown-editor-kicker">Markdown</p><h2>Edit note</h2></div><button class="markdown-editor-close" type="button" aria-label="Close editor">Close</button></div><div class="markdown-editor-fields"><label class="markdown-editor-field"><span>Title</span><input class="markdown-editor-title" type="text" placeholder="Note title"/></label><label class="markdown-editor-field"><span>Tags</span><div class="markdown-editor-tags-box"><input class="markdown-editor-tags" type="text" placeholder="#hashtag #separated #tags"/></div></label></div><textarea class="markdown-editor-textarea" spellcheck="false"></textarea><input class="markdown-editor-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden/><div class="markdown-editor-footer"><div class="markdown-editor-insert-tools"><button class="markdown-editor-image" type="button">Add images</button><label class="markdown-editor-placement-label">Place<select class="markdown-editor-placement"><option value="cursor">Cursor</option><option value="top">Top</option><option value="bottom">Bottom</option></select></label></div><div class="markdown-editor-footer-actions"><button class="markdown-editor-cancel" type="button">Cancel</button><button class="markdown-editor-save" type="button">Save</button></div></div></div></div></div><ul class="tags"><li><a href="../../tags/dbm" class="internal tag-link">dbm</a></li><li><a href="../../tags/fourier-transform" class="internal tag-link">fourier-transform</a></li><li><a href="../../tags/orthogonal-base" class="internal tag-link">orthogonal-base</a></li><li><a href="../../tags/sampling" class="internal tag-link">sampling</a></li><li><a href="../../tags/nyquist-criteria" class="internal tag-link">nyquist-criteria</a></li><li><a href="../../tags/delta-function" class="internal tag-link">delta-function</a></li><li><a href="../../tags/low-pass-filter" class="internal tag-link">low-pass-filter</a></li><li><a href="../../tags/time-division-multiplexing" class="internal tag-link">time-division-multiplexing</a></li><li><a href="../../tags/power" class="internal tag-link">power</a></li><li><a href="../../tags/signal-strength" class="internal tag-link">signal-strength</a></li><li><a href="../../tags/week-1" class="internal tag-link">week-1</a></li><li><a href="../../tags/midterm-topic" class="internal tag-link">midterm-topic</a></li><li><a href="../../tags/final-topic" class="internal tag-link">final-topic</a></li></ul></div></div><article class="popover-hint"><h2 id="summary">Summary<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#summary" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>This lecture chunk begins with a recap quiz on logarithmic power and voltage units, including dB, dBm, negative dB values, and the correct way to add logarithmic power quantities by converting to linear scale first. It then reviews course structure and the communication-system topic map, which follows a message through sampling, quantization, line coding, modulation, channel transmission, decoding, error detection, and signal reconstruction. The lecture revisits orthogonal bases, Fourier series, Fourier transforms, and the use of sine and cosine functions as basis functions for representing time-domain signals in the frequency domain. It explains harmonic decomposition of a square wave, including why even harmonics cancel while odd harmonics contribute. The lecture introduces sampling as the conversion of analog signals into digital data and motivates it through storage, computer processing, noise robustness, error correction, and time division multiplexing. It then develops ideal sampling mathematically as multiplication by a train of delta functions and shows that this produces repeated copies of the original spectrum in frequency. Finally, it explains the Nyquist criterion, under-sampling, spectral overlap, and ideal low-pass reconstruction of the original signal.</p>
+<h2 id="knowledge-tree">Knowledge tree<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#knowledge-tree" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li><a href="../../communication-1/decibel-power-ratios" class="internal alias" data-slug="communication-1/decibel-power-ratios">Decibel Power Ratios</a> (Page 1)</li>
+<li><a href="../../communication-1/definition-and-use-of-dbm" class="internal alias" data-slug="communication-1/definition-and-use-of-dbm">dBm Reference Power</a> (Page 1, Page 2)</li>
+<li><a href="../../communication-1/voltage-ratios-use-20-logarithm-instead-of-10" class="internal alias" data-slug="communication-1/voltage-ratios-use-20-logarithm-instead-of-10">Voltage Ratios in Decibels</a> (Page 1)</li>
+<li><a href="../../communication-1/adding-dbm-values" class="internal alias" data-slug="communication-1/adding-dbm-values">Adding dBm Values</a> (Page 2)</li>
+<li><a href="../../communication-1/communication-system-block-flow" class="internal alias" data-slug="communication-1/communication-system-block-flow">Communication System Course Map</a> (Page 3)</li>
+<li><a href="../../communication-1/orthogonal-bases-for-signal-representation" class="internal alias" data-slug="communication-1/orthogonal-bases-for-signal-representation">Orthogonal Bases for Signal Representation</a> (Page 3, Page 4)</li>
+<li><a href="../../communication-1/fourier-domain-representation" class="internal alias" data-slug="communication-1/fourier-domain-representation">Fourier Domain Representation</a> (Page 4)</li>
+<li><a href="../../communication-1/cosine-and-sine-frequency-representations" class="internal alias" data-slug="communication-1/cosine-and-sine-frequency-representations">Cosine and Sine Frequency Representations</a> (Page 4, Page 9)</li>
+<li><a href="../../communication-1/square-wave-decomposition-and-symmetry" class="internal alias" data-slug="communication-1/square-wave-decomposition-and-symmetry">Square Wave Harmonic Decomposition</a> (Page 4, Page 5)</li>
+<li><a href="../../communication-1/fourier-transform-of-a-constant-signal" class="internal alias" data-slug="communication-1/fourier-transform-of-a-constant-signal">Fourier Transform of a Constant Signal</a> (Page 5)</li>
+<li><a href="../../communication-1/digital-communication-as-analog-to-digital-to-analog-transfer" class="internal alias" data-slug="communication-1/digital-communication-as-analog-to-digital-to-analog-transfer">Motivations for Sampling and Digital Communication</a> (Page 5, Page 6)</li>
+<li><a href="../../communication-1/digital-robustness-versus-analog-under-noisy-transmission" class="internal alias" data-slug="communication-1/digital-robustness-versus-analog-under-noisy-transmission">Digital Communication and Noise Robustness</a> (Page 6)</li>
+<li><a href="../../communication-1/time-decoupling-in-digital-communication" class="internal alias" data-slug="communication-1/time-decoupling-in-digital-communication">Time Decoupling in Digital Communication</a> (Page 6, Page 7)</li>
+<li><a href="../../communication-1/aliasing-and-nyquist-sampling-criterion" class="internal alias" data-slug="communication-1/aliasing-and-nyquist-sampling-criterion">Nyquist Criterion</a> (Page 8)</li>
+<li><a href="../../communication-1/ideal-sampling-as-multiplication-by-a-delta-train" class="internal alias" data-slug="communication-1/ideal-sampling-as-multiplication-by-a-delta-train">Ideal Sampling as Multiplication by a Delta Train</a> (Page 8, Page 9)</li>
+<li><a href="../../communication-1/time-frequency-multiplication-and-convolution-duality" class="internal alias" data-slug="communication-1/time-frequency-multiplication-and-convolution-duality">Time-Frequency Multiplication and Convolution Duality</a> (Page 9)</li>
+<li><a href="../../communication-1/spectral-replication-from-sampling" class="internal alias" data-slug="communication-1/spectral-replication-from-sampling">Spectral Replication from Sampling</a> (Page 9, Page 10)</li>
+<li><a href="../../communication-1/under-sampling-and-spectral-overlap" class="internal alias" data-slug="communication-1/under-sampling-and-spectral-overlap">Under-Sampling and Spectral Overlap</a> (Page 8, Page 10)</li>
+<li><a href="../../communication-1/ideal-low-pass-reconstruction" class="internal alias" data-slug="communication-1/ideal-low-pass-reconstruction">Ideal Low-Pass Reconstruction</a> (Page 10)</li>
+</ul>
+<h2 id="source-material">Source material<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#source-material" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h1 id="page-1">Page 1<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>We will spend the first five minutes, give you time to solve the DB entry-level quiz because we want to look at the statistics to give you better feedback at the recap. So open your laptops, phones, whatever works for you. Log into Canvas and spend the next minutes doing the quiz and we’ll let also people who woke up a bit early to make their way into the classroom. Yes, this one, yes. Just smile and wave. All right, go.</p>
+<p>All right, good morning. Again, so thanks for joining this quiz. We saw that we have now 100 responses and that’s a threshold where we say, okay, that’s good and let’s start because it could be roughly the number of students that we have in the room. And maybe a few also joined online. That’s also why we wrote it on the board.</p>
+<p>I don’t know if you remember, so Oded in the last meeting or in the last lecture explained that we always start with a quick recap and today we also start with that quick quiz, which I think we will try to do every time. So we will always have this little quiz at the beginning. It still encourages you to be here in time, so don’t use it as an excuse. I can walk in later, but we can of course understand it’s sometimes difficult.</p>
+<p>And what we do now is we go through the quiz together and then we can see and compare how you actually answered and how it worked.</p>
+<p>So the first question that you were supposed to answer or that you got as a question is:</p>
+<p>If the power of a signal is doubled, what does it mean? Did the power increase by 10 dB or by 3 dB or by 2 dB or by 1 dB?</p>
+<p>When I look at the answers, I see that 81% of you got that right. Just one question, did you saw if you scored correctly or not? You didn’t saw if you scored correctly, okay, good to know. Who feels confident enough to tell me what is the correct answer? Yes, it’s 3 dB. So if the power is doubled or the signal strength is doubled, that means that you have an increase of 3 dB. So thanks for that.</p>
+<p>And then the next question, let me see, I have too many screens here. Question two. And look at the statistics as well. Also that statistics went quite well.</p>
+<p>So the question was:</p>
+<p>What power corresponds to 0 dBm? So you have now the power given in a logarithmic scale. And then the question is, what does it mean in a linear scale?</p>
+<p>And then the possibility answers are 10 milliwatt, 0 watt, 1 watt and 1 milliwatt. Who feels comfortable in answering me on that one? Yes, exactly, it’s 1 milliwatt. And I’m happy that 87% of the students got that right.</p>
+<p>And the next question that we had, what had you had, is the voltage ratio. So you have a ratio of two to one. And what does it approximately corresponds to? Again, here the trick is as well, it’s the voltage and not a power any longer that we’re talking about. And we mentioned it the last time. And we saw also in the responses that there’s a slight difference in accuracy. So in the first two questions you scored with nearly 90% here at 70%. So some might have made a mistake here, but now that I point out that it’s voltage, who feels comfortable in giving the proper correct answer? Or any answer, I’m also fine with guessing, yes. Six decibels, 60 dB, indeed. Based on the fact that we have now a field instead of a power, so a voltage. Doubling corresponds always, yeah, corresponds to a 60 dB.</p>
+<p>And then we had:</p>
+<p>What does it mean when two power levels differ by zero dB?</p>
+<p>And then the answer options are they are equal. One is twice as large as the other one. One of them has no power. The comparison is invalid.</p>
+<p>Here we get the highest score. So I’m happy to just ask around who would like to give me the proper answer or the correct answer. Yes? They’re equal, indeed. I’m just repeating the answers as well so that if anybody is looking at the live stream afterwards because that’s the only opportunity for you to get the right answers listening to how we go through them.</p>
+<p>I’ve released the answers now. You already released them already. I released them. Save the misery. Okay. I still hope you stay with me.</p>
+<p>The next question was:</p>
+<p>Which statement about negative dB values is correct? They mean the quantity is smaller than the reference. They are impossible. They always mean zero power. They mean the quantity is larger than the reference.</p>
+<p>And also here we have quite a nice response. 91% of the students or few answered correctly, at least due to the statistics that I see now. So I’m happy to ask who would like to. Chances are good that you had it correct. Yes. Yes, indeed. So the mean of the quantity is smaller than the reference. And what it also mentions is that you always end up kind of in a fraction. So 0.1 milliwatt or whatever. And the reference in that case would be, I mean, it’s dB. So it’s a fraction of what you had started with.</p>
+<p>All right. And then the last question. This</p>
+<h1 id="page-2">Page 2<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>is actually multiple answer options. So it’s not only one correct answer, but two correct answers. Therefore the statistics is also giving another complete picture.</p>
+<p>So you see here what happens if you calculate zero dBm plus zero dBm. What does it accumulate to? And we have someone who is, yes, we have someone who would like to. Yeah, and how did you calculate that? I just, I need to repeat it because otherwise not everybody’s hearing.</p>
+<p>So what you did is you took the zero dBm and converted it to milliwatt. So you took into linear scale. So zero dBm is one milliwatt. And then you add them. So you have two times this. So it’s in total two milliwatts. So that’s one answer. Yes, exactly.</p>
+<p>So you have then either you see a media, oh, that means I double. So it was before it was one milliwatt and I doubled it to two milliwatts. So you can make the conclusion, oh, it doubled. So it’s three dBm. However, the doubling itself would be expressed in a ratio, so three dB. But you can also just convert the milliwatt back to a logarithmic scale. And then you get indeed a three dBm.</p>
+<p>Yeah, one thing we want to, that’s why the question is showing. You see that next to the answer here, there are squares. And the other questions had circles. This will repeat itself also in the midterm and the final exam. There will be questions which are single answer and there will be multiple answer. Look carefully at the questions because we saw that a lot of students got the one answer right, because it’s three dBm and two milliwatts, it doesn’t matter. And they were happy with that or didn’t think there’s more answers possible. But when it’s a square, there are two answers, potentially two answers possible. It could be three, it could be four. Could be all of them are squared, of course. It’s an extreme case. But so this will repeat itself in the course that there will be sometimes multiple answer instead of a single answer.</p>
+<p>This camera’s also subtracting points if you get the wrong answer. It gives partial points for us. This answer probably, if people only gave one of the two answers, they will get half of points at the full point. Because that is a hint for the midterm. So if you have multiple choice questions and there are multiple answers possible, we will subtract points for your own answers. Then we also subtract points for our own answers. So I’m not certain of it. Just because otherwise you will just take all the boxes and get the perfect mark, it’s not the intention.</p>
+<p>All right. Going to the second part. Nope. Ah, there we go. We have no clicker here. So three parts or four parts all the way. A simple quiz at the beginning, a recap of the last lecture. Then we have the lecture of today and then we have the instruction sessions which we use creatively. And we are also free to not use all the instructions hours that we have. So it’s always planned for two hours, but we don’t know if we use them. And as also was mentioned last time, it might happen, it might regularly happen, that the lecture is actually extending into the instruction. So that we need a bit more time there.</p>
+<p>So what I’m doing now is like a few recap of what we did in the first lecture and a lot of things that we said in the first lecture was general information. So we told you that we have multiple sources of information that you can consume. Unfortunately, and I would like to announce that now, there has been quite some hiccups with the Canvas page. So I’m really sorry for that. These slides will be online later on. Well, they are already online, but I think it’s the wrong Discord channel in the slides that are online. This is the correct one. So this is this year’s Discord channel.</p>
+<p>However, we thought we fixed most of the Canvas issues, but I just heard from multiple students that there’s still some content things not accessible. I’m really sorry for that. I will do after the lecture look into that or after the instruction actually. Look into that and we’ll today enable everything that isn’t necessary for this week. And then later this week, so tomorrow and then the weekend, I will check for the next weeks. So then please be shocked if something is not already visible for next week, but I will try to make it accessible as soon as possible.</p>
+<p>One of the content that you can also use for studying is the reader. So of course you have the lecture, but you have also the reader. The reader is quite, it’s complete in itself, but there’s also a lot of information that is going beyond the content that you need for the exam. We often give, for example, a mathematical background on how is that actually, where is it actually coming from? What’s the calculation? In most cases, that’s not why. In nearly no case, it’s necessary.</p>
+<p>For the exam, we want to test that you understand the content of the course. We don’t</p>
+<h1 id="page-3">Page 3<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>want to test that you can learn everything. So it’s not by repetition of formulas. You’re not getting any scores for formulas in the exam. We actually give you a formula sheet of, I think, four pages. These you can use, so you don’t have to study them by heart, but you should be able to use them. So that’s what it is all about.</p>
+<p>This course we already mentioned, lecture already mentioned, and then we have the three lab sessions. These happen in multiple weeks. You can see them in the module overview, which weeks are actually used for the lab sessions. There will be always two sessions. You only have to attend one of the two, and you even don’t have to attend them at all. You can also do them from home, but we really advise you to join them because within these sessions, you actually get support by TAs, and if you’re at home, you have limited support. So we will try to answer a few questions in Discord, but the chances are high that at home, you’re on your own, while within the session itself, you get the support.</p>
+<p>All right. I also put down the different topics that were done on the lecture last time. So we had a slide that we had. Okay, that’s what we’re going through today. General course and selection using course feedback. We also mentioned, or you had the opportunity to fill in the course survey from Els for the last quarter. The topic map, we will show that again in a second. We talked about the autogonal base, time frequency duality, free series, free transform DB and DBM.</p>
+<p>All right, that’s going into the topic itself. So this is the course map. This is the extended version. What I mean with extended is you can see here the labels for the different topics. So you see in sampling this in letters written B and C that are the modules. So within the modules, you can find these letters back. So there’s reference between all the different topics that are presented here. And the end, what we are discussing, what all the content of the course is presented within that one slide. So it’s giving you an idea, okay, what do we actually cover?</p>
+<p>And we cover the transmission of a message towards a receiver at the end. So you have the outside. Can I actually use my mouse? Yes. Do you see that? Yes. So you have a message at the beginning and at the end, you want to have that message received somewhere. And what you do is you go through the different steps. You have sampling. You do quantization. You use a line code. So that’s the way we will get to the details later. Then you can use different modulation formats and then you use a physical channel, which could be a transmission via wireless communication. You could use optical communication to the host of your fiber, a coax cable, all these kinds of things.</p>
+<p>We talk a bit about channel properties. So what does the channel actually do with your signal? What will happen? How could it be influenced? Could it be disturbed? And so on and so forth. And then at the end, you receive the signal and then you decode the signal. And with that, we also will talk about error detection or that mention already, it’s a really powerful tool that is used in more or less all communication. So that’s definitely an important part of this course. And then you have a signal reconstruction before you can actually transmit it again.</p>
+<p>You see that, so it’s also kind of structured alphabetically or chronologically, B and C. That’s what we will cover, covered already in the first and we’ll cover today. So these two topics will be in the lecture today.</p>
+<p>All right, yes. Then just one recap on one of the topics or actually it covers all of the rest altogether. We talked about the orthogonal system. So what that was presenting he drew the three dimensional space. So you have a dot on the three dimensional space and you have the fundamental vectors that you can use for representing that point in the three dimensional space. And therefore you have an orthogonal base and it has a definition. So that means that each of these fundamental vectors, where’s my mouse again? Okay, somehow I’m not here. So if you use the product of the transverse or of two of these sort of transverse and another base vector and you use the product of these and it needs to follow these conditions. It needs to be K if these vectors are not the same and it needs to be zero if they are in all other cases. So that defines the base vectors.</p>
+<p>And why is that so important? You can also do that with functions. So you can do that and then you have a similar definition. And what that actually means or what we are using it for is that we express a lot of our functions and that was also what that was presenting. And I just tried to bring it back to you. You had a signal which was just squares after each other sent</p>
+<h1 id="page-4">Page 4<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>In the time domain. So that’s in time and it’s just an amplitude as X is always important. I’m kind of focusing on that. I will also focus in grading on that. I always want to have X labeled, sorry, already mentioning that. So these are expressed in the time domain and what you can do is you can also express in a frequency domain and one of the ways of visualizing that is if you use a set of other base vectors.</p>
+<p>So in this case, you use sine or cosine functions. You are able to express these by defining their ratio within this signal. So if you would draw a function and then you calculate for this function, what is the part that it is represented in the initial signal. Then you go for a higher base frequency. And now I’m able to draw that. Yeah, not the best drawing skills. And based on these different components, each of them has a representation in the frequency domain.</p>
+<p>So in the frequencies, you have also an amplitude, which is the coefficient actually, and the frequency. And the first one that you used has a certain base frequency, <code>ω_0</code> for example. And then you know, okay, this is the component that is representing that first to represent the initial signal in the time domain and your first, second, which might be present or might not be present at all. So that depends a bit on if it is.</p>
+<p>And when you want to actually practice that yourself or exercise that yourself, we created a mini map for that. And you can also find it in the modules where you actually do exactly this. So you have a square signal and what you do is you use the calculation or the formula that was also given last time for all the components, <code>Cₙ</code>. It’s an integral about the different base frequencies that you can use to reconstruct the square signal.</p>
+<p>And within this, you can actually check yourself if you are able to recreate it. And what you get then is the different frequency components that are actually representing, or that you are using to represent, the same signal. So you get exactly the same signal but expressed in a different domain. So use a different set of base functions to represent the same signal. And that’s what we do, that we will do a lot.</p>
+<p>And going back and forth between these two, that is what we do with the Fourier transform. So you do a Fourier transform to go from the time domain to the frequency domain or you can also go by inverse Fourier domain from the frequency domain to the time domain. That is mainly the takeaway. And at the end we also discussed dB and dBm, but that we already recapped today with the small quiz.</p>
+<p>Just one thing, because it will be important: the frequency representation of a cosine and the sine we also discussed. And what I would like to know, or not to know, but I would like to mention it. So for cosine, you have the base frequency that is given on both sides, or that expresses that. So you showed the Euler function and then you showed what does it actually mean if you look at the cosine frequency domain. But I think we missed drawing this graph.</p>
+<p>And for sine, you have one down, so you have one negative and one positive. And this is rather important to remember. So that’s one of the only things that I ask you to remember. Of course you can also calculate based on the formulas, but just that you take it with you and you will also need it later on in the exam that we will discuss today. So today, we have an exam question and this will be important to know. So that’s the reason why already I spotted it here.</p>
+<p>All right, thanks. Thank you, thanks a lot Mark.</p>
+<p>Cleaning or? Maybe I just, the reader shows an example of exactly this decomposition of a square wave into… Hi, Andrew. And it shows why, for example, the second harmonic and the fourth harmonic are not present in the solution. And it’s important because we talked about what does it mean to have orthogonal.</p>
+<p>It’s off now. Yes, wait. I can check if I find it in the reader. So the reader tries to help you understand this by showing that, and Mark did a very good job drawing the third harmonic. Well done. It’s not so easy.</p>
+<p>What you see here is the idea of this calculation, as you actually ask yourself: when you would multiply this function, this square wave, with this sine function, you have to solve the integral of <code>cos(ω_0t)</code> times, in this case, one. So this will be the total period, so this will be <code>T</code>, <code>T/2</code>. You integrate from zero to <code>T</code>, or from <code>-T/2</code> to <code>+T/2</code>, it doesn’t really matter, times the value of the function. In this case it’s one, or <code>A</code>, <code>dt</code>.</p>
+<p>And the value of this is positive. It has actually a value, it’s actually this area. So there’s a positive contribution with this. But if you take the next function, which is a harmonic, which does this, you see that the</p>
+<h1 id="page-5">Page 5<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-5" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>positive part is canceled out by the negative part. So this second harmonic does not contribute to the total waveform. And this is true for all the even harmonics. So the fourth harmonic, we have the same behavior. While the other harmonics all have contributions, the first one has the biggest contribution, but as you go on with harmonics, you’ll see that the third harmonic will have part of it, like Mark drew very well. I ran out of colors, very disappointing, they only have two colors in this room. Okay, it doesn’t matter, green. So this is Mark’s amazing drawing.</p>
+<p>So this one and this one are canceling out, but this part still contributes. So the third harmonic actually does contribute. And you can do the… but it’s of course smaller than the original one, so that’s how it goes.</p>
+<p>One last question about Fourier. We talked about the Fourier system of Euler function, the exponential, which ended up being a delta function with the frequency displacement. You remember that was done Tuesday. And a simple question will be: what is the Fourier transform of the constant <code>A</code>?</p>
+<p>Yes, a delta function, at which frequency? Yes, at zero. So this is nothing more, nothing less than <code>A</code>. If the frequency is zero, then it’s also an Euler function, but with <code>ω_0 = 0</code>. And then you’re left with a constant. And we will come back to this a lot in this course, when we talk about line codes, about their spectral behavior. We say, yeah, there’s a DC component, so we expect to see a delta at zero. This will be part of our language in the following weeks. So I wanted to reflect on this.</p>
+<p>And the logic behind this is very simple. If the only thing we have in our signal is constant amplitude from minus <code>V</code> plus <code>V</code>, clearly there’s energy here, obviously. And it’s infinite energy because you constantly have a voltage. So we expect to see something in the spectrum, but there are no changes in time. So this is equivalent to having zero frequency changes, but there’s still a lot of energy. So a constant in time has a delta function. So this in the frequency will be just a delta function at zero. So this is just the last comment I want to make.</p>
+<p>Okay, we are ready to start. I hate these clocks in this building. It’s completely off, huh? Like eight minutes ahead of time.</p>
+<p>No, no, it’s okay. I have my own watch, but I’m just… No, it’s here on the board. I wrote it down. While you were talking. Okay, so done.</p>
+<p>Okay, so we start with an interactive session. I want to ask you a simple question. We will spend today talking in depth about sampling. And my question to you is, why the hell do we need to sample? What’s the added value of sampling? Because we will spend a lot of time today about explaining how complicated it is, but there is a benefit. So I’m wondering if you can tell me what is the benefit of sampling?</p>
+<p>Any answer, any thoughts that come into your head? Yes, let’s start.</p>
+<p>To go from an analog signal to digital, we need to sample. Yes, and that was something already mentioned last Tuesday. Indeed, of course, if you don’t sample, you don’t have a way of getting information. Okay, but why? Clearly, that’s a way to move analog signal. Why do we want to move? Maybe why we want to move to digital? Maybe the different question.</p>
+<p>Okay, so the answer is, if you go digital, it’s easier to transmit. We will talk about this in details in this entire course. Maybe we can come back to the end of the course to realize if it’s easier. Remember, the origin of transmission, early 20th century, only analog. There was nothing digital about it. But okay, Morse code was digital, if you want. Telegraph was digital, huh, if you think about it.</p>
+<p>Yes, please. Like the minimum information needed to be free. It’s done with you digital. Yes, by sampling, you can transmit the minimum information needed to recreate it. Yes, so if you sample information, you sample it correctly, which is important, and then don’t just sample randomly. Then you use the least amount of information needed to send information. Okay, because if you send the whole waveform, you can use more information. Okay, okay, thank you.</p>
+<p>Yes, more. Yes, please. Okay, that’s an interesting one. If we don’t sample, it’s only understanding. If I send the analog wave, yes. Interesting, it could be. I mean, of course, you need to tell the receiving end what you’re doing, right? It doesn’t matter if it’s analog or digital. I mean, nowadays, radio is also digital, but it used to be a time the radio was analog. And the only thing the radio needed to do: what frequency I need to tune into to listen to that radio channel. So I’m not sure, but okay, thank you.</p>
+<p>More, yes, please. We need to process the information on the signal. We need to process the information, and it’s easier to do it on the</p>
+<h1 id="page-6">Page 6<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-6" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>digital, I mean. Yeah, computers are digital, right? Computers are digital. Okay, that’s a good one. So we have dramatically changed how we live by putting computers everywhere. So if we send analog information, for example, a computer doesn’t know what to do with it, right? So, okay, that’s very good.</p>
+<p>What is the benefit of digitizing everything? What do we do with digital information most of the time? Yes. We can store it. We can store it, exactly. It’s very good that we can store it because now your mobile phone, if it’s not connected to the internet, can still play music because you have the MP3 files on your phone, for example. So that’s very, very useful.</p>
+<p>Other possible benefits of using digital communication? Yes. We can filter out the noise better. That’s very deep, thank you. Indeed, we’ll talk about the benefits of it. And what is fundamental about digital compared to analog? And I think it’s important to realize, yeah, please. Yeah, I like it, yes, I was going to… thank you.</p>
+<p>So, digital is just a combination of bits, right? And that’s how we can store it as a file. And when we send it, and we talk about what happens when we send digital information in this course in detail, whatever you expect to receive as a receiver will be digital bits. If you send an analog wave, maybe common to both the digital world and the analog world, the receiver doesn’t know what is coming. If you knew, there was no need to transmit, right? If you know what you’re gonna receive, there’s no point in transmitting. But the whole story, the whole beauty about communication is that you don’t know what you’re getting.</p>
+<p>So, for the analog signal to come in, if, for example, it’s a noisy analog signal, I don’t know what the noise would look like. If there is noise, I don’t know. Maybe the noise is the signal, we don’t know. We just really do not know. In the digital world, we have agreements on how the wave should look like. It should be bits, maybe binary zeros, binary ones. Maybe we have a certain way of coding them. It’s all part of how we do communication. But we know, you have an expectation of something, how it looks like. And if there is noise added to it, which will happen in all systems, there is always noise, there is a better way of dealing with the noise. And that’s very fundamental to this communication.</p>
+<p>Very simply drawn, and you immediately see it in the drawing. Only one disadvantage for this room is that we only have one board, so I’ll be able to need to erase it a lot. So, if my signal is analog, and for whatever reason there is noise on the signal, doesn’t matter what frequency noise, when I detect this, I detect the green wave. Nothing to do about it. I don’t know what is noise and what is signal. Maybe somebody sent high frequency oscillation on the… I don’t know.</p>
+<p>If I somehow magically convert this analog information signal into a digital sequence of bits, and now I add noise to it, same amount of noise, by the way, doesn’t have to be different. I can tell my receiver, you know what? It could be that there’s gonna be a noisy signal, but the only thing you care about is: is it higher or lower than this line? And if it’s lower than this line, then I say, okay, I have this value, and if it’s higher, it’s this value. This is a very, very, very strong property of digital communication.</p>
+<p>And what else we talked about on Tuesday, what else we can do, and if we are very unfortunate, and there’s a dramatic increase in noise here, for example, and we detect this bit wrongly, which can happen, of course. There’s a bit error. There’s a bit error. We can use advanced error detection, error correction algorithms, digital ones, to get back the original data.</p>
+<p>So there’s a lot of benefits for data communication, but we pay a price. So somebody said it’s simple. It’s not simpler. It’s really much more complicated. But the benefits outweigh, dramatically outweigh the price we pay in terms of technology, so that’s why really all communication, 95% of it is digital, maybe even more, because it’s so much more efficient to do. There are so many benefits.</p>
+<p>The one last thing about digital communication, which is important to mention, I want to mention it, is the fact that when we sample signals, when we convert analog information to the digital domain, we disconnect, and it’s very important to understand. I find it very important, it’s part of the digital age, so it’s really, really important. We disconnect what is the original time-varying experience from the time domain, we disconnect it.</p>
+<p>So we say, okay, a song is three and a half minutes. If you sample it, digitize it, it will be three megabits, or 30 megabits, depending on how deep you sample it, how many bits of continuation, we’ll talk about this in details.</p>
+<h2 id="page-7">Page 7<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-7" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>later.</p>
+<p>But now we have a bunch of bits, and I can choose to send these three megabits which represent the song at a bit rate of one megabit per second, or 10 megabits per second, or 100 megabits per second, because you know when you connect your laptop to the Wi-Fi network, you can actually see the speed at which it’s connected, and depending on the network you’re connected, you have better or worse connection and better or worse bit rate on your link.</p>
+<p>So now, for example, you can read or download, or whatever you call it, a three and a half minute song in a fraction of a second, for example. And that is fundamental to digital information. You cannot do it with analog. There’s no way to take an analog information and to download it faster than it actually happened. You cannot do this.</p>
+<p>And this allows a lot of the things you now take for granted. For example, you, I think you know this, but if you don’t know it, when you talk on your phone with somebody, yeah, it’s not when you were young, maybe you had a walkie talkie, I don’t know, the experience, you had this thing that you can press and you can talk to your friends. It’s a lot of fun. That was analog. There was really a radio channel between you and your friend. That’s why it didn’t work for long distances, of course, otherwise you’ll be messing with the police and it’s not very nice. So it was short distance, and to allow you to talk for somebody maybe 10, 20, 30 meters away, this is purely analog.</p>
+<p>So you press the button, you talk, somebody on the other hand hears you, also works very nicely. But this is analog. As long as you are holding the button and talking, something happened.</p>
+<p>When you talk now on the phone, if you use the phone ever to talk to somebody or if you talk on any of the messaging apps, not even the audio, by the way, even you just make phone calls, all the same. Your voice is digitized, obviously. So sampled, quantized, convert to bits, and then the time you’re actually talking, during the time you’re talking to somebody, 10% of the time, maybe less, maybe 1% of the time, depending on how loaded the network is, you’re actually sending information.</p>
+<p>It’s called time division multiplexing. We will not talk about this in this course. It’s a beautiful course. Next year, Q1 is called telecommunication systems, given by colleagues of mine, which really digs deeper into what does it mean to have mobile networks. And it tells you that when you send information between two mobile users, most of the time, they’re not even connected to each other. It sounds weird.</p>
+<p>What we do is we take the voice that you speak, so we take, I don’t know, 100 milliseconds of your voice, we sample it, we compress it to the data it’s actually needed to actually reconstruct it. We talk about all of this in this course. And we take a small time window and we send the data. And at the other end, the data is decrypted so you can get the information and you get the audio in your ear. But most of the time, there is no real communication between you, not like the walkie talkie example.</p>
+<p>So this really allows us, for example, to allow all of you at the same time, roughly in this room with this wireless router somewhere, probably here in this room, to the same time listen to music, watch a video, talk to your friends all the time while using the same frequencies, the same radio channel, all of this happening simultaneously because none of you is actually occupying the channel full time. Each one of you is using it partially.</p>
+<p>That’s because we have sampled the information, we have allowed the time that it took to generate the information and the time it used to send the information to be completely different time. So it could be three orders of magnitude shorter, 10, five, depending on how efficient your communication channel, you can really squeeze time in that way and it allows you to reuse the information.</p>
+<p>Now it’s time for your break. After the break, we will explain sampling in more detail. All right. Yes. Let’s continue. Oh no, no. There’s still one minute. This clock is really fucking me over.</p>
+<p>Stream and they take the live stream as recording, so I hope. Yes, it’s more than like last. Yeah. All right, we can get started again. Please take your seats.</p>
+<p>All right. So we learned now that there’s no live streaming on Thursday morning. We’ll try to fix it. Maybe we don’t, because there’s enough room for you here, so. And then you show up, otherwise you’ll be in bed watching us. She’s also okay, I think, but we’d like having people around, right? We appreciate having an audience.</p>
+<p>Okay, sampling is important. We spent the last minutes before on what the impact is of being able to sample. Okay, so we want to sample. So, simple question.</p>
+<h2 id="page-8">Page 8<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-8" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>If I want to sample a signal, I’m gonna sample it. I’ll get the samples. And the first question is, how close do I need to put these sampling points?</p>
+<p>Yes. We said sampling frequency needs to be at least twice the highest frequency of the wave. Thank you. So this is something you’ve learned. It’s called the Nyquist criteria, right? If you want to sample a signal, you need to sample at least twice the frequency of the signal.</p>
+<p>So this signal, let’s assume for the sake of the discussion that the highest frequency in this wave is 100 hertz. So somewhere, if I’ll do a Fourier transform, because this is a not periodic signal, if I do Fourier transform of the signal and I look at the spectrum I get, I will see that spectrum, there’s a spectrum for this. So if I draw <code>A(f)</code>, this is the <code>A(f)</code> is the Fourier transform of this. I will see something. And here, this is 100 hertz. It ends. There’s nothing more. Okay, that’s the spectrum of <code>A(t)</code>. It’s called <code>A(f)</code> and it has a finite spectrum.</p>
+<p>So there is a somewhere, a wave at 100 hertz, which is included in this. It needs to be represented. It’s part of the signal, this is 100 hertz, so this will be 10 milliseconds.</p>
+<p>So what does it mean sampling at? So let’s assume I sample, do another sample of this. If I sample once every period, for example, like this and this, that’s what I do. You have to remember that at the receiver, the only thing I have, the only information I get at the receiver is of course only the things that I’ve sampled.</p>
+<p>Somebody said about using the minimum information needed to actually send the information, and send the signal. So if I only send the green points here to the receiver, and this goes to the entire transmission system and it doesn’t matter what happens, and the receiver, this is transmitted, sampled signal in green, and then the receiver after transmission, after transmission, only get these two points. The transmitter needs to connect the dots. That’s what it needs to do.</p>
+<p>And if I only send these two dots, it’s very improbable that the receiver will decide, ah, these two dots, okay, there’s this in between. There’s no reason. A very logical assumption will be that this is actually the information sent. It’s called linear interpolation.</p>
+<p>If we send double the amount of points, if we add to the green dots, also the blue dots, I drew it wrong. That’s roughly, okay. If we add the blue dots here, I add this and this, then there is a larger probability that at least I’ll be able to do this. And of course this is not a sine wave, but approximate sine wave better.</p>
+<p>So, and you can think about this, in a minute we’ll explain why it happens, but if I do anything which is below the combination of green and blue, if I decide to do within a cycle, this is a full cycle, this is a full cycle, the signal, instead of having two dots in the cycle, I’ll do one and a half dots.</p>
+<p>So I, for example, take extreme case, if I do, I’m really running into calls quickly, if I do this sampling and this sampling, for example, so I don’t have two, I have three samples over two periods, basically, because the next one will be somewhere here, somewhere. So this is two cycles, I have three samples over three cycles. You can see that I can connect the dots differently. This is not the original signal. This is called under sampling and we’ll show in a minute what it does with your signal.</p>
+<p>So, something at Nyquist is necessary, and I think we covered this one.</p>
+<p>So, in the case of ideal sampling, we take the signal, we sample it, at least at two times the maximum band of the signal, and now we’re gonna write it mathematically. So I leave this here, let me just erase this for a minute. Maybe I need to, remember, use the other part of the board, okay, so the question is what is sampling mathematically?</p>
+<p>And sampling mathematically is nothing more, nothing less than taking the original signal <code>a(t)</code>. So the sample signal <code>s(t)</code> is the original, multiplied by a sampling function. We call it <code>x(t)</code>, <code>x(t)</code> is a sampling function, so <code>x(t)</code>, and what the sampling function does is it takes the continuous time representation of a wave, which is this wiggly line, and chooses specific values out of it.</p>
+<p>So, we’re gonna have after sampling, the only thing we will have are these values. If I would draw it better, it will be equally distance. My drawing skills are limited, so it doesn’t look like it, but they should be equally distance. So this should be, this distance should be the sampling period, which is one over the sampling frequency, yes?</p>
+<p>We write mathematically the sampling function as <code>x(t)</code> is equal to infinite series of delta functions. This is the way we write it, mathematically. Which means that if I combine these two together, I can write <code>s(t)</code> to be equal to an infinite sum of <code>a</code></p>
+<h2 id="page-9">Page 9<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-9" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>at these sampling moments, and this is the ideal sample signal.</p>
+<p>It has the values, so it has all these values, these are all <code>a</code> and <code>t</code>, so this is <code>a</code>, <code>t_s</code>, and this would be <code>a</code>, <code>2t_s</code>, and this one would be <code>a</code>, <code>3t_s</code>, and so forth. These are discrete values. They are, as we decided, fast enough, we sample fast enough, because that means that if there is a sine wave hiding here which has a frequency, maximum frequency of 100 hertz, we sum it at least twice in that period so we can reconstruct a sine function.</p>
+<p>This is the time representation. What happens in frequency? Need to make sure it’s not escaping too far, but there is no way of capturing it.</p>
+<p>In order to understand what happens in frequency, I need to take <code>s(t)</code> and do Fourier transform. So <code>S(f)</code> is the Fourier transform of <code>s(t)</code>. <code>S(f)</code> is, and <code>s(t)</code> is a multiplication of two functions, of <code>a(t)</code>, and <code>x(t)</code>. If we have multiplication in the time domain, we will have convolution in the frequency domain, okay?</p>
+<p>We talked about it before when you said, remember we talked about linear time invariant systems, all right, just a quick reminder. We said if <code>x(t)</code> is the input, and I have a transfer function <code>h(t)</code>, and I want to know <code>y(t)</code>, then I can say <code>y(t)</code> is <code>x(t)</code> convolution with <code>h(t)</code>. We said this is annoying, it’s a difficult integral, so we go to the frequency domain, <code>X(f)</code> goes through <code>H(f)</code>, end up at <code>Y(f)</code>, and then we said, yeah, a <code>Y(f)</code> is just a multiplication of <code>X(f)</code>, and <code>H(f)</code>.</p>
+<p>Same works the other way around, please, yes, exactly. Exactly, so that’s, so this example, if the time domain is convolution, the frequency domain will be a multiplication. It also works the other way around. If you have multiplication in the time domain, you will have convolution in the frequency domain. It’s just because how you write convolution and integration, what happens when you do Fourier integrals.</p>
+<p>So we need to have a convolution between <code>A(f)</code> and <code>X(f)</code>, okay? So far, nothing dramatic happened. Now I’m gonna make you believe that I say something which is true, it is true, there’s a question.</p>
+<p>What is <code>A(f)</code>? It’s a spectrum of <code>a</code>, yeah, okay. And to be completely accurate, <code>a(t)</code> is a real signal, so the spectrum should be symmetric, and I’ll be a very bad drawing of this. So all spectra in this course are symmetric because we are talking about real signals.</p>
+<p>So now we need to do the convolution. In order to do the convolution, <code>A(f)</code> is just a spectrum. I just drew it. I don’t have a closed formula for it, but you can imagine having a closed formula for it because if it’s a single, you can actually do the Fourier integral, then you’ll get a closed formula, analytic formula, it doesn’t matter.</p>
+<p><code>X(f)</code> is the Fourier transform of this infinite series of delta functions. We can try to solve it together. We will spend a better part of two days on this because it’s mathematically very annoying, but I will just give you the answer.</p>
+<p><code>X(f)</code> is an infinite series of delta functions, surprise, surprise, where the distance between delta functions is inverse to the sampling frequency, or actually the sampling, inverse to the sampling period, or actually the sampling frequency. So you can write it like this, or you can write it as delta <code>f</code> minus <code>n</code> times <code>f_s</code>. Yes, both are, of course, identical and correct. This is <code>X(f)</code>.</p>
+<p>Why is this important? Because now we’re gonna do convolution.</p>
+<p>Yes, please. Then down, you do <code>a</code> over <code>t</code>. This here in <code>x</code>? This is <code>a</code> over <code>t</code>. This is <code>X(f)</code>. Again, if you note that. These are delta functions in time, and now they’re delta functions in frequency. I don’t have <code>a</code> here. I lost <code>a</code>. This is just <code>x</code>. This is not <code>s</code>, it’s <code>x</code>.</p>
+<p>I mean, the amplitude over the time period. This is not time. This is frequency. I’m missing something. Yeah, the frequency domain. Yeah? The height of the delta function.</p>
+<p>Oh, the height of the, well, that’s a, okay, that’s a general discussion to be had. There could be a scaling here. I don’t really care for it at the moment. There could be a scaling for the delta functions potentially, but they’re infinite anyway, so a scaling of an infinite variable is not really interesting, but when you do, you go back to the original value, it might have an impact. So again, the math, you can double check it. I don’t worry about it too much.</p>
+<p>The important thing is that an infinite series of delta function in time becomes an infinite series of delta function in frequency. But now it’s at a multiplication which we had in the time domain, we have convolution. And now I need to convince you that taking a function, it’s an <code>A(f)</code>, and convoluting it with a delta function in the frequency domain, <code>f_0</code>, that the impact of doing convolution with the delta function is to get <code>a</code> at <code>f</code> minus</p>
+<h2 id="page-10">Page 10<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-10" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>f zero. How best to do it? I don’t know how best to do it. It’s a mathematical fact that when you convolute something with a displaced delta function, you get the function centered around that new frequency. You can look at it from how you integrate this and what does it mean to do the integration. I don’t wanna spend too much time on it. It’s just pure mathematics, but this is an important outcome of this calculation because it means, and that’s important. So I apologize if I skip the math here, but it is the result of convoluting with the delta function, this is the space.</p>
+<p>And if you take my word for it for a minute, it means that what we have here is an infinite sum. So this is the spectrum of the sample signal. So the spectrum of the sample signals is an infinite sum of the original spectra of our signal, repeated again and again and again in the spectral domain. Basically we’re occupying, for a better word, the entire spectrum from minus infinity to plus infinity with copies of the original signal.</p>
+<p>You can also draw this and for drawing it, I will dramatically simplify the spectrum (A(f)) because it’s difficult to draw these wiggly lines every time. So if (A(f)) spectrum looks something like it and we use triangles a lot because it’s easy. If this is (A(f)), if then the spectrum then (S(f)) will have, this is (S(f)), will have copies. The first copy is very easy to draw because it’s when (N) is zero. So when (N) is zero, I have my first copy. That’s easy.</p>
+<p>Where do I draw the second copy? Yeah, so if I keep to my reasoning that 100 hertz is the maximum frequency, so (B) is 100, and if I say I sample it twice (B), then the second copy will emerge here. This will be two (B), no, three (B), sorry. This being two (B) and then there will be another copy here around minus two (B) which has minus three (B) here and so on.</p>
+<p>And now it can become much more clearer why sampling below Nyquist is a problem. Because we have put a condition on this that we have to sample. What happens if, for example, let’s draw it again. No, go up. It’s good, exercise this. What happens, what happens if (F_S), for example, is not two times (B) but only one and a half times (B)? Yes. There will be an overlap. There will be an overlap.</p>
+<p>Let’s exaggerate it. So this is (A(f)) and the next copy is now not at two (B) but at one and a half (B). So this is the center of it. And it has the same shape, supposed to end up here. And then this region where these two are overlapping, again, what I generate is not multiple lines. I generate the sum of all of these. So I will have this thing. It’s the orange line. This is really (S(f)). (S(f)), for this case, is this orange line.</p>
+<p>And what is the problem now? Okay, so I get the orange line. Yes. We lost information. Why did we lose information? Because the next question you want to ask yourself, okay, I sampled the signal, I got this waveform. It’s all nice. I want to actually get the original data. That’s the purpose of sampling. We want to eventually be able to reconstruct the original waveform.</p>
+<p>So if I want to reconstruct the original waveform and I have this signal, this is the spectrum of the sample signal. What trick can you suggest I can do in the frequency domain to get back the original signal? This is my signal, sample signal. Any idea how I can look at this and say, okay, I can do something in terms of filtering in the frequency domain to capture the original?</p>
+<p>A low-pass filter. That’s a very good idea. If I make a low-pass filter, and allow me to make an ideal low-pass filter, annoy me to the max. I have to get used to these boards. If I use a low-pass filter like this, and somehow miraculously I’m able to take only the copy around zero, just it, and we’ll talk about why it’s not very easy to do, but okay, let’s assume I can make this magical filter, and only capture this.</p>
+<p>Then after filtering, so this is the low-pass filter, so I take (S(f)), go to a low-pass filter, which has this response, so this is (H(f)). This is the low-pass filter. What do I get to the output? I get (A(f)), because I only filtered the zero copy, nothing else. And (A(f)) is my original signal.</p>
+<p>So simply said, it’s not so easy to do, but simply said, sample signal has a periodic spectrum. Here or here, it’s a periodic spectrum. If I capture the copy here at the center, I get (A(f)), which means, and that’s important, I have a perfect reconstruction of my original signal. And sampling theory is a very, very strong theory, and it suggests that if you do the right things, which means you sample at least at Nyquist frequency, at least, you can do more, at least at Nyquist frequency, then you apply a perfect rectangle filter, and perfect doesn’t exist, but if you can apply a perfect rectangle filter, if you do these two things, you are getting exactly, not maybe, not approximately, you get exactly the original</p>
+<h2 id="page-11">Page 11<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-11" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>signal. Think about it. Think about it, it’s not trivial. You started with this wiggly waveform. You started with this. You then decided, too much information. Gonna throw, effectively, almost all of the except for specific points. The only thing I’m actually preserving is these green points. So out of the whole complex time phenomenon, I only capture specific moments in time.</p>
+<p>I know, by analyzing the signal, that it has a finite spectrum, so I do this capturing in a clever way. I don’t just capture values, I capture the interval, which is at least two times the highest frequency in the signal, but I’m sending, very important, I’m sending digitally, later we talk how we do this, only these values. Nothing else, and yet, at the receiver, the theorem says I will be able to exactly reconstruct the waveform with all its wiggles, okay?</p>
+<p>It’s not trivial. Maybe you say, yeah, of course. It’s really not trivial, and it’s beautiful theory, and it says that, and now, why is it true? So I showed you in the spectral domain why it’s true, but that’s very easy, because, of course, if you have infinite copies of the spectrum, I take the zero copy, I have the original signal, but thematically, I’m gonna put a few math on the board.</p>
+<p>We can write that (A(t)), so this is reconstructed, so what does it mean to multiply with a square filter? It means, again, we have to go back to the time domain, I want to write (A(t)) that we reconstruct, is meant to do convolution with the Fourier transform of a square wave, which is a sinc function. That said, sinc function will be chasing us again and again and again, so this is what we do in the frequency domain, it means in the time domain that (A(t)), this is the reconstructed, we call it reconstructed signal, is gonna be equal to, somehow, my print got cut in the middle, of course:</p>
+<p>[
+A(t) = \sum_{N=-\infty}^{\infty} A(NT_S)
+\frac{\sin\left(\pi F_S\left(t - \frac{N}{F_S}\right)\right)}
+{\pi F_S\left(t - \frac{N}{F_S}\right)}
+]</p>
+<p>Maybe I write it in green so it’s clear. These are the values we sampled. These are really the values, this we have, for sure. Multiply by sine of pi times (F_S) times (T) minus (N) divided by (F_S), sorry, it’s overlapping here, divided by pi (F_S T) times (S). Minus (N F_S), sorry, not (F_S), yes, sampling frequency. These are sinc functions.</p>
+<p>The obvious way, if I get the green values at the receiver, the obvious way to connect them is just what you call linear interpolation. And just by looking at the blue line I drew, you see that this is not the original signal, right? It’s not even close to that. What the theorem tells us is that if we use a different way of interpolation, this function, the fact that connecting dots is called interpolation. It’s estimating the value between two known values and you can do it different ways.</p>
+<p>And the blue line represents the linear interpolation and the linear interpolation clearly doesn’t reconstruct the original waveform. You don’t need to be a rocket scientist to see it’s not happening. The interpolation using this sinc function actually does give you the original signal. What happens is the following. I will have the green values. And for each one of these green values, I will multiply by sinc function.</p>
+<p>Let me just draw the important moments in time. So this is one over (F_S), two over (F_S), three over (F_S), four over (F_S). And it’s drawn much better in the reader. So my excuses, and you have values. And for each one of these sampling points, I will multiply by sinc function. And the beauty with this sinc function is that it gets zeros at all the other points, so this is one and the second one will be here. Third one will be here, fourth one will be here. And as I said, there’s a much better picture in the reader.</p>
+<p>And if we connect, and again, we add all these things together. It’s not like these are separate waveform. We add them together. So it means that at every point where we have the exact data, all the other sinc functions go to zero. So here, only this contributes to the value. All of the rest of them are zero. So we actually get the original value, but that’s okay, that’s nice. We had it already in the linear interpolation. That’s not a big result.</p>
+<p>And anywhere in between, we add all these amplitudes. So we add this curve to this curve to this curve to this curve. And if we do it correctly, we will reconstruct the nasty waveform we had before, which was, two, three, four, something like that. Something like that, it doesn’t matter.</p>
+<p>This is really important. We reconstruct the original waveform from the sample by using a sinc interpolation. And now, if we look back at this picture, we see where the problem is, right? Maybe not. What is the problem now, if we have this phenomena? We call this phenomena, by the way, we have a name for it. It’s called aliasing, it’s doing very well. It’s called</p>
+<h2 id="page-12">Page 12<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-12" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>aliasing. It’s the fact that the signal, when we sample at a too low frequency, the signal will actually, the spectrum will overlap. And what was the condition for perfect reconstruction? We had to be able, that was the idea here, we must be able to capture a single copy of the spectrum, the original spectrum. But if aliasing takes place, (A(f)) has gone for good. We don’t have (A(f)) anymore.</p>
+<p>Because we detect the orange line, and there is no filter in the world I can place here. Doesn’t matter how hard I try. Which will bring you back (A(f)). Hence, if I have aliasing, if for whatever reason I sampled below the Nyquist criteria, I can still apply a low pass filter, it’s okay. But I will never get the original waveform because what I will have here in the spectral domain is a different spectrum than (A(f)). And when I reconstruct, I will get a different waveform from (A(t)). I will not be able to recover it.</p>
+<p>So you can think about it from the time domain principle, and the interpolation, or the frequency domain interpolation. Regardless how you look at it, you won’t be able to reconstruct. Yes, please. Yeah, triangles, I mean, somebody asked me, how does the time domain signal look if it has a triangular spectrum? I have no idea. I honestly do not know. So yeah.</p>
+<p>But this is really important. When we have aliasing, we have this phenomenon, and then it means that we don’t have a way of isolating the original spectrum of (A(f)). It’s not there anymore, it’s lost. Hence, the reconstruction is no longer guaranteed. And we cannot obtain the original waveform. It’s just not an option.</p>
+<p>One final point. It’s dimensionality theorem, I want to say something about it. So we can do, well, we cannot do, but we can, where’s my eraser? Strangely disappeared. Ah, here it is. Okay. We can, if we apply Nyquist criteria, and if we do it correctly, we can perfectly reconstruct the signal. And in the coming lectures, we will learn that in reality, it’s not so easy.</p>
+<p>One thing you should think about is a simple example why it’s not so easy, is that these values come out of a continuous set of values. It can be any voltage that we sample, principle. And we need to convert that voltage somehow into digital information. And digital information will eventually have a limited resolution.</p>
+<p>Maybe you know that when you sample, if you listen to music, you can choose a eight bit quantization or 12 bit or 16 bit. If you are audiophilic, if you really like music, you can subscribe to a Spotify service which has 24 bit sampling. And that every value that is sampled from the audio signal convert 24 bits, very high resolution sampling. The more bits sampling, we’ll talk about it next week. The finer you can approximate the green value, but of course it’s an infinite scale. So you will miss new answers in this. So that’s one problem you have.</p>
+<p>Question? Oh, okay. You will have problems with this. The other problem, the other problem is of course, this magical square filter. Not really physical to make square filters. Infinite frequency response here is not possible. Yes. Can you do that in this case? Yes. In the digital domain you mean? A lot of digital filtering is using, yes, you can use that in digital domain. You can do easier in digital domain. That’s one of the reasons go digital as well.</p>
+<p>The nice thing about the sampling theory, it’s also sets for us a limit or a theoretical limit on how much information we actually need to send. Because if I tell you that sampling at Nyquist allows you to perfectly reconstruct, then it also eventually tells you anything we do beyond that is redundant. Right? I can perfectly reconstruct from the sample space, Nyquist one over Nyquist frequency apart. So anything I do beyond that is redundant.</p>
+<p>We call this the dimensionality theorem. It’s just a fancy name to say information that you obtain by sampling at some point is enough. You don’t need to do anymore. And it says to you that if you look at the signal and you take a period (T) of time and you ask yourself how much information, how many different pieces of information, we call this later in this course symbols, how many pieces do I need to be able to send to the other side to perfectly reconstruct?</p>
+<p>The answer is very simple. The number of symbols you need to send is nothing more, nothing less than the total time you want to transmit divided by the sampling. That’s obvious because you just count how many there are in (T) and it can be written differently as:</p>
+<p>[
+\frac{T}{T_S} = 2BT
+]</p>
+<p>because you know (1/T_S) is (F_S) and (F_S) is (2B). So this is, I didn’t do just, I substituted (T_S) is (1/(2B)). So the dimensionality theory tells us in order to perfectly reconstruct the signal out of samples and the signal duration is (T), I need (2BT), different</p>
+<h2 id="page-13">Page 13<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#page-13" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>samples, different pieces of information to reconstruct it. It means that if for whatever purpose, I now add more samples, doubling the sampling frequency, maybe your intuition tells you now it’s gonna be much better reconstruction because I have so much more information, I have doubled the information.</p>
+<p>The answer to that statement is yes, you think you have doubled the information, but in fact all these additional data points that you actually are gonna meticulously sample and then transmit and then reconstruct and then recover are dependent on the information you already sent.</p>
+<p>So the orange dots can be approximated by the green dots and do not add any additional information in order to achieve perfect reconstruction.</p>
+<p>There’s a question, yes. What’s the use of over sampling? That’s what you’re asking.</p>
+<p>Because this adding green and orange means we actually effectively, if we do, if we do both of them together, what’s the effective sampling for over sampling? If you add green plus orange is four times B, right? We’ve doubled it.</p>
+<p>What does it mean it’s four times B? If we want to draw the spectrum now of the sampled signals, this is SF for FS equals four, not two times B, four times B. Here’s the copy, next copy, one, two, three, four, four B.</p>
+<p>Can you imagine benefits of having this? Simple benefits of having this copy farther away, anybody? Anybody, ideas, yes.</p>
+<p>Easier to filter, thank you, yes. It’s easier to filter, I can do like a very lazy filter, for example. More practical, it doesn’t, really important, it doesn’t give us more information. In fact, it forces us to send more information because sampling faster, sampling faster means we need to send more information.</p>
+<p>We talk about the bit rate and we show there’s direct correlation, linear correlation within the amount of the frequency at which you sample the sample period and the amount of bits you need to send. Because you send double the samples, more symbols, and you have to encode every symbol binary digits, you send more bits. It’s very simple.</p>
+<p>So, higher sampling frequency, and that’s why you know that for sampling audio, the typical sampling frequency, 44 point something kilohertz, has to do what we can hear.</p>
+<p>We, as humans, cannot hear anything about, depending on your age and how many clubbing you’ve done in your life, you can hear up to 20 kilohertz. Maybe your hearing is already damaged, could be, means you had a very happy youth, it’s very good. But yeah, we hear about 20 kilohertz. So, we don’t need to sample anything above it because the information we don’t even hear, it’s meaningless.</p>
+<p>And for a long time, this is a history story, but for a long time before we had digital phones, and even for a long time when we had digital phones, when you talk to somebody on your phone, the voice will be sound distorted. I don’t think you remember this, but maybe you do.</p>
+<p>So, having a digital conversation on the phone will be, and that’s because somebody many, many years ago decided that four kilohertz is enough. And it’s true because if you think about when you talk, if you record your talking, your speaking, and you put in a spectrum analyzer, most of the noise we make, even if we speak very loud, even if we do that, we’re not reaching anything above a few hundred hertz, maybe.</p>
+<p>The sopranos in the opera, they reach, I don’t know, 800 hertz, 900, these are very high-pitched voices. So, four kilohertz feels like a very safe frequency range. So, what they will do is we’ll filter the audio and then sample it, eight kilohertz, for example.</p>
+<p>But for digital music, at some point, it was chosen to be 44 kilohertz. But over-sampling maybe simplifies the reconstruction process, but doesn’t provide any additional information. That’s really important, that’s what the theorem tells us. This is all the information we need.</p>
+<p>N points over a period of T is all the information we need. Any additional points that we are gonna sample are superfluous, are redundant, they’re not needed for this.</p>
+<p>We are finished with the lecture. I can think of the last one. And then Mark has just entered back in the room. And after the break, we’ll solve an exam question, I guess, from previous years. So, stay tuned.</p>
+<h2 id="source-snapshots">Source snapshots<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#source-snapshots" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p><img src="../../communication-1/assets/997203-english-page-001.png" alt="997203_English Page 1"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-002.png" alt="997203_English Page 2"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-003.png" alt="997203_English Page 3"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-004.png" alt="997203_English Page 4"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-005.png" alt="997203_English Page 5"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-006.png" alt="997203_English Page 6"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-007.png" alt="997203_English Page 7"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-008.png" alt="997203_English Page 8"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-009.png" alt="997203_English Page 9"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-010.png" alt="997203_English Page 10"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-011.png" alt="997203_English Page 11"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-012.png" alt="997203_English Page 12"/></p>
+<p><img src="../../communication-1/assets/997203-english-page-013.png" alt="997203_English Page 13"/></p></article><hr/><div class="page-footer"><div class="breadboard-ai" data-dashboard="http://localhost:3000" data-garden="communication-1" data-page="communication-1/sources/997203-english" data-title="Week 1 Lecture 2"><button class="breadboard-ai-toggle" aria-label="Ask AI about this page" title="Ask AI about this page"><span class="breadboard-ai-toggle-icon" aria-hidden="true">✦</span><span class="breadboard-ai-toggle-label">Ask AI</span></button><div class="breadboard-ai-panel" role="dialog" aria-label="Page AI assistant" hidden><div class="breadboard-ai-header"><div class="breadboard-ai-context" aria-live="polite"><span class="breadboard-ai-dot" aria-hidden="true"></span><span class="breadboard-ai-page-name"></span></div><button class="breadboard-ai-close" aria-label="Close AI panel">✕</button></div><div class="breadboard-ai-actions"><button data-prompt="Explain this page from first principles.">Explain</button><button data-prompt="Give a concrete worked example based on this page.">Example</button><button data-prompt="Quiz me on this page.">Quiz me</button><button data-prompt="Show the sources this page is grounded in.">Sources</button><button data-prompt="Find connections between this page and related notes.">Connections</button></div><div class="breadboard-ai-messages" aria-live="polite"></div><div class="breadboard-ai-error" role="alert" hidden></div><form class="breadboard-ai-composer"><textarea class="breadboard-ai-input" rows="2" placeholder="Ask about this page…" aria-label="Ask about this page"></textarea><div class="breadboard-ai-composer-row"><button type="button" class="breadboard-ai-stop" hidden>Stop</button><button type="submit" class="breadboard-ai-send">Send</button></div></form></div></div></div></div><div class="right sidebar"><div class="graph "><h3>Knowledge Map</h3><div class="graph-outer"><div class="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:false,&quot;scale&quot;:0.95,&quot;repelForce&quot;:1.25,&quot;centerForce&quot;:0.08,&quot;linkDistance&quot;:120,&quot;fontSize&quot;:0.72,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><button class="global-graph-icon" aria-label="Expand Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                  s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                  c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                  C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                  c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                  v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                  s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                  C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                  S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                  s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                  s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div class="global-graph-outer"><div class="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scope&quot;:&quot;auto&quot;,&quot;clickToNavigate&quot;:true,&quot;scale&quot;:1.05,&quot;repelForce&quot;:2.3,&quot;centerForce&quot;:0.04,&quot;linkDistance&quot;:165,&quot;fontSize&quot;:0.8,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true,&quot;enableRadial&quot;:false}"></div><div class="global-graph-search" role="search"><button class="global-graph-search-button" type="button" aria-label="Search nodes"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="7"></circle></svg></button><input class="global-graph-search-input" type="search" placeholder="Search nodes..." autocomplete="off" spellcheck="false"/><button class="global-graph-search-clear" type="button" aria-label="Clear node search">Clear</button><span class="global-graph-search-status" aria-live="polite"></span></div><button class="global-graph-close" type="button" aria-label="Close Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></button></div></div><div class="toc desktop-only"><button type="button" class="toc-header" aria-controls="toc-125" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><ul id="list-1" class="toc-content overflow"><li class="depth-1"><a href="#summary" data-for="summary">Summary</a></li><li class="depth-1"><a href="#knowledge-tree" data-for="knowledge-tree">Knowledge tree</a></li><li class="depth-1"><a href="#source-material" data-for="source-material">Source material</a></li><li class="depth-0"><a href="#page-1" data-for="page-1">Page 1</a></li><li class="depth-0"><a href="#page-2" data-for="page-2">Page 2</a></li><li class="depth-0"><a href="#page-3" data-for="page-3">Page 3</a></li><li class="depth-0"><a href="#page-4" data-for="page-4">Page 4</a></li><li class="depth-0"><a href="#page-5" data-for="page-5">Page 5</a></li><li class="depth-0"><a href="#page-6" data-for="page-6">Page 6</a></li><li class="depth-1"><a href="#page-7" data-for="page-7">Page 7</a></li><li class="depth-1"><a href="#page-8" data-for="page-8">Page 8</a></li><li class="depth-1"><a href="#page-9" data-for="page-9">Page 9</a></li><li class="depth-1"><a href="#page-10" data-for="page-10">Page 10</a></li><li class="depth-1"><a href="#page-11" data-for="page-11">Page 11</a></li><li class="depth-1"><a href="#page-12" data-for="page-12">Page 12</a></li><li class="depth-1"><a href="#page-13" data-for="page-13">Page 13</a></li><li class="depth-1"><a href="#source-snapshots" data-for="source-snapshots">Source snapshots</a></li><li class="overflow-end"></li></ul></div><div class="backlinks"><h3>Backlinks</h3><ul id="list-2" class="overflow"><li><a href="../../communication-1/adding-dbm-values" class="internal">Adding dBm Values</a></li><li><a href="../../communication-1/aliasing-and-nyquist-sampling-criterion" class="internal">Aliasing and Nyquist Sampling Criterion</a></li><li><a href="../../communication-1/communication-system-block-flow" class="internal">Communication System Block Flow</a></li><li><a href="../../communication-1/cosine-and-sine-frequency-representations" class="internal">Cosine and Sine Frequency Representations</a></li><li><a href="../../communication-1/decibel-power-ratios" class="internal">Decibel Power Ratios</a></li><li><a href="../../communication-1/definition-and-use-of-dbm" class="internal">Definition and Use of dBm</a></li><li><a href="../../communication-1/digital-communication-as-analog-to-digital-to-analog-transfer" class="internal">Digital Communication as Analog-to-Digital-to-Analog Transfer</a></li><li><a href="../../communication-1/digital-robustness-versus-analog-under-noisy-transmission" class="internal">Digital robustness versus analog under noisy transmission</a></li><li><a href="../../communication-1/fourier-domain-representation" class="internal">Fourier Domain Representation</a></li><li><a href="../../communication-1/fourier-transform-of-a-constant-signal" class="internal">Fourier Transform of a Constant Signal</a></li><li><a href="../../communication-1/ideal-low-pass-reconstruction" class="internal">Ideal Low-Pass Reconstruction</a></li><li><a href="../../communication-1/ideal-sampling-as-multiplication-by-a-delta-train" class="internal">Ideal Sampling as Multiplication by a Delta Train</a></li><li><a href="../../communication-1/orthogonal-bases-for-signal-representation" class="internal">Orthogonal Bases for Signal Representation</a></li><li><a href="../../communication-1/sources/" class="internal">Sources</a></li><li><a href="../../communication-1/spectral-replication-from-sampling" class="internal">Spectral Replication from Sampling</a></li><li><a href="../../communication-1/square-wave-decomposition-and-symmetry" class="internal">Square-Wave Decomposition and Symmetry</a></li><li><a href="../../communication-1/time-decoupling-in-digital-communication" class="internal">Time Decoupling in Digital Communication</a></li><li><a href="../../communication-1/time-frequency-multiplication-and-convolution-duality" class="internal">Time-Frequency Multiplication and Convolution Duality</a></li><li><a href="../../communication-1/under-sampling-and-spectral-overlap" class="internal">Under-Sampling and Spectral Overlap</a></li><li><a href="../../communication-1/voltage-ratios-use-20-logarithm-instead-of-10" class="internal">Voltage Ratios Use 20 Logarithm Instead of 10</a></li><li class="overflow-end"></li></ul></div></div></div></div></body><script type="application/javascript" data-persist="true">function n(){let t=this.parentElement;t.classList.toggle("is-collapsed");let e=t.getElementsByClassName("callout-content")[0];if(!e)return;let l=t.classList.contains("is-collapsed");e.style.gridTemplateRows=l?"0fr":"1fr"}function c(){let t=document.getElementsByClassName("callout is-collapsible");for(let e of t){let l=e.getElementsByClassName("callout-title")[0],s=e.getElementsByClassName("callout-content")[0];if(!l||!s)continue;l.addEventListener("click",n),window.addCleanup(()=>l.removeEventListener("click",n));let o=e.classList.contains("is-collapsed");s.style.gridTemplateRows=o?"0fr":"1fr"}}document.addEventListener("nav",c);
+</script><script type="module" data-persist="true">function E(a,e){if(!a)return;function t(o){o.target===this&&(o.preventDefault(),o.stopPropagation(),e())}function n(o){o.key.startsWith("Esc")&&(o.preventDefault(),e())}a?.addEventListener("click",t),window.addCleanup(()=>a?.removeEventListener("click",t)),document.addEventListener("keydown",n),window.addCleanup(()=>document.removeEventListener("keydown",n))}function f(a){for(;a.firstChild;)a.removeChild(a.firstChild)}var m=class{constructor(e,t){this.container=e;this.content=t;this.setupEventListeners(),this.setupNavigationControls(),this.resetTransform()}isDragging=!1;startPan={x:0,y:0};currentPan={x:0,y:0};scale=1;MIN_SCALE=.5;MAX_SCALE=3;cleanups=[];setupEventListeners(){let e=this.onMouseDown.bind(this),t=this.onMouseMove.bind(this),n=this.onMouseUp.bind(this),o=this.onTouchStart.bind(this),r=this.onTouchMove.bind(this),i=this.onTouchEnd.bind(this),s=this.resetTransform.bind(this);this.container.addEventListener("mousedown",e),document.addEventListener("mousemove",t),document.addEventListener("mouseup",n),this.container.addEventListener("touchstart",o,{passive:!1}),document.addEventListener("touchmove",r,{passive:!1}),document.addEventListener("touchend",i),window.addEventListener("resize",s),this.cleanups.push(()=>this.container.removeEventListener("mousedown",e),()=>document.removeEventListener("mousemove",t),()=>document.removeEventListener("mouseup",n),()=>this.container.removeEventListener("touchstart",o),()=>document.removeEventListener("touchmove",r),()=>document.removeEventListener("touchend",i),()=>window.removeEventListener("resize",s))}cleanup(){for(let e of this.cleanups)e()}setupNavigationControls(){let e=document.createElement("div");e.className="mermaid-controls";let t=this.createButton("+",()=>this.zoom(.1)),n=this.createButton("-",()=>this.zoom(-.1)),o=this.createButton("Reset",()=>this.resetTransform());e.appendChild(n),e.appendChild(o),e.appendChild(t),this.container.appendChild(e)}createButton(e,t){let n=document.createElement("button");return n.textContent=e,n.className="mermaid-control-button",n.addEventListener("click",t),window.addCleanup(()=>n.removeEventListener("click",t)),n}onMouseDown(e){e.button===0&&(this.isDragging=!0,this.startPan={x:e.clientX-this.currentPan.x,y:e.clientY-this.currentPan.y},this.container.style.cursor="grabbing")}onMouseMove(e){this.isDragging&&(e.preventDefault(),this.currentPan={x:e.clientX-this.startPan.x,y:e.clientY-this.startPan.y},this.updateTransform())}onMouseUp(){this.isDragging=!1,this.container.style.cursor="grab"}onTouchStart(e){if(e.touches.length!==1)return;this.isDragging=!0;let t=e.touches[0];this.startPan={x:t.clientX-this.currentPan.x,y:t.clientY-this.currentPan.y}}onTouchMove(e){if(!this.isDragging||e.touches.length!==1)return;e.preventDefault();let t=e.touches[0];this.currentPan={x:t.clientX-this.startPan.x,y:t.clientY-this.startPan.y},this.updateTransform()}onTouchEnd(){this.isDragging=!1}zoom(e){let t=Math.min(Math.max(this.scale+e,this.MIN_SCALE),this.MAX_SCALE),n=this.content.getBoundingClientRect(),o=n.width/2,r=n.height/2,i=t-this.scale;this.currentPan.x-=o*i,this.currentPan.y-=r*i,this.scale=t,this.updateTransform()}updateTransform(){this.content.style.transform=`translate(${this.currentPan.x}px, ${this.currentPan.y}px) scale(${this.scale})`}resetTransform(){let t=this.content.querySelector("svg").getBoundingClientRect(),n=t.width/this.scale,o=t.height/this.scale;this.scale=1,this.currentPan={x:(this.container.clientWidth-n)/2,y:(this.container.clientHeight-o)/2},this.updateTransform()}},T=["--secondary","--tertiary","--gray","--light","--lightgray","--highlight","--dark","--darkgray","--codeFont"],y;document.addEventListener("nav",async()=>{let e=document.querySelector(".center").querySelectorAll("code.mermaid");if(e.length===0)return;y||=await import("https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.0/mermaid.esm.min.mjs");let t=y.default,n=new WeakMap;for(let r of e)n.set(r,r.innerText);async function o(){for(let s of e){s.removeAttribute("data-processed");let c=n.get(s);c&&(s.innerHTML=c)}let r=T.reduce((s,c)=>(s[c]=window.getComputedStyle(document.documentElement).getPropertyValue(c),s),{}),i=document.documentElement.getAttribute("saved-theme")==="dark";t.initialize({startOnLoad:!1,securityLevel:"loose",theme:i?"dark":"base",themeVariables:{fontFamily:r["--codeFont"],primaryColor:r["--light"],primaryTextColor:r["--darkgray"],primaryBorderColor:r["--tertiary"],lineColor:r["--darkgray"],secondaryColor:r["--secondary"],tertiaryColor:r["--tertiary"],clusterBkg:r["--light"],edgeLabelBackground:r["--highlight"]}}),await t.run({nodes:e})}await o(),document.addEventListener("themechange",o),window.addCleanup(()=>document.removeEventListener("themechange",o));for(let r=0;r<e.length;r++){let v=function(){let g=l.querySelector("#mermaid-space"),h=l.querySelector(".mermaid-content");if(!h)return;f(h);let w=i.querySelector("svg").cloneNode(!0);h.appendChild(w),l.classList.add("active"),g.style.cursor="grab",u=new m(g,h)},M=function(){l.classList.remove("active"),u?.cleanup(),u=null},i=e[r],s=i.parentElement,c=s.querySelector(".clipboard-button"),d=s.querySelector(".expand-button"),p=window.getComputedStyle(c),L=c.offsetWidth+parseFloat(p.marginLeft||"0")+parseFloat(p.marginRight||"0");d.style.right=`calc(${L}px + 0.3rem)`,s.prepend(d);let l=s.querySelector("#mermaid-container");if(!l)return;let u=null;d.addEventListener("click",v),E(l,M),window.addCleanup(()=>{u?.cleanup(),d.removeEventListener("click",v)})}});
+</script><script type="application/javascript" data-persist="true">var I="http://www.w3.org/2000/svg",p=(t,e)=>typeof t=="number"&&Number.isFinite(t)?t:e,T=(t,e)=>typeof t=="boolean"?t:e,N=(t,e)=>typeof t=="string"&&t.trim()?t:e;function y(t,e,n){let a=document.createElement(t);return e&&(a.className=e),n!==void 0&&(a.textContent=n),a}function M(t,e){let n=document.createElementNS(I,t);for(let[a,o]of Object.entries(e))n.setAttribute(a,String(o));return n}var R=640,F=300,v={left:46,right:14,top:16,bottom:34};function A(t,e){t.textContent="";let n=M("svg",{viewBox:`0 0 ${R} ${F}`,class:"bv-svg",role:"img"}),a=R-v.left-v.right,o=F-v.top-v.bottom,d=240,i=e.yMin??1/0,c=e.yMax??-1/0,x=e.series.map(m=>{let h=[];for(let l=0;l<=d;l++){let s=e.xMin+(e.xMax-e.xMin)*l/d,b=m.fn(s);Number.isFinite(b)||(b=NaN),h.push([s,b]),e.yMin===void 0&&Number.isFinite(b)&&(i=Math.min(i,b)),e.yMax===void 0&&Number.isFinite(b)&&(c=Math.max(c,b))}return h});(!Number.isFinite(i)||!Number.isFinite(c))&&(i=-1,c=1),c-i<1e-9&&(c+=1,i-=1);let r=(c-i)*.08;i-=r,c+=r;let f=m=>v.left+(m-e.xMin)/(e.xMax-e.xMin)*a,u=m=>v.top+(1-(m-i)/(c-i))*o;i<0&&c>0&&n.appendChild(M("line",{x1:v.left,y1:u(0),x2:R-v.right,y2:u(0),class:"bv-axis"})),e.xMin<0&&e.xMax>0&&n.appendChild(M("line",{x1:f(0),y1:v.top,x2:f(0),y2:F-v.bottom,class:"bv-axis"})),n.appendChild(M("rect",{x:v.left,y:v.top,width:a,height:o,class:"bv-frame",fill:"none"}));let g=(m,h,l,s)=>{let b=M("text",{x:h,y:l,class:"bv-tick","text-anchor":s});b.textContent=m,n.appendChild(b)};if(g(e.xMin.toFixed(1),v.left,F-v.bottom+16,"start"),g(e.xMax.toFixed(1),R-v.right,F-v.bottom+16,"end"),g(c.toFixed(1),v.left-6,v.top+10,"end"),g(i.toFixed(1),v.left-6,F-v.bottom,"end"),e.xLabel&&g(e.xLabel,v.left+a/2,F-8,"middle"),x.forEach((m,h)=>{let l=e.series[h],s="",b=!1;for(let[$,w]of m){if(!Number.isFinite(w)){b=!1;continue}let L=Math.min(Math.max(w,i),c);s+=`${b?"L":"M"}${f($).toFixed(2)},${u(L).toFixed(2)}`,b=!0}let k=M("path",{d:s,fill:"none",stroke:l.color,"stroke-width":2});l.dash&&k.setAttribute("stroke-dasharray",l.dash),n.appendChild(k)}),e.markerX!==void 0&&e.markerX>=e.xMin&&e.markerX<=e.xMax&&n.appendChild(M("line",{x1:f(e.markerX),y1:v.top,x2:f(e.markerX),y2:F-v.bottom,class:"bv-marker"})),t.appendChild(n),e.series.length>1||e.series[0]?.label){let m=y("div","bv-legend");for(let h of e.series){if(!h.label)continue;let l=y("span","bv-legend-item"),s=y("span","bv-swatch");s.style.background=h.color,l.appendChild(s),l.appendChild(document.createTextNode(h.label)),m.appendChild(l)}t.appendChild(m)}}var C={a:"#4f6f68",b:"#7b97aa",c:"#a45c5c",d:"#9a7b2e"};function _(t,e,n){let a=p(e.a,1),o=p(e.b,1),d=p(e.c,0),i=p(e.d,0);switch(t){case"cosine":return a*Math.cos(o*n+d)+i;case"damped_sine":return a*Math.exp(-Math.abs(d)*n)*Math.sin(o*n);case"exp_decay":return a*Math.exp(-Math.abs(o)*n)+i;case"exponential":return a*Math.exp(o*n)+i;case"gaussian":{let c=Math.abs(p(e.c,1))||1;return a*Math.exp(-((n-o)**2)/(2*c*c))+i}case"linear":return a*n+o;case"abs":return a*Math.abs(n-o)+d;case"reciprocal":return n===0?NaN:a/n+i;case"polynomial":{let c=Array.isArray(e.coefficients)?e.coefficients.map(r=>p(r,0)):[0,1],x=0;for(let r=c.length-1;r>=0;r--)x=x*n+c[r];return x}default:return a*Math.sin(o*n+d)+i}}var B=(t,e)=>{let n=N(e.family,"sine"),a={...e.parameters,...e};A(t,{xMin:p(e.xMin,-5),xMax:p(e.xMax,5),yMin:typeof e.yMin=="number"?e.yMin:void 0,yMax:typeof e.yMax=="number"?e.yMax:void 0,series:[{fn:o=>_(n,a,o),color:C.a,label:N(e.expressionLatex,"f(x)")}],xLabel:"x"})},G=(t,e)=>{let n=p(e.amplitude,1),a=Math.max(p(e.angularFrequency,1),.01),o=p(e.phase,0),d=p(e.duration,4*Math.PI/a),i=[];T(e.showPosition,!0)&&i.push({fn:c=>n*Math.cos(a*c+o),color:C.a,label:"x(t) = A cos(\u03C9t + \u03C6)"}),T(e.showVelocity,!0)&&i.push({fn:c=>-n*a*Math.sin(a*c+o),color:C.b,label:"v(t) = \u2212A\u03C9 sin(\u03C9t + \u03C6)"}),T(e.showAcceleration,!0)&&i.push({fn:c=>-n*a*a*Math.cos(a*c+o),color:C.c,label:"a(t) = \u2212A\u03C9\xB2 cos(\u03C9t + \u03C6)",dash:"6 4"}),A(t,{xMin:0,xMax:Math.max(d,.5),series:i,xLabel:"t"})};function P(t,e,n,a,o,d,i){if(Math.abs(a-e)<1&&Math.abs(o-n)<1)return;let c=M("line",{x1:e,y1:n,x2:a,y2:o,stroke:d,"stroke-width":3});t.appendChild(c);let x=Math.atan2(o-n,a-e),r=9,f=M("path",{d:`M${a},${o} L${a-r*Math.cos(x-.45)},${o-r*Math.sin(x-.45)} L${a-r*Math.cos(x+.45)},${o-r*Math.sin(x+.45)} Z`,fill:d});if(t.appendChild(f),i){let u=M("text",{x:(e+a)/2,y:n-8,class:"bv-tick","text-anchor":"middle",fill:d});u.textContent=i,t.appendChild(u)}}var X=(t,e)=>{t.textContent="";let n=p(e.amplitude,1),a=Math.max(p(e.angularFrequency,1),.01),o=p(e.phase,0),d=n*Math.cos(o),i=-n*a*Math.sin(o),c=640,r=M("svg",{viewBox:`0 0 ${c} 220`,class:"bv-svg"}),f=40,u=340,g=110,m=u+d*g,h=120,l=52;r.appendChild(M("rect",{x:f-12,y:40,width:12,height:130,class:"bv-solid"})),r.appendChild(M("line",{x1:10,y1:h+l/2+4,x2:c-10,y2:h+l/2+4,class:"bv-axis"})),r.appendChild(M("line",{x1:u,y1:34,x2:u,y2:h+l/2+4,class:"bv-marker"}));let s=M("text",{x:u,y:26,class:"bv-tick","text-anchor":"middle"});s.textContent="x = 0",r.appendChild(s);let b=h,k=9,$=f,w=m-l/2,L=`M${$},${b}`;for(let S=0;S<=k;S++){let H=$+(w-$)*(S+.5)/(k+1),D=b+(S%2===0?-14:14);L+=` L${H.toFixed(1)},${D}`}L+=` L${w},${b}`,r.appendChild(M("path",{d:L,fill:"none",stroke:"#50615a","stroke-width":2.5})),r.appendChild(M("rect",{x:m-l/2,y:h-l/2,width:l,height:l,rx:6,class:"bv-mass"}));let E=M("text",{x:m,y:h+5,class:"bv-mass-label","text-anchor":"middle"});E.textContent="m",r.appendChild(E),Math.abs(d)>.02&&P(r,u,52,m,52,C.d,`x = ${d.toFixed(2)}`),T(e.showForceVector,!0)&&Math.abs(d)>.02&&P(r,m,88,m-d*g*.55,88,C.c,"F = \u2212kx"),T(e.showVelocityVector,!1)&&Math.abs(i)>.02&&P(r,m,176,m+i*g*.4,176,C.b,`v = ${i.toFixed(2)}`),t.appendChild(r)},q=(t,e)=>{t.textContent="";let n=p(e.amplitude,1),a=Math.max(p(e.springConstant,1),1e-4),o=Math.max(p(e.mass,1),1e-4),d=p(e.phase,0),i=Math.sqrt(a/o),c=n*Math.cos(d),x=-n*i*Math.sin(d),r=.5*a*c*c,f=.5*o*x*x,u=.5*a*n*n,h=M("svg",{viewBox:"0 0 640 260",class:"bv-svg"}),l=210,s=150,b=90,k=[{label:"U = \xBDkx\xB2",value:r.toFixed(2),height:r/u*s,x:120,color:C.a},{label:"K = \xBDmv\xB2",value:f.toFixed(2),height:f/u*s,x:280,color:C.b},{label:"E = K + U",value:u.toFixed(2),height:s,x:440,color:C.d}];for(let w of k){let L=Math.max(Math.min(w.height,s),0);h.appendChild(M("rect",{x:w.x,y:l-L,width:b,height:Math.max(L,1),rx:4,fill:w.color,opacity:.85}));let E=M("text",{x:w.x+b/2,y:l+20,class:"bv-tick","text-anchor":"middle"});E.textContent=w.label,h.appendChild(E);let S=M("text",{x:w.x+b/2,y:l-L-7,class:"bv-tick","text-anchor":"middle"});S.textContent=w.value,h.appendChild(S)}h.appendChild(M("line",{x1:100,y1:l-s,x2:550,y2:l-s,class:"bv-marker"}));let $=M("text",{x:100,y:26,class:"bv-tick","text-anchor":"start"});$.textContent=`x = ${c.toFixed(2)}, v = ${x.toFixed(2)}, \u03C9 = \u221A(k/m) = ${i.toFixed(2)}`,h.appendChild($),t.appendChild(h)},O=(t,e)=>{let n=Math.max(p(e.naturalFrequency,1),.01),a=Math.max(p(e.damping,.2),.001),o=p(e.driveFrequency,n),d=c=>1/Math.sqrt((n*n-c*c)**2+(a*c)**2);A(t,{xMin:0,xMax:2.5*n,series:[{fn:d,color:C.a,label:"steady-state amplitude A(\u03C9_drive)"}],markerX:o,xLabel:"drive frequency \u03C9"});let i=y("p","bv-readout",`A(${o.toFixed(2)}) = ${d(o).toFixed(2)} \u2014 natural frequency \u03C9\u2080 = ${n.toFixed(2)}, damping \u03B3 = ${a.toFixed(2)}`);t.appendChild(i)};function U(t){return e=>{if(t.length===0)return NaN;if(e<=t[0][0])return t[0][1];if(e>=t[t.length-1][0])return t[t.length-1][1];let n=0,a=t.length-1;for(;n<a;){let o=n+a>>1;t[o][0]<e?n=o+1:a=o}return t[n][1]}}function z(t,e){let n=p(e.restPotential,0),a=p(e.threshold,1),o=p(e.resetPotential,n),d=p(e.inputCurrent,1.2),i=Math.min(1,Math.max(.01,p(e.leak,.15))),c=Math.max(0,p(e.refractory,2)),x=Math.min(200,Math.max(10,p(e.duration,40))),r=.1,f=[],u=[],g=n,m=-1;for(let l=0;l<=x+1e-9;l+=r)l<m?g=o:(g+=r*(-(g-n)*i+d),g>=a&&(f.push([l,a+.4]),u.push(l),g=o,m=l+c)),f.push([l,g]);A(t,{xMin:0,xMax:x,yMin:Math.min(o,n)-.25,yMax:a+.7,series:[{fn:U(f),color:C.a,label:"membrane potential V(t)"},{fn:()=>a,color:C.c,label:"firing threshold",dash:"5 4"}],xLabel:"time (ms)"});let h=u.length/(x||1);t.appendChild(y("p","bv-readout",`${u.length} spike${u.length===1?"":"s"} in ${x.toFixed(0)} ms \xB7 input ${d.toFixed(2)} \xB7 leak ${i.toFixed(2)} \xB7 refractory ${c.toFixed(1)} ms \xB7 firing rate ${(h*1e3).toFixed(0)} Hz. `+(u.length===0?"Input is too weak to reach threshold \u2014 leak cancels it out.":"Each spike resets the potential; leak then pulls it back toward rest.")))}function W(t,e){let n=Math.min(1,Math.max(0,p(e.strength,.6))),a=N(e.mode,"both"),o=400,d=640,i=54,x=40+(a==="both"?2:1)*i,r=M("svg",{viewBox:`0 0 ${d} ${x}`,class:"bv-svg",role:"img"}),f=(s,b,k,$)=>{r.appendChild(M("line",{x1:60,y1:s+i/2,x2:d-16,y2:s+i/2,class:"bv-axis"}));let w=M("text",{x:60,y:s+12,class:"bv-tick","text-anchor":"start"});w.textContent=b,r.appendChild(w);for(let L of k){let E=60+L/o*(d-76);r.appendChild(M("line",{x1:E,y1:s+i/2-14,x2:E,y2:s+i/2+14,stroke:$,"stroke-width":2.5}))}},u=28,g=[],m=Math.round(1+n*11);for(let s=0;s<m;s++)g.push((s+.5)/m*o);let h=(1-n)*o*.85+10,l=[h];(a==="rate"||a==="both")&&(f(u,"rate coding",g,C.b),u+=i),(a==="temporal"||a==="both")&&f(u,"temporal coding",l,C.d),t.textContent="",t.appendChild(r),t.appendChild(y("p","bv-readout",`Stimulus strength ${(n*100).toFixed(0)}%. Rate coding fires ${m} spikes across the window \u2014 count carries the signal. Temporal coding fires once at ${h.toFixed(0)} ms \u2014 a stronger stimulus spikes earlier, so timing carries the signal.`))}function j(t,e){let n=Math.max(0,p(e.aPlus,1)),a=Math.max(0,p(e.aMinus,1)),o=Math.max(1,p(e.tauPlus,20)),d=Math.max(1,p(e.tauMinus,20)),i=p(e.deltaT,8),c=Math.max(o,d)*3,x=f=>f>=0?n*Math.exp(-f/o):-a*Math.exp(f/d);A(t,{xMin:-c,xMax:c,series:[{fn:x,color:C.b,label:"\u0394w (synaptic weight change)"}],markerX:i,xLabel:"\u0394t = t(post) \u2212 t(pre), ms"});let r=i>.5?"pre fires before post \u2192 the synapse strengthens (potentiation, LTP)":i<-.5?"post fires before pre \u2192 the synapse weakens (depression, LTD)":"near-simultaneous spikes \u2192 almost no change";t.appendChild(y("p","bv-readout",`\u0394t = ${i.toFixed(1)} ms \u2192 \u0394w = ${x(i).toFixed(3)}. ${r}.`))}function K(t,e){let n=Math.max(0,p(e.correct,920)),a=Math.max(1,p(e.total,1e3)),o=p(e.stimulusTime,0),d=Math.max(o,p(e.decisionTime,24)),i=Math.max(0,p(e.spikeCount,180)),c=Math.max(1e-4,p(e.energyPerSpike,.002)),x=Math.min(1,n/a),r=d-o,f=i*c,u=f>0?x/f:x,g=[{label:"Accuracy",value:x,display:`${(x*100).toFixed(1)}%`,better:"higher"},{label:"Latency",value:Math.min(1,r/100),display:`${r.toFixed(0)} ms`,better:"lower"},{label:"Energy",value:Math.min(1,f),display:f.toFixed(3),better:"lower"},{label:"Efficiency",value:Math.min(1,u/10),display:u.toFixed(2),better:"higher"}];t.textContent="";let m=y("div","bv-metric-grid");for(let h of g){let l=y("div","bv-metric-card");l.appendChild(y("span","bv-metric-label",h.label)),l.appendChild(y("strong","bv-metric-value",h.display));let s=y("span","bv-metric-bar"),b=y("span","bv-metric-fill");b.style.width=`${Math.max(4,Math.min(100,h.value*100))}%`,b.style.background=h.better==="higher"?C.a:C.c,s.appendChild(b),l.appendChild(s),m.appendChild(l)}t.appendChild(m),t.appendChild(y("p","bv-readout",`This input set gives ${(x*100).toFixed(1)}% accuracy, ${r.toFixed(0)} ms latency, ${i.toFixed(0)} spikes, and ${f.toFixed(3)} estimated energy. Changing spike count can improve energy even when accuracy barely changes.`))}function Y(t,e){let n=Math.max(.01,p(e.learningRate,.35)),a=Math.max(0,p(e.noise,.08)),o=Math.min(.99,Math.max(.5,p(e.threshold,.9))),d=Math.max(8,Math.round(p(e.epochs,30))),i=r=>{let f=.45+.52*(1-Math.exp(-n*r/5)),u=a*.08*Math.sin(r*1.7);return Math.min(.99,Math.max(0,f-u))},c=r=>{let f=1.2*Math.exp(-n*r/4)+.12,u=a*.08*Math.cos(r*1.3);return Math.max(.02,f+u)},x=d;for(let r=0;r<=d;r++)if(i(r)>=o){x=r;break}A(t,{xMin:0,xMax:d,yMin:0,yMax:1.25,markerX:x,xLabel:"epoch",series:[{fn:r=>i(r),color:C.a,label:"accuracy"},{fn:r=>c(r),color:C.c,label:"loss",dash:"5 4"},{fn:()=>o,color:C.d,label:"target",dash:"2 3"}]}),t.appendChild(y("p","bv-readout",i(x)>=o?`The accuracy curve first reaches the target near epoch ${x}.`:`The accuracy curve does not reach the target inside ${d} epochs.`))}function J(t){let n=(Array.isArray(t.models)?t.models:[]).map(a=>({label:N(a.label,"model"),accuracy:Math.min(1,Math.max(0,p(a.accuracy,.8))),latency:Math.min(1,Math.max(0,p(a.latency,.5))),energy:Math.min(1,Math.max(0,p(a.energy,.5)))})).filter(a=>a.label!=="model");return n.length>=2?n:[{label:"ANN",accuracy:.99,latency:.9,energy:.95},{label:"Converted SNN",accuracy:.95,latency:.6,energy:.45},{label:"Surrogate-gradient SNN",accuracy:.96,latency:.45,energy:.4},{label:"STDP SNN",accuracy:.86,latency:.35,energy:.2}]}function Z(t,e){let n=J(e),a=N(e.priority,"balanced"),o=a==="accuracy"?{accuracy:.7,latency:.15,energy:.15}:a==="latency"?{accuracy:.2,latency:.6,energy:.2}:a==="energy"?{accuracy:.2,latency:.2,energy:.6}:{accuracy:.34,latency:.33,energy:.33},d=b=>o.accuracy*b.accuracy+o.latency*(1-b.latency)+o.energy*(1-b.energy),i=640,c=300,x=150,r=20,f=16,u=24,g=10,m=(c-f-u)/n.length,h=M("svg",{viewBox:`0 0 ${i} ${c}`,class:"bv-svg",role:"img"}),l=n.reduce((b,k)=>d(k)>d(b)?k:b,n[0]);n.forEach((b,k)=>{let $=f+k*m,w=d(b),L=w*(i-x-r),E=M("text",{x:x-8,y:$+m/2,class:"bv-tick","text-anchor":"end"});E.textContent=b.label,h.appendChild(E),h.appendChild(M("rect",{x,y:$+g/2,width:Math.max(1,L),height:m-g,fill:b.label===l.label?C.a:C.b,rx:3}));let S=M("text",{x:x+Math.max(1,L)+6,y:$+m/2,class:"bv-tick","text-anchor":"start"});S.textContent=w.toFixed(2),h.appendChild(S)}),t.textContent="",t.appendChild(h);let s=a==="accuracy"?"highest accuracy":a==="latency"?"lowest latency":a==="energy"?"lowest energy":"a balance of all three";t.appendChild(y("p","bv-readout",`Prioritizing ${s}, the best fit is ${l.label}. Change the priority to see why deployment goals, not accuracy alone, drive the model choice.`))}var V={function_plot:B,linked_time_plots:G,mass_spring:X,energy_exchange:q,resonance_curve:O,lif_neuron:z,neural_coding:W,stdp_window:j,metric_calculator:K,training_curve:Y,tradeoff_explorer:Z};function Q(){try{let t=new URL(window.location.href);return/^garden\./i.test(t.hostname)?t.origin.replace("//garden.","//"):/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(t.hostname)||t.port==="8081"?`${t.protocol}//${t.hostname}:3000`:t.origin}catch{return""}}function ee(){let t=window.location.pathname;try{t=decodeURIComponent(t)}catch{}let e=t.split("/").map(n=>n.trim()).filter(Boolean);return e[0]==="garden"&&e.shift(),{gardenId:e[0]??"",pageSlug:e.slice(1).join("/")}}function te(t){let e=[];for(let n of t.slice(0,4)){let a=[],o=typeof n.sourceTitle=="string"?n.sourceTitle:"",d=typeof n.sourceId=="string"?n.sourceId:"";(o||d)&&a.push(o||d),typeof n.page=="number"&&a.push(`p. ${n.page}`),typeof n.figureId=="string"&&a.push(`figure ${n.figureId}`),typeof n.tableId=="string"&&a.push(`table ${n.tableId}`),a.length===0&&typeof n.description=="string"&&a.push(n.description),e.push(a.join(", "))}return e.filter(Boolean).join(" \xB7 ")}function ne(t){let e=y("div","breadboard-visual-card");e.dataset.visualId=t.id,e.dataset.visualType=t.type;let n=y("div","bv-header");n.appendChild(y("p","bv-kicker","Interactive visual")),n.appendChild(y("h4","bv-title",t.title)),t.subtitle&&n.appendChild(y("p","bv-subtitle",t.subtitle)),e.appendChild(n);let a=y("div","bv-figure");e.appendChild(a);let o={...t.props};for(let u of t.controls??[]){let g=u.name;o[g]===void 0&&u.defaultValue!==void 0&&(o[g]=u.defaultValue)}let d=V[t.type],i=()=>{if(!d){e.remove();return}try{d(a,o)}catch{e.remove()}};if(d&&(t.controls??[]).length>0){let u=y("div","bv-controls");for(let g of t.controls??[]){let m=g.name,h=y("label","bv-control");h.appendChild(y("span","bv-control-label",String(g.label??m)));let l=g.type;if(l==="slider"){let s=y("input");s.type="range";let b=p(g.min,0),k=p(g.max,Math.max(b+1,1));s.min=String(b),s.max=String(k),s.step=String(p(g.step,(k-b)/100||.01));let $=p(o[m],p(g.defaultValue,(b+k)/2));s.value=String($),o[m]=$;let w=y("span","bv-control-value",String($));s.addEventListener("input",()=>{o[m]=Number(s.value),w.textContent=s.value,i()}),h.appendChild(s),h.appendChild(w)}else if(l==="toggle"){let s=y("input");s.type="checkbox";let b=T(o[m],T(g.defaultValue,!1));s.checked=b,o[m]=b,s.addEventListener("change",()=>{o[m]=s.checked,i()}),h.classList.add("bv-control-toggle"),h.appendChild(s)}else if(l==="select"){let s=y("select");for(let k of g.options??[]){let $=y("option",void 0,k);$.value=k,s.appendChild($)}let b=N(o[m],N(g.defaultValue,s.options[0]?.value??""));b&&(s.value=b),o[m]=s.value,s.addEventListener("change",()=>{o[m]=s.value,i()}),h.appendChild(s)}u.appendChild(h)}e.appendChild(u)}t.caption&&e.appendChild(y("p","bv-caption",t.caption));let c=te(t.sourceAnchors??[]);if(c&&e.appendChild(y("p","bv-source",`Source: ${c}`)),t.pedagogicalPurpose){let u=y("details","bv-why");u.appendChild(y("summary",void 0,"Why this visual is here")),u.appendChild(y("p",void 0,t.pedagogicalPurpose));for(let g of t.annotations??[])typeof g.label=="string"&&typeof g.explanation=="string"&&u.appendChild(y("p","bv-annotation",`${g.label}: ${g.explanation}`));e.appendChild(u)}let x=y("div","bv-footer"),r=y("button","bv-regenerate","Regenerate visualization");r.type="button";let f=y("span","bv-status");return x.appendChild(r),x.appendChild(f),e.appendChild(x),r.addEventListener("click",async()=>{let u=Q(),{gardenId:g,pageSlug:m}=ee();if(!u||!g){f.textContent="Open this page from the dashboard to regenerate";return}r.disabled=!0,f.textContent="Regenerating\u2026";try{let h=await fetch(`${u}/api/gardens/${encodeURIComponent(g)}/visualizations/${encodeURIComponent(t.id)}/regenerate`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({pageSlug:m,reason:t.regenerationPrompt})}),l=await h.json().catch(()=>({}));if(!h.ok||!l.success)throw new Error(typeof l.error=="string"?l.error:"Could not regenerate");f.textContent="Regenerated \u2014 reloading\u2026",window.setTimeout(()=>window.location.reload(),2500)}catch(h){r.disabled=!1,f.textContent=h instanceof Error?h.message:"Could not regenerate"}}),i(),e}document.addEventListener("nav",()=>{let t=document.querySelectorAll("code.breadboard-visual-block");for(let e of t){let n=e.closest("pre")??e;if(n.dataset.bvBound!=="true"){if(n.dataset.bvBound="true",e.classList.contains("breadboard-visual-invalid")||e.classList.contains("breadboard-visual-noninteractive")){n.remove();continue}try{let a=JSON.parse(e.dataset.visualSpec??"");if(!a||typeof a.id!="string"||typeof a.type!="string")throw new Error("bad spec");if(!(a.type in V)){n.remove();continue}n.replaceWith(ne(a))}catch{n.remove()}}}});
+</script><script type="application/javascript" data-persist="true">var h=`(() => {
+  "use strict"
+
+  const ROOT_ID = "breadboard-generated-visual-root"
+  const INIT = "breadboard-generated-visual:init"
+  const EVENT = "breadboard-generated-visual:event"
+  const SVG_NS = "http://www.w3.org/2000/svg"
+  let diagramCounter = 0
+
+  const element = (tag, className, text) => {
+    const node = document.createElement(tag)
+    if (className) node.className = className
+    if (text !== undefined) node.textContent = String(text)
+    return node
+  }
+
+  const svgElement = (tag, attributes = {}) => {
+    const node = document.createElementNS(SVG_NS, tag)
+    Object.entries(attributes).forEach(([name, value]) => node.setAttribute(name, String(value)))
+    return node
+  }
+
+  const finite = (value, fallback = 0) => {
+    const number = Number(value)
+    return Number.isFinite(number) ? number : fallback
+  }
+
+  const evaluate = (expression, state) => {
+    if (!expression || typeof expression !== "object") return 0
+    if (expression.kind === "constant") return finite(expression.value)
+    if (expression.kind === "input") return finite(state[expression.id])
+    if (expression.kind === "binary") {
+      const left = evaluate(expression.left, state)
+      const right = evaluate(expression.right, state)
+      if (expression.op === "add") return left + right
+      if (expression.op === "subtract") return left - right
+      if (expression.op === "multiply") return left * right
+      if (expression.op === "divide") return right === 0 ? Number.NaN : left / right
+      if (expression.op === "power") return Math.pow(left, right)
+      if (expression.op === "min") return Math.min(left, right)
+      return Math.max(left, right)
+    }
+    if (expression.kind === "unary") {
+      const value = evaluate(expression.argument, state)
+      if (expression.op === "negate") return -value
+      if (expression.op === "abs") return Math.abs(value)
+      if (expression.op === "sqrt") return Math.sqrt(value)
+      if (expression.op === "sin") return Math.sin(value)
+      if (expression.op === "cos") return Math.cos(value)
+      if (expression.op === "tan") return Math.tan(value)
+      if (expression.op === "exp") return Math.exp(value)
+      return Math.log(value)
+    }
+    if (expression.kind === "clamp") {
+      return Math.max(
+        evaluate(expression.min, state),
+        Math.min(evaluate(expression.max, state), evaluate(expression.value, state)),
+      )
+    }
+    if (expression.kind === "conditional") {
+      const left = evaluate(expression.left, state)
+      const right = evaluate(expression.right, state)
+      const matches =
+        expression.comparison === "lt"
+          ? left < right
+          : expression.comparison === "lte"
+            ? left <= right
+            : expression.comparison === "gt"
+              ? left > right
+              : expression.comparison === "gte"
+                ? left >= right
+                : left === right
+      return evaluate(matches ? expression.whenTrue : expression.whenFalse, state)
+    }
+    return 0
+  }
+
+  const format = (value, precision = 3) => {
+    if (!Number.isFinite(value)) return "Unavailable"
+    return Number(value).toLocaleString(undefined, { maximumFractionDigits: precision })
+  }
+
+  const styles = \`
+    :root { color-scheme: light dark; --bg:#fbfaf5; --panel:#f1f5ee; --line:#b7cdc0; --ink:#10251c; --muted:#5d6c65; --accent:#2f7d55; --accent-soft:#cce7d7; }
+    :root[data-theme="dark"] { --bg:#14211b; --panel:#1c2d25; --line:#486154; --ink:#eef7f1; --muted:#b2c4ba; --accent:#75d6a3; --accent-soft:#294c3a; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#14211b; --panel:#1c2d25; --line:#486154; --ink:#eef7f1; --muted:#b2c4ba; --accent:#75d6a3; --accent-soft:#294c3a; } }
+    * { box-sizing:border-box; }
+    html,body { margin:0; min-height:100%; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif,system-ui,sans-serif; }
+    button,input,select { font:inherit; }
+    .gv-root { padding:14px; display:grid; gap:14px; max-width:100%; overflow:hidden; }
+    .gv-header h2 { font-size:18px; margin:0 0 4px; }
+    .gv-header p { color:var(--muted); margin:0; }
+    .gv-scenes { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+    .gv-scene { min-width:0; border:1px solid var(--line); background:var(--panel); border-radius:12px; padding:12px; overflow:hidden; }
+    .gv-scene h3 { font-size:14px; margin:0 0 8px; }
+    .gv-svg { display:block; width:100%; height:auto; min-height:210px; }
+    .gv-axis { stroke:var(--muted); stroke-width:1; opacity:.7; }
+    .gv-grid { stroke:var(--line); stroke-width:1; opacity:.45; }
+    .gv-line { fill:none; stroke-width:2.5; vector-effect:non-scaling-stroke; }
+    .gv-node { fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.5; }
+    .gv-edge { stroke:var(--muted); stroke-width:1.5; }
+    .gv-label { fill:var(--ink); font-size:18px; font-weight:600; paint-order:stroke; stroke:var(--bg); stroke-width:3px; stroke-linejoin:round; text-anchor:middle; }
+    .gv-node-label { font-size:15px; }
+    .gv-tick { fill:var(--ink); font-size:16px; font-weight:600; paint-order:stroke; stroke:var(--bg); stroke-width:3px; }
+    .gv-controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; padding-top:2px; }
+    .gv-control { display:grid; gap:5px; border:1px solid var(--line); border-radius:10px; padding:9px; background:var(--panel); }
+    .gv-control-head { display:flex; justify-content:space-between; gap:8px; }
+    .gv-control label { font-weight:600; }
+    .gv-readout { color:var(--muted); font-variant-numeric:tabular-nums; }
+    .gv-control input[type=range] { width:100%; accent-color:var(--accent); }
+    .gv-control input[type=number], .gv-control select { width:100%; border:1px solid var(--line); border-radius:7px; padding:6px 8px; background:var(--bg); color:var(--ink); }
+    .gv-values { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; }
+    .gv-value { border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg); }
+    .gv-value span { display:block; color:var(--muted); font-size:12px; }
+    .gv-value strong { display:block; font-size:19px; margin-top:2px; font-variant-numeric:tabular-nums; }
+    .gv-timeline { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
+    .gv-timeline li { border-left:3px solid var(--line); padding:5px 8px; opacity:.55; }
+    .gv-timeline li[data-active=true] { border-color:var(--accent); opacity:1; background:var(--accent-soft); border-radius:0 8px 8px 0; }
+    .gv-table { width:100%; border-collapse:collapse; }
+    .gv-table th,.gv-table td { border-bottom:1px solid var(--line); padding:6px; text-align:left; }
+    .gv-formula { font-family:ui-monospace,SFMono-Regular,monospace; overflow-wrap:anywhere; }
+    .gv-status { border-left:5px solid var(--accent); }
+    .gv-status strong { display:block; font-size:18px; margin:3px 0; }
+    .gv-animation { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .gv-animation button,.gv-control button { border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); padding:6px 10px; cursor:pointer; }
+    .gv-animation button:focus-visible,.gv-control :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent); outline-offset:2px; }
+    .gv-sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto!important; transition:none!important; animation:none!important; } }
+    @media (max-width:520px) { .gv-label { font-size:24px; } .gv-tick { font-size:20px; } }
+  \`
+
+  const installStyles = () => {
+    if (document.getElementById("breadboard-generated-visual-styles")) return
+    const style = document.createElement("style")
+    style.id = "breadboard-generated-visual-styles"
+    style.textContent = styles
+    document.head.appendChild(style)
+  }
+
+  const renderPlot = (scene, state) => {
+    const host = element("section", "gv-scene")
+    host.appendChild(element("h3", undefined, scene.title))
+    const svg = svgElement("svg", { viewBox: "0 0 640 340", class: "gv-svg", role: "img", "aria-label": scene.title })
+    const margin = { left: 64, right: 18, top: 18, bottom: 68 }
+    const width = 640 - margin.left - margin.right
+    const height = 340 - margin.top - margin.bottom
+    const seriesValues = []
+    const yValues = []
+    for (const series of scene.series) {
+      const points = []
+      for (let index = 0; index < scene.samples; index += 1) {
+        const x = scene.xMin + ((scene.xMax - scene.xMin) * index) / Math.max(1, scene.samples - 1)
+        const y = evaluate(series.expression, { ...state, x })
+        if (Number.isFinite(y)) {
+          points.push({ x, y })
+          yValues.push(y)
+        }
+      }
+      seriesValues.push({ series, points })
+    }
+    const rawMin = yValues.length ? Math.min(...yValues) : -1
+    const rawMax = yValues.length ? Math.max(...yValues) : 1
+    const padding = Math.max(1e-6, (rawMax - rawMin) * 0.12)
+    const yMin = rawMin === rawMax ? rawMin - 1 : rawMin - padding
+    const yMax = rawMin === rawMax ? rawMax + 1 : rawMax + padding
+    const sx = (x) => margin.left + ((x - scene.xMin) / (scene.xMax - scene.xMin)) * width
+    const sy = (y) => margin.top + height - ((y - yMin) / (yMax - yMin)) * height
+    for (let index = 0; index <= 4; index += 1) {
+      const y = margin.top + (height * index) / 4
+      svg.appendChild(svgElement("line", { x1: margin.left, y1: y, x2: margin.left + width, y2: y, class: "gv-grid" }))
+      const yTick = svgElement("text", { x: margin.left - 8, y: y + 5, class: "gv-tick", "text-anchor": "end" })
+      yTick.textContent = format(yMax - ((yMax - yMin) * index) / 4, 2)
+      svg.appendChild(yTick)
+      const x = margin.left + (width * index) / 4
+      const xTick = svgElement("text", { x, y: margin.top + height + 22, class: "gv-tick", "text-anchor": "middle" })
+      xTick.textContent = format(scene.xMin + ((scene.xMax - scene.xMin) * index) / 4, 2)
+      svg.appendChild(xTick)
+    }
+    svg.appendChild(svgElement("line", { x1: margin.left, y1: margin.top + height, x2: margin.left + width, y2: margin.top + height, class: "gv-axis" }))
+    svg.appendChild(svgElement("line", { x1: margin.left, y1: margin.top, x2: margin.left, y2: margin.top + height, class: "gv-axis" }))
+    const palette = ["#2f7d55", "#3b82f6", "#d97706", "#8b5cf6", "#dc2626", "#0891b2"]
+    seriesValues.forEach(({ series, points }, index) => {
+      const polyline = svgElement("polyline", {
+        points: points.map((point) => \`\${sx(point.x).toFixed(2)},\${sy(point.y).toFixed(2)}\`).join(" "),
+        class: "gv-line",
+        stroke: series.color || palette[index % palette.length],
+      })
+      const title = svgElement("title")
+      title.textContent = series.label
+      polyline.appendChild(title)
+      svg.appendChild(polyline)
+    })
+    ;(scene.markers || []).forEach((marker) => {
+      const x = evaluate(marker.x, state)
+      const y = evaluate(marker.y, state)
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < scene.xMin || x > scene.xMax) return
+      const circle = svgElement("circle", { cx: sx(x), cy: sy(y), r: 7, fill: marker.color || "#dc2626", stroke: "var(--bg)", "stroke-width": 3 })
+      const title = svgElement("title")
+      title.textContent = \`\${marker.label}: \${format(x, 2)}, \${format(y, 2)}\`
+      circle.appendChild(title)
+      svg.appendChild(circle)
+    })
+    const xLabel = svgElement("text", { x: margin.left + width / 2, y: 330, class: "gv-label" })
+    xLabel.textContent = scene.xLabel
+    svg.appendChild(xLabel)
+    const yLabel = svgElement("text", { x: 13, y: margin.top + height / 2, class: "gv-label", transform: \`rotate(-90 13 \${margin.top + height / 2})\` })
+    yLabel.textContent = scene.yLabel
+    svg.appendChild(yLabel)
+    host.appendChild(svg)
+    return host
+  }
+
+  const renderDiagram = (scene, state) => {
+    const host = element("section", "gv-scene")
+    host.appendChild(element("h3", undefined, scene.title))
+    const svg = svgElement("svg", { viewBox: "0 0 640 360", class: "gv-svg", role: "img", "aria-label": scene.title })
+    const markerId = \`gv-arrow-\${diagramCounter += 1}\`
+    const defs = svgElement("defs")
+    const marker = svgElement("marker", {
+      id: markerId,
+      viewBox: "0 0 10 10",
+      refX: 9,
+      refY: 5,
+      markerWidth: 7,
+      markerHeight: 7,
+      orient: "auto-start-reverse",
+    })
+    marker.appendChild(svgElement("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--muted)" }))
+    defs.appendChild(marker)
+    svg.appendChild(defs)
+    const renderedNodes = scene.nodes.map((node) => ({
+      ...node,
+      x: Math.max(72, Math.min(568, finite(node.x, 320))),
+      y: Math.max(48, Math.min(312, finite(node.y, 180))),
+    }))
+    const nodes = new Map(renderedNodes.map((node) => [node.id, node]))
+    for (const edge of scene.edges) {
+      const from = nodes.get(edge.from)
+      const to = nodes.get(edge.to)
+      if (!from || !to) continue
+      const strength = edge.strength ? Math.max(0.5, Math.min(6, Math.abs(evaluate(edge.strength, state)))) : 1.5
+      const dx = to.x - from.x
+      const dy = to.y - from.y
+      const length = Math.max(1, Math.hypot(dx, dy))
+      const startInset = from.shape === "rect" ? 48 : 32
+      const endInset = to.shape === "rect" ? 52 : 38
+      svg.appendChild(svgElement("line", {
+        x1: from.x + (dx / length) * startInset,
+        y1: from.y + (dy / length) * startInset,
+        x2: to.x - (dx / length) * endInset,
+        y2: to.y - (dy / length) * endInset,
+        class: "gv-edge",
+        "stroke-width": strength,
+        ...(edge.directed ? { "marker-end": \`url(#\${markerId})\` } : {}),
+      }))
+      if (edge.label) {
+        const label = svgElement("text", { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 - 6, class: "gv-label" })
+        label.textContent = edge.label
+        svg.appendChild(label)
+      }
+    }
+    for (const node of renderedNodes) {
+      if (node.shape === "rect") svg.appendChild(svgElement("rect", { x: node.x - 48, y: node.y - 25, width: 96, height: 50, rx: 9, class: "gv-node" }))
+      else svg.appendChild(svgElement("circle", { cx: node.x, cy: node.y, r: 32, class: "gv-node" }))
+      const value = node.value ? \` \${format(evaluate(node.value, state), 2)}\` : ""
+      const words = \`\${node.label}\${value}\`.trim().split(/\\s+/)
+      const lines = []
+      for (const word of words) {
+        const current = lines[lines.length - 1]
+        if (!current || \`\${current} \${word}\`.length > 14) lines.push(word)
+        else lines[lines.length - 1] = \`\${current} \${word}\`
+      }
+      const label = svgElement("text", {
+        x: node.x,
+        y: node.y - ((lines.length - 1) * 8) + 4,
+        class: "gv-label gv-node-label",
+      })
+      lines.slice(0, 3).forEach((line, index) => {
+        const span = svgElement("tspan", { x: node.x, dy: index === 0 ? 0 : 16 })
+        span.textContent = line
+        label.appendChild(span)
+      })
+      svg.appendChild(label)
+    }
+    host.appendChild(svg)
+    return host
+  }
+
+  const renderTimeline = (scene, state) => {
+    const host = element("section", "gv-scene")
+    host.appendChild(element("h3", undefined, scene.title))
+    const list = element("ol", "gv-timeline")
+    const progress = finite(state[scene.progressInput])
+    scene.steps.forEach((step) => {
+      const item = element("li")
+      item.dataset.active = String(progress >= step.at)
+      item.appendChild(element("strong", undefined, step.label))
+      item.appendChild(element("p", undefined, step.description))
+      list.appendChild(item)
+    })
+    host.appendChild(list)
+    return host
+  }
+
+  const renderTable = (scene, state) => {
+    const host = element("section", "gv-scene")
+    host.appendChild(element("h3", undefined, scene.title))
+    const table = element("table", "gv-table")
+    const head = element("tr")
+    head.appendChild(element("th", undefined, "Case"))
+    scene.columns.forEach((column) => head.appendChild(element("th", undefined, column)))
+    const thead = element("thead")
+    thead.appendChild(head)
+    table.appendChild(thead)
+    const tbody = element("tbody")
+    scene.rows.forEach((row) => {
+      const tr = element("tr")
+      tr.appendChild(element("th", undefined, row.label))
+      row.values.forEach((value) => {
+        const output = value && typeof value === "object" ? format(evaluate(value, state)) : String(value)
+        tr.appendChild(element("td", undefined, output))
+      })
+      tbody.appendChild(tr)
+    })
+    table.appendChild(tbody)
+    host.appendChild(table)
+    return host
+  }
+
+  const renderDefinition = (definition, theme) => {
+    document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light"
+    installStyles()
+    const root = document.getElementById(ROOT_ID) || document.body.appendChild(element("div"))
+    root.id = ROOT_ID
+    root.replaceChildren()
+    const app = element("main", "gv-root")
+    app.setAttribute("aria-label", definition.accessibilityDescription)
+    const header = element("header", "gv-header")
+    header.appendChild(element("h2", undefined, definition.title))
+    header.appendChild(element("p", undefined, definition.description))
+    header.appendChild(element("p", "gv-sr", definition.accessibilityDescription))
+    app.appendChild(header)
+
+    const state = {}
+    const defaults = {}
+    definition.controls.forEach((control) => {
+      state[control.id] = control.defaultValue
+      defaults[control.id] = control.defaultValue
+    })
+    state.x = 0
+    state.t = 0
+    let playing = false
+    let animationFrame = 0
+    let animationStarted = 0
+    const outputNodes = new Map()
+    const scenesHost = element("div", "gv-scenes")
+    const valuesHost = element("div", "gv-values")
+    valuesHost.setAttribute("aria-live", "polite")
+    valuesHost.setAttribute("aria-atomic", "true")
+
+    const outputValue = (output) => (output.expression ? evaluate(output.expression, state) : 0)
+    const valueSceneOutputIds = new Set(definition.scenes.filter((scene) => scene.kind === "value").map((scene) => scene.outputId))
+    const draw = () => {
+      scenesHost.replaceChildren()
+      valuesHost.replaceChildren()
+      definition.outputs.forEach((output) => {
+        if (!output.expression) return
+        if (valueSceneOutputIds.has(output.id)) return
+        const card = element("div", "gv-value")
+        card.appendChild(element("span", undefined, output.label))
+        const value = outputValue(output)
+        const strong = element("strong", undefined, \`\${format(value, output.precision)}\${output.unit ? \` \${output.unit}\` : ""}\`)
+        strong.dataset.outputId = output.id
+        strong.dataset.outputFinite = String(Number.isFinite(value))
+        outputNodes.set(output.id, strong)
+        card.appendChild(strong)
+        valuesHost.appendChild(card)
+      })
+      definition.scenes.forEach((scene) => {
+        if (scene.kind === "plot") scenesHost.appendChild(renderPlot(scene, state))
+        else if (scene.kind === "diagram") scenesHost.appendChild(renderDiagram(scene, state))
+        else if (scene.kind === "timeline") scenesHost.appendChild(renderTimeline(scene, state))
+        else if (scene.kind === "table") scenesHost.appendChild(renderTable(scene, state))
+        else if (scene.kind === "value") {
+          const output = definition.outputs.find((candidate) => candidate.id === scene.outputId)
+          if (output && output.expression) {
+            const host = element("section", "gv-scene")
+            host.appendChild(element("h3", undefined, output.label))
+            host.appendChild(element("strong", undefined, \`\${format(outputValue(output), output.precision)}\${output.unit ? \` \${output.unit}\` : ""}\`))
+            scenesHost.appendChild(host)
+          }
+        } else if (scene.kind === "annotation" || scene.kind === "formula") {
+          if (!scene.visibleWhen || evaluate(scene.visibleWhen, state) > 0) {
+            const host = element("section", \`gv-scene \${scene.kind === "formula" ? "gv-formula" : ""}\`)
+            host.appendChild(element("h3", undefined, scene.title))
+            host.appendChild(element("p", undefined, scene.text))
+            scenesHost.appendChild(host)
+          }
+        } else if (scene.kind === "animated_marker") {
+          const host = element("section", "gv-scene")
+          host.appendChild(element("h3", undefined, scene.title))
+          const svg = svgElement("svg", { viewBox: "0 0 640 180", class: "gv-svg", role: "img", "aria-label": scene.title })
+          const x = Math.max(20, Math.min(620, evaluate(scene.x, state)))
+          const y = Math.max(20, Math.min(160, evaluate(scene.y, state)))
+          svg.appendChild(svgElement("circle", { cx: x, cy: y, r: 13, class: "gv-node" }))
+          const label = svgElement("text", { x, y: y - 20, class: "gv-label" })
+          label.textContent = scene.label
+          svg.appendChild(label)
+          host.appendChild(svg)
+          scenesHost.appendChild(host)
+        } else if (scene.kind === "status") {
+          const value = evaluate(scene.value, state)
+          const epsilon = 1e-9
+          const label = value < scene.threshold - epsilon
+            ? scene.belowLabel
+            : value > scene.threshold + epsilon
+              ? scene.aboveLabel
+              : scene.equalLabel
+          const host = element("section", "gv-scene gv-status")
+          host.setAttribute("role", "status")
+          host.setAttribute("aria-live", "polite")
+          host.appendChild(element("h3", undefined, scene.title))
+          host.appendChild(element("strong", undefined, label))
+          if (scene.description) host.appendChild(element("p", undefined, scene.description))
+          scenesHost.appendChild(host)
+        }
+      })
+      document.body.dataset.breadboardOverflow = String(document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)
+    }
+
+    if (definition.controls.length) {
+      const controlsHost = element("div", "gv-controls")
+      definition.controls.forEach((control) => {
+        const row = element("div", "gv-control")
+        const head = element("div", "gv-control-head")
+        const label = element("label", undefined, control.label)
+        const inputId = \`gv-control-\${control.id}\`
+        label.htmlFor = inputId
+        head.appendChild(label)
+        const readout = element("span", "gv-readout", \`\${control.defaultValue}\${control.unit ? \` \${control.unit}\` : ""}\`)
+        readout.dataset.controlReadout = control.id
+        head.appendChild(readout)
+        row.appendChild(head)
+        let input
+        if (control.type === "slider" || control.type === "number") {
+          input = element("input")
+          input.type = control.type === "slider" ? "range" : "number"
+          input.min = String(control.min)
+          input.max = String(control.max)
+          input.step = String(control.step)
+          input.value = String(control.defaultValue)
+          input.addEventListener("input", () => {
+            state[control.id] = finite(input.value)
+            readout.textContent = \`\${input.value}\${control.unit ? \` \${control.unit}\` : ""}\`
+            draw()
+            parent.postMessage({ type: EVENT, event: "input", controlId: control.id, value: state[control.id] }, "*")
+          })
+        } else if (control.type === "select") {
+          input = element("select")
+          ;(control.options || []).forEach((option) => {
+            const optionNode = element("option", undefined, option)
+            optionNode.value = option
+            input.appendChild(optionNode)
+          })
+          input.value = String(control.defaultValue)
+          input.addEventListener("change", () => {
+            state[control.id] = input.value
+            readout.textContent = input.value
+            draw()
+            parent.postMessage({ type: EVENT, event: "input", controlId: control.id, value: state[control.id] }, "*")
+          })
+        } else if (control.type === "toggle") {
+          input = element("input")
+          input.type = "checkbox"
+          input.checked = Boolean(control.defaultValue)
+          input.addEventListener("change", () => {
+            state[control.id] = input.checked
+            readout.textContent = input.checked ? "On" : "Off"
+            draw()
+            parent.postMessage({ type: EVENT, event: "input", controlId: control.id, value: state[control.id] }, "*")
+          })
+        } else {
+          input = element("button", undefined, control.label)
+          input.type = "button"
+          input.addEventListener("click", () => {
+            state[control.id] = finite(state[control.id]) + 1
+            draw()
+            parent.postMessage({ type: EVENT, event: "button", controlId: control.id, value: state[control.id] }, "*")
+          })
+        }
+        input.id = inputId
+        input.dataset.controlId = control.id
+        if (control.description) input.setAttribute("aria-description", control.description)
+        row.appendChild(input)
+        controlsHost.appendChild(row)
+      })
+      app.appendChild(controlsHost)
+    }
+
+    app.appendChild(valuesHost)
+    app.appendChild(scenesHost)
+
+    const stopAnimation = () => {
+      playing = false
+      if (animationFrame) cancelAnimationFrame(animationFrame)
+      animationFrame = 0
+    }
+    if (definition.animation) {
+      const animation = element("div", "gv-animation")
+      const play = element("button", undefined, "Play")
+      const pause = element("button", undefined, "Pause")
+      const step = element("button", undefined, "Step")
+      const reset = element("button", undefined, "Reset")
+      ;[play, pause, step, reset].forEach((button) => { button.type = "button" })
+      const tick = (timestamp) => {
+        if (!playing) return
+        if (!animationStarted) animationStarted = timestamp
+        const elapsed = timestamp - animationStarted
+        state.t = Math.min(1, elapsed / definition.animation.durationMs)
+        draw()
+        if (state.t >= 1) {
+          if (definition.animation.loop) animationStarted = timestamp
+          else { stopAnimation(); return }
+        }
+        animationFrame = requestAnimationFrame(tick)
+      }
+      play.addEventListener("click", () => {
+        if (playing) return
+        playing = true
+        animationStarted = 0
+        animationFrame = requestAnimationFrame(tick)
+      })
+      pause.addEventListener("click", stopAnimation)
+      step.addEventListener("click", () => { state.t = Math.min(1, finite(state.t) + 0.05); draw() })
+      reset.addEventListener("click", () => {
+        stopAnimation()
+        Object.assign(state, defaults, { x: 0, t: 0 })
+        document.querySelectorAll("[data-control-id]").forEach((node) => {
+          const control = definition.controls.find((candidate) => candidate.id === node.dataset.controlId)
+          if (!control) return
+          if (node.type === "checkbox") node.checked = Boolean(control.defaultValue)
+          else node.value = String(control.defaultValue)
+        })
+        document.querySelectorAll("[data-control-readout]").forEach((node) => {
+          const control = definition.controls.find((candidate) => candidate.id === node.dataset.controlReadout)
+          if (control) node.textContent = \`\${control.defaultValue}\${control.unit ? \` \${control.unit}\` : ""}\`
+        })
+        draw()
+      })
+      animation.append(play, pause, step, reset)
+      app.appendChild(animation)
+      if (definition.animation.autoplay && !matchMedia("(prefers-reduced-motion: reduce)").matches) play.click()
+    } else {
+      const reset = element("button", undefined, "Reset")
+      reset.type = "button"
+      reset.addEventListener("click", () => {
+        Object.assign(state, defaults, { x: 0, t: 0 })
+        document.querySelectorAll("[data-control-id]").forEach((node) => {
+          const control = definition.controls.find((candidate) => candidate.id === node.dataset.controlId)
+          if (!control) return
+          if (node.type === "checkbox") node.checked = Boolean(control.defaultValue)
+          else node.value = String(control.defaultValue)
+        })
+        document.querySelectorAll("[data-control-readout]").forEach((node) => {
+          const control = definition.controls.find((candidate) => candidate.id === node.dataset.controlReadout)
+          if (control) node.textContent = \`\${control.defaultValue}\${control.unit ? \` \${control.unit}\` : ""}\`
+        })
+        draw()
+      })
+      const animation = element("div", "gv-animation")
+      animation.appendChild(reset)
+      app.appendChild(animation)
+    }
+
+    root.appendChild(app)
+    draw()
+    parent.postMessage({ type: EVENT, event: "ready", height: document.documentElement.scrollHeight }, "*")
+
+    if (window.__BREADBOARD_VISUAL_TEST_MODE__) {
+      requestAnimationFrame(() => {
+        let passed = true
+        const first = document.querySelector("[data-control-id]")
+        if (first) {
+          first.focus()
+          if (first.type === "range" || first.type === "number") {
+            first.value = first.max || first.value
+            first.dispatchEvent(new Event("input", { bubbles: true }))
+          } else if (first.type === "checkbox") {
+            first.checked = !first.checked
+            first.dispatchEvent(new Event("change", { bubbles: true }))
+          } else if (first.tagName === "SELECT") {
+            first.selectedIndex = Math.min(1, first.options.length - 1)
+            first.dispatchEvent(new Event("change", { bubbles: true }))
+          } else first.click()
+        }
+        document.querySelectorAll("[data-output-finite]").forEach((node) => {
+          if (node.dataset.outputFinite !== "true") passed = false
+        })
+        const resetButton = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Reset")
+        if (resetButton) resetButton.click()
+        document.querySelectorAll("[data-control-id]").forEach((node) => {
+          const control = definition.controls.find((candidate) => candidate.id === node.dataset.controlId)
+          if (!control) return
+          const actual = node.type === "checkbox" ? node.checked : node.value
+          if (String(actual) !== String(control.defaultValue)) passed = false
+        })
+        const scrollWidth = document.documentElement.scrollWidth
+        const clientWidth = document.documentElement.clientWidth
+        document.body.dataset.breadboardScrollWidth = String(scrollWidth)
+        document.body.dataset.breadboardClientWidth = String(clientWidth)
+        if (scrollWidth > clientWidth + 1) {
+          document.body.dataset.breadboardOverflow = "true"
+          passed = false
+        }
+        document.body.dataset.breadboardRuntimeTests = passed ? "passed" : "failed"
+        window.scrollTo(0, 0)
+      })
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window && event.source !== parent) return
+    const message = event.data
+    if (!message || message.type !== INIT || !message.definition) return
+    try {
+      renderDefinition(message.definition, message.theme)
+    } catch (error) {
+      document.body.dataset.breadboardRuntimeTests = "failed"
+      parent.postMessage({ type: EVENT, event: "runtime-error", message: error instanceof Error ? error.message : "render failed" }, "*")
+    }
+  })
+})()
+`;var y="breadboard-generated-visual:init",k="breadboard-generated-visual:event";function f(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function i(e,t,n){let s=document.createElement(e);return t&&(s.className=t),n!==void 0&&(s.textContent=n),s}function C(){try{let e=new URL(window.location.href);return/^garden\./i.test(e.hostname)?e.origin.replace("//garden.","//"):/^(localhost|127(?:\.\d+){3}|0\.0\.0\.0)$/i.test(e.hostname)||e.port==="8081"?`${e.protocol}//${e.hostname}:3000`:e.origin}catch{return""}}function w(){let e=window.location.pathname;try{e=decodeURIComponent(e)}catch{}let t=e.split("/").map(n=>n.trim()).filter(Boolean);return t[0]==="garden"&&t.shift(),{gardenId:t[0]??"",pageSlug:t.slice(1).join("/")}}function E(){return`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"></head><body><div id="breadboard-generated-visual-root"></div><script>${String(h).replace(/<\/script/gi,"<\\/script")}<\/script></body></html>`}async function v(e,t,n,s){let c=C(),{gardenId:l,pageSlug:a}=w();if(!c||!l){n.textContent="Open this lesson from the dashboard to update the visualization.";return}s.forEach(r=>{r.disabled=!0}),n.textContent=t==="regenerate"?"Generating a validated replacement\u2026":"Restoring the previous version\u2026";try{let r=await fetch(`${c}/api/gardens/${encodeURIComponent(l)}/visualizations/${encodeURIComponent(e.id)}/${t}`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({pageSlug:a,currentVersion:e.version,version:t==="rollback"?e.previousVersion:void 0,reason:t==="regenerate"?"Learner requested a clearer generated visualization":void 0})}),d=await r.json().catch(()=>({}));if(!r.ok||d.success!==!0)throw new Error(typeof d.error=="string"?d.error:`Could not ${t} visualization`);n.textContent="Updated. Reloading the lesson\u2026",window.setTimeout(()=>window.location.reload(),1200)}catch(r){s.forEach(d=>{d.disabled=!1}),n.textContent=r instanceof Error?r.message:`Could not ${t} visualization`}}function g(e){let t=i("aside","breadboard-generated-visual-fallback");return t.setAttribute("role","note"),t.appendChild(i("strong",void 0,"Interactive visualization unavailable")),t.appendChild(i("p",void 0,e)),t}function M(e){if(e.classList.contains("breadboard-generated-visual-invalid"))return g(e.dataset.generatedVisualError||"The generated artifact did not pass validation.");let t,n;try{if(t=JSON.parse(e.dataset.generatedVisualDefinition??""),n=JSON.parse(e.dataset.generatedVisualManifest??""),!f(t)||!n?.id||!Number.isInteger(n.version))throw new Error("invalid data")}catch{return g("The generated artifact could not be decoded safely.")}let s=i("section","breadboard-generated-visual-card");s.dataset.visualId=n.id;let c=i("header","bgv-header"),l=i("div");l.appendChild(i("p","bgv-kicker","Generated interactive visual")),l.appendChild(i("h4","bgv-title",n.title)),n.description&&l.appendChild(i("p","bgv-description",n.description)),c.appendChild(l),c.appendChild(i("span","bgv-version",`v${n.version}`)),s.appendChild(c);let a=i("iframe","bgv-frame");a.title=n.title,a.sandbox.add("allow-scripts"),a.referrerPolicy="no-referrer",a.loading="lazy",a.srcdoc=E(),s.appendChild(a);let r=Array.isArray(n.sourceAnchorIds)?n.sourceAnchorIds.filter(o=>typeof o=="string"):[];r.length>0&&s.appendChild(i("p","bgv-sources",`Grounded in: ${r.slice(0,8).join(", ")}`));let d=i("footer","bgv-footer"),u=i("button","bgv-action bgv-action-primary","Regenerate");u.type="button";let m=[u];if(d.appendChild(u),Number.isInteger(n.previousVersion)&&Number(n.previousVersion)>0){let o=i("button","bgv-action",`Restore v${n.previousVersion}`);o.type="button",m.push(o),o.addEventListener("click",()=>{v(n,"rollback",p,m)}),d.appendChild(o)}let p=i("span","bgv-status");p.setAttribute("role","status"),p.setAttribute("aria-live","polite"),d.appendChild(p),u.addEventListener("click",()=>{v(n,"regenerate",p,m)}),s.appendChild(d);let b=o=>{if(!(o.source!==a.contentWindow||!f(o.data)||o.data.type!==k))if(o.data.event==="ready"){let x=typeof o.data.height=="number"?o.data.height:480;a.style.height=`${Math.max(300,Math.min(4800,x+4))}px`}else o.data.event==="runtime-error"&&(p.textContent="The visualization stopped safely after a runtime error.",a.hidden=!0,a.insertAdjacentElement("afterend",g("Its source lesson remains available below.")))};return window.addEventListener("message",b),a.addEventListener("load",()=>{let o=document.documentElement.getAttribute("saved-theme")==="dark"?"dark":"light";a.contentWindow?.postMessage({type:y,definition:t,theme:o},"*")},{once:!0}),s}document.addEventListener("nav",()=>{let e=document.querySelectorAll("code.breadboard-generated-visual-block");for(let t of e){let n=t.closest("pre")??t;n.dataset.bgvBound!=="true"&&(n.dataset.bgvBound="true",n.replaceWith(M(t)))}});
+</script><script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/copy-tex.min.js" type="application/javascript" data-persist="true"></script><script type="application/javascript" data-persist="true">
+        const socket = new WebSocket('ws://localhost:3001')
+        // reload(true) ensures resources like images and scripts are fetched again in firefox
+        socket.addEventListener('message', () => document.location.reload(true))
+      </script><script src="../../postscript.js?v=mrpeezo5" type="module" data-persist="true"></script></html>
