@@ -11695,43 +11695,100 @@ var roamItalicRegex = new RegExp(/__(.+)__/, "g");
 // quartz/plugins/transformers/breadboardVisual.ts
 import { visit as visit6 } from "unist-util-visit";
 
+// ../shared/visualization-renderers.json
+var visualization_renderers_default = {
+  schemaVersion: 1,
+  compatibilityThreshold: 0.72,
+  renderers: [
+    {
+      id: "function_plot",
+      label: "Function plot",
+      roles: ["formula", "metric", "core_concept"],
+      interactionGoals: ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      keywords: ["function", "equation", "curve", "parameter", "distribution", "relationship"]
+    },
+    {
+      id: "linked_time_plots",
+      label: "Linked time plots",
+      roles: ["mechanism", "formula", "core_concept"],
+      interactionGoals: ["observe_change_over_time", "inspect_relationship", "simulate_system"],
+      keywords: ["time", "velocity", "acceleration", "signal", "trajectory", "dynamics"]
+    },
+    {
+      id: "mass_spring",
+      label: "Mass-spring simulator",
+      roles: ["mechanism", "formula", "core_concept"],
+      interactionGoals: ["observe_change_over_time", "manipulate_variables", "simulate_system"],
+      keywords: ["mass", "spring", "oscillation", "force", "displacement"]
+    },
+    {
+      id: "energy_exchange",
+      label: "Energy exchange",
+      roles: ["mechanism", "formula", "result_interpretation"],
+      interactionGoals: ["observe_change_over_time", "compare_cases", "simulate_system"],
+      keywords: ["energy", "kinetic", "potential", "conservation", "exchange"]
+    },
+    {
+      id: "resonance_curve",
+      label: "Resonance curve",
+      roles: ["mechanism", "formula", "result_interpretation"],
+      interactionGoals: ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      keywords: ["resonance", "frequency", "damping", "amplitude", "response"]
+    },
+    {
+      id: "lif_neuron",
+      label: "Leaky integrate-and-fire neuron",
+      roles: ["core_concept", "mechanism"],
+      interactionGoals: ["observe_change_over_time", "manipulate_variables", "simulate_system"],
+      keywords: ["membrane", "threshold", "reset", "leak", "neuron", "integrate and fire", "lif"]
+    },
+    {
+      id: "neural_coding",
+      label: "Neural coding explorer",
+      roles: ["core_concept", "mechanism", "comparison"],
+      interactionGoals: ["compare_cases", "inspect_relationship", "test_prediction"],
+      keywords: ["spike", "timing", "temporal", "rate coding", "encoding", "event driven"]
+    },
+    {
+      id: "stdp_window",
+      label: "STDP timing window",
+      roles: ["training_method", "mechanism"],
+      interactionGoals: ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      keywords: ["stdp", "spike timing", "plasticity", "pre", "post", "hebbian"]
+    },
+    {
+      id: "metric_calculator",
+      label: "Metric calculator",
+      roles: ["metric", "formula", "result_interpretation"],
+      interactionGoals: ["manipulate_variables", "inspect_relationship", "test_prediction"],
+      keywords: ["metric", "accuracy", "latency", "energy", "efficiency", "spike count", "score"]
+    },
+    {
+      id: "training_curve",
+      label: "Training curve",
+      roles: ["training_method", "metric", "result_interpretation"],
+      interactionGoals: ["observe_change_over_time", "compare_cases", "test_prediction"],
+      keywords: ["training", "convergence", "loss", "learning curve", "epoch", "accuracy"]
+    },
+    {
+      id: "tradeoff_explorer",
+      label: "Trade-off explorer",
+      roles: ["comparison", "application", "result_interpretation", "metric"],
+      interactionGoals: ["compare_cases", "inspect_relationship", "test_prediction"],
+      keywords: ["tradeoff", "comparison", "deployment", "priority", "energy", "latency", "accuracy", "budget"]
+    }
+  ]
+};
+
+// quartz/util/visualizationRegistry.ts
+var registry = visualization_renderers_default;
+var TRUSTED_RENDERER_IDS = Object.freeze(
+  registry.renderers.map((renderer) => renderer.id)
+);
+
 // quartz/util/visualSpec.ts
-var VISUAL_TYPES = [
-  "function_plot",
-  "linked_time_plots",
-  "phase_space",
-  "mass_spring",
-  "pendulum",
-  "energy_exchange",
-  "damping_envelope",
-  "resonance_curve",
-  "travelling_wave",
-  "standing_wave",
-  "ray_diagram",
-  "lif_neuron",
-  "neural_coding",
-  "stdp_window",
-  "metric_calculator",
-  "training_curve",
-  "tradeoff_explorer",
-  "source_figure_explainer",
-  "formula_derivation",
-  "concept_diagram",
-  "comparison_table"
-];
-var IMPLEMENTED_VISUAL_TYPES = [
-  "function_plot",
-  "linked_time_plots",
-  "mass_spring",
-  "energy_exchange",
-  "resonance_curve",
-  "lif_neuron",
-  "neural_coding",
-  "stdp_window",
-  "metric_calculator",
-  "training_curve",
-  "tradeoff_explorer"
-];
+var VISUAL_TYPES = TRUSTED_RENDERER_IDS;
+var IMPLEMENTED_VISUAL_TYPES = TRUSTED_RENDERER_IDS;
 var MAX_SPEC_CHARS = 4e4;
 var ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 var CONTROL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
@@ -12086,6 +12143,206 @@ var BreadboardVisuals = /* @__PURE__ */ __name(() => {
   };
 }, "BreadboardVisuals");
 
+// quartz/plugins/transformers/breadboardGeneratedVisual.ts
+import crypto from "crypto";
+import fs2 from "fs";
+import path4 from "path";
+import { visit as visit7 } from "unist-util-visit";
+
+// quartz/components/scripts/breadboardGeneratedVisual.inline.ts
+var breadboardGeneratedVisual_inline_default = "";
+
+// quartz/components/styles/breadboardGeneratedVisual.inline.scss
+var breadboardGeneratedVisual_inline_default2 = "";
+
+// quartz/plugins/transformers/breadboardGeneratedVisual.ts
+var LANG = "breadboard-generated-visual";
+var ID_PATTERN2 = /^[A-Za-z][A-Za-z0-9_-]{1,79}$/;
+var COMPILED_PREFIX = "globalThis.__BREADBOARD_GENERATED_VISUAL__ = Object.freeze(";
+var COMPILED_SUFFIX = ");\n";
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+__name(isRecord, "isRecord");
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+__name(sha256, "sha256");
+function parseBlock(value) {
+  const id = value.match(/^id:\s*([A-Za-z][A-Za-z0-9_-]{1,79})\s*$/m)?.[1] ?? "";
+  const version = Number(value.match(/^version:\s*(\d+)\s*$/m)?.[1] ?? 0);
+  return ID_PATTERN2.test(id) && Number.isInteger(version) && version > 0 ? { id, version } : null;
+}
+__name(parseBlock, "parseBlock");
+function readJson(filePath) {
+  try {
+    const parsed = JSON.parse(fs2.readFileSync(filePath, "utf8"));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+__name(readJson, "readJson");
+function posix(value) {
+  return value.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+__name(posix, "posix");
+function nodeText(node) {
+  if (!isRecord(node)) return "";
+  if (typeof node.value === "string") return node.value;
+  return Array.isArray(node.children) ? node.children.map(nodeText).join("") : "";
+}
+__name(nodeText, "nodeText");
+function normalizeHeading(value) {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+__name(normalizeHeading, "normalizeHeading");
+function findGardenRoot(pagePath, id, boundary) {
+  let current = path4.dirname(pagePath);
+  const resolvedBoundary = path4.resolve(boundary);
+  for (let depth = 0; depth < 20; depth += 1) {
+    if (fs2.existsSync(path4.join(current, ".breadboard", "visuals", id))) return current;
+    const parent = path4.dirname(current);
+    if (parent === current) break;
+    if (!path4.resolve(parent).startsWith(resolvedBoundary) && path4.resolve(current) === resolvedBoundary) break;
+    current = parent;
+  }
+  return null;
+}
+__name(findGardenRoot, "findGardenRoot");
+function markInvalid(node, reason) {
+  node.data = {
+    hProperties: {
+      className: ["breadboard-generated-visual-block", "breadboard-generated-visual-invalid"],
+      "data-generated-visual-error": reason.slice(0, 500)
+    }
+  };
+  node.value = "This interactive visualization is temporarily unavailable.";
+}
+__name(markInvalid, "markInvalid");
+function validateDefinition(value) {
+  if (!isRecord(value) || value.sdkVersion !== "1.0.0") return false;
+  if (!Array.isArray(value.controls) || !Array.isArray(value.outputs) || !Array.isArray(value.scenes)) return false;
+  if (value.controls.length > 12 || value.outputs.length > 16 || value.scenes.length > 12) return false;
+  return typeof value.title === "string" && typeof value.description === "string";
+}
+__name(validateDefinition, "validateDefinition");
+var BreadboardGeneratedVisuals = /* @__PURE__ */ __name(() => ({
+  name: "BreadboardGeneratedVisuals",
+  markdownPlugins(ctx) {
+    return [
+      () => (tree, file) => {
+        visit7(tree, "code", (node, index, parent) => {
+          if (node.lang !== LANG) return;
+          const block = parseBlock(node.value);
+          if (!block) {
+            markInvalid(node, "invalid generated visualization reference");
+            return;
+          }
+          const filePath = String(file.data.filePath ?? "");
+          const gardenRoot = filePath ? findGardenRoot(filePath, block.id, ctx.argv.directory) : null;
+          if (!gardenRoot) {
+            markInvalid(node, "generated visualization artifact was not found");
+            return;
+          }
+          const artifactDir = path4.join(
+            gardenRoot,
+            ".breadboard",
+            "visuals",
+            block.id,
+            "versions",
+            String(block.version)
+          );
+          const manifest = readJson(path4.join(artifactDir, "manifest.json"));
+          const validation = readJson(path4.join(artifactDir, "validation.json"));
+          const tests = readJson(path4.join(artifactDir, "tests.json"));
+          const critic = readJson(path4.join(artifactDir, "critic.json"));
+          if (!manifest || !validation || !tests || !critic) {
+            markInvalid(node, "generated visualization evidence is incomplete");
+            return;
+          }
+          if (manifest.id !== block.id || manifest.version !== block.version || manifest.status !== "published" || validation.valid !== true || tests.passed !== true || critic.approved !== true) {
+            markInvalid(node, "generated visualization has not passed its publication gates");
+            return;
+          }
+          const relativePage = posix(path4.relative(gardenRoot, filePath));
+          if (!relativePage.startsWith("learning/") || posix(String(manifest.targetPage ?? "")) !== relativePage) {
+            markInvalid(node, "generated visualization is referenced from an unauthorized page");
+            return;
+          }
+          const siblings = parent && Array.isArray(parent.children) ? parent.children : [];
+          const before = typeof index === "number" ? siblings.slice(0, index) : [];
+          const precedingHeading = [...before].reverse().find((candidate) => candidate.type === "heading");
+          const targetHeading = normalizeHeading(String(manifest.targetHeading ?? ""));
+          const visibleHeading = normalizeHeading(
+            precedingHeading ? nodeText(precedingHeading) : String(file.data.frontmatter?.title ?? "")
+          );
+          if (!targetHeading || !(visibleHeading === targetHeading || visibleHeading.endsWith(` ${targetHeading}`))) {
+            markInvalid(node, "generated visualization heading constraint does not match");
+            return;
+          }
+          const insertionAnchor = String(manifest.insertionAnchor ?? "");
+          const anchorFound = insertionAnchor.length > 0 && before.some(
+            (candidate) => candidate.type === "html" && nodeText(candidate).includes(insertionAnchor)
+          );
+          if (!anchorFound) {
+            markInvalid(node, "generated visualization insertion anchor is missing");
+            return;
+          }
+          let compiled = "";
+          let source = "";
+          try {
+            compiled = fs2.readFileSync(path4.join(artifactDir, "compiled.js"), "utf8");
+            source = fs2.readFileSync(path4.join(artifactDir, "source.tsx"), "utf8");
+          } catch {
+            markInvalid(node, "generated visualization source or compiled artifact is missing");
+            return;
+          }
+          if (sha256(compiled) !== manifest.compiledHash || sha256(source) !== manifest.sourceHash) {
+            markInvalid(node, "generated visualization artifact hash does not match");
+            return;
+          }
+          if (!compiled.startsWith(COMPILED_PREFIX) || !compiled.endsWith(COMPILED_SUFFIX)) {
+            markInvalid(node, "generated visualization compiler envelope is invalid");
+            return;
+          }
+          let definition;
+          try {
+            definition = JSON.parse(compiled.slice(COMPILED_PREFIX.length, -COMPILED_SUFFIX.length));
+          } catch {
+            markInvalid(node, "generated visualization definition is invalid JSON");
+            return;
+          }
+          if (!validateDefinition(definition)) {
+            markInvalid(node, "generated visualization definition schema is invalid");
+            return;
+          }
+          node.data = {
+            hProperties: {
+              className: ["breadboard-generated-visual-block"],
+              "data-generated-visual-definition": JSON.stringify(definition),
+              "data-generated-visual-manifest": JSON.stringify({
+                id: block.id,
+                version: block.version,
+                title: manifest.title,
+                description: manifest.description,
+                sourceAnchorIds: manifest.sourceAnchorIds,
+                previousVersion: manifest.previousVersion
+              })
+            }
+          };
+          node.value = `Interactive visualization: ${String(manifest.title ?? block.id)}`;
+        });
+      }
+    ];
+  },
+  externalResources() {
+    const js = [{ script: breadboardGeneratedVisual_inline_default, loadTime: "afterDOMReady", contentType: "inline" }];
+    const css = [{ content: breadboardGeneratedVisual_inline_default2, inline: true }];
+    return { js, css };
+  }
+}), "BreadboardGeneratedVisuals");
+
 // quartz/plugins/filters/draft.ts
 function frontmatterString(fm, key) {
   const value = fm?.[key];
@@ -12176,7 +12433,7 @@ var RemoveDrafts = /* @__PURE__ */ __name((opts = {}) => ({
 }), "RemoveDrafts");
 
 // quartz/plugins/emitters/contentPage.tsx
-import path6 from "path";
+import path7 from "path";
 
 // quartz/components/Header.tsx
 import { jsx } from "preact/jsx-runtime";
@@ -12263,7 +12520,7 @@ function concatenateResources(...resources) {
 __name(concatenateResources, "concatenateResources");
 
 // quartz/components/renderPage.tsx
-import { visit as visit7 } from "unist-util-visit";
+import { visit as visit8 } from "unist-util-visit";
 import { styleText as styleText2 } from "util";
 import { jsx as jsx4, jsxs } from "preact/jsx-runtime";
 var headerRegex = new RegExp(/h[1-6]/);
@@ -12304,7 +12561,7 @@ function pageResources(baseDir, staticResources) {
 }
 __name(pageResources, "pageResources");
 function renderTranscludes(root, cfg, slug, componentData, visited) {
-  visit7(root, "element", (node, _index, _parent) => {
+  visit8(root, "element", (node, _index, _parent) => {
     if (node.tagName === "blockquote") {
       const classNames2 = node.properties?.className ?? [];
       if (classNames2.includes("transclude")) {
@@ -12783,59 +13040,59 @@ var FileTrieNode = class _FileTrieNode {
     this.displayNameOverride = name;
   }
   get slug() {
-    const path12 = joinSegments(...this.slugSegments);
+    const path13 = joinSegments(...this.slugSegments);
     if (this.isFolder) {
-      return joinSegments(path12, "index");
+      return joinSegments(path13, "index");
     }
-    return path12;
+    return path13;
   }
   get slugSegment() {
     return this.slugSegments[this.slugSegments.length - 1];
   }
-  makeChild(path12, file) {
-    const fullPath = [...this.slugSegments, path12[0]];
+  makeChild(path13, file) {
+    const fullPath = [...this.slugSegments, path13[0]];
     const child = new _FileTrieNode(fullPath, file);
     this.children.push(child);
     return child;
   }
-  insert(path12, file) {
-    if (path12.length === 0) {
+  insert(path13, file) {
+    if (path13.length === 0) {
       throw new Error("path is empty");
     }
     this.isFolder = true;
-    const segment = path12[0];
-    if (path12.length === 1) {
+    const segment = path13[0];
+    if (path13.length === 1) {
       if (segment === "index") {
         this.data ??= file;
       } else {
-        this.makeChild(path12, file);
+        this.makeChild(path13, file);
       }
-    } else if (path12.length > 1) {
-      const child = this.children.find((c) => c.slugSegment === segment) ?? this.makeChild(path12, void 0);
+    } else if (path13.length > 1) {
+      const child = this.children.find((c) => c.slugSegment === segment) ?? this.makeChild(path13, void 0);
       const fileParts = file.filePath.split("/");
-      child.fileSegmentHint = fileParts.at(-path12.length);
-      child.insert(path12.slice(1), file);
+      child.fileSegmentHint = fileParts.at(-path13.length);
+      child.insert(path13.slice(1), file);
     }
   }
   // Add new file to trie
   add(file) {
     this.insert(file.slug.split("/"), file);
   }
-  findNode(path12) {
-    if (path12.length === 0 || path12.length === 1 && path12[0] === "index") {
+  findNode(path13) {
+    if (path13.length === 0 || path13.length === 1 && path13[0] === "index") {
       return this;
     }
-    return this.children.find((c) => c.slugSegment === path12[0])?.findNode(path12.slice(1));
+    return this.children.find((c) => c.slugSegment === path13[0])?.findNode(path13.slice(1));
   }
-  ancestryChain(path12) {
-    if (path12.length === 0 || path12.length === 1 && path12[0] === "index") {
+  ancestryChain(path13) {
+    if (path13.length === 0 || path13.length === 1 && path13[0] === "index") {
       return [this];
     }
-    const child = this.children.find((c) => c.slugSegment === path12[0]);
+    const child = this.children.find((c) => c.slugSegment === path13[0]);
     if (!child) {
       return void 0;
     }
-    const childPath = child.ancestryChain(path12.slice(1));
+    const childPath = child.ancestryChain(path13.slice(1));
     if (!childPath) {
       return void 0;
     }
@@ -12883,7 +13140,7 @@ var FileTrieNode = class _FileTrieNode {
    * @returns array containing folder state for trie
    */
   getFolderPaths() {
-    return this.entries().filter(([_, node]) => node.isFolder).map(([path12, _]) => path12);
+    return this.entries().filter(([_, node]) => node.isFolder).map(([path13, _]) => path13);
   }
 };
 
@@ -13206,8 +13463,8 @@ ${stylesheet.join("\n\n")}
 __name(joinStyles, "joinStyles");
 
 // quartz/util/og.tsx
-import { promises as fs2 } from "fs";
-import path4 from "path";
+import { promises as fs3 } from "fs";
+import path5 from "path";
 import readingTime from "reading-time";
 import { styleText as styleText4 } from "util";
 import { jsx as jsx16, jsxs as jsxs9 } from "preact/jsx-runtime";
@@ -13252,11 +13509,11 @@ __name(getSatoriFonts, "getSatoriFonts");
 async function fetchTtf(rawFontName, weight) {
   const fontName = rawFontName.replaceAll(" ", "+");
   const cacheKey = `${fontName}-${weight}`;
-  const cacheDir = path4.join(QUARTZ, ".quartz-cache", "fonts");
-  const cachePath = path4.join(cacheDir, cacheKey);
+  const cacheDir = path5.join(QUARTZ, ".quartz-cache", "fonts");
+  const cachePath = path5.join(cacheDir, cacheKey);
   try {
-    await fs2.access(cachePath);
-    return fs2.readFile(cachePath);
+    await fs3.access(cachePath);
+    return fs3.readFile(cachePath);
   } catch (error) {
   }
   const cssResponse = await fetch(
@@ -13277,8 +13534,8 @@ Warning: Failed to fetch font ${rawFontName} with weight ${weight}, got ${cssRes
   }
   const fontResponse = await fetch(match[1]);
   const fontData = Buffer.from(await fontResponse.arrayBuffer());
-  await fs2.mkdir(cacheDir, { recursive: true });
-  await fs2.writeFile(cachePath, fontData);
+  await fs3.mkdir(cacheDir, { recursive: true });
+  await fs3.writeFile(cachePath, fontData);
   return fontData;
 }
 __name(fetchTtf, "fetchTtf");
@@ -13550,18 +13807,18 @@ async function loadEmoji(code) {
 __name(loadEmoji, "loadEmoji");
 
 // quartz/plugins/emitters/helpers.ts
-import path5 from "path";
-import fs3 from "fs";
+import path6 from "path";
+import fs4 from "fs";
 var write = /* @__PURE__ */ __name(async ({ ctx, slug, ext, content }) => {
   const pathToPage = joinSegments(ctx.argv.output, slug + ext);
-  const dir = path5.dirname(pathToPage);
-  await fs3.promises.mkdir(dir, { recursive: true });
-  await fs3.promises.writeFile(pathToPage, content);
+  const dir = path6.dirname(pathToPage);
+  await fs4.promises.mkdir(dir, { recursive: true });
+  await fs4.promises.writeFile(pathToPage, content);
   return pathToPage;
 }, "write");
 
 // quartz/plugins/emitters/ogImage.tsx
-import fs4 from "node:fs/promises";
+import fs5 from "node:fs/promises";
 import { styleText as styleText5 } from "util";
 import { Fragment as Fragment3, jsx as jsx17, jsxs as jsxs10 } from "preact/jsx-runtime";
 var defaultOptions11 = {
@@ -13576,7 +13833,7 @@ async function generateSocialImage({ cfg, description, fonts, title, fileData },
   const iconPath = joinSegments(QUARTZ, "static", "icon.png");
   let iconBase64 = void 0;
   try {
-    const iconData = await fs4.readFile(iconPath);
+    const iconData = await fs5.readFile(iconPath);
     iconBase64 = `data:image/png;base64,${iconData.toString("base64")}`;
   } catch (err) {
     console.warn(styleText5("yellow", `Warning: Could not find icon at ${iconPath}`));
@@ -13715,8 +13972,8 @@ var Head_default = /* @__PURE__ */ __name((() => {
     const description = fileData.frontmatter?.socialDescription ?? fileData.frontmatter?.description ?? unescapeHTML(fileData.description?.trim() ?? i18n(cfg.locale).propertyDefaults.description);
     const { css, js, additionalHead } = externalResources;
     const url = new URL(`https://${cfg.baseUrl ?? "example.com"}`);
-    const path12 = url.pathname;
-    const baseDir = fileData.slug === "404" ? path12 : pathToRoot(fileData.slug);
+    const path13 = url.pathname;
+    const baseDir = fileData.slug === "404" ? path13 : pathToRoot(fileData.slug);
     const iconPath = joinSegments(baseDir, "static/icon.png");
     const socialUrl = fileData.slug === "404" ? url.toString() : joinSegments(url.toString(), fileData.slug);
     const usesCustomOgImage = ctx.cfg.plugins.emitters.some(
@@ -16390,7 +16647,7 @@ var ContentPage = /* @__PURE__ */ __name((userOpts) => {
           styleText6(
             "yellow",
             `
-Warning: you seem to be missing an \`index.md\` home page file at the root of your \`${ctx.argv.directory}\` folder (\`${path6.join(ctx.argv.directory, "index.md")} does not exist\`). This may cause errors when deploying.`
+Warning: you seem to be missing an \`index.md\` home page file at the root of your \`${ctx.argv.directory}\` folder (\`${path7.join(ctx.argv.directory, "index.md")} does not exist\`). This may cause errors when deploying.`
           )
         );
       }
@@ -16542,7 +16799,7 @@ var TagPage = /* @__PURE__ */ __name((userOpts) => {
 }, "TagPage");
 
 // quartz/plugins/emitters/folderPage.tsx
-import path7 from "path";
+import path8 from "path";
 async function* processFolderInfo(ctx, folderInfo, allFiles, opts, resources) {
   for (const [folder, folderContent] of Object.entries(folderInfo)) {
     const slug = joinSegments(folder, "index");
@@ -16583,7 +16840,7 @@ function computeFolderInfo(folders, content, locale) {
   );
   for (const [tree, file] of content) {
     const slug = stripSlashes(simplifySlug(file.data.slug));
-    const folderSlug = slug.endsWith("/index") ? path7.dirname(slug) : slug;
+    const folderSlug = slug.endsWith("/index") ? path8.dirname(slug) : slug;
     if (folders.has(folderSlug)) {
       folderInfo[folderSlug] = [tree, file];
     }
@@ -16592,10 +16849,10 @@ function computeFolderInfo(folders, content, locale) {
 }
 __name(computeFolderInfo, "computeFolderInfo");
 function _getFolders(slug) {
-  var folderName = path7.dirname(slug ?? "");
+  var folderName = path8.dirname(slug ?? "");
   const parentFolderNames = [folderName];
   while (folderName !== ".") {
-    folderName = path7.dirname(folderName ?? "");
+    folderName = path8.dirname(folderName ?? "");
     parentFolderNames.push(folderName);
   }
   return parentFolderNames;
@@ -16803,11 +17060,11 @@ var ContentIndex = /* @__PURE__ */ __name((opts) => {
 }, "ContentIndex");
 
 // quartz/plugins/emitters/aliases.ts
-import path8 from "path";
+import path9 from "path";
 async function* processFile(ctx, file) {
   const ogSlug = simplifySlug(file.data.slug);
   for (const aliasTarget of file.data.aliases ?? []) {
-    const aliasTargetSlug = isRelativeURL(aliasTarget) ? path8.normalize(path8.join(ogSlug, "..", aliasTarget)) : aliasTarget;
+    const aliasTargetSlug = isRelativeURL(aliasTarget) ? path9.normalize(path9.join(ogSlug, "..", aliasTarget)) : aliasTarget;
     const redirUrl = resolveRelative(aliasTargetSlug, ogSlug);
     yield write({
       ctx,
@@ -16847,14 +17104,14 @@ var AliasRedirects = /* @__PURE__ */ __name(() => ({
 }), "AliasRedirects");
 
 // quartz/plugins/emitters/assets.ts
-import path10 from "path";
-import fs5 from "fs";
+import path11 from "path";
+import fs6 from "fs";
 
 // quartz/util/glob.ts
-import path9 from "path";
+import path10 from "path";
 import { globby } from "globby";
 function toPosixPath(fp) {
-  return fp.split(path9.sep).join("/");
+  return fp.split(path10.sep).join("/");
 }
 __name(toPosixPath, "toPosixPath");
 async function glob(pattern, cwd, ignorePatterns) {
@@ -16875,9 +17132,9 @@ var copyFile = /* @__PURE__ */ __name(async (argv, fp) => {
   const src = joinSegments(argv.directory, fp);
   const name = slugifyFilePath(fp);
   const dest = joinSegments(argv.output, name);
-  const dir = path10.dirname(dest);
-  await fs5.promises.mkdir(dir, { recursive: true });
-  await fs5.promises.copyFile(src, dest);
+  const dir = path11.dirname(dest);
+  await fs6.promises.mkdir(dir, { recursive: true });
+  await fs6.promises.copyFile(src, dest);
   return dest;
 }, "copyFile");
 var Assets = /* @__PURE__ */ __name(() => {
@@ -16891,14 +17148,14 @@ var Assets = /* @__PURE__ */ __name(() => {
     },
     async *partialEmit(ctx, _content, _resources, changeEvents) {
       for (const changeEvent of changeEvents) {
-        const ext = path10.extname(changeEvent.path);
+        const ext = path11.extname(changeEvent.path);
         if (ext === ".md") continue;
         if (changeEvent.type === "add" || changeEvent.type === "change") {
           yield copyFile(ctx.argv, changeEvent.path);
         } else if (changeEvent.type === "delete") {
           const name = slugifyFilePath(changeEvent.path);
           const dest = joinSegments(ctx.argv.output, name);
-          await fs5.promises.rm(dest, { force: true });
+          await fs6.promises.rm(dest, { force: true });
         }
       }
     }
@@ -16906,7 +17163,7 @@ var Assets = /* @__PURE__ */ __name(() => {
 }, "Assets");
 
 // quartz/plugins/emitters/static.ts
-import fs6 from "fs";
+import fs7 from "fs";
 import { dirname } from "path";
 var Static = /* @__PURE__ */ __name(() => ({
   name: "Static",
@@ -16914,12 +17171,12 @@ var Static = /* @__PURE__ */ __name(() => ({
     const staticPath = joinSegments(QUARTZ, "static");
     const fps = await glob("**", staticPath, cfg.configuration.ignorePatterns);
     const outputStaticPath = joinSegments(argv.output, "static");
-    await fs6.promises.mkdir(outputStaticPath, { recursive: true });
+    await fs7.promises.mkdir(outputStaticPath, { recursive: true });
     for (const fp of fps) {
       const src = joinSegments(staticPath, fp);
       const dest = joinSegments(outputStaticPath, fp);
-      await fs6.promises.mkdir(dirname(dest), { recursive: true });
-      await fs6.promises.copyFile(src, dest);
+      await fs7.promises.mkdir(dirname(dest), { recursive: true });
+      await fs7.promises.copyFile(src, dest);
       yield dest;
     }
   },
@@ -17308,7 +17565,7 @@ var NotFoundPage = /* @__PURE__ */ __name(() => {
       const cfg = ctx.cfg.configuration;
       const slug = "404";
       const url = new URL(`https://${cfg.baseUrl ?? "example.com"}`);
-      const path12 = url.pathname;
+      const path13 = url.pathname;
       const notFound = i18n(cfg.locale).pages.error.title;
       const [tree, vfile] = defaultProcessedContent({
         slug,
@@ -17316,7 +17573,7 @@ var NotFoundPage = /* @__PURE__ */ __name(() => {
         description: notFound,
         frontmatter: { title: notFound, tags: [] }
       });
-      const externalResources = pageResources(path12, resources);
+      const externalResources = pageResources(path13, resources);
       const componentData = {
         ctx,
         fileData: vfile.data,
@@ -17428,6 +17685,7 @@ var config = {
       }),
       ObsidianFlavoredMarkdown({ enableInHtmlEmbed: false }),
       BreadboardVisuals(),
+      BreadboardGeneratedVisuals(),
       GitHubFlavoredMarkdown(),
       TableOfContents(),
       CrawlLinks({ markdownLinkResolution: "shortest" }),
@@ -17487,7 +17745,7 @@ var PerfTimer = class {
 
 // quartz/processors/parse.ts
 import { read } from "to-vfile";
-import path11 from "path";
+import path12 from "path";
 import workerpool from "workerpool";
 
 // quartz/util/log.ts
@@ -17519,7 +17777,7 @@ function createFileParser(ctx, fps) {
           file.value = plugin.textTransform(ctx, file.value.toString());
         }
         file.data.filePath = file.path;
-        file.data.relativePath = path11.posix.relative(argv.directory, file.path);
+        file.data.relativePath = path12.posix.relative(argv.directory, file.path);
         file.data.slug = slugifyFilePath(file.data.relativePath);
         const ast = processor.parse(file);
         const newAst = await processor.run(ast, file);
@@ -17558,7 +17816,7 @@ Failed to process html \`${file.data.filePath}\``, err);
 __name(createMarkdownParser, "createMarkdownParser");
 
 // quartz/util/sourcemap.ts
-import fs7 from "fs";
+import fs8 from "fs";
 import { fileURLToPath } from "url";
 var options = {
   // source map hack to get around query param
@@ -17567,7 +17825,7 @@ var options = {
     if (source.includes(".quartz-cache")) {
       let realSource = fileURLToPath(source.split("?", 2)[0] + ".map");
       return {
-        map: fs7.readFileSync(realSource, "utf8")
+        map: fs8.readFileSync(realSource, "utf8")
       };
     } else {
       return null;

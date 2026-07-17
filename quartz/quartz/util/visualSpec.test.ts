@@ -9,6 +9,7 @@ import {
   tagVisualCodeNode,
   validateVisualSpec,
   VISUAL_BLOCK_LANG,
+  IMPLEMENTED_VISUAL_TYPES,
   VisualSpec,
 } from "./visualSpec"
 
@@ -83,10 +84,11 @@ describe("validateVisualSpec", () => {
     assert.ok(errors.some((message) => message.includes("regenerationPrompt")))
   })
 
-  test("accepts allowlisted-but-unimplemented types (renderer degrades gracefully)", () => {
-    const { spec } = validateVisualSpec({ ...validSpec, type: "ray_diagram" })
-    assert.ok(spec)
-    assert.strictEqual(spec!.type, "ray_diagram")
+  test("the canonical registry contains only implemented trusted renderers", () => {
+    for (const type of IMPLEMENTED_VISUAL_TYPES) {
+      const { spec, errors } = validateVisualSpec({ ...validSpec, type })
+      assert.ok(spec, `${type}: ${errors.join("; ")}`)
+    }
   })
 
   test("drops plain-English source anchor labels from visual anchor id fields", () => {
@@ -215,21 +217,16 @@ describe("visual code block tagging (transformer core)", () => {
     assert.strictEqual(codeNode.value, "")
   })
 
-  test("tags schema-valid but non-interactive blocks for removal (no static card)", () => {
+  test("tags every canonical registry type as interactive", () => {
     const codeNode = {
       lang: VISUAL_BLOCK_LANG,
-      value: JSON.stringify({ ...validSpec, type: "concept_diagram" }),
+      value: JSON.stringify({ ...validSpec, type: "resonance_curve" }),
       data: undefined as unknown,
     }
     const ok = tagVisualCodeNode(codeNode)
-    assert.strictEqual(ok, false)
+    assert.strictEqual(ok, true)
     const data = codeNode.data as { hProperties: Record<string, unknown> }
-    assert.deepStrictEqual(data.hProperties.className, [
-      "breadboard-visual-block",
-      "breadboard-visual-noninteractive",
-    ])
-    assert.strictEqual(data.hProperties["data-visual-spec"], undefined)
-    assert.ok(String(data.hProperties["data-visual-error"]).includes("concept_diagram"))
-    assert.strictEqual(codeNode.value, "")
+    assert.deepStrictEqual(data.hProperties.className, ["breadboard-visual-block"])
+    assert.ok(String(data.hProperties["data-visual-spec"]).includes("resonance_curve"))
   })
 })

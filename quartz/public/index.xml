@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>Learning Map</title>
-    <link>https://localhost:8081/test2/learning/Learning-Map</link>
-    <guid>https://localhost:8081/test2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Why Spiking Neural Networks Matters 1.1 Why Spiking Neural Networks Exist From Neuron Structure to Synaptic Transmission 2.1 Neurons, Synapses, and Membrane Potential 2.2 Action Potentials, Refractory Dynamics, and Spike Trains 2.3 Constraint Geometry in Spiking Networks 2... ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:10:28 GMT</pubDate>
-  </item><item>
     <title>Topic Overview</title>
-    <link>https://localhost:8081/test2/learning/Topic-Overview</link>
-    <guid>https://localhost:8081/test2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks (SNNs) process information through discrete events called spikes. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:10:28 GMT</pubDate>
+    <link>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</link>
+    <guid>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</guid>
+    <description><![CDATA[ Generated Visualization Demo This garden follows one source-backed relationship from its source note into a manipulable lesson. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 23:49:28 GMT</pubDate>
   </item><item>
-    <title>Spiking Neural Networks</title>
-    <link>https://localhost:8081/test2/learning/</link>
-    <guid>https://localhost:8081/test2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Learners will be able to explain how spiking neural networks represent and process temporal information, derive their central neuron and training equations, compare learning strategies, evaluate efficiency claims, and interpret benchmark results under hardware and dataset con... ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:10:28 GMT</pubDate>
+    <title>Generated visualization demo</title>
+    <link>https://localhost:8081/generated-visual-demo/</link>
+    <guid>https://localhost:8081/generated-visual-demo/</guid>
+    <description><![CDATA[ Generated visualization demo This small garden demonstrates a generated interaction that is compiled from the constrained Breadboard visualization SDK and rendered by Quartz in an isolated sandbox. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 23:49:00 GMT</pubDate>
   </item><item>
-    <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Imagine a small sensor watching a quiet room. For long stretches, the scene barely changes. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+    <title>Nn</title>
+    <link>https://localhost:8081/signals-and-systems/nn/</link>
+    <guid>https://localhost:8081/signals-and-systems/nn/</guid>
+    <description><![CDATA[  ]]></description>
+    <pubDate>Thu, 16 Jul 2026 23:43:48 GMT</pubDate>
   </item><item>
-    <title>1. Why Spiking Neural Networks Matters</title>
-    <link>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/</link>
-    <guid>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/</guid>
-    <description><![CDATA[ 1. Why Spiking Neural Networks Matters This teaching step is conceptually distinct and could not be merged without blurring two different ideas. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+    <title>1.1 Contact Reduction and Feedback Threshold</title>
+    <link>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/1.1-Contact-Reduction-and-Feedback-Threshold</link>
+    <guid>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/1.1-Contact-Reduction-and-Feedback-Threshold</guid>
+    <description><![CDATA[ Contact Reduction and Feedback Threshold An intervention’s strength changes the post-intervention reproduction factor. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 23:19:34 GMT</pubDate>
   </item><item>
-    <title>2.1 Neurons, Synapses, and Membrane Potential</title>
-    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.1-Neurons,-Synapses,-and-Membrane-Potential</link>
-    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.1-Neurons,-Synapses,-and-Membrane-Potential</guid>
-    <description><![CDATA[ Neurons, Synapses, and Membrane Potential A spike becomes useful only when one neuron can receive it, respond to it, and pass a new spike onward. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+    <title>Epidemic Feedback</title>
+    <link>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/</link>
+    <guid>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/</guid>
+    <description><![CDATA[ Epidemic Feedback Contact Reduction and Feedback Threshold . ]]></description>
+    <pubDate>Thu, 16 Jul 2026 23:12:54 GMT</pubDate>
   </item><item>
-    <title>2.2 Action Potentials, Refractory Dynamics, and Spike Trains</title>
-    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.2-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</link>
-    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.2-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</guid>
-    <description><![CDATA[ Action Potentials, Refractory Dynamics, and Spike Trains A neuron’s membrane potential changes as charged ions move across its membrane through voltage-gated ion channels. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+    <title>Learning</title>
+    <link>https://localhost:8081/generated-visual-demo/learning/</link>
+    <guid>https://localhost:8081/generated-visual-demo/learning/</guid>
+    <description><![CDATA[ Learning Contact Reduction and Feedback Threshold . ]]></description>
+    <pubDate>Thu, 16 Jul 2026 23:12:54 GMT</pubDate>
   </item><item>
-    <title>2.3 Constraint Geometry in Spiking Networks</title>
-    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.3-Constraint-Geometry-in-Spiking-Networks</link>
-    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.3-Constraint-Geometry-in-Spiking-Networks</guid>
-    <description><![CDATA[ Constraint Geometry in Spiking Networks A leaky integrate-and-fire neuron already gives us a useful picture of controlled accumulation: synaptic input changes a membrane voltage, leakage pulls that voltage downward, and reaching a threshold triggers a spike. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+    <title>Early-growth intervention relationship</title>
+    <link>https://localhost:8081/generated-visual-demo/sources/epidemic-growth-source</link>
+    <guid>https://localhost:8081/generated-visual-demo/sources/epidemic-growth-source</guid>
+    <description><![CDATA[ Early-growth intervention relationship Before susceptible depletion becomes important, infection pressure grows when the effective reproduction factor exceeds one and shrinks when it is below one. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 22:01:44 GMT</pubDate>
   </item><item>
-    <title>2.4 Why Spike Derivatives Need Surrogates</title>
-    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.4-Why-Spike-Derivatives-Need-Surrogates</link>
-    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.4-Why-Spike-Derivatives-Need-Surrogates</guid>
-    <description><![CDATA[ Why Spike Derivatives Need Surrogates Backpropagation through time has already given us a way to trace how activity at many time steps contributes to a final error. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+    <title>Sources</title>
+    <link>https://localhost:8081/generated-visual-demo/sources/</link>
+    <guid>https://localhost:8081/generated-visual-demo/sources/</guid>
+    <description><![CDATA[ Sources Early-growth intervention relationship . ]]></description>
+    <pubDate>Thu, 16 Jul 2026 22:01:44 GMT</pubDate>
   </item><item>
-    <title>2.5 How Sparse Events Can Save Energy</title>
-    <link>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.5-How-Sparse-Events-Can-Save-Energy</link>
-    <guid>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.5-How-Sparse-Events-Can-Save-Energy</guid>
-    <description><![CDATA[ How Sparse Events Can Save Energy A neuron receives signals through synapses, combines their effects in its membrane state, and emits a spike when that state reaches the firing condition. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 20:09:43 GMT</pubDate>
+    <title>Computer Architecture</title>
+    <link>https://localhost:8081/computer-architecture-2/</link>
+    <guid>https://localhost:8081/computer-architecture-2/</guid>
+    <description><![CDATA[ Learning garden with 0 source documents, 0 lesson pages, and 672 graph links. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 21:00:00 GMT</pubDate>
+  </item><item>
+    <title>Communication 1</title>
+    <link>https://localhost:8081/communication-1/</link>
+    <guid>https://localhost:8081/communication-1/</guid>
+    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 1398 graph links. ]]></description>
+    <pubDate>Thu, 16 Jul 2026 21:00:00 GMT</pubDate>
   </item>
     </channel>
   </rss>

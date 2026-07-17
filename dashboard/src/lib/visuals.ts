@@ -125,6 +125,25 @@ export function pruneVisualArtifacts(
         // Best-effort; a lingering spec file is caught by the validator.
       }
     }
+    // Generated modules are versioned directories rather than single JSON
+    // specs. Preserve every version for a live visual (rollback depends on
+    // them), but remove the complete directory once no current page references
+    // that visual so stale modules cannot remain active artifacts.
+    let directories: fs.Dirent[] = [];
+    try {
+      directories = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+    } catch {
+      directories = [];
+    }
+    for (const entry of directories) {
+      if (keep.has(entry.name) || entry.name.startsWith(".")) continue;
+      try {
+        fs.rmSync(path.join(dir, entry.name), { recursive: true, force: true });
+        removedSpecFiles.push(entry.name);
+      } catch {
+        // Best-effort; build-time hash/index validation prevents activation.
+      }
+    }
   } catch (error) {
     console.warn(`[visuals] could not prune stale visuals for ${gardenSlug}:`, error);
   }

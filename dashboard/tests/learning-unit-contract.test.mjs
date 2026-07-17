@@ -268,19 +268,21 @@ describe("Learning Unit Contract — visual/unit compatibility (Fix 5)", () => {
     assert.notEqual(training.interactiveVisual.visualType, "tradeoff_explorer");
   });
 
-  test("an unknown visual type is rejected instead of becoming a mandatory contract", () => {
+  test("an unknown visual type with a complete learning intent is routed to generation", () => {
     const [withJustification] = normalizeLearningUnits([
       { id: "A", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_widget", uniqueConcept: "a real thing", whyStaticSourceFigureIsNotEnough: "because interaction is required", learnerManipulates: ["k"], expectedInsight: "z", sourceAnchors: [] } },
     ]);
-    assert.equal(withJustification.interactiveVisual, undefined);
-    assert.equal(visualTypeCompatibleWithUnit("custom_widget", withJustification).ok, false);
+    assert.equal(withJustification.interactiveVisual.visualType, "custom_widget");
+    const generatedRoute = visualTypeCompatibleWithUnit("custom_widget", withJustification);
+    assert.equal(generatedRoute.ok, true);
+    assert.match(generatedRoute.reason, /generated-module routing/);
     const [withoutJustification] = normalizeLearningUnits([
       { id: "B", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_widget", uniqueConcept: "", whyStaticSourceFigureIsNotEnough: "", learnerManipulates: [], expectedInsight: "", sourceAnchors: [] } },
     ]);
     assert.equal(visualTypeCompatibleWithUnit("custom_widget", withoutJustification).ok, false);
   });
 
-  test("dropIncompatibleInteractiveVisuals removes unsupported visual contracts", () => {
+  test("dropIncompatibleInteractiveVisuals preserves complete custom visual contracts", () => {
     const [unit] = normalizeLearningUnits([
       { id: "A", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_type", uniqueConcept: "custom", whyStaticSourceFigureIsNotEnough: "needs an unsupported widget", learnerManipulates: ["x"], expectedInsight: "y", sourceAnchors: [] } },
     ]);
@@ -299,9 +301,8 @@ describe("Learning Unit Contract — visual/unit compatibility (Fix 5)", () => {
         },
       },
     ]);
-    assert.equal(units[0].interactiveVisual, undefined);
-    assert.equal(dropped.length, 1);
-    assert.match(dropped[0], /custom_type/);
+    assert.equal(units[0].interactiveVisual.visualType, "custom_type");
+    assert.equal(dropped.length, 0);
   });
 });
 

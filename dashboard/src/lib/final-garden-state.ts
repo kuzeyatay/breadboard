@@ -539,6 +539,18 @@ function embeddedVisualSpecs(body: string): Array<Record<string, unknown>> {
   return specs;
 }
 
+function embeddedGeneratedVisualRefs(body: string): Array<{ id: string; version: number }> {
+  const refs: Array<{ id: string; version: number }> = [];
+  const re = /```breadboard-generated-visual\r?\n([\s\S]*?)\r?\n```/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    const id = match[1].match(/^id:\s*([A-Za-z][A-Za-z0-9_-]{1,79})\s*$/m)?.[1] ?? "";
+    const version = Number(match[1].match(/^version:\s*(\d+)\s*$/m)?.[1] ?? 0);
+    if (id && Number.isInteger(version) && version > 0) refs.push({ id, version });
+  }
+  return refs;
+}
+
 function visualAnchorIdsByKind(spec: Record<string, unknown>): { hard: string[]; text: string[]; roles: string[] } {
   const raw = Array.isArray(spec.sourceAnchors) ? spec.sourceAnchors : [];
   const hard: string[] = [];
@@ -1515,21 +1527,40 @@ export function buildFinalGardenState(gardenDir: string, slug?: string): FinalGa
   const visualsDir = path.join(bd, "visuals");
   if (fs.existsSync(visualsDir)) {
     for (const name of fs.readdirSync(visualsDir)) {
-      if (!name.endsWith(".json")) continue;
-      const spec = readJson<Record<string, unknown>>(path.join(visualsDir, name), {});
-      const id = String(spec.id ?? name.replace(/\.json$/i, "")).trim();
-      if (!id) continue;
-      const anchors = visualAnchorIdsByKind(spec);
-      visualsById.set(id, {
-        id,
-        type: String(spec.type ?? ""),
-        pageRel: String(spec.pageId ?? "") || undefined,
-        anchorIds: anchors.hard,
-        textAnchorIds: anchors.text,
-        anchorRoles: anchors.roles,
-        fromFile: true,
-        fromBody: false,
-      });
+      const visualPath = path.join(visualsDir, name);
+      if (name.endsWith(".json")) {
+        const spec = readJson<Record<string, unknown>>(visualPath, {});
+        const id = String(spec.id ?? name.replace(/\.json$/i, "")).trim();
+        if (!id) continue;
+        const anchors = visualAnchorIdsByKind(spec);
+        visualsById.set(id, {
+          id,
+          type: String(spec.type ?? ""),
+          pageRel: String(spec.pageId ?? "") || undefined,
+          anchorIds: anchors.hard,
+          textAnchorIds: anchors.text,
+          anchorRoles: anchors.roles,
+          fromFile: true,
+          fromBody: false,
+        });
+      } else if (fs.statSync(visualPath).isDirectory()) {
+        const manifest = readJson<Record<string, unknown>>(path.join(visualPath, "manifest.json"), {});
+        const id = String(manifest.id ?? name).trim();
+        if (!id || manifest.status !== "published") continue;
+        const sourceAnchorIds = Array.isArray(manifest.sourceAnchorIds)
+          ? manifest.sourceAnchorIds.map(String).filter(Boolean)
+          : [];
+        visualsById.set(id, {
+          id,
+          type: "generated_module",
+          pageRel: String(manifest.targetPage ?? "") || undefined,
+          anchorIds: sourceAnchorIds.filter((anchor) => !/^text-/i.test(anchor)),
+          textAnchorIds: sourceAnchorIds.filter((anchor) => /^text-/i.test(anchor)),
+          anchorRoles: [],
+          fromFile: true,
+          fromBody: false,
+        });
+      }
     }
   }
   for (const page of pages) {
@@ -1557,6 +1588,25 @@ export function buildFinalGardenState(gardenDir: string, slug?: string): FinalGa
           fromBody: true,
         });
       }
+    }
+    for (const reference of embeddedGeneratedVisualRefs(page.body)) {
+      const manifest = readJson<Record<string, unknown>>(
+        path.join(visualsDir, reference.id, "versions", String(reference.version), "manifest.json"),
+        {},
+      );
+      const sourceAnchorIds = Array.isArray(manifest.sourceAnchorIds)
+        ? manifest.sourceAnchorIds.map(String).filter(Boolean)
+        : [];
+      visualsById.set(reference.id, {
+        id: reference.id,
+        type: "generated_module",
+        pageRel: page.rel,
+        anchorIds: sourceAnchorIds.filter((anchor) => !/^text-/i.test(anchor)),
+        textAnchorIds: sourceAnchorIds.filter((anchor) => /^text-/i.test(anchor)),
+        anchorRoles: [],
+        fromFile: Boolean(manifest.id),
+        fromBody: true,
+      });
     }
   }
   const visuals = [...visualsById.values()];
@@ -4919,6 +4969,20 @@ export function findRemainingAnchorReferences(gardenDir: string, oldId: string):
   if (fs.existsSync(visualsDir)) {
     for (const name of fs.readdirSync(visualsDir)) if (name.endsWith(".json")) checkWhole(`.breadboard/visuals/${name}`, "visual-json", "active_visual");
   }
+  for (const page of learnerPages) {
+    for (const reference of embeddedGeneratedVisualRefs(readText(page.abs) ?? "")) {
+      checkWhole(
+        `.breadboard/visuals/${reference.id}/versions/${reference.version}/manifest.json`,
+        "generated-visual manifest",
+        "active_visual",
+      );
+      checkWhole(
+        `.breadboard/visuals/${reference.id}/manifest.json`,
+        "published generated-visual manifest",
+        "active_visual",
+      );
+    }
+  }
 
   // Historical: audit trails that legitimately keep the old id.
   checkWhole(".breadboard/repair-log.json", "repair-log", "historical_repair_log");
@@ -6698,7 +6762,7 @@ function fixRepairLogProvenance(
     ownedVisualsByPage.set(page.rel, owned);
   }
   const pageOwnsVisualFile = (pagePath: string, file: string): boolean => {
-    const id = file.match(/^\.breadboard\/visuals\/(.+)\.json$/)?.[1] ?? "";
+    const id = file.match(/^\.breadboard\/visuals\/(?:([^/]+)\.json|([^/]+)\/)/)?.slice(1).find(Boolean) ?? "";
     return Boolean(id) && (ownedVisualsByPage.get(pagePath)?.has(id) ?? false);
   };
 

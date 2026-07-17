@@ -2,6 +2,18 @@
     <loc>https://localhost:8081/</loc>
     <lastmod>2026-04-20T06:24:39.000Z</lastmod>
   </url><url>
+    <loc>https://localhost:8081/math-2/13-5-chain-rule-1781027979171</loc>
+    <lastmod>2026-06-09T17:59:39.171Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/after-13-7-gradiants-1781280160859</loc>
+    <lastmod>2026-06-12T16:02:40.859Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583</loc>
+    <lastmod>2026-05-16T15:44:08.583Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/</loc>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/computer-architecture-2/32-bit-alu-organization-and-control-signals</loc>
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
@@ -60,9 +72,6 @@
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/computer-architecture-2/combinational-and-sequential-logic-in-processors</loc>
-    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/computer-architecture-2</loc>
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/computer-architecture-2/computer-architecture-versus-computer-organization</loc>
@@ -257,9 +266,6 @@
     <loc>https://localhost:8081/computer-architecture-2/single-cycle-processor-datapath-and-control-overview</loc>
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/computer-architecture-2/slides-cac-15-18-memory-hierarchy</loc>
-    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
-  </url><url>
     <loc>https://localhost:8081/computer-architecture-2/software-layers-operating-system-compiler-and-isa</loc>
     <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
@@ -306,7 +312,10 @@
     <lastmod>2026-04-19T16:59:21.587Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/computer-architecture-2/</loc>
-    <lastmod>2026-04-18T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/physics-for-ee/</loc>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/adding-dbm-values</loc>
     <lastmod>2026-04-26T07:24:06.018Z</lastmod>
@@ -744,34 +753,13 @@
     <lastmod>2026-04-25T10:25:58.869Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/13-5-chain-rule-1781027979171</loc>
-    <lastmod>2026-06-09T17:59:39.171Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/after-13-7-gradiants-1781280160859</loc>
-    <lastmod>2026-06-12T16:02:40.859Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/reconstructed-math-2-textbook-based-on-adams-1778946248583</loc>
-    <lastmod>2026-05-16T15:44:08.583Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test/</loc>
-    <lastmod>2026-04-19T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/public-library/</loc>
     <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test-2/</loc>
-    <lastmod>2026-07-15T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/</loc>
-    <lastmod>2026-07-15T21:00:00.000Z</lastmod>
+    <loc>https://localhost:8081/test/</loc>
+    <lastmod>2026-04-19T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/signals-and-systems/aliasing-problem-solving-with-multiple-sinusoids</loc>
     <lastmod>2026-04-30T16:26:39.261Z</lastmod>
@@ -984,40 +972,94 @@
     <lastmod>2026-04-30T16:26:39.261Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/signals-and-systems/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/canvas-quizzes/hard-questions-1781680403859</loc>
-    <lastmod>2026-06-17T07:13:23.859Z</lastmod>
+    <loc>https://localhost:8081/generated-visual-demo/learning/</loc>
+    <lastmod>2026-07-16T23:48:17.662Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/canvas-quizzes/</loc>
-    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
+    <loc>https://localhost:8081/test-2/</loc>
+    <lastmod>2026-07-15T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/notes/the-physical-channel-1782132376763</loc>
-    <lastmod>2026-06-22T12:46:16.763Z</lastmod>
+    <loc>https://localhost:8081/generated-visual-demo/sources/epidemic-growth-source</loc>
+    <lastmod>2026-07-16T22:01:44.782Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/notes/</loc>
-    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
+    <loc>https://localhost:8081/generated-visual-demo/sources/</loc>
+    <lastmod>2026-07-16T23:48:17.662Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/sources/988929-english-3</loc>
-    <lastmod>2026-04-26T07:08:26.047Z</lastmod>
+    <loc>https://localhost:8081/math-2/sources/5ezb0-sc-week2-1</loc>
+    <lastmod>2026-06-04T10:51:05.730Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/sources/988934-english-1</loc>
-    <lastmod>2026-04-26T07:12:08.116Z</lastmod>
+    <loc>https://localhost:8081/math-2/sources/5ezb0-sc-week6</loc>
+    <lastmod>2026-06-04T10:51:02.238Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/sources/997203-english</loc>
-    <lastmod>2026-04-26T07:24:06.018Z</lastmod>
+    <loc>https://localhost:8081/math-2/sources/calculus-a-complete-course-10-compress</loc>
+    <lastmod>2026-05-16T14:54:38.825Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/sources/communications-1-coursereader</loc>
-    <lastmod>2026-04-25T10:25:58.869Z</lastmod>
+    <loc>https://localhost:8081/math-2/sources/final-exam-2024</loc>
+    <lastmod>2026-06-04T10:51:10.881Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/sources/digital-and-analog-communication-systems</loc>
-    <lastmod>2026-04-26T14:55:20.696Z</lastmod>
+    <loc>https://localhost:8081/math-2/sources/final-exam-2025</loc>
+    <lastmod>2026-06-04T10:51:07.427Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/sources/topicmap</loc>
-    <lastmod>2026-04-26T07:58:41.833Z</lastmod>
+    <loc>https://localhost:8081/math-2/sources/final-exam-for-5ezb0-math-2-exam-details-and-instructions</loc>
+    <lastmod>2026-06-04T10:50:54.953Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/communication-1/sources/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+    <loc>https://localhost:8081/math-2/sources/lecture-transcripts</loc>
+    <lastmod>2026-06-04T10:50:57.951Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/math2-midterm2026</loc>
+    <lastmod>2026-06-04T10:50:59.648Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-1-1</loc>
+    <lastmod>2026-06-04T10:51:56.932Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-10</loc>
+    <lastmod>2026-06-04T10:51:41.093Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-11</loc>
+    <lastmod>2026-06-04T10:51:39.384Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-12</loc>
+    <lastmod>2026-06-04T10:51:37.829Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-13</loc>
+    <lastmod>2026-06-04T10:51:35.995Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-2</loc>
+    <lastmod>2026-06-04T10:51:55.049Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-3</loc>
+    <lastmod>2026-06-04T10:51:53.097Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-4</loc>
+    <lastmod>2026-06-04T10:51:51.140Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-5</loc>
+    <lastmod>2026-06-04T10:51:49.426Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-6</loc>
+    <lastmod>2026-06-04T10:51:47.519Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-7</loc>
+    <lastmod>2026-06-04T10:51:45.911Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-8</loc>
+    <lastmod>2026-06-04T10:51:44.347Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-9</loc>
+    <lastmod>2026-06-04T10:51:42.721Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/midterm5ezb0may2025</loc>
+    <lastmod>2026-06-04T10:51:03.930Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/resit-exam-2024</loc>
+    <lastmod>2026-06-04T10:51:09.170Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/studyguide5ezb0in2526</loc>
+    <lastmod>2026-05-16T16:31:08.346Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/math-2/sources/</loc>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/math-2/notes/10-5-quadric-surfaces-1780665605317</loc>
     <lastmod>2026-06-05T13:20:05.317Z</lastmod>
@@ -1118,80 +1160,41 @@
     <loc>https://localhost:8081/math-2/notes/</loc>
     <lastmod>2026-06-24T08:48:30.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/5ezb0-sc-week2-1</loc>
-    <lastmod>2026-06-04T10:51:05.730Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/1-oscillatory-motion-and-undamped-shm-foundations-1782370663514</loc>
+    <lastmod>2026-06-25T06:57:43.514Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/5ezb0-sc-week6</loc>
-    <lastmod>2026-06-04T10:51:02.238Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/10-superposition-and-reflection-1782469961121</loc>
+    <lastmod>2026-06-26T10:32:41.121Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/calculus-a-complete-course-10-compress</loc>
-    <lastmod>2026-05-16T14:54:38.825Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/11-standing-waves-modes-harmonics-and-resonance-on-strings-1782480998300</loc>
+    <lastmod>2026-06-26T13:36:38.300Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/final-exam-2024</loc>
-    <lastmod>2026-06-04T10:51:10.881Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/2-mass-spring-systems-pendulums-and-recognizing-shm-1782381340000</loc>
+    <lastmod>2026-06-25T09:55:40.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/final-exam-2025</loc>
-    <lastmod>2026-06-04T10:51:07.427Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/3-energy-in-simple-harmonic-motion-1782394708062</loc>
+    <lastmod>2026-06-25T13:38:28.062Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/final-exam-for-5ezb0-math-2-exam-details-and-instructions</loc>
-    <lastmod>2026-06-04T10:50:54.953Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/4-damped-oscillations-1782397764534</loc>
+    <lastmod>2026-06-25T14:29:24.534Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/lecture-transcripts</loc>
-    <lastmod>2026-06-04T10:50:57.951Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/5-forced-oscillations-and-resonance-1782402583504</loc>
+    <lastmod>2026-06-25T15:49:43.504Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/math2-midterm2026</loc>
-    <lastmod>2026-06-04T10:50:59.648Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/6-what-a-mechanical-wave-is-1782413020458</loc>
+    <lastmod>2026-06-25T18:43:40.458Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-1-1</loc>
-    <lastmod>2026-06-04T10:51:56.932Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/7-mathematical-description-of-traveling-waves-1782459028222</loc>
+    <lastmod>2026-06-26T07:30:28.222Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-10</loc>
-    <lastmod>2026-06-04T10:51:41.093Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/8-the-wave-equation-and-waves-on-a-string-1782465883268</loc>
+    <lastmod>2026-06-26T09:24:43.268Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-11</loc>
-    <lastmod>2026-06-04T10:51:39.384Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/9-energy-power-and-intensity-in-waves-1782467737584</loc>
+    <lastmod>2026-06-26T09:55:37.585Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-12</loc>
-    <lastmod>2026-06-04T10:51:37.829Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-13</loc>
-    <lastmod>2026-06-04T10:51:35.995Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-2</loc>
-    <lastmod>2026-06-04T10:51:55.049Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-3</loc>
-    <lastmod>2026-06-04T10:51:53.097Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-4</loc>
-    <lastmod>2026-06-04T10:51:51.140Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-5</loc>
-    <lastmod>2026-06-04T10:51:49.426Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-6</loc>
-    <lastmod>2026-06-04T10:51:47.519Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-7</loc>
-    <lastmod>2026-06-04T10:51:45.911Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-8</loc>
-    <lastmod>2026-06-04T10:51:44.347Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/mathematics-2-lec-9</loc>
-    <lastmod>2026-06-04T10:51:42.721Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/midterm5ezb0may2025</loc>
-    <lastmod>2026-06-04T10:51:03.930Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/resit-exam-2024</loc>
-    <lastmod>2026-06-04T10:51:09.170Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/studyguide5ezb0in2526</loc>
-    <lastmod>2026-05-16T16:31:08.346Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/math-2/sources/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
+    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/</loc>
+    <lastmod>2026-07-02T17:38:22.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/module-vi-propagation-of-light/1-why-light-needs-more-than-one-description-1782501705452</loc>
     <lastmod>2026-06-26T19:21:45.452Z</lastmod>
@@ -1233,42 +1236,6 @@
     <lastmod>2026-06-27T12:51:21.591Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/module-vi-propagation-of-light/</loc>
-    <lastmod>2026-07-02T17:38:22.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/1-oscillatory-motion-and-undamped-shm-foundations-1782370663514</loc>
-    <lastmod>2026-06-25T06:57:43.514Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/10-superposition-and-reflection-1782469961121</loc>
-    <lastmod>2026-06-26T10:32:41.121Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/11-standing-waves-modes-harmonics-and-resonance-on-strings-1782480998300</loc>
-    <lastmod>2026-06-26T13:36:38.300Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/2-mass-spring-systems-pendulums-and-recognizing-shm-1782381340000</loc>
-    <lastmod>2026-06-25T09:55:40.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/3-energy-in-simple-harmonic-motion-1782394708062</loc>
-    <lastmod>2026-06-25T13:38:28.062Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/4-damped-oscillations-1782397764534</loc>
-    <lastmod>2026-06-25T14:29:24.534Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/5-forced-oscillations-and-resonance-1782402583504</loc>
-    <lastmod>2026-06-25T15:49:43.504Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/6-what-a-mechanical-wave-is-1782413020458</loc>
-    <lastmod>2026-06-25T18:43:40.458Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/7-mathematical-description-of-traveling-waves-1782459028222</loc>
-    <lastmod>2026-06-26T07:30:28.222Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/8-the-wave-equation-and-waves-on-a-string-1782465883268</loc>
-    <lastmod>2026-06-26T09:24:43.268Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/9-energy-power-and-intensity-in-waves-1782467737584</loc>
-    <lastmod>2026-06-26T09:55:37.585Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/physics-for-ee/module-v-waves-and-oscilations/</loc>
     <lastmod>2026-07-02T17:38:22.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/module-vii-quantum-mechanics/1-why-quantum-mechanics-enters-this-course-1782669612494</loc>
@@ -1335,16 +1302,70 @@
     <lastmod>2026-06-24T15:51:12.911Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/sources/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test/sources/983068-english-annotated</loc>
-    <lastmod>2026-04-20T11:27:07.454Z</lastmod>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/private-library/user-1/</loc>
     <lastmod>2026-07-15T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/private-library/user-2/</loc>
     <lastmod>2026-04-19T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/canvas-quizzes/hard-questions-1781680403859</loc>
+    <lastmod>2026-06-17T07:13:23.859Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/canvas-quizzes/</loc>
+    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/notes/the-physical-channel-1782132376763</loc>
+    <lastmod>2026-06-22T12:46:16.763Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/notes/</loc>
+    <lastmod>2026-06-24T08:48:30.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/988929-english-3</loc>
+    <lastmod>2026-04-26T07:08:26.047Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/988934-english-1</loc>
+    <lastmod>2026-04-26T07:12:08.116Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/997203-english</loc>
+    <lastmod>2026-04-26T07:24:06.018Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/communications-1-coursereader</loc>
+    <lastmod>2026-04-25T10:25:58.869Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/digital-and-analog-communication-systems</loc>
+    <lastmod>2026-04-26T14:55:20.696Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/topicmap</loc>
+    <lastmod>2026-04-26T07:58:41.833Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/communication-1/sources/</loc>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test/sources/983068-english-annotated</loc>
+    <lastmod>2026-04-20T11:27:07.454Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test2/sources/2303-10780v2-1784220886636</loc>
+    <lastmod>2026-07-16T16:54:46.636Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/test2/sources/2303-10780v2</loc>
+    <lastmod>2026-07-16T10:12:34.773Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/signals-and-systems/sources/dsp-first-pearson-2017</loc>
+    <lastmod>2026-05-15T09:20:46.791Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/signals-and-systems/sources/signals-and-systems-full-notes</loc>
+    <lastmod>2026-04-30T16:26:39.261Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/signals-and-systems/sources/</loc>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/1.1-Contact-Reduction-and-Feedback-Threshold</loc>
+    <lastmod>2026-07-16T23:19:34.448Z</lastmod>
+  </url><url>
+    <loc>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/</loc>
+    <lastmod>2026-07-16T23:12:54.632Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/test-2/learning/Learning-Map</loc>
     <lastmod>2026-07-16T09:20:29.270Z</lastmod>
@@ -1360,33 +1381,6 @@
   </url><url>
     <loc>https://localhost:8081/test-2/sources/</loc>
     <lastmod>2026-07-15T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/Learning-Map</loc>
-    <lastmod>2026-07-16T20:10:28.929Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/Topic-Overview</loc>
-    <lastmod>2026-07-16T20:10:28.925Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/</loc>
-    <lastmod>2026-07-16T20:10:28.921Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/sources/2303-10780v2-1784220886636</loc>
-    <lastmod>2026-07-16T16:54:46.636Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/sources/2303-10780v2</loc>
-    <lastmod>2026-07-16T10:12:34.773Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/sources/</loc>
-    <lastmod>2026-07-15T21:00:00.000Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/signals-and-systems/sources/dsp-first-pearson-2017</loc>
-    <lastmod>2026-05-15T09:20:46.791Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/signals-and-systems/sources/signals-and-systems-full-notes</loc>
-    <lastmod>2026-04-30T16:26:39.261Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/signals-and-systems/sources/</loc>
-    <lastmod>2026-07-03T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/communication-1/notes/10-amplitude-frequency-and-phase-modulation/10-2-10-3-motivation-baseband-and-bandpass-signals-and-up-down-conversion-1781956960173</loc>
     <lastmod>2026-06-20T12:02:40.173Z</lastmod>
@@ -1484,93 +1478,33 @@
     <loc>https://localhost:8081/test-2/learning/6.-Using-Application-oriented-Model-Selection-in-Practice/</loc>
     <lastmod>2026-07-16T09:19:43.980Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/1.1-Why-Spiking-Neural-Networks-Exist</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/signals-and-systems/nn/</loc>
+    <lastmod>2026-07-16T23:43:48.375Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/1.-Why-Spiking-Neural-Networks-Matters/</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/generated-visual-demo/</loc>
+    <lastmod>2026-07-16T23:49:00.444Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.1-Neurons,-Synapses,-and-Membrane-Potential</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</loc>
+    <lastmod>2026-07-16T23:49:28.450Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.2-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/sources/slides-cac-15-18-memory-hierarchy</loc>
+    <lastmod>2026-04-19T16:59:21.587Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.3-Constraint-Geometry-in-Spiking-Networks</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/sources/computer-architecture-2</loc>
+    <lastmod>2026-04-19T16:43:52.573Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.4-Why-Spike-Derivatives-Need-Surrogates</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/computer-architecture-2/sources/</loc>
+    <lastmod>2026-07-16T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/2.5-How-Sparse-Events-Can-Save-Energy</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/test2/</loc>
+    <lastmod>2026-07-15T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/2.-From-Neuron-Structure-to-Synaptic-Transmission/</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/test2/sources/</loc>
+    <lastmod>2026-07-15T21:00:00.000Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/3.-Describing-Capacitive-Membrane-Current-Formally/3.1-The-Hodgkin-Huxley-Conductance-Model</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/test2/learning/Learning-Map</loc>
+    <lastmod>2026-07-16T10:12:34.773Z</lastmod>
   </url><url>
-    <loc>https://localhost:8081/test2/learning/3.-Describing-Capacitive-Membrane-Current-Formally/3.2-The-Leaky-Integrate-and-Fire-Neuron</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/3.-Describing-Capacitive-Membrane-Current-Formally/3.3-From-Convex-Optimization-to-Recurrent-Voltage-Dynamics</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/3.-Describing-Capacitive-Membrane-Current-Formally/3.4-Backpropagation-Through-Time</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/3.-Describing-Capacitive-Membrane-Current-Formally/</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/4.-Describing-Dspike-Surrogate-Formally/4.1-Temperature-Controlled-Differentiable-Spikes</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/4.-Describing-Dspike-Surrogate-Formally/4.2-Information-Maximization-and-Finite-Difference-Training</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/4.-Describing-Dspike-Surrogate-Formally/4.3-Spike-Timing-Dependent-Plasticity</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/4.-Describing-Dspike-Surrogate-Formally/4.4-Implicit-Differentiation-at-Equilibrium</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/4.-Describing-Dspike-Surrogate-Formally/</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/5.-Methods-and-Evaluation/5.1-Training-Deep-Spiking-Networks</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/5.-Methods-and-Evaluation/5.2-Active-Neuron-Sparsity-in-Training</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/5.-Methods-and-Evaluation/</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/6.-Rate-Encoding-and-Latency-Encoding-Compared/6.1-Rate,-Latency,-and-Delta-Modulation-Encoding</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/6.-Rate-Encoding-and-Latency-Encoding-Compared/6.2-Online-and-Event-Driven-Learning-Rules</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/6.-Rate-Encoding-and-Latency-Encoding-Compared/6.3-Datasets,-Frameworks,-and-Neuromorphic-Hardware</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/6.-Rate-Encoding-and-Latency-Encoding-Compared/6.4-Interpreting-SNN-Benchmark-Results</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/6.-Rate-Encoding-and-Latency-Encoding-Compared/</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/7.-Using-Memory-access-Energy-in-Practice/7.1-Memory-Access-and-Hardware-Limits</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/7.-Using-Memory-access-Energy-in-Practice/7.2-Low-Power-and-Neuromorphic-Applications</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/7.-Using-Memory-access-Energy-in-Practice/7.3-Choosing-an-SNN-Training-and-Evaluation-Strategy</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
-  </url><url>
-    <loc>https://localhost:8081/test2/learning/7.-Using-Memory-access-Energy-in-Practice/</loc>
-    <lastmod>2026-07-16T20:09:43.158Z</lastmod>
+    <loc>https://localhost:8081/test2/learning/Topic-Overview</loc>
+    <lastmod>2026-07-16T10:12:34.773Z</lastmod>
   </url></urlset>

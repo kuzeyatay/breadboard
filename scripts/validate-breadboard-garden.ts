@@ -15,6 +15,7 @@
 // Exit code 0 = all checks pass, 1 = at least one failure.
 
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -524,6 +525,33 @@ function embeddedVisualSpecsFromBody(body: string): Array<Record<string, unknown
     }
   }
   return specs;
+}
+
+function generatedVisualReferencesFromBody(body: string): Array<{
+  id: string;
+  version: number;
+  index: number;
+}> {
+  const references: Array<{ id: string; version: number; index: number }> = [];
+  const re = /```breadboard-generated-visual\r?\n([\s\S]*?)\r?\n```/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    const id = match[1].match(/^id:\s*([A-Za-z][A-Za-z0-9_-]{1,79})\s*$/m)?.[1] ?? "";
+    const version = Number(match[1].match(/^version:\s*(\d+)\s*$/m)?.[1] ?? 0);
+    references.push({ id, version, index: match.index });
+  }
+  return references;
+}
+
+function jsonRecord(filePath: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function pageSourceIds(page: PageFile): Set<string> {
@@ -1799,6 +1827,8 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     visualIndexKeys = Object.keys(index);
 
     let interactiveCount = 0;
+    const generatedVisualIds = new Set<string>();
+    const generatedByFingerprint = new Map<string, string[]>();
     const blockRe = /```breadboard-visual\r?\n([\s\S]*?)\r?\n```/g;
     for (const page of published) {
       const declared = fmArray(page.frontmatter, "visualIds");
@@ -1842,6 +1872,79 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
           idProblems.push(`${page.relPath}: visual ${spec.id} missing from visual-index.json`);
         }
       }
+      for (const reference of generatedVisualReferencesFromBody(page.body)) {
+        const { id, version } = reference;
+        if (!id || !Number.isInteger(version) || version < 1) {
+          contentProblems.push(`${page.relPath}: malformed breadboard-generated-visual block`);
+          continue;
+        }
+        embedded.push(id);
+        embeddedVisualIds.add(id);
+        generatedVisualIds.add(id);
+        interactiveCount += 1;
+        const entry = index[id] as Record<string, unknown> | undefined;
+        if (!entry || entry.kind !== "generated_module") {
+          idProblems.push(`${page.relPath}: generated visual ${id} missing generated_module visual-index entry`);
+        }
+        const artifactDir = path.join(visualsDir, id, "versions", String(version));
+        const manifest = jsonRecord(path.join(artifactDir, "manifest.json"));
+        const validation = jsonRecord(path.join(artifactDir, "validation.json"));
+        const tests = jsonRecord(path.join(artifactDir, "tests.json"));
+        const critic = jsonRecord(path.join(artifactDir, "critic.json"));
+        if (!manifest || !validation || !tests || !critic) {
+          idProblems.push(`${page.relPath}: generated visual ${id} v${version} has incomplete evidence artifacts`);
+          continue;
+        }
+        let source = "";
+        let compiled = "";
+        try {
+          source = fs.readFileSync(path.join(artifactDir, "source.tsx"), "utf-8");
+          compiled = fs.readFileSync(path.join(artifactDir, "compiled.js"), "utf-8");
+        } catch {
+          idProblems.push(`${page.relPath}: generated visual ${id} v${version} is missing source.tsx or compiled.js`);
+          continue;
+        }
+        if (manifest.id !== id || manifest.version !== version || manifest.status !== "published") {
+          contentProblems.push(`${page.relPath}: generated visual ${id} manifest identity/status does not match v${version}`);
+        }
+        const fingerprint = String(manifest.similarityFingerprint ?? "").trim();
+        if (fingerprint) {
+          const ids = generatedByFingerprint.get(fingerprint) ?? [];
+          ids.push(id);
+          generatedByFingerprint.set(fingerprint, ids);
+        }
+        if (String(manifest.targetPage ?? "").replace(/\\/g, "/") !== page.relPath) {
+          contentProblems.push(`${page.relPath}: generated visual ${id} manifest targets another page`);
+        }
+        const targetHeading = String(manifest.targetHeading ?? "").trim().toLowerCase();
+        if (!targetHeading || !fmString(page.frontmatter, "title").trim().toLowerCase().endsWith(targetHeading)) {
+          contentProblems.push(`${page.relPath}: generated visual ${id} target heading does not match the lesson`);
+        }
+        const insertionAnchor = String(manifest.insertionAnchor ?? "");
+        const anchorIndex = insertionAnchor ? page.body.indexOf(`<!-- ${insertionAnchor} -->`) : -1;
+        if (anchorIndex < 0 || anchorIndex > reference.index) {
+          contentProblems.push(`${page.relPath}: generated visual ${id} is detached from its stable insertion anchor`);
+        }
+        const hash = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
+        if (hash(source) !== manifest.sourceHash || hash(compiled) !== manifest.compiledHash) {
+          contentProblems.push(`${page.relPath}: generated visual ${id} artifact hash mismatch`);
+        }
+        if (validation.valid !== true || tests.passed !== true || critic.approved !== true) {
+          contentProblems.push(`${page.relPath}: generated visual ${id} lacks passing AST validation, runtime tests, or critic approval`);
+        }
+        const prefix = "globalThis.__BREADBOARD_GENERATED_VISUAL__ = Object.freeze(";
+        const suffix = ");\n";
+        try {
+          if (!compiled.startsWith(prefix) || !compiled.endsWith(suffix)) throw new Error("bad compiler envelope");
+          const definition = JSON.parse(compiled.slice(prefix.length, -suffix.length)) as Record<string, unknown>;
+          if (definition.schemaVersion !== 1 || definition.sdkVersion !== "1.0.0") throw new Error("bad SDK version");
+          if (!Array.isArray(definition.controls) || !Array.isArray(definition.outputs) || !Array.isArray(definition.scenes)) {
+            throw new Error("bad definition shape");
+          }
+        } catch {
+          contentProblems.push(`${page.relPath}: generated visual ${id} compiler envelope is invalid`);
+        }
+      }
       const declaredSet = new Set(declared);
       const embeddedSet = new Set(embedded);
       for (const id of declaredSet) {
@@ -1855,6 +1958,28 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
       }
     }
 
+    if (generatedVisualIds.size > 0) {
+      const coverage = jsonRecord(path.join(gardenDir, ".breadboard", "visualization-coverage.json"));
+      const plan = jsonRecord(path.join(gardenDir, ".breadboard", "visualization-plan.json"));
+      if (!coverage) contentProblems.push("generated visuals exist but visualization-coverage.json is missing");
+      else if (coverage.status === "fail") contentProblems.push("visualization coverage report is in fail state");
+      if (!plan || !Array.isArray(plan.opportunities) || !Array.isArray(plan.decisions)) {
+        contentProblems.push("generated visuals exist but visualization-plan.json is missing or invalid");
+      } else {
+        const opportunityIds = new Set(
+          (plan.opportunities as Array<Record<string, unknown>>).map((item) => String(item.id ?? "")),
+        );
+        for (const id of generatedVisualIds) {
+          if (!opportunityIds.has(id)) contentProblems.push(`generated visual ${id} has no planned opportunity`);
+        }
+      }
+      for (const [fingerprint, ids] of generatedByFingerprint) {
+        if (new Set(ids).size > 1) {
+          contentProblems.push(`duplicate generated visual fingerprint ${fingerprint} on ${[...new Set(ids)].join(", ")}`);
+        }
+      }
+    }
+
     check(13, "interactive visual IDs consistent (frontmatter = block = spec file = index)", idProblems);
     check(14, "interactive visuals are valid when present", contentProblems);
 
@@ -1862,14 +1987,21 @@ export function runChecks(gardenDir: string, gardenSlug: string): CheckResult[] 
     const rendererPath = path.resolve(
       SCRIPT_DIR, "..", "quartz", "quartz", "components", "scripts", "breadboardVisual.inline.ts",
     );
+    const generatedRendererPath = path.resolve(
+      SCRIPT_DIR, "..", "quartz", "quartz", "components", "scripts", "breadboardGeneratedVisual.inline.ts",
+    );
     const rendererProblems: string[] = [];
     try {
       const renderer = fs.readFileSync(rendererPath, "utf-8");
       if (!renderer.includes("bv-regenerate")) {
         rendererProblems.push("Quartz renderer no longer renders the regenerate button (bv-regenerate)");
       }
+      const generatedRenderer = fs.readFileSync(generatedRendererPath, "utf-8");
+      if (!generatedRenderer.includes("bgv-action-primary") || !generatedRenderer.includes('"rollback"')) {
+        rendererProblems.push("Quartz generated renderer no longer renders regenerate and rollback actions");
+      }
     } catch {
-      rendererProblems.push(`Cannot read renderer at ${rendererPath}`);
+      rendererProblems.push(`Cannot read visual renderers at ${rendererPath} and ${generatedRendererPath}`);
     }
     check(15, "regenerate button rendered below every interactive visual", rendererProblems);
 
