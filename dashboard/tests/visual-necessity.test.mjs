@@ -83,13 +83,21 @@ describe("visual necessity decisions", () => {
     assert.equal(decision.necessity, "recommended");
   });
 
-  test("3. Adequate source figure causes not-needed decision", () => {
+  test("3. Adequate source figure for a static concept causes not-needed decision", () => {
+    // The figure depicts a genuinely static/definitional concept (no dynamic,
+    // parameter, comparative, or spatial behavior), so it is a full substitute
+    // and interaction adds nothing. A figure of *dynamic* behavior is only a
+    // partial substitute and is covered by test "5.".
     const decision = decideInteractiveVisualNecessity(unit({
+      role: "core_concept",
+      title: "The definition of a biological neuron",
+      learningQuestion: "What is the biological definition of a neuron?",
+      newConcepts: ["neuron definition"],
       sourceFigures: [{
         id: "S1.P2.F1",
         placement: "inside_concept_explanation",
-        mustBeDiscussedWith: "voltage response",
-        interpretationGoal: "Read the complete parameter-response relationship.",
+        mustBeDiscussedWith: "neuron anatomy",
+        interpretationGoal: "Identify each labeled part of the neuron.",
       }],
     }), {});
     assert.equal(decision.necessity, "not_needed");
@@ -208,8 +216,14 @@ describe("contract behavior", () => {
 });
 
 describe("alternative media", () => {
-  test("16. Source figure may satisfy visual need", () => {
-    const candidate = unit({ sourceFigures: [{ id: "F1", placement: "inside_concept_explanation", mustBeDiscussedWith: "response", interpretationGoal: "show response" }] });
+  test("16. Source figure may satisfy visual need for a static concept", () => {
+    const candidate = unit({
+      role: "core_concept",
+      title: "The definition of a biological neuron",
+      learningQuestion: "What is the biological definition of a neuron?",
+      newConcepts: ["neuron definition"],
+      sourceFigures: [{ id: "F1", placement: "inside_concept_explanation", mustBeDiscussedWith: "anatomy", interpretationGoal: "identify labeled parts" }],
+    });
     const decision = decideInteractiveVisualNecessity(candidate, {});
     assert.equal(deriveTeachingMediumPlan(candidate, decision).sourceFigureAnchorId, "F1");
   });
@@ -290,7 +304,15 @@ describe("garden coordination", () => {
 });
 
 describe("ChatMock review guard", () => {
-  const sourceUnit = unit({ sourceFigures: [{ id: "F1", placement: "inside_concept_explanation", mustBeDiscussedWith: "response", interpretationGoal: "show response" }] });
+  // A static concept whose figure is a *full* substitute (sufficiency ≥ 0.8), so
+  // the "a sufficient non-interactive medium cannot be ignored" guard applies.
+  const sourceUnit = unit({
+    role: "core_concept",
+    title: "The definition of a biological neuron",
+    learningQuestion: "What is the biological definition of a neuron?",
+    newConcepts: ["neuron definition"],
+    sourceFigures: [{ id: "F1", placement: "inside_concept_explanation", mustBeDiscussedWith: "anatomy", interpretationGoal: "identify labeled parts" }],
+  });
   const sourceDecision = decideInteractiveVisualNecessity(sourceUnit, {});
   const packet = buildVisualNecessityReviewPacket({ unit: sourceUnit, deterministicDecision: sourceDecision });
 
@@ -436,4 +458,52 @@ test("author overrides and audit artifacts persist across replanning", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+describe("prerequisite cognitive load is position-aware (regression: garden produced zero visuals)", () => {
+  // Real gardens author prerequisites as high-level themes ("spike encoding")
+  // that never string-match the granular new concepts earlier units introduce
+  // ("rate coding", "spike train"). The old logic read that as "prerequisites
+  // unmet" for nearly every unit, slammed cognitive-load risk to 0.85, and
+  // suppressed every interactive visual. These pin the corrected behavior.
+
+  function thematicDynamicUnits() {
+    const topics = ["membrane", "network", "gradient", "surrogate", "plasticity", "efficiency"];
+    return topics.map((topic, index) =>
+      unit({
+        id: `U${index + 1}`,
+        role: "formula",
+        title: `Parameter-driven ${topic} dynamics`,
+        learningQuestion: `How does adjusting the threshold reshape the ${topic} voltage trajectory over time?`,
+        // Thematic prerequisites that deliberately do NOT match any newConcepts.
+        prerequisiteConcepts: [`upstream ${topic} theme`, `background idea ${index}`],
+        newConcepts: [`${topic} dynamics`],
+        sourceFigures: [],
+      }),
+    );
+  }
+
+  test("40. a coherent sequence of dynamic units with thematic prerequisites still yields interactive visuals", () => {
+    const plan = planGardenVisualNecessity({ gardenId: "g", learningUnits: thematicDynamicUnits() });
+    const interactive = plan.decisions.filter((decision) =>
+      ["required", "recommended", "optional"].includes(decision.necessity),
+    );
+    assert.ok(interactive.length >= 2, `expected several interactive visuals, got ${interactive.length}`);
+  });
+
+  test("41. unmet prerequisites never brand a visual distracting; they cap it at optional", () => {
+    const decision = decideInteractiveVisualNecessity(
+      unit({ role: "mechanism", prerequisiteConcepts: ["a", "b", "c", "d"] }),
+      { unitIndex: 0, totalUnits: 10, availablePrerequisiteConcepts: [] },
+    );
+    assert.notEqual(decision.necessity, "harmful_or_distracting");
+    assert.ok(decision.cognitiveLoadRisk <= 0.7, `cognitive load ${decision.cognitiveLoadRisk} should stay <= 0.70`);
+  });
+
+  test("42. a later unit carries less prerequisite load than the identical earlier unit", () => {
+    const candidate = unit({ role: "formula", title: "Threshold dynamics", prerequisiteConcepts: ["x", "y"] });
+    const early = decideInteractiveVisualNecessity(candidate, { unitIndex: 1, totalUnits: 20, availablePrerequisiteConcepts: [] });
+    const late = decideInteractiveVisualNecessity(candidate, { unitIndex: 18, totalUnits: 20, availablePrerequisiteConcepts: [] });
+    assert.ok(late.cognitiveLoadRisk < early.cognitiveLoadRisk);
+  });
 });

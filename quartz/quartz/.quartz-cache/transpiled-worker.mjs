@@ -16494,7 +16494,6 @@ var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
 }, "BreadboardAI");
 BreadboardAI.afterDOMLoaded = breadboardAI_inline_default;
 BreadboardAI.css = breadboardAI_default;
-var BreadboardAI_default = /* @__PURE__ */ __name((() => BreadboardAI), "default");
 
 // quartz.layout.ts
 var frontmatterString3 = /* @__PURE__ */ __name((page, key) => {
@@ -16507,10 +16506,7 @@ var isClusterIndex = /* @__PURE__ */ __name((page) => !isGardenOverview(page) &&
 var sharedPageComponents = {
   head: Head_default(),
   header: [],
-  // Breadboard page-scoped AI panel. It self-gates (renders nothing on the
-  // top-level index or pages without a garden), and only functions when the
-  // dashboard has OpenHarness enabled and the garden permits chat access.
-  afterBody: [BreadboardAI_default()],
+  afterBody: [],
   footer: Empty_default()
 };
 var defaultContentPageLayout = {

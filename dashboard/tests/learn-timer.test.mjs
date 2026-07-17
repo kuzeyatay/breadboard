@@ -216,12 +216,17 @@ test("Learn failures stay in the panel without opening a dialog or toast", () =>
     ),
     "utf8",
   );
+  const quartzAssistantSource = fs.readFileSync(
+    new URL("../src/app/garden/garden-assistant.tsx", import.meta.url),
+    "utf8",
+  );
   const catchStart = workspaceSource.indexOf("    } catch (error) {", workspaceSource.indexOf("const postLearnAction"));
   const catchEnd = workspaceSource.indexOf("    } finally {", catchStart);
   const learnActionCatch = workspaceSource.slice(catchStart, catchEnd);
 
   assert.ok(catchStart >= 0 && catchEnd > catchStart);
   assert.doesNotMatch(workspaceSource, /LearnErrorDialog/);
+  assert.doesNotMatch(quartzAssistantSource, /LearnErrorDialog|learn-error-dismissal/);
   assert.match(workspaceSource, /status === "failed" && job\?\.error[\s\S]*?\{job\.error\}/);
   assert.match(
     learnActionCatch,

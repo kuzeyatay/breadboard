@@ -757,7 +757,7 @@ export default function WorkspaceClient({
   const [graphRefreshVersion, setGraphRefreshVersion] = useState(0);
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
-  const [linksExpanded, setLinksExpanded] = useState(true);
+  const [linksExpanded, setLinksExpanded] = useState(false);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [newLinkTitle, setNewLinkTitle] = useState("");

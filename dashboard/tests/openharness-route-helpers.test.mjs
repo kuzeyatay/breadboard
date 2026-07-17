@@ -67,3 +67,29 @@ test("describeError hides internal detail message for unexpected errors", () => 
   assert.equal(res.status, 500);
   assert.equal(res.body.error, "Internal server error");
 });
+
+test("describeError preserves the status of a RouteError-shaped error (401 not 500)", () => {
+  // Mirrors server-auth.ts RouteError: an Error carrying a numeric HTTP status.
+  class RouteError extends Error {
+    constructor(status, message) {
+      super(message);
+      this.status = status;
+    }
+  }
+  const unauthorized = describeError(new RouteError(401, "Unauthorized"));
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.body.error, "Unauthorized");
+
+  const notFound = describeError(new RouteError(404, "Cluster not found"));
+  assert.equal(notFound.status, 404);
+  assert.equal(notFound.body.error, "Cluster not found");
+});
+
+test("describeError ignores an out-of-range or non-numeric status", () => {
+  const weird = new Error("boom");
+  weird.status = 200; // not an error status → fall through to 500
+  assert.equal(describeError(weird).status, 500);
+  const stringStatus = new Error("boom");
+  stringStatus.status = "teapot";
+  assert.equal(describeError(stringStatus).status, 500);
+});
