@@ -1,0 +1,144 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Stand Alone Crawl",
+      "request": "launch",
+      "runtimeVersion": "24",
+      "runtimeArgs": [
+      ],
+      "env": {
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "build/stand-alone/crawl.js",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node",
+      "outputCapture": "std",
+      "preLaunchTask": "Backend:prepare",
+      "killBehavior": "forceful"
+    },
+    {
+      "name": "Debug Stand Alone Crawl + Browser",
+      "request": "launch",
+      "runtimeVersion": "24",
+      "runtimeArgs": [
+      ],
+      "env": {
+        "DEBUG_BROWSER": "true"
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "build/stand-alone/crawl.js",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node",
+      "outputCapture": "std",
+      "preLaunchTask": "Backend:prepare",
+      "killBehavior": "forceful"
+    },
+    {
+      "name": "Debug Stand Alone Crawl - EU",
+      "request": "launch",
+      "runtimeVersion": "24",
+      "runtimeArgs": [
+      ],
+      "env": {
+        "GCLOUD_PROJECT": "reader-6b7dc",
+        "FIRESTORE_DATABASE": "reader-eu",
+        "GCP_STORAGE_BUCKET": "reader-eu"
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "build/stand-alone/crawl.js",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node",
+      "outputCapture": "std",
+      "preLaunchTask": "Backend:prepare",
+      "killBehavior": "forceful"
+    },
+    {
+      "name": "Debug Stand Alone Search",
+      "request": "launch",
+      "runtimeVersion": "24",
+      "runtimeArgs": [
+      ],
+      "env": {
+        // "GCLOUD_PROJECT": "reader-6b7dc",
+        // "PREFERRED_PROXY_COUNTRY": "us",
+        // "JINA_CRAWLER_OFFLOAD_ORIGIN": "https://r.jina.ai"
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "build/stand-alone/search.js",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node",
+      "outputCapture": "std",
+      "preLaunchTask": "Backend:prepare",
+      "killBehavior": "forceful"
+    },
+    {
+      "name": "Debug Stand Alone Search + Offload",
+      "request": "launch",
+      "runtimeVersion": "24",
+      "runtimeArgs": [
+      ],
+      "env": {
+        // "GCLOUD_PROJECT": "reader-6b7dc",
+        // "PREFERRED_PROXY_COUNTRY": "us",
+        // "JINA_CRAWLER_OFFLOAD_ORIGIN": "https://r.jina.ai"
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "build/stand-alone/search.js",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node",
+      "outputCapture": "std",
+      "preLaunchTask": "Backend:prepare",
+      "killBehavior": "forceful"
+    },
+    {
+      "name": "Debug Stand Alone SERP",
+      "request": "launch",
+      "runtimeVersion": "24",
+      "runtimeArgs": [
+      ],
+      "env": {
+        "GCLOUD_PROJECT": "reader-6b7dc",
+        // "OVERRIDE_GOOGLE_DOMAIN": "www.google.com.hk",
+        // "PREFERRED_PROXY_COUNTRY": "us"
+      },
+      "cwd": "${workspaceFolder}",
+      "program": "build/stand-alone/serp.js",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node",
+      "outputCapture": "std",
+      "preLaunchTask": "Backend:prepare",
+      "killBehavior": "forceful"
+    },
+    {
+      "name": "Attach",
+      "port": 9229,
+      "request": "attach",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node"
+    },
+    {
+      "name": "Attach by Process ID",
+      "processId": "${command:PickProcess}",
+      "request": "attach",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node"
+    },
+  ]
+}
