@@ -31,6 +31,9 @@ export async function POST(
     const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL;
     const sourceOnly = body.sourceOnly !== false;
     const includeSourceSnapshots = body.includeSourceSnapshots === true;
+    const includedSourceIds = Array.isArray(body.includedSourceIds)
+      ? body.includedSourceIds.filter((sourceId: unknown): sourceId is string => typeof sourceId === "string")
+      : undefined;
     const requestedMapId =
       typeof body.confirmedLearningMapId === "string" && body.confirmedLearningMapId.trim()
         ? body.confirmedLearningMapId.trim()
@@ -39,13 +42,23 @@ export async function POST(
       gardenId: cluster.slug,
       contentPath,
     });
-    if (!status.confirmedLearningMapId || (requestedMapId && requestedMapId !== status.confirmedLearningMapId)) {
+    const requestedSourceIdSet = includedSourceIds ? new Set(includedSourceIds) : null;
+    const confirmedSelectionMatches =
+      !requestedSourceIdSet ||
+      (requestedSourceIdSet.size === status.selectedSourceIds.length &&
+        status.selectedSourceIds.every((sourceId) => requestedSourceIdSet.has(sourceId)));
+    if (
+      !status.confirmedLearningMapId ||
+      (requestedMapId && requestedMapId !== status.confirmedLearningMapId) ||
+      !confirmedSelectionMatches
+    ) {
       const planning = await runLearnPlanning({
         gardenId: cluster.slug,
         userId,
         client,
         model,
         contentPath,
+        includedSourceIds,
         sourceOnly,
         includeSourceSnapshots,
       });

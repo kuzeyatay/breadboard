@@ -181,20 +181,22 @@ test('Learn persistence uses a job-scoped atomic usage table', () => {
   );
 });
 
-test('Learn panel renders live job usage before council activity', () => {
+test('Learn panel renders live job usage without Council activity', () => {
   const source = fs.readFileSync(
     new URL('../src/app/gardens/[clusterSlug]/workspace-client.tsx', import.meta.url),
     'utf8',
   );
   const usagePanelIndex = source.indexOf('aria-label="Learn token usage"');
   const councilActivityIndex = source.indexOf('Council activity');
-  const usagePanelSource = source.slice(usagePanelIndex, councilActivityIndex);
+  const nextPanelSectionIndex = source.indexOf(
+    '{panelExpanded && proposedMap',
+    usagePanelIndex,
+  );
+  const usagePanelSource = source.slice(usagePanelIndex, nextPanelSectionIndex);
 
   assert.ok(usagePanelIndex >= 0, 'Learn token usage panel should be rendered');
-  assert.ok(
-    councilActivityIndex > usagePanelIndex,
-    'token usage should appear before council activity',
-  );
+  assert.equal(councilActivityIndex, -1, 'Council activity should not be rendered');
+  assert.ok(nextPanelSectionIndex > usagePanelIndex, 'usage panel should remain in the Learn panel');
   assert.match(source, /label: "Input"/);
   assert.match(source, /label: "Output"/);
   assert.match(source, /label: "Reasoning"/);
@@ -208,8 +210,17 @@ test('Learn panel renders live job usage before council activity', () => {
   );
   assert.match(
     source,
-    /function formatLearnTotalTokenCount[\s\S]*?toFixed\(1\)[\s\S]*?k/,
+    /function formatLearnTotalTokenCount[\s\S]*?count >= 1_000_000[\s\S]*?formatTokenCount\(count\)[\s\S]*?toFixed\(1\)[\s\S]*?k/,
   );
+  assert.match(
+    usagePanelSource,
+    /formatLearnMetricTokenCount\(metric\.value\)/,
+  );
+  assert.match(
+    source,
+    /function formatLearnMetricTokenCount[\s\S]*?replace\(\/K\$\/, "k"\)/,
+  );
+  assert.doesNotMatch(usagePanelSource, /\.toLowerCase\(\)/);
   assert.doesNotMatch(source, /Cached input unavailable/);
   assert.doesNotMatch(source, /Generated across Learn/);
   assert.doesNotMatch(source, /Provider-reported total/);

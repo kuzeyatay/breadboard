@@ -165,12 +165,23 @@ export default function DashboardClient({
   const [searchQuery, setSearchQuery] = useState("");
   const [myClusters, setMyClusters] = useState(initialClusters);
   const [publicClusters, setPublicClusters] = useState(initialPublicClusters);
-  const [clusterFolders, setClusterFolders] = useState<string[]>(initialClusterFolders);
-  const [draggingClusterId, setDraggingClusterId] = useState<number | null>(null);
-  const [dragOverFolderKey, setDragOverFolderKey] = useState<string | null>(null);
-  const [expandedClusterFolders, setExpandedClusterFolders] = useState<Set<string>>(
-    new Set(),
+  const [clusterFolders, setClusterFolders] = useState<string[]>(
+    initialClusterFolders,
   );
+  const [clusterFolderModalOpen, setClusterFolderModalOpen] = useState(false);
+  const [clusterFolderName, setClusterFolderName] = useState("");
+  const [clusterFolderError, setClusterFolderError] = useState<string | null>(
+    null,
+  );
+  const [draggingClusterId, setDraggingClusterId] = useState<number | null>(
+    null,
+  );
+  const [dragOverFolderKey, setDragOverFolderKey] = useState<string | null>(
+    null,
+  );
+  const [expandedClusterFolders, setExpandedClusterFolders] = useState<
+    Set<string>
+  >(new Set());
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmVisibilityId, setConfirmVisibilityId] = useState<number | null>(
@@ -313,7 +324,9 @@ export default function DashboardClient({
       const key = `folder:${name}`;
       entries.push({ kind: "header", folder: name, key });
       if (expandedClusterFolders.has(key)) {
-        for (const cluster of filteredClusters.filter((c) => c.folder === name)) {
+        for (const cluster of filteredClusters.filter(
+          (c) => c.folder === name,
+        )) {
           entries.push({ kind: "card", cluster });
         }
       }
@@ -376,7 +389,9 @@ export default function DashboardClient({
         await deleteClusterFolder(name);
         router.refresh();
       } catch (err) {
-        addToast(err instanceof Error ? err.message : "Failed to delete cluster");
+        addToast(
+          err instanceof Error ? err.message : "Failed to delete cluster",
+        );
         router.refresh();
       }
     });
@@ -407,11 +422,33 @@ export default function DashboardClient({
     });
   }
 
-  function handleCreateClusterFolder() {
-    const input = window.prompt("New cluster name");
-    if (input === null) return;
-    const folder = input.trim();
+  function openClusterFolderModal() {
+    setClusterFolderName("");
+    setClusterFolderError(null);
+    setClusterFolderModalOpen(true);
+  }
+
+  function closeClusterFolderModal() {
+    if (isPending) return;
+    setClusterFolderModalOpen(false);
+    setClusterFolderName("");
+    setClusterFolderError(null);
+  }
+
+  function handleCreateClusterFolder(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const folder = clusterFolderName.trim();
     if (!folder) return;
+    if (
+      clusterFolders.some(
+        (existing) =>
+          existing.toLocaleLowerCase() === folder.toLocaleLowerCase(),
+      )
+    ) {
+      setClusterFolderError("A cluster with this name already exists.");
+      return;
+    }
+    setClusterFolderError(null);
     if (!clusterFolders.includes(folder)) {
       setClusterFolders((prev) =>
         [...prev, folder].sort((a, b) => a.localeCompare(b)),
@@ -420,9 +457,14 @@ export default function DashboardClient({
     startTransition(async () => {
       try {
         await createClusterFolder(folder);
+        setClusterFolderModalOpen(false);
+        setClusterFolderName("");
         router.refresh();
       } catch (err) {
-        addToast(err instanceof Error ? err.message : "Failed to create cluster");
+        setClusterFolders((prev) => prev.filter((item) => item !== folder));
+        setClusterFolderError(
+          err instanceof Error ? err.message : "Failed to create cluster",
+        );
       }
     });
   }
@@ -462,7 +504,8 @@ export default function DashboardClient({
         }}
         onDrop={(e) => {
           e.preventDefault();
-          const id = Number(e.dataTransfer.getData("text/plain")) || draggingClusterId;
+          const id =
+            Number(e.dataTransfer.getData("text/plain")) || draggingClusterId;
           if (id != null) handleMoveClusterToFolder(id, folder);
         }}
         className={[
@@ -479,7 +522,11 @@ export default function DashboardClient({
           stroke="currentColor"
           strokeWidth={2}
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="m8.25 4.5 7.5 7.5-7.5 7.5"
+          />
         </svg>
         <svg
           className="h-4 w-4 shrink-0 text-amber-300/70"
@@ -517,7 +564,13 @@ export default function DashboardClient({
             aria-label={`Delete cluster ${folder}`}
             title="Delete cluster"
           >
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.7}
+            >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -1066,9 +1119,15 @@ export default function DashboardClient({
             return;
           }
           if (event.tokenUsage) {
-            setUploadTokenUsage((prev) => ({ ...prev, [key]: event.tokenUsage! }));
+            setUploadTokenUsage((prev) => ({
+              ...prev,
+              [key]: event.tokenUsage!,
+            }));
           }
-          if (typeof event.visionError === "string" && event.visionError.trim()) {
+          if (
+            typeof event.visionError === "string" &&
+            event.visionError.trim()
+          ) {
             setUploadVisionErrors((prev) => ({
               ...prev,
               [key]: `${file.name}: ${event.visionError!.trim()}`,
@@ -1097,7 +1156,8 @@ export default function DashboardClient({
         clearProgress();
 
         const finishedAt = Date.now();
-        const elapsed = finishedAt - (uploadStartedAtRef.current[key] ?? finishedAt);
+        const elapsed =
+          finishedAt - (uploadStartedAtRef.current[key] ?? finishedAt);
         setUploadDurations((prev) => ({ ...prev, [key]: elapsed }));
 
         if (streamError) {
@@ -1121,17 +1181,24 @@ export default function DashboardClient({
             return next;
           });
           if (typeof data.durationMs === "number") {
-            setUploadDurations((prev) => ({ ...prev, [key]: data.durationMs! }));
+            setUploadDurations((prev) => ({
+              ...prev,
+              [key]: data.durationMs!,
+            }));
           }
           if (data.duplicate) {
             duplicateCount++;
-            addToast(`${file.name} is already in Documents; duplicate upload skipped`);
+            addToast(
+              `${file.name} is already in Documents; duplicate upload skipped`,
+            );
           } else {
             successCount++;
             snapshotCount +=
               typeof data.imageCount === "number" ? data.imageCount : 0;
             if (typeof data.screenshotWarning === "string") {
-              screenshotWarnings.push(`${file.name}: ${data.screenshotWarning}`);
+              screenshotWarnings.push(
+                `${file.name}: ${data.screenshotWarning}`,
+              );
             }
           }
         } else {
@@ -1189,7 +1256,16 @@ export default function DashboardClient({
   return (
     <div
       className="min-h-screen bg-gray-950 text-white flex flex-col pb-12"
-      style={bgImage ? { backgroundImage: `url(${bgImage})`, backgroundSize: "cover", backgroundPosition: "center", backgroundAttachment: "fixed" } : undefined}
+      style={
+        bgImage
+          ? {
+              backgroundImage: `url(${bgImage})`,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+              backgroundAttachment: "fixed",
+            }
+          : undefined
+      }
     >
       <NavBar
         email={userEmail}
@@ -1205,21 +1281,35 @@ export default function DashboardClient({
           title="Change dashboard background"
           className="absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:text-gray-300"
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.8}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+            />
           </svg>
         </button>
       </div>
 
-      <input ref={bgFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleBgFileChange} />
+      <input
+        ref={bgFileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleBgFileChange}
+      />
 
       <div className="max-w-5xl mx-auto w-full px-6 py-12 flex-1">
         <div className="flex flex-col gap-5 mb-10">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight">
-                Gardens
-              </h1>
+              <h1 className="text-2xl font-semibold tracking-tight">Gardens</h1>
               <p className="text-sm text-gray-500 mt-1">
                 {clusterView === "mine"
                   ? "Your knowledge gardens"
@@ -1343,7 +1433,7 @@ export default function DashboardClient({
               <div className="mb-3 flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleCreateClusterFolder}
+                  onClick={openClusterFolderModal}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
                 >
                   <svg
@@ -1367,7 +1457,10 @@ export default function DashboardClient({
               {clusterSections.map((section) => (
                 <div key={section.key} className="flex flex-col">
                   {section.header &&
-                    renderFolderHeader(section.header.folder, section.header.key)}
+                    renderFolderHeader(
+                      section.header.folder,
+                      section.header.key,
+                    )}
                   {section.cards.length > 0 && (
                     <div
                       className="mt-2 grid"
@@ -1387,387 +1480,423 @@ export default function DashboardClient({
                           clusterView === "mine" && Boolean(cluster.isOwner);
 
                         return (
-                <div
-                  key={cluster.id}
-                  draggable={cardDraggable}
-                  onDragStart={(e) => {
-                    if (!cardDraggable) return;
-                    e.dataTransfer.setData("text/plain", String(cluster.id));
-                    e.dataTransfer.effectAllowed = "move";
-                    setDraggingClusterId(cluster.id);
-                  }}
-                  onDragEnd={() => {
-                    setDraggingClusterId(null);
-                    setDragOverFolderKey(null);
-                  }}
-                  onClick={(e) => handleClusterBorderClick(e, cluster)}
-                  className={[
-                    "relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
-                    resizingClusterId === cluster.id
-                      ? "select-none ring-1 ring-[#7b97aa]/50"
-                      : "",
-                  ].join(" ")}
-                  style={{
-                    borderColor: cluster.border_color,
-                    gridColumn: `span ${cardGridSpan(cluster.card_width)}`,
-                    gridRow: `span ${cardGridSpan(cluster.card_height)}`,
-                  }}
-                  title={
-                    canManage
-                      ? "Click the border to change its color. Drag the right, bottom, or corner edge to resize."
-                      : undefined
-                  }
-                >
-                  {canManage && colorClusterId === cluster.id && (
-                    <div
-                      data-card-action="true"
-                      className="absolute left-3 top-3 z-20 w-36 rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl"
-                    >
-                      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">
-                        Border color
-                      </div>
-                      <div className="grid grid-cols-6 gap-1.5">
-                        {CLUSTER_BORDER_COLORS.map((color) => (
-                          <button
-                            key={color}
-                            type="button"
-                            onClick={() => handleBorderColorChange(color)}
-                            className={[
-                              "h-4 w-4 rounded border transition-transform hover:scale-110",
-                              cluster.border_color === color
-                                ? "border-white"
-                                : "border-gray-800",
-                            ].join(" ")}
-                            style={{ backgroundColor: color }}
-                            aria-label={`Use border color ${color}`}
-                            title={
-                              color === DEFAULT_BORDER_COLOR
-                                ? "Default border"
-                                : color
+                          <div
+                            key={cluster.id}
+                            draggable={cardDraggable}
+                            onDragStart={(e) => {
+                              if (!cardDraggable) return;
+                              e.dataTransfer.setData(
+                                "text/plain",
+                                String(cluster.id),
+                              );
+                              e.dataTransfer.effectAllowed = "move";
+                              setDraggingClusterId(cluster.id);
+                            }}
+                            onDragEnd={() => {
+                              setDraggingClusterId(null);
+                              setDragOverFolderKey(null);
+                            }}
+                            onClick={(e) =>
+                              handleClusterBorderClick(e, cluster)
                             }
-                          />
-                        ))}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setColorClusterId(null)}
-                        className="mt-2 w-full rounded border border-gray-800 px-2 py-1 text-[10px] text-gray-500 transition-colors hover:border-gray-700 hover:text-white"
-                      >
-                        Close
-                      </button>
-                    </div>
-                  )}
-                  {canManage && confirmDeleteId === cluster.id && (
-                    <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
-                      <span className="text-xs text-gray-400">Delete?</span>
-                      <button
-                        data-card-action="true"
-                        onClick={() => {
-                          setConfirmDeleteId(null);
-                          handleDelete(cluster.id);
-                        }}
-                        disabled={isDeleting || isPending}
-                        className="text-xs text-red-500 hover:text-red-400 font-medium transition-colors disabled:opacity-40"
-                      >
-                        Yes
-                      </button>
-                      <button
-                        data-card-action="true"
-                        onClick={() => setConfirmDeleteId(null)}
-                        className="text-xs text-gray-500 hover:text-white transition-colors"
-                      >
-                        No
-                      </button>
-                    </div>
-                  )}
-                  {canManage &&
-                    confirmDeleteId !== cluster.id &&
-                    confirmVisibilityId === cluster.id && (
-                      <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
-                        <span className="text-xs text-gray-400">
-                          Make{" "}
-                          {cluster.visibility === "public"
-                            ? "private"
-                            : "public"}
-                          ?
-                        </span>
-                        <button
-                          data-card-action="true"
-                          onClick={() => handleVisibilityChange(cluster)}
-                          className="text-xs text-gray-200 hover:text-white font-medium transition-colors"
-                        >
-                          Yes
-                        </button>
-                        <button
-                          data-card-action="true"
-                          onClick={() => setConfirmVisibilityId(null)}
-                          className="text-xs text-gray-500 hover:text-white transition-colors"
-                        >
-                          No
-                        </button>
-                      </div>
-                    )}
-                  {canManage &&
-                    confirmDeleteId !== cluster.id &&
-                    confirmVisibilityId !== cluster.id && (
-                      <div className="absolute top-3 right-3 flex items-center gap-2">
-                        <button
-                          data-card-action="true"
-                          type="button"
-                          onClick={() => openEditModal(cluster)}
-                          className="p-1 text-gray-500 hover:text-white transition-colors"
-                          title="Edit garden"
-                          aria-label="Edit garden"
-                        >
-                          <svg
-                            className="w-3.5 h-3.5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.8}
+                            className={[
+                              "relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
+                              resizingClusterId === cluster.id
+                                ? "select-none ring-1 ring-[#7b97aa]/50"
+                                : "",
+                            ].join(" ")}
+                            style={{
+                              borderColor: cluster.border_color,
+                              gridColumn: `span ${cardGridSpan(cluster.card_width)}`,
+                              gridRow: `span ${cardGridSpan(cluster.card_height)}`,
+                            }}
+                            title={
+                              canManage
+                                ? "Click the border to change its color. Drag the right, bottom, or corner edge to resize."
+                                : undefined
+                            }
                           >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
-                            />
-                          </svg>
-                        </button>
-                        <button
-                          data-card-action="true"
-                          type="button"
-                          onClick={() => setConfirmVisibilityId(cluster.id)}
-                          className="shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
-                          title={`Make ${cluster.visibility === "public" ? "private" : "public"}`}
-                        >
-                          {cluster.visibility}
-                        </button>
-                        <button
-                          data-card-action="true"
-                          onClick={() => setConfirmDeleteId(cluster.id)}
-                          disabled={isDeleting || isPending}
-                          className="p-1 text-gray-700 hover:text-red-500 transition-colors disabled:opacity-40"
-                          title="Delete garden"
-                        >
-                          {isDeleting ? (
-                            <Spinner className="w-3.5 h-3.5" />
-                          ) : (
-                            <svg
-                              className="w-3.5 h-3.5"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M6 18 18 6M6 6l12 12"
-                              />
-                            </svg>
-                          )}
-                        </button>
-                      </div>
-                    )}
-                  {!canManage && (
-                    <span className="absolute top-3 right-3 shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-400">
-                      {cluster.visibility}
-                    </span>
-                  )}
-
-                  <div className="min-h-0 flex min-w-0 flex-1 flex-col overflow-hidden">
-                    <div className="shrink-0">
-                      <div className="flex items-start gap-2 pr-28">
-                        <h2 className="min-w-0 flex-1 text-base font-semibold text-white truncate">
-                          {cluster.name}
-                        </h2>
-                      </div>
-                      {clusterView === "public" &&
-                        (cluster.ownerUsername || cluster.ownerEmail) && (
-                          <p className="mt-1 truncate text-xs text-gray-600">
-                            by {cluster.ownerUsername ?? cluster.ownerEmail}
-                          </p>
-                        )}
-                      {cluster.noteCount === 0 ? (
-                        <div className="mt-3 flex items-center gap-2 rounded-lg border border-dashed border-gray-800 px-3 py-2.5">
-                          <svg
-                            className="w-4 h-4 text-gray-600 shrink-0"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-                            />
-                          </svg>
-                          <span className="text-xs text-gray-600">
-                            No notes yet
-                            {canManage && (
-                              <>
-                                {" - "}
+                            {canManage && colorClusterId === cluster.id && (
+                              <div
+                                data-card-action="true"
+                                className="absolute left-3 top-3 z-20 w-36 rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl"
+                              >
+                                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">
+                                  Border color
+                                </div>
+                                <div className="grid grid-cols-6 gap-1.5">
+                                  {CLUSTER_BORDER_COLORS.map((color) => (
+                                    <button
+                                      key={color}
+                                      type="button"
+                                      onClick={() =>
+                                        handleBorderColorChange(color)
+                                      }
+                                      className={[
+                                        "h-4 w-4 rounded border transition-transform hover:scale-110",
+                                        cluster.border_color === color
+                                          ? "border-white"
+                                          : "border-gray-800",
+                                      ].join(" ")}
+                                      style={{ backgroundColor: color }}
+                                      aria-label={`Use border color ${color}`}
+                                      title={
+                                        color === DEFAULT_BORDER_COLOR
+                                          ? "Default border"
+                                          : color
+                                      }
+                                    />
+                                  ))}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setColorClusterId(null)}
+                                  className="mt-2 w-full rounded border border-gray-800 px-2 py-1 text-[10px] text-gray-500 transition-colors hover:border-gray-700 hover:text-white"
+                                >
+                                  Close
+                                </button>
+                              </div>
+                            )}
+                            {canManage && confirmDeleteId === cluster.id && (
+                              <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
+                                <span className="text-xs text-gray-400">
+                                  Delete?
+                                </span>
                                 <button
                                   data-card-action="true"
-                                  onClick={() => openUploadModal(cluster)}
-                                  className="text-gray-400 hover:text-white underline underline-offset-2 transition-colors"
+                                  onClick={() => {
+                                    setConfirmDeleteId(null);
+                                    handleDelete(cluster.id);
+                                  }}
+                                  disabled={isDeleting || isPending}
+                                  className="text-xs text-red-500 hover:text-red-400 font-medium transition-colors disabled:opacity-40"
                                 >
-                                  upload your first
+                                  Yes
                                 </button>
+                                <button
+                                  data-card-action="true"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="text-xs text-gray-500 hover:text-white transition-colors"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            )}
+                            {canManage &&
+                              confirmDeleteId !== cluster.id &&
+                              confirmVisibilityId === cluster.id && (
+                                <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 shadow-lg">
+                                  <span className="text-xs text-gray-400">
+                                    Make{" "}
+                                    {cluster.visibility === "public"
+                                      ? "private"
+                                      : "public"}
+                                    ?
+                                  </span>
+                                  <button
+                                    data-card-action="true"
+                                    onClick={() =>
+                                      handleVisibilityChange(cluster)
+                                    }
+                                    className="text-xs text-gray-200 hover:text-white font-medium transition-colors"
+                                  >
+                                    Yes
+                                  </button>
+                                  <button
+                                    data-card-action="true"
+                                    onClick={() => setConfirmVisibilityId(null)}
+                                    className="text-xs text-gray-500 hover:text-white transition-colors"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              )}
+                            {canManage &&
+                              confirmDeleteId !== cluster.id &&
+                              confirmVisibilityId !== cluster.id && (
+                                <div className="absolute top-3 right-3 flex items-center gap-2">
+                                  <button
+                                    data-card-action="true"
+                                    type="button"
+                                    onClick={() => openEditModal(cluster)}
+                                    className="p-1 text-gray-500 hover:text-white transition-colors"
+                                    title="Edit garden"
+                                    aria-label="Edit garden"
+                                  >
+                                    <svg
+                                      className="w-3.5 h-3.5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={1.8}
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+                                      />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    data-card-action="true"
+                                    type="button"
+                                    onClick={() =>
+                                      setConfirmVisibilityId(cluster.id)
+                                    }
+                                    className="shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
+                                    title={`Make ${cluster.visibility === "public" ? "private" : "public"}`}
+                                  >
+                                    {cluster.visibility}
+                                  </button>
+                                  <button
+                                    data-card-action="true"
+                                    onClick={() =>
+                                      setConfirmDeleteId(cluster.id)
+                                    }
+                                    disabled={isDeleting || isPending}
+                                    className="p-1 text-gray-700 hover:text-red-500 transition-colors disabled:opacity-40"
+                                    title="Delete garden"
+                                  >
+                                    {isDeleting ? (
+                                      <Spinner className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <svg
+                                        className="w-3.5 h-3.5"
+                                        fill="none"
+                                        viewBox="0 0 24 24"
+                                        stroke="currentColor"
+                                        strokeWidth={2}
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          d="M6 18 18 6M6 6l12 12"
+                                        />
+                                      </svg>
+                                    )}
+                                  </button>
+                                </div>
+                              )}
+                            {!canManage && (
+                              <span className="absolute top-3 right-3 shrink-0 rounded-full border border-gray-700 px-2.5 py-0.5 text-[11px] text-gray-400">
+                                {cluster.visibility}
+                              </span>
+                            )}
+
+                            <div className="min-h-0 flex min-w-0 flex-1 flex-col overflow-hidden">
+                              <div className="shrink-0">
+                                <div className="flex items-start gap-2 pr-28">
+                                  <h2 className="min-w-0 flex-1 text-base font-semibold text-white truncate">
+                                    {cluster.name}
+                                  </h2>
+                                </div>
+                                {clusterView === "public" &&
+                                  (cluster.ownerUsername ||
+                                    cluster.ownerEmail) && (
+                                    <p className="mt-1 truncate text-xs text-gray-600">
+                                      by{" "}
+                                      {cluster.ownerUsername ??
+                                        cluster.ownerEmail}
+                                    </p>
+                                  )}
+                                {cluster.noteCount === 0 ? (
+                                  <div className="mt-3 flex items-center gap-2 rounded-lg border border-dashed border-gray-800 px-3 py-2.5">
+                                    <svg
+                                      className="w-4 h-4 text-gray-600 shrink-0"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={1.5}
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+                                      />
+                                    </svg>
+                                    <span className="text-xs text-gray-600">
+                                      No notes yet
+                                      {canManage && (
+                                        <>
+                                          {" - "}
+                                          <button
+                                            data-card-action="true"
+                                            onClick={() =>
+                                              openUploadModal(cluster)
+                                            }
+                                            className="text-gray-400 hover:text-white underline underline-offset-2 transition-colors"
+                                          >
+                                            upload your first
+                                          </button>
+                                        </>
+                                      )}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-gray-600 mt-2">
+                                    {cluster.noteCount}{" "}
+                                    {cluster.noteCount === 1
+                                      ? "knowledge node"
+                                      : "knowledge nodes"}{" "}
+                                    -{" "}
+                                    {new Date(
+                                      cluster.created_at,
+                                    ).toLocaleDateString("en-US", {
+                                      month: "short",
+                                      day: "numeric",
+                                      year: "numeric",
+                                    })}
+                                  </p>
+                                )}
+                              </div>
+                              {descriptionText && (
+                                <p className="mt-4 min-h-0 flex-1 overflow-hidden whitespace-pre-line text-sm leading-6 text-gray-400">
+                                  {descriptionText}
+                                </p>
+                              )}
+                            </div>
+
+                            <div className="flex shrink-0 flex-col gap-2 pt-3 border-t border-gray-800">
+                              {canManage && cluster.visibility === "public" && (
+                                <>
+                                  <button
+                                    data-card-action="true"
+                                    type="button"
+                                    onClick={() =>
+                                      handleChatAccessibleToggle(cluster)
+                                    }
+                                    className="flex w-full items-center justify-between rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2 transition-colors hover:border-gray-700 hover:bg-gray-950/70"
+                                  >
+                                    <span className="text-xs text-gray-400">
+                                      Allow others to chat
+                                    </span>
+                                    <span
+                                      className={[
+                                        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors",
+                                        cluster.chat_accessible
+                                          ? "border-[#7b97aa] bg-[#7b97aa]"
+                                          : "border-gray-700 bg-gray-900",
+                                      ].join(" ")}
+                                    >
+                                      <span
+                                        className={[
+                                          "block h-3.5 w-3.5 rounded-full shadow-sm transition-transform",
+                                          cluster.chat_accessible
+                                            ? "translate-x-[18px] bg-gray-950"
+                                            : "translate-x-0.5 bg-gray-500",
+                                        ].join(" ")}
+                                      />
+                                    </span>
+                                  </button>
+                                  <button
+                                    data-card-action="true"
+                                    type="button"
+                                    onClick={() =>
+                                      handleForkAllowedToggle(cluster)
+                                    }
+                                    className="flex w-full items-center justify-between rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2 transition-colors hover:border-gray-700 hover:bg-gray-950/70"
+                                  >
+                                    <span className="text-xs text-gray-400">
+                                      Allow users to fork
+                                    </span>
+                                    <span
+                                      className={[
+                                        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors",
+                                        cluster.fork_allowed
+                                          ? "border-[#7b97aa] bg-[#7b97aa]"
+                                          : "border-gray-700 bg-gray-900",
+                                      ].join(" ")}
+                                    >
+                                      <span
+                                        className={[
+                                          "block h-3.5 w-3.5 rounded-full shadow-sm transition-transform",
+                                          cluster.fork_allowed
+                                            ? "translate-x-[18px] bg-gray-950"
+                                            : "translate-x-0.5 bg-gray-500",
+                                        ].join(" ")}
+                                      />
+                                    </span>
+                                  </button>
+                                </>
+                              )}
+                              {clusterView === "mine" ||
+                              cluster.chat_accessible ? (
+                                <>
+                                  <a
+                                    data-card-action="true"
+                                    href={`/garden/${cluster.slug}`}
+                                    className="w-full text-center py-1.5 text-sm border border-gray-700 text-gray-300 font-medium rounded-lg hover:border-gray-500 hover:text-white hover:bg-gray-900 transition-colors block"
+                                  >
+                                    Open garden view
+                                  </a>
+                                  <a
+                                    data-card-action="true"
+                                    href={`/gardens/${cluster.slug}`}
+                                    className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
+                                  >
+                                    Open garden chat
+                                  </a>
+                                </>
+                              ) : (
+                                <a
+                                  data-card-action="true"
+                                  href={`/garden/${cluster.slug}`}
+                                  className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
+                                >
+                                  Open garden view
+                                </a>
+                              )}
+                            </div>
+
+                            {canManage && (
+                              <>
+                                <div
+                                  data-card-action="true"
+                                  role="separator"
+                                  aria-orientation="vertical"
+                                  aria-label="Resize garden width"
+                                  onPointerDown={(e) =>
+                                    handleClusterResizePointerDown(
+                                      e,
+                                      cluster,
+                                      "right",
+                                    )
+                                  }
+                                  className="absolute bottom-8 right-0 top-8 w-3 cursor-ew-resize rounded-r-xl transition-colors hover:bg-[#7b97aa]/15"
+                                />
+                                <div
+                                  data-card-action="true"
+                                  role="separator"
+                                  aria-orientation="horizontal"
+                                  aria-label="Resize garden height"
+                                  onPointerDown={(e) =>
+                                    handleClusterResizePointerDown(
+                                      e,
+                                      cluster,
+                                      "bottom",
+                                    )
+                                  }
+                                  className="absolute bottom-0 left-8 right-8 h-3 cursor-ns-resize transition-colors hover:bg-[#7b97aa]/15"
+                                />
+                                <div
+                                  data-card-action="true"
+                                  role="button"
+                                  aria-label="Resize garden"
+                                  onPointerDown={(e) =>
+                                    handleClusterResizePointerDown(
+                                      e,
+                                      cluster,
+                                      "corner",
+                                    )
+                                  }
+                                  className="absolute bottom-1 right-1 h-5 w-5 cursor-nwse-resize rounded-br-lg"
+                                >
+                                  <span className="pointer-events-none absolute bottom-1 right-1 h-2.5 w-2.5 border-b border-r border-gray-600" />
+                                  <span className="pointer-events-none absolute bottom-1 right-1 h-4 w-4 border-b border-r border-gray-700" />
+                                </div>
                               </>
                             )}
-                          </span>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-gray-600 mt-2">
-                          {cluster.noteCount}{" "}
-                          {cluster.noteCount === 1
-                            ? "knowledge node"
-                            : "knowledge nodes"}{" "}
-                          -{" "}
-                          {new Date(cluster.created_at).toLocaleDateString(
-                            "en-US",
-                            {
-                              month: "short",
-                              day: "numeric",
-                              year: "numeric",
-                            },
-                          )}
-                        </p>
-                      )}
-                    </div>
-                    {descriptionText && (
-                      <p className="mt-4 min-h-0 flex-1 overflow-hidden whitespace-pre-line text-sm leading-6 text-gray-400">
-                        {descriptionText}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex shrink-0 flex-col gap-2 pt-3 border-t border-gray-800">
-                    {canManage && cluster.visibility === "public" && (
-                      <>
-                        <button
-                          data-card-action="true"
-                          type="button"
-                          onClick={() => handleChatAccessibleToggle(cluster)}
-                          className="flex w-full items-center justify-between rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2 transition-colors hover:border-gray-700 hover:bg-gray-950/70"
-                        >
-                          <span className="text-xs text-gray-400">
-                            Allow others to chat
-                          </span>
-                          <span
-                            className={[
-                              "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors",
-                              cluster.chat_accessible
-                                ? "border-[#7b97aa] bg-[#7b97aa]"
-                                : "border-gray-700 bg-gray-900",
-                            ].join(" ")}
-                          >
-                            <span
-                              className={[
-                                "block h-3.5 w-3.5 rounded-full shadow-sm transition-transform",
-                                cluster.chat_accessible
-                                  ? "translate-x-[18px] bg-gray-950"
-                                  : "translate-x-0.5 bg-gray-500",
-                              ].join(" ")}
-                            />
-                          </span>
-                        </button>
-                        <button
-                          data-card-action="true"
-                          type="button"
-                          onClick={() => handleForkAllowedToggle(cluster)}
-                          className="flex w-full items-center justify-between rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2 transition-colors hover:border-gray-700 hover:bg-gray-950/70"
-                        >
-                          <span className="text-xs text-gray-400">
-                            Allow users to fork
-                          </span>
-                          <span
-                            className={[
-                              "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors",
-                              cluster.fork_allowed
-                                ? "border-[#7b97aa] bg-[#7b97aa]"
-                                : "border-gray-700 bg-gray-900",
-                            ].join(" ")}
-                          >
-                            <span
-                              className={[
-                                "block h-3.5 w-3.5 rounded-full shadow-sm transition-transform",
-                                cluster.fork_allowed
-                                  ? "translate-x-[18px] bg-gray-950"
-                                  : "translate-x-0.5 bg-gray-500",
-                              ].join(" ")}
-                            />
-                          </span>
-                        </button>
-                      </>
-                    )}
-                    {clusterView === "mine" || cluster.chat_accessible ? (
-                      <>
-                        <a
-                          data-card-action="true"
-                          href={`/garden/${cluster.slug}`}
-                          className="w-full text-center py-1.5 text-sm border border-gray-700 text-gray-300 font-medium rounded-lg hover:border-gray-500 hover:text-white hover:bg-gray-900 transition-colors block"
-                        >
-                          Open garden view
-                        </a>
-                        <a
-                          data-card-action="true"
-                          href={`/gardens/${cluster.slug}`}
-                          className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
-                        >
-                          Open garden chat
-                        </a>
-                      </>
-                    ) : (
-                      <a
-                        data-card-action="true"
-                        href={`/garden/${cluster.slug}`}
-                        className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
-                      >
-                        Open garden view
-                      </a>
-                    )}
-                  </div>
-
-                  {canManage && (
-                    <>
-                      <div
-                        data-card-action="true"
-                        role="separator"
-                        aria-orientation="vertical"
-                        aria-label="Resize garden width"
-                        onPointerDown={(e) =>
-                          handleClusterResizePointerDown(e, cluster, "right")
-                        }
-                        className="absolute bottom-8 right-0 top-8 w-3 cursor-ew-resize rounded-r-xl transition-colors hover:bg-[#7b97aa]/15"
-                      />
-                      <div
-                        data-card-action="true"
-                        role="separator"
-                        aria-orientation="horizontal"
-                        aria-label="Resize garden height"
-                        onPointerDown={(e) =>
-                          handleClusterResizePointerDown(e, cluster, "bottom")
-                        }
-                        className="absolute bottom-0 left-8 right-8 h-3 cursor-ns-resize transition-colors hover:bg-[#7b97aa]/15"
-                      />
-                      <div
-                        data-card-action="true"
-                        role="button"
-                        aria-label="Resize garden"
-                        onPointerDown={(e) =>
-                          handleClusterResizePointerDown(e, cluster, "corner")
-                        }
-                        className="absolute bottom-1 right-1 h-5 w-5 cursor-nwse-resize rounded-br-lg"
-                      >
-                        <span className="pointer-events-none absolute bottom-1 right-1 h-2.5 w-2.5 border-b border-r border-gray-600" />
-                        <span className="pointer-events-none absolute bottom-1 right-1 h-4 w-4 border-b border-r border-gray-700" />
-                      </div>
-                    </>
-                  )}
-                </div>
+                          </div>
                         );
                       })}
                     </div>
@@ -1778,6 +1907,78 @@ export default function DashboardClient({
           </>
         )}
       </div>
+
+      {clusterFolderModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closeClusterFolderModal();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") closeClusterFolderModal();
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-cluster-title"
+            className="w-full max-w-sm rounded-xl border border-gray-800 bg-gray-900 p-5 shadow-xl"
+          >
+            <h2 id="new-cluster-title" className="mb-4 text-lg font-semibold">
+              New cluster
+            </h2>
+
+            <form onSubmit={handleCreateClusterFolder} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="new-cluster-name"
+                  className="mb-1.5 block text-sm text-gray-400"
+                >
+                  Cluster name
+                </label>
+                <input
+                  id="new-cluster-name"
+                  type="text"
+                  value={clusterFolderName}
+                  onChange={(event) => {
+                    setClusterFolderName(event.target.value);
+                    if (clusterFolderError) setClusterFolderError(null);
+                  }}
+                  maxLength={80}
+                  autoComplete="off"
+                  autoFocus
+                  className="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-gray-600"
+                />
+              </div>
+
+              {clusterFolderError ? (
+                <p role="alert" className="text-sm text-red-400">
+                  {clusterFolderError}
+                </p>
+              ) : null}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={closeClusterFolderModal}
+                  disabled={isPending}
+                  className="rounded-lg border border-gray-800 px-4 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPending || !clusterFolderName.trim()}
+                  className="flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isPending ? <Spinner /> : null}
+                  {isPending ? "Creating..." : "Create cluster"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {modalOpen && (
         <div
@@ -2123,7 +2324,7 @@ export default function DashboardClient({
                   />
                   <div>
                     <span className="text-sm text-gray-400">
-                        Generate Learning Map
+                      Generate Learning Map
                     </span>
                     <p className="text-[11px] text-gray-600 mt-0.5">
                       {handwritingUploadEnabled
@@ -2181,11 +2382,17 @@ export default function DashboardClient({
       {showBgModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
-          onClick={(e) => { if (e.target === e.currentTarget) setShowBgModal(false); }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowBgModal(false);
+          }}
         >
           <div className="w-full max-w-sm bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
-            <h2 className="text-base font-semibold mb-1">Dashboard background</h2>
-            <p className="text-sm text-gray-500 mb-5">Upload an image to use as the background for this page.</p>
+            <h2 className="text-base font-semibold mb-1">
+              Dashboard background
+            </h2>
+            <p className="text-sm text-gray-500 mb-5">
+              Upload an image to use as the background for this page.
+            </p>
             <div className="flex flex-col gap-3">
               <button
                 type="button"

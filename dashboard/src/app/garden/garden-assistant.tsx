@@ -33,6 +33,7 @@ import {
   normalizeChatTokenUsage,
   summarizeChatTokenUsage,
 } from '@/lib/chat-token-usage';
+import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
 import {
   forgetDismissedLearnErrorsForGarden,
   learnErrorDismissalKey,
@@ -93,6 +94,7 @@ interface AssistantLearnState {
   } | null;
   confirmedLearningMapId?: string;
   hasSources?: boolean;
+  selectedSourceIds?: string[];
   hasTextbook?: boolean;
   buttonLabel?: string;
   validationReport?: {
@@ -272,10 +274,6 @@ function wantsOpenMarkdownEdit(text: string): boolean {
   return /\b(add|append|insert|change|update|edit|rewrite|revise|fix|repair|clean|format|reformat|correct|remove|delete|replace|overwrite|swap|use|apply|tag|tags|frontmatter|yaml|latex|math|equation|version)\b/.test(
     normalized,
   );
-}
-
-function chatTitleFromText(text: string): string {
-  return text.trim().replace(/\s+/g, ' ').slice(0, 64) || 'New chat';
 }
 
 function formatChatTime(value: string): string {
@@ -612,11 +610,14 @@ export default function GardenAssistant({
     const pendingAttachments = chatAttachments;
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
     const displayText = text || 'Please review the attached document(s).';
+    const firstMessageTitle = chatTitleFromFirstMessage(
+      text || attachmentNames[0] || 'Document review',
+    );
 
     let session = activeChat;
     let sessionTitle: string | undefined;
     if (!session || session.isOwn === false) {
-      sessionTitle = chatTitleFromText(text || attachmentNames[0] || 'Document review');
+      sessionTitle = firstMessageTitle;
       session = await createChatSession(sessionTitle);
       if (!session) {
         setMessages([
@@ -626,6 +627,8 @@ export default function GardenAssistant({
         ]);
         return;
       }
+    } else if (session.messages.length === 0) {
+      sessionTitle = firstMessageTitle;
     }
 
     const userMessage: ChatMessage = { role: 'user', content: displayText, attachmentNames };
@@ -936,6 +939,9 @@ export default function GardenAssistant({
         body: JSON.stringify({
           model,
           sourceOnly: true,
+          ...(Array.isArray(learnState?.selectedSourceIds)
+            ? { includedSourceIds: learnState.selectedSourceIds }
+            : {}),
           includeSourceSnapshots: false,
         }),
       });

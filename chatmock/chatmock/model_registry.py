@@ -28,6 +28,20 @@ _MODEL_SPECS = (
         variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
     ),
     ModelSpec(
+        public_id="gpt-5.6-terra",
+        upstream_id="gpt-5.6-terra",
+        aliases=("gpt5.6-terra", "gpt-5.6-terra-latest"),
+        allowed_efforts=frozenset(("none", "low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
+    ),
+    ModelSpec(
+        public_id="gpt-5.6-luna",
+        upstream_id="gpt-5.6-luna",
+        aliases=("gpt5.6-luna", "gpt-5.6-luna-latest"),
+        allowed_efforts=frozenset(("none", "low", "medium", "high", "xhigh", "max")),
+        variant_efforts=("max", "xhigh", "high", "medium", "low", "none"),
+    ),
+    ModelSpec(
         public_id="gpt-5",
         upstream_id="gpt-5",
         aliases=("gpt5", "gpt-5-latest"),
@@ -151,8 +165,10 @@ def _strip_model_name(model: str | None) -> tuple[str, str | None]:
         return "", None
     if ":" in value:
         base, maybe_effort = value.rsplit(":", 1)
+        upstream_id = _ALIASES.get(base)
+        spec = _SPECS_BY_UPSTREAM.get(upstream_id) if upstream_id else None
         if maybe_effort in DEFAULT_REASONING_EFFORTS or (
-            maybe_effort == "max" and _ALIASES.get(base) == DEFAULT_MODEL
+            maybe_effort == "max" and spec is not None and "max" in spec.allowed_efforts
         ):
             return base, maybe_effort
     for separator in ("-", "_"):
@@ -160,8 +176,10 @@ def _strip_model_name(model: str | None) -> tuple[str, str | None]:
             suffix = f"{separator}{effort}"
             if value.endswith(suffix):
                 base = value[: -len(suffix)]
+                upstream_id = _ALIASES.get(base)
+                spec = _SPECS_BY_UPSTREAM.get(upstream_id) if upstream_id else None
                 if effort in DEFAULT_REASONING_EFFORTS or (
-                    effort == "max" and _ALIASES.get(base) == DEFAULT_MODEL
+                    effort == "max" and spec is not None and "max" in spec.allowed_efforts
                 ):
                     return base, effort
     return value, None

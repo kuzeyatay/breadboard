@@ -22,6 +22,9 @@ export async function POST(
     }
 
     const body = await request.json().catch(() => ({}));
+    const includedSourceIds = Array.isArray(body.includedSourceIds)
+      ? body.includedSourceIds.filter((sourceId: unknown): sourceId is string => typeof sourceId === "string")
+      : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
     const client = createChatmockClient(baseURL);
     const model =
@@ -36,6 +39,7 @@ export async function POST(
       client,
       model,
       contentPath,
+      includedSourceIds,
       sourceOnly,
       includeSourceSnapshots,
       resetSourceMap: true,

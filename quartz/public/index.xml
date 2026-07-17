@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
+    <title>Learning Map</title>
+    <link>https://localhost:8081/test2/learning/Learning-Map</link>
+    <guid>https://localhost:8081/test2/learning/Learning-Map</guid>
+    <description><![CDATA[ Learning Map Section Order From Spiking Neural Network to Event-driven Computation 1.1 Why Spiking Neural Networks Exist 1.2 Neurons, Synapses, and Signal Flow 1.3 Action Potentials, Refractory Dynamics, and Spike Trains 1.4 Operations, Memory Access, and Energy Cost Describing Membrane Capacitance ... ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:01:30 GMT</pubDate>
+  </item><item>
     <title>Topic Overview</title>
-    <link>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</link>
-    <guid>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</guid>
-    <description><![CDATA[ Generated Visualization Demo This garden follows one source-backed relationship from its source note into a manipulable lesson. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 23:49:28 GMT</pubDate>
+    <link>https://localhost:8081/test2/learning/Topic-Overview</link>
+    <guid>https://localhost:8081/test2/learning/Topic-Overview</guid>
+    <description><![CDATA[ Spiking Neural Networks A spiking neural network, or SNN, processes information through discrete events called spikes. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:01:30 GMT</pubDate>
   </item><item>
-    <title>Generated visualization demo</title>
-    <link>https://localhost:8081/generated-visual-demo/</link>
-    <guid>https://localhost:8081/generated-visual-demo/</guid>
-    <description><![CDATA[ Generated visualization demo This small garden demonstrates a generated interaction that is compiled from the constrained Breadboard visualization SDK and rendered by Quartz in an isolated sandbox. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 23:49:00 GMT</pubDate>
+    <title>Spiking Neural Networks</title>
+    <link>https://localhost:8081/test2/learning/</link>
+    <guid>https://localhost:8081/test2/learning/</guid>
+    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:01:30 GMT</pubDate>
   </item><item>
-    <title>Nn</title>
-    <link>https://localhost:8081/signals-and-systems/nn/</link>
-    <guid>https://localhost:8081/signals-and-systems/nn/</guid>
-    <description><![CDATA[  ]]></description>
-    <pubDate>Thu, 16 Jul 2026 23:43:48 GMT</pubDate>
+    <title>1.1 Why Spiking Neural Networks Exist</title>
+    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.1-Why-Spiking-Neural-Networks-Exist</link>
+    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.1-Why-Spiking-Neural-Networks-Exist</guid>
+    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a wearable sensor monitoring a person throughout the day. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item><item>
-    <title>1.1 Contact Reduction and Feedback Threshold</title>
-    <link>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/1.1-Contact-Reduction-and-Feedback-Threshold</link>
-    <guid>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/1.1-Contact-Reduction-and-Feedback-Threshold</guid>
-    <description><![CDATA[ Contact Reduction and Feedback Threshold An intervention’s strength changes the post-intervention reproduction factor. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 23:19:34 GMT</pubDate>
+    <title>1.2 Neurons, Synapses, and Signal Flow</title>
+    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.2-Neurons,-Synapses,-and-Signal-Flow</link>
+    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.2-Neurons,-Synapses,-and-Signal-Flow</guid>
+    <description><![CDATA[ Neurons, Synapses, and Signal Flow A spiking neural network becomes easier to understand when each neuron is viewed as a small signal-processing cell connected to many others. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item><item>
-    <title>Epidemic Feedback</title>
-    <link>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/</link>
-    <guid>https://localhost:8081/generated-visual-demo/learning/1.-Epidemic-Feedback/</guid>
-    <description><![CDATA[ Epidemic Feedback Contact Reduction and Feedback Threshold . ]]></description>
-    <pubDate>Thu, 16 Jul 2026 23:12:54 GMT</pubDate>
+    <title>1.3 Action Potentials, Refractory Dynamics, and Spike Trains</title>
+    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.3-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</link>
+    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.3-Action-Potentials,-Refractory-Dynamics,-and-Spike-Trains</guid>
+    <description><![CDATA[ A neuron already has a membrane potential, and incoming synaptic signals can push that voltage upward or downward. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item><item>
-    <title>Learning</title>
-    <link>https://localhost:8081/generated-visual-demo/learning/</link>
-    <guid>https://localhost:8081/generated-visual-demo/learning/</guid>
-    <description><![CDATA[ Learning Contact Reduction and Feedback Threshold . ]]></description>
-    <pubDate>Thu, 16 Jul 2026 23:12:54 GMT</pubDate>
+    <title>1.4 Operations, Memory Access, and Energy Cost</title>
+    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.4-Operations,-Memory-Access,-and-Energy-Cost</link>
+    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/1.4-Operations,-Memory-Access,-and-Energy-Cost</guid>
+    <description><![CDATA[ Operations, Memory Access, and Energy Cost Once neural activity is expressed as sparse events, computation can follow the same pattern. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item><item>
-    <title>Early-growth intervention relationship</title>
-    <link>https://localhost:8081/generated-visual-demo/sources/epidemic-growth-source</link>
-    <guid>https://localhost:8081/generated-visual-demo/sources/epidemic-growth-source</guid>
-    <description><![CDATA[ Early-growth intervention relationship Before susceptible depletion becomes important, infection pressure grows when the effective reproduction factor exceeds one and shrinks when it is below one. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 22:01:44 GMT</pubDate>
+    <title>1. From Spiking Neural Network to Event-driven Computation</title>
+    <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/</link>
+    <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/</guid>
+    <description><![CDATA[ 1. From Spiking Neural Network to Event-driven Computation Build up from spiking neural network to event-driven computation one step at a time. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item><item>
-    <title>Sources</title>
-    <link>https://localhost:8081/generated-visual-demo/sources/</link>
-    <guid>https://localhost:8081/generated-visual-demo/sources/</guid>
-    <description><![CDATA[ Sources Early-growth intervention relationship . ]]></description>
-    <pubDate>Thu, 16 Jul 2026 22:01:44 GMT</pubDate>
+    <title>2.1 The Hodgkin-Huxley Conductance Equation</title>
+    <link>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.1-The-Hodgkin-Huxley-Conductance-Equation</link>
+    <guid>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.1-The-Hodgkin-Huxley-Conductance-Equation</guid>
+    <description><![CDATA[ The Hodgkin-Huxley Conductance Equation An action potential depends on the membrane potential changing over time. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item><item>
-    <title>Computer Architecture</title>
-    <link>https://localhost:8081/computer-architecture-2/</link>
-    <guid>https://localhost:8081/computer-architecture-2/</guid>
-    <description><![CDATA[ Learning garden with 0 source documents, 0 lesson pages, and 672 graph links. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Communication 1</title>
-    <link>https://localhost:8081/communication-1/</link>
-    <guid>https://localhost:8081/communication-1/</guid>
-    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 1398 graph links. ]]></description>
-    <pubDate>Thu, 16 Jul 2026 21:00:00 GMT</pubDate>
+    <title>2.2 The Leaky Integrate-and-Fire Neuron</title>
+    <link>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.2-The-Leaky-Integrate-and-Fire-Neuron</link>
+    <guid>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.2-The-Leaky-Integrate-and-Fire-Neuron</guid>
+    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A membrane potential gives us a running measure of a neuron’s electrical state, while an action potential turns that state into a discrete spike. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item>
     </channel>
   </rss>

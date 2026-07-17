@@ -86,7 +86,12 @@ export async function GET(request: Request) {
           !isLegacySubtopicRelPath(`${folder}/placeholder.md`)),
     );
 
-    return NextResponse.json({ documents, folders, stats: knowledge.stats });
+    // Derived live from the filesystem — must never be cached, or added/removed
+    // folders and pages appear stale in the client until a hard refresh.
+    return NextResponse.json(
+      { documents, folders, stats: knowledge.stats },
+      { headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } },
+    );
   } catch (error) {
     return routeErrorResponse(error);
   }

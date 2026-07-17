@@ -1,137 +1,151 @@
 ---
 title: "Topic Overview"
-date: "2026-07-16T20:10:28.925Z"
+date: "2026-07-17T09:01:30.364Z"
 knowledge_type: "topic-overview"
 breadboardType: "topic_overview"
 gardenId: "test2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mrny0g6u_971tlkn"
-learningVersionId: "learning_mrny0g6u_971tlkn"
+learningVersion: "learning_mropk339_98vyshq"
+learningVersionId: "learning_mropk339_98vyshq"
 sourceSetHash: "4057720366b4ae7d905fa7ea8376f05cb1ec8ee45821d03953c05063636e7388"
 ---
 
 # Spiking Neural Networks
 
-Spiking neural networks (SNNs) process information through discrete events called **spikes**. Instead of producing a continuously valued activation at every step, a spiking neuron maintains an internal state-often interpreted as a membrane potential-and emits a spike when that state crosses a threshold. The timing, frequency, and pattern of these events can all carry information.
+A spiking neural network, or SNN, processes information through discrete events called **spikes**. Unlike a conventional neural network that usually passes continuously valued activations from layer to layer, an SNN maintains a state over time. Incoming events change a neuron's membrane potential; if that potential crosses a threshold, the neuron emits a spike and resets. Information can therefore reside not only in whether a neuron responds, but also in **when**, **how often**, and **in response to what change** it spikes.
 
-This temporal behavior makes an SNN more than a conventional neural network with a different activation function. Time is part of the computation itself. Inputs must be represented as spike trains, neuron states evolve across timesteps, recurrent effects can preserve history, and learning must account for the hard threshold that creates each spike.
+This temporal, stateful behavior creates both the promise and the difficulty of SNNs. Sparse spikes can reduce arithmetic because inactive neurons may require little or no event-driven computation. Yet sparse activity alone does not guarantee lower energy use: memory access, data movement, simulation overhead, software support, and hardware design can dominate the final cost. Training is also difficult because spike generation is discrete, while many optimization methods depend on smooth derivatives.
 
-SNNs are especially compelling when computation can occur only in response to events. Sparse spike activity may avoid unnecessary work, and suitable hardware may replace some dense multiply operations with cheaper accumulations. These advantages are conditional rather than automatic: memory traffic, temporal-state storage, simulation length, activity level, software, and hardware can outweigh arithmetic savings. Accuracy, energy use, biological plausibility, and training cost must therefore be evaluated as separate dimensions.
+The central thread of this garden is therefore:
 
-## The Learning Spine
+> **Biological signal flow motivates spike-based computation; neuron dynamics turn input over time into events; encoding determines what those events represent; learning rules assign credit despite discrete spikes; sparsity creates conditional efficiency opportunities; and configuration-aware evaluation determines whether those opportunities survive in practice.**
 
-The central idea develops through one continuous chain:
+## What You Will Learn
 
-1. Biological neurons integrate incoming signals into a changing membrane potential.
-2. Threshold and ion-channel dynamics turn that changing potential into action potentials.
-3. Repeated action potentials form spike trains whose timing or rate can represent information.
-4. Simplified neuron models retain the essential integration, leakage, threshold, and reset behavior needed for computation.
-5. Networks of these neurons can be interpreted as temporal systems and, in a particular formulation, as constrained optimizers.
-6. Training becomes difficult because spike generation is non-differentiable and neuron states depend on earlier timesteps.
-7. BPTT, surrogate gradients, local timing rules, finite differences, and equilibrium methods address different parts of that difficulty.
-8. Sparse activity can reduce computation only when the training procedure, implementation, and target hardware preserve that sparsity.
-9. Benchmark results become meaningful only when architecture, learning method, dataset, framework, hardware, and evaluation conditions remain aligned.
+You will begin with the physical intuition behind membrane potential, action potentials, refractory behavior, and spike trains. You will then turn that intuition into mathematical neuron models, moving from a conductance-based description to the simpler leaky integrate-and-fire neuron used in many computational systems.
 
-Keep this chain in mind while reading. Each later method answers a problem created by an earlier design choice.
+From there, the focus shifts from individual neurons to learning. You will compare spike encodings, connect SNN dynamics to constrained optimization, follow gradients through time, and examine several ways to handle the non-differentiable spike threshold. These include surrogate gradients, finite differences, information-based objectives, evolving surrogate functions, local timing rules, sparse gradient computation, and implicit differentiation at equilibrium.
+
+The final part connects algorithms to experiments and deployment. You will learn to distinguish activity sparsity from operation count, operation count from memory traffic, and simulated efficiency from hardware-level efficiency. You will also learn why an accuracy value is meaningful only as part of a larger configuration containing the dataset, encoding, architecture, learning method, temporal setup, software framework, and hardware context.
 
 ## How to Learn This Topic
 
-Begin with intuition rather than equations. First understand what a spike represents, why membrane state changes over time, and how a sequence of spikes differs from a single activation. Then study the equations as compact descriptions of behavior you can already explain verbally.
+Treat an SNN as a dynamical system before treating it as a collection of neural-network layers. At each step, ask four questions:
 
-For every neuron model or learning rule, ask four questions:
+1. **What state is stored?** Usually this includes a membrane potential or another time-dependent neural state.
+2. **What changes that state?** Inputs, recurrent interactions, leakage, conductances, and reset rules all matter.
+3. **What event is emitted?** A threshold crossing produces a spike, but the spike's meaning depends on the encoding and observation interval.
+4. **How is the system changed by learning?** A method may use gradients across time, approximate the spike derivative, rely on local timing, or differentiate an equilibrium relation.
 
-- **State:** What quantity persists over time?
-- **Event:** What condition causes a spike or update?
-- **Information:** Is meaning carried by spike count, spike timing, input change, or an equilibrium state?
-- **Cost:** What must be computed, stored, or moved through memory?
+When you encounter an equation, first identify the physical or computational balance it represents. For example, membrane capacitance links net current to voltage change; leakage removes stored voltage; a threshold converts continuous state into a discrete event; and a reset changes the state after that event. Only then follow the algebra.
 
-When comparing methods, do not search for one universally best approach. BPTT supports global temporal credit assignment but requires temporal unrolling. Surrogate gradients provide a usable backward signal but do not make forward spikes continuous. STDP uses local relative timing but serves different optimization goals. Implicit differentiation avoids explicit unrolling only when an equilibrium formulation is appropriate.
-
-Treat efficiency claims with the same care. A lower spike count is evidence of sparse activity, not a complete energy measurement. Always connect activity to timesteps, memory access, training or inference, execution hardware, and implementation details.
+When comparing methods, avoid asking which one is "best" without qualification. Instead ask which problem, representation, architecture, training procedure, software environment, and deployment constraint the method addresses. The same discipline applies to efficiency: keep neural activity, arithmetic operations, memory access, latency, and energy as separate measurements.
 
 ## Recommended Reading Order
 
-Follow the sequence below on a first pass. It moves from physical intuition to mathematical models, then to learning, efficiency, and evaluation.
+The most coherent route follows the causal chain from spikes to models, learning, efficiency, evaluation, and deployment.
 
-### 1. Motivation and Biological Foundations
+### 1. Build the Biological and Computational Intuition
 
-Start with [[learning/1. Why Spiking Neural Networks Matters/_index|1. Why Spiking Neural Networks Matters]] and [[learning/1. Why Spiking Neural Networks Matters/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]] to understand why discrete, event-driven communication is useful and why sparsity alone does not settle the efficiency question.
+Start with [[learning/1. From Spiking Neural Network to Event-driven Computation/_index|1. From Spiking Neural Network to Event-driven Computation]].
 
-Continue through [[learning/2. From Neuron Structure to Synaptic Transmission/_index|2. From Neuron Structure to Synaptic Transmission]]:
+Read:
 
-- [[learning/2. From Neuron Structure to Synaptic Transmission/2.1 Neurons, Synapses, and Membrane Potential|Neurons, Synapses, and Membrane Potential]]
-- [[learning/2. From Neuron Structure to Synaptic Transmission/2.2 Action Potentials, Refractory Dynamics, and Spike Trains|Action Potentials, Refractory Dynamics, and Spike Trains]]
+1. [[learning/1. From Spiking Neural Network to Event-driven Computation/1.1 Why Spiking Neural Networks Exist|Why Spiking Neural Networks Exist]]
+2. [[learning/1. From Spiking Neural Network to Event-driven Computation/1.2 Neurons, Synapses, and Signal Flow|Neurons, Synapses, and Signal Flow]]
+3. [[learning/1. From Spiking Neural Network to Event-driven Computation/1.3 Action Potentials, Refractory Dynamics, and Spike Trains|Action Potentials, Refractory Dynamics, and Spike Trains]]
 
-These pages establish the physical intuition behind integration, threshold events, recovery, and temporal spike patterns.
+These lessons establish why time matters, how membrane state connects input to output, and why a spike train is more than a sequence of independent binary labels.
 
-### 2. Formal Neuron Dynamics and Encoding
+### 2. Learn How Inputs Become Spikes
 
-Read [[learning/3. Describing Capacitive Membrane Current Formally/_index|3. Describing Capacitive Membrane Current Formally]] next:
+Continue with [[learning/5. Rate Encoding and Latency Encoding Compared/_index|5. Rate Encoding and Latency Encoding Compared]], beginning with:
 
-- [[learning/3. Describing Capacitive Membrane Current Formally/3.1 The Hodgkin-Huxley Conductance Model|The Hodgkin-Huxley Conductance Model]]
-- [[learning/3. Describing Capacitive Membrane Current Formally/3.2 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]]
+4. [[learning/5. Rate Encoding and Latency Encoding Compared/5.1 Rate, Latency, and Delta-Modulation Encoding|Rate, Latency, and Delta-Modulation Encoding]]
 
-The Hodgkin-Huxley model expresses voltage change as a balance among capacitive, sodium, potassium, and leak currents. The leaky integrate-and-fire model then keeps a smaller computational core: incoming integration, voltage leakage, threshold crossing, spike emission, and reset.
+Encoding determines what downstream neurons can recover from a spike train. Rate encoding emphasizes event frequency, latency encoding emphasizes timing, and delta modulation emphasizes changes in the input.
 
-After understanding spike generation, move to [[learning/6. Rate Encoding and Latency Encoding Compared/_index|6. Rate Encoding and Latency Encoding Compared]] and [[learning/6. Rate Encoding and Latency Encoding Compared/6.1 Rate, Latency, and Delta-Modulation Encoding|Rate, Latency, and Delta-Modulation Encoding]]. This explains how ordinary inputs become spike trains and distinguishes information carried by spike count, first-spike timing, and changes in the input.
+### 3. Turn Neuron Intuition into Equations
 
-### 3. Optimization and Temporal Credit Assignment
+Move to [[learning/2. Describing Membrane Capacitance Formally/_index|2. Describing Membrane Capacitance Formally]].
 
-Return to [[learning/2. From Neuron Structure to Synaptic Transmission/_index|2. From Neuron Structure to Synaptic Transmission]] for [[learning/2. From Neuron Structure to Synaptic Transmission/2.3 Constraint Geometry in Spiking Networks|Constraint Geometry in Spiking Networks]]. Then continue in [[learning/3. Describing Capacitive Membrane Current Formally/_index|3. Describing Capacitive Membrane Current Formally]] with [[learning/3. Describing Capacitive Membrane Current Formally/3.3 From Convex Optimization to Recurrent Voltage Dynamics|From Convex Optimization to Recurrent Voltage Dynamics]].
+Read:
 
-Together, these pages develop a specific interpretation in which feasible half-planes define a constrained region and spike-like events restore constraint boundaries. This is an interpretation of a particular recurrent construction, not a claim that every SNN solves every convex optimization problem.
+5. [[learning/2. Describing Membrane Capacitance Formally/2.1 The Hodgkin-Huxley Conductance Equation|The Hodgkin-Huxley Conductance Equation]]
+6. [[learning/2. Describing Membrane Capacitance Formally/2.2 The Leaky Integrate-and-Fire Neuron|The Leaky Integrate-and-Fire Neuron]]
+7. [[learning/2. Describing Membrane Capacitance Formally/2.3 Quadratic Objectives and SNN Voltage Dynamics|Quadratic Objectives and SNN Voltage Dynamics]]
+8. [[learning/2. Describing Membrane Capacitance Formally/2.4 Deriving an SNN from Constrained Gradient Dynamics|Deriving an SNN from Constrained Gradient Dynamics]]
 
-Next read:
+This sequence moves from current balance across a membrane to a compact computational neuron, then develops the interpretation of SNN voltage dynamics as constrained optimization.
 
-- [[learning/3. Describing Capacitive Membrane Current Formally/3.4 Backpropagation Through Time|Backpropagation Through Time]]
-- [[learning/2. From Neuron Structure to Synaptic Transmission/2.4 Why Spike Derivatives Need Surrogates|Why Spike Derivatives Need Surrogates]]
+### 4. Understand Temporal Learning
 
-BPTT exposes how a parameter can affect current and future states. The hard spike threshold then creates the derivative problem that motivates surrogate gradients.
+Continue with [[learning/3. Describing Temporal Credit Assignment Formally/_index|3. Describing Temporal Credit Assignment Formally]].
 
-### 4. Training Strategies
+Read:
 
-Continue through [[learning/4. Describing Dspike Surrogate Formally/_index|4. Describing Dspike Surrogate Formally]]:
+9. [[learning/3. Describing Temporal Credit Assignment Formally/3.1 Backpropagation Through Time for Spiking Networks|Backpropagation Through Time for Spiking Networks]]
+10. [[learning/3. Describing Temporal Credit Assignment Formally/3.2 Surrogate Gradients for Discrete Spikes|Surrogate Gradients for Discrete Spikes]]
+11. [[learning/3. Describing Temporal Credit Assignment Formally/3.3 Finite-Difference Gradient Approximation|Finite-Difference Gradient Approximation]]
+12. [[learning/3. Describing Temporal Credit Assignment Formally/3.4 Information-Maximizing and Evolutionary Surrogates|Information-Maximizing and Evolutionary Surrogates]]
 
-- [[learning/4. Describing Dspike Surrogate Formally/4.1 Temperature-Controlled Differentiable Spikes|Temperature-Controlled Differentiable Spikes]]
-- [[learning/4. Describing Dspike Surrogate Formally/4.2 Information-Maximization and Finite-Difference Training|Information-Maximization and Finite-Difference Training]]
-- [[learning/4. Describing Dspike Surrogate Formally/4.3 Spike-Timing-Dependent Plasticity|Spike-Timing-Dependent Plasticity]]
-- [[learning/4. Describing Dspike Surrogate Formally/4.4 Implicit Differentiation at Equilibrium|Implicit Differentiation at Equilibrium]]
+These lessons explain why a loss at a later time can depend on earlier states and weights, why the spike threshold blocks ordinary differentiation, and how different methods construct a usable learning signal.
 
-These approaches should be compared by the training signal they use. Temperature-controlled surrogates modify the backward approximation near threshold. Information-based objectives and finite differences seek alternative signals. STDP updates a synapse from relative spike timing. Implicit differentiation computes sensitivity through an equilibrium condition rather than an explicitly unrolled trajectory.
+### 5. Compare Global, Sparse, Local, and Equilibrium Learning
 
-Then read [[learning/6. Rate Encoding and Latency Encoding Compared/_index|6. Rate Encoding and Latency Encoding Compared]] -> [[learning/6. Rate Encoding and Latency Encoding Compared/6.2 Online and Event-Driven Learning Rules|Online and Event-Driven Learning Rules]] to compare local and online updates with full temporal backpropagation.
+Proceed to [[learning/4. Describing Near-threshold Activity Formally/_index|4. Describing Near-threshold Activity Formally]].
 
-### 5. Deep Training, Sparsity, and Evaluation
+Read:
 
-Move to [[learning/5. Methods and Evaluation/_index|5. Methods and Evaluation]]:
+13. [[learning/4. Describing Near-threshold Activity Formally/4.1 Sparse Surrogate-Gradient Computation|Sparse Surrogate-Gradient Computation]]
+14. [[learning/4. Describing Near-threshold Activity Formally/4.2 Spike-Timing-Dependent Plasticity|Spike-Timing-Dependent Plasticity]]
+15. [[learning/4. Describing Near-threshold Activity Formally/4.3 Implicit Differentiation for Equilibrium SNNs|Implicit Differentiation for Equilibrium SNNs]]
+16. [[learning/4. Describing Near-threshold Activity Formally/4.4 Residual Connections, Initialization, and Temporal Normalization|Residual Connections, Initialization, and Temporal Normalization]]
+17. [[learning/4. Describing Near-threshold Activity Formally/4.5 Measuring Sparse Neural Activity|Measuring Sparse Neural Activity]]
 
-- [[learning/5. Methods and Evaluation/5.1 Training Deep Spiking Networks|Training Deep Spiking Networks]]
-- [[learning/5. Methods and Evaluation/5.2 Active-Neuron Sparsity in Training|Active-Neuron Sparsity in Training]]
+Then return to:
 
-These pages connect residual paths, temporal normalization, initialization, encoding, and gradient choices to deep SNN training. They also distinguish the absolute number of active neurons from an activity ratio normalized by batch size, timestep count, and layer size.
+18. [[learning/5. Rate Encoding and Latency Encoding Compared/5.2 Biologically Motivated Alternatives to Temporal Backpropagation|Biologically Motivated Alternatives to Temporal Backpropagation]]
 
-Next read:
+This part separates several ideas that are easy to conflate. Sparse surrogate training selects which neurons receive gradient computation. Spike-timing-dependent plasticity uses local pre- and postsynaptic timing. Implicit differentiation works from an equilibrium relation. Residual connections, initialization, and temporal normalization address difficulties that arise when SNNs become deep.
 
-- [[learning/2. From Neuron Structure to Synaptic Transmission/2.5 How Sparse Events Can Save Energy|How Sparse Events Can Save Energy]]
-- [[learning/7. Using Memory-access Energy in Practice/_index|7. Using Memory-access Energy in Practice]]
-- [[learning/7. Using Memory-access Energy in Practice/7.1 Memory Access and Hardware Limits|Memory Access and Hardware Limits]]
-- [[learning/7. Using Memory-access Energy in Practice/7.2 Low-Power and Neuromorphic Applications|Low-Power and Neuromorphic Applications]]
+### 6. Reason Carefully About Efficiency
 
-This sequence separates potential arithmetic savings from realized system-level efficiency.
+Return to [[learning/1. From Spiking Neural Network to Event-driven Computation/_index|1. From Spiking Neural Network to Event-driven Computation]] and read:
 
-Finish with:
+19. [[learning/1. From Spiking Neural Network to Event-driven Computation/1.4 Operations, Memory Access, and Energy Cost|Operations, Memory Access, and Energy Cost]]
 
-- [[learning/6. Rate Encoding and Latency Encoding Compared/6.3 Datasets, Frameworks, and Neuromorphic Hardware|Datasets, Frameworks, and Neuromorphic Hardware]]
-- [[learning/6. Rate Encoding and Latency Encoding Compared/6.4 Interpreting SNN Benchmark Results|Interpreting SNN Benchmark Results]]
-- [[learning/7. Using Memory-access Energy in Practice/7.3 Choosing an SNN Training and Evaluation Strategy|Choosing an SNN Training and Evaluation Strategy]]
+This lesson connects normalized activity to practical computation. Reduced activity can reduce arithmetic, but the final benefit depends on memory traffic and the hardware and software that realize event-driven execution.
 
-The final pages bring the topic together by matching neuron dynamics, encoding, learning rules, sparsity, datasets, software, hardware, and metrics to a specific objective.
+### 7. Learn to Evaluate Complete Configurations
+
+Continue through the evaluation path:
+
+20. [[learning/5. Rate Encoding and Latency Encoding Compared/5.3 Choosing Benchmarks and Evaluation Criteria|Choosing Benchmarks and Evaluation Criteria]]
+21. [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.1 SNN Software Frameworks and Neuromorphic Hardware|SNN Software Frameworks and Neuromorphic Hardware]]
+22. [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.2 Encoding and Learning for Event-Based Classification|Encoding and Learning for Event-Based Classification]]
+23. [[learning/6. Snn Software Framework and Neuromorphic Hardware Compared/6.3 Deep SNN Performance on CIFAR Benchmarks|Deep SNN Performance on CIFAR Benchmarks]]
+
+The key habit is to interpret every result as configuration-bound evidence. Static-image and event-based tasks test different capabilities, while framework, architecture, encoding, timestep, and training choices affect what a reported result means.
+
+### 8. Connect Training to Deployment
+
+Finish with [[learning/7. Using Brain-machine Interface in Practice/_index|7. Using Brain-machine Interface in Practice]].
+
+Read:
+
+24. [[learning/7. Using Brain-machine Interface in Practice/7.1 Low-Power and Hardware-Constrained Applications|Low-Power and Hardware-Constrained Applications]]
+25. [[learning/7. Using Brain-machine Interface in Practice/7.2 Choosing an SNN Training and Deployment Strategy|Choosing an SNN Training and Deployment Strategy]]
+
+The final synthesis combines task requirements, learning strategy, activity, memory access, latency, software, and hardware. This is where an SNN becomes a defensible system design rather than an isolated model.
 
 ## Scope
 
-This garden covers the conceptual and mathematical path from biological signaling to computational spiking neurons, spike encoding, recurrent dynamics, major training strategies, sparse execution, neuromorphic deployment, and context-aware evaluation. It introduces the algebra, derivatives, circuit ideas, probability intuition, and dynamical-systems vocabulary only when they become necessary.
+This garden covers the path from biological spike generation to computational neuron models, spike encoding, temporal learning, surrogate and local learning rules, sparse activity, efficiency mechanisms, benchmark interpretation, software frameworks, neuromorphic hardware, and hardware-constrained applications. It develops the membrane, optimization, gradient, activity, and plasticity equations needed to connect those ideas.
 
-The treatment does not attempt a complete survey of neuroscience, deep learning, optimization, or neuromorphic engineering. It does not provide framework installation guides, executable training pipelines, hardware purchasing advice, or independent benchmark reproductions. Detailed ion-channel simulations, full convergence proofs, primary-study-level treatments of every method, and developments beyond the methods covered here remain outside scope.
+The biological treatment is limited to the neuron and membrane concepts required for understanding SNN computation. It does not attempt a comprehensive account of neuroscience or detailed ion-channel biophysics beyond the conductance-based model used here.
 
-By the end, you should be able to explain how an SNN represents temporal information, derive and interpret its central neuron and training equations, compare learning strategies without collapsing their tradeoffs, and evaluate accuracy or efficiency claims under the conditions that make those claims meaningful.
+The learning treatment focuses on the covered optimization and training strategies rather than the full landscape of modern neural-network theory. It does not provide a general-purpose deep-learning course, implementation tutorial, or benchmark reproduction guide.
+
+The evaluation lessons do not establish a universal winner among architectures or learning rules. They teach how to make bounded comparisons without mixing incompatible datasets, encodings, simulation lengths, frameworks, or hardware contexts. Likewise, the efficiency lessons do not assume that every SNN is low-power: practical savings must be demonstrated for the complete implementation and deployment setting.

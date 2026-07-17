@@ -10,6 +10,7 @@ topics: ["least-time-principle-for-refraction", "snells-law-and-bending-directio
 tags: ["diamond-cut-maximizes-light-return", "huygens-principle-derives-refraction", "light-confinement-requires-angle-condition", "oblique-incidence-increases-distortion", "path-length-differs-from-travel-time", "refraction-follows-time-minimization", "sine-ratio-constrains-refraction", "sine-ratio-sets-critical-angle", "snell-law-derives-refraction", "snell-law-relates-interface-angles"]
 source_images: ["/physics-for-ee/assets/977689-english-page-001.png", "/physics-for-ee/assets/977689-english-page-002.png", "/physics-for-ee/assets/977689-english-page-003.png", "/physics-for-ee/assets/977689-english-page-004.png", "/physics-for-ee/assets/977689-english-page-005.png", "/physics-for-ee/assets/977689-english-page-006.png", "/physics-for-ee/assets/977689-english-page-007.png", "/physics-for-ee/assets/977689-english-page-008.png", "/physics-for-ee/assets/977689-english-page-009.png", "/physics-for-ee/assets/977689-english-page-010.png", "/physics-for-ee/assets/977689-english-page-011.png", "/physics-for-ee/assets/977689-english-page-012.png", "/physics-for-ee/assets/977689-english-page-013.png", "/physics-for-ee/assets/977689-english-page-014.png"]
 source_pdf: "/physics-for-ee/assets/977689-english-source.pdf"
+flag_color: "#60a5fa"
 ---
 
 ## Summary
