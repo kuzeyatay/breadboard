@@ -42,6 +42,14 @@ import {
   type KnowledgeClaimPlan,
   type SemanticConceptPlan,
 } from "./semantic-core.ts";
+import type {
+  ContractInteractiveVisualPlan,
+  InteractiveVisualIntent,
+  InteractiveVisualNecessity,
+  PreferredTeachingMedium,
+  TeachingMediumPlan,
+  VisualNecessityDecision,
+} from "./visual-necessity-types.ts";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -119,19 +127,7 @@ export interface FigureReusePolicy {
   reason: string;
 }
 
-export interface InteractiveVisualContract {
-  id: string;
-  uniqueConcept: string;
-  visualType: string;
-  whyStaticSourceFigureIsNotEnough: string;
-  learnerManipulates: string[];
-  expectedInsight: string;
-  sourceAnchors: string[];
-  /** Stable dedupe key; if two units share it, that is a duplicate visual. */
-  duplicateSignature: string;
-  /** Set when this visual reuses/links back to an earlier unit's visual. */
-  reuseOf?: string;
-}
+export type InteractiveVisualContract = InteractiveVisualIntent;
 
 export interface ZettelNote {
   handle: string;
@@ -155,6 +151,10 @@ export interface LearningUnitContract {
   sourceTables: SourceTableContract[];
 
   interactiveVisual?: InteractiveVisualContract;
+  /** Necessity is decided before renderer/type routing. Only `required` is a hard blocker. */
+  interactiveVisualPlan?: ContractInteractiveVisualPlan;
+  /** The best teaching medium even when no interactive visual is selected. */
+  teachingMediumPlan?: TeachingMediumPlan;
 
   zettelNotes: ZettelNote[];
 
@@ -1194,6 +1194,135 @@ function normalizeInteractiveVisual(raw: unknown): InteractiveVisualContract | u
   return provisional;
 }
 
+const VISUAL_NECESSITIES: readonly InteractiveVisualNecessity[] = [
+  "required",
+  "recommended",
+  "optional",
+  "not_needed",
+  "harmful_or_distracting",
+];
+const TEACHING_MEDIA: readonly PreferredTeachingMedium[] = [
+  "interactive_visual",
+  "source_figure",
+  "generated_static_diagram",
+  "formula_derivation",
+  "worked_example",
+  "comparison_table",
+  "timeline",
+  "prose",
+  "no_additional_visual",
+];
+
+function normalizedScore(value: unknown): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.min(1, numeric)) : 0;
+}
+
+function normalizeVisualNecessityDecision(
+  raw: unknown,
+  fallbackUnitId: string,
+): VisualNecessityDecision | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Record<string, unknown>;
+  const necessity = compact(record.necessity) as InteractiveVisualNecessity;
+  const preferredMedium = compact(record.preferredMedium) as PreferredTeachingMedium;
+  if (!VISUAL_NECESSITIES.includes(necessity) || !TEACHING_MEDIA.includes(preferredMedium)) {
+    return undefined;
+  }
+  const evidenceRecord =
+    record.evidence && typeof record.evidence === "object"
+      ? (record.evidence as Record<string, unknown>)
+      : {};
+  return {
+    unitId: compact(record.unitId) || fallbackUnitId,
+    pageId: compact(record.pageId) || fallbackUnitId,
+    necessity,
+    preferredMedium,
+    learningGoal: compact(record.learningGoal),
+    manipulationValue: normalizedScore(record.manipulationValue),
+    dynamicBehaviorValue: normalizedScore(record.dynamicBehaviorValue),
+    comparisonValue: normalizedScore(record.comparisonValue),
+    spatialValue: normalizedScore(record.spatialValue),
+    parameterSensitivityValue: normalizedScore(record.parameterSensitivityValue),
+    sourceFigureSufficiency: normalizedScore(record.sourceFigureSufficiency),
+    proseSufficiency: normalizedScore(record.proseSufficiency),
+    formulaSufficiency: normalizedScore(record.formulaSufficiency),
+    workedExampleSufficiency: normalizedScore(record.workedExampleSufficiency),
+    cognitiveLoadRisk: normalizedScore(record.cognitiveLoadRisk),
+    duplicationRisk: normalizedScore(record.duplicationRisk),
+    implementationRisk: normalizedScore(record.implementationRisk),
+    ...(compact(record.recommendedVisualType)
+      ? { recommendedVisualType: compact(record.recommendedVisualType) }
+      : {}),
+    evidence: {
+      unitRole: compact(evidenceRecord.unitRole),
+      concepts: asStringArray(evidenceRecord.concepts),
+      learningQuestion: compact(evidenceRecord.learningQuestion),
+      sourceAnchorIds: asStringArray(evidenceRecord.sourceAnchorIds),
+      nearbyVisualIntentIds: asStringArray(evidenceRecord.nearbyVisualIntentIds),
+    },
+    reason: compact(record.reason),
+  };
+}
+
+function normalizeContractInteractiveVisualPlan(
+  raw: unknown,
+  unitId: string,
+  fallbackIntent?: InteractiveVisualContract,
+): ContractInteractiveVisualPlan | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Record<string, unknown>;
+  const decision = normalizeVisualNecessityDecision(record.decision, unitId);
+  const requirement = compact(record.requirement) as ContractInteractiveVisualPlan["requirement"];
+  if (!decision || !["required", "recommended", "optional", "none"].includes(requirement)) {
+    return undefined;
+  }
+  const visualIntent = normalizeInteractiveVisual(record.visualIntent) ?? fallbackIntent;
+  return {
+    decision,
+    requirement,
+    ...(requirement !== "none" && visualIntent ? { visualIntent } : {}),
+    ...(compact(record.omissionReason) ? { omissionReason: compact(record.omissionReason) } : {}),
+    ...(["covered", "uncovered", "unverified"].includes(compact(record.alternativeCoverage))
+      ? {
+          alternativeCoverage: compact(
+            record.alternativeCoverage,
+          ) as ContractInteractiveVisualPlan["alternativeCoverage"],
+        }
+      : {}),
+  };
+}
+
+function normalizeTeachingMediumPlan(
+  raw: unknown,
+  unitId: string,
+): TeachingMediumPlan | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Record<string, unknown>;
+  const preferredMedium = compact(record.preferredMedium) as PreferredTeachingMedium;
+  if (!TEACHING_MEDIA.includes(preferredMedium)) return undefined;
+  return {
+    unitId: compact(record.unitId) || unitId,
+    preferredMedium,
+    ...(compact(record.sourceFigureAnchorId)
+      ? { sourceFigureAnchorId: compact(record.sourceFigureAnchorId) }
+      : {}),
+    ...(compact(record.staticDiagramIntent)
+      ? { staticDiagramIntent: compact(record.staticDiagramIntent) }
+      : {}),
+    ...(asStringArray(record.formulaAnchorIds).length > 0
+      ? { formulaAnchorIds: asStringArray(record.formulaAnchorIds) }
+      : {}),
+    ...(compact(record.workedExampleIntent)
+      ? { workedExampleIntent: compact(record.workedExampleIntent) }
+      : {}),
+    ...(compact(record.comparisonTableIntent)
+      ? { comparisonTableIntent: compact(record.comparisonTableIntent) }
+      : {}),
+    reason: compact(record.reason),
+  };
+}
+
 function normalizeZettelNote(raw: unknown): ZettelNote | null {
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const claim = compact(record.claim ?? record.note ?? record.statement);
@@ -1235,7 +1364,18 @@ export function dropIncompatibleInteractiveVisuals(
     const compat = visualTypeCompatibleWithUnit(unit.interactiveVisual.visualType, unit);
     if (compat.ok) return unit;
     dropped.push(`${unit.id} (${unit.title}): dropped ${unit.interactiveVisual.visualType} — ${compat.reason}`);
-    return { ...unit, interactiveVisual: undefined };
+    return {
+      ...unit,
+      interactiveVisual: undefined,
+      ...(unit.interactiveVisualPlan
+        ? {
+            interactiveVisualPlan: {
+              ...unit.interactiveVisualPlan,
+              visualIntent: undefined,
+            },
+          }
+        : {}),
+    };
   });
   return { units: sanitized, dropped };
 }
@@ -1260,6 +1400,7 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
     id = id.replace(/[^A-Za-z0-9_.-]/g, "-");
     while (usedIds.has(id)) id = `${id}x`;
     usedIds.add(id);
+    const interactiveVisual = normalizeInteractiveVisual(record.interactiveVisual);
     const unit: LearningUnitContract = {
       id,
       title,
@@ -1271,7 +1412,13 @@ export function normalizeLearningUnits(raw: unknown): LearningUnitContract[] {
       sourceFigures: asArray(record.sourceFigures).map(normalizeFigure).filter(Boolean) as SourceFigureContract[],
       sourceFormulas: asArray(record.sourceFormulas).map(normalizeFormula).filter(Boolean) as SourceFormulaContract[],
       sourceTables: asArray(record.sourceTables).map(normalizeTable).filter(Boolean) as SourceTableContract[],
-      interactiveVisual: normalizeInteractiveVisual(record.interactiveVisual),
+      interactiveVisual,
+      interactiveVisualPlan: normalizeContractInteractiveVisualPlan(
+        record.interactiveVisualPlan,
+        id,
+        interactiveVisual,
+      ),
+      teachingMediumPlan: normalizeTeachingMediumPlan(record.teachingMediumPlan, id),
       zettelNotes: asArray(record.zettelNotes).map(normalizeZettelNote).filter(Boolean) as ZettelNote[],
       semanticConcepts: asArray(record.semanticConcepts)
         .map(normalizedConceptPlan)
@@ -1649,6 +1796,8 @@ function subsectionFromUnit(unit: LearningUnitContract): LearningSubsectionPlan 
     sourceTableContracts: unit.sourceTables,
     sourceArtifactAssignments: assignSourceArtifacts([unit]),
     interactiveVisualContract: unit.interactiveVisual,
+    interactiveVisualPlan: unit.interactiveVisualPlan,
+    teachingMediumPlan: unit.teachingMediumPlan,
     zettelNotes: unit.zettelNotes,
     semanticConcepts: semanticConceptsForUnit(unit),
     knowledgeClaims: knowledgeClaimsForUnit(unit),

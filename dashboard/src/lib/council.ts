@@ -19,6 +19,7 @@ export type CouncilTaskType =
   | 'full_page_revision'
   | 'subsection_repair'
   | 'visualization_generation'
+  | 'visual_necessity_review'
   | 'small_revision'
   | 'critique'
   | 'page_assistant_answer'

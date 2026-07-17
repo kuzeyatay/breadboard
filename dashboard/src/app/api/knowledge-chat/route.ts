@@ -7,7 +7,10 @@ import type {
   ResponseStreamEvent,
 } from 'openai/resources/responses/responses';
 import { DEFAULT_MODEL } from '@/lib/ai-models';
-import { normalizeAssistantReasoningEffort } from '@/lib/assistant-reasoning';
+import {
+  normalizeAssistantReasoningEffort,
+  toOpenAiReasoningEffort,
+} from '@/lib/assistant-reasoning';
 import {
   chatTokenUsageEventFromResponse,
   type ChatTokenUsageStreamEvent,
@@ -269,7 +272,7 @@ export async function POST(request: Request) {
       ...(thinkingEnabled
         ? {
             reasoning: {
-              effort: selectedReasoningEffort,
+              effort: toOpenAiReasoningEffort(selectedReasoningEffort),
               summary: 'auto' as const,
             },
           }

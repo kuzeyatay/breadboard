@@ -343,21 +343,20 @@ describe("learn route and council wiring", () => {
     assert.match(cancelRouteSource, /await cancelLatestLearnJob/);
   });
 
-  test("regenerate clears the source map and always replans", () => {
+  test("legacy regenerate maps to scoped repair and never replans", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
     const regenerateRouteSource = fs.readFileSync(
       path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "learn", "regenerate", "route.ts"),
       "utf8",
     );
 
-    assert.match(learnSource, /function clearSourceMapForRegeneration/);
-    assert.match(learnSource, /removeClusterPath\(clusterDir, "\.breadboard\/planning"/);
-    assert.match(learnSource, /resetSourceMap \? "regenerate" : "plan"/);
-    assert.match(regenerateRouteSource, /runLearnPlanning/);
-    assert.match(regenerateRouteSource, /resetSourceMap: true/);
-    assert.match(regenerateRouteSource, /sourceMapReset: true/);
+    assert.match(learnSource, /resetSourceMap \? "full_rebuild" : "plan"/);
+    assert.match(regenerateRouteSource, /runLearnRepairOperation/);
+    assert.match(regenerateRouteSource, /legacyDefault: "repair"/);
+    assert.doesNotMatch(regenerateRouteSource, /runLearnPlanning/);
+    assert.doesNotMatch(regenerateRouteSource, /resetSourceMap: true/);
     assert.doesNotMatch(regenerateRouteSource, /runTextbookGeneration/);
-    assert.doesNotMatch(regenerateRouteSource, /getLearnStatusSnapshot/);
+    assert.match(learnSource, /Scoped repair must use runLearnRepairOperation; it cannot enter the full page-generation loop/);
   });
 });
 

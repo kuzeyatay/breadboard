@@ -733,18 +733,22 @@ function scoreCandidate(
     ? 1
     : Math.max(0, 1 - vocab.unsupportedTerms.length / Math.max(1, vocab.unsupportedTerms.length + vocab.gardenTerms.length + vocab.universalTerms.length));
 
-  // Role coverage: template/fallback candidates are constructed FOR the primary
-  // purpose, so they cover it by construction; an existing title is judged by
-  // whether its own vocabulary points at the right family.
-  const constructed = source === "semantic_template" || source === "universal_fallback";
   const families = titlePurposeFamilies(bare);
-  const primaryFamily = purposeFamily(intent.primaryPurpose);
-  const hintCoversPrimary = families.has(primaryFamily);
-  const hintCoversSecondary = intent.secondaryPurposes.some((purpose) => families.has(purposeFamily(purpose)));
-  const roleCoverageScore = constructed
-    ? 1
-    : (hintCoversPrimary ? 0.7 : 0) + (hintCoversSecondary ? 0.3 : 0);
-  if (!constructed && !hintCoversPrimary) problems.push(`title vocabulary does not reflect the section's ${intent.primaryPurpose} purpose`);
+  const allRequiredFamilies = [
+    ...new Set([intent.primaryPurpose, ...intent.secondaryPurposes].map(purposeFamily)),
+  ];
+  const foregroundFamilies = allRequiredFamilies.filter(
+    (family) => family !== "motivation" && family !== "synthesis",
+  );
+  const requiredFamilies = foregroundFamilies.length > 0 ? foregroundFamilies : allRequiredFamilies;
+  const coveredFamilies = requiredFamilies.filter((family) => families.has(family));
+  const roleCoverageScore = requiredFamilies.length > 0
+    ? coveredFamilies.length / requiredFamilies.length
+    : 1;
+  if (roleCoverageScore < 1) {
+    const missing = requiredFamilies.filter((family) => !families.has(family));
+    problems.push(`title vocabulary omits the section's ${missing.join(", ")} purpose`);
+  }
 
   const conceptCoverageScore = conceptCoverage(bare, intent.focusConcepts);
   const uniquenessScore = otherTitleKeys.has(normalizeTitleKey(bare)) ? 0 : 1;
@@ -767,7 +771,7 @@ function candidateValid(candidate: SectionTitleCandidate): boolean {
     candidate.vocabularyProvenanceScore === 1 &&
     candidate.naturalnessScore === 1 &&
     candidate.uniquenessScore === 1 &&
-    candidate.roleCoverageScore > 0
+    candidate.roleCoverageScore === 1
   );
 }
 

@@ -134,6 +134,10 @@ type LearnStatus =
   | "idle"
   | "planning"
   | "awaiting_confirmation"
+  | "analyzing_issues"
+  | "repairing"
+  | "revalidating"
+  | "publishing_repair"
   | "generating_learning_pages"
   | "generating_textbook"
   | "generating_visuals"
@@ -213,6 +217,22 @@ interface LearnStatusResponse {
   sourceSetChanged?: boolean;
   buttonLabel?: string;
   validationReport?: LearnValidationReportInfo | null;
+  scopedRepair?: {
+    repairId: string;
+    issueCount: number;
+    unitIds: string[];
+    pageIds: string[];
+    sectionIds: string[];
+    visualIds: string[];
+    changedFiles: string[];
+    modelCalls: number;
+    blockersBefore: number;
+    blockersAfter: number;
+    unaffectedPageHashesVerified: boolean;
+    accepted: boolean;
+    publishReady: boolean;
+    reason: string;
+  } | null;
   error?: string;
 }
 
@@ -442,6 +462,10 @@ function formatElapsed(ms: number): string {
 function isLearnActive(status?: LearnStatus): boolean {
   return (
     status === "planning" ||
+    status === "analyzing_issues" ||
+    status === "repairing" ||
+    status === "revalidating" ||
+    status === "publishing_repair" ||
     status === "generating_learning_pages" ||
     status === "generating_textbook" ||
     status === "generating_visuals" ||
@@ -2018,7 +2042,7 @@ export default function WorkspaceClient({
   // ── Chat submit ─────────────────────────────────────────────────────────────
 
   const postLearnAction = useCallback(async (
-    endpoint: "plan" | "confirm" | "generate" | "regenerate" | "cancel",
+    endpoint: "plan" | "confirm" | "generate" | "regenerate" | "rebuild" | "cancel",
     body: Record<string, unknown> = {},
   ) => {
     const isCancel = endpoint === "cancel";
@@ -2064,14 +2088,13 @@ export default function WorkspaceClient({
         if (!learnSkipManualReviewRef.current) {
           addToast("Learning map ready to review", "success");
         }
-      } else if (endpoint === "regenerate" && data.planning) {
-        if (!learnSkipManualReviewRef.current) {
-          addToast("Learning map ready to review", "success");
-        }
+      } else if (endpoint === "regenerate") {
+        addToast("Issues repaired; unaffected pages were preserved", "success");
+      } else if (endpoint === "rebuild") {
+        addToast("Garden rebuilt", "success");
       } else if (
         endpoint === "confirm" ||
-        endpoint === "generate" ||
-        endpoint === "regenerate"
+        endpoint === "generate"
       ) {
         addToast("Lessons generated", "success");
       } else if (endpoint === "cancel") {
@@ -2118,7 +2141,9 @@ export default function WorkspaceClient({
         learnState.latestTextbookVersionId || learnState.hasTextbook
           ? "regenerate"
           : "generate",
-        { confirmedLearningMapId: learnState.confirmedLearningMapId },
+        learnState.latestTextbookVersionId || learnState.hasTextbook
+          ? { mode: "repair" }
+          : { confirmedLearningMapId: learnState.confirmedLearningMapId },
       );
       return;
     }
@@ -2135,9 +2160,18 @@ export default function WorkspaceClient({
     await postLearnAction("plan");
   }
 
-  async function handleRegenerateLessons() {
+  async function handleRepairIssues() {
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
-    await postLearnAction("regenerate");
+    await postLearnAction("regenerate", { mode: "repair" });
+  }
+
+  async function handleFullRebuild() {
+    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
+    const confirmed = window.confirm(
+      "This will regenerate the Learning Map, Learning Unit Contract, all learner pages, and interactive visuals.\n\nUse Repair issues when only validation errors need to be fixed.",
+    );
+    if (!confirmed) return;
+    await postLearnAction("rebuild", { mode: "full_rebuild", forceFullRebuild: true });
   }
 
   async function handleGenerateAfterCancellation() {
@@ -2551,6 +2585,10 @@ export default function WorkspaceClient({
       learnBusy || active || status === "awaiting_confirmation";
     const activeStageMessage: Partial<Record<LearnStatus, string>> = {
       planning: "Planning the Learning Map",
+      analyzing_issues: "Analyzing validation issues",
+      repairing: "Repairing affected pages and components",
+      revalidating: "Revalidating the complete garden",
+      publishing_repair: "Publishing repaired projection",
       generating_learning_pages: "Writing lesson pages",
       generating_textbook: "Writing lesson pages",
       generating_visuals: "Generating lesson visuals",
@@ -2568,7 +2606,7 @@ export default function WorkspaceClient({
             : status === "awaiting_confirmation"
               ? "Learning Map ready for review."
               : learnState?.hasTextbook
-                ? "Ready to regenerate lessons."
+                ? "Ready to repair current validation issues."
                 : "Ready to generate lessons.";
     const stageMessage =
       job?.currentStep || activeStageMessage[status] || (active ? "Creating lessons" : "");
@@ -2634,6 +2672,11 @@ export default function WorkspaceClient({
               {statusDetails.length > 0 ? (
                 <p className="text-[11px] leading-5 text-gray-600">
                   {statusDetails.join(" ")}
+                </p>
+              ) : null}
+              {learnState?.scopedRepair ? (
+                <p className="mt-1 text-[11px] leading-5 text-cyan-300/80">
+                  Last repair: {learnState.scopedRepair.issueCount} issue{learnState.scopedRepair.issueCount === 1 ? "" : "s"}, {learnState.scopedRepair.visualIds.length} visual block{learnState.scopedRepair.visualIds.length === 1 ? "" : "s"}, {learnState.scopedRepair.pageIds.length} affected page{learnState.scopedRepair.pageIds.length === 1 ? "" : "s"}; {learnState.scopedRepair.unaffectedPageHashesVerified ? "unaffected pages preserved" : "preservation check failed"}. Blockers {learnState.scopedRepair.blockersBefore} → {learnState.scopedRepair.blockersAfter}.
                 </p>
               ) : null}
             </div>
@@ -2764,8 +2807,9 @@ export default function WorkspaceClient({
             {status === "complete" && (
               <button
                 type="button"
-                onClick={handleRegenerateLessons}
+                onClick={handleRepairIssues}
                 disabled={!canStart}
+                title="Repairs only failing pages and components; unaffected content is preserved"
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {learnBusy ? (
@@ -2786,7 +2830,18 @@ export default function WorkspaceClient({
                     />
                   </svg>
                 )}
-                {learnBusy ? "Regenerating..." : "Regenerate"}
+                {learnBusy ? "Repairing..." : "Repair issues"}
+              </button>
+            )}
+            {(status === "complete" || status === "failed") && (
+              <button
+                type="button"
+                onClick={handleFullRebuild}
+                disabled={!canStart}
+                className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
+              >
+                Rebuild entire garden
               </button>
             )}
             {showPrimaryAction && (
@@ -2794,7 +2849,7 @@ export default function WorkspaceClient({
                 type="button"
                 onClick={
                   status === "failed"
-                    ? handleRegenerateLessons
+                    ? handleRepairIssues
                     : status === "cancelled"
                       ? handleGenerateAfterCancellation
                       : handleLearnPrimary
@@ -2805,8 +2860,8 @@ export default function WorkspaceClient({
                 {learnBusy || active ? <Spinner className="h-3.5 w-3.5" /> : null}
                 {status === "failed"
                   ? learnBusy
-                    ? "Regenerating..."
-                    : "Regenerate"
+                    ? "Repairing..."
+                    : "Repair issues"
                   : status === "cancelled"
                     ? learnBusy
                       ? "Generating..."

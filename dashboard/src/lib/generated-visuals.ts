@@ -1026,23 +1026,40 @@ export function runGeneratedVisualBrowserTests(input: {
   htmlPaths.push(screenshotHtmlPath);
   fs.writeFileSync(screenshotHtmlPath, previewHtml(input.definition, runtime, "light"), "utf-8");
   const screenshotUrl = pathToFileURL(screenshotHtmlPath).href;
-  const screenshot = spawnSync(
-    executable,
-    [
-      "--headless=new",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--no-first-run",
-      "--window-size=1000,720",
-      "--virtual-time-budget=2500",
-      `--screenshot=${screenshotPath}`,
-      screenshotUrl,
-    ],
-    { encoding: "utf-8", timeout, windowsHide: true },
-  );
-  const screenshotCreated = screenshot.status === 0 && fs.existsSync(screenshotPath);
-  tests.push({ name: "preview screenshot", passed: screenshotCreated });
+  const captureScreenshot = () =>
+    spawnSync(
+      executable,
+      [
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--window-size=1000,720",
+        "--virtual-time-budget=2500",
+        `--screenshot=${screenshotPath}`,
+        screenshotUrl,
+      ],
+      { encoding: "utf-8", timeout, windowsHide: true },
+    );
+  let screenshot = captureScreenshot();
+  let screenshotCreated = screenshot.status === 0 && fs.existsSync(screenshotPath);
+  // Headless Edge can intermittently fail to create a screenshot while other
+  // browser checks are finishing. Retry only the capture once; lesson/model
+  // generation is not repeated for this disposable preview artifact.
+  if (!screenshotCreated) {
+    fs.rmSync(screenshotPath, { force: true });
+    screenshot = captureScreenshot();
+    screenshotCreated = screenshot.status === 0 && fs.existsSync(screenshotPath);
+  }
+  tests.push({
+    name: "preview screenshot",
+    passed: screenshotCreated,
+    detail: screenshotCreated
+      ? "created"
+      : screenshot.error?.message || String(screenshot.stderr || "Screenshot was not created").slice(-500),
+  });
   try {
     for (const htmlPath of htmlPaths) fs.rmSync(htmlPath, { force: true });
   } catch {

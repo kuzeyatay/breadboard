@@ -1,8 +1,25 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import type { LearningUnitContract, LearningUnitRole } from "./learning-unit-contract.ts";
+import {
+  visualTypeCompatibleWithUnit,
+  type LearningUnitContract,
+  type LearningUnitRole,
+} from "./learning-unit-contract.ts";
 import type { ProposedLearningMap } from "./learn-utils.ts";
+import {
+  deriveGardenVisualBudget,
+  planGardenVisualNecessity,
+  saveVisualNecessityArtifacts,
+} from "./visual-necessity.ts";
+import type {
+  ContractInteractiveVisualPlan,
+  GardenVisualBudget,
+  InteractiveVisualIntent,
+  TeachingMediumPlan,
+  VisualDecisionOverride,
+  VisualNecessityDecision,
+} from "./visual-necessity-types.ts";
 import {
   TRUSTED_RENDERER_REGISTRY,
   trustedRenderer,
@@ -71,6 +88,8 @@ export interface VisualizationOpportunity {
   priority: "critical" | "high" | "medium" | "low";
   confidence: number;
   similarityFingerprint: string;
+  necessityDecision: VisualNecessityDecision;
+  requirement: ContractInteractiveVisualPlan["requirement"];
 }
 
 export interface VisualizationRouteDecision {
@@ -106,6 +125,12 @@ export interface VisualizationPlan {
   generatedAt: string;
   opportunities: VisualizationOpportunity[];
   decisions: VisualizationRouteDecision[];
+  visualNecessityDecisions: VisualNecessityDecision[];
+  teachingMedia: TeachingMediumPlan[];
+  visualBudget: GardenVisualBudget;
+  visualDecisionOverrides: VisualDecisionOverride[];
+  necessityReviewCalls: number;
+  rejectedNecessityReviews: number;
 }
 
 export interface VisualizationPublicationOutcome {
@@ -120,9 +145,6 @@ export interface VisualizationPublicationOutcome {
     | "failed_critic";
   reason?: string;
 }
-
-const INTERACTION_TERMS =
-  /formula|equation|variable|parameter|curve|graph|distribution|causal|feedback|process|step|timeline|state|transition|algorithm|mechanism|simulate|dynamic|compare|trade[- ]?off|network|hierarchy|geometry|boundary|optimization/i;
 
 function stableHash(value: unknown, length = 20): string {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, length);
@@ -172,18 +194,10 @@ function interactionGoalForUnit(unit: LearningUnitContract): VisualizationIntera
 }
 
 function priorityForUnit(unit: LearningUnitContract): VisualizationOpportunity["priority"] {
-  if (unit.sourceFormulas.length > 0 && unit.role === "formula") return "critical";
-  if (
-    unit.interactiveVisual ||
-    unit.role === "mechanism" ||
-    unit.role === "comparison" ||
-    unit.role === "training_method"
-  ) {
-    return "high";
-  }
-  if (unit.sourceFigures.length > 0 || unit.sourceTables.length > 0 || INTERACTION_TERMS.test(unitText(unit))) {
-    return "medium";
-  }
+  const requirement = unit.interactiveVisualPlan?.requirement;
+  if (requirement === "required") return "critical";
+  if (requirement === "recommended") return "high";
+  if (requirement === "optional") return "medium";
   return "low";
 }
 
@@ -267,7 +281,13 @@ export function analyzeVisualizationOpportunities(input: {
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
 }): VisualizationOpportunity[] {
-  return input.learningUnits.map((unit) => {
+  return input.learningUnits
+    .filter((unit) => {
+      const requirement = unit.interactiveVisualPlan?.requirement;
+      return requirement === "required" || requirement === "recommended" || requirement === "optional";
+    })
+    .map((unit) => {
+    const visualPlan = unit.interactiveVisualPlan!;
     const priority = priorityForUnit(unit);
     const interactionGoal = interactionGoalForUnit(unit);
     const target = subsectionTarget(input.learningMap, unit.id, unit.title);
@@ -338,6 +358,8 @@ export function analyzeVisualizationOpportunities(input: {
       priority,
       confidence: unit.interactiveVisual ? 0.95 : priority === "low" ? 0.65 : 0.82,
       similarityFingerprint: fingerprint,
+      necessityDecision: visualPlan.decision,
+      requirement: visualPlan.requirement,
     };
   });
 }
@@ -394,6 +416,7 @@ export function selectVisualizationRoutes(input: {
     }
 
     const scored = TRUSTED_RENDERER_REGISTRY.renderers
+      .filter((renderer) => visualTypeCompatibleWithUnit(renderer.id, unit).ok)
       .map((renderer) => ({ renderer, score: compatibilityScore(opportunity, unit, renderer) }))
       .sort((left, right) => right.score - left.score || left.renderer.id.localeCompare(right.renderer.id));
     const best = scored[0];
@@ -408,12 +431,12 @@ export function selectVisualizationRoutes(input: {
       continue;
     }
 
-    if (opportunity.priority === "low") {
+    if (opportunity.requirement === "optional") {
       decisions.push({
         opportunityId: opportunity.id,
         route: "intentional_omission",
         compatibilityScore: best?.score,
-        reason: opportunity.pedagogicalReason,
+        reason: `Optional interaction omitted because no trusted renderer cleared the compatibility threshold. ${opportunity.pedagogicalReason}`,
       });
       continue;
     }
@@ -438,16 +461,113 @@ export function buildVisualizationPlan(input: {
   gardenId: string;
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
+  necessityReviewCalls?: number;
+  rejectedNecessityReviews?: number;
+  visualDecisionOverrides?: VisualDecisionOverride[];
 }): VisualizationPlan {
-  const opportunities = analyzeVisualizationOpportunities(input);
-  const selected = selectVisualizationRoutes({ opportunities, learningUnits: input.learningUnits });
+  const hasPersistedNecessity =
+    input.learningUnits.length > 0 &&
+    input.learningUnits.every((unit) => unit.interactiveVisualPlan && unit.teachingMediumPlan);
+  const necessityPlan = hasPersistedNecessity
+    ? {
+        learningUnits: input.learningUnits,
+        decisions: input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
+        teachingMedia: input.learningUnits.map((unit) => unit.teachingMediumPlan!),
+        budget: deriveGardenVisualBudget(
+          input.learningUnits,
+          input.learningUnits.map((unit) => unit.interactiveVisualPlan!.decision),
+        ),
+        overrides: input.visualDecisionOverrides ?? [],
+      }
+    : planGardenVisualNecessity({
+        gardenId: input.gardenId,
+        learningUnits: input.learningUnits,
+      });
+  const opportunities = analyzeVisualizationOpportunities({
+    ...input,
+    learningUnits: necessityPlan.learningUnits,
+  });
+  const selected = selectVisualizationRoutes({
+    opportunities,
+    learningUnits: necessityPlan.learningUnits,
+  });
   return {
     schemaVersion: 1,
     gardenId: input.gardenId,
     generatedAt: new Date().toISOString(),
     opportunities: selected.opportunities,
     decisions: selected.decisions,
+    visualNecessityDecisions: necessityPlan.decisions,
+    teachingMedia: necessityPlan.teachingMedia,
+    visualBudget: necessityPlan.budget,
+    visualDecisionOverrides: necessityPlan.overrides,
+    necessityReviewCalls: input.necessityReviewCalls ?? 0,
+    rejectedNecessityReviews: input.rejectedNecessityReviews ?? 0,
   };
+}
+
+/** Attach renderer/type intent only after necessity and garden coordination. */
+export function applyVisualizationRoutesToLearningUnits(
+  learningUnits: LearningUnitContract[],
+  plan: VisualizationPlan,
+): LearningUnitContract[] {
+  const opportunityByUnit = new Map(plan.opportunities.map((item) => [item.learningUnitId, item]));
+  const routeByOpportunity = new Map(plan.decisions.map((item) => [item.opportunityId, item]));
+  return learningUnits.map((unit) => {
+    const visualPlan = unit.interactiveVisualPlan;
+    if (!visualPlan || visualPlan.requirement === "none") {
+      return { ...unit, interactiveVisual: undefined };
+    }
+    const opportunity = opportunityByUnit.get(unit.id);
+    const route = opportunity ? routeByOpportunity.get(opportunity.id) : undefined;
+    if (!opportunity || !route || route.route === "intentional_omission") {
+      return {
+        ...unit,
+        interactiveVisual: undefined,
+        interactiveVisualPlan: {
+          ...visualPlan,
+          visualIntent: undefined,
+          omissionReason: route?.reason ?? visualPlan.omissionReason,
+        },
+      };
+    }
+    const candidateType = route.selectedRenderer ?? visualPlan.decision.recommendedVisualType;
+    const selectedType = candidateType && visualTypeCompatibleWithUnit(candidateType, unit).ok
+      ? candidateType
+      : undefined;
+    if (!selectedType) {
+      return {
+        ...unit,
+        interactiveVisual: undefined,
+        interactiveVisualPlan: {
+          ...visualPlan,
+          decision: { ...visualPlan.decision, recommendedVisualType: undefined },
+          visualIntent: undefined,
+        },
+      };
+    }
+    const intent: InteractiveVisualIntent = visualPlan.visualIntent ?? {
+      id: opportunity.id,
+      uniqueConcept: opportunity.learningObjective,
+      visualType: selectedType,
+      whyStaticSourceFigureIsNotEnough: opportunity.pedagogicalReason,
+      learnerManipulates: opportunity.requiredInputs.map((item) => item.label),
+      expectedInsight: opportunity.requiredOutputs.map((item) => item.label).join("; "),
+      sourceAnchors: [...new Set([...opportunity.sourceAnchorIds, ...opportunity.sourceVisualIds])],
+      duplicateSignature: opportunity.similarityFingerprint,
+    };
+    const typedIntent = { ...intent, visualType: selectedType };
+    return {
+      ...unit,
+      interactiveVisual: typedIntent,
+      interactiveVisualPlan: {
+        ...visualPlan,
+        decision: { ...visualPlan.decision, recommendedVisualType: selectedType },
+        visualIntent: typedIntent,
+        omissionReason: undefined,
+      },
+    };
+  });
 }
 
 export function visualizationPlanPath(gardenDir: string): string {
@@ -458,15 +578,49 @@ export function saveVisualizationPlan(gardenDir: string, plan: VisualizationPlan
   const filePath = visualizationPlanPath(gardenDir);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(plan, null, 2)}\n`, "utf-8");
+  saveVisualNecessityArtifacts(gardenDir, plan.gardenId, {
+    decisions: plan.visualNecessityDecisions,
+    teachingMedia: plan.teachingMedia,
+    budget: plan.visualBudget,
+    overrides: plan.visualDecisionOverrides,
+    reviewCalls: plan.necessityReviewCalls,
+    rejectedReviews: plan.rejectedNecessityReviews,
+  });
 }
 
 export function loadVisualizationPlan(gardenDir: string): VisualizationPlan | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(visualizationPlanPath(gardenDir), "utf-8"));
-    if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.opportunities) || !Array.isArray(parsed.decisions)) {
+    if (
+      parsed?.schemaVersion !== 1 ||
+      !Array.isArray(parsed.opportunities) ||
+      !Array.isArray(parsed.decisions)
+    ) {
       return null;
     }
-    return parsed as VisualizationPlan;
+    const visualBudget: GardenVisualBudget = parsed.visualBudget ?? {
+      targetMinimum: 0,
+      targetMaximum: 0,
+      maximumPerSection: 2,
+      minimumUnitsBetweenSimilarVisuals: 3,
+      requiredVisuals: 0,
+      recommendedVisuals: 0,
+      optionalVisuals: 0,
+      reason: "Legacy visualization plan; necessity will be recalculated before repair or regeneration.",
+    };
+    return {
+      ...parsed,
+      visualNecessityDecisions: Array.isArray(parsed.visualNecessityDecisions)
+        ? parsed.visualNecessityDecisions
+        : [],
+      teachingMedia: Array.isArray(parsed.teachingMedia) ? parsed.teachingMedia : [],
+      visualBudget,
+      visualDecisionOverrides: Array.isArray(parsed.visualDecisionOverrides)
+        ? parsed.visualDecisionOverrides
+        : [],
+      necessityReviewCalls: Number(parsed.necessityReviewCalls) || 0,
+      rejectedNecessityReviews: Number(parsed.rejectedNecessityReviews) || 0,
+    } as VisualizationPlan;
   } catch {
     return null;
   }
@@ -524,7 +678,9 @@ export function buildVisualizationCoverageReport(input: {
   const gate = input.gate ?? coverageGateMode();
   const publishedCount = covered.size;
   const explanations: string[] = [];
-  if (publishedCount === 0) explanations.push("No interactive visualizations were published.");
+  if (publishedCount === 0 && actionable.some((item) => item.requirement !== "optional")) {
+    explanations.push("No required or recommended interactive visualizations were published.");
+  }
   if (uncoveredCriticalOpportunityIds.length > 0) {
     explanations.push(`${uncoveredCriticalOpportunityIds.length} critical opportunity or opportunities remain uncovered.`);
   }
@@ -534,8 +690,7 @@ export function buildVisualizationCoverageReport(input: {
   const status: VisualizationCoverageReport["status"] =
     gate === "fail" && uncoveredCriticalOpportunityIds.length > 0
       ? "fail"
-      : publishedCount === 0 ||
-          uncoveredCriticalOpportunityIds.length > 0 ||
+      : uncoveredCriticalOpportunityIds.length > 0 ||
           uncoveredHighPriorityOpportunityIds.length > 0
         ? "warning"
         : "pass";

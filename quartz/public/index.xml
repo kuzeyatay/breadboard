@@ -6,6 +6,18 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
+    <title>Topic Overview</title>
+    <link>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</link>
+    <guid>https://localhost:8081/generated-visual-demo/learning/Topic-Overview</guid>
+    <description><![CDATA[ Generated Visualization Demo This garden follows one source-backed relationship from its source note into a manipulable lesson. ]]></description>
+    <pubDate>Fri, 17 Jul 2026 11:10:57 GMT</pubDate>
+  </item><item>
+    <title>A</title>
+    <link>https://localhost:8081/physics-for-ee/a/</link>
+    <guid>https://localhost:8081/physics-for-ee/a/</guid>
+    <description><![CDATA[  ]]></description>
+    <pubDate>Fri, 17 Jul 2026 11:10:57 GMT</pubDate>
+  </item><item>
     <title>Learning Map</title>
     <link>https://localhost:8081/test2/learning/Learning-Map</link>
     <guid>https://localhost:8081/test2/learning/Learning-Map</guid>
@@ -51,19 +63,7 @@
     <title>1. From Spiking Neural Network to Event-driven Computation</title>
     <link>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/</link>
     <guid>https://localhost:8081/test2/learning/1.-From-Spiking-Neural-Network-to-Event-driven-Computation/</guid>
-    <description><![CDATA[ 1. From Spiking Neural Network to Event-driven Computation Build up from spiking neural network to event-driven computation one step at a time. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
-  </item><item>
-    <title>2.1 The Hodgkin-Huxley Conductance Equation</title>
-    <link>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.1-The-Hodgkin-Huxley-Conductance-Equation</link>
-    <guid>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.1-The-Hodgkin-Huxley-Conductance-Equation</guid>
-    <description><![CDATA[ The Hodgkin-Huxley Conductance Equation An action potential depends on the membrane potential changing over time. ]]></description>
-    <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
-  </item><item>
-    <title>2.2 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.2-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test2/learning/2.-Describing-Membrane-Capacitance-Formally/2.2-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron A membrane potential gives us a running measure of a neuron’s electrical state, while an action potential turns that state into a discrete spike. ]]></description>
+    <description><![CDATA[ 1. ]]></description>
     <pubDate>Fri, 17 Jul 2026 09:00:48 GMT</pubDate>
   </item>
     </channel>

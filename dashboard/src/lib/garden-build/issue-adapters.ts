@@ -6,6 +6,7 @@ import type { WeakAnchorSelfHealingResult } from "../weak-anchor-self-healing.ts
 import { stableGardenIssueId } from "./issue-identity.ts";
 import type { GardenIssue, GardenIssueBase, GardenIssueRepairClass, GardenIssueSeverity, GardenIssueTarget } from "./issues.ts";
 import type { GardenBuildStage } from "./types.ts";
+import { pageIdForUnit } from "./ids.ts";
 
 export interface LegacyIssueAdapterContext {
   pageIdByLegacyPath?: Record<string, string>;
@@ -58,12 +59,20 @@ export function issuesFromSemanticReconciliation(
 }
 
 function finalIssueType(entry: FinalRepairIssue): GardenIssue["type"] {
+  const message = entry.message.toLowerCase();
   if (entry.type === "formula_usage_projection") return "formula_usage_projection";
-  if (entry.type === "formula_kind_misclassification" || entry.type === "formula_metadata_noise") return "formula_lineage";
+  if (entry.type === "formula_kind_misclassification" || entry.type === "formula_metadata_noise") return "formula_lineage_missing";
   if (entry.type === "source_anchor_missing") return "missing_source_anchor";
-  if (entry.type === "source_anchor_mismatch") return "source_anchor_relevance";
-  if (entry.type === "visual_grounding") return "visual_grounding";
-  if (entry.type === "section_semantics") return "section_semantic";
+  if (entry.type === "source_anchor_mismatch") return "contract_page_anchor_mismatch";
+  if (entry.type === "visual_grounding") {
+    if (message.includes("duplicate") && message.includes("visual signature")) return "duplicate_visual_signature";
+    if (message.includes("missing planned visual") || message.includes("required visual") && message.includes("missing")) return "missing_planned_visual";
+    if (message.includes("type mismatch") || message.includes("incompatible visual")) return "visual_type_mismatch";
+    return "visual_grounding_mismatch";
+  }
+  if (entry.type === "section_semantics") return "section_semantic_mismatch";
+  if (message.includes("scaffold") || message.includes("placeholder prose")) return "scaffold_prose";
+  if (message.includes("repeated opening") || message.includes("repeated motivation")) return "repeated_opening";
   if (entry.type === "structural_integrity") return "unit_page_mapping";
   return "report_serialization";
 }
@@ -98,10 +107,17 @@ export function issuesFromWeakAnchorHealing(result: WeakAnchorSelfHealingResult)
 export function issuesFromFinalGardenAudit(audit: FinalizeAuditResult, context: LegacyIssueAdapterContext = {}): GardenIssue[] {
   return [...audit.repairableIssues, ...audit.nonRepairableIssues].map((entry) => makeIssue({
     type: finalIssueType(entry), severity: entry.severity, repairClass: repairClass(entry),
-    target: { anchorId: entry.anchorId, formulaAnchorId: entry.anchorId, unitId: entry.unitId, pageId: entry.pagePath ? context.pageIdByLegacyPath?.[entry.pagePath] : undefined },
+    target: {
+      anchorId: entry.anchorId,
+      formulaAnchorId: entry.anchorId,
+      unitId: entry.unitId,
+      pageId: (entry.pagePath ? context.pageIdByLegacyPath?.[entry.pagePath] : undefined) ?? (entry.unitId ? pageIdForUnit(entry.unitId) : undefined),
+      visualId: entry.message.match(/(?:^|[: ,])(vis[-_][A-Za-z0-9_-]+)/)?.[1],
+    },
     evidence: {
       ...entry.evidence, semanticCategory: entry.type, sourceIssueId: entry.id, legacyPagePath: entry.pagePath,
       legacyStringAdapter: true, originalProblem: entry.message,
+      visualIds: [...entry.message.matchAll(/(?:^|[: ,])(vis[-_][A-Za-z0-9_-]+)/g)].map((match) => match[1]),
     }, detectedBy: "final_garden_audit",
   }));
 }

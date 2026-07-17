@@ -74,6 +74,10 @@ type LearnStatus =
   | 'idle'
   | 'planning'
   | 'awaiting_confirmation'
+  | 'analyzing_issues'
+  | 'repairing'
+  | 'revalidating'
+  | 'publishing_repair'
   | 'generating_learning_pages'
   | 'generating_textbook'
   | 'generating_visuals'
@@ -143,6 +147,10 @@ const EMPTY_STATS: GraphStats = {
 function isAssistantLearnActive(status?: LearnStatus): boolean {
   return (
     status === 'planning' ||
+    status === 'analyzing_issues' ||
+    status === 'repairing' ||
+    status === 'revalidating' ||
+    status === 'publishing_repair' ||
     status === 'generating_learning_pages' ||
     status === 'generating_textbook' ||
     status === 'generating_visuals' ||
@@ -938,6 +946,7 @@ export default function GardenAssistant({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model,
+          ...(endpoint === 'regenerate' ? { mode: 'repair' } : {}),
           sourceOnly: true,
           ...(Array.isArray(learnState?.selectedSourceIds)
             ? { includedSourceIds: learnState.selectedSourceIds }
@@ -951,7 +960,7 @@ export default function GardenAssistant({
       await appendAssistantNotice(
         endpoint === 'plan'
           ? `Learning map drafted. Open the garden dashboard to confirm the lesson order: [${clusterLabel}](/gardens/${activeClusterSlug}).`
-          : `Lesson generation finished for [${clusterLabel}](/garden/${activeClusterSlug}).`,
+          : `Current validation issues were repaired for [${clusterLabel}](/garden/${activeClusterSlug}); unaffected pages were preserved.`,
       );
     } catch (error) {
       await appendAssistantNotice(error instanceof Error ? error.message : 'Learn action failed.');
