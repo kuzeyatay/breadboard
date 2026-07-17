@@ -31,3 +31,11 @@ test("Learn panel reports the active step without a redundant running subtitle",
   assert.match(learnSource, /Planning failed; last internal step:/);
   assert.match(learnSource, /Lesson generation failed; last internal step:/);
 });
+
+test("Learn repair summary uses the readable yellow status color", () => {
+  assert.match(
+    workspaceSource,
+    /Last repair:[\s\S]*?className="mt-1 text-\[11px\] leading-5 text-yellow-300\/80"|className="mt-1 text-\[11px\] leading-5 text-yellow-300\/80"[\s\S]*?Last repair:/,
+  );
+  assert.doesNotMatch(workspaceSource, /text-cyan-300\/80/);
+});

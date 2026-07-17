@@ -2124,6 +2124,10 @@ export default function WorkspaceClient({
     model,
   ]);
 
+  const hasExistingLearnContent = Boolean(
+    learnState?.latestTextbookVersionId || learnState?.hasTextbook,
+  );
+
   async function handleCancelLearn() {
     const status = learnState?.job?.status;
     if (learnCancelBusy || (!isLearnActive(status) && status !== "awaiting_confirmation")) return;
@@ -2136,15 +2140,17 @@ export default function WorkspaceClient({
       setLearnPanelOpen(true);
       return;
     }
+    // Existing learner content always recovers through bounded repair, even if
+    // a cancelled run rolled back (or hid) its learning-map id. Planning first
+    // here would silently turn Regenerate into a new-garden workflow.
+    if (hasExistingLearnContent) {
+      await postLearnAction("regenerate", { mode: "repair" });
+      return;
+    }
     if (learnState?.confirmedLearningMapId) {
-      await postLearnAction(
-        learnState.latestTextbookVersionId || learnState.hasTextbook
-          ? "regenerate"
-          : "generate",
-        learnState.latestTextbookVersionId || learnState.hasTextbook
-          ? { mode: "repair" }
-          : { confirmedLearningMapId: learnState.confirmedLearningMapId },
-      );
+      await postLearnAction("generate", {
+        confirmedLearningMapId: learnState.confirmedLearningMapId,
+      });
       return;
     }
     await postLearnAction("plan");
@@ -2175,8 +2181,7 @@ export default function WorkspaceClient({
   }
 
   async function handleGenerateAfterCancellation() {
-    if (learnBusy || isLearnActive(learnState?.job?.status)) return;
-    await postLearnAction("plan");
+    await handleLearnPrimary();
   }
 
   const autoConfirmLearnJobId = learnState?.job?.id;
@@ -2185,6 +2190,7 @@ export default function WorkspaceClient({
     if (
       !learnSkipManualReview ||
       learnBusy ||
+      hasExistingLearnContent ||
       autoConfirmLearnJobStatus !== "awaiting_confirmation" ||
       !autoConfirmLearnJobId ||
       autoConfirmingLearnJobRef.current === autoConfirmLearnJobId
@@ -2196,6 +2202,7 @@ export default function WorkspaceClient({
   }, [
     autoConfirmLearnJobId,
     autoConfirmLearnJobStatus,
+    hasExistingLearnContent,
     learnBusy,
     learnSkipManualReview,
     postLearnAction,
@@ -2675,7 +2682,7 @@ export default function WorkspaceClient({
                 </p>
               ) : null}
               {learnState?.scopedRepair ? (
-                <p className="mt-1 text-[11px] leading-5 text-cyan-300/80">
+                <p className="mt-1 text-[11px] leading-5 text-yellow-300/80">
                   Last repair: {learnState.scopedRepair.issueCount} issue{learnState.scopedRepair.issueCount === 1 ? "" : "s"}, {learnState.scopedRepair.visualIds.length} visual block{learnState.scopedRepair.visualIds.length === 1 ? "" : "s"}, {learnState.scopedRepair.pageIds.length} affected page{learnState.scopedRepair.pageIds.length === 1 ? "" : "s"}; {learnState.scopedRepair.unaffectedPageHashesVerified ? "unaffected pages preserved" : "preservation check failed"}. Blockers {learnState.scopedRepair.blockersBefore} → {learnState.scopedRepair.blockersAfter}.
                 </p>
               ) : null}
@@ -2833,7 +2840,7 @@ export default function WorkspaceClient({
                 {learnBusy ? "Repairing..." : "Repair issues"}
               </button>
             )}
-            {(status === "complete" || status === "failed") && (
+            {(status === "complete" || status === "failed" || status === "cancelled") && (
               <button
                 type="button"
                 onClick={handleFullRebuild}
@@ -2864,8 +2871,12 @@ export default function WorkspaceClient({
                     : "Repair issues"
                   : status === "cancelled"
                     ? learnBusy
-                      ? "Generating..."
-                      : "Generate"
+                      ? hasExistingLearnContent
+                        ? "Repairing..."
+                        : "Generating..."
+                      : hasExistingLearnContent
+                        ? "Repair issues"
+                        : "Generate"
                   : learnState?.buttonLabel ?? "Learn"}
               </button>
             )}
@@ -3025,23 +3036,31 @@ export default function WorkspaceClient({
                 ) : null}
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleConfirmAndGenerate}
-                  disabled={learnBusy}
-                  className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                  Confirm and Learn
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRegenerateLearningMap}
-                  disabled={learnBusy}
-                  className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Regenerate Learning Map
-                </button>
+                {hasExistingLearnContent ? (
+                  <span className="max-w-sm text-xs leading-5 text-yellow-300/80">
+                    Existing learner pages are protected. Cancel this map, then use Repair issues.
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleConfirmAndGenerate}
+                      disabled={learnBusy}
+                      className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
+                      Confirm and Learn
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRegenerateLearningMap}
+                      disabled={learnBusy}
+                      className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Regenerate Learning Map
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={handleCancelLearn}
