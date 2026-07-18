@@ -55,8 +55,8 @@ export async function POST(request: Request) {
     }
 
     const refreshError = probeResponse.ok
-      ? 'ChatMock completed the refresh request but did not report updated usage limits.'
-      : `ChatMock could not refresh usage limits (HTTP ${probeResponse.status}).`;
+      ? 'The refresh completed but did not report updated usage limits.'
+      : `Could not refresh usage limits (HTTP ${probeResponse.status}).`;
     return NextResponse.json(
       { ...latest, refreshed: false, refresh_error: refreshError },
       { status: 502, headers: NO_STORE_HEADERS },
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
     const refreshError =
       error instanceof Error && error.name === 'TimeoutError'
         ? 'The usage refresh timed out.'
-        : 'Could not ask ChatMock to refresh usage limits.';
+        : 'Could not refresh usage limits.';
     return NextResponse.json(
       { ...readUsageLimits(), refreshed: false, refresh_error: refreshError },
       { status: 502, headers: NO_STORE_HEADERS },

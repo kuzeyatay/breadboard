@@ -317,6 +317,19 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_openharness_skill_audit_name
     ON openharness_skill_audit(skill_name, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS openharness_audit_events (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type         TEXT NOT NULL,
+    runtime_session_id INTEGER REFERENCES openharness_runtime_sessions(id) ON DELETE SET NULL,
+    user_id            INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    garden_id          TEXT,
+    payload            TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_openharness_audit_events_session
+    ON openharness_audit_events(runtime_session_id, created_at DESC);
 `);
 
 // Additional per-message runtime metadata. These are nullable so historical

@@ -123,10 +123,36 @@ export interface QuartzPageContext {
   pageSlug: string;
   pageTitle: string;
   excerpt: string;
+  visibleContent: string;
   sources: string[];
   prerequisites: string[];
   backlinks: string[];
+  outgoingLinks: string[];
+  neighboringConcepts: string[];
   neighbors: Array<{ related: string; relation: string }>;
+  graph: QuartzGraphContext | null;
+}
+
+export interface QuartzGraphInput {
+  selectedNodeSlug?: unknown;
+  visibleNodeSlugs?: unknown;
+  directNeighborSlugs?: unknown;
+  activeCluster?: unknown;
+  filters?: unknown;
+  depth?: unknown;
+  relationshipTypes?: unknown;
+  viewport?: unknown;
+}
+
+export interface QuartzGraphContext {
+  selectedNode: { slug: string; title: string } | null;
+  visibleNodes: Array<{ slug: string; title: string }>;
+  directNeighbors: Array<{ slug: string; title: string; relation: string }>;
+  activeCluster: string;
+  filters: string[];
+  depth: number;
+  relationshipTypes: string[];
+  viewport: { x: number; y: number; width: number; height: number; scale: number } | null;
 }
 
 /**
@@ -136,12 +162,16 @@ export interface QuartzPageContext {
 export async function assembleQuartzContext(
   cluster: QuartzCluster,
   pageSlug: string,
+  graphInput?: QuartzGraphInput | null,
 ): Promise<QuartzPageContext> {
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) throw new ApiError(500, "not_configured", "Content path not configured.");
   const { scanClusterKnowledge } = await import("../knowledge.ts");
   const knowledge = scanClusterKnowledge(contentPath, cluster.slug);
-  const node = knowledge.nodes.find((n) => n.slug === pageSlug || n.relPath === pageSlug);
+  const relativePageSlug = pageSlug.startsWith(`${cluster.slug}/`)
+    ? pageSlug.slice(cluster.slug.length + 1)
+    : pageSlug;
+  const node = knowledge.nodes.find((n) => n.slug === relativePageSlug || n.relPath === relativePageSlug);
 
   const neighbors = node
     ? knowledge.edges
@@ -152,6 +182,12 @@ export async function assembleQuartzContext(
           relation: edge.relation,
         }))
     : [];
+  const backlinks = node
+    ? knowledge.edges.filter((edge) => edge.target === node.slug).slice(0, 12).map((edge) => edge.source)
+    : [];
+  const outgoingLinks = node
+    ? knowledge.edges.filter((edge) => edge.source === node.slug).slice(0, 12).map((edge) => edge.target)
+    : [];
 
   return {
     gardenId: cluster.slug,
@@ -159,11 +195,94 @@ export async function assembleQuartzContext(
     pageSlug,
     pageTitle: node?.title ?? pageSlug,
     excerpt: node?.excerpt?.slice(0, 1200) ?? "",
+    visibleContent: node?.content?.slice(0, 12_000) ?? "",
     sources: node?.sourceAnchors?.slice(0, 12) ?? [],
     prerequisites: (node?.related ?? []).slice(0, 8),
-    backlinks: (node?.related ?? []).slice(0, 8),
+    backlinks,
+    outgoingLinks,
+    neighboringConcepts: [...new Set([...backlinks, ...outgoingLinks, ...(node?.related ?? [])])].slice(0, 16),
     neighbors,
+    graph: graphInput ? assembleBoundedGraphContext(cluster.slug, knowledge.nodes, knowledge.edges, graphInput) : null,
   };
+}
+
+export function assembleBoundedGraphContext(
+  gardenSlug: string,
+  nodes: Array<{ slug: string; title: string }>,
+  edges: Array<{ source: string; target: string; relation: string }>,
+  input: QuartzGraphInput,
+): QuartzGraphContext {
+  const bySlug = new Map(nodes.map((node) => [node.slug, node]));
+  const normalize = (value: string) => {
+    if (value === gardenSlug) return "index";
+    if (value.startsWith(`${gardenSlug}/`)) return value.slice(gardenSlug.length + 1);
+    return value.includes("/") && !bySlug.has(value) ? "" : value;
+  };
+  const displaySlug = (value: string) => `${gardenSlug}/${value}`;
+  const requestedSelected = typeof input.selectedNodeSlug === "string" ? normalize(input.selectedNodeSlug) : "";
+  const selected = bySlug.get(requestedSelected) ?? null;
+  const visibleSlugs = Array.isArray(input.visibleNodeSlugs)
+    ? input.visibleNodeSlugs.filter((value): value is string => typeof value === "string").slice(0, 24)
+    : [];
+  const visibleNodes = [...new Set(visibleSlugs)]
+    .flatMap((slug) => {
+      const value = bySlug.get(normalize(slug));
+      return value ? [{ slug: displaySlug(value.slug), title: value.title }] : [];
+    });
+  const selectedEdges = selected
+    ? edges.filter((edge) => edge.source === selected.slug || edge.target === selected.slug)
+    : [];
+  const requestedNeighbors = new Set(
+    Array.isArray(input.directNeighborSlugs)
+      ? input.directNeighborSlugs.filter((value): value is string => typeof value === "string").map(normalize).slice(0, 12)
+      : [],
+  );
+  const directNeighbors = selectedEdges.flatMap((edge) => {
+    const slug = edge.source === selected?.slug ? edge.target : edge.source;
+    if (requestedNeighbors.size && !requestedNeighbors.has(slug)) return [];
+    const value = bySlug.get(slug);
+    return value ? [{ slug: displaySlug(slug), title: value.title, relation: edge.relation }] : [];
+  }).slice(0, 12);
+  const actualRelations = new Set(selectedEdges.map((edge) => edge.relation));
+  const requestedRelations = Array.isArray(input.relationshipTypes)
+    ? input.relationshipTypes.filter((value): value is string => typeof value === "string")
+    : [];
+  const viewport = boundedViewport(input.viewport);
+  return {
+    selectedNode: selected ? { slug: displaySlug(selected.slug), title: selected.title } : null,
+    visibleNodes,
+    directNeighbors,
+    activeCluster: gardenSlug,
+    filters: Array.isArray(input.filters)
+      ? input.filters.filter((value): value is string => typeof value === "string").map((value) => value.slice(0, 100)).slice(0, 8)
+      : [],
+    depth: Math.max(0, Math.min(3, Number.isFinite(Number(input.depth)) ? Number(input.depth) : 1)),
+    relationshipTypes: (requestedRelations.length ? requestedRelations.filter((value) => actualRelations.has(value)) : [...actualRelations]).slice(0, 8),
+    viewport,
+  };
+}
+
+export function quartzSystemContext(page: QuartzPageContext, selectedText?: string): string {
+  return [
+    `Authorized garden: ${page.gardenName} (${page.gardenId}).`,
+    `Current page: ${page.pageTitle} (${page.pageSlug}).`,
+    page.visibleContent ? `Visible page content:\n${page.visibleContent}` : "",
+    selectedText ? `Reader selection:\n${selectedText.slice(0, 2_000)}` : "",
+    page.backlinks.length ? `Backlinks: ${page.backlinks.join(", ")}` : "",
+    page.outgoingLinks.length ? `Outgoing links: ${page.outgoingLinks.join(", ")}` : "",
+    page.neighboringConcepts.length ? `Neighboring concepts: ${page.neighboringConcepts.join(", ")}` : "",
+    page.sources.length ? `Source references: ${page.sources.join(", ")}` : "",
+    page.graph ? `Bounded graph interaction context:\n${JSON.stringify(page.graph)}` : "",
+    "Do not infer access to any other garden. Use proposal tools for every requested change.",
+  ].filter(Boolean).join("\n\n");
+}
+
+function boundedViewport(value: unknown): QuartzGraphContext["viewport"] {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const numbers = [record.x, record.y, record.width, record.height, record.scale].map(Number);
+  if (!numbers.every(Number.isFinite)) return null;
+  return { x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3], scale: numbers[4] };
 }
 
 // A shared marker used by knowledge lint (path check) intentionally references

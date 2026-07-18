@@ -43,14 +43,17 @@ Kept deliberately small so upstream merges stay feasible:
 
 ## Configuration Breadboard supplies (outside this repo)
 
-- `breadboard/openharness-config/opencode.json` — provider (ChatMock,
-  OpenAI-compatible at `127.0.0.1:8765/v1`), default agent, permission defaults.
+- `breadboard/openharness-config/opencode.json` — environment-driven ChatMock
+  provider, default agent, and conservative permission defaults.
 - `breadboard/openharness-config/agent/*.md` — `breadboard-terminal`,
-  `breadboard-garden`, `breadboard-quartz`, `breadboard-capability-scout`.
+  `breadboard-garden`, `breadboard-quartz`, `breadboard-document`, and
+  `breadboard-capability-scout`.
 - `breadboard/openharness-config/tool/garden.ts` — the scoped `garden_*` tools
   the garden/quartz agents use to reach Breadboard content via a capability token.
 - `breadboard/.agents/skills/*` — first-party Breadboard skills + `find-skills`
   (find-skills is restricted to the terminal and capability scout).
+- `breadboard/openharness-config/tool/capability.ts` — narrow capability-gap and
+  real skill-discovery calls for terminal/scout workflows.
 
 ## Running as Breadboard's runtime
 
@@ -66,6 +69,7 @@ scripts, and the agent/permission/tool model.
 ## Build note
 
 OpenHarness is a Bun + Effect monorepo (`bun@1.3.14`). Building/running it requires
-`bun install` in this directory. On machines without Bun, the Breadboard dashboard
-detects OpenHarness is unavailable and falls back to its prior behavior — no
-interactive surface breaks.
+`bun install` in this directory. Breadboard defaults to `OPENHARNESS_MODE=required`,
+which reports an unavailable runtime instead of silently bypassing it. Use
+`preferred` for visible/audited migration fallback or `legacy` for intentional
+prior behavior.

@@ -54,7 +54,7 @@ export function allowedToolsForSurface(surface: OpenHarnessSurface): string[] {
   if (surface === "quartz_ai") return [...QUARTZ_TOOLS];
   // The dashboard terminal's tools are governed by the OpenHarness agent config
   // and per-action permission prompts, not by a fixed Breadboard allowlist.
-  return [];
+  return ["capability_gap", "capability_search"];
 }
 
 export function isProposalTool(tool: string): boolean {

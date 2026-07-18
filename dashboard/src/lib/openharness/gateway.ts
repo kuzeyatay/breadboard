@@ -177,11 +177,13 @@ export class OpenHarnessGateway {
   async *subscribeToSession(
     input: { openHarnessSessionId: string; workspaceKey: string },
     signal?: AbortSignal,
+    onConnected?: () => void,
   ): AsyncIterable<NormalizedAgentEvent> {
     const directory = directoryForWorkspaceKey(this.config, input.workspaceKey);
     const response = await openEventStream(this.config, directory, signal);
     const body = response.body;
     if (!body) return;
+    onConnected?.();
     for await (const raw of parseSseStream(readableToIterable(body))) {
       if (typeof raw.type !== "string") continue;
       const event = raw as unknown as RawOpenHarnessEvent;

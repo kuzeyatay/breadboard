@@ -158,7 +158,7 @@ export default function UsageLimitsPopover({
                 type="button"
                 onClick={() => void refreshUsage(false, true)}
                 disabled={loading}
-                title="Send a minimal hidden request through ChatMock and reload usage limits"
+                title="Refresh the usage-limit snapshot"
                 className={`rounded-md border px-2 py-1 text-[11px] transition disabled:cursor-wait disabled:opacity-50 ${light ? "border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)]" : "border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300"}`}
               >
                 {loading ? "Refreshing..." : "Refresh"}
@@ -177,7 +177,7 @@ export default function UsageLimitsPopover({
                     <p className={light ? "text-[var(--ink-muted)]" : "text-gray-600"}>Updated: {updatedAt}</p>
                     {usageData.stale ? (
                       <p className={light ? "text-[#8a6f00]" : "text-amber-300"}>
-                        This snapshot is stale. Click Refresh to ask ChatMock for an updated snapshot.
+                        This snapshot is stale. Click Refresh for an updated snapshot.
                       </p>
                     ) : null}
                   </div>

@@ -10,8 +10,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadRootEnv } from "./load-root-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+loadRootEnv(repoRoot);
 const openharnessDir = path.join(repoRoot, "openharness");
 const configDir = path.join(repoRoot, "openharness-config");
 const port = process.env.OPENHARNESS_PORT || "4096";
@@ -27,6 +29,9 @@ const env = {
   OPENCODE_SERVER_PASSWORD: password,
   OPENCODE_SERVER_USERNAME: process.env.OPENHARNESS_USERNAME || "breadboard",
   OPENCODE_CONFIG_DIR: configDir,
+  CHATMOCK_BASE_URL: process.env.CHATMOCK_BASE_URL || "http://127.0.0.1:8765/v1",
+  CHATMOCK_API_KEY: process.env.CHATMOCK_API_KEY || process.env.OPENAI_API_KEY || "local",
+  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5",
 };
 
 const bunCmd = process.platform === "win32" ? "bun.exe" : "bun";
@@ -40,7 +45,7 @@ child.on("error", (error) => {
   if (error.code === "ENOENT") {
     console.error("Bun is not installed. OpenHarness requires Bun (bun@1.3.14+).");
     console.error("Install from https://bun.sh, then run `bun install` in ./openharness.");
-    console.error("Breadboard runs without OpenHarness when OPENHARNESS_ENABLED=false.");
+    console.error("Use OPENHARNESS_MODE=legacy only when intentional prior behavior is required.");
   } else {
     console.error(error.message);
   }

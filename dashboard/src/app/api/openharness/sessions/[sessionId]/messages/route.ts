@@ -9,8 +9,7 @@ import {
 } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeSession, markStatus } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
-import { appendRuntimeMessage } from "@/lib/openharness/runtime-store.ts";
-import { appendChatMessage } from "@/lib/openharness/runtime-store.ts";
+import { appendRuntimeMessage, appendChatMessage, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +43,22 @@ export async function POST(
       body.model && typeof body.model === "object"
         ? (body.model as { providerID?: string; modelID?: string })
         : undefined;
+    const continuation = body.continuation && typeof body.continuation === "object"
+      ? body.continuation as Record<string, unknown>
+      : null;
+    if (continuation) {
+      if (session.row.surface !== "dashboard_terminal") {
+        throw new ApiError(403, "invalid_continuation", "Only terminal tasks can be resumed.");
+      }
+      const parentTaskId = requireString(continuation.parentTaskId, "continuation.parentTaskId", 500);
+      const skillId = requireString(continuation.skillId, "continuation.skillId", 500);
+      recordAuditEvent({
+        eventType: "task.resumed",
+        runtimeSessionId: session.row.id,
+        userId,
+        payload: { parentTaskId, skillId },
+      });
+    }
 
     // Persist the user's message before dispatching so it is durable even if the
     // runtime call fails.
@@ -62,6 +77,13 @@ export async function POST(
     }
 
     markStatus(session, "busy");
+    recordAuditEvent({
+      eventType: "message.submitted",
+      runtimeSessionId: session.row.id,
+      userId,
+      gardenId: session.row.garden_id,
+      payload: { characterCount: text.length },
+    });
     await getOpenHarnessGateway().sendMessage({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,

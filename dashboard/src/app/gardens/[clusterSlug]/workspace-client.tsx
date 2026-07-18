@@ -2399,6 +2399,7 @@ export default function WorkspaceClient({
               : { role, content },
           ),
           clusterSlug,
+          chatSessionId: sessionId,
           model,
           reasoningEffort,
           attachments: pendingAttachments,
@@ -2426,6 +2427,11 @@ export default function WorkspaceClient({
         throw new Error(message);
       }
 
+      if (res.headers.get("X-Breadboard-AI-Fallback") === "1") {
+        assistantMsg.thinking =
+          "OpenHarness failed at runtime. OPENHARNESS_MODE=preferred allowed this visible legacy ChatMock fallback.\n";
+      }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -2448,6 +2454,10 @@ export default function WorkspaceClient({
               | { type: "sources"; sources: string[] }
               | { type: "delta"; text: string }
               | { type: "thinking"; text: string }
+              | { type: "tool"; toolName?: string; status?: string }
+              | { type: "permission"; description?: string }
+              | { type: "error"; error?: string }
+              | { type: "runtime"; backend: string; fallback: boolean }
               | { type: "usage"; usage: unknown };
 
             if (event.type === "sources") {
@@ -2473,6 +2483,22 @@ export default function WorkspaceClient({
                 finalMessages = [...nextMessages, { ...assistantMsg }];
                 updateChatMessages(sessionId, finalMessages);
               }
+            } else if (event.type === "tool") {
+              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\n[${event.status ?? "tool"}] ${event.toolName ?? "garden tool"}`;
+              finalMessages = [...nextMessages, { ...assistantMsg }];
+              updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "permission") {
+              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nPermission requested: ${event.description ?? "agent action"}`;
+              finalMessages = [...nextMessages, { ...assistantMsg }];
+              updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "error") {
+              assistantMsg.content += `\n\n${event.error ?? "OpenHarness reported an error."}`;
+              finalMessages = [...nextMessages, { ...assistantMsg }];
+              updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "runtime" && event.fallback) {
+              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nOpenHarness unavailable — using the visible preferred-mode ChatMock fallback.`;
+              finalMessages = [...nextMessages, { ...assistantMsg }];
+              updateChatMessages(sessionId, finalMessages);
             }
           } catch {
             // malformed event — skip

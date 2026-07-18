@@ -1,9 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  assembleBoundedGraphContext,
   corsHeaders,
   enforceRateLimit,
   newClientToken,
+  quartzSystemContext,
 } from "../src/lib/openharness/quartz-support.ts";
 import { ApiError } from "../src/lib/openharness/route-core.ts";
 
@@ -43,4 +48,75 @@ test("newClientToken returns a long unguessable token", () => {
   const b = newClientToken();
   assert.notEqual(a, b);
   assert.ok(a.length >= 24);
+});
+
+const pageContext = {
+  gardenId: "garden-a",
+  gardenName: "Garden A",
+  pageSlug: "garden-a/lesson",
+  pageTitle: "Lesson",
+  excerpt: "Short excerpt",
+  visibleContent: "The complete bounded visible lesson.",
+  sources: ["source-anchor-1"],
+  prerequisites: ["intro"],
+  backlinks: ["intro"],
+  outgoingLinks: ["next"],
+  neighboringConcepts: ["intro", "next"],
+  neighbors: [{ related: "intro", relation: "prerequisite" }],
+  graph: null,
+};
+
+test("page-only Quartz context includes page relationships and no selection or graph packet", () => {
+  const system = quartzSystemContext(pageContext);
+  assert.match(system, /Visible page content/);
+  assert.match(system, /Backlinks: intro/);
+  assert.match(system, /Outgoing links: next/);
+  assert.doesNotMatch(system, /Reader selection/);
+  assert.doesNotMatch(system, /graph interaction context/);
+});
+
+test("selected-text Quartz context contains only the bounded selection", () => {
+  const selection = "chosen sentence";
+  const system = quartzSystemContext(pageContext, selection);
+  assert.match(system, /Reader selection:\nchosen sentence/);
+});
+
+test("graph-node requests receive a bounded, garden-scoped map packet", () => {
+  const graph = assembleBoundedGraphContext(
+    "garden-a",
+    [
+      { slug: "lesson", title: "Lesson" },
+      { slug: "next", title: "Next" },
+      { slug: "private/other", title: "Unrelated" },
+    ],
+    [{ source: "lesson", target: "next", relation: "explains" }],
+    {
+      selectedNodeSlug: "garden-a/lesson",
+      visibleNodeSlugs: ["garden-a/lesson", "garden-a/next", "garden-b/private/other"],
+      directNeighborSlugs: ["garden-a/next", "garden-b/private/other"],
+      relationshipTypes: ["explains", "unrelated"],
+      filters: ["learning"],
+      depth: 99,
+      viewport: { x: 1, y: 2, width: 800, height: 600, scale: 1.5 },
+    },
+  );
+  assert.equal(graph.selectedNode.slug, "garden-a/lesson");
+  assert.deepEqual(graph.visibleNodes.map((node) => node.slug), ["garden-a/lesson", "garden-a/next"]);
+  assert.deepEqual(graph.directNeighbors.map((node) => node.slug), ["garden-a/next"]);
+  assert.deepEqual(graph.relationshipTypes, ["explains"]);
+  assert.equal(graph.depth, 3);
+  assert.doesNotMatch(JSON.stringify(graph), /garden-b|Unrelated/);
+  assert.match(quartzSystemContext({ ...pageContext, graph }), /Bounded graph interaction context/);
+});
+
+test("Quartz browser code calls only dashboard proxy routes and contains no OpenHarness secret", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const source = fs.readFileSync(
+    path.resolve(here, "..", "..", "quartz", "quartz", "components", "scripts", "breadboardAI.inline.ts"),
+    "utf8",
+  );
+  assert.match(source, /\/api\/quartz-ai\/chat/);
+  assert.match(source, /\/api\/quartz-ai\/events/);
+  assert.match(source, /\/api\/quartz-ai\/abort/);
+  assert.doesNotMatch(source, /OPENHARNESS_(?:PASSWORD|AUTH|BASE_URL)|127\.0\.0\.1:4096/);
 });

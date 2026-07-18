@@ -7,8 +7,19 @@ import {
   requireString,
   ApiError,
 } from "@/lib/openharness/route-helpers.ts";
-import { promoteSkill, rejectQuarantine, inspectQuarantine } from "@/lib/openharness/skills.ts";
-import { recordSkillDecision } from "@/lib/openharness/runtime-store.ts";
+import {
+  promoteSkill,
+  rejectQuarantine,
+  inspectQuarantine,
+  type SkillAvailableEvent,
+  type SkillPermission,
+} from "@/lib/openharness/skills.ts";
+import {
+  getLatestCapabilityGap,
+  recordAuditEvent,
+  recordSkillDecision,
+} from "@/lib/openharness/runtime-store.ts";
+import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +39,7 @@ export async function POST(request: Request) {
     if (decision === "reject") {
       rejectQuarantine(name);
       recordSkillDecision({ skillName: name, decision: "rejected", decidedBy: userId });
+      recordAuditEvent({ eventType: "skill.rejected", userId, payload: { name } });
       return NextResponse.json({ name, status: "rejected" });
     }
 
@@ -36,15 +48,59 @@ export async function POST(request: Request) {
     if (!report.hasSkillMd) {
       throw new ApiError(422, "invalid_skill", "Refusing to promote a skill without a valid SKILL.md.");
     }
-    const result = promoteSkill(name, { overwrite: Boolean(body.overwrite) });
+    const approvedPermissions = Array.isArray(body.approvedPermissions)
+      ? body.approvedPermissions.filter((value): value is SkillPermission =>
+          typeof value === "string" && report.requestedPermissions.includes(value as SkillPermission),
+        )
+      : [];
+    const runtimeSessionId = Number(body.runtimeSessionId);
+    let capabilityGap: Record<string, unknown> | null = null;
+    if (Number.isInteger(runtimeSessionId) && runtimeSessionId > 0) {
+      const runtime = authorizeRuntimeSession(userId, runtimeSessionId);
+      if (runtime.row.surface !== "dashboard_terminal") {
+        throw new ApiError(403, "invalid_parent_session", "Skills can resume only a terminal session.");
+      }
+      capabilityGap = getLatestCapabilityGap(runtime.row.id);
+    }
+    // Third-party promoted skills are attached only to the permissioned terminal
+    // profile. Garden, Quartz, document, and scout profiles explicitly deny
+    // dynamic skill execution.
+    const approvedAgents = ["breadboard-terminal"];
+    const result = promoteSkill(name, {
+      overwrite: Boolean(body.overwrite),
+      approvedAgents,
+      approvedPermissions,
+    });
     recordSkillDecision({
       skillName: report.name,
       decision: "promoted",
       decidedBy: userId,
-      manifest: report,
-      notes: `Promoted to ${result.promotedPath}`,
+      manifest: result.report,
+      notes: "Exact reviewed hashes verified and promoted to the approved registry.",
     });
-    return NextResponse.json({ name: report.name, status: "promoted" });
+    let continuation: SkillAvailableEvent | null = null;
+    if (capabilityGap && typeof capabilityGap.taskId === "string" && typeof capabilityGap.requestedCapability === "string") {
+        continuation = {
+          parentTaskId: capabilityGap.taskId,
+          skillId: result.report.package,
+          capability: capabilityGap.requestedCapability,
+          approvedPermissions,
+        };
+    }
+    recordAuditEvent({
+      eventType: "skill.promoted",
+      userId,
+      payload: { package: result.report.package, exactVersion: result.report.exactVersion, approvedPermissions },
+    });
+    if (continuation) {
+      recordAuditEvent({
+        eventType: "skill.available",
+        runtimeSessionId,
+        userId,
+        payload: continuation,
+      });
+    }
+    return NextResponse.json({ name: report.name, status: "promoted", continuation });
   } catch (error) {
     return apiErrorResponse(error);
   }

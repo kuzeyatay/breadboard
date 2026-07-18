@@ -719,6 +719,7 @@ export default function GardenAssistant({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clusterSlug: activeClusterSlug,
+          chatSessionId: session.id,
           messages: nextMessages.map(({ role, content }) => ({ role, content })),
           model,
           reasoningEffort,
@@ -730,6 +731,14 @@ export default function GardenAssistant({
       if (!response.ok || !response.body) {
         const body = await response.json().catch(() => ({}));
         throw new Error(typeof body.error === 'string' ? body.error : 'Assistant request failed');
+      }
+
+      if (response.headers.get('X-Breadboard-AI-Fallback') === '1') {
+        assistantMessage = {
+          ...assistantMessage,
+          thinking:
+            'OpenHarness failed at runtime. OPENHARNESS_MODE=preferred allowed this visible legacy ChatMock fallback.\n',
+        };
       }
 
       const reader = response.body.getReader();
@@ -773,6 +782,34 @@ export default function GardenAssistant({
               assistantMessage = {
                 ...assistantMessage,
                 thinking: `${assistantMessage.thinking ?? ''}${event.text}`,
+              };
+              updateAssistant();
+            }
+            if (event.type === 'tool') {
+              assistantMessage = {
+                ...assistantMessage,
+                thinking: `${assistantMessage.thinking ?? ''}\n[${event.status ?? 'tool'}] ${event.toolName ?? 'garden tool'}`,
+              };
+              updateAssistant();
+            }
+            if (event.type === 'permission') {
+              assistantMessage = {
+                ...assistantMessage,
+                thinking: `${assistantMessage.thinking ?? ''}\nPermission requested: ${event.description ?? 'agent action'}`,
+              };
+              updateAssistant();
+            }
+            if (event.type === 'error') {
+              assistantMessage = {
+                ...assistantMessage,
+                content: `${assistantMessage.content}\n\n${event.error ?? 'OpenHarness reported an error.'}`,
+              };
+              updateAssistant();
+            }
+            if (event.type === 'runtime' && event.fallback) {
+              assistantMessage = {
+                ...assistantMessage,
+                thinking: `${assistantMessage.thinking ?? ''}\nOpenHarness unavailable — using the visible preferred-mode ChatMock fallback.`,
               };
               updateAssistant();
             }

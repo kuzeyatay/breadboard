@@ -10,10 +10,14 @@
 // toggled without a rebuild, and so importing this module never throws when
 // OpenHarness is disabled.
 
+import path from "node:path";
+
 export type OpenHarnessSurface =
   | "dashboard_terminal"
   | "garden_chat"
   | "quartz_ai";
+
+export type OpenHarnessMode = "required" | "preferred" | "legacy";
 
 export const OPENHARNESS_SURFACES: readonly OpenHarnessSurface[] = [
   "dashboard_terminal",
@@ -23,6 +27,7 @@ export const OPENHARNESS_SURFACES: readonly OpenHarnessSurface[] = [
 
 export interface OpenHarnessConfig {
   enabled: boolean;
+  mode: OpenHarnessMode;
   baseUrl: string;
   username: string;
   password: string;
@@ -58,6 +63,19 @@ function envFlag(name: string): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function modeFromEnvironment(): OpenHarnessMode {
+  const configured = process.env.OPENHARNESS_MODE?.trim().toLowerCase();
+  if (configured === "required" || configured === "preferred" || configured === "legacy") {
+    return configured;
+  }
+  // OPENHARNESS_ENABLED is retained as a compatibility kill switch. A clean
+  // checkout is OpenHarness-first; only an explicit false opts into legacy.
+  if (process.env.OPENHARNESS_ENABLED !== undefined && !envFlag("OPENHARNESS_ENABLED")) {
+    return "legacy";
+  }
+  return "required";
+}
+
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");
   if (!trimmed) return "http://127.0.0.1:4096";
@@ -73,15 +91,20 @@ function defaultRoot(): string {
   // process.cwd() is the dashboard package dir under `next dev`/`next start`.
   // The runtime dir lives one level up, at the repo root, so all services can
   // share it and it is covered by the repo .gitignore.
-  return `${process.cwd().replace(/[\\/]+$/, "")}/.runtime/openharness`;
+  const root = path.basename(process.cwd()).toLowerCase() === "dashboard"
+    ? path.resolve(process.cwd(), "..")
+    : process.cwd();
+  return path.join(root, ".runtime", "openharness");
 }
 
 export function readOpenHarnessConfig(): OpenHarnessConfig {
+  const mode = modeFromEnvironment();
   return {
-    enabled: envFlag("OPENHARNESS_ENABLED"),
+    enabled: mode !== "legacy",
+    mode,
     baseUrl: normalizeBaseUrl(envString("OPENHARNESS_BASE_URL", "http://127.0.0.1:4096")),
     username: envString("OPENHARNESS_USERNAME", "breadboard"),
-    password: process.env.OPENHARNESS_PASSWORD ?? "",
+    password: process.env.OPENHARNESS_PASSWORD ?? "breadboard-local-dev",
     root: envString("OPENHARNESS_ROOT", defaultRoot()),
     agents: {
       terminal: envString("OPENHARNESS_TERMINAL_AGENT", "breadboard-terminal"),
@@ -121,5 +144,9 @@ export function authHeader(config: OpenHarnessConfig): string | undefined {
 }
 
 export function isOpenHarnessEnabled(): boolean {
-  return envFlag("OPENHARNESS_ENABLED");
+  return modeFromEnvironment() !== "legacy";
+}
+
+export function readOpenHarnessMode(): OpenHarnessMode {
+  return modeFromEnvironment();
 }

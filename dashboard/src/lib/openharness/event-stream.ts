@@ -12,6 +12,7 @@ import {
   appendChatMessage,
   listRuntimeMessages,
   setRuntimeStatus,
+  recordAuditEvent,
 } from "./runtime-store.ts";
 import type { AuthorizedRuntimeSession } from "./session-service.ts";
 
@@ -73,8 +74,6 @@ export function buildSessionEventStream(
       const emit = (event: NormalizedAgentEvent | { type: string; [k: string]: unknown }) => {
         controller.enqueue(encoder.encode(encodeSseEvent(event)));
       };
-      controller.enqueue(encoder.encode(": connected\n\n"));
-
       const finalize = (status: string) => {
         if (persisted) return;
         persisted = true;
@@ -90,13 +89,37 @@ export function buildSessionEventStream(
         for await (const event of gateway.subscribeToSession(
           { openHarnessSessionId: session.openHarnessSessionId, workspaceKey: session.workspaceKey },
           abortController.signal,
+          () => controller.enqueue(encoder.encode(": connected\n\n")),
         )) {
           if (event.type === "assistant.delta") assistantText += event.payload.text;
-          else if (event.type === "tool.completed") {
+          else if (event.type === "tool.started") {
+            recordAuditEvent({
+              eventType: "tool.requested",
+              runtimeSessionId: session.row.id,
+              userId: session.row.user_id,
+              gardenId: session.row.garden_id,
+              payload: { toolName: event.payload.toolName, toolCallId: event.payload.toolCallId },
+            });
+          } else if (event.type === "tool.completed") {
             toolCalls.push({
               toolName: event.payload.toolName,
               success: event.payload.success,
               summary: event.payload.summary,
+            });
+            recordAuditEvent({
+              eventType: "tool.completed",
+              runtimeSessionId: session.row.id,
+              userId: session.row.user_id,
+              gardenId: session.row.garden_id,
+              payload: { toolName: event.payload.toolName, success: event.payload.success },
+            });
+          } else if (event.type === "permission.requested") {
+            recordAuditEvent({
+              eventType: "permission.requested",
+              runtimeSessionId: session.row.id,
+              userId: session.row.user_id,
+              gardenId: session.row.garden_id,
+              payload: { requestId: event.payload.requestId, permission: event.payload.permission },
             });
           }
           emit(event);
@@ -125,7 +148,21 @@ export function buildSessionEventStream(
             recoverable: true,
           },
         });
+        recordAuditEvent({
+          eventType: "error",
+          runtimeSessionId: session.row.id,
+          userId: session.row.user_id,
+          gardenId: session.row.garden_id,
+          payload: { stage: "event_stream" },
+        });
       } finally {
+        recordAuditEvent({
+          eventType: "message.completed",
+          runtimeSessionId: session.row.id,
+          userId: session.row.user_id,
+          gardenId: session.row.garden_id,
+          payload: { characterCount: assistantText.length, toolCalls: toolCalls.length },
+        });
         finalize("idle");
         controller.close();
       }

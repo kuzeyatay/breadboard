@@ -21,6 +21,10 @@ import { retrieveGraphRag } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
+import { readOpenHarnessConfig } from '@/lib/openharness/config.ts';
+import { openGardenAgentChat } from '@/lib/openharness/garden-chat-adapter.ts';
+import { apiErrorResponse } from '@/lib/openharness/route-helpers.ts';
+import { recordAuditEvent } from '@/lib/openharness/runtime-store.ts';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,6 +42,7 @@ type SsePayload =
   | { type: 'sources'; sources: string[] }
   | { type: 'delta'; text: string }
   | { type: 'thinking'; text: string }
+  | { type: 'runtime'; backend: string; fallback: boolean; mode: string }
   | ChatTokenUsageStreamEvent;
 
 function truncate(value: string, maxLength: number): string {
@@ -231,6 +236,24 @@ function parseActiveMarkdownContext(value: unknown): ActiveMarkdownContext | nul
 
 export async function POST(request: Request) {
   try {
+    const payload = await request.json() as JsonRecord;
+    const runtime = readOpenHarnessConfig();
+    let legacyFallback = false;
+    if (runtime.mode !== 'legacy') {
+      try {
+        return await openGardenAgentChat(payload, request.signal);
+      } catch (error) {
+        if (runtime.mode === 'required') return apiErrorResponse(error);
+        legacyFallback = true;
+        recordAuditEvent({
+          eventType: 'fallback.used',
+          payload: { surface: 'garden_chat', mode: runtime.mode, reason: 'openharness_runtime_failure' },
+        });
+      }
+    }
+    if (runtime.mode === 'legacy') {
+      recordAuditEvent({ eventType: 'legacy.requested', payload: { surface: 'garden_chat' } });
+    }
     const { baseURL } = resolveChatmockBaseUrl(request);
     const {
       messages,
@@ -241,7 +264,7 @@ export async function POST(request: Request) {
       attachments,
       selectedDocumentSlugs,
       activeMarkdown,
-    } = await request.json();
+    } = payload;
 
     if (!Array.isArray(messages) || typeof clusterSlug !== 'string' || !clusterSlug.trim()) {
       return NextResponse.json({ error: 'messages and clusterSlug are required' }, { status: 400 });
@@ -467,6 +490,7 @@ export async function POST(request: Request) {
           emit(payload);
         }
 
+        emit({ type: 'runtime', backend: 'legacy-chatmock', fallback: legacyFallback, mode: runtime.mode });
         emit({ type: 'sources', sources: sourceNames });
 
         try {
@@ -510,6 +534,8 @@ export async function POST(request: Request) {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
+        'X-Breadboard-AI-Backend': 'legacy-chatmock',
+        'X-Breadboard-AI-Fallback': legacyFallback ? '1' : '0',
       },
     });
   } catch (error) {
