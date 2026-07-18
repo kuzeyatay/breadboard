@@ -85,7 +85,7 @@ function setupPanel(root: HTMLElement) {
     stopBtn!.hidden = !busy
   }
 
-  async function streamEvents(sessionId: number, assistantEl: HTMLElement) {
+  async function streamEvents(sessionId: number, assistantEl: HTMLElement, dispatch: () => Promise<void>) {
     abortController = new AbortController()
     const params = new URLSearchParams({ sessionId: String(sessionId) })
     if (state.clientToken) params.set("clientToken", state.clientToken)
@@ -100,6 +100,7 @@ function setupPanel(root: HTMLElement) {
     const decoder = new TextDecoder()
     let buffer = ""
     let text = ""
+    let dispatched = false
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
@@ -107,6 +108,18 @@ function setupPanel(root: HTMLElement) {
       const frames = buffer.split("\n\n")
       buffer = frames.pop() || ""
       for (const frame of frames) {
+        if (frame.split("\n").some((line) => line.trim() === ": connected")) {
+          if (!dispatched) {
+            dispatched = true
+            try {
+              await dispatch()
+            } catch (error) {
+              abortController?.abort()
+              throw error
+            }
+          }
+          continue
+        }
         const data = frame
           .split("\n")
           .filter((line) => line.startsWith("data:"))
@@ -140,21 +153,24 @@ function setupPanel(root: HTMLElement) {
     const assistantEl = addMessage("assistant", "…")
     setBusy(true)
     try {
+      const turn = {
+        text: trimmed,
+        sessionId: state.sessionId,
+        clientToken: state.clientToken,
+        context: {
+          gardenId,
+          pageSlug,
+          pageTitle,
+          visiblePageContent: (document.querySelector("article")?.textContent || "").slice(0, 12000),
+          selectedText: (window.getSelection()?.toString() || "").slice(0, 2000),
+          graph: (window as Window & { __breadboardGraphContext?: unknown }).__breadboardGraphContext,
+        },
+      }
       const response = await fetch(`${dashboard}/api/quartz-ai/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          text: trimmed,
-          sessionId: state.sessionId,
-          clientToken: state.clientToken,
-          context: {
-            gardenId,
-            pageSlug,
-            pageTitle,
-            selectedText: (window.getSelection()?.toString() || "").slice(0, 2000),
-          },
-        }),
+        body: JSON.stringify({ ...turn, prepareOnly: true }),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.error || "The assistant is unavailable.")
@@ -162,7 +178,22 @@ function setupPanel(root: HTMLElement) {
       if (data.clientToken) state.clientToken = data.clientToken
       saveState()
       assistantEl.textContent = ""
-      await streamEvents(state.sessionId!, assistantEl)
+      await streamEvents(state.sessionId!, assistantEl, async () => {
+        const dispatchResponse = await fetch(`${dashboard}/api/quartz-ai/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            ...turn,
+            sessionId: state.sessionId,
+            clientToken: state.clientToken,
+          }),
+        })
+        if (!dispatchResponse.ok) {
+          const dispatchData = await dispatchResponse.json().catch(() => ({}))
+          throw new Error(dispatchData.error || "The assistant could not accept the message.")
+        }
+      })
     } catch (error) {
       if ((error as Error).name === "AbortError") {
         assistantEl.textContent = assistantEl.textContent || "(stopped)"
@@ -190,7 +221,16 @@ function setupPanel(root: HTMLElement) {
       void send(value)
     }
   })
-  stopBtn.addEventListener("click", () => abortController?.abort())
+  stopBtn.addEventListener("click", () => {
+    abortController?.abort()
+    if (!state.sessionId) return
+    void fetch(`${dashboard}/api/quartz-ai/abort`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ sessionId: state.sessionId, clientToken: state.clientToken }),
+    }).catch(() => undefined)
+  })
 
   for (const btn of Array.from(root.querySelectorAll<HTMLButtonElement>(".breadboard-ai-actions button"))) {
     btn.addEventListener("click", () => {

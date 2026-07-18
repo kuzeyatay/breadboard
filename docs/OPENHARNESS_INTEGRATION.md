@@ -1,249 +1,280 @@
 # OpenHarness integration
 
-OpenHarness is Breadboard's **interactive AI agent runtime** — a local fork of
-[OpenCode](https://github.com/anomalyco/opencode). It backs exactly three
-interactive surfaces:
+OpenHarness is Breadboard's interactive agent runtime. It is a shallow,
+upstream-friendly fork of OpenCode plus Breadboard-owned configuration, agents,
+tools, session adapters, and UI routes.
 
-1. **Dashboard AI terminal** — a multipurpose, permissioned repo/agent surface.
-2. **Garden chat** — grounded, single-garden Q&A with proposal-only writes.
-3. **Quartz page AI** — a page-scoped assistant on the published site.
+It backs the live dashboard terminal, both live garden chat clients, and the
+published Quartz page assistant. Learning-content generation remains on the
+existing ChatMock/OpenAI-compatible pipeline: ingestion, extraction, mapping,
+garden and Learning Spine generation, council/critic loops, deterministic repair,
+semantic audit, finalization, publication, and embeddings do not use
+OpenHarness.
 
-Everything else — document ingestion, source extraction/mapping, garden/topic
-map/Learning Spine/section generation, council and critic loops, deterministic
-repair, semantic auditing, finalization, Quartz publication, and embeddings —
-stays on the existing ChatMock / OpenAI-compatible pipeline. **OpenHarness is not
-the learning-content generation engine.**
+## Phase 1 audit: paths that existed before this integration
 
----
+The initial repository audit found these real runtime paths:
 
-## Architecture & trust boundaries
+| Surface | Initial live path | Gap found |
+| --- | --- | --- |
+| Dashboard terminal | `dashboard-agent-terminal.tsx` health-checked OpenHarness, otherwise rendered `KnowledgeTerminal` -> `/api/knowledge-chat` | The fallback was silent and session restoration was absent. |
+| Garden workspace chat | `gardens/[clusterSlug]/workspace-client.tsx` -> `/api/chat` -> ChatMock | It did not use OpenHarness. |
+| Garden assistant | `garden/garden-assistant.tsx` -> `/api/chat` -> ChatMock | `garden-assistant-switch.tsx` existed but was not the mounted chat path. |
+| Quartz page AI | Quartz browser -> dashboard `/api/quartz-ai/chat` and `/events` -> OpenHarness | Page text was proxied, but Graph View state was not connected and Stop did not abort server execution. |
+| Provider config | `openharness-config/opencode.json` | ChatMock URL/model values were static. |
+| OpenHarness fork | `openharness/` | The only core divergence was the `openharness` bin alias; Breadboard behavior lived outside the fork. |
+| Skill discovery | `dashboard/src/lib/openharness/skills.ts` | It used a placeholder registry and could fabricate a manifest after download failure. |
 
-```
+The current implementation replaces those gaps in the existing mounted paths;
+it does not introduce parallel demo UIs.
+
+## Runtime architecture and trust boundary
+
+```text
 Browser UI
-    │  (only ever talks to Breadboard)
-    ▼
-Breadboard dashboard backend  ── the application authorization boundary
-    - authenticates the user
-    - authorizes garden / page access
-    - owns Breadboard session records + the durable transcript
-    - selects the agent + server-controlled workspace
-    - filters tools (per-surface allowlists + capability tokens)
-    - normalizes and relays events (filtered to the authorized session)
-    │
-    ▼
-OpenHarness server (127.0.0.1:4096, password-protected)
-    - agent execution, model/provider access, tool execution
-    - agent sessions, skills, permission events
+  -> Breadboard dashboard backend
+       authentication and garden/page authorization
+       runtime-mode decision
+       session/workspace/agent selection
+       capability-token and permission enforcement
+       event normalization and audit persistence
+  -> OpenHarness on 127.0.0.1:4096
+       agent loop, provider access, tools, runtime sessions
+  -> ChatMock OpenAI-compatible provider on 127.0.0.1:8765/v1
 ```
 
-The browser **never**: connects to OpenHarness; receives its URL, credentials,
-filesystem paths, or provider keys; sees the unfiltered event stream; or gets raw
-tool controls. It references sessions only by a **Breadboard runtime-session id**;
-the OpenHarness session id, workspace directory, and agent are always derived
-server-side from the authorized record.
+The browser never receives the OpenHarness base URL, Basic Auth credentials,
+provider key, workspace path, capability token, or instance-wide event stream.
+It sends only Breadboard session ids to authenticated dashboard routes. The
+dashboard resolves the OpenHarness session and filters events by that authorized
+record.
 
-## Process topology & ports
+| Service | Default port | Role |
+| --- | ---: | --- |
+| Dashboard | 3000 | Application boundary and only OpenHarness client |
+| Quartz | 8081 | Published static site; calls dashboard proxy routes only |
+| ChatMock | 8765 | Local OpenAI-compatible model provider |
+| OpenHarness | 4096 | Loopback, password-protected interactive runtime |
 
-| Service      | Port | Notes                                   |
-| ------------ | ---- | --------------------------------------- |
-| Dashboard    | 3000 | Next.js, the only OpenHarness client    |
-| Quartz       | 8081 | Static site; calls dashboard API only   |
-| ChatMock     | 8765 | Existing generation backend (unchanged) |
-| OpenHarness  | 4096 | Agent runtime, loopback + password      |
+## Routing modes
 
-## Environment variables
+`OPENHARNESS_MODE` is the explicit migration switch:
 
-Dashboard (`dashboard/.env.local`, see `dashboard/.env.example`):
+- `required` (default): all three interactive surfaces require OpenHarness.
+  Unavailability is a visible error. No direct ChatMock fallback occurs.
+- `preferred`: OpenHarness is attempted first. Garden chat may use the retained
+  direct ChatMock adapter only after an explicit runtime failure; the response,
+  UI, and audit log identify the fallback. The terminal also labels its legacy
+  fallback. Quartz reports an error rather than bypassing the dashboard proxy.
+- `legacy`: intentionally uses the prior terminal/garden behavior and does not
+  start OpenHarness in the root launcher.
+
+`OPENHARNESS_ENABLED=false` remains a compatibility alias for `legacy` only when
+`OPENHARNESS_MODE` is unset. This prevents a hidden default-disable switch from
+silently bypassing the runtime.
+
+## Provider configuration
+
+`openharness-config/opencode.json` defines the `chatmock` provider using
+environment substitutions:
+
+- `CHATMOCK_BASE_URL` (default `http://127.0.0.1:8765/v1`)
+- `CHATMOCK_API_KEY` (local default `local`)
+- `CHATMOCK_MODEL` (local default `gpt-5`)
+
+OpenHarness owns the model call for interactive surfaces. Direct ChatMock calls
+remain only in the learning pipeline, diagnostics, explicit `legacy` mode, and
+the visible/audited `preferred` garden fallback.
+
+The authenticated `GET /api/openharness/health` endpoint returns a secret-free
+combined view of ChatMock health, OpenHarness health, provider visibility,
+dashboard mode, and the configured terminal/garden/Quartz/scout agents.
+
+## Sessions, events, and cancellation
+
+Breadboard is the durable user-visible record. Additive database objects include:
+
+- `openharness_runtime_sessions`: surface, Breadboard binding, OpenHarness id,
+  agent, garden/page scope, workspace key, metadata, and runtime status.
+- `openharness_messages`: durable terminal and Quartz transcripts.
+- `openharness_proposals`: typed note/page-revision/visualization proposals.
+- `openharness_skill_audit`: skill search, quarantine, review, promotion, and
+  rejection records.
+- `openharness_audit_events`: agent selection, tool use, permission decisions,
+  fallbacks, errors, cancellations, and capability lifecycle events.
+- Additive runtime/tool/permission/proposal fields on garden chat messages.
+
+OpenHarness emits a server-wide SSE stream. The gateway filters it to the
+authorized session and normalizes it as `assistant.delta`,
+`assistant.completed`, `reasoning.status`, `tool.started`, `tool.completed`,
+`permission.requested`, `session.status`, and `error`.
+
+The terminal restores its latest surface session after refresh. Garden chats are
+bound to their existing `chatSessionId`, so a restored Breadboard conversation
+reuses its OpenHarness runtime record. Stop sends a browser abort and a
+server-side OpenHarness abort. Quartz uses `/api/quartz-ai/abort` for the same
+behavior.
+
+## Agent profiles and generalization
+
+Agents are external configuration under `openharness-config/agent/`:
+
+- `breadboard-terminal`: repository engineering agent. Read/search/status/diff
+  and focused verification are available; edits, broad shell, installs, network,
+  commits, and migrations require permission; destructive deletes and force push
+  are denied.
+- `breadboard-garden`: garden-grounded assistant with only curated `garden_*`
+  tools. No generic file, shell, git, web, task, or skill access.
+- `breadboard-quartz`: page/map assistant with the same isolation and
+  proposal-only write behavior.
+- `breadboard-document`: repository-free document analysis with no shell, edit,
+  web, task, or skill access. This is the concrete non-coding/non-repository
+  generalization proof.
+- `breadboard-capability-scout`: discovery-only subagent limited to
+  `capability_search`; it cannot edit, execute shell, browse arbitrarily, install,
+  or delegate again.
+
+The fork is generalized through upstream agent/tool/provider configuration, not
+through a large rewrite of OpenCode internals. The only intentional core fork
+change remains the additional executable alias. This keeps upstream merges
+practical while supporting coding and non-coding profiles.
+
+## Garden tools and proposals
+
+`openharness-config/tool/garden.ts` exposes scoped search, page/source retrieval,
+graph-neighbor, Learning Spine, content inventory, event, validation, and typed
+proposal tools. Every call reads a short-lived capability token from the
+server-created session workspace and calls the internal dashboard endpoint. The
+token pins the session, garden, and tool allowlist; a model-supplied garden id
+cannot broaden it.
+
+Write-like actions create reviewable note, page-revision, or visualization
+proposals. They never edit published Markdown directly.
+
+## Quartz page and Graph View context
+
+Quartz JavaScript calls only dashboard routes. On each turn it sends the current
+page slug, bounded visible page text, selected text, and the latest bounded Graph
+View packet. `graph.inline.ts` emits `breadboard:graph-context` on graph load,
+selection, hover, filter/depth change, and viewport change.
+
+The dashboard re-authorizes the garden/page and rebuilds trusted server-side page
+context. Graph input is normalized to the current garden and capped before the
+agent sees it: selected/visible nodes, relation types, depth, viewport, and a
+small neighboring concept set. Unrelated gardens and arbitrary client content are
+discarded. Page-only, selected-text, and graph-node queries therefore receive
+different bounded context packets.
+
+Anonymous use requires a public, chat-enabled garden, is rate-limited, and is
+bound to an opaque browser token. Private gardens require an authenticated owner.
+
+## Real skill discovery, review, and promotion
+
+The `find-skills` behavior uses the official Skills CLI pinned by
+`SKILLS_CLI_PACKAGE` (default `skills@1.5.9`):
+
+1. `skills find <query>` returns real repository/package identifiers. Unavailable
+   descriptions or permissions remain unknown; Breadboard does not invent them.
+2. A user-authorized install runs `skills add <repo> --skill <name> --copy --yes`
+   in an isolated temporary staging directory.
+3. The exact result is copied to `openharness-skills/quarantine/`. It is inactive
+   and cannot be loaded as an approved skill.
+4. Breadboard records source URL and lock metadata, every file SHA-256, scripts,
+   URLs, derived permission risks, timestamp, target agents, and review status.
+5. Promotion re-hashes every file, rejects post-review mutation, requires
+   `SKILL.md`, copies only the reviewed version to `.agents/skills/`, and updates
+   the approved registry. Rejection deletes only the quarantined copy.
+
+Quarantine also caps file count, individual file size, and total size. Manifest
+name mismatches cannot be promoted. Third-party promotions are attached only to
+`breadboard-terminal`; every other checked-in profile denies dynamic skills.
+
+The terminal can emit a structured capability gap and ask the isolated scout to
+search. Search/install/promotion are separate, auditable actions. A promotion
+linked to a parent task emits a continuation event so the original terminal task
+can resume; garden and Quartz agents cannot invoke this path.
+
+The terminal's **Review skills** panel is the human control point: it shows real
+search metadata, quarantine risks, source/lock identity, scripts, URLs, every
+file hash, and permission checkboxes before the approve/reject action. Approval
+uses the latest gap recorded for that authorized terminal session and submits a
+continuation turn back to the same session.
+
+## Startup and environment
+
+Copy `.env.example`, `dashboard/.env.example`, and `openharness/.env.example` as
+needed. Important variables are:
 
 | Variable | Purpose |
 | --- | --- |
-| `OPENHARNESS_ENABLED` | Master switch. Off → fallback to prior behavior. |
-| `OPENHARNESS_BASE_URL` | OpenHarness server URL (default `http://127.0.0.1:4096`). |
-| `OPENHARNESS_USERNAME` / `OPENHARNESS_PASSWORD` | Server basic-auth creds. |
-| `OPENHARNESS_ROOT` | Workspace root (default `<repo>/.runtime/openharness`). |
-| `OPENHARNESS_TERMINAL_AGENT` / `_GARDEN_AGENT` / `_QUARTZ_AGENT` / `_CAPABILITY_SCOUT_AGENT` | Agent names per surface. |
-| `OPENHARNESS_REQUEST_TIMEOUT_MS` | HTTP timeout (default 120000). |
-| `BREADBOARD_INTERNAL_URL` | Loopback URL garden/quartz tools call back on. |
-| `OPENHARNESS_CAPABILITY_SECRET` | HMAC secret for capability tokens (falls back to `NEXTAUTH_SECRET`). |
-| `QUARTZ_AI_ALLOWED_ORIGINS` | Extra CORS origins for public Quartz AI. |
-| `OPENHARNESS_SKILLS_QUARANTINE` / `_APPROVED` | Skill roots. |
+| `OPENHARNESS_MODE` | `required`, `preferred`, or `legacy` |
+| `OPENHARNESS_BASE_URL` | Dashboard-to-runtime URL |
+| `OPENHARNESS_USERNAME`, `OPENHARNESS_PASSWORD` | OpenHarness Basic Auth |
+| `OPENHARNESS_ROOT` | Server-controlled runtime workspaces |
+| `OPENHARNESS_CAPABILITY_SECRET` | HMAC secret; production should not reuse local defaults |
+| `OPENHARNESS_*_AGENT` | Agent name per surface |
+| `CHATMOCK_BASE_URL`, `CHATMOCK_API_KEY`, `CHATMOCK_MODEL` | OpenHarness provider wiring |
+| `BREADBOARD_INTERNAL_URL` | Internal callback URL for scoped tools |
+| `BREADBOARD_DASHBOARD_URL` | Dashboard URL embedded into the Quartz build |
+| `QUARTZ_AI_ALLOWED_ORIGINS` | Additional permitted Quartz origins |
+| `OPENHARNESS_SKILLS_QUARANTINE`, `OPENHARNESS_SKILLS_APPROVED` | Skill lifecycle roots |
+| `SKILLS_CLI_PACKAGE` | Pinned official discovery CLI package |
 
-Root / startup (`.env.example`): `OPENHARNESS_PASSWORD`, `OPENHARNESS_USERNAME`,
-`OPENHARNESS_PORT`, `BREADBOARD_DASHBOARD_URL` (embedded in Quartz builds).
-
-## Development startup
-
-Start everything (cross-platform):
+From the repository root:
 
 ```sh
-npm run dev            # ChatMock + Quartz + OpenHarness + dashboard
+npm run dev
 ```
 
-Windows: `start.bat` opens each service in its own window (now including
-OpenHarness). Focused commands:
+The ordered launcher starts and health-checks ChatMock, then starts and checks
+OpenHarness plus its ChatMock provider, then starts Quartz and the dashboard. In
+`required` mode it fails fast instead of starting a half-working interactive
+stack; in `preferred` mode it logs the runtime failure and continues so the
+dashboard can expose its fallback state. `start.bat` delegates to this same
+launcher. OpenHarness requires Bun; run `bun install` in `openharness/` on first
+setup.
 
-```sh
-npm run dev:openharness   # OpenHarness only (node scripts/start-openharness.mjs)
-npm run dev:dashboard
-npm run dev:quartz
-npm run dev:chatmock
-```
+Focused launchers remain available as `npm run dev:chatmock`, `dev:openharness`,
+`dev:quartz`, and `dev:dashboard`.
 
-OpenHarness requires **Bun** (`bun@1.3.14+`). First run:
+## Route inventory
 
-```sh
-cd openharness && bun install
-```
-
-If Bun is not installed, the launcher prints guidance and exits; the rest of the
-stack still starts. With `OPENHARNESS_ENABLED=false`, the dashboard runs normally
-and the interactive surfaces use their prior behavior.
-
-## Production startup
-
-- Run OpenHarness as a supervised local service bound to `127.0.0.1:4096` with a
-  strong `OPENCODE_SERVER_PASSWORD` and `OPENCODE_CONFIG_DIR` pointing at
-  `openharness-config/`. Never expose it on a non-loopback interface unsecured.
-- Set the dashboard's `OPENHARNESS_*` vars to match, and a distinct
-  `OPENHARNESS_CAPABILITY_SECRET`.
-- Build Quartz with `BREADBOARD_DASHBOARD_URL` set to the public dashboard URL.
-
-## Session model (persistence)
-
-Breadboard remains the durable record of user-visible conversations; OpenHarness
-keeps its own runtime state but is never the sole record.
-
-New tables/columns (all additive, backward-compatible — see `dashboard/src/lib/db.ts`):
-
-- `openharness_runtime_sessions` — links a surface + (optional) chat session to an
-  OpenHarness session: `surface`, `openharness_session_id`, `agent_name`,
-  `cluster_id`, `garden_id`, `page_slug`, `workspace_key`, `runtime_metadata`,
-  `last_runtime_status`.
-- `openharness_messages` — durable transcript for the terminal/Quartz surfaces
-  (which are not cluster-scoped). Garden chat continues to use `chat_sessions` /
-  `chat_messages`.
-- `openharness_proposals` — typed agent proposals (note / page_revision /
-  visualization) with `status` (pending/applied/rejected).
-- `openharness_skill_audit` — auditable skill quarantine/promotion/rejection log.
-- Added nullable columns on `chat_messages`: `tool_calls`, `permission_decisions`,
-  `runtime_error`, `runtime_status`, `proposal`.
-
-## Event model
-
-OpenHarness emits one instance-wide SSE stream (`{ id, type, properties }`),
-filtered by workspace `directory`. The gateway narrows to one session and
-normalizes each event into the shared contract (`assistant.delta`,
-`assistant.completed`, `reasoning.status`, `tool.started`, `tool.completed`,
-`permission.requested`, `session.status`, `error`). UIs never see raw event JSON.
-See `dashboard/src/lib/openharness/events.ts`.
-
-## Agent permissions
-
-Defined in `openharness-config/agent/*.md` (loaded via `OPENCODE_CONFIG_DIR`):
-
-- **breadboard-terminal** — multipurpose. Read/search/`git status`/`git diff`/
-  focused tests/lint run freely; edits, package installs, broad shell, commits,
-  migrations, network, and skill installs require approval; force-push and
-  destructive deletes are denied.
-- **breadboard-garden** — `"*": false` tools except the curated `garden_*` tools;
-  `edit/bash/webfetch/websearch/task/skill` all denied. Cannot use shell, files,
-  git, package installs, or dynamic skills.
-- **breadboard-quartz** — same restrictions as garden, read-only by default.
-- **breadboard-capability-scout** — subagent that can ONLY run the `find-skills`
-  skill; no shell/file/edit; cannot delegate (`task: deny`). Garden/quartz cannot
-  invoke it (they also have `task: deny`), so it is not an escalation path.
-
-Defense in depth: agent permissions + per-surface capability tokens + process/
-workspace isolation.
-
-## Garden tools
-
-`openharness-config/tool/garden.ts` exposes the scoped tools (file `garden.ts`,
-export `X` → tool `garden_X`): `garden_search`, `garden_get_page`,
-`garden_get_page_context`, `garden_get_source_excerpt`, `garden_get_source_figure`,
-`garden_get_graph_neighbors`, `garden_get_learning_spine`,
-`garden_get_content_inventory`, `garden_get_recent_events`,
-`garden_run_proposal_validation`, `garden_create_note_proposal`,
-`garden_propose_page_revision`, `garden_propose_visualization`.
-
-Each tool reads the per-session **capability token** from the session workspace
-(`.breadboard/capability.json`, never in the prompt) and calls
-`POST /api/openharness/tools/garden`. The token pins the garden scope server-side,
-so a model-supplied garden id cannot escape it. Write-like tools create typed
-**proposals** (reviewed/applied by the user through Breadboard) — never a direct
-markdown edit.
-
-## Quartz integration
-
-- Component: `quartz/quartz/components/BreadboardAI.tsx` + inline script +
-  styles, registered in `components/index.ts` and mounted in `quartz.layout.ts`
-  (`afterBody`). It self-gates (renders nothing on the index or non-garden pages).
-- The browser calls only the dashboard: `POST /api/quartz-ai/chat` and
-  `GET /api/quartz-ai/events` (SSE), with CORS for the Quartz origin.
-- Public access requires the garden to be public AND chat-enabled
-  (`chat_accessible`); it is rate-limited per IP. Private gardens require an
-  authenticated owner, re-checked every request. Anonymous sessions are bound to
-  their browser by an opaque client token.
-- The dashboard base URL is configurable via `BREADBOARD_DASHBOARD_URL` at Quartz
-  build time.
-
-## Skill discovery & quarantine
-
-- First-party skills live in `.agents/skills/` (repo-level, not OpenHarness-tied).
-- `find-skills` is available ONLY to the terminal and capability scout.
-- Lifecycle (never auto-installs, never auto-executes):
-  `search` (`/api/openharness/skills/search`) → user asks → `install`
-  (`/api/openharness/skills/install`) downloads into
-  `openharness-skills/quarantine/<name>/` and inspects files/manifest/risks →
-  user reviews → `promote` (`/api/openharness/skills/promote`) copies into the
-  approved skills dir (`.agents/skills/`) → agents pick it up. Every decision is
-  recorded in `openharness_skill_audit`.
-- Validation: name sanitization (no traversal), SKILL.md presence + name match,
-  script-file and suspicious-command detection, name-collision detection.
-
-## API routes
-
-```
+```text
 /api/openharness/health
 /api/openharness/agents
 /api/openharness/models
-/api/openharness/sessions                         (GET list, POST create)
-/api/openharness/sessions/[sessionId]/messages    (POST)
-/api/openharness/sessions/[sessionId]/events       (GET SSE)
-/api/openharness/sessions/[sessionId]/abort        (POST)
-/api/openharness/permissions/[requestId]           (POST)
-/api/openharness/tools/garden                      (POST, capability-token auth)
-/api/openharness/skills/search|install|promote
-/api/gardens/[gardenId]/proposals                  (GET list)
-/api/gardens/[gardenId]/proposals/[proposalId]     (POST apply/reject)
-/api/quartz-ai/chat                                (POST + OPTIONS, CORS)
-/api/quartz-ai/events                              (GET SSE + OPTIONS, CORS)
+/api/openharness/sessions
+/api/openharness/sessions/[sessionId]/messages|events|abort
+/api/openharness/permissions/[requestId]
+/api/openharness/tools/garden
+/api/openharness/tools/capabilities
+/api/openharness/skills/search|install|promote  (promote accepts promote/reject decisions)
+/api/gardens/[gardenId]/proposals
+/api/gardens/[gardenId]/proposals/[proposalId]
+/api/quartz-ai/chat|events|abort
 ```
 
-Every route authenticates through Breadboard, verifies session ownership and
-garden/page access, derives the OpenHarness session id server-side, rejects
-arbitrary workspace paths, enforces a request-size limit (256 KB), and returns
-structured, secret-free errors.
+Browser-facing routes enforce Breadboard authentication or the explicit public
+Quartz policy, ownership/scope checks, size limits, and secret-free errors.
+Internal tool routes require narrow HMAC capability tokens.
 
-## Troubleshooting
+## Verification and limitations
 
-- **Terminal shows the legacy UI** → OpenHarness is disabled/unreachable; the
-  surface falls back automatically. Check `GET /api/openharness/health`.
-- **401 from OpenHarness** → `OPENHARNESS_PASSWORD` (dashboard) must match
-  `OPENCODE_SERVER_PASSWORD` (server).
-- **Garden tool "Capability token expired"** → tokens are short-lived (15 min);
-  start a new turn to remint.
-- **Quartz panel does nothing** → confirm the garden is public + chat-enabled, the
-  dashboard URL is embedded (`BREADBOARD_DASHBOARD_URL`), and the origin is in
-  `QUARTZ_AI_ALLOWED_ORIGINS`.
-- **`bun: not found`** → install Bun and `bun install` in `openharness/`, or run
-  with `OPENHARNESS_ENABLED=false`.
+Focused tests cover gateway authentication, agent restrictions, session-event
+isolation, auth boundaries, migrations, cancellation wiring, mode semantics,
+live-route selection, Quartz context bounding, official CLI parsing, quarantine
+hashes, tamper rejection, and exact promotion. A live Skills ecosystem test is
+opt-in with `OPENHARNESS_LIVE_SKILLS_TEST=1` so the default suite is deterministic.
 
-## Upgrade strategy (merging future OpenCode changes)
+The approved skill registry is local filesystem state; production deployments
+must back it up or use a controlled artifact promotion process. Quarantine risk
+classification is review assistance, not a sandbox or proof that third-party code
+is safe. OpenHarness remains loopback-oriented and should be placed behind a
+supervisor and strong credentials in production.
 
-The fork is kept close to upstream. The only in-repo divergence is an
-`openharness` bin alias in `packages/opencode/package.json` (see
-`openharness/BREADBOARD.md`). All Breadboard-specific behavior is **external
-configuration** (`openharness-config/`, `.agents/skills/`), so upstream merges
-touch few fork files. To upgrade: pull upstream `dev`, reconcile the bin alias if
-`package.json` conflicts, and re-run `bun install`.
+## Upstream upgrade strategy
+
+Pull the upstream OpenCode branch, reconcile the executable alias if its package
+manifest changed, run `bun install`, and rerun the Breadboard focused tests. Most
+integration behavior stays in `openharness-config/` and dashboard adapters, which
+keeps core fork conflicts small.

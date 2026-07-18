@@ -5,8 +5,10 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadRootEnv } from "./load-root-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+loadRootEnv(repoRoot);
 const chatmockDir = path.join(repoRoot, "chatmock");
 const python = process.platform === "win32" ? "python" : "python3";
 

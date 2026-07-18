@@ -8,8 +8,8 @@ the `openharness/` fork so future upstream merges stay clean and the fork's own
 
 Contents:
 
-- `opencode.json` — provider wiring (ChatMock, OpenAI-compatible at
-  `127.0.0.1:8765/v1`), default agent, and conservative permission defaults.
+- `opencode.json` — environment-driven ChatMock provider wiring, default agent,
+  and conservative permission defaults.
 - `agent/breadboard-terminal.md` — the multipurpose dashboard terminal agent
   (permissioned edit/shell/git/tests).
 - `agent/breadboard-garden.md` — garden chat agent, restricted to the curated
@@ -18,9 +18,15 @@ Contents:
   proposal-only writes, same tool restrictions as garden.
 - `agent/breadboard-capability-scout.md` — subagent that can ONLY run
   `find-skills`; it cannot install or escalate.
+- `agent/breadboard-document.md` — repository-free document analyst with no
+  shell, edit, web, task, or skill capabilities.
 - `tool/garden.ts` — the scoped `garden_*` tool adapters. Each reads the
   per-session capability token from the session workspace and calls back to
   Breadboard's internal tool endpoint. Tool `X` is exposed as `garden_X`.
+- `tool/capability.ts` — narrow `capability_gap` and `capability_search`
+  adapters for terminal/scout capability discovery.
+- `skill/find-skills/SKILL.md` — discovery-only instructions backed by the
+  official Skills CLI; it never installs or executes a result.
 
 Security notes:
 

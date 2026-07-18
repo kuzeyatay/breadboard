@@ -8,7 +8,7 @@ import {
 } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
-import { appendRuntimeMessage } from "@/lib/openharness/runtime-store.ts";
+import { appendRuntimeMessage, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 import db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +46,13 @@ export async function POST(
       workspaceKey: session.workspaceKey,
       requestId,
       decision: decision as "once" | "always" | "reject",
+    });
+    recordAuditEvent({
+      eventType: "permission.decided",
+      runtimeSessionId: session.row.id,
+      userId,
+      gardenId: session.row.garden_id,
+      payload: { requestId, decision },
     });
 
     // Record the permission decision alongside the transcript for auditability.

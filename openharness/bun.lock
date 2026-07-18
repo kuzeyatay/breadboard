@@ -561,6 +561,7 @@
       "version": "1.18.3",
       "bin": {
         "opencode": "./bin/opencode",
+        "openharness": "./bin/opencode",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

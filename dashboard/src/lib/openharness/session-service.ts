@@ -22,6 +22,7 @@ import {
   getRuntimeSessionById,
   setOpenHarnessSessionId,
   setRuntimeStatus,
+  recordAuditEvent,
   type RuntimeSessionRow,
 } from "./runtime-store.ts";
 import { ApiError } from "./route-helpers.ts";
@@ -145,21 +146,32 @@ export async function createSessionForSurface(
     workspaceKey: created.workspaceKey,
     agentName: created.agentName,
   };
+  recordAuditEvent({
+    eventType: "session.created",
+    runtimeSessionId: row.id,
+    userId: options.userId,
+    gardenId,
+    payload: { surface: options.surface, agent: created.agentName, pageSlug: options.pageSlug ?? null },
+  });
+  recordAuditEvent({
+    eventType: "agent.selected",
+    runtimeSessionId: row.id,
+    userId: options.userId,
+    gardenId,
+    payload: { agent: created.agentName, allowedTools: allowedToolsForSurface(options.surface) },
+  });
 
-  // Garden/Quartz agents call back into Breadboard for real content via a
-  // capability-scoped tool. Drop the short-lived token into the session's
-  // isolated workspace (never into the model prompt) so the tool adapter can
-  // read it. The terminal has no such callback.
-  if (options.surface === "garden_chat" || options.surface === "quartz_ai") {
-    const config = readOpenHarnessConfig();
-    writeWorkspaceCapability(created.directory, {
-      token: mintCapabilityToken(authorized, options.userId ?? 0),
-      dashboardUrl: config.dashboardInternalUrl,
-      surface: options.surface,
-      gardenId: gardenId ?? undefined,
-      pageSlug: options.pageSlug ?? undefined,
-    });
-  }
+  // Custom tools call back through narrowly scoped Breadboard capabilities.
+  // Garden/Quartz receive content tools; terminal/scout receive only structured
+  // capability-gap and official skill-search callbacks.
+  const config = readOpenHarnessConfig();
+  writeWorkspaceCapability(created.directory, {
+    token: mintCapabilityToken(authorized, options.userId ?? 0),
+    dashboardUrl: config.dashboardInternalUrl,
+    surface: options.surface,
+    gardenId: gardenId ?? undefined,
+    pageSlug: options.pageSlug ?? undefined,
+  });
 
   return authorized;
 }

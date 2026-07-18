@@ -1,16 +1,18 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "breadboard-terminal",
+  "model": "chatmock/{env:CHATMOCK_MODEL}",
   "subagent_depth": 1,
   "provider": {
     "chatmock": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "ChatMock (Breadboard)",
       "options": {
-        "baseURL": "http://127.0.0.1:8765/v1"
+        "baseURL": "{env:CHATMOCK_BASE_URL}",
+        "apiKey": "{env:CHATMOCK_API_KEY}"
       },
       "models": {
-        "gpt-5": { "name": "GPT-5 (ChatMock)" }
+        "{env:CHATMOCK_MODEL}": { "name": "ChatMock model" }
       }
     }
   },

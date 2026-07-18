@@ -351,3 +351,54 @@ export function listSkillAudit(skillName?: string): Array<Record<string, unknown
     .prepare("SELECT * FROM openharness_skill_audit ORDER BY created_at DESC LIMIT 200")
     .all() as Array<Record<string, unknown>>;
 }
+
+export function recordAuditEvent(input: {
+  eventType: string;
+  runtimeSessionId?: number | null;
+  userId?: number | null;
+  gardenId?: string | null;
+  payload?: unknown;
+}): number {
+  const result = db.prepare(
+    `INSERT INTO openharness_audit_events
+       (event_type, runtime_session_id, user_id, garden_id, payload)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    input.eventType,
+    input.runtimeSessionId ?? null,
+    input.userId ?? null,
+    input.gardenId ?? null,
+    input.payload === undefined ? null : JSON.stringify(input.payload),
+  );
+  return Number(result.lastInsertRowid);
+}
+
+export function listAuditEvents(runtimeSessionId?: number): Array<Record<string, unknown>> {
+  if (runtimeSessionId) {
+    return db.prepare(
+      "SELECT * FROM openharness_audit_events WHERE runtime_session_id = ? ORDER BY created_at, id",
+    ).all(runtimeSessionId) as Array<Record<string, unknown>>;
+  }
+  return db.prepare(
+    "SELECT * FROM openharness_audit_events ORDER BY created_at DESC, id DESC LIMIT 500",
+  ).all() as Array<Record<string, unknown>>;
+}
+
+export function getLatestCapabilityGap(runtimeSessionId: number): Record<string, unknown> | null {
+  const row = db.prepare(
+    `SELECT payload FROM openharness_audit_events
+     WHERE runtime_session_id = ? AND event_type = 'capability.gap'
+       AND id > COALESCE((
+         SELECT MAX(id) FROM openharness_audit_events
+         WHERE runtime_session_id = ? AND event_type = 'task.resumed'
+       ), 0)
+     ORDER BY id DESC LIMIT 1`,
+  ).get(runtimeSessionId, runtimeSessionId) as { payload: string | null } | undefined;
+  if (!row?.payload) return null;
+  try {
+    const parsed = JSON.parse(row.payload) as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}

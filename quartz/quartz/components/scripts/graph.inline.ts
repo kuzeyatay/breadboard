@@ -127,6 +127,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
     focusOnHover,
     enableRadial,
   } = JSON.parse(graph.dataset["cfg"]!) as D3Config
+  const configuredDepth = depth
   const isOverviewGraph = depth < 0
   const hasExplicitClusterScope = Array.isArray(includeClusters)
   const scopeClusters = hasExplicitClusterScope
@@ -355,6 +356,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
   }
 
   let hoveredNodeId: string | null = null
+  let selectedGraphNodeId: string | null = null
   let hoveredNeighbours: Set<string> = new Set()
   let searchQuery = ""
   let searchedNodeIds: Set<string> = new Set()
@@ -433,6 +435,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
         n.active = hoveredNeighbours.has(n.simulationData.id)
       }
     }
+    emitGraphContext(newHoveredId ?? selectedGraphNodeId)
   }
 
   let dragStartTime = 0
@@ -703,6 +706,35 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
   }
 
   let currentTransform = zoomIdentity
+  function emitGraphContext(selectedNodeSlug: string | null) {
+    const directNeighborSlugs = selectedNodeSlug
+      ? graphData.links.flatMap((link) => {
+          if (link.source.id === selectedNodeSlug) return [link.target.id]
+          if (link.target.id === selectedNodeSlug) return [link.source.id]
+          return []
+        }).slice(0, 12)
+      : []
+    const detail = {
+      selectedNodeSlug,
+      visibleNodeSlugs: graphData.nodes.map((node) => node.id).slice(0, 24),
+      directNeighborSlugs,
+      activeCluster: scopeCluster ?? scopeClusters[0] ?? clusterPrefixForSlug(slug) ?? "",
+      filters: searchQuery ? [searchQuery] : [],
+      depth: configuredDepth < 0 ? 3 : configuredDepth,
+      relationshipTypes: ["link"],
+      viewport: {
+        x: currentTransform.x,
+        y: currentTransform.y,
+        width,
+        height,
+        scale: currentTransform.k,
+      },
+    }
+    const graphWindow = window as Window & { __breadboardGraphContext?: unknown }
+    graphWindow.__breadboardGraphContext = detail
+    window.dispatchEvent(new CustomEvent("breadboard:graph-context", { detail }))
+  }
+  emitGraphContext(null)
   if (enableDrag) {
     select<HTMLCanvasElement, NodeData | undefined>(app.canvas).call(
       drag<HTMLCanvasElement, NodeData | undefined>()
@@ -735,6 +767,8 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
           // if the time between mousedown and mouseup is short, we consider it a click
           if ((isGlobalGraph || clickToNavigate) && Date.now() - dragStartTime < 500) {
             const node = graphData.nodes.find((n) => n.id === event.subject.id) as NodeData
+            selectedGraphNodeId = node.id
+            emitGraphContext(node.id)
             const targ = resolveRelative(fullSlug, node.id)
             window.spaNavigate(new URL(targ, window.location.toString()))
           }
@@ -744,6 +778,8 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
     for (const node of nodeRenderData) {
       node.gfx.on("click", () => {
         if (!isGlobalGraph && !clickToNavigate) return
+        selectedGraphNodeId = node.simulationData.id
+        emitGraphContext(node.simulationData.id)
         const targ = resolveRelative(fullSlug, node.simulationData.id)
         window.spaNavigate(new URL(targ, window.location.toString()))
       })
@@ -760,6 +796,7 @@ async function renderGraph(graph: HTMLElement, fullSlug: FullSlug) {
         .scaleExtent([0.25, 4])
         .on("zoom", ({ transform }) => {
           currentTransform = transform
+          emitGraphContext(selectedGraphNodeId ?? hoveredNodeId)
           stage.scale.set(transform.k, transform.k)
           stage.position.set(transform.x, transform.y)
 

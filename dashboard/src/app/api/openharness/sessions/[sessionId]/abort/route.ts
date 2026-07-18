@@ -3,6 +3,7 @@ import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeSession, markStatus } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,12 @@ export async function POST(
       workspaceKey: session.workspaceKey,
     });
     markStatus(session, "aborted");
+    recordAuditEvent({
+      eventType: "session.cancelled",
+      runtimeSessionId: session.row.id,
+      userId,
+      gardenId: session.row.garden_id,
+    });
     return NextResponse.json({ aborted: true });
   } catch (error) {
     return apiErrorResponse(error);

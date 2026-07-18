@@ -22,12 +22,15 @@ $password = if ($env:OPENHARNESS_PASSWORD) { $env:OPENHARNESS_PASSWORD } else { 
 $env:OPENCODE_SERVER_PASSWORD = $password
 $env:OPENCODE_SERVER_USERNAME = if ($env:OPENHARNESS_USERNAME) { $env:OPENHARNESS_USERNAME } else { "breadboard" }
 $env:OPENCODE_CONFIG_DIR = $configDir
+$env:CHATMOCK_BASE_URL = if ($env:CHATMOCK_BASE_URL) { $env:CHATMOCK_BASE_URL } else { "http://127.0.0.1:8765/v1" }
+$env:CHATMOCK_API_KEY = if ($env:CHATMOCK_API_KEY) { $env:CHATMOCK_API_KEY } elseif ($env:OPENAI_API_KEY) { $env:OPENAI_API_KEY } else { "local" }
+$env:CHATMOCK_MODEL = if ($env:CHATMOCK_MODEL) { $env:CHATMOCK_MODEL } else { "gpt-5" }
 
 $bun = Get-Command bun -ErrorAction SilentlyContinue
 if (-not $bun) {
   Write-Host "Bun is not installed. OpenHarness requires Bun (bun@1.3.14+)." -ForegroundColor Yellow
   Write-Host "Install from https://bun.sh, then run 'bun install' in $openharnessDir." -ForegroundColor Yellow
-  Write-Host "Breadboard runs without OpenHarness (set OPENHARNESS_ENABLED=false)." -ForegroundColor Yellow
+  Write-Host "Use OPENHARNESS_MODE=legacy only when intentional prior behavior is required." -ForegroundColor Yellow
   exit 1
 }
 

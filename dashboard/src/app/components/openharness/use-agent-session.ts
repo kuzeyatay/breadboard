@@ -10,7 +10,7 @@
 // references sessions by their Breadboard runtime-session id; the OpenHarness
 // session id, workspace, and agent are all server-derived.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
 
@@ -37,6 +37,13 @@ export interface AgentMessage {
   proposal?: unknown;
 }
 
+export interface SkillContinuation {
+  parentTaskId: string;
+  skillId: string;
+  capability: string;
+  approvedPermissions: string[];
+}
+
 export type ConnectionState = "idle" | "connecting" | "streaming" | "waiting" | "error";
 
 interface CreateOptions {
@@ -54,7 +61,10 @@ export interface UseAgentSessionResult {
   activeTools: ToolActivity[];
   setMessages: (messages: AgentMessage[]) => void;
   setSessionId: (id: number | null) => void;
-  send: (text: string, options?: { model?: { providerID: string; modelID: string } }) => Promise<void>;
+  send: (text: string, options?: {
+    model?: { providerID: string; modelID: string };
+    continuation?: SkillContinuation;
+  }) => Promise<void>;
   respondToPermission: (decision: "once" | "always" | "reject") => Promise<void>;
   abort: () => Promise<void>;
   reset: () => void;
@@ -89,8 +99,37 @@ export function useAgentSession(surface: AgentSurface, createOptions?: CreateOpt
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<number | null>(null);
 
+  // Breadboard owns the durable transcript. Restore the newest matching
+  // runtime session after a refresh; OpenHarness ids remain server-side.
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/openharness/sessions?surface=${encodeURIComponent(surface)}`)
+      .then((response) => (response.ok ? response.json() : { sessions: [] }))
+      .then((data) => {
+        if (cancelled || sessionRef.current) return;
+        const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+        const restored = sessions.find((candidate: { gardenId?: unknown; pageSlug?: unknown }) =>
+          (!createOptions?.gardenSlug || candidate.gardenId === createOptions.gardenSlug) &&
+          (!createOptions?.pageSlug || candidate.pageSlug === createOptions.pageSlug),
+        );
+        if (!restored || !Number.isInteger(restored.id)) return;
+        sessionRef.current = restored.id;
+        setSessionId(restored.id);
+        setMessages(Array.isArray(restored.messages) ? restored.messages : []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [surface, createOptions?.gardenSlug, createOptions?.pageSlug]);
+
   const streamEvents = useCallback(
-    async (activeSessionId: number, assistant: AgentMessage, commit: (message: AgentMessage) => void) => {
+    async (
+      activeSessionId: number,
+      assistant: AgentMessage,
+      commit: (message: AgentMessage) => void,
+      onConnected: () => void,
+    ) => {
       const controller = new AbortController();
       abortRef.current = controller;
       const response = await fetch(`/api/openharness/sessions/${activeSessionId}/events`, {
@@ -118,6 +157,10 @@ export function useAgentSession(surface: AgentSurface, createOptions?: CreateOpt
         const frames = buffer.split("\n\n");
         buffer = frames.pop() ?? "";
         for (const frame of frames) {
+          if (frame.split("\n").some((line) => line.trim() === ": connected")) {
+            onConnected();
+            continue;
+          }
           const dataLine = frame
             .split("\n")
             .filter((line) => line.startsWith("data:"))
@@ -191,7 +234,10 @@ export function useAgentSession(surface: AgentSurface, createOptions?: CreateOpt
   );
 
   const send = useCallback(
-    async (text: string, options?: { model?: { providerID: string; modelID: string } }) => {
+    async (text: string, options?: {
+      model?: { providerID: string; modelID: string };
+      continuation?: SkillContinuation;
+    }) => {
       const trimmed = text.trim();
       if (!trimmed || connection === "streaming" || connection === "connecting") return;
       setError(null);
@@ -219,11 +265,19 @@ export function useAgentSession(surface: AgentSurface, createOptions?: CreateOpt
 
         // Open the event stream, then dispatch the message so no early deltas are
         // missed. The stream stays open until the turn goes idle.
-        const streamPromise = streamEvents(activeSessionId, assistant, commit);
+        let markConnected!: () => void;
+        const connected = new Promise<void>((resolve) => { markConnected = resolve; });
+        const streamPromise = streamEvents(activeSessionId, assistant, commit, markConnected);
+        await Promise.race([
+          connected,
+          streamPromise.then(() => {
+            throw new Error("The agent event stream closed before it became ready.");
+          }),
+        ]);
         const sendResponse = await fetch(`/api/openharness/sessions/${activeSessionId}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed, model: options?.model }),
+          body: JSON.stringify({ text: trimmed, model: options?.model, continuation: options?.continuation }),
         });
         if (!sendResponse.ok) {
           const body = await sendResponse.json().catch(() => ({}));
@@ -232,6 +286,7 @@ export function useAgentSession(surface: AgentSurface, createOptions?: CreateOpt
         await streamPromise;
         setConnection("idle");
       } catch (err) {
+        abortRef.current?.abort();
         if ((err as Error).name === "AbortError") {
           setConnection("idle");
           return;

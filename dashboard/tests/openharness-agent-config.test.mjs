@@ -22,8 +22,8 @@ function frontmatter(name) {
   return yaml.load(match[1]);
 }
 
-test("all four agents exist and parse", () => {
-  for (const name of ["breadboard-terminal", "breadboard-garden", "breadboard-quartz", "breadboard-capability-scout"]) {
+test("all non-coding and engineering agent profiles exist and parse", () => {
+  for (const name of ["breadboard-terminal", "breadboard-garden", "breadboard-quartz", "breadboard-capability-scout", "breadboard-document"]) {
     const fm = frontmatter(name);
     assert.ok(fm.mode, `${name} declares a mode`);
   }
@@ -74,9 +74,21 @@ test("capability scout is a subagent limited to find-skills, cannot edit/bash/de
   assert.equal(fm.permission.edit, "deny");
   assert.equal(fm.permission.bash, "deny");
   assert.equal(fm.permission.task, "deny");
+  assert.equal(fm.permission.webfetch, "deny");
+  assert.equal(fm.permission.websearch, "deny");
+  assert.equal(fm.tools.capability_search, true);
   // Skill permission allows ONLY find-skills.
   assert.equal(fm.permission.skill["*"], "deny");
   assert.equal(fm.permission.skill["find-skills"], "allow");
+});
+
+test("document analyst needs no repository, shell, edit tools, or source-code context", () => {
+  const fm = frontmatter("breadboard-document");
+  assert.equal(fm.mode, "primary");
+  assert.equal(fm.tools["*"], false);
+  for (const permission of ["edit", "bash", "webfetch", "websearch", "task", "skill"]) {
+    assert.equal(fm.permission[permission], "deny");
+  }
 });
 
 test("terminal denies force-push and destructive deletes, asks before edits", () => {
