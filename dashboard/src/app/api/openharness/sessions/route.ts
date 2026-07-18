@@ -19,12 +19,32 @@ function parseSurface(value: unknown): OpenHarnessSurface {
   throw new ApiError(400, "invalid_surface", "A valid surface is required.");
 }
 
-function parseMessages(row: { sources: string | null; token_usage: string | null; content: string; role: string }) {
+function parseMessages(row: {
+  sources: string | null;
+  token_usage: string | null;
+  tool_calls: string | null;
+  content: string;
+  role: string;
+}) {
+  let runtime: { calls?: Array<Record<string, unknown>>; verification?: Record<string, unknown> } = {};
+  try {
+    const parsed = row.tool_calls ? JSON.parse(row.tool_calls) : null;
+    runtime = Array.isArray(parsed) ? { calls: parsed } : parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    runtime = {};
+  }
   return {
     role: row.role,
     content: row.content,
     sources: row.sources ? (JSON.parse(row.sources) as string[]) : [],
     usage: row.token_usage ? JSON.parse(row.token_usage) : undefined,
+    tools: (runtime.calls ?? []).map((call, index) => ({
+      toolCallId: String(call.toolCallId ?? `${call.toolName ?? "tool"}-${index}`),
+      toolName: String(call.toolName ?? "tool"),
+      summary: typeof call.summary === "string" ? call.summary : undefined,
+      status: call.success === false ? "failed" : "completed",
+    })),
+    verification: runtime.verification,
   };
 }
 
@@ -47,6 +67,8 @@ export async function GET(request: Request) {
       gardenId: row.garden_id,
       pageSlug: row.page_slug,
       status: row.last_runtime_status,
+      activeDirectory: row.active_directory,
+      filesystemMode: row.filesystem_mode,
       updatedAt: row.updated_at,
       messages: listRuntimeMessages(row.id).map(parseMessages),
     }));
@@ -82,6 +104,8 @@ export async function POST(request: Request) {
         agentName: session.agentName,
         gardenId: session.row.garden_id,
         pageSlug: session.row.page_slug,
+        activeDirectory: session.activeDirectory,
+        filesystemMode: session.filesystemMode,
       },
     });
   } catch (error) {

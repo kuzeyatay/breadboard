@@ -16,35 +16,19 @@
 // model as `garden_X` (e.g. export `search` → tool `garden_search`).
 
 import { tool } from "@opencode-ai/plugin"
-import fs from "node:fs"
-import path from "node:path"
-
-type Capability = {
-  token: string
-  dashboardUrl: string
-  surface: string
-  gardenId?: string
-  pageSlug?: string
-}
-
-function readCapability(worktree: string): Capability {
-  // The gateway writes the descriptor into <workspace>/.breadboard/capability.json.
-  const file = path.join(worktree, ".breadboard", "capability.json")
-  const raw = fs.readFileSync(file, "utf8")
-  return JSON.parse(raw) as Capability
-}
-
-async function callBreadboard(worktree: string, toolName: string, args: Record<string, unknown>) {
-  const capability = readCapability(worktree)
-  const response = await fetch(new URL("/api/openharness/tools/garden", capability.dashboardUrl), {
+async function callBreadboard(sessionID: string, toolName: string, args: Record<string, unknown>) {
+  const dashboardUrl = process.env.BREADBOARD_INTERNAL_URL || "http://127.0.0.1:3000"
+  const serviceSecret = process.env.OPENHARNESS_TOOL_SECRET || process.env.OPENHARNESS_PASSWORD || "breadboard-local-dev"
+  const response = await fetch(new URL("/api/openharness/tools/garden", dashboardUrl), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${capability.token}`,
+      Authorization: `Bearer ${serviceSecret}`,
+      "X-OpenHarness-Session-ID": sessionID,
     },
     // The garden id is always taken from the capability token server-side; we
     // pass it only so the endpoint can reject a mismatch defensively.
-    body: JSON.stringify({ tool: toolName, args: { gardenId: capability.gardenId, ...args } }),
+    body: JSON.stringify({ tool: toolName, args }),
   })
   const data = await response.json().catch(() => ({ ok: false, error: "Invalid tool response" }))
   if (!response.ok || data.ok === false) {
@@ -60,7 +44,7 @@ export const search = tool({
     query: tool.schema.string().describe("What to search for in the garden"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_search", { query: args.query })
+    return callBreadboard(ctx.sessionID, "garden_search", { query: args.query })
   },
 })
 
@@ -70,7 +54,7 @@ export const get_page = tool({
     slug: tool.schema.string().describe("The page slug or relative path"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_page", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_page", { slug: args.slug })
   },
 })
 
@@ -80,7 +64,7 @@ export const get_page_context = tool({
     slug: tool.schema.string().describe("The page slug or relative path"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_page_context", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_page_context", { slug: args.slug })
   },
 })
 
@@ -90,7 +74,7 @@ export const get_source_excerpt = tool({
     slug: tool.schema.string().describe("The source page slug"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_source_excerpt", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_source_excerpt", { slug: args.slug })
   },
 })
 
@@ -100,7 +84,7 @@ export const get_source_figure = tool({
     slug: tool.schema.string().describe("The source page slug"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_source_figure", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_source_figure", { slug: args.slug })
   },
 })
 
@@ -110,7 +94,7 @@ export const get_graph_neighbors = tool({
     slug: tool.schema.string().describe("The node slug"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_graph_neighbors", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_graph_neighbors", { slug: args.slug })
   },
 })
 
@@ -118,7 +102,7 @@ export const get_learning_spine = tool({
   description: "Fetch this garden's Learning Spine (ordered learning pages) to understand progression.",
   args: {},
   async execute(_args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_learning_spine", {})
+    return callBreadboard(ctx.sessionID, "garden_get_learning_spine", {})
   },
 })
 
@@ -126,7 +110,7 @@ export const get_content_inventory = tool({
   description: "Fetch a bounded inventory of this garden's documents, topics, and stats.",
   args: {},
   async execute(_args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_content_inventory", {})
+    return callBreadboard(ctx.sessionID, "garden_get_content_inventory", {})
   },
 })
 
@@ -134,7 +118,7 @@ export const get_recent_events = tool({
   description: "Fetch recent agent proposal activity for this garden.",
   args: {},
   async execute(_args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_get_recent_events", {})
+    return callBreadboard(ctx.sessionID, "garden_get_recent_events", {})
   },
 })
 
@@ -144,7 +128,7 @@ export const run_proposal_validation = tool({
     pageSlug: tool.schema.string().describe("The page the proposal targets"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_run_proposal_validation", { pageSlug: args.pageSlug })
+    return callBreadboard(ctx.sessionID, "garden_run_proposal_validation", { pageSlug: args.pageSlug })
   },
 })
 
@@ -158,7 +142,7 @@ export const create_note_proposal = tool({
     evidenceAnchorIds: tool.schema.array(tool.schema.string()).describe("Supporting source anchor ids").default([]),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_create_note_proposal", {
+    return callBreadboard(ctx.sessionID, "garden_create_note_proposal", {
       title: args.title,
       content: args.content,
       rationale: args.rationale,
@@ -178,7 +162,7 @@ export const propose_page_revision = tool({
     affectedConcepts: tool.schema.array(tool.schema.string()).describe("Concepts touched by this revision").default([]),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_propose_page_revision", {
+    return callBreadboard(ctx.sessionID, "garden_propose_page_revision", {
       pageSlug: args.pageSlug,
       patchOrReplacement: args.patchOrReplacement,
       rationale: args.rationale,
@@ -198,7 +182,7 @@ export const propose_visualization = tool({
     rationale: tool.schema.string().describe("Why this visualization helps").default(""),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.worktree, "garden_propose_visualization", {
+    return callBreadboard(ctx.sessionID, "garden_propose_visualization", {
       pageSlug: args.pageSlug,
       description: args.description,
       spec: args.spec,

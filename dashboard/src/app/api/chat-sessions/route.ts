@@ -6,6 +6,7 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import db from "@/lib/db";
+import type { VerificationSummary } from "@/lib/openharness/evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ interface ChatMessage {
   content: string;
   sources?: string[];
   usage?: ChatTokenUsage;
+  verification?: VerificationSummary;
 }
 
 interface ChatSessionRow {
@@ -33,6 +35,7 @@ interface ChatMessageRow {
   content: string;
   sources: string | null;
   token_usage: string | null;
+  tool_calls: string | null;
 }
 
 function cleanTitle(value: unknown): string {
@@ -57,6 +60,20 @@ function parseTokenUsage(value: string | null): ChatTokenUsage | undefined {
   if (!value) return undefined;
   try {
     return normalizeChatTokenUsage(JSON.parse(value)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseVerification(value: string | null): VerificationSummary | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { verification?: unknown };
+    const verification = parsed?.verification;
+    if (!verification || typeof verification !== "object") return undefined;
+    const state = (verification as { state?: unknown }).state;
+    if (!["verified", "partially_verified", "unverified", "contradicted", "not_applicable"].includes(String(state))) return undefined;
+    return verification as VerificationSummary;
   } catch {
     return undefined;
   }
@@ -142,7 +159,7 @@ function readSessions(
   const placeholders = ids.map(() => "?").join(",");
   const messages = db
     .prepare(
-      `SELECT session_id, role, content, sources, token_usage
+      `SELECT session_id, role, content, sources, token_usage, tool_calls
        FROM chat_messages
        WHERE session_id IN (${placeholders})
        ORDER BY session_id, order_index`,
@@ -153,11 +170,13 @@ function readSessions(
   for (const message of messages) {
     const existing = bySession.get(message.session_id) ?? [];
     const usage = parseTokenUsage(message.token_usage);
+    const verification = parseVerification(message.tool_calls);
     existing.push({
       role: message.role,
       content: message.content,
       sources: parseSources(message.sources),
       ...(usage ? { usage } : {}),
+      ...(verification ? { verification } : {}),
     });
     bySession.set(message.session_id, existing);
   }

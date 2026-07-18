@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -27,21 +28,55 @@ test("sanitizeSegment neutralizes traversal and separators", () => {
 });
 
 test("workspaceKeyFor builds per-surface keys", () => {
-  assert.equal(workspaceKeyFor({ surface: "dashboard_terminal", sessionKey: "S1" }), "terminal/s1");
   assert.equal(
-    workspaceKeyFor({ surface: "garden_chat", sessionKey: "S1", gardenKey: "Physics" }),
+    workspaceKeyFor({ surface: "dashboard_terminal", sessionKey: "S1" }),
+    "terminal/s1",
+  );
+  assert.equal(
+    workspaceKeyFor({
+      surface: "garden_chat",
+      sessionKey: "S1",
+      gardenKey: "Physics",
+    }),
     "gardens/physics/s1",
   );
   assert.equal(
-    workspaceKeyFor({ surface: "quartz_ai", sessionKey: "S1", gardenKey: "Physics", pageKey: "Wave/Eq" }),
+    workspaceKeyFor({
+      surface: "quartz_ai",
+      sessionKey: "S1",
+      gardenKey: "Physics",
+      pageKey: "Wave/Eq",
+    }),
     "quartz/physics/wave-eq/s1",
   );
 });
 
 test("resolveWorkspace stays under the configured root", () => {
-  const resolved = resolveWorkspace(config, { surface: "dashboard_terminal", sessionKey: "abc" });
+  const resolved = resolveWorkspace(config, {
+    surface: "dashboard_terminal",
+    sessionKey: "abc",
+  });
   assert.ok(resolved.directory.startsWith(path.resolve(config.root)));
   assert.equal(resolved.workspaceKey, "terminal/abc");
+});
+
+test("full mode uses an existing previous directory without moving runtime metadata there", () => {
+  const previousDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "bb-oh-active-"),
+  );
+  try {
+    const resolved = resolveWorkspace(config, {
+      surface: "dashboard_terminal",
+      sessionKey: "full-mode",
+      filesystemMode: "full",
+      previousDirectory,
+    });
+    assert.equal(resolved.directory, fs.realpathSync(previousDirectory));
+    assert.ok(resolved.runtimeDirectory.startsWith(path.resolve(config.root)));
+    assert.notEqual(resolved.runtimeDirectory, resolved.directory);
+  } finally {
+    fs.rmSync(previousDirectory, { recursive: true, force: true });
+  }
 });
 
 test("directoryForWorkspaceKey rejects escaping keys", () => {

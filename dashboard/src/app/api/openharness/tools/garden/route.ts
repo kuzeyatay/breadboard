@@ -6,6 +6,7 @@ import {
   ApiError,
 } from "@/lib/openharness/route-helpers.ts";
 import { executeGardenTool } from "@/lib/openharness/garden-tools.ts";
+import { capabilityForInternalToolRequest } from "@/lib/openharness/tool-service-auth.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,9 @@ export async function POST(request: Request) {
       ? authHeader.slice(7).trim()
       : undefined;
     const body = await readJsonBody(request);
-    const token = bearer ?? (typeof body.token === "string" ? body.token : undefined);
+    const token = capabilityForInternalToolRequest(request) ??
+      bearer ??
+      (typeof body.token === "string" ? body.token : undefined);
     if (!token) throw new ApiError(401, "missing_capability", "A capability token is required.");
 
     const tool = typeof body.tool === "string" ? body.tool : "";

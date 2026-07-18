@@ -10,14 +10,13 @@ Contents:
 
 - `opencode.json` — environment-driven ChatMock provider wiring, default agent,
   and conservative permission defaults.
-- `agent/breadboard-terminal.md` — the multipurpose dashboard terminal agent
-  (permissioned edit/shell/git/tests).
-- `agent/breadboard-garden.md` — garden chat agent, restricted to the curated
-  `garden_*` tools only (no shell/file/git/web/task/skill).
-- `agent/breadboard-quartz.md` — Quartz page agent, read-only-by-default,
-  proposal-only writes, same tool restrictions as garden.
-- `agent/breadboard-capability-scout.md` — subagent that can ONLY run
-  `find-skills`; it cannot install or escalate.
+- `agent/breadboard-workbench.md` — the common capable primary agent used by
+  terminal, Garden, and Quartz. Surface context is additive; risky mutations
+  remain permissioned.
+- `agent/{planner,repo-explorer,web-researcher,file-analyst,file-operator,
+  code-implementer,test-runner,document-analyst,garden-specialist,
+  memory-specialist,verifier,capability-scout}.md` — bounded specialist
+  subagents. Specialists cannot recursively delegate.
 - `agent/breadboard-document.md` — repository-free document analyst with no
   shell, edit, web, task, or skill capabilities.
 - `tool/garden.ts` — the scoped `garden_*` tool adapters. Each reads the
@@ -30,10 +29,8 @@ Contents:
 
 Security notes:
 
-- The garden/quartz agents disable every generic tool (`"*": false`) and only
-  enable the curated `garden_*` tools, plus `permission` denies edit/bash/web/
-  task/skill. This is defense in depth alongside Breadboard's capability tokens
-  and process/workspace isolation.
-- `find-skills` is available only to the terminal and capability scout.
-- The capability scout is a subagent that cannot be reached by the garden or
-  quartz agents (they have `task: deny`), so it cannot become an escalation path.
+- Garden and Quartz data remains protected by short-lived, server-validated
+  capability tokens even though the workbench can also use general tools.
+- Mutating filesystem and shell actions remain behind OpenCode permissions.
+- `find-skills` discovery does not install; promotion remains a separate,
+  audited human approval step.

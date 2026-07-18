@@ -5,100 +5,131 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
-// Verifies the EFFECTIVE DECLARED configuration of the OpenHarness agents — the
-// YAML frontmatter that OpenHarness's config loader parses and merges into each
-// agent's tool set and permission ruleset. This is config-level evidence (not
-// the prose prompt). A live tool-availability probe would require running the
-// OpenHarness server, which needs Bun (unavailable in this environment); this
-// asserts the exact declarations that drive effective availability.
-
 const here = path.dirname(fileURLToPath(import.meta.url));
-const agentDir = path.resolve(here, "..", "..", "openharness-config", "agent");
+const root = path.resolve(here, "..", "..");
+const agentDir = path.join(root, "openharness-config", "agent");
+
+function rawAgent(name) {
+  return fs.readFileSync(path.join(agentDir, `${name}.md`), "utf8");
+}
 
 function frontmatter(name) {
-  const raw = fs.readFileSync(path.join(agentDir, `${name}.md`), "utf8");
-  const match = raw.match(/^---\s*\n([\s\S]*?)\n---/);
+  const match = rawAgent(name).match(/^---\s*\n([\s\S]*?)\n---/);
   assert.ok(match, `${name} must have YAML frontmatter`);
   return yaml.load(match[1]);
 }
 
-test("all non-coding and engineering agent profiles exist and parse", () => {
-  for (const name of ["breadboard-terminal", "breadboard-garden", "breadboard-quartz", "breadboard-capability-scout", "breadboard-document"]) {
+test("the common workbench is the OpenHarness default", () => {
+  const config = JSON.parse(
+    fs.readFileSync(
+      path.join(root, "openharness-config", "opencode.json"),
+      "utf8",
+    ),
+  );
+  assert.equal(config.default_agent, "breadboard-workbench");
+  assert.equal(config.subagent_depth, 2);
+});
+
+test("the common workbench exposes general tools with guarded mutation", () => {
+  const fm = frontmatter("breadboard-workbench");
+  assert.equal(fm.mode, "primary");
+  for (const tool of [
+    "read",
+    "glob",
+    "grep",
+    "bash",
+    "edit",
+    "write",
+    "patch",
+    "task",
+    "webfetch",
+    "websearch",
+    "skill",
+  ]) {
+    assert.equal(fm.tools[tool], true, `workbench enables ${tool}`);
+  }
+  assert.equal(fm.permission.edit, "ask");
+  assert.equal(fm.permission.webfetch, "allow");
+  assert.equal(fm.permission.websearch, "allow");
+  assert.equal(fm.permission.bash["git push*"], "deny");
+  assert.equal(fm.permission.bash["rm -rf*"], "deny");
+  assert.equal(fm.permission.bash["git status*"], "allow");
+  assert.equal(fm.permission.read["*"], "allow");
+  assert.equal(fm.permission.read["**/.ssh/*"], "ask");
+  assert.equal(fm.permission.read["**/*credentials*"], "ask");
+  assert.equal(fm.tools.question, false);
+  assert.equal(fm.permission.question, "deny");
+});
+
+test("all chat surfaces select the same capable base agent", () => {
+  const configSource = fs.readFileSync(
+    path.join(root, "dashboard", "src", "lib", "openharness", "config.ts"),
+    "utf8",
+  );
+  assert.match(
+    configSource,
+    /terminal:\s*envString\("OPENHARNESS_TERMINAL_AGENT", "breadboard-workbench"\)/,
+  );
+  assert.match(
+    configSource,
+    /garden:\s*envString\("OPENHARNESS_GARDEN_AGENT", "breadboard-workbench"\)/,
+  );
+  assert.match(
+    configSource,
+    /quartz:\s*envString\("OPENHARNESS_QUARTZ_AGENT", "breadboard-workbench"\)/,
+  );
+});
+
+test("bounded specialists exist as subagents and cannot recursively delegate", () => {
+  const specialists = [
+    "planner",
+    "repo-explorer",
+    "web-researcher",
+    "file-analyst",
+    "file-operator",
+    "code-implementer",
+    "test-runner",
+    "document-analyst",
+    "garden-specialist",
+    "memory-specialist",
+    "verifier",
+    "capability-scout",
+  ];
+  for (const name of specialists) {
     const fm = frontmatter(name);
-    assert.ok(fm.mode, `${name} declares a mode`);
+    assert.equal(fm.mode, "subagent", `${name} is a subagent`);
+    assert.equal(
+      fm.permission.task,
+      "deny",
+      `${name} cannot recursively delegate`,
+    );
   }
 });
 
-test("breadboard-garden disables all generic tools and denies shell/file/git/web/task/skill", () => {
-  const fm = frontmatter("breadboard-garden");
-  // Generic tools off by default.
-  assert.equal(fm.tools["*"], false);
-  // No generic capability is turned back on.
-  for (const generic of ["bash", "edit", "write", "read", "webfetch", "websearch", "task", "patch"]) {
-    assert.notEqual(fm.tools[generic], true, `garden must not enable ${generic}`);
-  }
-  // Only garden_* tools are enabled.
-  for (const [name, enabled] of Object.entries(fm.tools)) {
-    if (enabled === true) assert.ok(name.startsWith("garden_"), `garden enables only garden_* (found ${name})`);
-  }
-  // Permission denies the dangerous classes.
-  for (const perm of ["edit", "bash", "webfetch", "websearch", "task", "skill"]) {
-    assert.equal(fm.permission[perm], "deny", `garden must deny ${perm}`);
-  }
+test("Garden behavior remains proposal-only without disabling general tools", () => {
+  const workbench = rawAgent("breadboard-workbench");
+  assert.match(workbench, /Garden changes remain typed proposals/i);
+  assert.match(workbench, /typed proposal/i);
+  const adapter = fs.readFileSync(
+    path.join(
+      root,
+      "dashboard",
+      "src",
+      "lib",
+      "openharness",
+      "garden-chat-adapter.ts",
+    ),
+    "utf8",
+  );
+  assert.match(adapter, /context is high priority but additive/i);
+  assert.doesNotMatch(adapter, /Use only the garden_\* tools/);
 });
 
-test("breadboard-quartz has the same lockdown and is proposal-only", () => {
-  const fm = frontmatter("breadboard-quartz");
-  assert.equal(fm.tools["*"], false);
-  for (const perm of ["edit", "bash", "webfetch", "websearch", "task", "skill"]) {
-    assert.equal(fm.permission[perm], "deny", `quartz must deny ${perm}`);
-  }
-  for (const [name, enabled] of Object.entries(fm.tools)) {
-    if (enabled === true) assert.ok(name.startsWith("garden_"));
-  }
-});
-
-test("neither garden nor quartz can invoke find-skills or delegate (task denied)", () => {
-  for (const name of ["breadboard-garden", "breadboard-quartz"]) {
-    const fm = frontmatter(name);
-    assert.notEqual(fm.tools["find-skills"], true, `${name} must not enable find-skills`);
-    assert.equal(fm.permission.task, "deny", `${name} must deny task (no delegation to scout)`);
-    assert.equal(fm.permission.skill, "deny", `${name} must deny skills`);
-  }
-});
-
-test("capability scout is a subagent limited to find-skills, cannot edit/bash/delegate", () => {
-  const fm = frontmatter("breadboard-capability-scout");
+test("capability scout may discover skills but cannot mutate or delegate", () => {
+  const fm = frontmatter("capability-scout");
   assert.equal(fm.mode, "subagent");
-  assert.equal(fm.tools["*"], false);
   assert.equal(fm.permission.edit, "deny");
   assert.equal(fm.permission.bash, "deny");
   assert.equal(fm.permission.task, "deny");
-  assert.equal(fm.permission.webfetch, "deny");
-  assert.equal(fm.permission.websearch, "deny");
-  assert.equal(fm.tools.capability_search, true);
-  // Skill permission allows ONLY find-skills.
-  assert.equal(fm.permission.skill["*"], "deny");
   assert.equal(fm.permission.skill["find-skills"], "allow");
-});
-
-test("document analyst needs no repository, shell, edit tools, or source-code context", () => {
-  const fm = frontmatter("breadboard-document");
-  assert.equal(fm.mode, "primary");
-  assert.equal(fm.tools["*"], false);
-  for (const permission of ["edit", "bash", "webfetch", "websearch", "task", "skill"]) {
-    assert.equal(fm.permission[permission], "deny");
-  }
-});
-
-test("terminal denies force-push and destructive deletes, asks before edits", () => {
-  const fm = frontmatter("breadboard-terminal");
-  assert.equal(fm.mode, "primary");
-  assert.equal(fm.permission.edit, "ask");
-  assert.equal(fm.permission.bash["git push --force*"], "deny");
-  assert.equal(fm.permission.bash["rm -rf*"], "deny");
-  assert.equal(fm.permission.bash["git push*"], "deny");
-  // Safe reads are allowed without confirmation.
-  assert.equal(fm.permission.bash["git status"], "allow");
-  assert.equal(fm.permission.bash["git diff"], "allow");
 });

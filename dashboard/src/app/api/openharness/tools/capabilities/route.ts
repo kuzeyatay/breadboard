@@ -7,6 +7,7 @@ import {
   type CapabilityGap,
   type SkillPermission,
 } from "@/lib/openharness/skills.ts";
+import { capabilityForInternalToolRequest } from "@/lib/openharness/tool-service-auth.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,8 @@ const PERMISSIONS = new Set<SkillPermission>([
 export async function POST(request: Request) {
   try {
     requireEnabled();
-    const raw = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    const raw = capabilityForInternalToolRequest(request) ??
+      request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
     const verified = verifyCapabilityToken(raw);
     if (!verified.ok) throw new ApiError(401, "invalid_capability", "Invalid capability token.");
     const body = await readJsonBody(request);

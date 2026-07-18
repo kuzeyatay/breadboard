@@ -331,7 +331,57 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_openharness_audit_events_session
     ON openharness_audit_events(runtime_session_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS openharness_user_settings (
+    user_id               INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    filesystem_mode       TEXT NOT NULL DEFAULT 'restricted'
+                          CHECK (filesystem_mode IN ('restricted','full')),
+    last_active_directory TEXT,
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS openharness_prompts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    legacy_id   TEXT,
+    slug        TEXT    NOT NULL,
+    title       TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    category    TEXT    NOT NULL DEFAULT 'Custom',
+    favorite    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, slug),
+    UNIQUE(user_id, legacy_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_openharness_prompts_user_updated
+    ON openharness_prompts(user_id, updated_at DESC);
+
+  CREATE TABLE IF NOT EXISTS openharness_mcp_connections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    slug        TEXT    NOT NULL,
+    display_name TEXT   NOT NULL,
+    transport   TEXT    NOT NULL CHECK (transport IN ('local','remote')),
+    config_json TEXT    NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    approved_at TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, slug)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_openharness_mcp_connections_user
+    ON openharness_mcp_connections(user_id, enabled, updated_at DESC);
 `);
+
+ensureColumn("openharness_runtime_sessions", "active_directory", "active_directory TEXT");
+ensureColumn(
+  "openharness_runtime_sessions",
+  "filesystem_mode",
+  "filesystem_mode TEXT NOT NULL DEFAULT 'restricted' CHECK (filesystem_mode IN ('restricted','full'))",
+);
 
 // Additional per-message runtime metadata. These are nullable so historical
 // ChatMock-authored messages remain valid and readable.

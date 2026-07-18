@@ -10,7 +10,12 @@ test("streams assistant text deltas as assistant.delta", () => {
   const event = normalizeOpenHarnessEvent(
     {
       type: "message.part.delta",
-      properties: { sessionID: "s1", messageID: "m1", field: "text", delta: "Hello" },
+      properties: {
+        sessionID: "s1",
+        messageID: "m1",
+        field: "text",
+        delta: "Hello",
+      },
     },
     "s1",
   );
@@ -21,16 +26,26 @@ test("streams assistant text deltas as assistant.delta", () => {
 
 test("maps reasoning deltas to reasoning.status", () => {
   const event = normalizeOpenHarnessEvent(
-    { type: "message.part.delta", properties: { sessionID: "s1", field: "reasoning", delta: "thinking..." } },
+    {
+      type: "message.part.delta",
+      properties: { sessionID: "s1", field: "reasoning", delta: "thinking..." },
+    },
     "s1",
   );
   assert.equal(event?.type, "reasoning.status");
-  assert.equal(event?.payload.detail, "thinking...");
+  assert.equal(
+    event?.payload.detail,
+    undefined,
+    "private reasoning text must not reach the browser",
+  );
 });
 
 test("drops events belonging to a different session", () => {
   const event = normalizeOpenHarnessEvent(
-    { type: "message.part.delta", properties: { sessionID: "other", field: "text", delta: "nope" } },
+    {
+      type: "message.part.delta",
+      properties: { sessionID: "other", field: "text", delta: "nope" },
+    },
     "s1",
   );
   assert.equal(event, null);
@@ -42,7 +57,12 @@ test("maps a running tool part to tool.started", () => {
       type: "message.part.updated",
       properties: {
         sessionID: "s1",
-        part: { type: "tool", tool: "garden_search", callID: "c1", state: { status: "running", title: "Searching" } },
+        part: {
+          type: "tool",
+          tool: "garden_search",
+          callID: "c1",
+          state: { status: "running", title: "Searching" },
+        },
       },
     },
     "s1",
@@ -58,13 +78,23 @@ test("maps a completed tool part to tool.completed success", () => {
       type: "message.part.updated",
       properties: {
         sessionID: "s1",
-        part: { type: "tool", tool: "read", callID: "c2", state: { status: "completed", output: "ok" } },
+        part: {
+          type: "tool",
+          tool: "read",
+          callID: "c2",
+          state: {
+            status: "completed",
+            input: { filePath: "C:\\work\\note.md" },
+            output: "ok",
+          },
+        },
       },
     },
     "s1",
   );
   assert.equal(event?.type, "tool.completed");
   assert.equal(event?.payload.success, true);
+  assert.equal(event?.payload.location, "C:\\work\\note.md");
 });
 
 test("maps an errored tool part to tool.completed failure", () => {
@@ -73,7 +103,12 @@ test("maps an errored tool part to tool.completed failure", () => {
       type: "message.part.updated",
       properties: {
         sessionID: "s1",
-        part: { type: "tool", tool: "bash", callID: "c3", state: { status: "error", error: "boom" } },
+        part: {
+          type: "tool",
+          tool: "bash",
+          callID: "c3",
+          state: { status: "error", error: "boom" },
+        },
       },
     },
     "s1",
@@ -113,7 +148,9 @@ test("maps permission.asked to permission.requested", () => {
   const event = normalizeOpenHarnessEvent(
     {
       type: "permission.asked",
-      properties: { info: { id: "p1", sessionID: "s1", type: "bash", title: "Run tests?" } },
+      properties: {
+        info: { id: "p1", sessionID: "s1", type: "bash", title: "Run tests?" },
+      },
     },
     "s1",
   );
@@ -124,14 +161,20 @@ test("maps permission.asked to permission.requested", () => {
 });
 
 test("maps session.idle to session.status idle", () => {
-  const event = normalizeOpenHarnessEvent({ type: "session.idle", properties: { sessionID: "s1" } }, "s1");
+  const event = normalizeOpenHarnessEvent(
+    { type: "session.idle", properties: { sessionID: "s1" } },
+    "s1",
+  );
   assert.equal(event?.type, "session.status");
   assert.equal(event?.payload.status, "idle");
 });
 
 test("maps session.error to error", () => {
   const event = normalizeOpenHarnessEvent(
-    { type: "session.error", properties: { sessionID: "s1", error: { name: "Boom", message: "bad" } } },
+    {
+      type: "session.error",
+      properties: { sessionID: "s1", error: { name: "Boom", message: "bad" } },
+    },
     "s1",
   );
   assert.equal(event?.type, "error");
@@ -145,7 +188,10 @@ test("extracts the nested OpenHarness API error message", () => {
       type: "session.error",
       properties: {
         sessionID: "s1",
-        error: { name: "APIError", data: { message: "Upstream error", statusCode: 400 } },
+        error: {
+          name: "APIError",
+          data: { message: "Upstream error", statusCode: 400 },
+        },
       },
     },
     "s1",
@@ -155,16 +201,30 @@ test("extracts the nested OpenHarness API error message", () => {
 });
 
 test("returns null for unrelated event types", () => {
-  assert.equal(normalizeOpenHarnessEvent({ type: "server.heartbeat", properties: {} }, "s1"), null);
+  assert.equal(
+    normalizeOpenHarnessEvent(
+      { type: "server.heartbeat", properties: {} },
+      "s1",
+    ),
+    null,
+  );
 });
 
 test("extractSessionId reads nested part sessions", () => {
-  assert.equal(extractSessionId({ type: "x", properties: { part: { sessionID: "sX" } } }), "sX");
+  assert.equal(
+    extractSessionId({ type: "x", properties: { part: { sessionID: "sX" } } }),
+    "sX",
+  );
   assert.equal(extractSessionId({ type: "x", properties: {} }), undefined);
 });
 
 test("encodeSseEvent produces a valid SSE data frame", () => {
-  const frame = encodeSseEvent({ type: "session.status", sessionId: "s1", timestamp: "t", payload: { status: "idle" } });
+  const frame = encodeSseEvent({
+    type: "session.status",
+    sessionId: "s1",
+    timestamp: "t",
+    payload: { status: "idle" },
+  });
   assert.match(frame, /^data: \{/);
   assert.match(frame, /\n\n$/);
 });

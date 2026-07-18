@@ -65,7 +65,7 @@ export async function POST(request: Request) {
     // Third-party promoted skills are attached only to the permissioned terminal
     // profile. Garden, Quartz, document, and scout profiles explicitly deny
     // dynamic skill execution.
-    const approvedAgents = ["breadboard-terminal"];
+    const approvedAgents = ["breadboard-workbench"];
     const result = promoteSkill(name, {
       overwrite: Boolean(body.overwrite),
       approvedAgents,

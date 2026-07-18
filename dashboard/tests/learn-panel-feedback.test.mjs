@@ -3,11 +3,21 @@ import fs from "node:fs";
 import test from "node:test";
 
 const workspaceSource = fs.readFileSync(
-  new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
+  new URL(
+    "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+    import.meta.url,
+  ),
   "utf8",
 );
 const learnSource = fs.readFileSync(
   new URL("../src/lib/learn.ts", import.meta.url),
+  "utf8",
+);
+const confirmationDialogSource = fs.readFileSync(
+  new URL(
+    "../src/app/components/learn-confirmation-dialog.tsx",
+    import.meta.url,
+  ),
   "utf8",
 );
 
@@ -18,14 +28,20 @@ test("Learn panel omits Council activity and its polling", () => {
 });
 
 test("Learn panel reports the active step without a redundant running subtitle", () => {
-  assert.doesNotMatch(workspaceSource, /Learn is running\. \$\{Math\.round\(progress\)\}% complete\./);
+  assert.doesNotMatch(
+    workspaceSource,
+    /Learn is running\. \$\{Math\.round\(progress\)\}% complete\./,
+  );
   assert.match(workspaceSource, /Learn failed before completion\./);
   assert.doesNotMatch(workspaceSource, /Internal stage:/);
   assert.match(workspaceSource, /const stageMessage =/);
   assert.match(workspaceSource, /stageMessage \|\| null/);
   assert.match(workspaceSource, /Section:/);
   assert.match(workspaceSource, /Page:/);
-  assert.doesNotMatch(workspaceSource, /The error below explains what needs attention/);
+  assert.doesNotMatch(
+    workspaceSource,
+    /The error below explains what needs attention/,
+  );
   assert.doesNotMatch(workspaceSource, /selectedDocumentNames/);
   assert.match(workspaceSource, /aria-live="polite"/);
   assert.match(learnSource, /Planning failed; last internal step:/);
@@ -51,4 +67,18 @@ test("Learn panel omits the old colored repair summary", () => {
   assert.doesNotMatch(workspaceSource, /Last repair:/);
   assert.doesNotMatch(workspaceSource, /Existing learner pages are protected/);
   assert.doesNotMatch(workspaceSource, /proposedMap\.warnings\.map/);
+});
+
+test("destructive Learn actions use the custom confirmation dialog", () => {
+  assert.match(workspaceSource, /setLearnConfirmationAction\("full_rebuild"\)/);
+  assert.match(workspaceSource, /setLearnConfirmationAction\("clear"\)/);
+  assert.match(workspaceSource, /<LearnConfirmationDialog/);
+  assert.doesNotMatch(
+    workspaceSource,
+    /window\.confirm\([\s\S]{0,300}regenerate the Learning Map/,
+  );
+  assert.match(confirmationDialogSource, /role="alertdialog"/);
+  assert.match(confirmationDialogSource, /aria-modal="true"/);
+  assert.match(confirmationDialogSource, /event\.key !== "Escape"/);
+  assert.match(confirmationDialogSource, /cancelRef\.current\?\.focus\(\)/);
 });

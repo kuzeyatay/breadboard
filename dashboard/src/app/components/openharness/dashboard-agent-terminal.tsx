@@ -216,6 +216,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
           <p className="truncate text-sm font-semibold text-[#172A22]">Agent terminal</p>
           <p className="truncate text-[11px] text-[#5F6F68]">
             Powered by OpenHarness · {scope === "public" ? "public gardens" : "your workspace"}
+            {session.activeDirectory ? ` · ${session.filesystemMode}: ${session.activeDirectory}` : ""}
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -267,6 +268,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
           connection={session.connection}
           error={runtimeUnavailable ? "OpenHarness is required but unavailable. No legacy request was sent." : session.error}
           pendingPermission={session.pendingPermission}
+          activities={session.activities}
           input={input}
           onInputChange={setInput}
           onSubmit={submit}

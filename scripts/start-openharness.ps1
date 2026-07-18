@@ -22,9 +22,13 @@ $password = if ($env:OPENHARNESS_PASSWORD) { $env:OPENHARNESS_PASSWORD } else { 
 $env:OPENCODE_SERVER_PASSWORD = $password
 $env:OPENCODE_SERVER_USERNAME = if ($env:OPENHARNESS_USERNAME) { $env:OPENHARNESS_USERNAME } else { "breadboard" }
 $env:OPENCODE_CONFIG_DIR = $configDir
+$env:BREADBOARD_INTERNAL_URL = if ($env:BREADBOARD_INTERNAL_URL) { $env:BREADBOARD_INTERNAL_URL } else { "http://127.0.0.1:3000" }
+$env:OPENHARNESS_TOOL_SECRET = if ($env:OPENHARNESS_TOOL_SECRET) { $env:OPENHARNESS_TOOL_SECRET } else { $password }
 $env:CHATMOCK_BASE_URL = if ($env:CHATMOCK_BASE_URL) { $env:CHATMOCK_BASE_URL } else { "http://127.0.0.1:8765/v1" }
 $env:CHATMOCK_API_KEY = if ($env:CHATMOCK_API_KEY) { $env:CHATMOCK_API_KEY } elseif ($env:OPENAI_API_KEY) { $env:OPENAI_API_KEY } else { "local" }
 $env:CHATMOCK_MODEL = if ($env:CHATMOCK_MODEL) { $env:CHATMOCK_MODEL } else { "gpt-5.6-sol" }
+$env:OPENCODE_ENABLE_EXA = if ($env:OPENCODE_ENABLE_EXA) { $env:OPENCODE_ENABLE_EXA } else { "1" }
+$env:OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = if ($env:OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS) { $env:OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS } else { "true" }
 
 $bun = Get-Command bun -ErrorAction SilentlyContinue
 if (-not $bun) {

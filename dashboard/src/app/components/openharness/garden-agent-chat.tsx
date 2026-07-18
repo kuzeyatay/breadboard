@@ -164,6 +164,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           connection={session.connection}
           error={session.error}
           pendingPermission={session.pendingPermission}
+          activities={session.activities}
           input={input}
           onInputChange={setInput}
           onSubmit={submit}

@@ -10,12 +10,15 @@
 import { useEffect, useRef } from "react";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import AssistantComposer from "@/app/components/assistant-composer";
+import ActivityPanel from "./activity-panel";
+import EvidencePanel from "./evidence-panel";
 import {
   DEFAULT_ASSISTANT_REASONING_EFFORT,
   type AssistantReasoningEffort,
 } from "@/lib/assistant-reasoning";
 import type {
   AgentMessage,
+  ActivityItem,
   ConnectionState,
   PermissionPrompt,
   ToolActivity,
@@ -26,6 +29,7 @@ interface Props {
   connection: ConnectionState;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
+  activities: ActivityItem[];
   input: string;
   onInputChange: (value: string) => void;
   onSubmit: () => void;
@@ -48,7 +52,7 @@ function ToolChip({ tool }: { tool: ToolActivity }) {
       : tool.status === "failed"
         ? "border-red-700 text-red-300"
         : "border-amber-700 text-amber-300";
-  const icon = tool.status === "running" ? "◐" : tool.status === "completed" ? "✓" : "✕";
+  const icon = tool.status === "running" ? "•" : tool.status === "completed" ? "✓" : "×";
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full border bg-gray-900/60 px-2 py-0.5 text-[10px] ${color}`}
@@ -65,6 +69,7 @@ export default function AgentRuntimePanel({
   connection,
   error,
   pendingPermission,
+  activities,
   input,
   onInputChange,
   onSubmit,
@@ -110,12 +115,6 @@ export default function AgentRuntimePanel({
                       </div>
                     ) : (
                       <div className="text-sm leading-7 text-gray-200">
-                        {message.reasoning ? (
-                          <details className="mb-2 rounded-md border border-gray-800 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
-                            <summary className="cursor-pointer text-gray-300">Thinking</summary>
-                            <pre className="mt-2 whitespace-pre-wrap font-sans leading-5">{message.reasoning}</pre>
-                          </details>
-                        ) : null}
                         {message.tools && message.tools.length > 0 ? (
                           <div className="mb-2 flex flex-wrap gap-1.5">
                             {message.tools.map((tool) => (
@@ -140,6 +139,7 @@ export default function AgentRuntimePanel({
                             ))}
                           </div>
                         ) : null}
+                        {message.verification ? <EvidencePanel verification={message.verification} /> : null}
                       </div>
                     )}
                   </div>
@@ -148,39 +148,6 @@ export default function AgentRuntimePanel({
               <div ref={endRef} />
             </div>
           )}
-
-          {pendingPermission ? (
-            <div className="mt-4 rounded-lg border border-amber-700/60 bg-amber-950/30 px-4 py-3">
-              <p className="text-sm font-medium text-amber-200">Permission requested</p>
-              <p className="mt-1 text-xs text-amber-100/80">{pendingPermission.description}</p>
-              {pendingPermission.risk ? (
-                <p className="mt-1 text-[11px] text-amber-300/70">Risk: {pendingPermission.risk}</p>
-              ) : null}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => onPermissionDecision("once")}
-                  className="rounded-md border border-emerald-700 bg-emerald-900/40 px-3 py-1.5 text-xs text-emerald-200 hover:bg-emerald-900/70"
-                >
-                  Allow once
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onPermissionDecision("always")}
-                  className="rounded-md border border-emerald-800 bg-emerald-900/20 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-900/50"
-                >
-                  Allow for session
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onPermissionDecision("reject")}
-                  className="rounded-md border border-red-800 bg-red-950/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/70"
-                >
-                  Deny
-                </button>
-              </div>
-            </div>
-          ) : null}
 
           {error ? (
             <div className="mt-4 rounded-lg border border-red-800/60 bg-red-950/30 px-4 py-3 text-xs text-red-300">
@@ -191,24 +158,15 @@ export default function AgentRuntimePanel({
       </div>
 
       <div className="shrink-0 px-4 pb-3">
-        {streaming ? (
-          <div className="mx-auto mb-2 flex w-full max-w-3xl items-center justify-between text-xs text-gray-500">
-            <span>
-              {connection === "waiting"
-                ? "Waiting for your permission decision…"
-                : connection === "connecting"
-                  ? "Connecting…"
-                  : "Streaming…"}
-            </span>
-            <button
-              type="button"
-              onClick={onAbort}
-              className="rounded-md border border-gray-700 px-2.5 py-1 text-gray-300 hover:border-gray-600 hover:text-white"
-            >
-              Stop
-            </button>
-          </div>
-        ) : null}
+        <div className="mx-auto w-full max-w-3xl">
+          <ActivityPanel
+            activities={activities}
+            connection={connection}
+            pendingPermission={pendingPermission}
+            onAbort={onAbort}
+            onPermissionDecision={onPermissionDecision}
+          />
+        </div>
         <AssistantComposer
           className="mx-auto w-full max-w-3xl"
           compact={compact}

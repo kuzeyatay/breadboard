@@ -12,6 +12,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import ActivityPanel from '@/app/components/openharness/activity-panel';
+import EvidencePanel from '@/app/components/openharness/evidence-panel';
+import { useLegacyAgentActivity } from '@/app/components/openharness/use-legacy-agent-activity';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import {
   DEFAULT_ASSISTANT_MODELS,
@@ -33,6 +36,7 @@ import {
   summarizeChatTokenUsage,
 } from '@/lib/chat-token-usage';
 import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
+import type { VerificationSummary } from '@/lib/openharness/evidence';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -41,6 +45,7 @@ interface ChatMessage {
   thinking?: string;
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
+  verification?: VerificationSummary;
 }
 
 interface ChatSession {
@@ -362,6 +367,7 @@ export default function GardenAssistant({
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const agentActivity = useLegacyAgentActivity();
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
@@ -641,6 +647,8 @@ export default function GardenAssistant({
     setIsStreaming(true);
     setMessages([...nextMessages, assistantMessage]);
 
+    let activityStarted = false;
+    let agentFailed = false;
     try {
       if (activeMarkdown && wantsOpenMarkdownEdit(text) && pendingAttachments.length === 0) {
         const response = await fetch('/api/markdown-edit', {
@@ -714,6 +722,8 @@ export default function GardenAssistant({
         return;
       }
 
+      const signal = agentActivity.start();
+      activityStarted = true;
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -726,6 +736,7 @@ export default function GardenAssistant({
           attachments: pendingAttachments,
           activeMarkdown: activeMarkdownContext,
         }),
+        signal,
       });
 
       if (!response.ok || !response.body) {
@@ -769,33 +780,13 @@ export default function GardenAssistant({
 
           try {
             const event = JSON.parse(payload);
+            agentActivity.handleEvent(event as Record<string, unknown>);
             if (event.type === 'sources' && Array.isArray(event.sources)) {
               assistantMessage = {
                 ...assistantMessage,
                 sources: Array.from(
                   new Set(event.sources.filter((source: unknown) => typeof source === 'string')),
                 ),
-              };
-              updateAssistant();
-            }
-            if (event.type === 'thinking' && typeof event.text === 'string') {
-              assistantMessage = {
-                ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}${event.text}`,
-              };
-              updateAssistant();
-            }
-            if (event.type === 'tool') {
-              assistantMessage = {
-                ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}\n[${event.status ?? 'tool'}] ${event.toolName ?? 'garden tool'}`,
-              };
-              updateAssistant();
-            }
-            if (event.type === 'permission') {
-              assistantMessage = {
-                ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}\nPermission requested: ${event.description ?? 'agent action'}`,
               };
               updateAssistant();
             }
@@ -833,6 +824,10 @@ export default function GardenAssistant({
                 updateAssistant();
               }
             }
+            if (event.type === 'verification' && event.verification) {
+              assistantMessage = { ...assistantMessage, verification: event.verification as VerificationSummary };
+              updateAssistant();
+            }
           } catch {
             // Ignore malformed stream fragments and keep reading.
           }
@@ -840,7 +835,9 @@ export default function GardenAssistant({
       }
       await persistChatSession(session.id, [...nextMessages, assistantMessage], sessionTitle);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Assistant could not answer right now';
+      const aborted = error instanceof Error && error.name === 'AbortError';
+      agentFailed = !aborted;
+      const message = aborted ? 'The request was stopped.' : error instanceof Error ? error.message : 'Assistant could not answer right now';
       const finalMessages: ChatMessage[] = [
         ...nextMessages,
         {
@@ -852,6 +849,7 @@ export default function GardenAssistant({
       setMessages(finalMessages);
       await persistChatSession(session.id, finalMessages, sessionTitle);
     } finally {
+      if (activityStarted) agentActivity.finish(agentFailed);
       setIsStreaming(false);
     }
   }
@@ -1179,6 +1177,7 @@ export default function GardenAssistant({
                     <pre className="mt-2 whitespace-pre-wrap font-sans leading-5">{message.thinking}</pre>
                   </details>
                 ) : null}
+                {message.verification ? <EvidencePanel verification={message.verification} /> : null}
               </div>
             ))}
             <div ref={messagesEndRef} />
@@ -1194,6 +1193,13 @@ export default function GardenAssistant({
           multiple
           onChange={handleAttachmentInput}
           className="hidden"
+        />
+        <ActivityPanel
+          activities={agentActivity.activities}
+          connection={agentActivity.connection}
+          pendingPermission={agentActivity.pendingPermission}
+          onAbort={agentActivity.abort}
+          onPermissionDecision={(decision) => void agentActivity.respondToPermission(decision)}
         />
         <AssistantComposer
           compact
@@ -1221,21 +1227,6 @@ export default function GardenAssistant({
           statusMessage={attachmentStatus}
           tokenUsage={tokenUsage}
           tokenUsagePending={isStreaming}
-          utilityActions={
-            <>
-              <button
-                type="button"
-                onClick={() => setShowPrompts(true)}
-                className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
-                title="Prompt library"
-                aria-label="Prompt library"
-              >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
-                </svg>
-              </button>
-            </>
-          }
         />
       </div>
 

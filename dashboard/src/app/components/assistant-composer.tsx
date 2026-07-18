@@ -7,8 +7,10 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
+import { CommandHub, type CommandHubHandle } from '@/app/components/openharness/command-hub';
+import type { CommandHubItem } from '@/lib/openharness/commands.ts';
 import { formatAssistantModelName } from '@/lib/ai-models';
 import type { AssistantReasoningEffort } from '@/lib/assistant-reasoning';
 import { formatResponseDuration, formatTokenCount, type ChatTokenUsageSummary } from '@/lib/chat-token-usage';
@@ -123,6 +125,10 @@ export default function AssistantComposer({
   compact = false,
 }: Props) {
   const [showIntelligence, setShowIntelligence] = useState(false);
+  const [showCommandHub, setShowCommandHub] = useState(false);
+  const commandHubRef = useRef<CommandHubHandle>(null);
+  const internalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useImperativeHandle(textareaRef, () => internalTextareaRef.current as HTMLTextAreaElement);
   const selectedEffort =
     EFFORT_OPTIONS.find((option) => option.value === reasoningEffort) ??
     EFFORT_OPTIONS[2];
@@ -131,6 +137,27 @@ export default function AssistantComposer({
     const next = !showIntelligence;
     setShowIntelligence(next);
     if (next) onLoadModels?.();
+  }
+
+  function assignTextareaRef(node: HTMLTextAreaElement | null) {
+    internalTextareaRef.current = node;
+  }
+
+  function insertCommand(item: CommandHubItem) {
+    const node = internalTextareaRef.current;
+    let start = node?.selectionStart ?? value.length;
+    let end = node?.selectionEnd ?? value.length;
+    if (value === '/') {
+      start = 0;
+      end = 1;
+    }
+    const token = `/${item.kind}:${item.slug} `;
+    const next = `${value.slice(0, start)}${token}${value.slice(end)}`;
+    onChange(next);
+    window.setTimeout(() => {
+      node?.focus();
+      node?.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
   }
 
   return (
@@ -180,6 +207,15 @@ export default function AssistantComposer({
         ) : null}
 
         <div className="flex items-end gap-1.5">
+          <CommandHub
+            ref={commandHubRef}
+            open={showCommandHub}
+            onOpenChange={setShowCommandHub}
+            onSelect={insertCommand}
+            disabled={disabled}
+            compact={compact}
+          />
+
           {onAddDocuments ? (
             <button
               type="button"
@@ -202,10 +238,17 @@ export default function AssistantComposer({
           {utilityActions ? <div className="flex shrink-0 items-center gap-1">{utilityActions}</div> : null}
 
           <textarea
-            ref={textareaRef}
+            ref={assignTextareaRef}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
-            onKeyDown={onKeyDown}
+            onChange={(event) => {
+              const next = event.target.value;
+              onChange(next);
+              if (next === '/') setShowCommandHub(true);
+            }}
+            onKeyDown={(event) => {
+              if (commandHubRef.current?.handleKeyDown(event)) return;
+              onKeyDown?.(event);
+            }}
             onPaste={onPaste}
             rows={1}
             placeholder={placeholder}

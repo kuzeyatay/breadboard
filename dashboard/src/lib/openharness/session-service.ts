@@ -16,21 +16,26 @@ import { getOpenHarnessGateway } from "./gateway.ts";
 import { readOpenHarnessConfig, type OpenHarnessSurface } from "./config.ts";
 import { issueCapabilityToken } from "./capability-token.ts";
 import { allowedToolsForSurface } from "./tool-scopes.ts";
-import { writeWorkspaceCapability } from "./workspace.ts";
+import { directoryForWorkspaceKey, writeWorkspaceCapability } from "./workspace.ts";
 import {
   createRuntimeSession,
   getRuntimeSessionById,
+  getOpenHarnessUserSettings,
   setOpenHarnessSessionId,
   setRuntimeStatus,
   recordAuditEvent,
   type RuntimeSessionRow,
+  type FilesystemAccessMode,
 } from "./runtime-store.ts";
 import { ApiError } from "./route-helpers.ts";
+import { listMcpConnections, runtimeMcpConfig } from "./mcp-connections.ts";
 
 export interface AuthorizedRuntimeSession {
   row: RuntimeSessionRow;
   openHarnessSessionId: string;
   workspaceKey: string;
+  activeDirectory: string;
+  filesystemMode: FilesystemAccessMode;
   agentName: string;
 }
 
@@ -113,6 +118,9 @@ export async function createSessionForSurface(
   }
 
   const gateway = getOpenHarnessGateway();
+  const settings = options.userId === null
+    ? { filesystemMode: "restricted" as const, lastActiveDirectory: null }
+    : getOpenHarnessUserSettings(options.userId);
   // sessionKey is a fresh random id so workspaces never collide across sessions.
   const sessionKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const created = await gateway.createSession({
@@ -122,6 +130,8 @@ export async function createSessionForSurface(
     pageKey: options.pageSlug ?? undefined,
     title: options.title,
     metadata: { userId: options.userId, gardenId, pageSlug: options.pageSlug },
+    filesystemMode: settings.filesystemMode,
+    previousDirectory: settings.lastActiveDirectory,
   });
 
   const row = createRuntimeSession({
@@ -133,6 +143,8 @@ export async function createSessionForSurface(
     gardenId,
     pageSlug: options.pageSlug ?? null,
     workspaceKey: created.workspaceKey,
+    activeDirectory: created.directory,
+    filesystemMode: settings.filesystemMode,
     openHarnessSessionId: created.openHarnessSessionId,
     runtimeMetadata: {
       title: options.title,
@@ -144,6 +156,8 @@ export async function createSessionForSurface(
     row,
     openHarnessSessionId: created.openHarnessSessionId,
     workspaceKey: created.workspaceKey,
+    activeDirectory: created.directory,
+    filesystemMode: settings.filesystemMode,
     agentName: created.agentName,
   };
   recordAuditEvent({
@@ -161,11 +175,40 @@ export async function createSessionForSurface(
     payload: { agent: created.agentName, allowedTools: allowedToolsForSurface(options.surface) },
   });
 
+  // Dynamic OpenHarness MCP additions are instance-scoped, so replay the
+  // user's persisted, approved connections into each new workspace instance.
+  if (options.userId !== null) {
+    for (const connection of listMcpConnections(options.userId, true)) {
+      try {
+        const status = await gateway.addMcpConnection(
+          created.directory,
+          connection.slug,
+          runtimeMcpConfig(connection),
+        );
+        recordAuditEvent({
+          eventType: "mcp.loaded",
+          runtimeSessionId: row.id,
+          userId: options.userId,
+          gardenId,
+          payload: { slug: connection.slug, status: status[connection.slug]?.status ?? "unknown" },
+        });
+      } catch {
+        recordAuditEvent({
+          eventType: "mcp.load_failed",
+          runtimeSessionId: row.id,
+          userId: options.userId,
+          gardenId,
+          payload: { slug: connection.slug, reason: "MCP connection failed to load; details were not persisted to avoid credential leakage." },
+        });
+      }
+    }
+  }
+
   // Custom tools call back through narrowly scoped Breadboard capabilities.
   // Garden/Quartz receive content tools; terminal/scout receive only structured
   // capability-gap and official skill-search callbacks.
   const config = readOpenHarnessConfig();
-  writeWorkspaceCapability(created.directory, {
+  writeWorkspaceCapability(created.runtimeDirectory, {
     token: mintCapabilityToken(authorized, options.userId ?? 0),
     dashboardUrl: config.dashboardInternalUrl,
     surface: options.surface,
@@ -204,6 +247,9 @@ export function authorizeRuntimeSession(
     row,
     openHarnessSessionId: row.openharness_session_id,
     workspaceKey: row.workspace_key,
+    activeDirectory:
+      row.active_directory ?? directoryForWorkspaceKey(readOpenHarnessConfig(), row.workspace_key),
+    filesystemMode: row.filesystem_mode === "full" ? "full" : "restricted",
     agentName: row.agent_name,
   };
 }
@@ -242,6 +288,9 @@ export function authorizeQuartzRuntimeSession(
     row,
     openHarnessSessionId: row.openharness_session_id,
     workspaceKey: row.workspace_key,
+    activeDirectory:
+      row.active_directory ?? directoryForWorkspaceKey(readOpenHarnessConfig(), row.workspace_key),
+    filesystemMode: row.filesystem_mode === "full" ? "full" : "restricted",
     agentName: row.agent_name,
   };
 }

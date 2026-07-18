@@ -1,4 +1,4 @@
-+---
+---
 name: find-skills
 description: Discover real candidate skills through the official Skills CLI adapter. Metadata-only; never installs, promotes, or executes.
 ---
@@ -23,4 +23,3 @@ scout after a structured `capability_gap` has identified a missing capability.
    files, and does not make the skill agent-accessible.
 5. Promotion is a separate human-approved action. Never recommend running an
    unreviewed skill and never approve your own candidate.
-
