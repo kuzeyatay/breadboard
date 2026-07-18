@@ -1,4 +1,5 @@
 start "ChatMock" cmd /k "cd /d ""%~dp0chatmock"" && python chatmock.py serve --port 8765 --reasoning-effort low --reasoning-summary none"
+start "Scriberr" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-scriberr.ps1"
 start "Quartz" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-quartz.ps1"
 start "OpenHarness" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-openharness.ps1"
 start "Dashboard" cmd /k "cd /d ""%~dp0dashboard"" && npm run dev"

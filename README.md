@@ -315,6 +315,7 @@ start.bat
 
 This starts:
 - **ChatMock** on port `8765`
+- **Scriberr** on port `8091` (video transcription service; requires Docker)
 - **Quartz** on port `8081`
 - **OpenHarness** on port `4096` (interactive agent runtime; requires Bun)
 - **Dashboard** on port `3000`
@@ -327,8 +328,15 @@ This starts:
 > never route through OpenHarness. See
 > [docs/OPENHARNESS_INTEGRATION.md](docs/OPENHARNESS_INTEGRATION.md).
 >
-> Cross-platform: `npm run dev` (root) starts all four services; `npm run
+> Cross-platform: `npm run dev` (root) starts the whole stack; `npm run
 > dev:openharness` starts only OpenHarness.
+>
+> **Scriberr** powers Garden Chat's video import: upload a video or paste a
+> YouTube URL and the full transcript becomes a timestamped Markdown source
+> under the garden's `sources/` folder. Scriberr is vendored at `./scriberr`
+> and runs via Docker (`npm run dev:scriberr`); set `SCRIBERR_AUTOSTART=false`
+> to skip it. See [docs/VIDEO_TRANSCRIPTION.md](docs/VIDEO_TRANSCRIPTION.md)
+> for setup, environment variables, and troubleshooting.
 
 #### Manual Startup
 
@@ -356,6 +364,7 @@ npm run dev
 - Dashboard: `http://localhost:3000`
 - Quartz garden: `http://localhost:8081`
 - ChatMock backend: `http://localhost:8765/v1`
+- Scriberr (video transcription): `http://localhost:8091`
 
 ---
 

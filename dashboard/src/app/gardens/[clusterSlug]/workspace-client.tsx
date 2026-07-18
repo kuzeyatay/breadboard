@@ -16,6 +16,7 @@ import AssistantComposer from "@/app/components/assistant-composer";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
+import GardenVideoImport from "@/app/components/garden-video-import";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
@@ -1275,6 +1276,29 @@ export default function WorkspaceClient({
       addToast("Link copied", "success");
     } catch {
       addToast("Could not copy link");
+    }
+  }
+
+  function handleVideoSourceCreated(info: {
+    jobId: string;
+    sourceTitle: string;
+    sourceRelPath: string;
+    sourceSlug: string;
+  }) {
+    // The transcript is now a regular source: refresh the tree and graph so it
+    // appears immediately, and surface a Garden Chat system message.
+    setSourceDocsExpanded(true);
+    void fetchDocuments();
+    setGraphRefreshVersion((value) => value + 1);
+    addToast(`Video transcribed: ${info.sourceTitle}`, "success");
+    if (activeChatId) {
+      updateChatMessages(activeChatId, (previous) => [
+        ...previous,
+        {
+          role: "assistant",
+          content: `Video transcription completed. New source available: **${info.sourceTitle}** (\`${info.sourceRelPath}\`). You can now ask questions about it in this chat.`,
+        },
+      ]);
     }
   }
 
@@ -4341,9 +4365,11 @@ export default function WorkspaceClient({
           </svg>
         </button>
         {videosExpanded && (
-          <div id="garden-videos-panel" className="border-t border-gray-800 px-4 py-6 text-center">
-            <p className="text-xs text-gray-600">No videos yet.</p>
-          </div>
+          <GardenVideoImport
+            clusterSlug={clusterSlug}
+            isOwner={isOwner}
+            onSourceCreated={handleVideoSourceCreated}
+          />
         )}
       </div>
     </>

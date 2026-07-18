@@ -82,6 +82,33 @@ test("maps an errored tool part to tool.completed failure", () => {
   assert.equal(event?.payload.success, false);
 });
 
+test("preserves usage on a completed assistant message", () => {
+  const tokens = {
+    total: 125,
+    input: 100,
+    output: 20,
+    reasoning: 5,
+    cache: { read: 10, write: 0 },
+  };
+  const event = normalizeOpenHarnessEvent(
+    {
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "m1",
+          sessionID: "s1",
+          role: "assistant",
+          time: { completed: 123 },
+          tokens,
+        },
+      },
+    },
+    "s1",
+  );
+  assert.equal(event?.type, "assistant.completed");
+  assert.deepEqual(event?.payload.usage, tokens);
+});
+
 test("maps permission.asked to permission.requested", () => {
   const event = normalizeOpenHarnessEvent(
     {

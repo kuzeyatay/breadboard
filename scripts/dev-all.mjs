@@ -85,6 +85,24 @@ async function main() {
     }
   }
 
+  // Scriberr (video transcription) is optional: start it when enabled, but
+  // never block the rest of the stack on it — the dashboard reports a specific
+  // "Scriberr unavailable" state until it becomes healthy.
+  const scriberrAutostart = !/^(0|false|no|off)$/i.test(process.env.SCRIBERR_AUTOSTART?.trim() ?? "");
+  const scriberrPort = /^\d+$/.test(process.env.SCRIBERR_PORT ?? "") ? process.env.SCRIBERR_PORT : "8091";
+  const scriberrBaseUrl = (process.env.SCRIBERR_BASE_URL || `http://127.0.0.1:${scriberrPort}`).replace(/\/+$/, "");
+  if (scriberrAutostart) {
+    startService("scriberr", process.execPath, [path.join(repoRoot, "scripts", "start-scriberr.mjs")]);
+    try {
+      await waitFor(`${scriberrBaseUrl}/health`, {}, 30_000);
+      process.stdout.write("[stack] Scriberr healthy\n");
+    } catch {
+      process.stderr.write(
+        "[stack] Scriberr not reachable yet; video transcription stays unavailable until it is up.\n",
+      );
+    }
+  }
+
   startService("quartz", process.execPath, [path.join(repoRoot, "scripts", "start-quartz.mjs")]);
   startService("dashboard", npm, ["--prefix", path.join(repoRoot, "dashboard"), "run", "dev"]);
   process.stdout.write(`[stack] Runtime mode: ${mode}; dashboard OpenHarness feature: ${mode === "legacy" ? "disabled" : "enabled"}\n`);

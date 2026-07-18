@@ -8,6 +8,7 @@
     "dev:quartz": "node scripts/start-quartz.mjs",
     "dev:chatmock": "node scripts/start-chatmock.mjs",
     "dev:openharness": "node scripts/start-openharness.mjs",
+    "dev:scriberr": "node scripts/start-scriberr.mjs",
     "test:dashboard": "npm --prefix dashboard test"
   }
 }

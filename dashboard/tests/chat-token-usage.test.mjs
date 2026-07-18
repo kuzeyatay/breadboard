@@ -126,6 +126,25 @@ test('supports providers that omit optional usage details', () => {
   );
 });
 
+test('normalizes OpenHarness completion token usage', () => {
+  assert.deepEqual(
+    normalizeChatTokenUsage({
+      total: 11_537,
+      input: 11_530,
+      output: 7,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    }),
+    {
+      inputTokens: 11_530,
+      outputTokens: 7,
+      totalTokens: 11_537,
+      cachedInputTokens: 0,
+      reasoningTokens: 0,
+    },
+  );
+});
+
 test('rejects missing, negative, and non-finite token totals', () => {
   assert.equal(normalizeChatTokenUsage(null), null);
   assert.equal(normalizeChatTokenUsage({}), null);
