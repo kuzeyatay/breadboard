@@ -31,7 +31,7 @@ const env = {
   OPENCODE_CONFIG_DIR: configDir,
   CHATMOCK_BASE_URL: process.env.CHATMOCK_BASE_URL || "http://127.0.0.1:8765/v1",
   CHATMOCK_API_KEY: process.env.CHATMOCK_API_KEY || process.env.OPENAI_API_KEY || "local",
-  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5",
+  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5.6-sol",
 };
 
 const bunCmd = process.platform === "win32" ? "bun.exe" : "bun";

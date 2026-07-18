@@ -265,13 +265,18 @@ export function normalizeOpenHarnessEvent(
 
     case "session.error": {
       const error = isRecord(props.error) ? props.error : undefined;
+      const errorData = isRecord(error?.data) ? error.data : undefined;
       return {
         type: "error",
         sessionId,
         timestamp: timestamp(),
         payload: {
           code: asString(error?.name) ?? asString(props.name) ?? "session_error",
-          message: asString(error?.message) ?? asString(props.message) ?? "The agent reported an error.",
+          message:
+            asString(error?.message) ??
+            asString(errorData?.message) ??
+            asString(props.message) ??
+            "The agent reported an error.",
           recoverable: false,
         },
       };

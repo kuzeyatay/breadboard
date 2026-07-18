@@ -80,7 +80,7 @@ environment substitutions:
 
 - `CHATMOCK_BASE_URL` (default `http://127.0.0.1:8765/v1`)
 - `CHATMOCK_API_KEY` (local default `local`)
-- `CHATMOCK_MODEL` (local default `gpt-5`)
+- `CHATMOCK_MODEL` (local default `gpt-5.6-sol`)
 
 OpenHarness owns the model call for interactive surfaces. Direct ChatMock calls
 remain only in the learning pipeline, diagnostics, explicit `legacy` mode, and

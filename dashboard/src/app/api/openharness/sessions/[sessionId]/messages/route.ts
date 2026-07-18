@@ -9,6 +9,7 @@ import {
 } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeSession, markStatus } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { resolveOpenHarnessEngine } from "@/lib/openharness/model-selection.ts";
 import { appendRuntimeMessage, appendChatMessage, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
@@ -39,10 +40,7 @@ export async function POST(
 
     const body = await readJsonBody(request);
     const text = requireString(body.text, "text", 200_000);
-    const model =
-      body.model && typeof body.model === "object"
-        ? (body.model as { providerID?: string; modelID?: string })
-        : undefined;
+    const engine = resolveOpenHarnessEngine(body.model, body.reasoningEffort);
     const continuation = body.continuation && typeof body.continuation === "object"
       ? body.continuation as Record<string, unknown>
       : null;
@@ -82,14 +80,20 @@ export async function POST(
       runtimeSessionId: session.row.id,
       userId,
       gardenId: session.row.garden_id,
-      payload: { characterCount: text.length },
+      payload: {
+        characterCount: text.length,
+        modelId: engine.model.modelID,
+        reasoningEffort: engine.variant,
+        reasoningEffortAdjusted: engine.adjusted,
+      },
     });
     await getOpenHarnessGateway().sendMessage({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
       agentName: session.agentName,
       text,
-      model: model?.providerID && model?.modelID ? { providerID: model.providerID, modelID: model.modelID } : undefined,
+      model: engine.model,
+      variant: engine.variant,
     });
 
     return NextResponse.json({ accepted: true });

@@ -15,6 +15,8 @@ test("both checked-in garden chat UIs bind requests to Breadboard chat sessions"
   assert.match(assistant, /fetch\('\/api\/chat'[\s\S]*chatSessionId:\s*session\.id/);
   assert.match(workspace, /event\.type === "runtime" && event\.fallback/);
   assert.match(assistant, /event\.type === 'runtime' && event\.fallback/);
+  assert.match(workspace, /body:\s*JSON\.stringify\([\s\S]*model,[\s\S]*reasoningEffort/);
+  assert.match(assistant, /body:\s*JSON\.stringify\([\s\S]*model,[\s\S]*reasoningEffort/);
 });
 
 test("garden API dispatches OpenHarness before the explicitly retained ChatMock backend", () => {
@@ -30,6 +32,8 @@ test("garden adapter opens the event stream before prompting and aborts the serv
   assert.match(adapter, /const firstEvent = events\.next\(\);[\s\S]*await Promise\.race[\s\S]*await sendMessage\(\);/);
   assert.match(adapter, /requestSignal\.addEventListener\("abort", abortRuntime/);
   assert.match(adapter, /gateway\.abortSession/);
+  assert.match(adapter, /resolveOpenHarnessEngine\(payload\.model, payload\.reasoningEffort\)/);
+  assert.match(adapter, /model:\s*engine\.model,[\s\S]*variant:\s*engine\.variant/);
 });
 
 test("terminal required mode cannot render the direct KnowledgeTerminal fallback", () => {
@@ -47,6 +51,9 @@ test("terminal session hook restores a Breadboard session after refresh and abor
   assert.match(hook, /\/abort/);
   assert.match(hook, /: connected[\s\S]*onConnected\(\)/);
   assert.match(hook, /await Promise\.race[\s\S]*const sendResponse/);
+  assert.match(hook, /model:\s*options\?\.model,[\s\S]*reasoningEffort:\s*options\?\.reasoningEffort/);
+  const terminal = read("dashboard/src/app/components/openharness/dashboard-agent-terminal.tsx");
+  assert.match(terminal, /session\.send\(text, \{ model, reasoningEffort \}\)/);
 });
 
 test("OpenHarness model provider is environment-driven ChatMock", () => {
@@ -54,7 +61,18 @@ test("OpenHarness model provider is environment-driven ChatMock", () => {
   assert.equal(config.model, "chatmock/{env:CHATMOCK_MODEL}");
   assert.equal(config.provider.chatmock.options.baseURL, "{env:CHATMOCK_BASE_URL}");
   assert.equal(config.provider.chatmock.options.apiKey, "{env:CHATMOCK_API_KEY}");
-  assert.ok(config.provider.chatmock.models["{env:CHATMOCK_MODEL}"]);
+  for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"]) {
+    assert.ok(config.provider.chatmock.models[id]);
+    assert.equal(config.provider.chatmock.models[id].variants.high.reasoningEffort, "high");
+  }
+  assert.equal(config.provider.chatmock.models["gpt-5.6-sol"].variants.max.reasoningEffort, "max");
+  assert.equal(config.provider.chatmock.models["gpt-5.5"].variants.max, undefined);
+});
+
+test("OpenHarness launchers default to a registered working model", () => {
+  for (const file of ["scripts/dev-all.mjs", "scripts/start-openharness.mjs", "scripts/start-openharness.ps1"]) {
+    assert.match(read(file), /gpt-5\.6-sol/);
+  }
 });
 
 test("routing mode implements required, preferred, and explicit legacy semantics", () => {

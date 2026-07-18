@@ -758,6 +758,7 @@ export default function WorkspaceClient({
   const [docsExpanded, setDocsExpanded] = useState(false);
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
   const [linksExpanded, setLinksExpanded] = useState(false);
+  const [videosExpanded, setVideosExpanded] = useState(false);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [newLinkTitle, setNewLinkTitle] = useState("");
@@ -4297,6 +4298,51 @@ export default function WorkspaceClient({
                 </ul>
               )}
             </div>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-gray-800 shrink-0">
+        <button
+          type="button"
+          onClick={() => setVideosExpanded((value) => !value)}
+          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          aria-expanded={videosExpanded}
+          aria-controls="garden-videos-panel"
+        >
+          <div className="flex items-center gap-2">
+            <svg
+              className="w-3.5 h-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.6}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 6.75h9A2.25 2.25 0 0 1 15.75 9v6A2.25 2.25 0 0 1 13.5 17.25h-9A2.25 2.25 0 0 1 2.25 15V9A2.25 2.25 0 0 1 4.5 6.75Z"
+              />
+            </svg>
+            Videos
+          </div>
+          <svg
+            className={`w-3.5 h-3.5 transition-transform duration-200 ${videosExpanded ? "" : "rotate-180"}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m4.5 15.75 7.5-7.5 7.5 7.5"
+            />
+          </svg>
+        </button>
+        {videosExpanded && (
+          <div id="garden-videos-panel" className="border-t border-gray-800 px-4 py-6 text-center">
+            <p className="text-xs text-gray-600">No videos yet.</p>
           </div>
         )}
       </div>

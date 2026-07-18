@@ -11,6 +11,7 @@
 // session id, workspace, and agent are all server-derived.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AssistantReasoningEffort } from "@/lib/assistant-reasoning";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
 
@@ -62,7 +63,8 @@ export interface UseAgentSessionResult {
   setMessages: (messages: AgentMessage[]) => void;
   setSessionId: (id: number | null) => void;
   send: (text: string, options?: {
-    model?: { providerID: string; modelID: string };
+    model?: string;
+    reasoningEffort?: AssistantReasoningEffort;
     continuation?: SkillContinuation;
   }) => Promise<void>;
   respondToPermission: (decision: "once" | "always" | "reject") => Promise<void>;
@@ -235,7 +237,8 @@ export function useAgentSession(surface: AgentSurface, createOptions?: CreateOpt
 
   const send = useCallback(
     async (text: string, options?: {
-      model?: { providerID: string; modelID: string };
+      model?: string;
+      reasoningEffort?: AssistantReasoningEffort;
       continuation?: SkillContinuation;
     }) => {
       const trimmed = text.trim();
@@ -277,7 +280,12 @@ export function useAgentSession(surface: AgentSurface, createOptions?: CreateOpt
         const sendResponse = await fetch(`/api/openharness/sessions/${activeSessionId}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed, model: options?.model, continuation: options?.continuation }),
+          body: JSON.stringify({
+            text: trimmed,
+            model: options?.model,
+            reasoningEffort: options?.reasoningEffort,
+            continuation: options?.continuation,
+          }),
         });
         if (!sendResponse.ok) {
           const body = await sendResponse.json().catch(() => ({}));

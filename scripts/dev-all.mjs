@@ -25,7 +25,7 @@ const runtimeEnv = {
   OPENHARNESS_USERNAME: username,
   CHATMOCK_BASE_URL: process.env.CHATMOCK_BASE_URL || "http://127.0.0.1:8765/v1",
   CHATMOCK_API_KEY: process.env.CHATMOCK_API_KEY || process.env.OPENAI_API_KEY || "local",
-  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5",
+  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5.6-sol",
   BREADBOARD_DASHBOARD_URL: process.env.BREADBOARD_DASHBOARD_URL || "http://localhost:3000",
 };
 const children = [];

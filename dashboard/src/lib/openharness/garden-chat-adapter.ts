@@ -5,6 +5,7 @@
 import db from "../db.ts";
 import { requireUserId } from "../server-auth.ts";
 import { getOpenHarnessGateway } from "./gateway.ts";
+import { resolveOpenHarnessEngine } from "./model-selection.ts";
 import {
   authorizeGardenAccess,
   authorizeRuntimeSession,
@@ -19,6 +20,8 @@ type GardenChatPayload = {
   clusterSlug?: unknown;
   chatSessionId?: unknown;
   messages?: unknown;
+  model?: unknown;
+  reasoningEffort?: unknown;
   selectedDocumentSlugs?: unknown;
   activeMarkdown?: unknown;
 };
@@ -46,6 +49,7 @@ export async function openGardenAgentChat(
   const text = [...messages].reverse().find((message) => message.role === "user")?.content.trim();
   if (!text) throw new ApiError(400, "message_required", "A user message is required.");
   const page = parseActivePage(payload.activeMarkdown);
+  const engine = resolveOpenHarnessEngine(payload.model, payload.reasoningEffort);
   const existing = getRuntimeSessionByChatSession(chatSessionId);
   const session = existing
     ? authorizeRuntimeSession(userId, existing.id)
@@ -66,13 +70,21 @@ export async function openGardenAgentChat(
     runtimeSessionId: session.row.id,
     userId,
     gardenId: clusterSlug,
-    payload: { characterCount: text.length, chatSessionId },
+    payload: {
+      characterCount: text.length,
+      chatSessionId,
+      modelId: engine.model.modelID,
+      reasoningEffort: engine.variant,
+      reasoningEffortAdjusted: engine.adjusted,
+    },
   });
   return legacyGardenEventStream(session, signal, () => gateway.sendMessage({
     openHarnessSessionId: session.openHarnessSessionId,
     workspaceKey: session.workspaceKey,
     agentName: session.agentName,
     text,
+    model: engine.model,
+    variant: engine.variant,
     system: gardenTurnContext(clusterSlug, chatSessionId, page, payload.selectedDocumentSlugs),
   }));
 }

@@ -176,6 +176,7 @@ export interface PromptPart {
 export interface PromptBody {
   agent?: string;
   model?: { providerID: string; modelID: string };
+  variant?: string;
   system?: string;
   parts: PromptPart[];
   messageID?: string;
