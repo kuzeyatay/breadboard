@@ -8,12 +8,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
+import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import ActivityPanel from '@/app/components/openharness/activity-panel';
-import EvidencePanel from '@/app/components/openharness/evidence-panel';
 import { useLegacyAgentActivity } from '@/app/components/openharness/use-legacy-agent-activity';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import {
@@ -33,7 +32,6 @@ import {
 import {
   type ChatTokenUsage,
   normalizeChatTokenUsage,
-  summarizeChatTokenUsage,
 } from '@/lib/chat-token-usage';
 import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
 import type { VerificationSummary } from '@/lib/openharness/evidence';
@@ -393,8 +391,6 @@ export default function GardenAssistant({
   const hasActiveCluster = Boolean(activeClusterSlug);
   const clusterLabel = activeClusterName || activeClusterSlug || 'Open a garden';
   const activeChat = chatSessions.find((session) => session.id === activeChatId) ?? null;
-  const tokenUsage = useMemo(() => summarizeChatTokenUsage(messages), [messages]);
-
   useEffect(() => {
     const savedWidth = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
     if (Number.isFinite(savedWidth)) setPanelWidth(clampPanelWidth(savedWidth));
@@ -608,11 +604,12 @@ export default function GardenAssistant({
     });
   }
 
-  async function sendMessage(textOverride?: string) {
+  async function sendMessage(textOverride?: string, historyOverride?: ChatMessage[]) {
     const text = (textOverride ?? input).trim();
-    if ((!text && chatAttachments.length === 0) || isStreaming || !activeClusterSlug) return;
+    const pendingAttachments = textOverride === undefined ? chatAttachments : [];
+    if ((!text && pendingAttachments.length === 0) || isStreaming || !activeClusterSlug) return;
 
-    const pendingAttachments = chatAttachments;
+    const history = historyOverride ?? messages;
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
     const displayText = text || 'Please review the attached document(s).';
     const firstMessageTitle = chatTitleFromFirstMessage(
@@ -632,12 +629,12 @@ export default function GardenAssistant({
         ]);
         return;
       }
-    } else if (session.messages.length === 0) {
+    } else if (history.length === 0) {
       sessionTitle = firstMessageTitle;
     }
 
     const userMessage: ChatMessage = { role: 'user', content: displayText, attachmentNames };
-    const nextMessages = [...messages, userMessage];
+    const nextMessages = [...history, userMessage];
     let assistantMessage: ChatMessage = { role: 'assistant', content: '', sources: [] };
     const responseStartedAt = performance.now();
 
@@ -866,11 +863,17 @@ export default function GardenAssistant({
     setExtractingAttachments(false);
   }
 
-  function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      void sendMessage();
+  function retryAssistantMessage(messageIndex: number) {
+    if (isStreaming) return;
+    let userIndex = messageIndex - 1;
+    while (userIndex >= 0 && messages[userIndex]?.role !== 'user') userIndex -= 1;
+    const previousUser = messages[userIndex];
+    if (!previousUser || previousUser.role !== 'user') return;
+    if (previousUser.attachmentNames?.length) {
+      setAttachmentStatus('Add the original attachments again before regenerating.');
+      return;
     }
+    void sendMessage(previousUser.content, messages.slice(0, userIndex));
   }
 
   function handlePanelResizeStart(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -1153,15 +1156,31 @@ export default function GardenAssistant({
                   className={
                     message.role === 'user'
                       ? 'rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm leading-6 text-gray-100'
-                      : 'rounded-md border border-gray-800 bg-gray-950/70 px-3 py-2 text-sm leading-6 text-gray-200'
+                      : 'text-sm leading-6 text-gray-200'
                   }
                 >
                   {message.role === 'assistant' ? (
-                    message.content ? (
-                      <ChatMarkdown content={message.content} compact />
-                    ) : (
-                      <span className="text-gray-500">Reading the Learning Map...</span>
-                    )
+                    <>
+                      {message.usage ||
+                      message.thinking ||
+                      (index === messages.length - 1 &&
+                        (isStreaming ||
+                          agentActivity.pendingPermission ||
+                          agentActivity.activities.length > 0)) ? (
+                        <ActivityPanel
+                          activities={index === messages.length - 1 ? agentActivity.activities : []}
+                          connection={index === messages.length - 1 ? agentActivity.connection : 'idle'}
+                          pendingPermission={index === messages.length - 1 ? agentActivity.pendingPermission : null}
+                          usage={message.usage}
+                          reasoning={message.thinking}
+                          onAbort={agentActivity.abort}
+                          onPermissionDecision={(decision) =>
+                            void agentActivity.respondToPermission(decision)
+                          }
+                        />
+                      ) : null}
+                      {message.content ? <ChatMarkdown content={message.content} compact /> : null}
+                    </>
                   ) : (
                     <p className="whitespace-pre-wrap">{message.content}</p>
                   )}
@@ -1171,13 +1190,19 @@ export default function GardenAssistant({
                     </p>
                   ) : null}
                 </div>
-                {message.thinking ? (
-                  <details className="mt-2 rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 text-xs text-gray-400">
-                    <summary className="cursor-pointer text-gray-300">Thinking</summary>
-                    <pre className="mt-2 whitespace-pre-wrap font-sans leading-5">{message.thinking}</pre>
-                  </details>
+                {message.role === 'assistant' &&
+                message.content &&
+                !(isStreaming && index === messages.length - 1) ? (
+                  <AssistantMessageActions
+                    content={message.content}
+                    verification={message.verification}
+                    onRetry={
+                      index === messages.length - 1
+                        ? () => retryAssistantMessage(index)
+                        : undefined
+                    }
+                  />
                 ) : null}
-                {message.verification ? <EvidencePanel verification={message.verification} /> : null}
               </div>
             ))}
             <div ref={messagesEndRef} />
@@ -1194,19 +1219,11 @@ export default function GardenAssistant({
           onChange={handleAttachmentInput}
           className="hidden"
         />
-        <ActivityPanel
-          activities={agentActivity.activities}
-          connection={agentActivity.connection}
-          pendingPermission={agentActivity.pendingPermission}
-          onAbort={agentActivity.abort}
-          onPermissionDecision={(decision) => void agentActivity.respondToPermission(decision)}
-        />
         <AssistantComposer
           compact
           value={input}
           onChange={setInput}
           onSubmit={() => void sendMessage()}
-          onKeyDown={handleInputKeyDown}
           placeholder={hasActiveCluster ? 'Ask about a topic, page, source, or link...' : 'Open a garden first...'}
           disabled={!hasActiveCluster}
           isSending={isStreaming}
@@ -1225,8 +1242,6 @@ export default function GardenAssistant({
             setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
           }
           statusMessage={attachmentStatus}
-          tokenUsage={tokenUsage}
-          tokenUsagePending={isStreaming}
         />
       </div>
 

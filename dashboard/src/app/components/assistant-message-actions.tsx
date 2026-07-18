@@ -1,0 +1,242 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import EvidencePanel from "@/app/components/openharness/evidence-panel";
+import type { VerificationSummary } from "@/lib/openharness/evidence";
+
+type Feedback = "up" | "down" | null;
+
+interface Props {
+  content: string;
+  onRetry?: () => void;
+  verification?: VerificationSummary;
+}
+
+function contentKey(content: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `breadboard:assistant-feedback:${(hash >>> 0).toString(36)}`;
+}
+
+async function copyToClipboard(content: string): Promise<void> {
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("Clipboard access is unavailable.");
+  }
+  await navigator.clipboard.writeText(content);
+}
+
+function downloadMarkdown(content: string): void {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `breadboard-response-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+const actionClass =
+  "rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus:outline-none focus:ring-2 focus:ring-[var(--line-strong)]";
+
+export default function AssistantMessageActions({
+  content,
+  onRetry,
+  verification,
+}: Props) {
+  const [copied, setCopied] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const copyTimerRef = useRef<number | null>(null);
+  const storageKey = useMemo(() => contentKey(content), [content]);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(storageKey);
+    setFeedback(stored === "up" || stored === "down" ? stored : null);
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!menuOpen && !evidenceOpen) return;
+    const closeMenu = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+        setEvidenceOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        setEvidenceOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", closeMenu);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", closeMenu);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [evidenceOpen, menuOpen]);
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current !== null)
+        window.clearTimeout(copyTimerRef.current);
+    },
+    [],
+  );
+
+  async function copyResponse() {
+    try {
+      await copyToClipboard(content);
+      setCopied(true);
+      if (copyTimerRef.current !== null)
+        window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
+    } finally {
+      setMenuOpen(false);
+    }
+  }
+
+  function setRating(rating: Exclude<Feedback, null>) {
+    const next = feedback === rating ? null : rating;
+    setFeedback(next);
+    if (next) localStorage.setItem(storageKey, next);
+    else localStorage.removeItem(storageKey);
+  }
+
+  function downloadResponse() {
+    downloadMarkdown(content);
+    setMenuOpen(false);
+  }
+
+  function retryResponse() {
+    setMenuOpen(false);
+    onRetry?.();
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-0.5" aria-label="Assistant response actions">
+      <button
+        type="button"
+        onClick={() => void copyResponse()}
+        className={actionClass}
+        title={copied ? "Copied" : "Copy response"}
+        aria-label={copied ? "Response copied" : "Copy response"}
+      >
+        {copied ? (
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4 4L19 6" />
+          </svg>
+        ) : (
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+            <rect x="8" y="8" width="11" height="11" rx="2" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+          </svg>
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={() => setRating("up")}
+        className={`${actionClass} ${feedback === "up" ? "bg-[var(--paper-strong)] text-[var(--ink-heading)]" : ""}`}
+        title="Helpful"
+        aria-label="Mark response as helpful"
+        aria-pressed={feedback === "up"}
+      >
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M7 10v10H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h3Zm0 10h9.2a3 3 0 0 0 2.94-2.42l1.1-5.5A2.56 2.56 0 0 0 17.73 9H14l.55-2.74A2.73 2.73 0 0 0 11.87 3L7 10Z" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={() => setRating("down")}
+        className={`${actionClass} ${feedback === "down" ? "bg-[var(--paper-strong)] text-[var(--ink-heading)]" : ""}`}
+        title="Not helpful"
+        aria-label="Mark response as not helpful"
+        aria-pressed={feedback === "down"}
+      >
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M7 14V4H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h3Zm0-10h9.2a3 3 0 0 1 2.94 2.42l1.1 5.5A2.56 2.56 0 0 1 17.73 15H14l.55 2.74A2.73 2.73 0 0 1 11.87 21L7 14Z" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={downloadResponse}
+        className={actionClass}
+        title="Download response"
+        aria-label="Download response as Markdown"
+      >
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
+        </svg>
+      </button>
+      {onRetry ? (
+        <button
+          type="button"
+          onClick={retryResponse}
+          className={actionClass}
+          title="Regenerate response"
+          aria-label="Regenerate response"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M20 6v5h-5M4 18v-5h5m9.7-3A7 7 0 0 0 6.1 7.1L4 11m16 2-2.1 3.9A7 7 0 0 1 5.3 14" />
+          </svg>
+        </button>
+      ) : null}
+      <div ref={menuRef} className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setEvidenceOpen(false);
+            setMenuOpen((current) => !current);
+          }}
+          className={actionClass}
+          title="More actions"
+          aria-label="More response actions"
+          aria-expanded={menuOpen}
+        >
+          <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.5" />
+            <circle cx="12" cy="12" r="1.5" />
+            <circle cx="19" cy="12" r="1.5" />
+          </svg>
+        </button>
+        {menuOpen ? (
+          <div
+            aria-label="More response actions menu"
+            className="absolute bottom-full left-0 z-20 mb-1 min-w-44 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-1 text-xs text-[var(--ink)] shadow-lg"
+          >
+            {verification ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setEvidenceOpen(true);
+                }}
+                className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)]"
+              >
+                View evidence
+              </button>
+            ) : null}
+            <button type="button" onClick={downloadResponse} className="block w-full rounded-lg px-3 py-2 text-left hover:bg-[var(--paper-strong)]">
+              Download Markdown
+            </button>
+          </div>
+        ) : null}
+        {evidenceOpen && verification ? (
+          <div className="absolute bottom-full left-0 z-20 mb-1">
+            <EvidencePanel
+              verification={verification}
+              onClose={() => setEvidenceOpen(false)}
+            />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}

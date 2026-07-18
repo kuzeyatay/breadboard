@@ -16469,7 +16469,23 @@ var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
               /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-dot", "aria-hidden": "true" }),
               /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-page-name" })
             ] }),
-            /* @__PURE__ */ jsx41("button", { class: "breadboard-ai-close", "aria-label": "Close AI panel", children: "\u2715" })
+            /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-header-actions", children: [
+              /* @__PURE__ */ jsx41("button", { class: "breadboard-ai-new", title: "Start a new chat", children: "New chat" }),
+              /* @__PURE__ */ jsx41(
+                "button",
+                {
+                  class: "breadboard-ai-history-toggle",
+                  title: "Show past chats on this page",
+                  "aria-expanded": "false",
+                  children: "History"
+                }
+              ),
+              /* @__PURE__ */ jsx41("button", { class: "breadboard-ai-close", "aria-label": "Close AI panel", children: "\u2715" })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-history", hidden: true, children: [
+            /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-history-status", "aria-live": "polite" }),
+            /* @__PURE__ */ jsx41("ul", { class: "breadboard-ai-history-list" })
           ] }),
           /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-actions", children: [
             /* @__PURE__ */ jsx41("button", { "data-prompt": "Explain this page from first principles.", children: "Explain" }),
@@ -16527,6 +16543,10 @@ var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
                   children: "/"
                 }
               ),
+              /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-intelligence", hidden: true, children: [
+                /* @__PURE__ */ jsx41("select", { class: "breadboard-ai-model", "aria-label": "Model" }),
+                /* @__PURE__ */ jsx41("select", { class: "breadboard-ai-effort", "aria-label": "Reasoning effort" })
+              ] }),
               /* @__PURE__ */ jsx41("button", { type: "submit", class: "breadboard-ai-send", children: "Send" })
             ] })
           ] })

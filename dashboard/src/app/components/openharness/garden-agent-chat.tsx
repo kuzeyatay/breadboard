@@ -6,12 +6,24 @@
 // (search, retrieval, and proposal creation) — no shell, files, or git. Answers
 // stay grounded and cite sources; any change the agent suggests arrives as a
 // typed PROPOSAL the user reviews and applies through Breadboard, never a silent
-// markdown edit. This floating panel embeds the shared runtime panel plus a
-// proposals reviewer.
+// markdown edit. This floating panel embeds the shared runtime panel and gives
+// the surface the same capability set as the dashboard terminal: model and
+// reasoning-effort selection, session history with new-chat, skill review, and
+// the proposals reviewer.
 
 import { useCallback, useEffect, useState } from "react";
 import AgentRuntimePanel from "./agent-runtime-panel";
-import { useAgentSession } from "./use-agent-session";
+import SkillReviewPanel from "./skill-review-panel";
+import { useAgentSession, type AgentMessage } from "./use-agent-session";
+import {
+  DEFAULT_ASSISTANT_MODELS,
+  DEFAULT_MODEL,
+  mergeAssistantModels,
+} from "@/lib/ai-models";
+import {
+  DEFAULT_ASSISTANT_REASONING_EFFORT,
+  type AssistantReasoningEffort,
+} from "@/lib/assistant-reasoning";
 
 interface Props {
   gardenSlug: string;
@@ -29,11 +41,57 @@ interface Proposal {
   createdAt: string;
 }
 
+interface RuntimeHistorySession {
+  id: number;
+  title: string;
+  updatedAt: string;
+  messages: AgentMessage[];
+}
+
+type PanelView = "chat" | "proposals" | "recents" | "skills";
+
+const SUGGESTED_PROMPTS = [
+  "Summarize the main ideas of this garden.",
+  "Quiz me on this garden.",
+  "Find gaps or missing prerequisites in these notes.",
+  "Trace the sources behind a key claim.",
+];
+
+function formatChatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Props) {
   const [input, setInput] = useState("");
   const [proposals, setProposals] = useState<Proposal[]>([]);
-  const [showProposals, setShowProposals] = useState(false);
+  const [view, setView] = useState<PanelView>("chat");
+  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
+  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
+    DEFAULT_ASSISTANT_REASONING_EFFORT,
+  );
+  const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const session = useAgentSession("garden_chat", { gardenSlug, title: `${gardenName ?? gardenSlug} chat` });
+  const busy =
+    session.connection === "connecting" ||
+    session.connection === "streaming" ||
+    session.connection === "waiting";
+
+  useEffect(() => {
+    fetch("/api/models")
+      .then((response) => response.json())
+      .then((data) => {
+        const ids = Array.isArray(data?.data)
+          ? data.data
+              .map((item: { id?: unknown }) => (typeof item?.id === "string" ? item.id : null))
+              .filter((id: string | null): id is string => Boolean(id))
+          : [];
+        if (ids.length > 0) setModels(mergeAssistantModels(ids));
+      })
+      .catch(() => undefined);
+  }, []);
 
   const loadProposals = useCallback(async () => {
     try {
@@ -61,6 +119,41 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     };
   }, [loadProposals, session.connection]);
 
+  // Refresh the recents list between turns so past garden sessions can be
+  // reopened, mirroring the terminal's history sidebar.
+  useEffect(() => {
+    if (session.connection !== "idle") return;
+    let cancelled = false;
+    void fetch("/api/openharness/sessions?surface=garden_chat")
+      .then((response) => (response.ok ? response.json() : { sessions: [] }))
+      .then((data) => {
+        if (cancelled) return;
+        const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+        setHistory(
+          sessions
+            .filter(
+              (item: { id?: unknown; gardenId?: unknown }) =>
+                Number.isInteger(item.id) && item.gardenId === gardenSlug,
+            )
+            .map((item: {
+              id: number;
+              title?: unknown;
+              updatedAt?: unknown;
+              messages?: unknown;
+            }) => ({
+              id: item.id,
+              title: typeof item.title === "string" ? item.title : "New chat",
+              updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
+              messages: Array.isArray(item.messages) ? (item.messages as AgentMessage[]) : [],
+            })),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [gardenSlug, session.connection, session.sessionId]);
+
   const decide = useCallback(
     async (proposalId: number, decision: "apply" | "reject") => {
       await fetch(
@@ -80,21 +173,94 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     const text = input.trim();
     if (!text) return;
     setInput("");
-    void session.send(text);
-  }, [input, session]);
+    void session.send(text, { model, reasoningEffort });
+  }, [input, model, reasoningEffort, session]);
+
+  const sendSuggestedPrompt = useCallback(
+    (text: string) => {
+      if (busy) return;
+      void session.send(text, { model, reasoningEffort });
+    },
+    [busy, model, reasoningEffort, session],
+  );
+
+  const retryMessage = useCallback(
+    (messageIndex: number) => {
+      const previousUser = session.messages
+        .slice(0, messageIndex)
+        .reverse()
+        .find((message) => message.role === "user");
+      if (previousUser) void session.send(previousUser.content, { model, reasoningEffort });
+    },
+    [model, reasoningEffort, session],
+  );
+
+  function startNewChat() {
+    if (busy) return;
+    session.reset();
+    setInput("");
+    setView("chat");
+  }
+
+  function openHistorySession(item: RuntimeHistorySession) {
+    if (busy) return;
+    session.reset();
+    session.setSessionId(item.id);
+    session.setMessages(item.messages);
+    setView("chat");
+  }
+
+  function toggleView(next: PanelView) {
+    setView((current) => (current === next ? "chat" : next));
+  }
+
+  const headerButton =
+    "rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-900";
+  const activeHeaderButton =
+    "rounded-md border border-gray-500 bg-gray-800 px-2 py-1 text-[11px] text-white";
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex h-[70vh] w-[420px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-2xl">
-      <header className="flex shrink-0 items-center justify-between border-b border-gray-800 px-4 py-2.5">
+    <div className="fixed bottom-4 right-4 z-50 flex h-[76vh] w-[480px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-2xl">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 px-4 py-2.5">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-gray-100">{gardenName ?? gardenSlug}</p>
-          <p className="truncate text-[11px] text-gray-500">Garden agent · grounded, proposal-only</p>
+          <p className="truncate text-[11px] text-gray-500">
+            Garden agent · grounded, proposal-only · OpenHarness
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="rounded-full border border-gray-700 px-2 py-0.5 text-[10px] text-gray-400">
+            {session.connection === "idle" ? "ready" : session.connection}
+          </span>
           <button
             type="button"
-            onClick={() => setShowProposals((value) => !value)}
-            className="relative rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-900"
+            onClick={startNewChat}
+            disabled={busy}
+            className={`${headerButton} disabled:opacity-50`}
+            title="Start a new chat"
+          >
+            New chat
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("recents")}
+            className={view === "recents" ? activeHeaderButton : headerButton}
+            title="Show past chats in this garden"
+          >
+            Recents
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("skills")}
+            className={view === "skills" ? activeHeaderButton : headerButton}
+            title="Review skills"
+          >
+            Skills
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("proposals")}
+            className={`relative ${view === "proposals" ? activeHeaderButton : headerButton}`}
           >
             Proposals
             {proposals.length > 0 ? (
@@ -105,7 +271,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-900"
+              className={headerButton}
               aria-label="Close garden chat"
             >
               ✕
@@ -114,7 +280,45 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
         </div>
       </header>
 
-      {showProposals ? (
+      {view === "recents" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          <div className="px-1 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">
+            Recents
+          </div>
+          {history.length === 0 ? (
+            <p className="py-8 text-center text-xs text-gray-500">No chats in this garden yet.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {history.map((item) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => openHistorySession(item)}
+                    disabled={busy}
+                    className={`w-full rounded-md px-2.5 py-2 text-left transition ${
+                      item.id === session.sessionId
+                        ? "bg-gray-800 text-white"
+                        : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-xs font-medium">{item.title}</span>
+                      <span className="shrink-0 text-[10px] text-gray-600">
+                        {formatChatTime(item.updatedAt)}
+                      </span>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : view === "skills" ? (
+        <SkillReviewPanel
+          runtimeSessionId={session.sessionId}
+          onClose={() => setView("chat")}
+        />
+      ) : view === "proposals" ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {proposals.length === 0 ? (
             <p className="py-8 text-center text-xs text-gray-500">No pending proposals.</p>
@@ -170,14 +374,35 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           onSubmit={submit}
           onAbort={() => void session.abort()}
           onPermissionDecision={(decision) => void session.respondToPermission(decision)}
+          onRetryMessage={retryMessage}
           placeholder={`Ask about ${gardenName ?? "this garden"}…`}
+          model={model}
+          models={models}
+          onModelChange={setModel}
+          reasoningEffort={reasoningEffort}
+          onReasoningEffortChange={setReasoningEffort}
           emptyState={
-            <div className="py-8 text-center">
-              <p className="text-sm font-medium text-gray-200">Ask this garden</p>
-              <p className="mt-1.5 text-xs text-gray-500">
-                Grounded answers with citations. Ask it to trace a source, compare sections, find gaps, quiz
-                you, or propose a correction.
-              </p>
+            <div className="flex flex-col items-center gap-5 py-8 text-center">
+              <div>
+                <p className="text-sm font-medium text-gray-200">Ask this garden</p>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  Grounded answers with citations. Ask it to trace a source, compare sections, find gaps, quiz
+                  you, or propose a correction.
+                </p>
+              </div>
+              <div className="grid w-full max-w-md gap-2">
+                {SUGGESTED_PROMPTS.map((prompt) => (
+                  <button
+                    type="button"
+                    key={prompt}
+                    onClick={() => sendSuggestedPrompt(prompt)}
+                    disabled={busy}
+                    className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-xs text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
             </div>
           }
         />

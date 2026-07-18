@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import {
   activityLabelForTool,
   evidenceKindForTool,
@@ -10,6 +11,7 @@ import type {
   ConnectionState,
   PermissionPrompt,
 } from "./use-agent-session";
+import { submitPermissionDecision } from "./permission-client";
 
 type LegacyRuntimeEvent = Record<string, unknown> & { type?: string };
 
@@ -20,6 +22,7 @@ export function useLegacyAgentActivity() {
     useState<PermissionPrompt | null>(null);
   const runtimeSessionId = useRef<number | null>(null);
   const requestController = useRef<AbortController | null>(null);
+  const [yoloMode] = useYoloMode();
 
   const start = useCallback(() => {
     const controller = new AbortController();
@@ -118,6 +121,19 @@ export function useLegacyAgentActivity() {
             : undefined,
         allowSession: event.allowSession === true,
       };
+      if (isYoloModeEnabled()) {
+        const sessionId = runtimeSessionId.current;
+        setPendingPermission(null);
+        if (!sessionId) {
+          setConnection("error");
+          return;
+        }
+        setConnection("streaming");
+        void submitPermissionDecision(requestId, sessionId, "always").catch(
+          () => setConnection("error"),
+        );
+        return;
+      }
       setPendingPermission(prompt);
       setConnection("waiting");
       setActivities((current) => [
@@ -178,28 +194,20 @@ export function useLegacyAgentActivity() {
       const prompt = pendingPermission;
       const sessionId = runtimeSessionId.current;
       if (!prompt || !sessionId) return;
-      let response: Response;
       try {
-        response = await fetch(
-          `/api/openharness/permissions/${encodeURIComponent(prompt.requestId)}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, decision }),
-          },
+        await submitPermissionDecision(
+          prompt.requestId,
+          sessionId,
+          decision,
         );
       } catch {
-        setConnection("error");
-        return;
-      }
-      if (!response.ok) {
         setConnection("error");
         setActivities((current) =>
           current.map((item) =>
             item.id === `permission-${prompt.requestId}`
               ? {
                   ...item,
-                  detail: `Permission response failed (${response.status}).`,
+                  detail: "Permission response failed.",
                 }
               : item,
           ),
@@ -222,6 +230,14 @@ export function useLegacyAgentActivity() {
     },
     [pendingPermission],
   );
+
+  useEffect(() => {
+    if (!yoloMode || !pendingPermission) return;
+    const timer = window.setTimeout(() => {
+      void respondToPermission("always");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [pendingPermission, respondToPermission, yoloMode]);
 
   return {
     activities,

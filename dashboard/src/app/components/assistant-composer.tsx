@@ -7,13 +7,13 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
-import { useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { useImperativeHandle, useRef, useState } from 'react';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import { CommandHub, type CommandHubHandle } from '@/app/components/openharness/command-hub';
+import { useYoloMode } from '@/app/components/use-yolo-mode';
 import type { CommandHubItem } from '@/lib/openharness/commands.ts';
 import { formatAssistantModelName } from '@/lib/ai-models';
 import type { AssistantReasoningEffort } from '@/lib/assistant-reasoning';
-import { formatResponseDuration, formatTokenCount, type ChatTokenUsageSummary } from '@/lib/chat-token-usage';
 
 export interface ComposerAttachment {
   name: string;
@@ -45,8 +45,6 @@ interface Props {
   onRemoveAttachment?: (index: number) => void;
   utilityActions?: ReactNode;
   statusMessage?: string;
-  tokenUsage?: ChatTokenUsageSummary;
-  tokenUsagePending?: boolean;
   className?: string;
   compact?: boolean;
 }
@@ -80,20 +78,6 @@ function Spinner() {
   );
 }
 
-function LiveTokenUsageStatus() {
-  const [durationMs, setDurationMs] = useState(0);
-
-  useEffect(() => {
-    const startedAt = performance.now();
-    const timer = window.setInterval(() => {
-      setDurationMs(performance.now() - startedAt);
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  return <>({formatResponseDuration(durationMs)} \u2022 \u2193 counting tokens...)</>;
-}
-
 export default function AssistantComposer({
   value,
   onChange,
@@ -119,13 +103,12 @@ export default function AssistantComposer({
   onRemoveAttachment,
   utilityActions,
   statusMessage,
-  tokenUsage,
-  tokenUsagePending = false,
   className = '',
   compact = false,
 }: Props) {
   const [showIntelligence, setShowIntelligence] = useState(false);
   const [showCommandHub, setShowCommandHub] = useState(false);
+  const [yoloMode, setYoloMode] = useYoloMode();
   const commandHubRef = useRef<CommandHubHandle>(null);
   const internalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   useImperativeHandle(textareaRef, () => internalTextareaRef.current as HTMLTextAreaElement);
@@ -162,17 +145,6 @@ export default function AssistantComposer({
 
   return (
     <div className={className}>
-      {tokenUsage ? (
-        <p className="mb-2 px-3 font-mono text-[12px] leading-4 text-[var(--ink-muted)]">
-          {tokenUsagePending
-            ? <LiveTokenUsageStatus />
-            : tokenUsage.latest
-              ? `(${tokenUsage.latest.responseDurationMs !== undefined ? `${formatResponseDuration(tokenUsage.latest.responseDurationMs)} \u2022 ` : ''}\u2193 ${tokenUsage.latest.estimated ? '~' : ''}${formatTokenCount(tokenUsage.latest.totalTokens).toLowerCase()} tokens)`
-              : tokenUsage.unreportedResponses > 0
-                ? '(\u2193 tokens unavailable)'
-                : '(\u2193 0 tokens)'}
-        </p>
-      ) : null}
       <div className="relative rounded-[30px] border border-[var(--line)] bg-[var(--paper-raised)] p-2 shadow-[0_14px_40px_rgba(15,32,27,0.10)] transition focus-within:border-[var(--line-strong)] focus-within:shadow-[0_16px_44px_rgba(15,32,27,0.14)]">
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 px-2 pb-1.5 pt-1">
@@ -248,6 +220,17 @@ export default function AssistantComposer({
             onKeyDown={(event) => {
               if (commandHubRef.current?.handleKeyDown(event)) return;
               onKeyDown?.(event);
+              if (event.defaultPrevented) return;
+              if (
+                event.key !== 'Enter' ||
+                event.shiftKey ||
+                event.nativeEvent.isComposing
+              ) {
+                return;
+              }
+              event.preventDefault();
+              if (!canSubmit || isSending || disabled) return;
+              onSubmit();
             }}
             onPaste={onPaste}
             rows={1}
@@ -320,6 +303,30 @@ export default function AssistantComposer({
                       </button>
                     ))}
                   </div>
+
+                  <div className="my-1.5 border-t border-[var(--line)]" />
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={yoloMode}
+                    onClick={() => setYoloMode(!yoloMode)}
+                    className="flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
+                  >
+                    <span className="min-w-0">
+                      <span className="block">YOLO mode</span>
+                      <span className="block text-[11px] text-[var(--ink-muted)]">
+                        Bypass permission prompts
+                      </span>
+                    </span>
+                    <span
+                      aria-hidden
+                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${yoloMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
+                    >
+                      <span
+                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ${yoloMode ? 'translate-x-5' : 'translate-x-0'}`}
+                      />
+                    </span>
+                  </button>
 
                   <div className="my-1.5 border-t border-[var(--line)]" />
                   <UsageLimitsPopover

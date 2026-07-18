@@ -14,7 +14,15 @@ import {
   handleListVideoTranscriptions,
   handleRetryVideoTranscription,
 } from "../src/lib/scriberr/route-core.ts";
-import { RouteError } from "../src/lib/server-auth.ts";
+// Mirror of RouteError from server-auth.ts (not imported: that module pulls in
+// Next.js). route-core re-throws non-VideoTranscriptionError errors untouched,
+// so the adapter's status mapping only needs the same shape.
+class RouteError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
 
 const ID = "dQw4w9WgXcQ";
 

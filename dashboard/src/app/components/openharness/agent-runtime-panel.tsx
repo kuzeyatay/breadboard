@@ -10,8 +10,8 @@
 import { useEffect, useRef } from "react";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import AssistantComposer from "@/app/components/assistant-composer";
+import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import ActivityPanel from "./activity-panel";
-import EvidencePanel from "./evidence-panel";
 import {
   DEFAULT_ASSISTANT_REASONING_EFFORT,
   type AssistantReasoningEffort,
@@ -21,7 +21,6 @@ import type {
   ActivityItem,
   ConnectionState,
   PermissionPrompt,
-  ToolActivity,
 } from "./use-agent-session";
 
 interface Props {
@@ -35,6 +34,7 @@ interface Props {
   onSubmit: () => void;
   onAbort: () => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
+  onRetryMessage?: (messageIndex: number) => void;
   placeholder?: string;
   emptyState?: React.ReactNode;
   model?: string;
@@ -43,25 +43,6 @@ interface Props {
   reasoningEffort?: AssistantReasoningEffort;
   onReasoningEffortChange?: (effort: AssistantReasoningEffort) => void;
   compact?: boolean;
-}
-
-function ToolChip({ tool }: { tool: ToolActivity }) {
-  const color =
-    tool.status === "completed"
-      ? "border-emerald-700 text-emerald-300"
-      : tool.status === "failed"
-        ? "border-red-700 text-red-300"
-        : "border-amber-700 text-amber-300";
-  const icon = tool.status === "running" ? "•" : tool.status === "completed" ? "✓" : "×";
-  return (
-    <span
-      className={`inline-flex items-center gap-1 rounded-full border bg-gray-900/60 px-2 py-0.5 text-[10px] ${color}`}
-      title={tool.summary ?? tool.toolName}
-    >
-      <span aria-hidden>{icon}</span>
-      {tool.toolName}
-    </span>
-  );
 }
 
 export default function AgentRuntimePanel({
@@ -75,6 +56,7 @@ export default function AgentRuntimePanel({
   onSubmit,
   onAbort,
   onPermissionDecision,
+  onRetryMessage,
   placeholder,
   emptyState,
   model,
@@ -86,6 +68,11 @@ export default function AgentRuntimePanel({
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const streaming = connection === "streaming" || connection === "connecting" || connection === "waiting";
+  const lastAssistantIndex = messages.reduce(
+    (lastIndex, message, index) =>
+      message.role === "assistant" ? index : lastIndex,
+    -1,
+  );
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -115,17 +102,22 @@ export default function AgentRuntimePanel({
                       </div>
                     ) : (
                       <div className="text-sm leading-7 text-gray-200">
-                        {message.tools && message.tools.length > 0 ? (
-                          <div className="mb-2 flex flex-wrap gap-1.5">
-                            {message.tools.map((tool) => (
-                              <ToolChip key={tool.toolCallId} tool={tool} />
-                            ))}
-                          </div>
+                        {message.usage ||
+                        message.reasoning ||
+                        (index === lastAssistantIndex &&
+                          (streaming || pendingPermission || activities.length > 0)) ? (
+                          <ActivityPanel
+                            activities={index === lastAssistantIndex ? activities : []}
+                            connection={index === lastAssistantIndex ? connection : "idle"}
+                            pendingPermission={index === lastAssistantIndex ? pendingPermission : null}
+                            usage={message.usage}
+                            reasoning={message.reasoning}
+                            onAbort={onAbort}
+                            onPermissionDecision={onPermissionDecision}
+                          />
                         ) : null}
                         {message.content ? (
                           <ChatMarkdown content={message.content} compact />
-                        ) : streaming && index === messages.length - 1 ? (
-                          <span className="text-gray-500">Working…</span>
                         ) : null}
                         {message.sources && message.sources.length > 0 ? (
                           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -139,7 +131,18 @@ export default function AgentRuntimePanel({
                             ))}
                           </div>
                         ) : null}
-                        {message.verification ? <EvidencePanel verification={message.verification} /> : null}
+                        {message.content &&
+                        !(streaming && index === lastAssistantIndex) ? (
+                          <AssistantMessageActions
+                            content={message.content}
+                            verification={message.verification}
+                            onRetry={
+                              index === lastAssistantIndex && onRetryMessage
+                                ? () => onRetryMessage(index)
+                                : undefined
+                            }
+                          />
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -158,15 +161,6 @@ export default function AgentRuntimePanel({
       </div>
 
       <div className="shrink-0 px-4 pb-3">
-        <div className="mx-auto w-full max-w-3xl">
-          <ActivityPanel
-            activities={activities}
-            connection={connection}
-            pendingPermission={pendingPermission}
-            onAbort={onAbort}
-            onPermissionDecision={onPermissionDecision}
-          />
-        </div>
         <AssistantComposer
           className="mx-auto w-full max-w-3xl"
           compact={compact}

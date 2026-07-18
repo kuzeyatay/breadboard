@@ -302,6 +302,32 @@ b {
   animation: learn-progress-pulse 1.2s ease-in-out infinite;
 }
 
+@keyframes thinking-shimmer {
+  from {
+    background-position: -180% 0;
+  }
+  to {
+    background-position: 180% 0;
+  }
+}
+
+.thinking-shimmer {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--ink-muted) 0%,
+    var(--ink-muted) 35%,
+    var(--ink-heading) 50%,
+    var(--ink-muted) 65%,
+    var(--ink-muted) 100%
+  );
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 1.65s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .terminal-boot-reveal,
   .terminal-boot-conceal {
@@ -310,6 +336,13 @@ b {
   }
 
   .learn-progress-pulse {
+    animation: none;
+  }
+
+  .thinking-shimmer {
+    color: var(--ink-muted);
+    background: none;
+    -webkit-text-fill-color: currentColor;
     animation: none;
   }
 }

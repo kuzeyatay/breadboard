@@ -53,9 +53,26 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
             <span class="breadboard-ai-dot" aria-hidden="true"></span>
             <span class="breadboard-ai-page-name"></span>
           </div>
-          <button class="breadboard-ai-close" aria-label="Close AI panel">
-            ✕
-          </button>
+          <div class="breadboard-ai-header-actions">
+            <button class="breadboard-ai-new" title="Start a new chat">
+              New chat
+            </button>
+            <button
+              class="breadboard-ai-history-toggle"
+              title="Show past chats on this page"
+              aria-expanded="false"
+            >
+              History
+            </button>
+            <button class="breadboard-ai-close" aria-label="Close AI panel">
+              ✕
+            </button>
+          </div>
+        </div>
+
+        <div class="breadboard-ai-history" hidden>
+          <div class="breadboard-ai-history-status" aria-live="polite"></div>
+          <ul class="breadboard-ai-history-list"></ul>
         </div>
 
         <div class="breadboard-ai-actions">
@@ -116,6 +133,10 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
             >
               /
             </button>
+            <div class="breadboard-ai-intelligence" hidden>
+              <select class="breadboard-ai-model" aria-label="Model"></select>
+              <select class="breadboard-ai-effort" aria-label="Reasoning effort"></select>
+            </div>
             <button type="submit" class="breadboard-ai-send">
               Send
             </button>

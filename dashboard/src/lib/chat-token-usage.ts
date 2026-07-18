@@ -200,7 +200,7 @@ export function summarizeChatTokenUsage(
 }
 
 export function formatTokenCount(value: number): string {
-  const count = Math.max(0, Math.trunc(value));
+  const count = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
   if (count < 1_000) return String(count);
 
   const units = [

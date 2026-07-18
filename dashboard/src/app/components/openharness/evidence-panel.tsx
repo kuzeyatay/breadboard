@@ -12,14 +12,33 @@ const LABELS: Record<VerificationSummary["state"], string> = {
 
 export default function EvidencePanel({
   verification,
+  onClose,
 }: {
   verification: VerificationSummary;
+  onClose: () => void;
 }) {
   return (
-    <details className="mt-2 text-xs text-[var(--ink)]">
-      <summary className="cursor-pointer font-medium text-[var(--ink-heading)]">
-        Evidence · {LABELS[verification.state]}
-      </summary>
+    <section
+      role="dialog"
+      aria-label="Response evidence"
+      className="w-80 max-w-[calc(100vw-2rem)] rounded-xl bg-[var(--paper-raised)] p-3 text-xs text-[var(--ink)] shadow-lg"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-medium text-[var(--ink-heading)]">Evidence</h3>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-md p-1 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+          aria-label="Close evidence"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      </div>
+      <p className="mt-1 font-medium text-[var(--ink-muted)]">
+        {LABELS[verification.state]}
+      </p>
       {verification.unsupportedClaims.length ? (
         <ul className="mt-2 space-y-1 text-red-700">
           {verification.unsupportedClaims.map((claim) => (
@@ -60,6 +79,6 @@ export default function EvidencePanel({
           Assumptions: {verification.assumptions.join("; ")}
         </p>
       ) : null}
-    </details>
+    </section>
   );
 }

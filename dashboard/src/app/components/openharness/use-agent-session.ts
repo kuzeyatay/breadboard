@@ -11,7 +11,12 @@
 // session id, workspace, and agent are all server-derived.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import type { AssistantReasoningEffort } from "@/lib/assistant-reasoning";
+import {
+  normalizeChatTokenUsage,
+  type ChatTokenUsage,
+} from "@/lib/chat-token-usage";
 import {
   activityLabelForTool,
   evidenceKindForTool,
@@ -19,6 +24,7 @@ import {
   type VerificationSummary,
 } from "@/lib/openharness/evidence";
 import type { PermissionRisk } from "@/lib/openharness/events";
+import { submitPermissionDecision } from "./permission-client";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
 
@@ -66,6 +72,7 @@ export interface AgentMessage {
   sources?: string[];
   tools?: ToolActivity[];
   proposal?: unknown;
+  usage?: ChatTokenUsage;
   verification?: VerificationSummary;
 }
 
@@ -74,6 +81,27 @@ export interface SkillContinuation {
   skillId: string;
   capability: string;
   approvedPermissions: string[];
+}
+
+function normalizeRestoredMessages(value: unknown): AgentMessage[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((message): message is AgentMessage => {
+      if (!message || typeof message !== "object") return false;
+      const candidate = message as Record<string, unknown>;
+      return (
+        (candidate.role === "user" || candidate.role === "assistant") &&
+        typeof candidate.content === "string"
+      );
+    })
+    .map((message) => {
+      const usage = normalizeChatTokenUsage(message.usage);
+      if (usage) return { ...message, usage };
+      const messageWithoutUsage = { ...message };
+      delete messageWithoutUsage.usage;
+      return messageWithoutUsage;
+    });
 }
 
 export type ConnectionState =
@@ -169,6 +197,7 @@ export function useAgentSession(
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<number | null>(null);
+  const [yoloMode] = useYoloMode();
 
   // Breadboard owns the durable transcript. Restore the newest matching
   // runtime session after a refresh; OpenHarness ids remain server-side.
@@ -199,7 +228,7 @@ export function useAgentSession(
         setFilesystemMode(
           restored.filesystemMode === "full" ? "full" : "restricted",
         );
-        setMessages(Array.isArray(restored.messages) ? restored.messages : []);
+        setMessages(normalizeRestoredMessages(restored.messages));
       })
       .catch(() => undefined);
     return () => {
@@ -296,6 +325,14 @@ export function useAgentSession(
                 startedAt: new Date().toISOString(),
               });
               break;
+            case "assistant.completed": {
+              const usage = normalizeChatTokenUsage(payload.usage);
+              if (usage) {
+                assistant = { ...assistant, usage };
+                commit(assistant);
+              }
+              break;
+            }
             case "tool.started":
               tools.set(String(payload.toolCallId), {
                 toolCallId: String(payload.toolCallId),
@@ -340,8 +377,8 @@ export function useAgentSession(
               flushAssistant();
               break;
             }
-            case "permission.requested":
-              setPendingPermission({
+            case "permission.requested": {
+              const prompt: PermissionPrompt = {
                 requestId: String(payload.requestId),
                 permission: String(payload.permission),
                 description: String(payload.description),
@@ -355,17 +392,38 @@ export function useAgentSession(
                 sourcePath: payload.sourcePath as string | undefined,
                 destinationPath: payload.destinationPath as string | undefined,
                 allowSession: payload.allowSession === true,
-              });
+              };
+              if (isYoloModeEnabled()) {
+                setPendingPermission(null);
+                setConnection("streaming");
+                try {
+                  await submitPermissionDecision(
+                    prompt.requestId,
+                    activeSessionId,
+                    "always",
+                  );
+                } catch (permissionError) {
+                  setConnection("error");
+                  setError(
+                    permissionError instanceof Error
+                      ? permissionError.message
+                      : "Automatic permission approval failed.",
+                  );
+                }
+                break;
+              }
+              setPendingPermission(prompt);
               upsertActivity({
-                id: `permission-${String(payload.requestId)}`,
+                id: `permission-${prompt.requestId}`,
                 kind: "permission",
                 label: "Permission required",
-                detail: String(payload.description),
+                detail: prompt.description,
                 status: "permission_required",
                 startedAt: new Date().toISOString(),
               });
               setConnection("waiting");
               break;
+            }
             case "session.status":
               if (payload.status === "waiting") setConnection("waiting");
               else if (payload.status === "busy") setConnection("streaming");
@@ -550,29 +608,20 @@ export function useAgentSession(
       if (!prompt || !activeSessionId) return;
       setPendingPermission(null);
       setConnection("streaming");
-      let response: Response;
       try {
-        response = await fetch(
-          `/api/openharness/permissions/${encodeURIComponent(prompt.requestId)}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId: activeSessionId, decision }),
-          },
+        await submitPermissionDecision(
+          prompt.requestId,
+          activeSessionId,
+          decision,
         );
-      } catch {
+      } catch (permissionError) {
         setPendingPermission(prompt);
         setConnection("error");
-        setError("The permission decision could not reach the runtime.");
-        return;
-      }
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        setPendingPermission(prompt);
-        setConnection("error");
-        setError(body.error ?? "The runtime rejected the permission decision.");
+        setError(
+          permissionError instanceof Error
+            ? permissionError.message
+            : "The permission decision failed.",
+        );
         return;
       }
       setActivities((current) =>
@@ -589,6 +638,14 @@ export function useAgentSession(
     },
     [pendingPermission],
   );
+
+  useEffect(() => {
+    if (!yoloMode || !pendingPermission) return;
+    const timer = window.setTimeout(() => {
+      void respondToPermission("always");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [pendingPermission, respondToPermission, yoloMode]);
 
   const abort = useCallback(async () => {
     const activeSessionId = sessionRef.current;
