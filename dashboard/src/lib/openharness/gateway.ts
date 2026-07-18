@@ -54,6 +54,14 @@ import {
   type WorkspaceRequest,
 } from "./workspace.ts";
 
+const PERMISSION_HANDOFF_SYSTEM = [
+  "Permission decisions are handled outside the conversation by Breadboard controls.",
+  "Never ask for tool permission in prose or request a confirmation as another chat turn.",
+  "This rule overrides any agent guidance to ask the user before a permissioned operation.",
+  "When an intended tool requires permission, invoke it directly exactly once; the runtime will either approve it automatically or pause for the dedicated permission UI.",
+  "If the operation is denied or unavailable, report that outcome without asking the user to confirm the same operation in chat.",
+].join(" ");
+
 export interface AgentSession {
   openHarnessSessionId: string;
   directory: string;
@@ -230,12 +238,15 @@ export class OpenHarnessGateway {
     const directory =
       input.directory ??
       directoryForWorkspaceKey(this.config, input.workspaceKey);
+    const system = [input.system?.trim(), PERMISSION_HANDOFF_SYSTEM]
+      .filter(Boolean)
+      .join("\n\n");
     const body: PromptBody = {
       agent: input.agentName,
       parts: [{ type: "text", text: input.text }],
       ...(input.model ? { model: input.model } : {}),
       ...(input.variant ? { variant: input.variant } : {}),
-      ...(input.system ? { system: input.system } : {}),
+      system,
       ...(input.tools ? { tools: input.tools } : {}),
       ...(input.messageId ? { messageID: input.messageId } : {}),
     };
