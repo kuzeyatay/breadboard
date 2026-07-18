@@ -15,7 +15,6 @@ import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import ActivityPanel from "@/app/components/openharness/activity-panel";
-import EvidencePanel from "@/app/components/openharness/evidence-panel";
 import { useLegacyAgentActivity } from "@/app/components/openharness/use-legacy-agent-activity";
 import type {
   ActivityItem,
@@ -47,7 +46,6 @@ import {
   formatExactTokenCount,
   formatTokenCount,
   normalizeChatTokenUsage,
-  summarizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import { chatTitleFromFirstMessage } from "@/lib/chat-session-title";
@@ -595,69 +593,34 @@ const ChatTranscript = memo(function ChatTranscript({
             </div>
           ) : (
             <div className="w-full flex flex-col gap-2">
-              {i === lastAssistantIndex && (isStreaming || pendingPermission) ? (
+              {msg.usage ||
+              msg.thinking ||
+              (i === lastAssistantIndex &&
+                (isStreaming || pendingPermission || activities.length > 0)) ? (
                 <ActivityPanel
-                  activities={activities}
-                  connection={connection}
-                  pendingPermission={pendingPermission}
+                  activities={i === lastAssistantIndex ? activities : []}
+                  connection={i === lastAssistantIndex ? connection : "idle"}
+                  pendingPermission={i === lastAssistantIndex ? pendingPermission : null}
+                  usage={msg.usage}
+                  reasoning={msg.thinking}
                   onAbort={onAbort}
                   onPermissionDecision={onPermissionDecision}
                 />
               ) : null}
-              {msg.thinking && (
-                <details className="w-full text-xs text-gray-500">
-                  <summary className="cursor-pointer select-none list-none flex items-center gap-2 py-1 hover:text-gray-400 transition-colors">
-                    <svg
-                      className="w-3.5 h-3.5 shrink-0"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={1.5}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 18v-5.25m0 0a6.01 6.01 0 0 0 1.5-.189m-1.5.189a6.01 6.01 0 0 1-1.5-.189m3.75 7.478a12.06 12.06 0 0 1-4.5 0m3.75 2.383a14.406 14.406 0 0 1-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 1 0-7.517 0c.85.493 1.509 1.333 1.509 2.316V18"
-                      />
-                    </svg>
-                    <span>Thinking</span>
-                    {isStreaming && i === messages.length - 1 && (
-                      <span className="inline-block w-1 h-3 bg-gray-600 ml-0.5 animate-pulse align-text-bottom" />
-                    )}
-                  </summary>
-                  <div className="py-2 text-gray-600 whitespace-pre-wrap leading-relaxed font-mono text-[11px]">
-                    {msg.thinking}
-                  </div>
-                </details>
-              )}
-
               {msg.content ? (
                 <div className="max-w-[90%] text-sm text-gray-200 leading-relaxed">
                   <ChatMarkdown content={msg.content} />
                 </div>
               ) : null}
-              {msg.verification ? (
-                <EvidencePanel verification={msg.verification} />
-              ) : null}
               {msg.content && !(isStreaming && i === lastAssistantIndex) ? (
                 <AssistantMessageActions
                   content={msg.content}
+                  verification={msg.verification}
                   onRetry={
                     i === lastAssistantIndex
                       ? () => onRetryAssistant(i)
                       : undefined
                   }
-                />
-              ) : null}
-              {i === lastAssistantIndex &&
-              !isStreaming &&
-              activities.length > 0 ? (
-                <ActivityPanel
-                  activities={activities}
-                  connection={connection}
-                  pendingPermission={pendingPermission}
-                  onAbort={onAbort}
-                  onPermissionDecision={onPermissionDecision}
                 />
               ) : null}
             </div>
@@ -1208,8 +1171,6 @@ export default function WorkspaceClient({
 
   const activeChat = chatSessions.find((s) => s.id === activeChatId) ?? null;
   const messages = activeChat?.messages ?? EMPTY_MESSAGES;
-  const tokenUsage = summarizeChatTokenUsage(messages);
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -2400,14 +2361,6 @@ export default function WorkspaceClient({
     learnSkipManualReview,
     postLearnAction,
   ]);
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!isStreaming && (input.trim() || chatAttachments.length > 0))
-        handleSubmit();
-    }
-  }
 
   function handleRetryAssistant(messageIndex: number) {
     if (isStreaming || !activeChat) return;
@@ -5441,7 +5394,6 @@ export default function WorkspaceClient({
               value={input}
               onChange={setInput}
               onSubmit={handleSubmit}
-              onKeyDown={handleKeyDown}
               onPaste={handleChatPaste}
               textareaRef={textareaRef}
               textareaStyle={{ fieldSizing: "content" } as React.CSSProperties}
@@ -5460,8 +5412,6 @@ export default function WorkspaceClient({
               isAddingDocuments={extractingAttachments}
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
-              tokenUsage={tokenUsage}
-              tokenUsagePending={isStreaming}
             />
           </div>
         </div>

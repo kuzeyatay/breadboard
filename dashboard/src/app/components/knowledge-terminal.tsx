@@ -28,7 +28,6 @@ import {
 } from '@/lib/chat-attachments';
 import {
   normalizeChatTokenUsage,
-  summarizeChatTokenUsage,
   type ChatTokenUsage,
 } from '@/lib/chat-token-usage';
 import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
@@ -209,7 +208,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const activeSession = sessions.find((session) => session.id === activeId) ?? null;
-  const tokenUsage = summarizeChatTokenUsage(messages);
   const isPublic = scope === 'public';
   const scopeTagline = isPublic ? 'chat across all public gardens' : 'chat across every garden you own';
 
@@ -513,7 +511,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   const terminalStyle: CSSProperties = {
     height,
-    background: isOpen ? '#f7f3e8' : '#EFE8D6',
+    background: isOpen ? 'var(--paper-surface)' : '#EFE8D6',
     borderTopColor: 'rgba(169, 193, 177, 0.7)',
   };
 
@@ -805,8 +803,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
               }
               statusMessage={attachmentStatus}
-              tokenUsage={tokenUsage}
-              tokenUsagePending={isStreaming}
             />
           </div>
         </div>

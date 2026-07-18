@@ -220,6 +220,9 @@ test('sums reported usage without changing latest-request semantics', () => {
 
 test('formats compact and exact token counts deterministically', () => {
   assert.equal(formatTokenCount(0), '0');
+  assert.equal(formatTokenCount(undefined), '0');
+  assert.equal(formatTokenCount(Number.NaN), '0');
+  assert.equal(formatTokenCount(Number.POSITIVE_INFINITY), '0');
   assert.equal(formatTokenCount(999), '999');
   assert.equal(formatTokenCount(1_000), '1K');
   assert.equal(formatTokenCount(1_200), '1.2K');

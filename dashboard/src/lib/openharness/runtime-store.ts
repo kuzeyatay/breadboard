@@ -303,6 +303,79 @@ export function listRuntimeMessages(
     .all(runtimeSessionId) as RuntimeMessageRow[];
 }
 
+/**
+ * Present a persisted runtime message in the shape the browser surfaces
+ * consume (AgentMessage). Shared by the dashboard and Quartz session-listing
+ * routes so restored transcripts look identical on every surface.
+ */
+export function presentRuntimeMessage(row: RuntimeMessageRow): {
+  role: "user" | "assistant";
+  content: string;
+  sources: string[];
+  usage: unknown;
+  tools: Array<{
+    toolCallId: string;
+    toolName: string;
+    summary?: string;
+    status: "completed" | "failed";
+  }>;
+  verification?: Record<string, unknown>;
+} {
+  let runtime: {
+    calls?: Array<Record<string, unknown>>;
+    verification?: Record<string, unknown>;
+  } = {};
+  try {
+    const parsed = row.tool_calls ? JSON.parse(row.tool_calls) : null;
+    runtime = Array.isArray(parsed)
+      ? { calls: parsed }
+      : parsed && typeof parsed === "object"
+        ? parsed
+        : {};
+  } catch {
+    runtime = {};
+  }
+  let sources: string[] = [];
+  try {
+    const parsed = row.sources ? JSON.parse(row.sources) : [];
+    sources = Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    sources = [];
+  }
+  let usage: unknown;
+  try {
+    usage = row.token_usage ? JSON.parse(row.token_usage) : undefined;
+  } catch {
+    usage = undefined;
+  }
+  return {
+    role: row.role,
+    content: row.content,
+    sources,
+    usage,
+    tools: (runtime.calls ?? []).map((call, index) => ({
+      toolCallId: String(call.toolCallId ?? `${call.toolName ?? "tool"}-${index}`),
+      toolName: String(call.toolName ?? "tool"),
+      summary: typeof call.summary === "string" ? call.summary : undefined,
+      status: call.success === false ? "failed" : "completed",
+    })),
+    verification: runtime.verification,
+  };
+}
+
+/** Session title stored in runtime_metadata, with a stable fallback. */
+export function runtimeSessionTitle(row: RuntimeSessionRow): string {
+  try {
+    return row.runtime_metadata
+      ? ((JSON.parse(row.runtime_metadata).title as string | undefined) ?? "New chat")
+      : "New chat";
+  } catch {
+    return "New chat";
+  }
+}
+
 export function listRuntimeSessionsForUser(
   surface: OpenHarnessSurface,
   userId: number,

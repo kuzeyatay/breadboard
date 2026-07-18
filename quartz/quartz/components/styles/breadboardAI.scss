@@ -3,6 +3,7 @@
   --bb-ai-fg: #e5e7eb;
   --bb-ai-border: #1f2937;
   --bb-ai-accent: #5f7f8e;
+  --bb-ai-muted: #9ca3af;
 
   .breadboard-ai-toggle {
     position: fixed;
@@ -73,12 +74,89 @@
       border-radius: 999px;
       background: var(--bb-ai-accent);
     }
+    .breadboard-ai-header-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+
+      .breadboard-ai-new,
+      .breadboard-ai-history-toggle {
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.4rem;
+        border: 1px solid var(--bb-ai-border);
+        background: #111827;
+        color: #d1d5db;
+        cursor: pointer;
+        font-size: 0.7rem;
+
+        &:hover {
+          background: #1f2937;
+        }
+      }
+    }
     .breadboard-ai-close {
       background: none;
       border: none;
       color: #9ca3af;
       cursor: pointer;
       font-size: 0.9rem;
+    }
+  }
+
+  .breadboard-ai-history {
+    border-bottom: 1px solid var(--bb-ai-border);
+    padding: 0.55rem 0.85rem;
+    max-height: 14rem;
+    overflow-y: auto;
+
+    &[hidden] {
+      display: none;
+    }
+    .breadboard-ai-history-status {
+      color: var(--bb-ai-muted);
+      font-size: 0.72rem;
+
+      &:empty {
+        display: none;
+      }
+    }
+    .breadboard-ai-history-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+
+      li + li {
+        margin-top: 0.2rem;
+      }
+      button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        width: 100%;
+        padding: 0.4rem 0.5rem;
+        border: 0;
+        border-radius: 0.45rem;
+        background: transparent;
+        color: var(--bb-ai-fg);
+        cursor: pointer;
+        text-align: left;
+        font-size: 0.76rem;
+
+        &:hover {
+          background: #1f2937;
+        }
+        span {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        small {
+          flex-shrink: 0;
+          color: var(--bb-ai-muted);
+          font-size: 0.66rem;
+        }
+      }
     }
   }
 
@@ -129,6 +207,50 @@
       align-self: flex-start;
       color: #e5e7eb;
     }
+    .breadboard-ai-markdown {
+      white-space: normal;
+
+      p {
+        margin: 0 0 0.5rem;
+        &:last-child {
+          margin-bottom: 0;
+        }
+      }
+      .breadboard-ai-md-heading {
+        font-weight: 700;
+        margin-top: 0.65rem;
+      }
+      ul,
+      ol {
+        margin: 0 0 0.5rem;
+        padding-left: 1.15rem;
+      }
+      li {
+        margin-top: 0.15rem;
+      }
+      pre {
+        margin: 0 0 0.5rem;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid var(--bb-ai-border);
+        border-radius: 0.5rem;
+        background: #0f141b;
+        overflow-x: auto;
+
+        code {
+          background: transparent;
+          padding: 0;
+        }
+      }
+      code {
+        background: #1f2937;
+        border-radius: 0.3rem;
+        padding: 0.08rem 0.3rem;
+        font-size: 0.78rem;
+      }
+      a {
+        color: #93c5fd;
+      }
+    }
   }
 
   .breadboard-ai-error {
@@ -139,6 +261,21 @@
     background: rgba(127, 29, 29, 0.25);
     color: #fca5a5;
     font-size: 0.78rem;
+
+    .breadboard-ai-retry {
+      margin-left: 0.6rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 0.4rem;
+      border: 1px solid #7f1d1d;
+      background: rgba(127, 29, 29, 0.4);
+      color: #fecaca;
+      cursor: pointer;
+      font-size: 0.72rem;
+
+      &:hover {
+        background: rgba(127, 29, 29, 0.6);
+      }
+    }
   }
 
   .breadboard-ai-activity {
@@ -305,12 +442,32 @@
     }
     .breadboard-ai-composer-row {
       display: flex;
+      align-items: center;
       justify-content: flex-end;
       gap: 0.5rem;
     }
     .breadboard-ai-command-button {
       margin-right: auto;
       font-family: monospace;
+    }
+    .breadboard-ai-intelligence {
+      display: flex;
+      gap: 0.35rem;
+      min-width: 0;
+
+      &[hidden] {
+        display: none;
+      }
+      select {
+        max-width: 8.5rem;
+        border: 1px solid var(--bb-ai-border);
+        border-radius: 0.45rem;
+        background: #111827;
+        color: var(--bb-ai-fg);
+        padding: 0.3rem 0.35rem;
+        font-size: 0.72rem;
+        cursor: pointer;
+      }
     }
     button {
       padding: 0.35rem 0.85rem;

@@ -8,6 +8,15 @@
 interface SessionState {
   sessionId: number | null
   clientToken: string | null
+  model: string | null
+  effort: string | null
+}
+
+interface QuartzSessionItem {
+  id: number
+  title: string
+  updatedAt: string
+  messages: Array<{ role?: unknown; content?: unknown }>
 }
 
 interface QuartzCommandItem {
@@ -49,6 +58,14 @@ function setupPanel(root: HTMLElement) {
   const evidenceBox = root.querySelector<HTMLDetailsElement>(".breadboard-ai-evidence")
   const evidenceBody = root.querySelector<HTMLElement>(".breadboard-ai-evidence-body")
   const pageName = root.querySelector<HTMLElement>(".breadboard-ai-page-name")
+  const newChatBtn = root.querySelector<HTMLButtonElement>(".breadboard-ai-new")
+  const historyToggle = root.querySelector<HTMLButtonElement>(".breadboard-ai-history-toggle")
+  const historyBox = root.querySelector<HTMLElement>(".breadboard-ai-history")
+  const historyStatus = root.querySelector<HTMLElement>(".breadboard-ai-history-status")
+  const historyList = root.querySelector<HTMLUListElement>(".breadboard-ai-history-list")
+  const intelligence = root.querySelector<HTMLElement>(".breadboard-ai-intelligence")
+  const modelSelect = root.querySelector<HTMLSelectElement>(".breadboard-ai-model")
+  const effortSelect = root.querySelector<HTMLSelectElement>(".breadboard-ai-effort")
   if (!toggle || !panel || !messages || !form || !input || !sendBtn || !stopBtn || !errorBox) return
 
   if (pageName) pageName.textContent = pageTitle
@@ -58,16 +75,18 @@ function setupPanel(root: HTMLElement) {
   let abortController: AbortController | null = null
   let commandItems: QuartzCommandItem[] = []
   let activeCommandIndex = 0
+  let intelligenceLoaded = false
   const activityEntries = new Map<string, { label: string; detail?: string; status: string }>()
 
   function loadState(): SessionState {
+    const defaults: SessionState = { sessionId: null, clientToken: null, model: null, effort: null }
     try {
       const raw = sessionStorage.getItem(storageKey)
-      if (raw) return JSON.parse(raw) as SessionState
+      if (raw) return { ...defaults, ...(JSON.parse(raw) as Partial<SessionState>) }
     } catch {
       /* ignore */
     }
-    return { sessionId: null, clientToken: null }
+    return defaults
   }
   function saveState() {
     try {
@@ -80,6 +99,10 @@ function setupPanel(root: HTMLElement) {
   function openPanel() {
     panel!.hidden = false
     toggle!.setAttribute("aria-expanded", "true")
+    if (!intelligenceLoaded) {
+      intelligenceLoaded = true
+      void loadIntelligence()
+    }
     input!.focus()
   }
   function closePanel() {
@@ -88,6 +111,87 @@ function setupPanel(root: HTMLElement) {
   }
   toggle.addEventListener("click", () => (panel.hidden ? openPanel() : closePanel()))
   closeBtn?.addEventListener("click", closePanel)
+
+  function formatModelName(modelId: string): string {
+    if (modelId === "gpt-5.6-sol" || modelId === "gpt-5.6") return "GPT-5.6 Sol"
+    if (modelId === "gpt-5.6-terra") return "GPT-5.6 Terra"
+    if (modelId === "gpt-5.6-luna") return "GPT-5.6 Luna"
+    return modelId.replace(/^gpt-/i, "GPT-")
+  }
+
+  function effortLabel(effort: string): string {
+    const labels: Record<string, string> = {
+      low: "Light",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Extra high",
+      max: "Ultra",
+    }
+    return labels[effort] ?? effort
+  }
+
+  // Populate the same intelligence picker (model + reasoning effort) the
+  // dashboard terminal offers. If the runtime is off or unreachable the picker
+  // stays hidden and the server's defaults apply.
+  async function loadIntelligence() {
+    if (!intelligence || !modelSelect || !effortSelect) return
+    try {
+      const response = await fetch(`${dashboard}/api/quartz-ai/models`, {
+        credentials: "include",
+      })
+      if (!response.ok) return
+      const data = (await response.json()) as {
+        models?: unknown
+        defaultModel?: unknown
+        reasoningEfforts?: unknown
+        defaultReasoningEffort?: unknown
+      }
+      const models = Array.isArray(data.models)
+        ? data.models.filter((value): value is string => typeof value === "string")
+        : []
+      const efforts = Array.isArray(data.reasoningEfforts)
+        ? data.reasoningEfforts.filter((value): value is string => typeof value === "string")
+        : []
+      if (!models.length || !efforts.length) return
+      const option = (value: string, label: string) => {
+        const el = document.createElement("option")
+        el.value = value
+        el.textContent = label
+        return el
+      }
+      modelSelect.replaceChildren(...models.map((id) => option(id, formatModelName(id))))
+      effortSelect.replaceChildren(...efforts.map((id) => option(id, effortLabel(id))))
+      const defaultModel = typeof data.defaultModel === "string" ? data.defaultModel : models[0]
+      const defaultEffort =
+        typeof data.defaultReasoningEffort === "string" ? data.defaultReasoningEffort : efforts[0]
+      modelSelect.value =
+        state.model && models.includes(state.model)
+          ? state.model
+          : models.includes(defaultModel)
+            ? defaultModel
+            : models[0]
+      effortSelect.value =
+        state.effort && efforts.includes(state.effort)
+          ? state.effort
+          : efforts.includes(defaultEffort)
+            ? defaultEffort
+            : efforts[0]
+      state.model = modelSelect.value
+      state.effort = effortSelect.value
+      saveState()
+      intelligence.hidden = false
+    } catch {
+      /* picker stays hidden; server defaults apply */
+    }
+  }
+  modelSelect?.addEventListener("change", () => {
+    state.model = modelSelect.value
+    saveState()
+  })
+  effortSelect?.addEventListener("change", () => {
+    state.effort = effortSelect.value
+    saveState()
+  })
 
   function filteredCommands(): QuartzCommandItem[] {
     const query = commandSearch?.value.trim().toLowerCase() || ""
@@ -227,8 +331,199 @@ function setupPanel(root: HTMLElement) {
     return el
   }
 
-  function showError(message: string) {
-    errorBox!.textContent = message
+  function escapeHtml(value: string): string {
+    return value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+  }
+
+  function inlineMarkdown(value: string): string {
+    return value
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+      .replace(
+        /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+      )
+  }
+
+  // Minimal, safe markdown for assistant answers (the dashboard surfaces render
+  // full markdown; this mirrors the common cases). The input is fully
+  // HTML-escaped before any tags are introduced, so the only markup in the
+  // output is generated below.
+  function markdownToHtml(text: string): string {
+    return escapeHtml(text)
+      .split(/^```.*$/m)
+      .map((segment, index) => {
+        if (index % 2 === 1) {
+          return `<pre><code>${segment.replace(/^\n|\n$/g, "")}</code></pre>`
+        }
+        return segment
+          .split(/\n{2,}/)
+          .map((block) => {
+            const trimmed = block.trim()
+            if (!trimmed) return ""
+            const heading = trimmed.match(/^(#{1,4})\s+(.*)$/)
+            if (heading && !trimmed.includes("\n")) {
+              return `<p class="breadboard-ai-md-heading">${inlineMarkdown(heading[2])}</p>`
+            }
+            const lines = trimmed.split("\n")
+            if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
+              const items = lines
+                .map((line) => `<li>${inlineMarkdown(line.replace(/^\s*[-*]\s+/, ""))}</li>`)
+                .join("")
+              return `<ul>${items}</ul>`
+            }
+            if (lines.every((line) => /^\s*\d+[.)]\s+/.test(line))) {
+              const items = lines
+                .map((line) => `<li>${inlineMarkdown(line.replace(/^\s*\d+[.)]\s+/, ""))}</li>`)
+                .join("")
+              return `<ol>${items}</ol>`
+            }
+            return `<p>${inlineMarkdown(trimmed).replace(/\n/g, "<br>")}</p>`
+          })
+          .join("")
+      })
+      .join("")
+  }
+
+  function renderAssistantContent(el: HTMLElement, text: string) {
+    el.classList.add("breadboard-ai-markdown")
+    el.innerHTML = markdownToHtml(text)
+  }
+
+  function renderTranscript(entries: Array<{ role?: unknown; content?: unknown }>) {
+    messages!.replaceChildren()
+    for (const entry of entries) {
+      const role = entry.role === "user" ? "user" : "assistant"
+      const content = typeof entry.content === "string" ? entry.content : ""
+      if (!content) continue
+      const el = addMessage(role, content)
+      if (role === "assistant") renderAssistantContent(el, content)
+    }
+    messages!.scrollTop = messages!.scrollHeight
+  }
+
+  function sessionQuery(): string {
+    const params = new URLSearchParams({ gardenId, pageSlug })
+    if (state.sessionId) params.set("sessionId", String(state.sessionId))
+    if (state.clientToken) params.set("clientToken", state.clientToken)
+    return params.toString()
+  }
+
+  async function fetchSessions(): Promise<QuartzSessionItem[]> {
+    const response = await fetch(`${dashboard}/api/quartz-ai/sessions?${sessionQuery()}`, {
+      credentials: "include",
+    })
+    if (!response.ok) throw new Error("History is unavailable.")
+    const data = (await response.json()) as { sessions?: unknown }
+    return (Array.isArray(data.sessions) ? data.sessions : []).flatMap((item) => {
+      const record = (item ?? {}) as Record<string, unknown>
+      return Number.isInteger(record.id)
+        ? [
+            {
+              id: record.id as number,
+              title: typeof record.title === "string" ? record.title : "New chat",
+              updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
+              messages: Array.isArray(record.messages)
+                ? (record.messages as QuartzSessionItem["messages"])
+                : [],
+            },
+          ]
+        : []
+    })
+  }
+
+  // Terminal-style session continuity: after a reload the persisted transcript
+  // for the page session comes back from the dashboard.
+  async function restoreTranscript() {
+    if (!state.sessionId) return
+    try {
+      const sessions = await fetchSessions()
+      const current = sessions.find((item) => item.id === state.sessionId)
+      if (current && current.messages.length) renderTranscript(current.messages)
+    } catch {
+      /* keep the empty view */
+    }
+  }
+
+  function closeHistory() {
+    if (!historyBox || !historyToggle) return
+    historyBox.hidden = true
+    historyToggle.setAttribute("aria-expanded", "false")
+  }
+
+  async function openHistory() {
+    if (!historyBox || !historyToggle || !historyList || !historyStatus) return
+    historyBox.hidden = false
+    historyToggle.setAttribute("aria-expanded", "true")
+    historyStatus.textContent = "Loading history…"
+    historyList.replaceChildren()
+    try {
+      const sessions = await fetchSessions()
+      if (!sessions.length) {
+        historyStatus.textContent = "No past chats on this page."
+        return
+      }
+      historyStatus.textContent = ""
+      for (const item of sessions) {
+        const entry = document.createElement("li")
+        const button = document.createElement("button")
+        button.type = "button"
+        const title = document.createElement("span")
+        title.textContent = item.title
+        const when = document.createElement("small")
+        const date = new Date(item.updatedAt)
+        when.textContent = Number.isNaN(date.getTime())
+          ? ""
+          : date.toLocaleDateString([], { month: "short", day: "numeric" })
+        button.append(title, when)
+        button.addEventListener("click", () => {
+          state.sessionId = item.id
+          saveState()
+          renderTranscript(item.messages)
+          clearError()
+          closeHistory()
+        })
+        entry.appendChild(button)
+        historyList.appendChild(entry)
+      }
+    } catch (error) {
+      historyStatus.textContent = error instanceof Error ? error.message : "History is unavailable."
+    }
+  }
+
+  function startNewChat() {
+    state.sessionId = null
+    state.clientToken = null
+    saveState()
+    messages!.replaceChildren()
+    clearError()
+    if (activity) activity.hidden = true
+    closeHistory()
+  }
+
+  newChatBtn?.addEventListener("click", startNewChat)
+  historyToggle?.addEventListener("click", () =>
+    historyBox?.hidden ? void openHistory() : closeHistory(),
+  )
+
+  function showError(message: string, onRetry?: () => void) {
+    errorBox!.replaceChildren(document.createTextNode(message))
+    if (onRetry) {
+      const retry = document.createElement("button")
+      retry.type = "button"
+      retry.className = "breadboard-ai-retry"
+      retry.textContent = "Retry"
+      retry.addEventListener("click", () => {
+        clearError()
+        onRetry()
+      })
+      errorBox!.appendChild(retry)
+    }
     errorBox!.hidden = false
     if (activityTitle) activityTitle.textContent = "Stopped with an error"
   }
@@ -244,16 +539,20 @@ function setupPanel(root: HTMLElement) {
       activity.hidden = false
       activity.classList.remove("collapsed")
       activityTitle.textContent = "Working"
+      delete activityTitle.dataset.usage
       activityEntries.clear()
       activityEntries.set("reasoning", { label: "Thinking", status: "running" })
       if (permissionBox) permissionBox.hidden = true
       if (evidenceBox) evidenceBox.hidden = true
       renderActivity()
     } else if (!abortController?.signal.aborted) {
+      const usageNote = activityTitle.dataset.usage
       activityTitle.textContent =
         activityTitle.textContent === "Stopped with an error"
           ? activityTitle.textContent
-          : "Completed"
+          : usageNote
+            ? `Completed · ${usageNote}`
+            : "Completed"
       for (const entry of activityEntries.values())
         if (entry.status === "running") entry.status = "completed"
       renderActivity()
@@ -264,26 +563,35 @@ function setupPanel(root: HTMLElement) {
     }
   }
 
+  function lowerFirst(value: string): string {
+    return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value
+  }
+
+  function activityStatusSentence(entry: { label: string; status: string }): string {
+    const rawLabel = entry.label.trim().replace(/[.!?]+$/, "")
+    const phrase = rawLabel === "Writing answer" ? "Writing the answer" : rawLabel || "Working"
+
+    if (entry.status === "permission_required") return "Permission is required."
+    if (entry.status === "denied") return "Permission was denied."
+    if (entry.status === "failed") return `${phrase} failed.`
+    if (entry.status === "cancelled") return `${phrase} was cancelled.`
+    if (entry.status === "running") return `${phrase}.`
+    if (phrase === "Thinking") return "Done thinking."
+    if (phrase === "Writing the answer") return "Finished writing the answer."
+    if (phrase === "Requesting permission") return "Permission was granted."
+    return `Finished ${lowerFirst(phrase)}.`
+  }
+
   function renderActivity() {
     if (!activityList) return
     activityList.replaceChildren()
     for (const entry of activityEntries.values()) {
       const item = document.createElement("li")
-      const glyph =
-        entry.status === "completed"
-          ? "âœ“"
-          : entry.status === "failed"
-            ? "Ã—"
-            : entry.status === "cancelled"
-              ? "â– "
-              : entry.status === "permission_required"
-                ? "!"
-                : "â€¢"
-      const marker = document.createElement("span")
-      marker.textContent = glyph
       const text = document.createElement("span")
-      text.textContent = entry.detail ? `${entry.label} â€” ${entry.detail}` : entry.label
-      item.append(marker, text)
+      text.textContent = entry.detail
+        ? `${activityStatusSentence(entry)} ${entry.detail}`
+        : activityStatusSentence(entry)
+      item.appendChild(text)
       activityList.appendChild(item)
     }
   }
@@ -356,7 +664,7 @@ function setupPanel(root: HTMLElement) {
         }
         permissionBox.hidden = true
         const entry = activityEntries.get(`permission-${requestId}`)
-        if (entry) entry.status = decision.value === "reject" ? "failed" : "completed"
+        if (entry) entry.status = decision.value === "reject" ? "denied" : "completed"
         renderActivity()
       })
       actions.appendChild(button)
@@ -446,8 +754,20 @@ function setupPanel(root: HTMLElement) {
         }
         if (event.type === "assistant.delta") {
           text += event.payload?.text ?? ""
-          assistantEl.textContent = text
+          renderAssistantContent(assistantEl, text)
           messages!.scrollTop = messages!.scrollHeight
+        } else if (event.type === "assistant.completed") {
+          const usage = event.payload?.usage
+          const total = Number(usage?.totalTokens ?? usage?.total_tokens)
+          if (activityTitle && Number.isFinite(total) && total > 0) {
+            activityTitle.dataset.usage = `${Math.trunc(total)} tokens`
+          }
+        } else if (event.type === "reasoning.status") {
+          const entry = activityEntries.get("reasoning")
+          if (entry && entry.status === "running") {
+            entry.label = String(event.payload?.label ?? "Thinking")
+            renderActivity()
+          }
         } else if (event.type === "error") {
           showError(String(event.payload?.message ?? "The assistant reported an error."))
         } else if (event.type === "tool.started" || event.type === "tool.completed") {
@@ -500,6 +820,8 @@ function setupPanel(root: HTMLElement) {
         text: trimmed,
         sessionId: state.sessionId,
         clientToken: state.clientToken,
+        model: state.model || undefined,
+        reasoningEffort: state.effort || undefined,
         context: {
           gardenId,
           pageSlug,
@@ -545,7 +867,10 @@ function setupPanel(root: HTMLElement) {
       if ((error as Error).name === "AbortError") {
         assistantEl.textContent = assistantEl.textContent || "(stopped)"
       } else {
-        showError(error instanceof Error ? error.message : "The assistant is unavailable.")
+        showError(
+          error instanceof Error ? error.message : "The assistant is unavailable.",
+          () => void send(trimmed),
+        )
         assistantEl.remove()
       }
     } finally {
@@ -561,9 +886,11 @@ function setupPanel(root: HTMLElement) {
     void send(value)
   })
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault()
+      if (sendBtn.disabled) return
       const value = input.value
+      if (!value.trim()) return
       input.value = ""
       void send(value)
     }
@@ -596,6 +923,9 @@ function setupPanel(root: HTMLElement) {
       void send(btn.dataset.prompt || btn.textContent || "")
     })
   }
+
+  // Restore the persisted transcript of the page session after a reload.
+  if (state.sessionId) void restoreTranscript()
 }
 
 document.addEventListener("nav", () => {

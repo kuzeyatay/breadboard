@@ -392,9 +392,9 @@ export default function GardenVideoImport({
       {isOwner && (
         <div className="space-y-3 border-b border-gray-800 px-3 py-3">
           {healthIssues.length > 0 && (
-            <div className="rounded-md border border-amber-900/60 bg-amber-950/20 px-2.5 py-2">
+            <div className="space-y-0.5">
               {healthIssues.map((issue) => (
-                <p key={issue} className="text-[11px] leading-4 text-amber-400/90">
+                <p key={issue} className="text-[11px] leading-4 text-amber-600">
                   {issue}
                 </p>
               ))}
@@ -458,7 +458,7 @@ export default function GardenVideoImport({
               >
                 <span className="text-xs text-gray-400">
                   Drop a video here or{" "}
-                  <span className="text-cyan-300 underline underline-offset-2">
+                  <span className="text-blue-900 underline underline-offset-2 transition-colors hover:text-blue-700">
                     choose a file
                   </span>
                 </span>

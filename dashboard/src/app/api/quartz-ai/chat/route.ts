@@ -28,6 +28,7 @@ import {
   type QuartzGraphInput,
 } from "@/lib/openharness/quartz-support.ts";
 import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
+import { resolveOpenHarnessEngine } from "@/lib/openharness/model-selection.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +70,9 @@ export async function POST(request: Request) {
     const pageSlug = requireString(context.pageSlug, "context.pageSlug", 400);
     const text = requireString(body.text, "text", 20_000);
     const prepareOnly = body.prepareOnly === true;
+    // Same server-owned engine resolution as the terminal: the provider is
+    // fixed and unknown model/effort values are rejected with a 400.
+    const engine = resolveOpenHarnessEngine(body.model, body.reasoningEffort);
 
     // Access control + rate limiting (public readers).
     const { cluster } = authorizeQuartzAccess(gardenId, userId);
@@ -130,6 +134,8 @@ export async function POST(request: Request) {
           hasSelection: Boolean(context.selectedText),
           hasGraph: Boolean(context.graph),
           commands: resolved.invocations,
+          modelId: engine.model.modelID,
+          reasoningEffort: engine.variant,
         },
       });
       await getOpenHarnessGateway().sendMessage({
@@ -140,6 +146,8 @@ export async function POST(request: Request) {
         text: resolved.text,
         tools: resolved.tools,
         system: systemContext,
+        model: engine.model,
+        variant: engine.variant,
       });
       return NextResponse.json(
         { sessionId: session.row.id, accepted: true },
@@ -191,6 +199,8 @@ export async function POST(request: Request) {
         hasSelection: Boolean(context.selectedText),
         hasGraph: Boolean(context.graph),
         commands: resolved.invocations,
+        modelId: engine.model.modelID,
+        reasoningEffort: engine.variant,
       },
     });
     await getOpenHarnessGateway().sendMessage({
@@ -201,6 +211,8 @@ export async function POST(request: Request) {
       text: resolved.text,
       tools: resolved.tools,
       system: systemContext,
+      model: engine.model,
+      variant: engine.variant,
     });
 
     return NextResponse.json(
