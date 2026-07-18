@@ -5,7 +5,7 @@
 import fs from "fs";
 import path from "path";
 
-import type { ExistingVideoSource } from "./types";
+import type { ExistingVideoSource } from "./types.ts";
 
 const SOURCE_NOTE_FOLDER = "sources";
 

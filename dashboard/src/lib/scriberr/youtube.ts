@@ -6,7 +6,7 @@
 // 11-character video ID, and no playlist-only URLs. Arbitrary remote URLs are
 // rejected outright.
 
-import { VideoTranscriptionError } from "./errors";
+import { VideoTranscriptionError } from "./errors.ts";
 
 const YOUTUBE_HOSTS = new Set([
   "youtube.com",

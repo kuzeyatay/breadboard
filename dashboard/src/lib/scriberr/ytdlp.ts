@@ -3,10 +3,10 @@
 // the actual media download is delegated to Scriberr's own yt-dlp integration
 // via its /transcription/youtube endpoint. Argument arrays only, no shell.
 
-import { CommandNotFoundError, runCommand } from "./exec";
-import { VideoTranscriptionError } from "./errors";
-import type { ParsedYouTubeUrl } from "./youtube";
-import type { YouTubeMediaMetadata } from "./types";
+import { CommandNotFoundError, runCommand } from "./exec.ts";
+import { VideoTranscriptionError } from "./errors.ts";
+import type { ParsedYouTubeUrl } from "./youtube.ts";
+import type { YouTubeMediaMetadata } from "./types.ts";
 
 /** Pure argument builder (unit-tested; the client never supplies arguments). */
 export function buildYtdlpMetadataArgs(canonicalUrl: string): string[] {

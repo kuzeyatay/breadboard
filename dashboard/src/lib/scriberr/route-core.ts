@@ -11,7 +11,7 @@ import path from "path";
 import {
   VideoTranscriptionError,
   sanitizeErrorForClient,
-} from "./errors";
+} from "./errors.ts";
 import {
   ensureJobTempDir,
   isSupportedVideoExtension,
@@ -19,18 +19,18 @@ import {
   removePathWithRetries,
   sanitizeDisplayFilename,
   titleFromFilename,
-} from "./paths";
-import { parseYouTubeUrl } from "./youtube";
+} from "./paths.ts";
+import { parseYouTubeUrl } from "./youtube.ts";
 import {
   publicVideoTranscriptionJob,
   type ExistingVideoSource,
   type PublicVideoTranscriptionJob,
   type VideoTranscriptionJob,
   type YouTubeMediaMetadata,
-} from "./types";
-import type { VideoTranscriptionConfig } from "./config";
-import type { VideoTranscriptionJobStore } from "./job-store";
-import type { VideoTranscriptionHealth } from "./health";
+} from "./types.ts";
+import type { VideoTranscriptionConfig } from "./config.ts";
+import type { VideoTranscriptionJobStore } from "./job-store.ts";
+import type { VideoTranscriptionHealth } from "./health.ts";
 
 export interface AuthorizedGarden {
   userId: number;

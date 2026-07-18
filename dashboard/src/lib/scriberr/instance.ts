@@ -4,21 +4,21 @@
 // same way the db handle does). Routes import from here; tests import the
 // underlying modules directly with injected fakes.
 
-import db from "../db";
+import db from "../db.ts";
 import {
   requireOwnedClusterFromSlug,
-} from "../server-auth";
-import { getVideoTranscriptionConfig } from "./config";
-import { ScriberrClient } from "./client";
-import { VideoTranscriptionJobStore } from "./job-store";
-import { VideoTranscriptionRunner } from "./job-runner";
-import { ingestTranscriptSource, resumeTranscriptIndexing } from "./ingest";
-import { findExistingVideoSource } from "./video-source-store";
-import { probeMediaFile } from "./ffprobe";
-import { inspectYouTubeVideo } from "./ytdlp";
-import { checkVideoTranscriptionHealth } from "./health";
-import type { VideoTranscriptionRouteDeps } from "./route-core";
-import type { ParsedYouTubeUrl } from "./youtube";
+} from "../server-auth.ts";
+import { getVideoTranscriptionConfig } from "./config.ts";
+import { ScriberrClient } from "./client.ts";
+import { VideoTranscriptionJobStore } from "./job-store.ts";
+import { VideoTranscriptionRunner } from "./job-runner.ts";
+import { ingestTranscriptSource, resumeTranscriptIndexing } from "./ingest.ts";
+import { findExistingVideoSource } from "./video-source-store.ts";
+import { probeMediaFile } from "./ffprobe.ts";
+import { inspectYouTubeVideo } from "./ytdlp.ts";
+import { checkVideoTranscriptionHealth } from "./health.ts";
+import type { VideoTranscriptionRouteDeps } from "./route-core.ts";
+import type { ParsedYouTubeUrl } from "./youtube.ts";
 
 interface VideoTranscriptionGlobals {
   videoTranscriptionStore?: VideoTranscriptionJobStore;

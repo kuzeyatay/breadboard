@@ -6,8 +6,8 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 
-import { probeCommandVersion } from "./exec";
-import type { VideoTranscriptionConfig } from "./config";
+import { probeCommandVersion } from "./exec.ts";
+import type { VideoTranscriptionConfig } from "./config.ts";
 
 export interface HealthCheckItem {
   ok: boolean;

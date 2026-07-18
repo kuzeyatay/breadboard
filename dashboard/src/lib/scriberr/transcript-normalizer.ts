@@ -3,12 +3,12 @@
 // preserving every segment's complete text, Unicode intact, in chronological
 // order — and fails loudly when there is no transcript text at all.
 
-import { VideoTranscriptionError } from "./errors";
+import { VideoTranscriptionError } from "./errors.ts";
 import type {
   NormalizedTranscript,
   NormalizedTranscriptSegment,
   ScriberrTranscript,
-} from "./types";
+} from "./types.ts";
 
 function normalizeLineEndings(value: string): string {
   return value.replace(/\r\n?/g, "\n");

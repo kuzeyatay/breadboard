@@ -12,22 +12,22 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
-import { VideoTranscriptionError, sanitizeErrorForClient } from "./errors";
-import { assertProbeAcceptable } from "./ffprobe";
+import { VideoTranscriptionError, sanitizeErrorForClient } from "./errors.ts";
+import { assertProbeAcceptable } from "./ffprobe.ts";
 import {
   buildTranscriptMarkdown,
   type TranscriptSourceInfo,
-} from "./transcript-markdown";
+} from "./transcript-markdown.ts";
 import {
   detectSuspiciouslyIncomplete,
   normalizeScriberrTranscript,
-} from "./transcript-normalizer";
-import { removePathWithRetries, sweepStaleTempDirs } from "./paths";
-import type { VideoTranscriptionConfig } from "./config";
+} from "./transcript-normalizer.ts";
+import { removePathWithRetries, sweepStaleTempDirs } from "./paths.ts";
+import type { VideoTranscriptionConfig } from "./config.ts";
 import type {
   VideoTranscriptionJobStore,
-} from "./job-store";
-import type { TranscriptIngestResult } from "./ingest";
+} from "./job-store.ts";
+import type { TranscriptIngestResult } from "./ingest.ts";
 import type {
   ExistingVideoSource,
   MediaProbeResult,
@@ -35,7 +35,7 @@ import type {
   ScriberrJobSnapshot,
   ScriberrTranscript,
   VideoTranscriptionJob,
-} from "./types";
+} from "./types.ts";
 
 /** The subset of ScriberrClient the runner needs (injectable for tests). */
 export interface ScriberrOps {

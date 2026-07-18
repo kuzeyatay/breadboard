@@ -19,13 +19,13 @@ import fs from "fs";
 import { openAsBlob } from "fs";
 import path from "path";
 
-import { VideoTranscriptionError } from "./errors";
+import { VideoTranscriptionError } from "./errors.ts";
 import type {
   ScriberrJobSnapshot,
   ScriberrJobStatus,
   ScriberrTranscript,
   ScriberrTranscriptSegment,
-} from "./types";
+} from "./types.ts";
 
 type FetchLike = typeof fetch;
 
