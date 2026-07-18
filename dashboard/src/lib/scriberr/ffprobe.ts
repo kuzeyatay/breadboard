@@ -3,9 +3,9 @@
 
 import fs from "fs";
 
-import { CommandNotFoundError, runCommand } from "./exec";
-import { VideoTranscriptionError } from "./errors";
-import type { MediaProbeResult } from "./types";
+import { CommandNotFoundError, runCommand } from "./exec.ts";
+import { VideoTranscriptionError } from "./errors.ts";
+import type { MediaProbeResult } from "./types.ts";
 
 interface FfprobeStream {
   codec_type?: unknown;

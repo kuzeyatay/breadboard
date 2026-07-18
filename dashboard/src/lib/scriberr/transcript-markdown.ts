@@ -5,13 +5,13 @@
 
 import crypto from "crypto";
 
-import { VideoTranscriptionError } from "./errors";
+import { VideoTranscriptionError } from "./errors.ts";
 import {
   comparableTranscriptText,
   transcriptComparableText,
-} from "./transcript-normalizer";
-import { youtubeTimestampUrl } from "./youtube";
-import type { NormalizedTranscript, YouTubeMediaMetadata } from "./types";
+} from "./transcript-normalizer.ts";
+import { youtubeTimestampUrl } from "./youtube.ts";
+import type { NormalizedTranscript, YouTubeMediaMetadata } from "./types.ts";
 
 export const TRANSCRIPT_WINDOW_SECONDS = 300;
 

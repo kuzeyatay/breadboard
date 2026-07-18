@@ -5,9 +5,9 @@
 import type {
   PublicVideoTranscriptionJob,
   VideoTranscriptionStatus,
-} from "./scriberr/types";
-import { isTerminalVideoTranscriptionStatus } from "./scriberr/types";
-import { parseYouTubeUrl } from "./scriberr/youtube";
+} from "./scriberr/types.ts";
+import { isTerminalVideoTranscriptionStatus } from "./scriberr/types.ts";
+import { parseYouTubeUrl } from "./scriberr/youtube.ts";
 
 export const ACCEPTED_VIDEO_EXTENSIONS = [
   ".mp4",

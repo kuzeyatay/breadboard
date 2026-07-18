@@ -12,8 +12,8 @@ import type {
   VideoTranscriptionJob,
   VideoTranscriptionStatus,
   YouTubeMediaMetadata,
-} from "./types";
-import { isTerminalVideoTranscriptionStatus } from "./types";
+} from "./types.ts";
+import { isTerminalVideoTranscriptionStatus } from "./types.ts";
 
 type Db = DatabaseType.Database;
 

@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
-import { ensureVideoTranscriptionSchema } from "./scriberr/job-store";
+import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
 
 const DB_PATH = path.join(process.cwd(), "db", "brain.db");
 

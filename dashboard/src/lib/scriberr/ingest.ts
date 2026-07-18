@@ -14,10 +14,10 @@ import {
   writeDocumentKnowledge,
   type DocumentPage,
   type KnowledgeExtraction,
-} from "../knowledge";
-import { publishQuartzAfterMutation } from "../quartz-publish";
-import { sourceSlugExists } from "./video-source-store";
-import { deterministicTitleSuffix } from "./transcript-markdown";
+} from "../knowledge.ts";
+import { publishQuartzAfterMutation } from "../quartz-publish.ts";
+import { sourceSlugExists } from "./video-source-store.ts";
+import { deterministicTitleSuffix } from "./transcript-markdown.ts";
 
 export interface TranscriptIngestInput {
   contentPath: string;
