@@ -13,7 +13,10 @@ import {
   markStatus,
 } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
-import { appendRuntimeMessage, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
+import {
+  appendRuntimeMessage,
+  recordAuditEvent,
+} from "@/lib/openharness/runtime-store.ts";
 import {
   authorizeQuartzAccess,
   assembleQuartzContext,
@@ -24,6 +27,7 @@ import {
   quartzSystemContext,
   type QuartzGraphInput,
 } from "@/lib/openharness/quartz-support.ts";
+import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +38,10 @@ async function optionalUserId(): Promise<number | null> {
 }
 
 export async function OPTIONS(request: Request) {
-  return new Response(null, { status: 204, headers: corsHeaders(request.headers.get("origin")) });
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders(request.headers.get("origin")),
+  });
 }
 
 // POST: send a message from the Quartz page AI panel. The browser talks only to
@@ -49,7 +56,9 @@ export async function POST(request: Request) {
     const userId = await optionalUserId();
     const body = await readJsonBody(request);
 
-    const context = (body.context && typeof body.context === "object" ? body.context : {}) as {
+    const context = (
+      body.context && typeof body.context === "object" ? body.context : {}
+    ) as {
       gardenId?: string;
       pageSlug?: string;
       pageTitle?: string;
@@ -64,38 +73,78 @@ export async function POST(request: Request) {
     // Access control + rate limiting (public readers).
     const { cluster } = authorizeQuartzAccess(gardenId, userId);
     if (userId === null) enforceRateLimit(`${clientIp(request)}:${gardenId}`);
-    const pageContext = await assembleQuartzContext(cluster, pageSlug, context.graph);
-    const systemContext = quartzSystemContext(pageContext, context.selectedText);
+    const pageContext = await assembleQuartzContext(
+      cluster,
+      pageSlug,
+      context.graph,
+    );
+    const systemContext = quartzSystemContext(
+      pageContext,
+      context.selectedText,
+    );
 
     const existingSessionId = Number(body.sessionId);
-    const clientToken = typeof body.clientToken === "string" ? body.clientToken : null;
+    const clientToken =
+      typeof body.clientToken === "string" ? body.clientToken : null;
 
     if (Number.isInteger(existingSessionId) && existingSessionId > 0) {
       // Continue an existing page session.
-      const session = authorizeQuartzRuntimeSession(existingSessionId, { userId, clientToken });
-      if (session.row.garden_id !== gardenId || session.row.page_slug !== pageSlug) {
-        return NextResponse.json({ error: "Session context does not match this page." }, { status: 404, headers: cors });
+      const session = authorizeQuartzRuntimeSession(existingSessionId, {
+        userId,
+        clientToken,
+      });
+      if (
+        session.row.garden_id !== gardenId ||
+        session.row.page_slug !== pageSlug
+      ) {
+        return NextResponse.json(
+          { error: "Session context does not match this page." },
+          { status: 404, headers: cors },
+        );
       }
       if (prepareOnly) {
-        return NextResponse.json({ sessionId: session.row.id, clientToken, prepared: true }, { headers: cors });
+        return NextResponse.json(
+          { sessionId: session.row.id, clientToken, prepared: true },
+          { headers: cors },
+        );
       }
-      appendRuntimeMessage({ runtimeSessionId: session.row.id, role: "user", content: text });
+      const resolved = await resolveCommandMessage(
+        userId,
+        text,
+        session.activeDirectory,
+      );
+      appendRuntimeMessage({
+        runtimeSessionId: session.row.id,
+        role: "user",
+        content: text,
+      });
       markStatus(session, "busy");
       recordAuditEvent({
         eventType: "message.submitted",
         runtimeSessionId: session.row.id,
         userId,
         gardenId,
-        payload: { surface: "quartz_ai", pageSlug, hasSelection: Boolean(context.selectedText), hasGraph: Boolean(context.graph) },
+        payload: {
+          surface: "quartz_ai",
+          pageSlug,
+          hasSelection: Boolean(context.selectedText),
+          hasGraph: Boolean(context.graph),
+          commands: resolved.invocations,
+        },
       });
       await getOpenHarnessGateway().sendMessage({
         openHarnessSessionId: session.openHarnessSessionId,
         workspaceKey: session.workspaceKey,
+        directory: session.activeDirectory,
         agentName: session.agentName,
-        text,
+        text: resolved.text,
+        tools: resolved.tools,
         system: systemContext,
       });
-      return NextResponse.json({ sessionId: session.row.id, accepted: true }, { headers: cors });
+      return NextResponse.json(
+        { sessionId: session.row.id, accepted: true },
+        { headers: cors },
+      );
     }
 
     // First turn: create a page-scoped session enriched with authorized context.
@@ -111,35 +160,61 @@ export async function POST(request: Request) {
 
     if (prepareOnly) {
       return NextResponse.json(
-        { sessionId: created.row.id, clientToken: issuedClientToken, prepared: true },
+        {
+          sessionId: created.row.id,
+          clientToken: issuedClientToken,
+          prepared: true,
+        },
         { headers: cors },
       );
     }
 
-    appendRuntimeMessage({ runtimeSessionId: created.row.id, role: "user", content: text });
+    const resolved = await resolveCommandMessage(
+      userId,
+      text,
+      created.activeDirectory,
+    );
+    appendRuntimeMessage({
+      runtimeSessionId: created.row.id,
+      role: "user",
+      content: text,
+    });
     markStatus(created, "busy");
     recordAuditEvent({
       eventType: "message.submitted",
       runtimeSessionId: created.row.id,
       userId,
       gardenId,
-      payload: { surface: "quartz_ai", pageSlug, hasSelection: Boolean(context.selectedText), hasGraph: Boolean(context.graph) },
+      payload: {
+        surface: "quartz_ai",
+        pageSlug,
+        hasSelection: Boolean(context.selectedText),
+        hasGraph: Boolean(context.graph),
+        commands: resolved.invocations,
+      },
     });
     await getOpenHarnessGateway().sendMessage({
       openHarnessSessionId: created.openHarnessSessionId,
       workspaceKey: created.workspaceKey,
+      directory: created.activeDirectory,
       agentName: created.agentName,
-      text,
+      text: resolved.text,
+      tools: resolved.tools,
       system: systemContext,
     });
 
     return NextResponse.json(
-      { sessionId: created.row.id, clientToken: issuedClientToken, accepted: true },
+      {
+        sessionId: created.row.id,
+        clientToken: issuedClientToken,
+        accepted: true,
+      },
       { headers: cors },
     );
   } catch (error) {
     const response = apiErrorResponse(error);
-    for (const [key, value] of Object.entries(cors)) response.headers.set(key, value);
+    for (const [key, value] of Object.entries(cors))
+      response.headers.set(key, value);
     return response;
   }
 }

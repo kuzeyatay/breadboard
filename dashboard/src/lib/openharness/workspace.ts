@@ -8,19 +8,25 @@
 // arbitrary filesystem location via traversal or symlink tricks.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { OpenHarnessConfig, OpenHarnessSurface } from "./config.ts";
+import type { FilesystemAccessMode } from "./runtime-store.ts";
 
 export interface WorkspaceRequest {
   surface: OpenHarnessSurface;
   sessionKey: string;
   gardenKey?: string;
   pageKey?: string;
+  filesystemMode?: FilesystemAccessMode;
+  previousDirectory?: string | null;
 }
 
 export interface ResolvedWorkspace {
   /** Absolute, canonical directory OpenHarness should use (`?directory=`). */
   directory: string;
+  /** Isolated Breadboard-owned directory for logs and capability metadata. */
+  runtimeDirectory: string;
   /** Stable key persisted with the runtime session for reuse on resume. */
   workspaceKey: string;
 }
@@ -68,26 +74,74 @@ export function resolveWorkspace(
 ): ResolvedWorkspace {
   const root = path.resolve(config.root);
   const workspaceKey = workspaceKeyFor(request);
-  const directory = path.resolve(root, workspaceKey);
+  const runtimeDirectory = path.resolve(root, workspaceKey);
 
-  const relative = path.relative(root, directory);
+  const relative = path.relative(root, runtimeDirectory);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("Refusing workspace outside the configured OpenHarness root");
   }
 
   if (options?.create) {
-    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(runtimeDirectory, { recursive: true });
     // Reject symlink escapes: after creation, the real path must still be inside
     // the real root. This catches a pre-existing symlink planted at any segment.
     const realRoot = fs.realpathSync(root);
-    const realDir = fs.realpathSync(directory);
+    const realDir = fs.realpathSync(runtimeDirectory);
     const realRelative = path.relative(realRoot, realDir);
     if (realRelative.startsWith("..") || path.isAbsolute(realRelative)) {
       throw new Error("Resolved workspace escapes root via symlink");
     }
   }
 
-  return { directory, workspaceKey };
+  const directory = request.filesystemMode === "full"
+    ? resolveInitialDirectory(request.previousDirectory, runtimeDirectory)
+    : runtimeDirectory;
+  return { directory, runtimeDirectory, workspaceKey };
+}
+
+function breadboardRepoRoot(): string | null {
+  const cwd = path.resolve(process.cwd());
+  const candidates = path.basename(cwd).toLowerCase() === "dashboard"
+    ? [path.dirname(cwd), cwd]
+    : [cwd, path.dirname(cwd)];
+  return candidates.find((candidate) =>
+    fs.existsSync(path.join(candidate, "openharness-config")) &&
+    fs.existsSync(path.join(candidate, "dashboard")),
+  ) ?? null;
+}
+
+/** Canonicalize an existing readable directory or return null. */
+export function canonicalAccessibleDirectory(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const resolved = fs.realpathSync(path.resolve(value.trim()));
+    if (!fs.statSync(resolved).isDirectory()) return null;
+    fs.accessSync(resolved, fs.constants.R_OK);
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+/** previous selection -> Breadboard repository -> home -> isolated runtime. */
+export function resolveInitialDirectory(
+  previousDirectory: string | null | undefined,
+  runtimeDirectory: string,
+): string {
+  const candidates = [previousDirectory, breadboardRepoRoot(), os.homedir(), runtimeDirectory];
+  for (const candidate of candidates) {
+    const resolved = canonicalAccessibleDirectory(candidate);
+    if (resolved) return resolved;
+  }
+  throw new Error("No accessible initial directory is available");
+}
+
+/** Discover operating-system roots without probing or enumerating their contents. */
+export function discoverFilesystemRoots(): string[] {
+  const candidates = process.platform === "win32"
+    ? Array.from({ length: 26 }, (_, index) => `${String.fromCharCode(65 + index)}:\\`)
+    : [path.parse(os.homedir()).root || "/"];
+  return candidates.filter((candidate) => canonicalAccessibleDirectory(candidate) !== null);
 }
 
 /**

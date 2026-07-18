@@ -3,20 +3,16 @@
 // actions and is never exposed to a browser.
 
 import { tool } from "@opencode-ai/plugin"
-import fs from "node:fs"
-import path from "node:path"
-
-type Capability = { token: string; dashboardUrl: string }
-
-function readCapability(worktree: string): Capability {
-  return JSON.parse(fs.readFileSync(path.join(worktree, ".breadboard", "capability.json"), "utf8")) as Capability
-}
-
-async function call(worktree: string, action: "capability_gap" | "capability_search", args: Record<string, unknown>) {
-  const capability = readCapability(worktree)
-  const response = await fetch(new URL("/api/openharness/tools/capabilities", capability.dashboardUrl), {
+async function call(sessionID: string, action: "capability_gap" | "capability_search", args: Record<string, unknown>) {
+  const dashboardUrl = process.env.BREADBOARD_INTERNAL_URL || "http://127.0.0.1:3000"
+  const serviceSecret = process.env.OPENHARNESS_TOOL_SECRET || process.env.OPENHARNESS_PASSWORD || "breadboard-local-dev"
+  const response = await fetch(new URL("/api/openharness/tools/capabilities", dashboardUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${capability.token}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${serviceSecret}`,
+      "X-OpenHarness-Session-ID": sessionID,
+    },
     body: JSON.stringify({ action, args }),
   })
   const data = await response.json().catch(() => ({ error: "Invalid capability response" }))
@@ -33,7 +29,7 @@ export const gap = tool({
     requiredPermissions: tool.schema.array(tool.schema.string()).default([]),
   },
   async execute(args, ctx) {
-    return call(ctx.worktree, "capability_gap", args)
+    return call(ctx.sessionID, "capability_gap", args)
   },
 })
 
@@ -41,6 +37,6 @@ export const search = tool({
   description: "Search the real skills.sh ecosystem through Breadboard's official Skills CLI adapter. Metadata only.",
   args: { query: tool.schema.string() },
   async execute(args, ctx) {
-    return call(ctx.worktree, "capability_search", { query: args.query })
+    return call(ctx.sessionID, "capability_search", { query: args.query })
   },
 })

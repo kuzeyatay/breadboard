@@ -16451,10 +16451,18 @@ var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
       "data-page": slug,
       "data-title": pageTitle,
       children: [
-        /* @__PURE__ */ jsxs24("button", { class: "breadboard-ai-toggle", "aria-label": "Ask AI about this page", title: "Ask AI about this page", children: [
-          /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-toggle-icon", "aria-hidden": "true", children: "\u2726" }),
-          /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-toggle-label", children: "Ask AI" })
-        ] }),
+        /* @__PURE__ */ jsxs24(
+          "button",
+          {
+            class: "breadboard-ai-toggle",
+            "aria-label": "Ask AI about this page",
+            title: "Ask AI about this page",
+            children: [
+              /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-toggle-icon", "aria-hidden": "true", children: "\u2726" }),
+              /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-toggle-label", children: "Ask AI" })
+            ]
+          }
+        ),
         /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-panel", role: "dialog", "aria-label": "Page AI assistant", hidden: true, children: [
           /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-header", children: [
             /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-context", "aria-live": "polite", children: [
@@ -16472,6 +16480,19 @@ var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
           ] }),
           /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-messages", "aria-live": "polite" }),
           /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-error", role: "alert", hidden: true }),
+          /* @__PURE__ */ jsxs24("section", { class: "breadboard-ai-activity", hidden: true, children: [
+            /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-activity-header", children: [
+              /* @__PURE__ */ jsx41("span", { class: "breadboard-ai-activity-title", children: "Working" }),
+              /* @__PURE__ */ jsx41("button", { type: "button", class: "breadboard-ai-activity-toggle", children: "Hide activity" }),
+              /* @__PURE__ */ jsx41("button", { type: "button", class: "breadboard-ai-stop", hidden: true, children: "Stop" })
+            ] }),
+            /* @__PURE__ */ jsx41("ol", { class: "breadboard-ai-activity-list" }),
+            /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-permission", hidden: true }),
+            /* @__PURE__ */ jsxs24("details", { class: "breadboard-ai-evidence", hidden: true, children: [
+              /* @__PURE__ */ jsx41("summary", { children: "Evidence" }),
+              /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-evidence-body" })
+            ] })
+          ] }),
           /* @__PURE__ */ jsxs24("form", { class: "breadboard-ai-composer", children: [
             /* @__PURE__ */ jsx41(
               "textarea",
@@ -16482,8 +16503,30 @@ var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
                 "aria-label": "Ask about this page"
               }
             ),
+            /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-command-hub", hidden: true, children: [
+              /* @__PURE__ */ jsx41(
+                "input",
+                {
+                  class: "breadboard-ai-command-search",
+                  type: "search",
+                  placeholder: "Search skills, MCP, and prompts\u2026",
+                  "aria-label": "Search commands"
+                }
+              ),
+              /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-command-results" }),
+              /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-command-status", "aria-live": "polite" })
+            ] }),
             /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-composer-row", children: [
-              /* @__PURE__ */ jsx41("button", { type: "button", class: "breadboard-ai-stop", hidden: true, children: "Stop" }),
+              /* @__PURE__ */ jsx41(
+                "button",
+                {
+                  type: "button",
+                  class: "breadboard-ai-command-button",
+                  "aria-label": "Open command hub",
+                  "aria-expanded": "false",
+                  children: "/"
+                }
+              ),
               /* @__PURE__ */ jsx41("button", { type: "submit", class: "breadboard-ai-send", children: "Send" })
             ] })
           ] })

@@ -36,8 +36,14 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
       data-page={slug}
       data-title={pageTitle}
     >
-      <button class="breadboard-ai-toggle" aria-label="Ask AI about this page" title="Ask AI about this page">
-        <span class="breadboard-ai-toggle-icon" aria-hidden="true">✦</span>
+      <button
+        class="breadboard-ai-toggle"
+        aria-label="Ask AI about this page"
+        title="Ask AI about this page"
+      >
+        <span class="breadboard-ai-toggle-icon" aria-hidden="true">
+          ✦
+        </span>
         <span class="breadboard-ai-toggle-label">Ask AI</span>
       </button>
 
@@ -47,7 +53,9 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
             <span class="breadboard-ai-dot" aria-hidden="true"></span>
             <span class="breadboard-ai-page-name"></span>
           </div>
-          <button class="breadboard-ai-close" aria-label="Close AI panel">✕</button>
+          <button class="breadboard-ai-close" aria-label="Close AI panel">
+            ✕
+          </button>
         </div>
 
         <div class="breadboard-ai-actions">
@@ -55,12 +63,32 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
           <button data-prompt="Give a concrete worked example based on this page.">Example</button>
           <button data-prompt="Quiz me on this page.">Quiz me</button>
           <button data-prompt="Show the sources this page is grounded in.">Sources</button>
-          <button data-prompt="Find connections between this page and related notes.">Connections</button>
+          <button data-prompt="Find connections between this page and related notes.">
+            Connections
+          </button>
         </div>
 
         <div class="breadboard-ai-messages" aria-live="polite"></div>
 
         <div class="breadboard-ai-error" role="alert" hidden></div>
+
+        <section class="breadboard-ai-activity" hidden>
+          <div class="breadboard-ai-activity-header">
+            <span class="breadboard-ai-activity-title">Working</span>
+            <button type="button" class="breadboard-ai-activity-toggle">
+              Hide activity
+            </button>
+            <button type="button" class="breadboard-ai-stop" hidden>
+              Stop
+            </button>
+          </div>
+          <ol class="breadboard-ai-activity-list"></ol>
+          <div class="breadboard-ai-permission" hidden></div>
+          <details class="breadboard-ai-evidence" hidden>
+            <summary>Evidence</summary>
+            <div class="breadboard-ai-evidence-body"></div>
+          </details>
+        </section>
 
         <form class="breadboard-ai-composer">
           <textarea
@@ -69,9 +97,28 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
             placeholder="Ask about this page…"
             aria-label="Ask about this page"
           ></textarea>
+          <div class="breadboard-ai-command-hub" hidden>
+            <input
+              class="breadboard-ai-command-search"
+              type="search"
+              placeholder="Search skills, MCP, and prompts…"
+              aria-label="Search commands"
+            />
+            <div class="breadboard-ai-command-results"></div>
+            <div class="breadboard-ai-command-status" aria-live="polite"></div>
+          </div>
           <div class="breadboard-ai-composer-row">
-            <button type="button" class="breadboard-ai-stop" hidden>Stop</button>
-            <button type="submit" class="breadboard-ai-send">Send</button>
+            <button
+              type="button"
+              class="breadboard-ai-command-button"
+              aria-label="Open command hub"
+              aria-expanded="false"
+            >
+              /
+            </button>
+            <button type="submit" class="breadboard-ai-send">
+              Send
+            </button>
           </div>
         </form>
       </div>

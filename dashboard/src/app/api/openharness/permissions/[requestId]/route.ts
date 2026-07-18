@@ -8,8 +8,7 @@ import {
 } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
-import { appendRuntimeMessage, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
-import db from "@/lib/db";
+import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +43,7 @@ export async function POST(
     await getOpenHarnessGateway().respondToPermission({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
       requestId,
       decision: decision as "once" | "always" | "reject",
     });
@@ -54,20 +54,6 @@ export async function POST(
       gardenId: session.row.garden_id,
       payload: { requestId, decision },
     });
-
-    // Record the permission decision alongside the transcript for auditability.
-    db.prepare(
-      `UPDATE openharness_runtime_sessions SET updated_at = datetime('now') WHERE id = ?`,
-    ).run(session.row.id);
-    if (!session.row.chat_session_id) {
-      appendRuntimeMessage({
-        runtimeSessionId: session.row.id,
-        role: "assistant",
-        content: `Permission ${decision}: ${requestId}`,
-        permissionDecisions: [{ requestId, decision, at: new Date().toISOString() }],
-        runtimeStatus: "permission",
-      });
-    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {

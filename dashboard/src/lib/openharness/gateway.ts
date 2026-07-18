@@ -21,15 +21,27 @@ import {
   fetchAgents,
   fetchHealth,
   fetchModels,
+  fetchMcpStatus,
+  fetchToolIds,
+  addMcpServer,
+  setMcpServerConnected,
+  startMcpAuthentication,
   openEventStream,
   promptAsync,
   replyPermission,
+  updateSessionPermissions,
   type OpenHarnessAgent,
   type OpenHarnessHealth,
   type OpenHarnessModel,
+  type OpenHarnessMcpConfig,
   type PromptBody,
 } from "./client.ts";
-import { readOpenHarnessConfig, type OpenHarnessConfig, type OpenHarnessSurface } from "./config.ts";
+import {
+  readOpenHarnessConfig,
+  type OpenHarnessConfig,
+  type OpenHarnessSurface,
+} from "./config.ts";
+import type { FilesystemAccessMode } from "./runtime-store.ts";
 import {
   normalizeOpenHarnessEvent,
   type NormalizedAgentEvent,
@@ -45,6 +57,7 @@ import {
 export interface AgentSession {
   openHarnessSessionId: string;
   directory: string;
+  runtimeDirectory: string;
   workspaceKey: string;
   agentName: string;
 }
@@ -56,24 +69,34 @@ export interface CreateAgentSessionInput {
   pageKey?: string;
   title?: string;
   metadata?: Record<string, unknown>;
+  filesystemMode: FilesystemAccessMode;
+  previousDirectory?: string | null;
 }
 
 export interface SendAgentMessageInput {
   openHarnessSessionId: string;
   workspaceKey: string;
+  directory?: string;
   agentName: string;
   text: string;
   model?: { providerID: string; modelID: string };
   variant?: string;
   system?: string;
+  tools?: Record<string, boolean>;
   messageId?: string;
 }
 
 export interface PermissionResponseInput {
   openHarnessSessionId: string;
   workspaceKey: string;
+  directory?: string;
   requestId: string;
   decision: "once" | "always" | "reject";
+}
+
+export interface OpenHarnessCapabilityDiscovery {
+  tools: string[];
+  mcp: Awaited<ReturnType<typeof fetchMcpStatus>>;
 }
 
 export class OpenHarnessGateway {
@@ -111,6 +134,47 @@ export class OpenHarnessGateway {
     return fetchModels(this.config, directory);
   }
 
+  async capabilityDiscovery(
+    directory = this.managementDirectory(),
+  ): Promise<OpenHarnessCapabilityDiscovery> {
+    const [tools, mcp] = await Promise.all([
+      fetchToolIds(this.config, directory),
+      fetchMcpStatus(this.config, directory),
+    ]);
+    return { tools, mcp };
+  }
+
+  managementDirectory(scope: string | number = "shared"): string {
+    return resolveWorkspace(
+      this.config,
+      {
+        surface: "dashboard_terminal",
+        sessionKey: `capability-discovery-${scope}`,
+      },
+      { create: true },
+    ).directory;
+  }
+
+  async addMcpConnection(
+    directory: string,
+    name: string,
+    config: OpenHarnessMcpConfig,
+  ) {
+    return addMcpServer(this.config, directory, name, config);
+  }
+
+  async setMcpConnectionConnected(
+    directory: string,
+    name: string,
+    connected: boolean,
+  ) {
+    return setMcpServerConnected(this.config, directory, name, connected);
+  }
+
+  async startMcpAuthentication(directory: string, name: string) {
+    return startMcpAuthentication(this.config, directory, name);
+  }
+
   agentForSurface(surface: OpenHarnessSurface): string {
     if (surface === "garden_chat") return this.config.agents.garden;
     if (surface === "quartz_ai") return this.config.agents.quartz;
@@ -124,14 +188,35 @@ export class OpenHarnessGateway {
       gardenKey: input.gardenKey,
       pageKey: input.pageKey,
     };
-    const { directory, workspaceKey } = resolveWorkspace(this.config, request, { create: true });
+    const { directory, runtimeDirectory, workspaceKey } = resolveWorkspace(
+      this.config,
+      {
+        ...request,
+        filesystemMode: input.filesystemMode,
+        previousDirectory: input.previousDirectory,
+      },
+      { create: true },
+    );
     const agentName = this.agentForSurface(input.surface);
     const session = await createSession(this.config, directory, {
       title: input.title,
       agent: agentName,
       metadata: { surface: input.surface, ...input.metadata },
     });
-    return { openHarnessSessionId: session.id, directory, workspaceKey, agentName };
+    await updateSessionPermissions(this.config, directory, session.id, [
+      {
+        permission: "external_directory",
+        pattern: "*",
+        action: input.filesystemMode === "full" ? "allow" : "deny",
+      },
+    ]);
+    return {
+      openHarnessSessionId: session.id,
+      directory,
+      runtimeDirectory,
+      workspaceKey,
+      agentName,
+    };
   }
 
   // Session resume is implemented in session-service.authorizeRuntimeSession /
@@ -142,25 +227,36 @@ export class OpenHarnessGateway {
   // (openHarnessSessionId, workspaceKey), recomputing the directory per call.
 
   async sendMessage(input: SendAgentMessageInput): Promise<void> {
-    const directory = directoryForWorkspaceKey(this.config, input.workspaceKey);
+    const directory =
+      input.directory ??
+      directoryForWorkspaceKey(this.config, input.workspaceKey);
     const body: PromptBody = {
       agent: input.agentName,
       parts: [{ type: "text", text: input.text }],
       ...(input.model ? { model: input.model } : {}),
       ...(input.variant ? { variant: input.variant } : {}),
       ...(input.system ? { system: input.system } : {}),
+      ...(input.tools ? { tools: input.tools } : {}),
       ...(input.messageId ? { messageID: input.messageId } : {}),
     };
     await promptAsync(this.config, directory, input.openHarnessSessionId, body);
   }
 
-  async abortSession(input: { openHarnessSessionId: string; workspaceKey: string }): Promise<void> {
-    const directory = directoryForWorkspaceKey(this.config, input.workspaceKey);
+  async abortSession(input: {
+    openHarnessSessionId: string;
+    workspaceKey: string;
+    directory?: string;
+  }): Promise<void> {
+    const directory =
+      input.directory ??
+      directoryForWorkspaceKey(this.config, input.workspaceKey);
     await abortSession(this.config, directory, input.openHarnessSessionId);
   }
 
   async respondToPermission(input: PermissionResponseInput): Promise<void> {
-    const directory = directoryForWorkspaceKey(this.config, input.workspaceKey);
+    const directory =
+      input.directory ??
+      directoryForWorkspaceKey(this.config, input.workspaceKey);
     await replyPermission(
       this.config,
       directory,
@@ -177,11 +273,17 @@ export class OpenHarnessGateway {
    * the underlying HTTP connection.
    */
   async *subscribeToSession(
-    input: { openHarnessSessionId: string; workspaceKey: string },
+    input: {
+      openHarnessSessionId: string;
+      workspaceKey: string;
+      directory?: string;
+    },
     signal?: AbortSignal,
     onConnected?: () => void,
   ): AsyncIterable<NormalizedAgentEvent> {
-    const directory = directoryForWorkspaceKey(this.config, input.workspaceKey);
+    const directory =
+      input.directory ??
+      directoryForWorkspaceKey(this.config, input.workspaceKey);
     const response = await openEventStream(this.config, directory, signal);
     const body = response.body;
     if (!body) return;
@@ -189,7 +291,10 @@ export class OpenHarnessGateway {
     for await (const raw of parseSseStream(readableToIterable(body))) {
       if (typeof raw.type !== "string") continue;
       const event = raw as unknown as RawOpenHarnessEvent;
-      const normalized = normalizeOpenHarnessEvent(event, input.openHarnessSessionId);
+      const normalized = normalizeOpenHarnessEvent(
+        event,
+        input.openHarnessSessionId,
+      );
       if (normalized) yield normalized;
       if (signal?.aborted) break;
     }

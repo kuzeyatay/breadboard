@@ -13,10 +13,23 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
+import AssistantMessageActions from "@/app/components/assistant-message-actions";
+import ActivityPanel from "@/app/components/openharness/activity-panel";
+import EvidencePanel from "@/app/components/openharness/evidence-panel";
+import { useLegacyAgentActivity } from "@/app/components/openharness/use-legacy-agent-activity";
+import type {
+  ActivityItem,
+  ConnectionState,
+  PermissionPrompt,
+} from "@/app/components/openharness/use-agent-session";
+import type { VerificationSummary } from "@/lib/openharness/evidence";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import GardenVideoImport from "@/app/components/garden-video-import";
+import LearnConfirmationDialog, {
+  type LearnDestructiveAction,
+} from "@/app/components/learn-confirmation-dialog";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
@@ -54,6 +67,7 @@ interface Message {
   thinking?: string;
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
+  verification?: VerificationSummary;
 }
 
 interface ChatSession {
@@ -481,6 +495,12 @@ interface ChatTranscriptProps {
   loadingChats: boolean;
   messages: Message[];
   messagesEndRef: RefObject<HTMLDivElement | null>;
+  activities: ActivityItem[];
+  connection: ConnectionState;
+  pendingPermission: PermissionPrompt | null;
+  onAbort: () => void;
+  onPermissionDecision: (decision: "once" | "always" | "reject") => void;
+  onRetryAssistant: (messageIndex: number) => void;
 }
 
 const ChatTranscript = memo(function ChatTranscript({
@@ -489,7 +509,18 @@ const ChatTranscript = memo(function ChatTranscript({
   loadingChats,
   messages,
   messagesEndRef,
+  activities,
+  connection,
+  pendingPermission,
+  onAbort,
+  onPermissionDecision,
+  onRetryAssistant,
 }: ChatTranscriptProps) {
+  const lastAssistantIndex = messages.reduce(
+    (lastIndex, message, index) =>
+      message.role === "assistant" ? index : lastIndex,
+    -1,
+  );
   return (
     <div className="max-w-5xl mx-auto flex flex-col gap-6">
       {loadingChats ? (
@@ -564,9 +595,18 @@ const ChatTranscript = memo(function ChatTranscript({
             </div>
           ) : (
             <div className="w-full flex flex-col gap-2">
+              {i === lastAssistantIndex && (isStreaming || pendingPermission) ? (
+                <ActivityPanel
+                  activities={activities}
+                  connection={connection}
+                  pendingPermission={pendingPermission}
+                  onAbort={onAbort}
+                  onPermissionDecision={onPermissionDecision}
+                />
+              ) : null}
               {msg.thinking && (
-                <details className="w-full text-xs border border-gray-800/80 rounded-xl bg-gray-900/30 overflow-hidden">
-                  <summary className="px-3.5 py-2.5 cursor-pointer select-none list-none flex items-center gap-2 text-gray-500 hover:text-gray-400 transition-colors">
+                <details className="w-full text-xs text-gray-500">
+                  <summary className="cursor-pointer select-none list-none flex items-center gap-2 py-1 hover:text-gray-400 transition-colors">
                     <svg
                       className="w-3.5 h-3.5 shrink-0"
                       fill="none"
@@ -585,24 +625,41 @@ const ChatTranscript = memo(function ChatTranscript({
                       <span className="inline-block w-1 h-3 bg-gray-600 ml-0.5 animate-pulse align-text-bottom" />
                     )}
                   </summary>
-                  <div className="px-3.5 py-3 text-gray-600 whitespace-pre-wrap leading-relaxed border-t border-gray-800/80 font-mono text-[11px]">
+                  <div className="py-2 text-gray-600 whitespace-pre-wrap leading-relaxed font-mono text-[11px]">
                     {msg.thinking}
                   </div>
                 </details>
               )}
 
-              <div className="max-w-[90%] text-sm text-gray-200 leading-relaxed">
-                <ChatMarkdown content={msg.content} />
-                {isStreaming && i === messages.length - 1 && !msg.thinking && (
-                  <span className="inline-block w-1.5 h-4 bg-gray-400 ml-0.5 animate-pulse align-text-bottom" />
-                )}
-                {isStreaming &&
-                  i === messages.length - 1 &&
-                  msg.thinking &&
-                  msg.content && (
-                    <span className="inline-block w-1.5 h-4 bg-gray-400 ml-0.5 animate-pulse align-text-bottom" />
-                  )}
-              </div>
+              {msg.content ? (
+                <div className="max-w-[90%] text-sm text-gray-200 leading-relaxed">
+                  <ChatMarkdown content={msg.content} />
+                </div>
+              ) : null}
+              {msg.verification ? (
+                <EvidencePanel verification={msg.verification} />
+              ) : null}
+              {msg.content && !(isStreaming && i === lastAssistantIndex) ? (
+                <AssistantMessageActions
+                  content={msg.content}
+                  onRetry={
+                    i === lastAssistantIndex
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                />
+              ) : null}
+              {i === lastAssistantIndex &&
+              !isStreaming &&
+              activities.length > 0 ? (
+                <ActivityPanel
+                  activities={activities}
+                  connection={connection}
+                  pendingPermission={pendingPermission}
+                  onAbort={onAbort}
+                  onPermissionDecision={onPermissionDecision}
+                />
+              ) : null}
             </div>
           )}
         </div>
@@ -749,7 +806,9 @@ export default function WorkspaceClient({
   // Documents sidebar
   const [documents, setDocuments] = useState<DocInfo[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    new Set(),
+  );
   const [draggingSlug, setDraggingSlug] = useState<string | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [movingSlug, setMovingSlug] = useState<string | null>(null);
@@ -775,13 +834,16 @@ export default function WorkspaceClient({
   const LEFT_SIDEBAR_MAX = 440;
   const LEFT_SIDEBAR_THRESHOLD = 170;
   const LEFT_SIDEBAR_RAIL = 48;
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(LEFT_SIDEBAR_DEFAULT);
+  const [leftSidebarWidth, setLeftSidebarWidth] =
+    useState(LEFT_SIDEBAR_DEFAULT);
   const [leftSidebarResizing, setLeftSidebarResizing] = useState(false);
   const leftSidebarOpen = leftSidebarWidth >= LEFT_SIDEBAR_THRESHOLD;
 
   // Window listeners (not pointer capture) so the drag survives the sidebar
   // swapping between its open and rail render at the collapse threshold.
-  function handleLeftSidebarResizeStart(event: ReactPointerEvent<HTMLDivElement>) {
+  function handleLeftSidebarResizeStart(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = leftSidebarOpen ? leftSidebarWidth : LEFT_SIDEBAR_RAIL;
@@ -792,7 +854,10 @@ export default function WorkspaceClient({
     const handleMove = (e: PointerEvent) => {
       const next = startWidth + (e.clientX - startX);
       setLeftSidebarWidth(
-        Math.min(LEFT_SIDEBAR_MAX, Math.max(LEFT_SIDEBAR_RAIL, Math.round(next))),
+        Math.min(
+          LEFT_SIDEBAR_MAX,
+          Math.max(LEFT_SIDEBAR_RAIL, Math.round(next)),
+        ),
       );
     };
     const handleEnd = () => {
@@ -821,7 +886,9 @@ export default function WorkspaceClient({
     >
       <span
         className={`h-10 w-0.5 rounded-full transition-colors ${
-          leftSidebarResizing ? "bg-gray-400" : "bg-gray-700 group-hover:bg-gray-500"
+          leftSidebarResizing
+            ? "bg-gray-400"
+            : "bg-gray-700 group-hover:bg-gray-500"
         }`}
       />
     </div>
@@ -855,6 +922,7 @@ export default function WorkspaceClient({
   const [isForking, setIsForking] = useState(false);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const agentActivity = useLegacyAgentActivity();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -894,23 +962,29 @@ export default function WorkspaceClient({
   const [isGenerating, setIsGenerating] = useState(false);
 
   // Learn pipeline
-  const [learnState, setLearnState] = useState<LearnStatusResponse | null>(null);
+  const [learnState, setLearnState] = useState<LearnStatusResponse | null>(
+    null,
+  );
   const [learnBusy, setLearnBusy] = useState(false);
   const [learnCancelBusy, setLearnCancelBusy] = useState(false);
   const [learnPanelOpen, setLearnPanelOpen] = useState(false);
+  const [learnConfirmationAction, setLearnConfirmationAction] =
+    useState<LearnDestructiveAction | null>(null);
   const [learnSourceOnly, setLearnSourceOnly] = useState(true);
   const [learnSkipManualReview, setLearnSkipManualReview] = useState(false);
-  const [learnIncludedSourceSlugs, setLearnIncludedSourceSlugs] = useState<string[] | null>(null);
+  const [learnIncludedSourceSlugs, setLearnIncludedSourceSlugs] = useState<
+    string[] | null
+  >(null);
   const [learnDocumentMenuOpen, setLearnDocumentMenuOpen] = useState(false);
   const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
-  const [showSettledLearnIndicator, setShowSettledLearnIndicator] = useState(false);
+  const [showSettledLearnIndicator, setShowSettledLearnIndicator] =
+    useState(false);
   const learnSkipManualReviewRef = useRef(false);
   const lastSyncedLearnSelectionRef = useRef<string | null>(null);
   const autoConfirmingLearnJobRef = useRef<string | null>(null);
   // Reasoning effort
-  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
-    DEFAULT_ASSISTANT_REASONING_EFFORT,
-  );
+  const [reasoningEffort, setReasoningEffort] =
+    useState<AssistantReasoningEffort>(DEFAULT_ASSISTANT_REASONING_EFFORT);
 
   // Prompts
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
@@ -973,7 +1047,9 @@ export default function WorkspaceClient({
       // changes whenever a folder or note is added, moved, or removed. Never let
       // the browser serve a cached response, or newly created folders and pages
       // (and folders synced in from disk) stay invisible until a hard refresh.
-      const res = await fetch(`/api/documents?${params.toString()}`, { cache: "no-store" });
+      const res = await fetch(`/api/documents?${params.toString()}`, {
+        cache: "no-store",
+      });
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents ?? []);
@@ -1480,9 +1556,15 @@ export default function WorkspaceClient({
               };
 
               if (event.tokenUsage) {
-                setUploadTokenUsage((prev) => ({ ...prev, [key]: event.tokenUsage! }));
+                setUploadTokenUsage((prev) => ({
+                  ...prev,
+                  [key]: event.tokenUsage!,
+                }));
               }
-              if (typeof event.visionError === "string" && event.visionError.trim()) {
+              if (
+                typeof event.visionError === "string" &&
+                event.visionError.trim()
+              ) {
                 setUploadVisionErrors((prev) => ({
                   ...prev,
                   [key]: `${file.name}: ${event.visionError!.trim()}`,
@@ -1497,7 +1579,9 @@ export default function WorkspaceClient({
               } else if (event.type === "error") {
                 if (event.canceled) canceledEvent = true;
                 streamError =
-                  typeof event.error === "string" ? event.error : "Upload failed";
+                  typeof event.error === "string"
+                    ? event.error
+                    : "Upload failed";
               }
             } catch {
               // malformed event — skip
@@ -1519,7 +1603,9 @@ export default function WorkspaceClient({
           });
           if (result.duplicate === true) {
             duplicateCount++;
-            addToast(`${file.name} is already in Documents; duplicate upload skipped`);
+            addToast(
+              `${file.name} is already in Documents; duplicate upload skipped`,
+            );
           } else {
             successCount++;
             snapshotCount +=
@@ -1528,7 +1614,9 @@ export default function WorkspaceClient({
               mapGeneratedCount++;
             }
             if (typeof result.screenshotWarning === "string") {
-              screenshotWarnings.push(`${file.name}: ${result.screenshotWarning}`);
+              screenshotWarnings.push(
+                `${file.name}: ${result.screenshotWarning}`,
+              );
             }
             if (typeof result.mapGenerationWarning === "string") {
               mapWarnings.push(`${file.name}: ${result.mapGenerationWarning}`);
@@ -1547,13 +1635,15 @@ export default function WorkspaceClient({
         if (aborted) break;
 
         setUploadStatuses((prev) => ({ ...prev, [key]: "error" }));
-        const message = error instanceof Error ? error.message : "Network error";
+        const message =
+          error instanceof Error ? error.message : "Network error";
         setUploadErrors((prev) => ({ ...prev, [key]: message }));
         addToast(`${file.name}: ${message}`);
       }
     }
 
-    const canceled = uploadCanceledRef.current || abortController.signal.aborted;
+    const canceled =
+      uploadCanceledRef.current || abortController.signal.aborted;
 
     if (!canceled && (successCount > 0 || duplicateCount > 0)) {
       const generationLabel = !generateMap
@@ -1619,13 +1709,17 @@ export default function WorkspaceClient({
           // Extract via API (handles vision / OCR)
           const fd = new FormData();
           fd.append("file", file);
-          fd.append("isHandwriting", String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)));
+          fd.append(
+            "isHandwriting",
+            String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)),
+          );
           const res = await fetch("/api/extract-text", {
             method: "POST",
             body: fd,
           });
           const data = await res.json();
-          if (!res.ok || data.error) throw new Error(data.error ?? "Extraction failed");
+          if (!res.ok || data.error)
+            throw new Error(data.error ?? "Extraction failed");
           if (data.warning) addToast(`${file.name}: ${data.warning}`);
           if (data.type === "image") {
             results.push({
@@ -1666,18 +1760,26 @@ export default function WorkspaceClient({
           // Binary formats (pdf, docx, pptx, xlsx, zip) — extract server-side
           const fd = new FormData();
           fd.append("file", file);
-          fd.append("isHandwriting", String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)));
+          fd.append(
+            "isHandwriting",
+            String(isHandwriting && HANDWRITING_FILE_RE.test(file.name)),
+          );
           const res = await fetch("/api/extract-text", {
             method: "POST",
             body: fd,
           });
           const data = await res.json();
-          if (!res.ok || data.error) throw new Error(data.error ?? "Extraction failed");
+          if (!res.ok || data.error)
+            throw new Error(data.error ?? "Extraction failed");
           if (data.warning) addToast(`${file.name}: ${data.warning}`);
           results.push({ type: "text", text: data.text, name: file.name });
         }
       } catch (error) {
-        addToast(error instanceof Error ? `${file.name}: ${error.message}` : `Could not read ${file.name}`);
+        addToast(
+          error instanceof Error
+            ? `${file.name}: ${error.message}`
+            : `Could not read ${file.name}`,
+        );
       }
     }
 
@@ -2008,7 +2110,10 @@ export default function WorkspaceClient({
       body: JSON.stringify({
         clusterSlug,
         request: requestText,
-        messages: sourceMessages.map(({ role, content }) => ({ role, content })),
+        messages: sourceMessages.map(({ role, content }) => ({
+          role,
+          content,
+        })),
         model,
         attachments: pendingAttachments,
       }),
@@ -2044,7 +2149,9 @@ export default function WorkspaceClient({
 
       const notes = await generateGardenNotes(messages, "chat-note");
       const count = notes.length;
-      const mergedCount = notes.filter((note) => note.action === "merged").length;
+      const mergedCount = notes.filter(
+        (note) => note.action === "merged",
+      ).length;
       addToast(
         count > 0
           ? mergedCount > 0
@@ -2059,7 +2166,9 @@ export default function WorkspaceClient({
         setGraphRefreshVersion((v) => v + 1);
       }
     } catch (err) {
-      addToast(err instanceof Error ? err.message : "Failed to save lesson page");
+      addToast(
+        err instanceof Error ? err.message : "Failed to save lesson page",
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -2067,103 +2176,114 @@ export default function WorkspaceClient({
 
   // ── Chat submit ─────────────────────────────────────────────────────────────
 
-  const postLearnAction = useCallback(async (
-    endpoint: "plan" | "confirm" | "generate" | "regenerate" | "rebuild" | "clear" | "cancel",
-    body: Record<string, unknown> = {},
-  ) => {
-    const isCancel = endpoint === "cancel";
-    if (!isCancel) {
-      setLearnPanelOpen(true);
-    }
-    if (isCancel) {
-      setLearnCancelBusy(true);
-    } else {
-      setLearnBusy(true);
-    }
-    try {
-      const res = await fetch(
-        `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/${endpoint}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            sourceOnly: learnSourceOnly,
-            ...(learnIncludedSourceSlugs !== null
-              ? { includedSourceIds: learnIncludedSourceSlugs }
-              : {}),
-            includeSourceSnapshots: false,
-            // Keep planning interruptible from the UI. The live checkbox is
-            // evaluated when the proposed map reaches the review boundary.
-            skipManualReview:
-              endpoint === "plan" ? false : learnSkipManualReviewRef.current,
-            ...body,
-          }),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.error) {
-        throw new Error(data.error ?? "Learn action failed");
+  const postLearnAction = useCallback(
+    async (
+      endpoint:
+        | "plan"
+        | "confirm"
+        | "generate"
+        | "regenerate"
+        | "rebuild"
+        | "clear"
+        | "cancel",
+      body: Record<string, unknown> = {},
+    ) => {
+      const isCancel = endpoint === "cancel";
+      if (!isCancel) {
+        setLearnPanelOpen(true);
       }
-
-      if (endpoint === "clear") {
-        lastSyncedLearnSelectionRef.current = null;
-        autoConfirmingLearnJobRef.current = null;
-        learnSkipManualReviewRef.current = false;
-        setLearnIncludedSourceSlugs(null);
-        setLearnSkipManualReview(false);
-        setLearnDocumentMenuOpen(false);
-      }
-      await fetchLearnStatus();
-      await fetchDocuments();
-      setGraphRefreshVersion((value) => value + 1);
-
-      if (endpoint === "plan") {
-        if (!learnSkipManualReviewRef.current) {
-          addToast("Learning map ready to review", "success");
-        }
-      } else if (endpoint === "regenerate") {
-        addToast("Issues repaired; unaffected pages were preserved", "success");
-      } else if (endpoint === "rebuild") {
-        addToast("Garden rebuilt", "success");
-      } else if (endpoint === "clear") {
-        addToast(
-          "Learn data cleared; sources and non-Learn notes were preserved",
-          "success",
-        );
-      } else if (
-        endpoint === "confirm" ||
-        endpoint === "generate"
-      ) {
-        addToast("Lessons generated", "success");
-      } else if (endpoint === "cancel") {
-        setLearnPanelOpen(false);
-        addToast("Learn job cancelled");
-      }
-      return true;
-    } catch (error) {
-      await fetchLearnStatus();
-      const message = error instanceof Error ? error.message : "Learn action failed";
-      if (isCancel || endpoint === "clear") {
-        addToast(message);
-      }
-      return false;
-    } finally {
       if (isCancel) {
-        setLearnCancelBusy(false);
+        setLearnCancelBusy(true);
       } else {
-        setLearnBusy(false);
+        setLearnBusy(true);
       }
-    }
-  }, [
-    addToast,
-    clusterSlug,
-    fetchDocuments,
-    fetchLearnStatus,
-    learnIncludedSourceSlugs,
-    learnSourceOnly,
-    model,
-  ]);
+      try {
+        const res = await fetch(
+          `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/${endpoint}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model,
+              sourceOnly: learnSourceOnly,
+              ...(learnIncludedSourceSlugs !== null
+                ? { includedSourceIds: learnIncludedSourceSlugs }
+                : {}),
+              includeSourceSnapshots: false,
+              // Keep planning interruptible from the UI. The live checkbox is
+              // evaluated when the proposed map reaches the review boundary.
+              skipManualReview:
+                endpoint === "plan" ? false : learnSkipManualReviewRef.current,
+              ...body,
+            }),
+          },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+          throw new Error(data.error ?? "Learn action failed");
+        }
+
+        if (endpoint === "clear") {
+          lastSyncedLearnSelectionRef.current = null;
+          autoConfirmingLearnJobRef.current = null;
+          learnSkipManualReviewRef.current = false;
+          setLearnIncludedSourceSlugs(null);
+          setLearnSkipManualReview(false);
+          setLearnDocumentMenuOpen(false);
+        }
+        await fetchLearnStatus();
+        await fetchDocuments();
+        setGraphRefreshVersion((value) => value + 1);
+
+        if (endpoint === "plan") {
+          if (!learnSkipManualReviewRef.current) {
+            addToast("Learning map ready to review", "success");
+          }
+        } else if (endpoint === "regenerate") {
+          addToast(
+            "Issues repaired; unaffected pages were preserved",
+            "success",
+          );
+        } else if (endpoint === "rebuild") {
+          addToast("Garden rebuilt", "success");
+        } else if (endpoint === "clear") {
+          addToast(
+            "Learn data cleared; sources and non-Learn notes were preserved",
+            "success",
+          );
+        } else if (endpoint === "confirm" || endpoint === "generate") {
+          addToast("Lessons generated", "success");
+        } else if (endpoint === "cancel") {
+          setLearnPanelOpen(false);
+          addToast("Learn job cancelled");
+        }
+        return true;
+      } catch (error) {
+        await fetchLearnStatus();
+        const message =
+          error instanceof Error ? error.message : "Learn action failed";
+        if (isCancel || endpoint === "clear") {
+          addToast(message);
+        }
+        return false;
+      } finally {
+        if (isCancel) {
+          setLearnCancelBusy(false);
+        } else {
+          setLearnBusy(false);
+        }
+      }
+    },
+    [
+      addToast,
+      clusterSlug,
+      fetchDocuments,
+      fetchLearnStatus,
+      learnIncludedSourceSlugs,
+      learnSourceOnly,
+      model,
+    ],
+  );
 
   const hasExistingLearnContent = Boolean(
     learnState?.latestTextbookVersionId || learnState?.hasTextbook,
@@ -2171,12 +2291,17 @@ export default function WorkspaceClient({
 
   async function handleCancelLearn() {
     const status = learnState?.job?.status;
-    if (learnCancelBusy || (!isLearnActive(status) && status !== "awaiting_confirmation")) return;
+    if (
+      learnCancelBusy ||
+      (!isLearnActive(status) && status !== "awaiting_confirmation")
+    )
+      return;
     await postLearnAction("cancel", { expectedJobId: learnState?.job?.id });
   }
 
   async function handleLearnPrimary() {
-    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
+      return;
     if (learnState?.job?.status === "awaiting_confirmation") {
       if (hasExistingLearnContent) {
         await handleRepairIssues();
@@ -2212,7 +2337,8 @@ export default function WorkspaceClient({
   }
 
   async function handleRepairIssues() {
-    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status)) return;
+    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
+      return;
     if (learnState?.job?.status === "awaiting_confirmation") {
       const cancelled = await postLearnAction("cancel", {
         expectedJobId: learnState.job.id,
@@ -2222,25 +2348,28 @@ export default function WorkspaceClient({
     await postLearnAction("regenerate", { mode: "repair" });
   }
 
-  async function handleFullRebuild() {
+  function handleFullRebuild() {
     if (learnBusy || isLearnActive(learnState?.job?.status)) return;
-    const confirmed = window.confirm(
-      "This will regenerate the Learning Map, Learning Unit Contract, all learner pages, and interactive visuals.\n\nUse Repair issues when only validation errors need to be fixed.",
-    );
-    if (!confirmed) return;
-    await postLearnAction("rebuild", { mode: "full_rebuild", forceFullRebuild: true });
+    setLearnConfirmationAction("full_rebuild");
   }
 
-  async function handleClearLearnData() {
-    if (
-      learnBusy ||
-      learnCancelBusy ||
-      isLearnActive(learnState?.job?.status)
-    ) return;
-    const confirmed = window.confirm(
-      "Clear all Learn data for this garden?\n\nThis permanently removes the Learning Map, Learning Unit Contract, generated learner pages and interactive visuals, validation and repair reports, Learn job history, and Learn snapshots.\n\nUploaded source documents and notes outside the generated Learning folder will remain. This cannot be undone.",
-    );
-    if (!confirmed) return;
+  function handleClearLearnData() {
+    if (learnBusy || learnCancelBusy || isLearnActive(learnState?.job?.status))
+      return;
+    setLearnConfirmationAction("clear");
+  }
+
+  async function handleConfirmLearnDestructiveAction() {
+    const action = learnConfirmationAction;
+    if (!action || learnBusy || isLearnActive(learnState?.job?.status)) return;
+    setLearnConfirmationAction(null);
+    if (action === "full_rebuild") {
+      await postLearnAction("rebuild", {
+        mode: "full_rebuild",
+        forceFullRebuild: true,
+      });
+      return;
+    }
     await postLearnAction("clear", { confirmClearLearnData: true });
   }
 
@@ -2280,24 +2409,43 @@ export default function WorkspaceClient({
     }
   }
 
-  async function handleSubmit() {
-    const text = input.trim();
-    if ((!text && chatAttachments.length === 0) || isStreaming) return;
+  function handleRetryAssistant(messageIndex: number) {
+    if (isStreaming || !activeChat) return;
+    let userIndex = messageIndex - 1;
+    while (userIndex >= 0 && messages[userIndex]?.role !== "user") {
+      userIndex -= 1;
+    }
+    const previousUser = messages[userIndex];
+    if (!previousUser || previousUser.role !== "user") return;
+    if (previousUser.attachmentNames?.length) {
+      addToast("Add the original attachments again before regenerating.");
+      return;
+    }
+    void handleSubmit(previousUser.content, messages.slice(0, userIndex));
+  }
+
+  async function handleSubmit(
+    textOverride?: string,
+    historyOverride?: Message[],
+  ) {
+    const text = (textOverride ?? input).trim();
+    const pendingAttachments =
+      textOverride === undefined ? chatAttachments : [];
+    if ((!text && pendingAttachments.length === 0) || isStreaming) return;
 
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
     const firstMessageTitle = chatTitleFromFirstMessage(
-      text || chatAttachments[0]?.name || "Document review",
+      text || pendingAttachments[0]?.name || "Document review",
     );
     const session =
       writableActiveChat ?? (await createChatSession(firstMessageTitle));
     if (!session) return;
 
     const sessionId = session.id;
-    const title =
-      session.messages.length === 0 ? firstMessageTitle : undefined;
+    const history = historyOverride ?? session.messages;
+    const title = history.length === 0 ? firstMessageTitle : undefined;
 
     // Snapshot attachments and clear them immediately
-    const pendingAttachments = chatAttachments;
     const attachmentNames = pendingAttachments.map((a) => a.name);
 
     const displayText =
@@ -2310,7 +2458,7 @@ export default function WorkspaceClient({
       content: displayText,
       ...(attachmentNames.length > 0 ? { attachmentNames } : {}),
     };
-    const nextMessages = [...session.messages, userMsg];
+    const nextMessages = [...history, userMsg];
     const assistantMsg: Message = {
       role: "assistant",
       content: "",
@@ -2331,7 +2479,7 @@ export default function WorkspaceClient({
 
     if (isGardenSaveCommand(text)) {
       try {
-        const sourceMessages = session.messages.filter((message) =>
+        const sourceMessages = history.filter((message) =>
           message.content.trim(),
         );
         const hasPreviousAssistantResponse = sourceMessages.some(
@@ -2375,7 +2523,7 @@ export default function WorkspaceClient({
       return;
     }
 
-    if (isMarkdownTagCommand(text, session.messages)) {
+    if (isMarkdownTagCommand(text, history)) {
       try {
         const result = await tagMarkdownsFromRequest(
           text,
@@ -2412,7 +2560,9 @@ export default function WorkspaceClient({
     }
 
     const responseStartedAt = performance.now();
+    let agentFailed = false;
     try {
+      const signal = agentActivity.start();
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2430,6 +2580,7 @@ export default function WorkspaceClient({
           attachments: pendingAttachments,
           selectedDocumentSlugs,
         }),
+        signal,
       });
 
       if (!res.ok || !res.body) {
@@ -2480,10 +2631,15 @@ export default function WorkspaceClient({
               | { type: "delta"; text: string }
               | { type: "thinking"; text: string }
               | { type: "tool"; toolName?: string; status?: string }
-              | { type: "permission"; description?: string }
+              | { type: "permission"; description?: string; requestId?: string }
               | { type: "error"; error?: string }
               | { type: "runtime"; backend: string; fallback: boolean }
+              | { type: "verification"; verification: VerificationSummary }
               | { type: "usage"; usage: unknown };
+
+            agentActivity.handleEvent(
+              event as unknown as Record<string, unknown>,
+            );
 
             if (event.type === "sources") {
               assistantMsg.sources = event.sources;
@@ -2493,31 +2649,24 @@ export default function WorkspaceClient({
               assistantMsg.content += event.text;
               finalMessages = [...nextMessages, { ...assistantMsg }];
               updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "thinking") {
-              assistantMsg.thinking =
-                (assistantMsg.thinking ?? "") + event.text;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
-              updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "usage") {
               const usage = normalizeChatTokenUsage(event.usage);
               if (usage) {
                 assistantMsg.usage = {
                   ...usage,
-                  responseDurationMs: Math.round(performance.now() - responseStartedAt),
+                  responseDurationMs: Math.round(
+                    performance.now() - responseStartedAt,
+                  ),
                 };
                 finalMessages = [...nextMessages, { ...assistantMsg }];
                 updateChatMessages(sessionId, finalMessages);
               }
-            } else if (event.type === "tool") {
-              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\n[${event.status ?? "tool"}] ${event.toolName ?? "garden tool"}`;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
-              updateChatMessages(sessionId, finalMessages);
-            } else if (event.type === "permission") {
-              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nPermission requested: ${event.description ?? "agent action"}`;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
-              updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "error") {
               assistantMsg.content += `\n\n${event.error ?? "OpenHarness reported an error."}`;
+              finalMessages = [...nextMessages, { ...assistantMsg }];
+              updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "verification") {
+              assistantMsg.verification = event.verification;
               finalMessages = [...nextMessages, { ...assistantMsg }];
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "runtime" && event.fallback) {
@@ -2531,13 +2680,17 @@ export default function WorkspaceClient({
         }
       }
     } catch (error) {
-      assistantMsg.content =
-        error instanceof Error && error.message.trim()
+      const aborted = error instanceof Error && error.name === "AbortError";
+      agentFailed = !aborted;
+      assistantMsg.content = aborted
+        ? assistantMsg.content || "(stopped)"
+        : error instanceof Error && error.message.trim()
           ? error.message
           : "Something went wrong. Please try again.";
       finalMessages = [...nextMessages, { ...assistantMsg }];
       updateChatMessages(sessionId, finalMessages);
     } finally {
+      agentActivity.finish(agentFailed);
       await persistChatSession(sessionId, finalMessages, title);
       setIsStreaming(false);
       textareaRef.current?.focus();
@@ -2673,8 +2826,10 @@ export default function WorkspaceClient({
       learnState?.scopedRepair,
     );
     const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
-    const displayProgress = status === "complete" || status === "failed" ? 100 : progress;
-    const hasSelectedLearnSources = effectiveLearnIncludedSourceSlugs.length > 0;
+    const displayProgress =
+      status === "complete" || status === "failed" ? 100 : progress;
+    const hasSelectedLearnSources =
+      effectiveLearnIncludedSourceSlugs.length > 0;
     const canStart =
       Boolean(learnState?.hasSources) &&
       hasSelectedLearnSources &&
@@ -2730,7 +2885,9 @@ export default function WorkspaceClient({
     const stageMessage =
       status === "cancelled" || staleReviewForExistingGarden
         ? ""
-        : job?.currentStep || activeStageMessage[status] || (active ? "Creating lessons" : "");
+        : job?.currentStep ||
+          activeStageMessage[status] ||
+          (active ? "Creating lessons" : "");
     const statusDetails = [
       stageMessage || null,
       job?.currentSectionTitle ? `Section: ${job.currentSectionTitle}.` : null,
@@ -2774,7 +2931,8 @@ export default function WorkspaceClient({
     if (
       !isOwner ||
       (!learnState?.hasSources && status !== "failed" && !hasLearnData)
-    ) return null;
+    )
+      return null;
     if (!shouldShowPanel) return null;
 
     return (
@@ -2791,142 +2949,19 @@ export default function WorkspaceClient({
             </div>
 
             <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setLearnDocumentMenuOpen((open) => !open)}
-                className="flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
-                aria-expanded={learnDocumentMenuOpen}
-                aria-haspopup="menu"
-                title="Choose which source documents Learn may use"
-              >
-                <svg
-                  className="h-3.5 w-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.8}
-                  aria-hidden="true"
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setLearnDocumentMenuOpen((open) => !open)}
+                  className="flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                  aria-expanded={learnDocumentMenuOpen}
+                  aria-haspopup="menu"
+                  title="Choose which source documents Learn may use"
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3.75h7.5l3 3v13.5H6.75z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.25 3.75v3h3M9.5 11h5M9.5 14.5h5" />
-                </svg>
-                Documents {effectiveLearnIncludedSourceSlugs.length}/{sourceDocuments.length}
-                <svg
-                  className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
-                </svg>
-              </button>
-              {learnDocumentMenuOpen ? (
-                <div
-                  className="absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl"
-                  role="menu"
-                  aria-label="Documents included in Learn"
-                >
-                  <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-2">
-                    <div>
-                      <p className="text-xs font-medium text-gray-200">Documents for Learn</p>
-                      <p className="mt-0.5 text-[10px] text-gray-600">Unchecked documents are excluded from this run.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setLearnIncludedSourceSlugs(
-                          effectiveLearnIncludedSourceSlugs.length === sourceDocuments.length
-                            ? []
-                            : sourceDocuments.map((doc) => doc.slug),
-                        )
-                      }
-                      disabled={learnDocumentSelectionLocked}
-                      className="text-[10px] text-gray-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {effectiveLearnIncludedSourceSlugs.length === sourceDocuments.length
-                        ? "Clear all"
-                        : "Select all"}
-                    </button>
-                  </div>
-                  <div className="max-h-56 space-y-1 overflow-y-auto">
-                    {sourceDocuments.map((doc) => {
-                      const checked = effectiveLearnIncludedSourceSlugSet.has(doc.slug);
-                      const fileLabel = doc.sourcePdf || doc.sourceFile || doc.name || doc.title;
-                      return (
-                        <label
-                          key={doc.slug}
-                          className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleLearnSourceDocument(doc.slug)}
-                            disabled={learnDocumentSelectionLocked}
-                            className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-                          />
-                          <span className="min-w-0">
-                            <span className="block truncate text-xs text-gray-300">{fileLabel}</span>
-                            {doc.description ? (
-                              <span className="mt-0.5 block truncate text-[10px] text-gray-600">{doc.description}</span>
-                            ) : null}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {learnDocumentSelectionLocked ? (
-                    <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
-                      This selection is locked for the current Learning Map.
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            <label className="flex items-center gap-1.5 text-xs text-gray-500">
-              <input
-                type="checkbox"
-                checked={learnSourceOnly}
-                onChange={(event) => setLearnSourceOnly(event.target.checked)}
-                disabled={learnBusy || active}
-                className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-              />
-              Source-only
-            </label>
-            <label
-              className="flex items-center gap-1.5 text-xs text-gray-500"
-              title="Automatically confirm the learning map and continue generating lessons"
-            >
-              <input
-                type="checkbox"
-                checked={learnSkipManualReview}
-                onChange={(event) => {
-                  learnSkipManualReviewRef.current = event.target.checked;
-                  setLearnSkipManualReview(event.target.checked);
-                }}
-                disabled={
-                  status === "awaiting_confirmation" ||
-                  (active && status !== "planning")
-                }
-                className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
-              />
-              Skip review
-            </label>
-            {status === "complete" && (
-              <button
-                type="button"
-                onClick={handleRepairIssues}
-                disabled={!canStart}
-                title="Repairs only failing pages and components; unaffected content is preserved"
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {learnBusy ? (
-                  <Spinner className="h-3.5 w-3.5" />
-                ) : (
                   <svg
                     className="h-3.5 w-3.5"
-                    fill="none"
                     viewBox="0 0 24 24"
+                    fill="none"
                     stroke="currentColor"
                     strokeWidth={1.8}
                     aria-hidden="true"
@@ -2934,102 +2969,265 @@ export default function WorkspaceClient({
                     <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                      d="M6.75 3.75h7.5l3 3v13.5H6.75z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M14.25 3.75v3h3M9.5 11h5M9.5 14.5h5"
                     />
                   </svg>
-                )}
-                {learnBusy ? "Repairing..." : "Repair issues"}
-              </button>
-            )}
-            {(status === "complete" || status === "failed" || status === "cancelled" || status === "awaiting_confirmation") && (
-              <button
-                type="button"
-                onClick={handleFullRebuild}
-                disabled={!canStart}
-                className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
+                  Documents {effectiveLearnIncludedSourceSlugs.length}/
+                  {sourceDocuments.length}
+                  <svg
+                    className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+                {learnDocumentMenuOpen ? (
+                  <div
+                    className="absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl"
+                    role="menu"
+                    aria-label="Documents included in Learn"
+                  >
+                    <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-2">
+                      <div>
+                        <p className="text-xs font-medium text-gray-200">
+                          Documents for Learn
+                        </p>
+                        <p className="mt-0.5 text-[10px] text-gray-600">
+                          Unchecked documents are excluded from this run.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLearnIncludedSourceSlugs(
+                            effectiveLearnIncludedSourceSlugs.length ===
+                              sourceDocuments.length
+                              ? []
+                              : sourceDocuments.map((doc) => doc.slug),
+                          )
+                        }
+                        disabled={learnDocumentSelectionLocked}
+                        className="text-[10px] text-gray-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {effectiveLearnIncludedSourceSlugs.length ===
+                        sourceDocuments.length
+                          ? "Clear all"
+                          : "Select all"}
+                      </button>
+                    </div>
+                    <div className="max-h-56 space-y-1 overflow-y-auto">
+                      {sourceDocuments.map((doc) => {
+                        const checked = effectiveLearnIncludedSourceSlugSet.has(
+                          doc.slug,
+                        );
+                        const fileLabel =
+                          doc.sourcePdf ||
+                          doc.sourceFile ||
+                          doc.name ||
+                          doc.title;
+                        return (
+                          <label
+                            key={doc.slug}
+                            className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                toggleLearnSourceDocument(doc.slug)
+                              }
+                              disabled={learnDocumentSelectionLocked}
+                              className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs text-gray-300">
+                                {fileLabel}
+                              </span>
+                              {doc.description ? (
+                                <span className="mt-0.5 block truncate text-[10px] text-gray-600">
+                                  {doc.description}
+                                </span>
+                              ) : null}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {learnDocumentSelectionLocked ? (
+                      <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
+                        This selection is locked for the current Learning Map.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <label className="flex items-center gap-1.5 text-xs text-gray-500">
+                <input
+                  type="checkbox"
+                  checked={learnSourceOnly}
+                  onChange={(event) => setLearnSourceOnly(event.target.checked)}
+                  disabled={learnBusy || active}
+                  className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                />
+                Source-only
+              </label>
+              <label
+                className="flex items-center gap-1.5 text-xs text-gray-500"
+                title="Automatically confirm the learning map and continue generating lessons"
               >
-                Rebuild entire garden
-              </button>
-            )}
-            {hasLearnData && (
-              <button
-                type="button"
-                onClick={handleClearLearnData}
-                disabled={learnBusy || learnCancelBusy || active}
-                className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
-              >
-                Clear Learn data
-              </button>
-            )}
-            {showPrimaryAction && (
-              <button
-                type="button"
-                onClick={
-                  status === "failed" || staleReviewForExistingGarden
-                    ? handleRepairIssues
-                    : status === "cancelled"
-                      ? handleGenerateAfterCancellation
-                      : handleLearnPrimary
-                }
-                disabled={
-                  learnCancelBusy ||
-                  (!canStart && status !== "awaiting_confirmation")
-                }
-                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {learnBusy || active ? <Spinner className="h-3.5 w-3.5" /> : null}
-                {status === "failed" || staleReviewForExistingGarden
-                  ? learnBusy
-                    ? "Repairing..."
-                    : "Repair issues"
-                  : status === "cancelled"
-                    ? learnBusy
-                      ? hasExistingLearnContent
-                        ? "Repairing..."
-                        : "Generating..."
-                      : hasExistingLearnContent
-                        ? "Repair issues"
-                        : "Generate"
-                  : learnState?.buttonLabel ?? "Learn"}
-              </button>
-            )}
-            {active && (
-              <button
-                type="button"
-                onClick={handleCancelLearn}
-                disabled={learnCancelBusy}
-                className="flex items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
-                title="Stop this Learn run"
-              >
-                {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                {learnCancelBusy ? "Stopping..." : "Stop"}
-              </button>
-            )}
-            {!active &&
-              (status !== "awaiting_confirmation" || staleReviewForExistingGarden) && (
-              <button
-                type="button"
-                onClick={() => setLearnPanelOpen(false)}
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
-                aria-label="Close Learn panel"
-                title="Close"
-              >
-                <svg
-                  className="h-3.5 w-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
+                <input
+                  type="checkbox"
+                  checked={learnSkipManualReview}
+                  onChange={(event) => {
+                    learnSkipManualReviewRef.current = event.target.checked;
+                    setLearnSkipManualReview(event.target.checked);
+                  }}
+                  disabled={
+                    status === "awaiting_confirmation" ||
+                    (active && status !== "planning")
+                  }
+                  className="h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                />
+                Skip review
+              </label>
+              {status === "complete" && (
+                <button
+                  type="button"
+                  onClick={handleRepairIssues}
+                  disabled={!canStart}
+                  title="Repairs only failing pages and components; unaffected content is preserved"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-                </svg>
-              </button>
-            )}
+                  {learnBusy ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : (
+                    <svg
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.8}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                      />
+                    </svg>
+                  )}
+                  {learnBusy ? "Repairing..." : "Repair issues"}
+                </button>
+              )}
+              {(status === "complete" ||
+                status === "failed" ||
+                status === "cancelled" ||
+                status === "awaiting_confirmation") && (
+                <button
+                  type="button"
+                  onClick={handleFullRebuild}
+                  disabled={!canStart}
+                  className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
+                >
+                  Rebuild entire garden
+                </button>
+              )}
+              {hasLearnData && (
+                <button
+                  type="button"
+                  onClick={handleClearLearnData}
+                  disabled={learnBusy || learnCancelBusy || active}
+                  className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
+                >
+                  Clear Learn data
+                </button>
+              )}
+              {showPrimaryAction && (
+                <button
+                  type="button"
+                  onClick={
+                    status === "failed" || staleReviewForExistingGarden
+                      ? handleRepairIssues
+                      : status === "cancelled"
+                        ? handleGenerateAfterCancellation
+                        : handleLearnPrimary
+                  }
+                  disabled={
+                    learnCancelBusy ||
+                    (!canStart && status !== "awaiting_confirmation")
+                  }
+                  className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {learnBusy || active ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : null}
+                  {status === "failed" || staleReviewForExistingGarden
+                    ? learnBusy
+                      ? "Repairing..."
+                      : "Repair issues"
+                    : status === "cancelled"
+                      ? learnBusy
+                        ? hasExistingLearnContent
+                          ? "Repairing..."
+                          : "Generating..."
+                        : hasExistingLearnContent
+                          ? "Repair issues"
+                          : "Generate"
+                      : (learnState?.buttonLabel ?? "Learn")}
+                </button>
+              )}
+              {active && (
+                <button
+                  type="button"
+                  onClick={handleCancelLearn}
+                  disabled={learnCancelBusy}
+                  className="flex items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
+                  title="Stop this Learn run"
+                >
+                  {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
+                  {learnCancelBusy ? "Stopping..." : "Stop"}
+                </button>
+              )}
+              {!active &&
+                (status !== "awaiting_confirmation" ||
+                  staleReviewForExistingGarden) && (
+                  <button
+                    type="button"
+                    onClick={() => setLearnPanelOpen(false)}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
+                    aria-label="Close Learn panel"
+                    title="Close"
+                  >
+                    <svg
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M6 18 18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                )}
+            </div>
           </div>
-          </div>
-
         </div>
 
         {!hasSelectedLearnSources ? (
@@ -3152,7 +3350,9 @@ export default function WorkspaceClient({
             )}
 
             {learnUsageCallSummary ? (
-              <span className="ml-auto text-gray-600">{learnUsageCallSummary}</span>
+              <span className="ml-auto text-gray-600">
+                {learnUsageCallSummary}
+              </span>
             ) : null}
           </div>
         ) : null}
@@ -3161,79 +3361,101 @@ export default function WorkspaceClient({
           proposedMap &&
           status === "awaiting_confirmation" &&
           !staleReviewForExistingGarden && (
-          <div className="mt-4 border-t border-gray-800 pt-3">
-            <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-100">{proposedMap.title}</p>
-                {proposedMap.summary ? (
-                  <p className="mt-0.5 text-xs text-gray-500">{proposedMap.summary}</p>
-                ) : null}
+            <div className="mt-4 border-t border-gray-800 pt-3">
+              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-100">
+                    {proposedMap.title}
+                  </p>
+                  {proposedMap.summary ? (
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      {proposedMap.summary}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConfirmAndGenerate}
+                    disabled={learnBusy}
+                    className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
+                    Confirm and Learn
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRegenerateLearningMap}
+                    disabled={learnBusy}
+                    className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Regenerate Learning Map
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelLearn}
+                    disabled={learnCancelBusy}
+                    className="flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {learnCancelBusy ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : null}
+                    {learnCancelBusy ? "Cancelling..." : "Cancel"}
+                  </button>
+                </div>
               </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleConfirmAndGenerate}
-                  disabled={learnBusy}
-                  className="flex items-center gap-1.5 rounded-lg bg-cyan-100 px-3 py-1.5 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {learnBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                  Confirm and Learn
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRegenerateLearningMap}
-                  disabled={learnBusy}
-                  className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Regenerate Learning Map
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCancelLearn}
-                  disabled={learnCancelBusy}
-                  className="flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-500 transition hover:border-gray-700 hover:text-gray-300 disabled:cursor-wait disabled:opacity-60"
-                >
-                  {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
-                  {learnCancelBusy ? "Cancelling..." : "Cancel"}
-                </button>
-              </div>
-            </div>
 
-            <ol className="max-h-72 space-y-2 overflow-y-auto pr-1">
-              {proposedMap.sections.map((section, sectionIndex) => (
-                <li key={`${section.title}-${sectionIndex}`} className="rounded-lg border border-gray-800 bg-gray-900/50 p-3">
-                  <div className="flex items-start gap-2">
-                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gray-800 text-[11px] font-medium text-gray-300">
-                      {sectionIndex + 1}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-gray-100">{section.title}</p>
-                      {section.purpose ? (
-                        <p className="mt-1 text-xs leading-5 text-gray-500">{section.purpose}</p>
-                      ) : null}
-                      <ul className="mt-2 space-y-1">
-                        {section.subsections.map((subsection, subsectionIndex) => (
-                          <li key={`${subsection.title}-${subsectionIndex}`} className="text-xs text-gray-400">
-                            <span className="text-gray-600">
-                              {sectionIndex + 1}.{subsectionIndex + 1}
-                            </span>{" "}
-                            {subsection.title}
-                            {subsection.visualOpportunities && subsection.visualOpportunities.length > 0 ? (
-                              <span className="ml-2 text-cyan-500">
-                                {subsection.visualOpportunities.length} visual
-                                {subsection.visualOpportunities.length === 1 ? "" : "s"}
-                              </span>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
+              <ol className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                {proposedMap.sections.map((section, sectionIndex) => (
+                  <li
+                    key={`${section.title}-${sectionIndex}`}
+                    className="rounded-lg border border-gray-800 bg-gray-900/50 p-3"
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gray-800 text-[11px] font-medium text-gray-300">
+                        {sectionIndex + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-gray-100">
+                          {section.title}
+                        </p>
+                        {section.purpose ? (
+                          <p className="mt-1 text-xs leading-5 text-gray-500">
+                            {section.purpose}
+                          </p>
+                        ) : null}
+                        <ul className="mt-2 space-y-1">
+                          {section.subsections.map(
+                            (subsection, subsectionIndex) => (
+                              <li
+                                key={`${subsection.title}-${subsectionIndex}`}
+                                className="text-xs text-gray-400"
+                              >
+                                <span className="text-gray-600">
+                                  {sectionIndex + 1}.{subsectionIndex + 1}
+                                </span>{" "}
+                                {subsection.title}
+                                {subsection.visualOpportunities &&
+                                subsection.visualOpportunities.length > 0 ? (
+                                  <span className="ml-2 text-cyan-500">
+                                    {subsection.visualOpportunities.length}{" "}
+                                    visual
+                                    {subsection.visualOpportunities.length === 1
+                                      ? ""
+                                      : "s"}
+                                  </span>
+                                ) : null}
+                              </li>
+                            ),
+                          )}
+                        </ul>
+                      </div>
                     </div>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
 
         {panelExpanded && status === "complete" && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-800 pt-3">
@@ -3252,15 +3474,16 @@ export default function WorkspaceClient({
     );
   }
 
-  function handleDocumentColorButtonClick(slug: string, selectableForChat: boolean) {
+  function handleDocumentColorButtonClick(
+    slug: string,
+    selectableForChat: boolean,
+  ) {
     const pendingTimer = documentColorClickTimersRef.current.get(slug);
     if (pendingTimer !== undefined) {
       window.clearTimeout(pendingTimer);
       documentColorClickTimersRef.current.delete(slug);
       if (!selectableForChat) {
-        setOpenFlagPaletteSlug((openSlug) =>
-          openSlug === slug ? null : slug,
-        );
+        setOpenFlagPaletteSlug((openSlug) => (openSlug === slug ? null : slug));
         return;
       }
       setOpenFlagPaletteSlug(null);
@@ -3270,9 +3493,7 @@ export default function WorkspaceClient({
 
     const timer = window.setTimeout(() => {
       documentColorClickTimersRef.current.delete(slug);
-      setOpenFlagPaletteSlug((openSlug) =>
-        openSlug === slug ? null : slug,
-      );
+      setOpenFlagPaletteSlug((openSlug) => (openSlug === slug ? null : slug));
     }, 250);
     documentColorClickTimersRef.current.set(slug, timer);
   }
@@ -3303,13 +3524,14 @@ export default function WorkspaceClient({
             : status === "cancelled"
               ? "Learn was cancelled"
               : "Open Learn panel";
-    const tone = status === "complete"
-      ? "border-gray-700 bg-gray-900 text-[#4f8a62]"
-      : status === "failed"
-        ? "border-gray-700 bg-gray-900 text-[#b85c5c]"
-        : status === "awaiting_confirmation"
-          ? "border-[#a77f2b] bg-[#c59a3d] text-[var(--paper-raised)]"
-          : "border-gray-700 bg-gray-900 text-gray-400";
+    const tone =
+      status === "complete"
+        ? "border-gray-700 bg-gray-900 text-[#4f8a62]"
+        : status === "failed"
+          ? "border-gray-700 bg-gray-900 text-[#b85c5c]"
+          : status === "awaiting_confirmation"
+            ? "border-[#a77f2b] bg-[#c59a3d] text-[var(--paper-raised)]"
+            : "border-gray-700 bg-gray-900 text-gray-400";
 
     return (
       <button
@@ -3338,7 +3560,10 @@ export default function WorkspaceClient({
             <path strokeLinecap="round" d="M9.5 8.5v7M14.5 8.5v7" />
           </svg>
         ) : (
-          <span className="h-3 w-3 rounded-full border-2 border-current" aria-hidden="true" />
+          <span
+            className="h-3 w-3 rounded-full border-2 border-current"
+            aria-hidden="true"
+          />
         )}
       </button>
     );
@@ -3352,8 +3577,7 @@ export default function WorkspaceClient({
           const isSelectedForChat =
             isSource && selectedDocumentSlugs.includes(doc.slug);
           const isPdf = isSource && doc.sourceType?.toLowerCase() === "pdf";
-          const isPdfSource =
-            isPdf && Boolean(doc.sourcePdf);
+          const isPdfSource = isPdf && Boolean(doc.sourcePdf);
           const displayTitle =
             (isPdf ? doc.sourceFile?.trim() : "") || doc.title || doc.name;
           // Existing PDF notes predate the explicit description field and have
@@ -3362,7 +3586,9 @@ export default function WorkspaceClient({
           const storedDescription = doc.description?.trim() || "";
           const sourceDescription =
             (storedDescription !== displayTitle ? storedDescription : "") ||
-            (isPdf && doc.title?.trim() !== displayTitle ? doc.title.trim() : "");
+            (isPdf && doc.title?.trim() !== displayTitle
+              ? doc.title.trim()
+              : "");
           const documentHref = isPdfSource
             ? `/gardens/${clusterSlug}/pdf/${encodeURIComponent(doc.slug)}`
             : `/garden/${clusterSlug}?note=${encodeURIComponent(doc.slug)}`;
@@ -3379,7 +3605,9 @@ export default function WorkspaceClient({
               <div className="relative shrink-0 mt-0.5">
                 <button
                   type="button"
-                  onClick={() => handleDocumentColorButtonClick(doc.slug, isSource)}
+                  onClick={() =>
+                    handleDocumentColorButtonClick(doc.slug, isSource)
+                  }
                   disabled={savingFlagSlug === doc.slug}
                   className={[
                     "h-5 w-5 rounded border border-gray-700 bg-gray-950",
@@ -3391,15 +3619,13 @@ export default function WorkspaceClient({
                       ? "opacity-50 cursor-wait"
                       : "cursor-pointer",
                   ].join(" ")}
-                  title={
-                    `${doc.flagColor ? `Flagged ${doc.flagColor}. ` : ""}${
-                      isSelectedForChat
-                        ? "Selected for chat; click twice to remove."
-                        : isSource
-                          ? "Click twice to select for chat."
-                          : ""
-                    } Click once to choose a color.`
-                  }
+                  title={`${doc.flagColor ? `Flagged ${doc.flagColor}. ` : ""}${
+                    isSelectedForChat
+                      ? "Selected for chat; click twice to remove."
+                      : isSource
+                        ? "Click twice to select for chat."
+                        : ""
+                  } Click once to choose a color.`}
                   aria-label={
                     isSource
                       ? isSelectedForChat
@@ -3696,7 +3922,12 @@ export default function WorkspaceClient({
     items: DocInfo[],
     folderPaths: string[],
   ): FolderTreeNode => {
-    const root: FolderTreeNode = { path: "", name: "", childFolders: [], files: [] };
+    const root: FolderTreeNode = {
+      path: "",
+      name: "",
+      childFolders: [],
+      files: [],
+    };
     const nodeByPath = new Map<string, FolderTreeNode>([["", root]]);
 
     const ensureFolder = (folderPath: string): FolderTreeNode => {
@@ -3789,7 +4020,9 @@ export default function WorkspaceClient({
                   }}
                   className={[
                     "h-4 w-4 rounded border transition-transform hover:scale-110",
-                    doc.flagColor === color ? "border-white" : "border-gray-800",
+                    doc.flagColor === color
+                      ? "border-white"
+                      : "border-gray-800",
                   ].join(" ")}
                   style={{ backgroundColor: color }}
                   aria-label={`Flag ${color}`}
@@ -3878,7 +4111,11 @@ export default function WorkspaceClient({
             stroke="currentColor"
             strokeWidth={2}
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m8.25 4.5 7.5 7.5-7.5 7.5"
+            />
           </svg>
           <svg
             className="w-3.5 h-3.5 shrink-0 text-amber-300/70"
@@ -3907,8 +4144,18 @@ export default function WorkspaceClient({
             aria-label={`New folder inside ${node.name}`}
             title="New subfolder"
           >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 4.5v15m7.5-7.5h-15"
+              />
             </svg>
           </span>
           <span
@@ -3921,7 +4168,13 @@ export default function WorkspaceClient({
             aria-label={`Rename folder ${node.name}`}
             title="Rename folder"
           >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.7}
+            >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -3939,7 +4192,13 @@ export default function WorkspaceClient({
             aria-label={`Delete folder ${node.name}`}
             title="Delete folder"
           >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.7}
+            >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -3948,12 +4207,15 @@ export default function WorkspaceClient({
             </svg>
           </span>
         </div>
-        {isExpanded && (node.childFolders.length > 0 || node.files.length > 0) && (
-          <ul>
-            {node.childFolders.map((child) => renderFolderTree(child, depth + 1))}
-            {node.files.map((doc) => renderMarkdownFileRow(doc, depth + 1))}
-          </ul>
-        )}
+        {isExpanded &&
+          (node.childFolders.length > 0 || node.files.length > 0) && (
+            <ul>
+              {node.childFolders.map((child) =>
+                renderFolderTree(child, depth + 1),
+              )}
+              {node.files.map((doc) => renderMarkdownFileRow(doc, depth + 1))}
+            </ul>
+          )}
       </li>
     );
   };
@@ -3978,7 +4240,9 @@ export default function WorkspaceClient({
           const slug = e.dataTransfer.getData("text/plain") || draggingSlug;
           if (slug) handleMoveNote(slug, "");
         }}
-        className={isRootDrop ? "ring-1 ring-inset ring-cyan-400/40 bg-cyan-950/10" : ""}
+        className={
+          isRootDrop ? "ring-1 ring-inset ring-cyan-400/40 bg-cyan-950/10" : ""
+        }
       >
         <ul className="py-1">
           {tree.childFolders.map((child) => renderFolderTree(child, 0))}
@@ -4253,7 +4517,10 @@ export default function WorkspaceClient({
               ) : (
                 <ul className="divide-y divide-gray-800/70">
                   {savedLinks.map((link) => (
-                    <li key={link.id} className="group flex items-center gap-2 px-3 py-2">
+                    <li
+                      key={link.id}
+                      className="group flex items-center gap-2 px-3 py-2"
+                    >
                       <a
                         href={link.url}
                         target="_blank"
@@ -5110,6 +5377,14 @@ export default function WorkspaceClient({
               loadingChats={loadingChats}
               messages={messages}
               messagesEndRef={messagesEndRef}
+              activities={agentActivity.activities}
+              connection={agentActivity.connection}
+              pendingPermission={agentActivity.pendingPermission}
+              onAbort={agentActivity.abort}
+              onPermissionDecision={(decision) =>
+                void agentActivity.respondToPermission(decision)
+              }
+              onRetryAssistant={handleRetryAssistant}
             />
           </main>
 
@@ -5187,29 +5462,6 @@ export default function WorkspaceClient({
               onRemoveAttachment={removeChatAttachment}
               tokenUsage={tokenUsage}
               tokenUsagePending={isStreaming}
-              utilityActions={
-                <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowPrompts((value) => !value);
-                      setPromptSearch("");
-                      setPromptCategory("All");
-                    }}
-                    className={`flex h-11 w-11 items-center justify-center rounded-full transition ${
-                      showPrompts
-                        ? "bg-[var(--paper-strong)] text-[#8a6f00]"
-                        : "text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)]"
-                    }`}
-                    title="Prompt library"
-                    aria-label="Prompt library"
-                  >
-                    <svg className="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 0 1 0 3.75H5.625a1.875 1.875 0 0 1 0-3.75Z" />
-                    </svg>
-                  </button>
-                </>
-              }
             />
           </div>
         </div>
@@ -5930,7 +6182,8 @@ export default function WorkspaceClient({
                     />
                   </svg>
                   <span>
-                    {isUploading ? "Elapsed" : "Done in"} {formatElapsed(uploadElapsedMs)}
+                    {isUploading ? "Elapsed" : "Done in"}{" "}
+                    {formatElapsed(uploadElapsedMs)}
                   </span>
                 </div>
               )}
@@ -5942,7 +6195,11 @@ export default function WorkspaceClient({
                   onClick={closeUploadModal}
                   className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors disabled:opacity-40"
                 >
-                  {allDoneOrError ? "Close" : isUploading ? "Cancel upload" : "Cancel"}
+                  {allDoneOrError
+                    ? "Close"
+                    : isUploading
+                      ? "Cancel upload"
+                      : "Cancel"}
                 </button>
                 {!allDoneOrError && (
                   <button
@@ -5961,6 +6218,14 @@ export default function WorkspaceClient({
           </div>
         </div>
       )}
+
+      {learnConfirmationAction ? (
+        <LearnConfirmationDialog
+          action={learnConfirmationAction}
+          onCancel={() => setLearnConfirmationAction(null)}
+          onConfirm={() => void handleConfirmLearnDestructiveAction()}
+        />
+      ) : null}
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
     </div>

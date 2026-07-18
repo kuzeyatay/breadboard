@@ -37,7 +37,7 @@ export type NormalizedAgentEvent =
         toolCallId: string;
         toolName: string;
         summary?: string;
-        arguments?: unknown;
+        location?: string;
       };
     }
   | {
@@ -49,7 +49,7 @@ export type NormalizedAgentEvent =
         toolName: string;
         success: boolean;
         summary?: string;
-        result?: unknown;
+        location?: string;
       };
     }
   | {
@@ -60,8 +60,28 @@ export type NormalizedAgentEvent =
         requestId: string;
         permission: string;
         description: string;
-        risk?: string;
-        details?: unknown;
+        risk: PermissionRisk;
+        affectedPaths: string[];
+        command?: string;
+        sourcePath?: string;
+        destinationPath?: string;
+        allowSession: boolean;
+      };
+    }
+  | {
+      type: "verification.updated";
+      sessionId: string;
+      timestamp: string;
+      payload: {
+        state:
+          | "verified"
+          | "partially_verified"
+          | "unverified"
+          | "contradicted"
+          | "not_applicable";
+        evidence: unknown[];
+        unsupportedClaims: string[];
+        assumptions: string[];
       };
     }
   | {
@@ -84,6 +104,16 @@ export type NormalizedAgentEvent =
     };
 
 export type NormalizedAgentEventType = NormalizedAgentEvent["type"];
+
+export type PermissionRisk =
+  | "write"
+  | "overwrite"
+  | "move"
+  | "delete"
+  | "execute"
+  | "network"
+  | "sensitive"
+  | "install";
 
 export interface RawOpenHarnessEvent {
   id?: string;
@@ -150,7 +180,7 @@ export function normalizeOpenHarnessEvent(
           type: "reasoning.status",
           sessionId,
           timestamp: timestamp(),
-          payload: { label: "Thinking", detail: delta },
+          payload: { label: "Thinking" },
         };
       }
       // Any text-ish field (text, content) is streamed assistant output.
@@ -183,7 +213,7 @@ export function normalizeOpenHarnessEvent(
             toolCallId,
             toolName,
             summary: asString(state?.title),
-            arguments: state?.input,
+            location: safeToolLocation(toolName, state),
           },
         };
       }
@@ -197,7 +227,7 @@ export function normalizeOpenHarnessEvent(
             toolName,
             success: status === "completed",
             summary: asString(state?.title),
-            result: status === "error" ? state?.error : state?.output,
+            location: safeToolLocation(toolName, state),
           },
         };
       }
@@ -215,7 +245,9 @@ export function normalizeOpenHarnessEvent(
           sessionId,
           messageId: asString(info.id),
           timestamp: timestamp(),
-          payload: { usage: (info as Record<string, unknown>).tokens ?? undefined },
+          payload: {
+            usage: (info as Record<string, unknown>).tokens ?? undefined,
+          },
         };
       }
       return null;
@@ -226,26 +258,49 @@ export function normalizeOpenHarnessEvent(
       const info = isRecord(props.info) ? props.info : props;
       const requestId = asString(info.id) ?? asString(props.id);
       if (!requestId) return null;
+      const permission =
+        asString(info.type) ?? asString(info.permission) ?? "unknown";
+      const description =
+        asString(info.title) ??
+        asString(info.description) ??
+        `Permission requested: ${permission}`;
+      const metadata = isRecord(info.metadata) ? info.metadata : {};
+      const paths = extractAffectedPaths(metadata, info.pattern);
+      const risk = permissionRisk(permission, description, metadata);
       return {
         type: "permission.requested",
         sessionId,
         timestamp: timestamp(),
         payload: {
           requestId,
-          permission: asString(info.type) ?? asString(info.permission) ?? "unknown",
-          description:
-            asString(info.title) ??
-            asString(info.description) ??
-            `Permission requested: ${asString(info.type) ?? "action"}`,
-          risk: asString(info.risk),
-          details: info.metadata ?? info.pattern,
+          permission,
+          description,
+          risk,
+          affectedPaths: paths,
+          command: asString(metadata.command),
+          sourcePath:
+            asString(metadata.sourcePath) ?? asString(metadata.source),
+          destinationPath:
+            asString(metadata.destinationPath) ??
+            asString(metadata.destination),
+          allowSession: !["overwrite", "delete", "sensitive"].includes(risk),
         },
       };
     }
 
     case "session.status": {
       const info = isRecord(props.info) ? props.info : props;
-      const rawStatus = asString(info.status) ?? asString(props.status);
+      const nestedStatus = isRecord(info.status)
+        ? info.status
+        : isRecord(props.status)
+          ? props.status
+          : undefined;
+      const rawStatus =
+        asString(info.status) ??
+        asString(info.type) ??
+        asString(props.status) ??
+        asString(nestedStatus?.type) ??
+        asString(nestedStatus?.status);
       return {
         type: "session.status",
         sessionId,
@@ -271,7 +326,8 @@ export function normalizeOpenHarnessEvent(
         sessionId,
         timestamp: timestamp(),
         payload: {
-          code: asString(error?.name) ?? asString(props.name) ?? "session_error",
+          code:
+            asString(error?.name) ?? asString(props.name) ?? "session_error",
           message:
             asString(error?.message) ??
             asString(errorData?.message) ??
@@ -287,7 +343,77 @@ export function normalizeOpenHarnessEvent(
   }
 }
 
-function mapStatus(raw: string | undefined): "idle" | "busy" | "waiting" | "aborted" | "failed" {
+function safeToolLocation(
+  toolName: string,
+  state: Record<string, unknown> | undefined,
+): string | undefined {
+  const input = isRecord(state?.input) ? state.input : {};
+  const name = toolName.toLowerCase();
+  const candidate =
+    name === "read" ||
+    name === "edit" ||
+    name === "write" ||
+    name === "patch" ||
+    name === "apply_patch"
+      ? (input.filePath ?? input.path)
+      : name === "glob" || name === "grep"
+        ? input.path
+        : name === "webfetch" || name === "fetch"
+          ? input.url
+          : name.startsWith("garden_")
+            ? (input.slug ?? input.pageSlug ?? input.gardenId)
+            : undefined;
+  const value = asString(candidate)?.trim();
+  return value && value.length <= 2_000 && !/[\r\n]/.test(value)
+    ? value
+    : undefined;
+}
+
+function extractAffectedPaths(
+  metadata: Record<string, unknown>,
+  pattern: unknown,
+): string[] {
+  const values = [
+    metadata.path,
+    metadata.filepath,
+    metadata.source,
+    metadata.sourcePath,
+    metadata.destination,
+    metadata.destinationPath,
+    ...(Array.isArray(metadata.paths) ? metadata.paths : []),
+    ...(Array.isArray(pattern) ? pattern : []),
+  ];
+  return [
+    ...new Set(
+      values.filter(
+        (value): value is string =>
+          typeof value === "string" && value.length < 1_000,
+      ),
+    ),
+  ].slice(0, 20);
+}
+
+function permissionRisk(
+  permission: string,
+  description: string,
+  metadata: Record<string, unknown>,
+): PermissionRisk {
+  const text =
+    `${permission} ${description} ${String(metadata.command ?? "")}`.toLowerCase();
+  if (/credential|secret|token|ssh|browser profile/.test(text))
+    return "sensitive";
+  if (/delete|remove|rm\b|clean\b/.test(text)) return "delete";
+  if (/overwrite|replace/.test(text)) return "overwrite";
+  if (/move|rename/.test(text)) return "move";
+  if (/install|dependency|package/.test(text)) return "install";
+  if (/web|network|fetch|http|mcp/.test(text)) return "network";
+  if (/bash|shell|execute|run /.test(text)) return "execute";
+  return "write";
+}
+
+function mapStatus(
+  raw: string | undefined,
+): "idle" | "busy" | "waiting" | "aborted" | "failed" {
   switch (raw) {
     case "idle":
       return "idle";
@@ -308,6 +434,8 @@ function mapStatus(raw: string | undefined): "idle" | "busy" | "waiting" | "abor
 }
 
 /** Serialize a normalized event as an SSE `data:` frame. */
-export function encodeSseEvent(event: NormalizedAgentEvent | { type: string; [k: string]: unknown }): string {
+export function encodeSseEvent(
+  event: NormalizedAgentEvent | { type: string; [k: string]: unknown },
+): string {
   return `data: ${JSON.stringify(event)}\n\n`;
 }

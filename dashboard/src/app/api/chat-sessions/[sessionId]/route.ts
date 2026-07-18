@@ -126,14 +126,33 @@ export async function PATCH(
     }
 
     if (messages) {
+      const runtimeMetadata = db.prepare(
+        `SELECT role, content, tool_calls, permission_decisions, runtime_error, runtime_status
+         FROM chat_messages WHERE session_id = ? AND (tool_calls IS NOT NULL OR permission_decisions IS NOT NULL OR runtime_status IS NOT NULL) ORDER BY order_index`,
+      ).all(sessionAccess.id) as Array<{
+        role: string;
+        content: string;
+        tool_calls: string | null;
+        permission_decisions: string | null;
+        runtime_error: string | null;
+        runtime_status: string | null;
+      }>;
+      const metadataByMessage = new Map<string, typeof runtimeMetadata>();
+      for (const metadata of runtimeMetadata) {
+        const key = `${metadata.role}\u0000${metadata.content}`;
+        metadataByMessage.set(key, [...(metadataByMessage.get(key) ?? []), metadata]);
+      }
       db.prepare("DELETE FROM chat_messages WHERE session_id = ?").run(
         sessionAccess.id,
       );
       const insert = db.prepare(
-        `INSERT INTO chat_messages (session_id, role, content, sources, token_usage, order_index)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_messages
+           (session_id, role, content, sources, token_usage, tool_calls, permission_decisions, runtime_error, runtime_status, order_index)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       messages.forEach((message, index) => {
+        const key = `${message.role}\u0000${message.content}`;
+        const prior = metadataByMessage.get(key)?.shift();
         insert.run(
           sessionAccess.id,
           message.role,
@@ -142,6 +161,10 @@ export async function PATCH(
             ? JSON.stringify(message.sources)
             : null,
           message.usage ? JSON.stringify(message.usage) : null,
+          prior?.tool_calls ?? null,
+          prior?.permission_decisions ?? null,
+          prior?.runtime_error ?? null,
+          prior?.runtime_status ?? null,
           index,
         );
       });

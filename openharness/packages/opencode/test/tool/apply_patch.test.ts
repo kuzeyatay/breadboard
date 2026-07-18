@@ -143,6 +143,7 @@ describe("tool.apply_patch freeform", () => {
         const addFile = permissionCall.metadata.files.find((f) => f.type === "add")
         expect(addFile?.relativePath).toBe("nested/new.txt")
         expect(addFile?.patch).toContain("+created")
+        expect(Object.hasOwn(addFile ?? {}, "movePath")).toBe(false)
 
         const updateFile = permissionCall.metadata.files.find((f) => f.type === "update")
         expect(updateFile?.patch).toContain("-line2")

@@ -44,6 +44,13 @@ export interface OpenHarnessModel {
   name?: string;
 }
 
+export type OpenHarnessMcpStatus =
+  | { status: "connected" }
+  | { status: "disabled" }
+  | { status: "failed"; error?: string }
+  | { status: "needs_auth" }
+  | { status: "needs_client_registration" };
+
 type QueryValue = string | number | boolean | undefined;
 
 function buildUrl(config: OpenHarnessConfig, pathname: string, query?: Record<string, QueryValue>): string {
@@ -150,10 +157,60 @@ export async function fetchModels(
   return models;
 }
 
+export async function fetchMcpStatus(
+  config: OpenHarnessConfig,
+  directory: string,
+): Promise<Record<string, OpenHarnessMcpStatus>> {
+  return request(config, "GET", "/mcp", { query: { directory } });
+}
+
+export async function fetchToolIds(config: OpenHarnessConfig, directory: string): Promise<string[]> {
+  const result = await request<unknown>(config, "GET", "/experimental/tool/ids", {
+    query: { directory },
+  });
+  return Array.isArray(result) ? result.filter((value): value is string => typeof value === "string") : [];
+}
+
+export type OpenHarnessMcpConfig =
+  | { type: "local"; command: string[]; cwd?: string; environment?: Record<string, string>; enabled?: boolean; timeout?: number }
+  | { type: "remote"; url: string; headers?: Record<string, string>; oauth?: false | Record<string, never>; enabled?: boolean; timeout?: number };
+
+export async function addMcpServer(
+  config: OpenHarnessConfig,
+  directory: string,
+  name: string,
+  mcp: OpenHarnessMcpConfig,
+): Promise<Record<string, OpenHarnessMcpStatus>> {
+  return request(config, "POST", "/mcp", { query: { directory }, body: { name, config: mcp } });
+}
+
+export async function setMcpServerConnected(
+  config: OpenHarnessConfig,
+  directory: string,
+  name: string,
+  connected: boolean,
+): Promise<boolean> {
+  return request(config, "POST", `/mcp/${encodeURIComponent(name)}/${connected ? "connect" : "disconnect"}`, { query: { directory } });
+}
+
+export async function startMcpAuthentication(
+  config: OpenHarnessConfig,
+  directory: string,
+  name: string,
+): Promise<{ authorizationUrl: string; oauthState: string }> {
+  return request(config, "POST", `/mcp/${encodeURIComponent(name)}/auth`, { query: { directory } });
+}
+
 export interface CreateSessionBody {
   title?: string;
   agent?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface OpenHarnessPermissionRule {
+  permission: string;
+  pattern: string;
+  action: "allow" | "ask" | "deny";
 }
 
 export async function createSession(
@@ -168,6 +225,18 @@ export async function createSession(
   return session;
 }
 
+export async function updateSessionPermissions(
+  config: OpenHarnessConfig,
+  directory: string,
+  sessionId: string,
+  permission: OpenHarnessPermissionRule[],
+): Promise<void> {
+  await request(config, "PATCH", `/session/${encodeURIComponent(sessionId)}`, {
+    query: { directory },
+    body: { permission },
+  });
+}
+
 export interface PromptPart {
   type: "text";
   text: string;
@@ -178,6 +247,7 @@ export interface PromptBody {
   model?: { providerID: string; modelID: string };
   variant?: string;
   system?: string;
+  tools?: Record<string, boolean>;
   parts: PromptPart[];
   messageID?: string;
 }

@@ -37,6 +37,7 @@ export async function POST(request: Request) {
     await getOpenHarnessGateway().abortSession({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
     });
     markStatus(session, "aborted");
     recordAuditEvent({

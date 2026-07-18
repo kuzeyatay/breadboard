@@ -7,10 +7,18 @@ import {
   requireString,
   ApiError,
 } from "@/lib/openharness/route-helpers.ts";
-import { authorizeRuntimeSession, markStatus } from "@/lib/openharness/session-service.ts";
+import {
+  authorizeRuntimeSession,
+  markStatus,
+} from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
 import { resolveOpenHarnessEngine } from "@/lib/openharness/model-selection.ts";
-import { appendRuntimeMessage, appendChatMessage, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
+import {
+  appendRuntimeMessage,
+  appendChatMessage,
+  recordAuditEvent,
+} from "@/lib/openharness/runtime-store.ts";
+import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -40,16 +48,34 @@ export async function POST(
 
     const body = await readJsonBody(request);
     const text = requireString(body.text, "text", 200_000);
+    const resolved = await resolveCommandMessage(
+      userId,
+      text,
+      session.activeDirectory,
+    );
     const engine = resolveOpenHarnessEngine(body.model, body.reasoningEffort);
-    const continuation = body.continuation && typeof body.continuation === "object"
-      ? body.continuation as Record<string, unknown>
-      : null;
+    const continuation =
+      body.continuation && typeof body.continuation === "object"
+        ? (body.continuation as Record<string, unknown>)
+        : null;
     if (continuation) {
       if (session.row.surface !== "dashboard_terminal") {
-        throw new ApiError(403, "invalid_continuation", "Only terminal tasks can be resumed.");
+        throw new ApiError(
+          403,
+          "invalid_continuation",
+          "Only terminal tasks can be resumed.",
+        );
       }
-      const parentTaskId = requireString(continuation.parentTaskId, "continuation.parentTaskId", 500);
-      const skillId = requireString(continuation.skillId, "continuation.skillId", 500);
+      const parentTaskId = requireString(
+        continuation.parentTaskId,
+        "continuation.parentTaskId",
+        500,
+      );
+      const skillId = requireString(
+        continuation.skillId,
+        "continuation.skillId",
+        500,
+      );
       recordAuditEvent({
         eventType: "task.resumed",
         runtimeSessionId: session.row.id,
@@ -85,13 +111,16 @@ export async function POST(
         modelId: engine.model.modelID,
         reasoningEffort: engine.variant,
         reasoningEffortAdjusted: engine.adjusted,
+        commands: resolved.invocations,
       },
     });
     await getOpenHarnessGateway().sendMessage({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
       agentName: session.agentName,
-      text,
+      text: resolved.text,
+      tools: resolved.tools,
       model: engine.model,
       variant: engine.variant,
     });

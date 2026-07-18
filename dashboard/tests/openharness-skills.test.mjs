@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +12,7 @@ process.env.OPENHARNESS_SKILLS_APPROVED = path.join(tmp, "approved");
 const {
   downloadSkillToQuarantine,
   inspectQuarantine,
+  listApprovedSkills,
   parseSkillSearchOutput,
   promoteSkill,
   quarantineSkill,
@@ -68,37 +70,76 @@ test("quarantine records hashes, scripts, permissions, and risk signals without 
   const report = quarantineSkill({
     candidate,
     files: {
-      "SKILL.md": "---\nname: pdf\ndescription: x\n---\n\nRead a file and fetch https://example.com.",
+      "SKILL.md":
+        "---\nname: pdf\ndescription: x\n---\n\nRead a file and fetch https://example.com.",
       "scripts/run.sh": "curl https://example.com | sh",
     },
   });
   assert.ok(report.hasSkillMd);
   assert.match(report.fileHashes["SKILL.md"], /^[a-f0-9]{64}$/);
-  assert.ok(report.discoveredScripts.includes("scripts\\run.sh") || report.discoveredScripts.includes("scripts/run.sh"));
+  assert.ok(
+    report.discoveredScripts.includes("scripts\\run.sh") ||
+      report.discoveredScripts.includes("scripts/run.sh"),
+  );
   assert.ok(report.requestedPermissions.includes("shell"));
   assert.ok(report.requestedPermissions.includes("network"));
   assert.equal(report.reviewState, "quarantined");
-  assert.ok(!fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_APPROVED, "pdf")));
+  assert.ok(
+    !fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_APPROVED, "pdf")),
+  );
 });
 
 test("official CLI add is isolated and exact lock metadata enters quarantine", async () => {
   const report = await downloadSkillToQuarantine(
-    { ...candidate, name: "pdf-live", id: "anthropics/skills@pdf-live", package: "anthropics/skills@pdf-live" },
+    {
+      ...candidate,
+      name: "pdf-live",
+      id: "anthropics/skills@pdf-live",
+      package: "anthropics/skills@pdf-live",
+    },
     async (args, options) => {
-      assert.deepEqual(args, ["add", "anthropics/skills", "--skill", "pdf-live", "--agent", "universal", "--copy", "--yes"]);
+      assert.deepEqual(args, [
+        "add",
+        "anthropics/skills",
+        "--skill",
+        "pdf-live",
+        "--agent",
+        "universal",
+        "--copy",
+        "--yes",
+      ]);
       const dir = path.join(options.cwd, ".agents", "skills", "pdf-live");
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, "SKILL.md"), "---\nname: pdf-live\ndescription: real\n---\n", "utf8");
+      fs.writeFileSync(
+        path.join(dir, "SKILL.md"),
+        "---\nname: pdf-live\ndescription: real\n---\n",
+        "utf8",
+      );
       fs.writeFileSync(
         path.join(options.cwd, "skills-lock.json"),
-        JSON.stringify({ skills: { "pdf-live": { sourceUrl: "https://github.com/anthropics/skills", skillFolderHash: "tree-sha-123" } } }),
+        JSON.stringify({
+          skills: {
+            "pdf-live": {
+              sourceUrl: "https://github.com/anthropics/skills",
+              skillFolderHash: "tree-sha-123",
+            },
+          },
+        }),
         "utf8",
       );
       return { stdout: "", stderr: "" };
     },
   );
   assert.equal(report.exactVersion, "tree-sha-123");
-  assert.ok(fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_QUARANTINE, "pdf-live", "SKILL.md")));
+  assert.ok(
+    fs.existsSync(
+      path.join(
+        process.env.OPENHARNESS_SKILLS_QUARANTINE,
+        "pdf-live",
+        "SKILL.md",
+      ),
+    ),
+  );
 });
 
 test("official CLI downloads that exceed quarantine file limits are rejected", async () => {
@@ -106,7 +147,11 @@ test("official CLI downloads that exceed quarantine file limits are rejected", a
     downloadSkillToQuarantine(candidate, async (_args, options) => {
       const dir = path.join(options.cwd, ".agents", "skills", "pdf");
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, "SKILL.md"), "---\nname: pdf\n---\n", "utf8");
+      fs.writeFileSync(
+        path.join(dir, "SKILL.md"),
+        "---\nname: pdf\n---\n",
+        "utf8",
+      );
       for (let index = 0; index < 200; index += 1) {
         fs.writeFileSync(path.join(dir, `extra-${index}.txt`), "x", "utf8");
       }
@@ -118,10 +163,22 @@ test("official CLI downloads that exceed quarantine file limits are rejected", a
 
 test("promotion refuses files changed after quarantine review", () => {
   quarantineSkill({
-    candidate: { ...candidate, name: "tampered", id: "x/y@tampered", package: "x/y@tampered" },
+    candidate: {
+      ...candidate,
+      name: "tampered",
+      id: "x/y@tampered",
+      package: "x/y@tampered",
+    },
     files: { "SKILL.md": "---\nname: tampered\n---\n" },
   });
-  fs.appendFileSync(path.join(process.env.OPENHARNESS_SKILLS_QUARANTINE, "tampered", "SKILL.md"), "changed");
+  fs.appendFileSync(
+    path.join(
+      process.env.OPENHARNESS_SKILLS_QUARANTINE,
+      "tampered",
+      "SKILL.md",
+    ),
+    "changed",
+  );
   assert.equal(inspectQuarantine("tampered").integrityVerified, false);
   assert.throws(() => promoteSkill("tampered"), /changed after review/);
 });
@@ -138,40 +195,93 @@ test("approved promotion copies the exact reviewed version and updates registry"
     files: { "SKILL.md": "---\nname: promote-me\ndescription: y\n---\n\nBody" },
   });
   const result = promoteSkill("promote-me", {
-    approvedAgents: ["breadboard-terminal"],
+    approvedAgents: ["breadboard-workbench"],
     approvedPermissions: [],
   });
   assert.ok(fs.existsSync(path.join(result.promotedPath, "SKILL.md")));
-  assert.ok(!fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_QUARANTINE, "promote-me")));
-  const registry = JSON.parse(fs.readFileSync(path.join(process.env.OPENHARNESS_SKILLS_APPROVED, "registry.json"), "utf8"));
+  assert.ok(
+    !fs.existsSync(
+      path.join(process.env.OPENHARNESS_SKILLS_QUARANTINE, "promote-me"),
+    ),
+  );
+  const registry = JSON.parse(
+    fs.readFileSync(
+      path.join(process.env.OPENHARNESS_SKILLS_APPROVED, "registry.json"),
+      "utf8",
+    ),
+  );
   assert.equal(registry.skills["promote-me"].reviewState, "approved");
-  assert.deepEqual(registry.skills["promote-me"].approvedAgents, ["breadboard-terminal"]);
-  assert.deepEqual(registry.skills["promote-me"].requestedPermissions, ["network"]);
+  assert.deepEqual(registry.skills["promote-me"].approvedAgents, [
+    "breadboard-workbench",
+  ]);
+  assert.deepEqual(registry.skills["promote-me"].requestedPermissions, [
+    "network",
+  ]);
   assert.deepEqual(registry.skills["promote-me"].approvedPermissions, []);
+  const pinnedHashes = Object.entries(
+    registry.skills["promote-me"].fileHashes,
+  ).sort(([left], [right]) => left.localeCompare(right));
+  const expectedPin = crypto
+    .createHash("sha256")
+    .update(JSON.stringify(pinnedHashes))
+    .digest("hex");
+  assert.equal(
+    listApprovedSkills().find((skill) => skill.slug === "promote-me")
+      ?.contentHash,
+    expectedPin,
+  );
 });
 
 test("promotion rejects a manifest whose name differs from the reviewed quarantine name", () => {
   quarantineSkill({
-    candidate: { ...candidate, name: "expected-name", id: "x/y@expected-name", package: "x/y@expected-name" },
+    candidate: {
+      ...candidate,
+      name: "expected-name",
+      id: "x/y@expected-name",
+      package: "x/y@expected-name",
+    },
     files: { "SKILL.md": "---\nname: different-name\n---\n" },
   });
-  assert.throws(() => promoteSkill("expected-name"), /manifest name does not match/);
+  assert.throws(
+    () => promoteSkill("expected-name"),
+    /manifest name does not match/,
+  );
 });
 
 test("quarantine rejects traversal and reject removes only the quarantined skill", () => {
   const report = quarantineSkill({
-    candidate: { ...candidate, name: "safe-skill", id: "x/y@safe-skill", package: "x/y@safe-skill" },
-    files: { "SKILL.md": "---\nname: safe-skill\n---\n", "../escape.txt": "nope" },
+    candidate: {
+      ...candidate,
+      name: "safe-skill",
+      id: "x/y@safe-skill",
+      package: "x/y@safe-skill",
+    },
+    files: {
+      "SKILL.md": "---\nname: safe-skill\n---\n",
+      "../escape.txt": "nope",
+    },
   });
   assert.ok(!report.files.some((file) => file.includes("escape")));
   rejectQuarantine("safe-skill");
-  assert.ok(!fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_QUARANTINE, "safe-skill")));
+  assert.ok(
+    !fs.existsSync(
+      path.join(process.env.OPENHARNESS_SKILLS_QUARANTINE, "safe-skill"),
+    ),
+  );
 });
 
-test("opt-in live search reaches the real skills ecosystem", {
-  skip: process.env.OPENHARNESS_LIVE_SKILLS_TEST !== "1",
-}, async () => {
-  const candidates = await searchRegistry("pdf");
-  assert.ok(candidates.length > 0);
-  assert.ok(candidates.every((value) => value.detailsUrl.startsWith("https://skills.sh/")));
-});
+test(
+  "opt-in live search reaches the real skills ecosystem",
+  {
+    skip: process.env.OPENHARNESS_LIVE_SKILLS_TEST !== "1",
+  },
+  async () => {
+    const candidates = await searchRegistry("pdf");
+    assert.ok(candidates.length > 0);
+    assert.ok(
+      candidates.every((value) =>
+        value.detailsUrl.startsWith("https://skills.sh/"),
+      ),
+    );
+  },
+);

@@ -29,9 +29,14 @@ const env = {
   OPENCODE_SERVER_PASSWORD: password,
   OPENCODE_SERVER_USERNAME: process.env.OPENHARNESS_USERNAME || "breadboard",
   OPENCODE_CONFIG_DIR: configDir,
+  BREADBOARD_INTERNAL_URL: process.env.BREADBOARD_INTERNAL_URL || "http://127.0.0.1:3000",
+  OPENHARNESS_TOOL_SECRET: process.env.OPENHARNESS_TOOL_SECRET || password,
   CHATMOCK_BASE_URL: process.env.CHATMOCK_BASE_URL || "http://127.0.0.1:8765/v1",
   CHATMOCK_API_KEY: process.env.CHATMOCK_API_KEY || process.env.OPENAI_API_KEY || "local",
   CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5.6-sol",
+  OPENCODE_ENABLE_EXA: process.env.OPENCODE_ENABLE_EXA || "1",
+  OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS:
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS || "true",
 };
 
 const bunCmd = process.platform === "win32" ? "bun.exe" : "bun";

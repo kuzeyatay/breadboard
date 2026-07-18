@@ -15,25 +15,39 @@ import {
   recordAuditEvent,
 } from "./runtime-store.ts";
 import type { AuthorizedRuntimeSession } from "./session-service.ts";
+import {
+  assessVerification,
+  evidenceKindForTool,
+  type EvidenceRecord,
+  type VerificationSummary,
+} from "./evidence.ts";
 
 function persistAssistantOnce(
   session: AuthorizedRuntimeSession,
   content: string,
   sources: string[],
   toolCalls: unknown[],
+  verification: VerificationSummary,
+  runtimeStatus: string,
+  tokenUsage?: unknown,
 ): void {
   if (!content.trim() && toolCalls.length === 0) return;
   if (session.row.chat_session_id) {
     const last = db
-      .prepare("SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY order_index DESC LIMIT 1")
-      .get(session.row.chat_session_id) as { role: string; content: string } | undefined;
+      .prepare(
+        "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY order_index DESC LIMIT 1",
+      )
+      .get(session.row.chat_session_id) as
+      { role: string; content: string } | undefined;
     if (last && last.role === "assistant" && last.content === content) return;
     appendChatMessage({
       chatSessionId: session.row.chat_session_id,
       role: "assistant",
       content,
       sources,
-      toolCalls: toolCalls.length ? toolCalls : undefined,
+      tokenUsage,
+      toolCalls: { calls: toolCalls, verification },
+      runtimeStatus,
     });
     return;
   }
@@ -45,7 +59,9 @@ function persistAssistantOnce(
     role: "assistant",
     content,
     sources,
-    toolCalls: toolCalls.length ? toolCalls : undefined,
+    tokenUsage,
+    toolCalls: { calls: toolCalls, verification },
+    runtimeStatus,
   });
 }
 
@@ -62,24 +78,52 @@ export function buildSessionEventStream(
   const gateway = getOpenHarnessGateway();
   const encoder = new TextEncoder();
   const abortController = new AbortController();
-  signal.addEventListener("abort", () => abortController.abort());
+  let runtimeAbortSent = false;
+  const abortRuntime = () => {
+    abortController.abort();
+    if (runtimeAbortSent) return;
+    runtimeAbortSent = true;
+    void gateway
+      .abortSession({
+        openHarnessSessionId: session.openHarnessSessionId,
+        workspaceKey: session.workspaceKey,
+        directory: session.activeDirectory,
+      })
+      .catch(() => undefined);
+  };
+  signal.addEventListener("abort", abortRuntime, { once: true });
 
   let assistantText = "";
   const sources: string[] = [];
   const toolCalls: Array<Record<string, unknown>> = [];
+  const evidence: EvidenceRecord[] = [];
   let persisted = false;
+  let finalStatus = "idle";
+  let tokenUsage: unknown;
 
   const readable = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const emit = (event: NormalizedAgentEvent | { type: string; [k: string]: unknown }) => {
+      const emit = (
+        event: NormalizedAgentEvent | { type: string; [k: string]: unknown },
+      ) => {
         controller.enqueue(encoder.encode(encodeSseEvent(event)));
       };
       const finalize = (status: string) => {
         if (persisted) return;
         persisted = true;
+        finalStatus = status;
         setRuntimeStatus(session.row.id, status);
+        const verification = assessVerification(assistantText, evidence);
         try {
-          persistAssistantOnce(session, assistantText, sources, toolCalls);
+          persistAssistantOnce(
+            session,
+            assistantText,
+            sources,
+            toolCalls,
+            verification,
+            status,
+            tokenUsage,
+          );
         } catch {
           // Persistence is best-effort; never crash the stream.
         }
@@ -87,31 +131,62 @@ export function buildSessionEventStream(
 
       try {
         for await (const event of gateway.subscribeToSession(
-          { openHarnessSessionId: session.openHarnessSessionId, workspaceKey: session.workspaceKey },
+          {
+            openHarnessSessionId: session.openHarnessSessionId,
+            workspaceKey: session.workspaceKey,
+            directory: session.activeDirectory,
+          },
           abortController.signal,
           () => controller.enqueue(encoder.encode(": connected\n\n")),
         )) {
-          if (event.type === "assistant.delta") assistantText += event.payload.text;
+          if (event.type === "assistant.delta")
+            assistantText += event.payload.text;
+          else if (event.type === "assistant.completed")
+            tokenUsage = event.payload.usage;
           else if (event.type === "tool.started") {
             recordAuditEvent({
               eventType: "tool.requested",
               runtimeSessionId: session.row.id,
               userId: session.row.user_id,
               gardenId: session.row.garden_id,
-              payload: { toolName: event.payload.toolName, toolCallId: event.payload.toolCallId },
+              payload: {
+                toolName: event.payload.toolName,
+                toolCallId: event.payload.toolCallId,
+              },
             });
           } else if (event.type === "tool.completed") {
             toolCalls.push({
+              toolCallId: event.payload.toolCallId,
               toolName: event.payload.toolName,
               success: event.payload.success,
               summary: event.payload.summary,
+              completedAt: event.timestamp,
+            });
+            const inferredKind =
+              /(?:^|\s)(?:test|lint|typecheck)(?:\s|$)/i.test(
+                event.payload.summary ?? "",
+              )
+                ? "test"
+                : evidenceKindForTool(event.payload.toolName);
+            evidence.push({
+              id: `evidence-${event.payload.toolCallId}`,
+              kind: inferredKind,
+              title: event.payload.summary ?? event.payload.toolName,
+              location: event.payload.location,
+              success: event.payload.success,
+              toolCallId: event.payload.toolCallId,
+              timestamp: event.timestamp,
+              details: { toolName: event.payload.toolName },
             });
             recordAuditEvent({
               eventType: "tool.completed",
               runtimeSessionId: session.row.id,
               userId: session.row.user_id,
               gardenId: session.row.garden_id,
-              payload: { toolName: event.payload.toolName, success: event.payload.success },
+              payload: {
+                toolName: event.payload.toolName,
+                success: event.payload.success,
+              },
             });
           } else if (event.type === "permission.requested") {
             recordAuditEvent({
@@ -119,18 +194,30 @@ export function buildSessionEventStream(
               runtimeSessionId: session.row.id,
               userId: session.row.user_id,
               gardenId: session.row.garden_id,
-              payload: { requestId: event.payload.requestId, permission: event.payload.permission },
+              payload: {
+                requestId: event.payload.requestId,
+                permission: event.payload.permission,
+              },
             });
           }
           emit(event);
 
           if (event.type === "session.status") {
             if (event.payload.status === "idle") {
+              emit({
+                type: "verification.updated",
+                sessionId: session.openHarnessSessionId,
+                timestamp: new Date().toISOString(),
+                payload: assessVerification(assistantText, evidence),
+              });
               finalize("idle");
               emit({ type: "done" });
               break;
             }
-            if (event.payload.status === "aborted" || event.payload.status === "failed") {
+            if (
+              event.payload.status === "aborted" ||
+              event.payload.status === "failed"
+            ) {
               finalize(event.payload.status);
               emit({ type: "done" });
               break;
@@ -138,6 +225,12 @@ export function buildSessionEventStream(
           }
         }
       } catch (error) {
+        finalStatus = abortController.signal.aborted ? "aborted" : "failed";
+        if (abortController.signal.aborted) {
+          finalize("aborted");
+          emit({ type: "cancelled" });
+          return;
+        }
         emit({
           type: "error",
           sessionId: session.openHarnessSessionId,
@@ -157,18 +250,26 @@ export function buildSessionEventStream(
         });
       } finally {
         recordAuditEvent({
-          eventType: "message.completed",
+          eventType:
+            finalStatus === "aborted"
+              ? "session.cancelled"
+              : finalStatus === "failed"
+                ? "message.failed"
+                : "message.completed",
           runtimeSessionId: session.row.id,
           userId: session.row.user_id,
           gardenId: session.row.garden_id,
-          payload: { characterCount: assistantText.length, toolCalls: toolCalls.length },
+          payload: {
+            characterCount: assistantText.length,
+            toolCalls: toolCalls.length,
+          },
         });
-        finalize("idle");
+        finalize(finalStatus);
         controller.close();
       }
     },
     cancel() {
-      abortController.abort();
+      abortRuntime();
     },
   });
 

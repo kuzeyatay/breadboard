@@ -48,6 +48,10 @@ function startFakeServer() {
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ id: "oh_session_1" }));
       }
+      if (url.pathname.startsWith("/session/") && req.method === "PATCH") {
+        res.writeHead(204);
+        return res.end();
+      }
       if (url.pathname.endsWith("/prompt_async") && req.method === "POST") {
         res.writeHead(204);
         return res.end();
@@ -141,6 +145,7 @@ test("createSession routes a workspace directory and picks the garden agent", as
       sessionKey: "abc",
       gardenKey: "physics",
       title: "Garden chat",
+      filesystemMode: "restricted",
     });
     assert.equal(session.openHarnessSessionId, "oh_session_1");
     assert.equal(session.agentName, "breadboard-garden");
