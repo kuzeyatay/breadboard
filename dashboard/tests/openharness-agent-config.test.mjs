@@ -49,8 +49,8 @@ test("the common workbench exposes general tools with guarded mutation", () => {
     assert.equal(fm.tools[tool], true, `workbench enables ${tool}`);
   }
   assert.equal(fm.permission.edit, "ask");
-  assert.equal(fm.permission.webfetch, "allow");
-  assert.equal(fm.permission.websearch, "allow");
+  assert.equal(fm.permission.webfetch, "ask");
+  assert.equal(fm.permission.websearch, "ask");
   assert.equal(fm.permission.bash["git push*"], "deny");
   assert.equal(fm.permission.bash["rm -rf*"], "deny");
   assert.equal(fm.permission.bash["git status*"], "allow");
@@ -59,6 +59,14 @@ test("the common workbench exposes general tools with guarded mutation", () => {
   assert.equal(fm.permission.read["**/*credentials*"], "ask");
   assert.equal(fm.tools.question, false);
   assert.equal(fm.permission.question, "deny");
+});
+
+test("permission decisions never become another chat turn", () => {
+  const workbench = rawAgent("breadboard-workbench");
+  assert.match(workbench, /never ask for tool approval through prose/i);
+  assert.match(workbench, /invoke the intended tool exactly once/i);
+  assert.match(workbench, /dedicated permission UI/i);
+  assert.match(workbench, /If a tool is denied or unavailable/i);
 });
 
 test("all chat surfaces select the same capable base agent", () => {

@@ -169,12 +169,18 @@ test("sendMessage posts a text part to prompt_async", async () => {
       text: "hello",
       model: { providerID: "chatmock", modelID: "gpt-5.6-terra" },
       variant: "xhigh",
+      system: "Surface-specific context.",
     });
     const promptReq = state.requests.find((r) => r.pathname.endsWith("/prompt_async"));
     assert.equal(promptReq.body.parts[0].text, "hello");
     assert.equal(promptReq.body.agent, "breadboard-terminal");
     assert.deepEqual(promptReq.body.model, { providerID: "chatmock", modelID: "gpt-5.6-terra" });
     assert.equal(promptReq.body.variant, "xhigh");
+    assert.match(promptReq.body.system, /^Surface-specific context\./);
+    assert.match(promptReq.body.system, /Never ask for tool permission in prose/);
+    assert.match(promptReq.body.system, /overrides any agent guidance/);
+    assert.match(promptReq.body.system, /invoke it directly exactly once/);
+    assert.match(promptReq.body.system, /dedicated permission UI/);
   } finally {
     server.close();
   }
