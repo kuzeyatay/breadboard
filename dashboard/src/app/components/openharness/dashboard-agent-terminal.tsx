@@ -155,8 +155,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     const text = input.trim();
     if (!text || runtimeUnavailable) return;
     setInput("");
-    void session.send(text);
-  }, [input, runtimeUnavailable, session]);
+    void session.send(text, { model, reasoningEffort });
+  }, [input, model, reasoningEffort, runtimeUnavailable, session]);
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
     event.preventDefault();
@@ -256,7 +256,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
             setSkillsOpen(false);
             await session.send(
               `The reviewed skill ${continuation.skillId} is now approved with permissions: ${continuation.approvedPermissions.join(", ") || "none"}. Resume parent task ${continuation.parentTaskId} and use it only for ${continuation.capability}.`,
-              { continuation },
+              { continuation, model, reasoningEffort },
             );
           }}
         />

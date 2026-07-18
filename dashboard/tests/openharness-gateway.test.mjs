@@ -162,10 +162,14 @@ test("sendMessage posts a text part to prompt_async", async () => {
       workspaceKey: "terminal/abc",
       agentName: "breadboard-terminal",
       text: "hello",
+      model: { providerID: "chatmock", modelID: "gpt-5.6-terra" },
+      variant: "xhigh",
     });
     const promptReq = state.requests.find((r) => r.pathname.endsWith("/prompt_async"));
     assert.equal(promptReq.body.parts[0].text, "hello");
     assert.equal(promptReq.body.agent, "breadboard-terminal");
+    assert.deepEqual(promptReq.body.model, { providerID: "chatmock", modelID: "gpt-5.6-terra" });
+    assert.equal(promptReq.body.variant, "xhigh");
   } finally {
     server.close();
   }

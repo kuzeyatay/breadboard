@@ -64,6 +64,7 @@ export interface SendAgentMessageInput {
   agentName: string;
   text: string;
   model?: { providerID: string; modelID: string };
+  variant?: string;
   system?: string;
   messageId?: string;
 }
@@ -146,6 +147,7 @@ export class OpenHarnessGateway {
       agent: input.agentName,
       parts: [{ type: "text", text: input.text }],
       ...(input.model ? { model: input.model } : {}),
+      ...(input.variant ? { variant: input.variant } : {}),
       ...(input.system ? { system: input.system } : {}),
       ...(input.messageId ? { messageID: input.messageId } : {}),
     };

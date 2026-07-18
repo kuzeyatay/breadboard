@@ -112,6 +112,21 @@ test("maps session.error to error", () => {
   assert.equal(event?.payload.message, "bad");
 });
 
+test("extracts the nested OpenHarness API error message", () => {
+  const event = normalizeOpenHarnessEvent(
+    {
+      type: "session.error",
+      properties: {
+        sessionID: "s1",
+        error: { name: "APIError", data: { message: "Upstream error", statusCode: 400 } },
+      },
+    },
+    "s1",
+  );
+  assert.equal(event?.type, "error");
+  assert.equal(event?.payload.message, "Upstream error");
+});
+
 test("returns null for unrelated event types", () => {
   assert.equal(normalizeOpenHarnessEvent({ type: "server.heartbeat", properties: {} }, "s1"), null);
 });
