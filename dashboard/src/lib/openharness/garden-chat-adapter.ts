@@ -3,6 +3,7 @@
 // an authorized, garden-scoped OpenHarness session.
 
 import db from "../db.ts";
+import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
 import { requireUserId } from "../server-auth.ts";
 import { getOpenHarnessGateway } from "./gateway.ts";
 import { resolveOpenHarnessEngine } from "./model-selection.ts";
@@ -171,6 +172,10 @@ function legacyGardenEventStream(
         for (let next = await firstEvent; !next.done; next = await events.next()) {
           const event = next.value;
           if (event.type === "assistant.delta") emit({ type: "delta", text: event.payload.text });
+          if (event.type === "assistant.completed") {
+            const usage = normalizeChatTokenUsage(event.payload.usage);
+            if (usage) emit({ type: "usage", usage });
+          }
           if (event.type === "reasoning.status" && event.payload.detail) {
             emit({ type: "thinking", text: event.payload.detail });
           }

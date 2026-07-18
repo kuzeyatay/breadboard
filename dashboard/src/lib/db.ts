@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { ensureVideoTranscriptionSchema } from "./scriberr/job-store";
 
 const DB_PATH = path.join(process.cwd(), "db", "brain.db");
 
@@ -404,6 +405,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_clusters_visibility_popularity
     ON clusters(visibility, view_count DESC, created_at DESC);
 `);
+
+// --- Video transcription (Scriberr integration) ----------------------------
+// Additive table for asynchronous video transcription jobs; the schema lives
+// with its store in src/lib/scriberr/job-store.ts and is safe to re-apply.
+ensureVideoTranscriptionSchema(db);
 
 const initialInviteCode = process.env.SECOND_BRAIN_INITIAL_INVITE_CODE?.replace(
   /[^a-z0-9]/gi,

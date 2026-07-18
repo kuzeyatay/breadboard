@@ -34,6 +34,7 @@ test("garden adapter opens the event stream before prompting and aborts the serv
   assert.match(adapter, /gateway\.abortSession/);
   assert.match(adapter, /resolveOpenHarnessEngine\(payload\.model, payload\.reasoningEffort\)/);
   assert.match(adapter, /model:\s*engine\.model,[\s\S]*variant:\s*engine\.variant/);
+  assert.match(adapter, /event\.type === "assistant\.completed"[\s\S]*type: "usage", usage/);
 });
 
 test("terminal required mode cannot render the direct KnowledgeTerminal fallback", () => {

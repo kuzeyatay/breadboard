@@ -77,13 +77,15 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
     'inputTokens',
     'input_tokens',
     'prompt_tokens',
+    'input',
   ] as const;
   const outputKeys = [
     'outputTokens',
     'output_tokens',
     'completion_tokens',
+    'output',
   ] as const;
-  const totalKeys = ['totalTokens', 'total_tokens'] as const;
+  const totalKeys = ['totalTokens', 'total_tokens', 'total'] as const;
   if (
     hasInvalidTokenCount(record, inputKeys) ||
     hasInvalidTokenCount(record, outputKeys) ||
@@ -110,6 +112,7 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
   const outputDetails =
     recordFrom(record.output_tokens_details) ??
     recordFrom(record.completion_tokens_details);
+  const cacheDetails = recordFrom(record.cache);
 
   const normalizedInput = inputTokens ?? 0;
   const normalizedOutput = outputTokens ?? 0;
@@ -126,9 +129,10 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
     cachedInputTokens:
       firstTokenCount(record, ['cachedInputTokens', 'cachedTokens']) ??
       (inputDetails ? firstTokenCount(inputDetails, ['cached_tokens']) : undefined) ??
+      (cacheDetails ? firstTokenCount(cacheDetails, ['read']) : undefined) ??
       0,
     reasoningTokens:
-      firstTokenCount(record, ['reasoningTokens']) ??
+      firstTokenCount(record, ['reasoningTokens', 'reasoning']) ??
       (outputDetails ? firstTokenCount(outputDetails, ['reasoning_tokens']) : undefined) ??
       0,
     ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
