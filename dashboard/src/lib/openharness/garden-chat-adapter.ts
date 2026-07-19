@@ -17,7 +17,9 @@ import {
 import {
   appendChatMessage,
   getRuntimeSessionByChatSession,
+  persistCapabilityDecision,
   recordAuditEvent,
+  revokeCapabilityDecision,
 } from "./runtime-store.ts";
 import { ApiError } from "./route-core.ts";
 import { resolveCommandMessage } from "./commands.ts";
@@ -26,6 +28,11 @@ import {
   evidenceKindForTool,
   type EvidenceRecord,
 } from "./evidence.ts";
+import {
+  decideCapabilityMode,
+  mergeCapabilityToolPolicy,
+} from "./capability-policy.ts";
+import { composeOpenHarnessSystemPrompt } from "./system-prompts.ts";
 
 type GardenChatPayload = {
   clusterSlug?: unknown;
@@ -92,14 +99,44 @@ export async function openGardenAgentChat(
         pageSlug: page?.slug,
         chatSessionId,
       });
+  const decision = decideCapabilityMode({
+    surface: "garden_chat",
+    userId,
+    requestedOutcome: text,
+    authorizedRoot: session.activeDirectory,
+  });
   const resolved = await resolveCommandMessage(
     userId,
     text,
     session.activeDirectory,
+    { mode: decision.mode, surface: "garden_chat" },
   );
+  decision.selectedConnections = resolved.invocations
+    .filter((item) => item.kind === "mcp")
+    .map((item) => item.slug);
 
   const gateway = getOpenHarnessGateway();
   await gateway.health();
+  await gateway.applyCapabilityDecision({
+    openHarnessSessionId: session.openHarnessSessionId,
+    workspaceKey: session.workspaceKey,
+    directory: session.activeDirectory,
+    decision,
+  });
+  const storedDecision = persistCapabilityDecision(session.row.id, decision);
+  recordAuditEvent({
+    eventType: "capability.decision",
+    runtimeSessionId: session.row.id,
+    userId,
+    gardenId: clusterSlug,
+    payload: {
+      decisionId: storedDecision.id,
+      mode: decision.mode,
+      implementationRequired: false,
+      decisionReason: decision.decisionReason,
+      decisionSource: decision.decisionSource,
+    },
+  });
   markStatus(session, "busy");
   recordAuditEvent({
     eventType: "message.submitted",
@@ -113,6 +150,8 @@ export async function openGardenAgentChat(
       reasoningEffort: engine.variant,
       reasoningEffortAdjusted: engine.adjusted,
       commands: resolved.invocations,
+      capabilityDecisionId: storedDecision.id,
+      capabilityMode: decision.mode,
     },
   });
   return legacyGardenEventStream(session, signal, () =>
@@ -122,15 +161,19 @@ export async function openGardenAgentChat(
       directory: session.activeDirectory,
       agentName: session.agentName,
       text: resolved.text,
-      tools: resolved.tools,
+      tools: mergeCapabilityToolPolicy(decision, resolved.tools),
       model: engine.model,
       variant: engine.variant,
-      system: gardenTurnContext(
-        clusterSlug,
-        chatSessionId,
-        page,
-        payload.selectedDocumentSlugs,
-      ),
+      system: composeOpenHarnessSystemPrompt({
+        surface: "garden_chat",
+        decision,
+        additional: gardenTurnContext(
+          clusterSlug,
+          chatSessionId,
+          page,
+          payload.selectedDocumentSlugs,
+        ),
+      }),
     }),
   );
 }
@@ -185,8 +228,8 @@ function gardenTurnContext(
     selected.length
       ? `User-selected garden documents: ${selected.join(", ")}`
       : "",
-    "Garden context is high priority but additive: general filesystem, web, shell, skill, and subagent tools remain available.",
-    "Published Garden content is still changed only through typed Breadboard proposals; ordinary files outside that boundary follow normal tool permissions.",
+    "Garden context is authoritative for this surface. Repository, shell, Git, package, build, test, deployment, and direct file-mutation capabilities are unavailable.",
+    "Published Garden content is changed only through typed Breadboard proposals.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -367,6 +410,10 @@ function legacyGardenEventStream(
           }
         }
         markStatus(session, controller.signal.aborted ? "aborted" : "idle");
+        revokeCapabilityDecision(
+          session.row.id,
+          controller.signal.aborted ? "cancelled" : "completed",
+        );
         recordAuditEvent({
           eventType: controller.signal.aborted
             ? "session.cancelled"
@@ -378,6 +425,7 @@ function legacyGardenEventStream(
       } catch (error) {
         abortRuntime();
         markStatus(session, "failed");
+        revokeCapabilityDecision(session.row.id, "abandoned");
         emit({
           type: "error",
           error:

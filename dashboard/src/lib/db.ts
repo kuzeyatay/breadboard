@@ -265,6 +265,30 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_openharness_runtime_sessions_surface_user
     ON openharness_runtime_sessions(surface, user_id);
 
+  CREATE TABLE IF NOT EXISTS openharness_capability_decisions (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime_session_id          INTEGER NOT NULL REFERENCES openharness_runtime_sessions(id) ON DELETE CASCADE,
+    mode                        TEXT NOT NULL CHECK (mode IN ('knowledge','technical_read','scoped_implementation')),
+    requested_outcome           TEXT NOT NULL,
+    implementation_required     INTEGER NOT NULL DEFAULT 0,
+    decision_reason             TEXT NOT NULL,
+    decision_source             TEXT NOT NULL,
+    authorized_roots            TEXT NOT NULL DEFAULT '[]',
+    authorized_path_patterns    TEXT NOT NULL DEFAULT '[]',
+    allowed_tools               TEXT NOT NULL DEFAULT '[]',
+    allowed_operations          TEXT NOT NULL DEFAULT '[]',
+    allowed_command_patterns    TEXT NOT NULL DEFAULT '[]',
+    selected_conditional_skills TEXT NOT NULL DEFAULT '[]',
+    selected_connections        TEXT NOT NULL DEFAULT '[]',
+    created_at                  TEXT NOT NULL,
+    expires_at                  TEXT,
+    revoked_at                  TEXT,
+    revocation_reason           TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_openharness_capability_session
+    ON openharness_capability_decisions(runtime_session_id, id DESC);
+
   CREATE TABLE IF NOT EXISTS openharness_messages (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     runtime_session_id INTEGER NOT NULL REFERENCES openharness_runtime_sessions(id) ON DELETE CASCADE,
@@ -381,6 +405,26 @@ ensureColumn(
   "openharness_runtime_sessions",
   "filesystem_mode",
   "filesystem_mode TEXT NOT NULL DEFAULT 'restricted' CHECK (filesystem_mode IN ('restricted','full'))",
+);
+ensureColumn(
+  "openharness_runtime_sessions",
+  "capability_mode",
+  "capability_mode TEXT NOT NULL DEFAULT 'knowledge' CHECK (capability_mode IN ('knowledge','technical_read','scoped_implementation'))",
+);
+ensureColumn(
+  "openharness_runtime_sessions",
+  "capability_decision_id",
+  "capability_decision_id INTEGER",
+);
+ensureColumn(
+  "openharness_capability_decisions",
+  "authorized_path_patterns",
+  "authorized_path_patterns TEXT NOT NULL DEFAULT '[]'",
+);
+ensureColumn(
+  "openharness_capability_decisions",
+  "allowed_command_patterns",
+  "allowed_command_patterns TEXT NOT NULL DEFAULT '[]'",
 );
 
 // Additional per-message runtime metadata. These are nullable so historical

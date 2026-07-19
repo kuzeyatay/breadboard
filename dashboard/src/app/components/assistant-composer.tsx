@@ -12,6 +12,7 @@ import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import { CommandHub, type CommandHubHandle } from '@/app/components/openharness/command-hub';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
 import type { CommandHubItem } from '@/lib/openharness/commands.ts';
+import type { OpenHarnessSurface } from '@/lib/openharness/config.ts';
 import { formatAssistantModelName } from '@/lib/ai-models';
 import type { AssistantReasoningEffort } from '@/lib/assistant-reasoning';
 
@@ -47,6 +48,8 @@ interface Props {
   statusMessage?: string;
   className?: string;
   compact?: boolean;
+  capabilitySessionId?: number | null;
+  capabilitySurface?: OpenHarnessSurface;
 }
 
 const EFFORT_OPTIONS: Array<{
@@ -105,6 +108,8 @@ export default function AssistantComposer({
   statusMessage,
   className = '',
   compact = false,
+  capabilitySessionId,
+  capabilitySurface = 'dashboard_terminal',
 }: Props) {
   const [showIntelligence, setShowIntelligence] = useState(false);
   const [showCommandHub, setShowCommandHub] = useState(false);
@@ -128,24 +133,25 @@ export default function AssistantComposer({
 
   function insertCommand(item: CommandHubItem) {
     const node = internalTextareaRef.current;
-    let start = node?.selectionStart ?? value.length;
-    let end = node?.selectionEnd ?? value.length;
+    let start = 0;
+    let end = 0;
     if (value === '/') {
       start = 0;
       end = 1;
     }
-    const token = `/${item.kind}:${item.slug} `;
+    const token = `/${item.token} `;
     const next = `${value.slice(0, start)}${token}${value.slice(end)}`;
     onChange(next);
     window.setTimeout(() => {
       node?.focus();
-      node?.setSelectionRange(start + token.length, start + token.length);
+      const cursor = value === '/' ? token.length : token.length + (node?.selectionStart ?? value.length);
+      node?.setSelectionRange(cursor, cursor);
     }, 0);
   }
 
   return (
     <div className={className}>
-      <div className="relative rounded-[30px] border border-[var(--line)] bg-[var(--paper-raised)] p-2 shadow-[0_14px_40px_rgba(15,32,27,0.10)] transition focus-within:border-[var(--line-strong)] focus-within:shadow-[0_16px_44px_rgba(15,32,27,0.14)]">
+      <div className="neumorphic-chat-bar relative rounded-[30px] p-2">
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 px-2 pb-1.5 pt-1">
             {attachments.map((attachment, index) => (
@@ -186,6 +192,9 @@ export default function AssistantComposer({
             onSelect={insertCommand}
             disabled={disabled}
             compact={compact}
+            sessionId={capabilitySessionId}
+            surface={capabilitySurface}
+            requestedOutcome={value}
           />
 
           {onAddDocuments ? (

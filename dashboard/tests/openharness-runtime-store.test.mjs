@@ -41,6 +41,16 @@ function applyMigration(db) {
       content TEXT NOT NULL, sources TEXT, token_usage TEXT, tool_calls TEXT, permission_decisions TEXT,
       runtime_error TEXT, runtime_status TEXT, proposal TEXT, order_index INTEGER NOT NULL,
       created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS openharness_capability_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, runtime_session_id INTEGER NOT NULL,
+      mode TEXT NOT NULL, requested_outcome TEXT NOT NULL,
+      implementation_required INTEGER NOT NULL DEFAULT 0,
+      decision_reason TEXT NOT NULL, decision_source TEXT NOT NULL,
+      authorized_roots TEXT NOT NULL DEFAULT '[]', authorized_path_patterns TEXT NOT NULL DEFAULT '[]',
+      allowed_tools TEXT NOT NULL DEFAULT '[]', allowed_operations TEXT NOT NULL DEFAULT '[]',
+      allowed_command_patterns TEXT NOT NULL DEFAULT '[]', selected_conditional_skills TEXT NOT NULL DEFAULT '[]',
+      selected_connections TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL,
+      expires_at TEXT, revoked_at TEXT, revocation_reason TEXT);
     CREATE TABLE IF NOT EXISTS openharness_proposals (
       id INTEGER PRIMARY KEY AUTOINCREMENT, cluster_id INTEGER, garden_id TEXT NOT NULL, surface TEXT NOT NULL,
       kind TEXT NOT NULL, page_slug TEXT, rationale TEXT, payload TEXT NOT NULL, evidence_anchors TEXT,
@@ -52,6 +62,12 @@ function applyMigration(db) {
   ensureColumn(db, "chat_messages", "runtime_error", "runtime_error TEXT");
   ensureColumn(db, "chat_messages", "runtime_status", "runtime_status TEXT");
   ensureColumn(db, "chat_messages", "proposal", "proposal TEXT");
+  ensureColumn(db, "openharness_runtime_sessions", "active_directory", "active_directory TEXT");
+  ensureColumn(db, "openharness_runtime_sessions", "filesystem_mode", "filesystem_mode TEXT NOT NULL DEFAULT 'restricted'");
+  ensureColumn(db, "openharness_runtime_sessions", "capability_mode", "capability_mode TEXT NOT NULL DEFAULT 'knowledge'");
+  ensureColumn(db, "openharness_runtime_sessions", "capability_decision_id", "capability_decision_id INTEGER");
+  ensureColumn(db, "openharness_capability_decisions", "authorized_path_patterns", "authorized_path_patterns TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "openharness_capability_decisions", "allowed_command_patterns", "allowed_command_patterns TEXT NOT NULL DEFAULT '[]'");
 }
 
 test("migration is additive and existing data survives", () => {
@@ -74,6 +90,12 @@ test("migration is additive and existing data survives", () => {
     "INSERT INTO openharness_runtime_sessions (surface, agent_name, workspace_key) VALUES (?, ?, ?)",
   ).run("dashboard_terminal", "breadboard-terminal", "terminal/abc");
   assert.ok(rt.lastInsertRowid > 0);
+  const migratedSession = db.prepare("SELECT capability_mode, filesystem_mode FROM openharness_runtime_sessions WHERE id = ?").get(rt.lastInsertRowid);
+  assert.equal(migratedSession.capability_mode, "knowledge");
+  assert.equal(migratedSession.filesystem_mode, "restricted");
+  const decisionColumns = db.prepare("PRAGMA table_info(openharness_capability_decisions)").all().map((column) => column.name);
+  assert.ok(decisionColumns.includes("authorized_path_patterns"));
+  assert.ok(decisionColumns.includes("allowed_command_patterns"));
 
   db.prepare(
     "INSERT INTO openharness_messages (runtime_session_id, role, content, order_index) VALUES (?, ?, ?, ?)",
@@ -106,6 +128,7 @@ test("migration on an empty database creates all runtime tables", () => {
     .map((t) => t.name)
     .sort();
   assert.deepEqual(tables, [
+    "openharness_capability_decisions",
     "openharness_messages",
     "openharness_proposals",
     "openharness_runtime_sessions",

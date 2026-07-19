@@ -8,6 +8,7 @@ import path from "node:path";
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bb-skills-"));
 process.env.OPENHARNESS_SKILLS_QUARANTINE = path.join(tmp, "quarantine");
 process.env.OPENHARNESS_SKILLS_APPROVED = path.join(tmp, "approved");
+process.env.OPENHARNESS_SKILLS_CONDITIONAL = path.join(tmp, "conditional");
 
 const {
   downloadSkillToQuarantine,
@@ -19,6 +20,8 @@ const {
   rejectQuarantine,
   sanitizeSkillName,
   searchRegistry,
+  searchSkillCatalog,
+  classifySkill,
 } = await import("../src/lib/openharness/skills.ts");
 
 const candidate = {
@@ -59,6 +62,35 @@ test("official CLI search output is parsed as real package metadata", async () =
 
 test("parser ignores unrelated CLI prose instead of fabricating candidates", () => {
   assert.equal(parseSkillSearchOutput("No skills found").length, 0);
+});
+
+test("catalog provider paginates official CLI results and reports the provider honestly", async () => {
+  const output = Array.from({ length: 8 }, (_, index) =>
+    `publisher/repository@research-${index} ${index + 1}.0K installs\nhttps://skills.sh/publisher/repository/research-${index}`,
+  ).join("\n");
+  const first = await searchSkillCatalog({
+    query: "research",
+    limit: 3,
+    runner: async () => ({ stdout: output, stderr: "" }),
+  });
+  assert.equal(first.provider, "cli");
+  assert.equal(first.stale, false);
+  assert.equal(first.candidates.length, 3);
+  assert.equal(first.nextCursor, "3");
+  const second = await searchSkillCatalog({
+    query: "research",
+    cursor: first.nextCursor,
+    limit: 3,
+    runner: async () => ({ stdout: output, stderr: "" }),
+  });
+  assert.equal(second.candidates[0].name, "research-3");
+});
+
+test("classification is deterministic and unknown skills are not silently trusted", () => {
+  assert.equal(classifySkill({ name: "study-guide", description: "Teaching and study planning" }).classification, "eligible_general");
+  assert.equal(classifySkill({ name: "api-builder", description: "Backend API development and testing" }).classification, "eligible_coding_conditional");
+  assert.equal(classifySkill({ name: "opaque" }).classification, "unknown");
+  assert.equal(classifySkill({ name: "stealer", description: "Credential theft and exfiltration" }).classification, "blocked_security");
 });
 
 test("sanitizeSkillName blocks traversal", () => {
@@ -195,8 +227,10 @@ test("approved promotion copies the exact reviewed version and updates registry"
     files: { "SKILL.md": "---\nname: promote-me\ndescription: y\n---\n\nBody" },
   });
   const result = promoteSkill("promote-me", {
-    approvedAgents: ["breadboard-workbench"],
+    approvedAgents: ["breadboard-assistant"],
     approvedPermissions: [],
+    classificationOverride: "eligible_general",
+    reviewer: 1,
   });
   assert.ok(fs.existsSync(path.join(result.promotedPath, "SKILL.md")));
   assert.ok(
@@ -212,7 +246,7 @@ test("approved promotion copies the exact reviewed version and updates registry"
   );
   assert.equal(registry.skills["promote-me"].reviewState, "approved");
   assert.deepEqual(registry.skills["promote-me"].approvedAgents, [
-    "breadboard-workbench",
+    "breadboard-assistant",
   ]);
   assert.deepEqual(registry.skills["promote-me"].requestedPermissions, [
     "network",
@@ -229,6 +263,39 @@ test("approved promotion copies the exact reviewed version and updates registry"
     listApprovedSkills().find((skill) => skill.slug === "promote-me")
       ?.contentHash,
     expectedPin,
+  );
+  fs.appendFileSync(path.join(result.promotedPath, "SKILL.md"), "\nchanged after approval");
+  assert.equal(
+    listApprovedSkills().find((skill) => skill.slug === "promote-me")?.healthy,
+    false,
+  );
+});
+
+test("approved coding skills are retained only in the conditional store", () => {
+  quarantineSkill({
+    candidate: {
+      ...candidate,
+      name: "react-repair",
+      id: "x/y@react-repair",
+      package: "x/y@react-repair",
+      description: "Debug and edit React interface code",
+    },
+    files: {
+      "SKILL.md": "---\nname: react-repair\ndescription: Debug and edit React interface code\n---\n\nRepair the reviewed interface only.",
+    },
+  });
+  const result = promoteSkill("react-repair", {
+    classificationOverride: "eligible_coding_conditional",
+    reviewer: 1,
+  });
+  assert.equal(
+    path.dirname(result.promotedPath),
+    process.env.OPENHARNESS_SKILLS_CONDITIONAL,
+  );
+  assert.ok(!fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_APPROVED, "react-repair")));
+  assert.equal(
+    listApprovedSkills().find((skill) => skill.slug === "react-repair")?.classification,
+    "eligible_coding_conditional",
   );
 });
 

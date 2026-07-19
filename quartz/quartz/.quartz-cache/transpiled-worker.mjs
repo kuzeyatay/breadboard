@@ -16510,44 +16510,55 @@ var BreadboardAI = /* @__PURE__ */ __name(({ fileData }) => {
             ] })
           ] }),
           /* @__PURE__ */ jsxs24("form", { class: "breadboard-ai-composer", children: [
-            /* @__PURE__ */ jsx41(
-              "textarea",
-              {
-                class: "breadboard-ai-input",
-                rows: 2,
-                placeholder: "Ask about this page\u2026",
-                "aria-label": "Ask about this page"
-              }
-            ),
             /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-command-hub", hidden: true, children: [
+              /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-command-heading", children: [
+                /* @__PURE__ */ jsx41("strong", { children: "Use a capability" }),
+                /* @__PURE__ */ jsx41("button", { type: "button", class: "breadboard-ai-command-close", "aria-label": "Close capabilities", children: "\xD7" })
+              ] }),
               /* @__PURE__ */ jsx41(
                 "input",
                 {
                   class: "breadboard-ai-command-search",
                   type: "search",
-                  placeholder: "Search skills, MCP, and prompts\u2026",
-                  "aria-label": "Search commands"
+                  placeholder: "Search skills, connections, and prompts",
+                  "aria-label": "Search capabilities"
                 }
               ),
+              /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-command-tabs", role: "tablist", "aria-label": "Capability types", children: [
+                /* @__PURE__ */ jsx41("button", { type: "button", role: "tab", "data-command-tab": "skill", "aria-selected": "true", children: "Skills" }),
+                /* @__PURE__ */ jsx41("button", { type: "button", role: "tab", "data-command-tab": "mcp", "aria-selected": "false", children: "Connections" }),
+                /* @__PURE__ */ jsx41("button", { type: "button", role: "tab", "data-command-tab": "prompt", "aria-selected": "false", children: "Prompts" })
+              ] }),
               /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-command-results" }),
               /* @__PURE__ */ jsx41("div", { class: "breadboard-ai-command-status", "aria-live": "polite" })
             ] }),
-            /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-composer-row", children: [
+            /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-composer-shell", children: [
               /* @__PURE__ */ jsx41(
                 "button",
                 {
                   type: "button",
                   class: "breadboard-ai-command-button",
-                  "aria-label": "Open command hub",
+                  "aria-label": "Open capabilities",
                   "aria-expanded": "false",
                   children: "/"
                 }
               ),
-              /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-intelligence", hidden: true, children: [
-                /* @__PURE__ */ jsx41("select", { class: "breadboard-ai-model", "aria-label": "Model" }),
-                /* @__PURE__ */ jsx41("select", { class: "breadboard-ai-effort", "aria-label": "Reasoning effort" })
-              ] }),
-              /* @__PURE__ */ jsx41("button", { type: "submit", class: "breadboard-ai-send", children: "Send" })
+              /* @__PURE__ */ jsx41(
+                "textarea",
+                {
+                  class: "breadboard-ai-input",
+                  rows: 1,
+                  placeholder: "Ask about this page\u2026",
+                  "aria-label": "Ask about this page"
+                }
+              ),
+              /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-composer-row", children: [
+                /* @__PURE__ */ jsxs24("div", { class: "breadboard-ai-intelligence", hidden: true, children: [
+                  /* @__PURE__ */ jsx41("select", { class: "breadboard-ai-model", "aria-label": "Model" }),
+                  /* @__PURE__ */ jsx41("select", { class: "breadboard-ai-effort", "aria-label": "Reasoning effort" })
+                ] }),
+                /* @__PURE__ */ jsx41("button", { type: "submit", class: "breadboard-ai-send", children: "Send" })
+              ] })
             ] })
           ] })
         ] })

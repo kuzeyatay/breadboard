@@ -53,6 +53,11 @@ import {
   resolveWorkspace,
   type WorkspaceRequest,
 } from "./workspace.ts";
+import {
+  decideCapabilityMode,
+  permissionRulesForDecision,
+  type CapabilityDecision,
+} from "./capability-policy.ts";
 
 const PERMISSION_HANDOFF_SYSTEM = [
   "Permission decisions are handled outside the conversation by Breadboard controls.",
@@ -211,13 +216,18 @@ export class OpenHarnessGateway {
       agent: agentName,
       metadata: { surface: input.surface, ...input.metadata },
     });
-    await updateSessionPermissions(this.config, directory, session.id, [
-      {
-        permission: "external_directory",
-        pattern: "*",
-        action: input.filesystemMode === "full" ? "allow" : "deny",
-      },
-    ]);
+    const defaultDecision = decideCapabilityMode({
+      surface: input.surface,
+      userId: null,
+      requestedOutcome: "Start a knowledge-work session.",
+      authorizedRoot: directory,
+    });
+    await updateSessionPermissions(
+      this.config,
+      directory,
+      session.id,
+      permissionRulesForDecision(defaultDecision),
+    );
     return {
       openHarnessSessionId: session.id,
       directory,
@@ -225,6 +235,23 @@ export class OpenHarnessGateway {
       workspaceKey,
       agentName,
     };
+  }
+
+  async applyCapabilityDecision(input: {
+    openHarnessSessionId: string;
+    workspaceKey: string;
+    directory?: string;
+    decision: CapabilityDecision;
+  }): Promise<void> {
+    const directory =
+      input.directory ??
+      directoryForWorkspaceKey(this.config, input.workspaceKey);
+    await updateSessionPermissions(
+      this.config,
+      directory,
+      input.openHarnessSessionId,
+      permissionRulesForDecision(input.decision),
+    );
   }
 
   // Session resume is implemented in session-service.authorizeRuntimeSession /

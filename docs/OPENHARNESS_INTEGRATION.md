@@ -1,8 +1,9 @@
 # OpenHarness integration
 
-OpenHarness is Breadboard's interactive agent runtime. It is a shallow,
+OpenHarness is Breadboard's knowledge-work assistant runtime. It is a shallow,
 upstream-friendly fork of OpenCode plus Breadboard-owned configuration, agents,
-tools, session adapters, and UI routes.
+tools, session adapters, policy, and UI routes. Coding is disabled by default;
+it is a temporary task capability, not the assistant's identity.
 
 It backs the live dashboard terminal, both live garden chat clients, and the
 published Quartz page assistant. Learning-content generation remains on the
@@ -26,7 +27,34 @@ The initial repository audit found these real runtime paths:
 | Skill discovery | `dashboard/src/lib/openharness/skills.ts` | It used a placeholder registry and could fabricate a manifest after download failure. |
 
 The current implementation replaces those gaps in the existing mounted paths;
-it does not introduce parallel demo UIs.
+it does not introduce parallel demo UIs. Names in the table above describe the
+historical audit and are not the current product model.
+
+## Knowledge-first capability policy
+
+Every turn receives a deterministic, server-owned capability decision:
+
+| Mode | Purpose | Mutation |
+| --- | --- | --- |
+| `knowledge` | Research, grounded Q&A, documents, writing, study, planning, web research, general skills, connections, and reviewable artifacts | No application/repository mutation, shell, Git writes, packages, builds, tests, or deployment |
+| `technical_read` | Narrow source inspection for an explicit explain/inspect/diagnose request | Read/glob/grep only; no mutation or arbitrary shell |
+| `scoped_implementation` | A concrete authenticated software change that cannot be completed without code | Only the approved root, tools, operations, conditional skills, and duration |
+
+The model cannot grant a mode. Slash tokens, skill metadata, prompt text, and MCP
+tool descriptions are removed from the escalation signal. Conceptual technical
+questions, architecture summaries, comparisons, plans, and explicit “do not
+change” requests stay in `knowledge` or read-only mode. High-impact actions such
+as commit, push, deployment, branch changes, destructive migrations, secrets, or
+publishing are not implied by implementation approval and require a separate
+explicit-intent workflow.
+
+The decision is recorded in `openharness_capability_decisions` with the requested
+outcome, reason/source, authorized roots, tools, operations, selected conditional
+skills/connections, timestamps, expiry/revocation, and a database audit id. The
+runtime permission set is updated before dispatch. Completion, cancellation,
+failure, expiry, or legacy migration revokes the decision and restores
+knowledge-only runtime permissions. Skills and connections are intersected with
+this allowlist and cannot widen it.
 
 ## Runtime architecture and trust boundary
 
@@ -34,7 +62,7 @@ it does not introduce parallel demo UIs.
 Browser UI
   -> Breadboard dashboard backend
        authentication and garden/page authorization
-       runtime-mode decision
+       capability-mode decision
        session/workspace/agent selection
        capability-token and permission enforcement
        event normalization and audit persistence
@@ -109,35 +137,55 @@ authorized session and normalizes it as `assistant.delta`,
 `assistant.completed`, `reasoning.status`, `tool.started`, `tool.completed`,
 `permission.requested`, `session.status`, and `error`.
 
-The terminal restores its latest surface session after refresh. Garden chats are
+The dashboard Assistant restores its latest surface session after refresh. Garden chats are
 bound to their existing `chatSessionId`, so a restored Breadboard conversation
 reuses its OpenHarness runtime record. Stop sends a browser abort and a
 server-side OpenHarness abort. Quartz uses `/api/quartz-ai/abort` for the same
 behavior.
 
-## Agent profiles and generalization
+## Migration and compatibility
+
+Stored conversations are preserved. When an old `breadboard-terminal` or
+`breadboard-workbench` session loads, Breadboard maps it to
+`breadboard-assistant`, revokes any active decision, resets the mode and runtime
+rules to `knowledge`, and records the migration. A historical full-filesystem
+setting is changed to restricted; its previous root is retained only as inactive
+metadata and cannot become authority without a new task decision.
+
+Old namespaced slash tokens remain parser-compatible, while only clean tokens are
+generated. Legacy prompt-library entries are imported to server persistence with
+the browser copy retained for recovery. Existing MCP records and audit history
+are additive and preserved. Existing skills are reclassified at load; coding
+skills are unavailable to knowledge/public surfaces and newly promoted coding
+skills use the conditional store. No migration restores broad permissions.
+
+## Agent profiles and prompt composition
 
 Agents are external configuration under `openharness-config/agent/`:
 
-- `breadboard-terminal`: repository engineering agent. Read/search/status/diff
-  and focused verification are available; edits, broad shell, installs, network,
-  commits, and migrations require permission; destructive deletes and force push
-  are denied.
-- `breadboard-garden`: garden-grounded assistant with only curated `garden_*`
-  tools. No generic file, shell, git, web, task, or skill access.
-- `breadboard-quartz`: page/map assistant with the same isolation and
-  proposal-only write behavior.
-- `breadboard-document`: repository-free document analysis with no shell, edit,
-  web, task, or skill access. This is the concrete non-coding/non-repository
-  generalization proof.
-- `breadboard-capability-scout`: discovery-only subagent limited to
-  `capability_search`; it cannot edit, execute shell, browse arbitrarily, install,
-  or delegate again.
+- `breadboard-assistant` is the canonical authenticated assistant. Its base
+  configuration denies repository and coding operations.
+- `breadboard-terminal` and `breadboard-workbench` are restricted compatibility
+  aliases only. New sessions never select them.
+- `breadboard-garden` uses curated garden reads and typed proposals; it has no
+  general application-repository access.
+- `breadboard-quartz` uses bounded server-trusted page/graph context and
+  proposal-only writes. Public Quartz is always knowledge-only and receives no
+  private memory, private connections, conditional coding skills, files, or code
+  tools.
+- `breadboard-document` focuses on reading, extraction, comparison, rewriting,
+  and artifacts without repository, Git, shell, or package permissions.
+- `breadboard-capability-scout` can discover candidates but cannot install,
+  mutate, execute shell, or delegate.
 
-The fork is generalized through upstream agent/tool/provider configuration, not
-through a large rewrite of OpenCode internals. The only intentional core fork
-change remains the additional executable alias. This keeps upstream merges
-practical while supporting coding and non-coding profiles.
+The system prompt is composed server-side from
+`openharness-config/system/assistant.md`, the relevant surface prompt, a factual
+capability-decision block, and—only in an approved implementation turn—
+`system/scoped-implementation.md`. It explicitly covers identity, hierarchy,
+truthfulness, knowledge work, tools, connections, skills, memory, evidence,
+proposals, coding gate, permissions, errors, and completion. GBrain is not
+considered integrated merely because its source was cloned; memory is claimed
+only after a configured, healthy adapter returns a durable result.
 
 ## Garden tools and proposals
 
@@ -168,37 +216,58 @@ different bounded context packets.
 Anonymous use requires a public, chat-enabled garden, is rate-limited, and is
 bound to an opaque browser token. Private gardens require an authenticated owner.
 
-## Real skill discovery, review, and promotion
+## Capability palette, tokens, connections, and prompts
 
-The `find-skills` behavior uses the official Skills CLI pinned by
-`SKILLS_CLI_PACKAGE` (default `skills@1.5.9`):
+The real mounted composers use a shared capability picker. Clicking the
+accessible **Open capabilities** button or typing `/` into an empty composer
+opens an anchored desktop palette or a mobile bottom sheet. It has one search
+field and Skills, Connections, and Prompts tabs, keyboard navigation, focus
+restoration, loading/empty/retry states, and no filesystem, path, runtime-health,
+memory, environment-variable, or provider diagnostic footer.
 
-1. `skills find <query>` returns real repository/package identifiers. Unavailable
-   descriptions or permissions remain unknown; Breadboard does not invent them.
-2. A user-authorized install runs `skills add <repo> --skill <name> --copy --yes`
-   in an isolated temporary staging directory.
-3. The exact result is copied to `openharness-skills/quarantine/`. It is inactive
-   and cannot be loaded as an approved skill.
-4. Breadboard records source URL and lock metadata, every file SHA-256, scripts,
-   URLs, derived permission risks, timestamp, target agents, and review status.
-5. Promotion re-hashes every file, rejects post-review mutation, requires
-   `SKILL.md`, copies only the reviewed version to `.agents/skills/`, and updates
-   the approved registry. Rejection deletes only the quarantined copy.
+Rows insert clean tokens such as `/research-synthesis`, `/google-drive`, and
+`/study-guide`, followed by a space; selection never sends the message. A typed
+server registry resolves stable IDs, kinds, surfaces, modes, and deterministic
+collisions. Legacy `/skill:`, `/mcp:`, and `/prompt:` tokens remain compatible,
+but neither a token nor prompt text can activate implementation mode.
 
-Quarantine also caps file count, individual file size, and total size. Manifest
-name mismatches cannot be promoted. Third-party promotions are attached only to
-`breadboard-terminal`; every other checked-in profile denies dynamic skills.
+Connection and prompt management use separate palette detail views. Remote MCP
+prefers OAuth. Local MCP requires explicit execution approval and rejects
+credential-looking arguments; secret values are never included in stored/public
+metadata. Connections remain subordinate to the active mode. Prompts are stored
+server-side with create/edit/delete and legacy-library import support.
 
-The terminal can emit a structured capability gap and ask the isolated scout to
-search. Search/install/promotion are separate, auditable actions. A promotion
-linked to a parent task emits a continuation event so the original terminal task
-can resume; garden and Quartz agents cannot invoke this path.
+## Real skill discovery, classification, review, and promotion
 
-The terminal's **Review skills** panel is the human control point: it shows real
-search metadata, quarantine risks, source/lock identity, scripts, URLs, every
-file hash, and permission checkboxes before the approve/reject action. Approval
-uses the latest gap recorded for that authorized terminal session and submits a
-continuation turn back to the same session.
+Discovery uses a provider abstraction in this order: a configured supported
+skills.sh catalog API, the official Skills CLI pinned by `SKILLS_CLI_PACKAGE`,
+then a last-known cache for temporary failure. Search is query-based, debounced,
+and paginated. It does not scrape undocumented HTML, eagerly load the complete
+catalog, or fabricate candidates, descriptions, permissions, or popularity.
+
+1. Search returns real provider/package metadata and an honest provider/stale
+   status.
+2. An authorized install runs the official CLI in an isolated staging directory.
+3. The exact result enters `openharness-skills/quarantine/` and remains inactive.
+4. Breadboard records source/lock metadata, hashes, scripts, URLs, permissions,
+   classification evidence, timestamp, and review state.
+5. Promotion re-hashes every file and rejects mutation/name mismatches. General
+   skills enter the approved store; implementation skills enter
+   `openharness-skills/conditional/`. Rejection removes quarantine only.
+
+Classification considers provider metadata, description, repository, requested
+tools, and reviewed `SKILL.md` content. The persisted states are
+`eligible_general`, `eligible_coding_conditional`, `blocked_security`,
+`blocked_incompatible`, `needs_review`, and `unknown`. Unknown/ambiguous skills
+do not silently become trusted; blocked items cannot promote. Conditional skills
+stay hidden from knowledge search/invocation and, after approval, still require a
+relevant authenticated `scoped_implementation` task. A skill can only reduce the
+active tool set.
+
+The palette's review detail shows real source identity, hashes, scripts, URLs,
+risk signals, classification evidence, compatible modes/surfaces, and requested
+permissions. Existing coding skills are reclassified, disabled by default,
+hidden from general suggestions, and retained in audit history.
 
 ## Startup and environment
 
@@ -217,7 +286,8 @@ needed. Important variables are:
 | `BREADBOARD_INTERNAL_URL` | Internal callback URL for scoped tools |
 | `BREADBOARD_DASHBOARD_URL` | Dashboard URL embedded into the Quartz build |
 | `QUARTZ_AI_ALLOWED_ORIGINS` | Additional permitted Quartz origins |
-| `OPENHARNESS_SKILLS_QUARANTINE`, `OPENHARNESS_SKILLS_APPROVED` | Skill lifecycle roots |
+| `OPENHARNESS_SKILLS_QUARANTINE`, `OPENHARNESS_SKILLS_APPROVED`, `OPENHARNESS_SKILLS_CONDITIONAL` | Inactive review, general, and task-conditional skill roots |
+| `SKILLS_CATALOG_API_URL`, `SKILLS_CATALOG_API_TOKEN` | Optional supported skills.sh catalog API |
 | `SKILLS_CLI_PACKAGE` | Pinned official discovery CLI package |
 
 From the repository root:
@@ -243,6 +313,9 @@ Focused launchers remain available as `npm run dev:chatmock`, `dev:openharness`,
 /api/openharness/health
 /api/openharness/agents
 /api/openharness/models
+/api/openharness/commands
+/api/openharness/mcp-connections
+/api/openharness/prompts
 /api/openharness/sessions
 /api/openharness/sessions/[sessionId]/messages|events|abort
 /api/openharness/permissions/[requestId]
@@ -260,10 +333,11 @@ Internal tool routes require narrow HMAC capability tokens.
 
 ## Verification and limitations
 
-Focused tests cover gateway authentication, agent restrictions, session-event
-isolation, auth boundaries, migrations, cancellation wiring, mode semantics,
-live-route selection, Quartz context bounding, official CLI parsing, quarantine
-hashes, tamper rejection, and exact promotion. A live Skills ecosystem test is
+Focused tests cover the server capability gate, default-deny agents, palette and
+token regressions, runtime permission intersection, session migration/revocation,
+Garden/Quartz boundaries, gateway authentication, official API/CLI/cache catalog
+behavior, classification, quarantine hashes, tamper rejection, exact promotion,
+MCP safety, and prompt/token authorization. A live Skills ecosystem test is
 opt-in with `OPENHARNESS_LIVE_SKILLS_TEST=1` so the default suite is deterministic.
 
 The approved skill registry is local filesystem state; production deployments

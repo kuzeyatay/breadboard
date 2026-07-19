@@ -39,6 +39,7 @@ export async function GET(request: Request) {
       status: row.last_runtime_status,
       activeDirectory: row.active_directory,
       filesystemMode: row.filesystem_mode,
+      capabilityMode: row.capability_mode ?? "knowledge",
       updatedAt: row.updated_at,
       messages: listRuntimeMessages(row.id).map(presentRuntimeMessage),
     }));
@@ -76,6 +77,7 @@ export async function POST(request: Request) {
         pageSlug: session.row.page_slug,
         activeDirectory: session.activeDirectory,
         filesystemMode: session.filesystemMode,
+        capabilityMode: "knowledge",
       },
     });
   } catch (error) {

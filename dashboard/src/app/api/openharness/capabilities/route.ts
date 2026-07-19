@@ -6,9 +6,11 @@ import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
 import { inspectGBrainState } from "@/lib/openharness/gbrain-status.ts";
 import {
   getOpenHarnessUserSettings,
+  getActiveCapabilityDecision,
   successfulToolNamesForUser,
   type FilesystemAccessMode,
 } from "@/lib/openharness/runtime-store.ts";
+import { toolPolicyForDecision, decideCapabilityMode } from "@/lib/openharness/capability-policy.ts";
 import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
 import {
   apiErrorResponse,
@@ -54,6 +56,16 @@ export async function GET(request: Request) {
         ? authorizeRuntimeSession(userId, requestedSessionId)
         : null;
     const settings = getOpenHarnessUserSettings(userId);
+    const activeDecision = session
+      ? getActiveCapabilityDecision(session.row.id)
+      : null;
+    const effectiveDecision = activeDecision ?? decideCapabilityMode({
+      surface: session?.row.surface ?? "dashboard_terminal",
+      userId,
+      requestedOutcome: "Inspect available knowledge-work capabilities.",
+      authorizedRoot: session?.activeDirectory ?? process.cwd(),
+    });
+    const policy = toolPolicyForDecision(effectiveDecision);
     let toolIds: string[] = [];
     let mcp: Record<string, OpenHarnessMcpStatus> = {};
     let runtimeReason: string | undefined;
@@ -118,7 +130,7 @@ export async function GET(request: Request) {
       return {
         name,
         registered,
-        permitted: registered,
+        permitted: registered && policy[name === "shell" ? "bash" : name] !== false,
         healthy,
         ...(registered
           ? name === "websearch" && !observedSuccessful
@@ -165,7 +177,8 @@ export async function GET(request: Request) {
     }
     return NextResponse.json({
       sessionId: session ? String(session.row.id) : "unbound",
-      agent: session?.agentName ?? "breadboard-workbench",
+      agent: session?.agentName ?? "breadboard-assistant",
+      capabilityMode: effectiveDecision.mode,
       activeDirectory,
       filesystemMode,
       tools,

@@ -19,118 +19,75 @@ function frontmatter(name) {
   return yaml.load(match[1]);
 }
 
-test("the common workbench is the OpenHarness default", () => {
-  const config = JSON.parse(
-    fs.readFileSync(
-      path.join(root, "openharness-config", "opencode.json"),
-      "utf8",
-    ),
-  );
-  assert.equal(config.default_agent, "breadboard-workbench");
+test("breadboard-assistant is the canonical OpenHarness default", () => {
+  const config = JSON.parse(fs.readFileSync(path.join(root, "openharness-config", "opencode.json"), "utf8"));
+  assert.equal(config.default_agent, "breadboard-assistant");
   assert.equal(config.subagent_depth, 2);
 });
 
-test("the common workbench exposes general tools with guarded mutation", () => {
-  const fm = frontmatter("breadboard-workbench");
+test("the canonical assistant defaults repository and coding permissions to deny", () => {
+  const fm = frontmatter("breadboard-assistant");
   assert.equal(fm.mode, "primary");
-  for (const tool of [
-    "read",
-    "glob",
-    "grep",
-    "bash",
-    "edit",
-    "write",
-    "patch",
-    "task",
-    "webfetch",
-    "websearch",
-    "skill",
-  ]) {
-    assert.equal(fm.tools[tool], true, `workbench enables ${tool}`);
+  for (const permission of ["read", "glob", "grep", "edit", "write", "patch", "bash", "task", "skill"]) {
+    assert.equal(fm.permission[permission], "deny", `${permission} is default denied`);
   }
-  assert.equal(fm.permission.edit, "ask");
+  assert.equal(fm.tools.task, false);
+  assert.equal(fm.tools.skill, false);
+  assert.equal(fm.tools.question, false);
   assert.equal(fm.permission.webfetch, "ask");
   assert.equal(fm.permission.websearch, "ask");
-  assert.equal(fm.permission.bash["git push*"], "deny");
-  assert.equal(fm.permission.bash["rm -rf*"], "deny");
-  assert.equal(fm.permission.bash["git status*"], "allow");
-  assert.equal(fm.permission.read["*"], "allow");
-  assert.equal(fm.permission.read["**/.ssh/*"], "ask");
-  assert.equal(fm.permission.read["**/*credentials*"], "ask");
-  assert.equal(fm.tools.question, false);
-  assert.equal(fm.permission.question, "deny");
 });
 
-test("permission decisions never become another chat turn", () => {
-  const workbench = rawAgent("breadboard-workbench");
-  assert.match(workbench, /never ask for tool approval through prose/i);
-  assert.match(workbench, /invoke the intended tool exactly once/i);
-  assert.match(workbench, /dedicated permission UI/i);
-  assert.match(workbench, /If a tool is denied or unavailable/i);
+test("legacy engineering identifiers remain loadable without broad authority", () => {
+  for (const name of ["breadboard-workbench", "breadboard-terminal"]) {
+    const fm = frontmatter(name);
+    assert.equal(fm.tools["*"], false);
+    assert.equal(fm.permission.read, "deny");
+    assert.equal(fm.permission.edit, "deny");
+    assert.equal(fm.permission.bash, "deny");
+    assert.match(rawAgent(name), /knowledge mode/i);
+    assert.match(rawAgent(name), /breadboard-assistant/i);
+  }
 });
 
-test("all chat surfaces select the same capable base agent", () => {
-  const configSource = fs.readFileSync(
-    path.join(root, "dashboard", "src", "lib", "openharness", "config.ts"),
-    "utf8",
-  );
-  assert.match(
-    configSource,
-    /terminal:\s*envString\("OPENHARNESS_TERMINAL_AGENT", "breadboard-workbench"\)/,
-  );
-  assert.match(
-    configSource,
-    /garden:\s*envString\("OPENHARNESS_GARDEN_AGENT", "breadboard-workbench"\)/,
-  );
-  assert.match(
-    configSource,
-    /quartz:\s*envString\("OPENHARNESS_QUARTZ_AGENT", "breadboard-workbench"\)/,
-  );
+test("surface defaults use dedicated knowledge-first agents", () => {
+  const configSource = fs.readFileSync(path.join(root, "dashboard", "src", "lib", "openharness", "config.ts"), "utf8");
+  assert.match(configSource, /terminal:\s*envString\("OPENHARNESS_TERMINAL_AGENT", "breadboard-assistant"\)/);
+  assert.match(configSource, /garden:\s*envString\("OPENHARNESS_GARDEN_AGENT", "breadboard-garden"\)/);
+  assert.match(configSource, /quartz:\s*envString\("OPENHARNESS_QUARTZ_AGENT", "breadboard-quartz"\)/);
+  assert.equal(frontmatter("breadboard-garden").permission.bash, "deny");
+  assert.equal(frontmatter("breadboard-quartz").permission.skill, "deny");
 });
 
 test("bounded specialists exist as subagents and cannot recursively delegate", () => {
   const specialists = [
-    "planner",
-    "repo-explorer",
-    "web-researcher",
-    "file-analyst",
-    "file-operator",
-    "code-implementer",
-    "test-runner",
-    "document-analyst",
-    "garden-specialist",
-    "memory-specialist",
-    "verifier",
-    "capability-scout",
+    "planner", "repo-explorer", "web-researcher", "file-analyst", "file-operator",
+    "code-implementer", "test-runner", "document-analyst", "garden-specialist",
+    "memory-specialist", "verifier", "capability-scout",
   ];
   for (const name of specialists) {
     const fm = frontmatter(name);
     assert.equal(fm.mode, "subagent", `${name} is a subagent`);
-    assert.equal(
-      fm.permission.task,
-      "deny",
-      `${name} cannot recursively delegate`,
-    );
+    assert.equal(fm.permission.task, "deny", `${name} cannot recursively delegate`);
   }
 });
 
-test("Garden behavior remains proposal-only without disabling general tools", () => {
-  const workbench = rawAgent("breadboard-workbench");
-  assert.match(workbench, /Garden changes remain typed proposals/i);
-  assert.match(workbench, /typed proposal/i);
-  const adapter = fs.readFileSync(
-    path.join(
-      root,
-      "dashboard",
-      "src",
-      "lib",
-      "openharness",
-      "garden-chat-adapter.ts",
-    ),
-    "utf8",
-  );
-  assert.match(adapter, /context is high priority but additive/i);
-  assert.doesNotMatch(adapter, /Use only the garden_\* tools/);
+test("Garden and Quartz publication remain proposal-only and coding-free", () => {
+  assert.match(rawAgent("breadboard-garden"), /typed PROPOSAL/i);
+  assert.match(rawAgent("breadboard-quartz"), /typed PROPOSAL/i);
+  assert.equal(frontmatter("breadboard-garden").permission.edit, "deny");
+  assert.equal(frontmatter("breadboard-quartz").permission.edit, "deny");
+});
+
+test("the composed system prompt contains every policy section", () => {
+  const prompt = fs.readFileSync(path.join(root, "openharness-config", "system", "assistant.md"), "utf8");
+  for (const section of [
+    "identity_and_role", "primary_behavior", "garden_and_source_grounding", "capability_modes",
+    "coding_necessity", "tools", "web_research", "skills", "mcp_connections", "memory",
+    "files_and_artifacts", "implementation_behavior", "temporal_awareness",
+    "safety_and_high_stakes_topics", "tone_and_formatting", "errors_and_limitations",
+    "knowledge_first_boundary",
+  ]) assert.match(prompt, new RegExp(`# ${section}`));
 });
 
 test("capability scout may discover skills but cannot mutate or delegate", () => {

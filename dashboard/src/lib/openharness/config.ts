@@ -107,9 +107,9 @@ export function readOpenHarnessConfig(): OpenHarnessConfig {
     password: process.env.OPENHARNESS_PASSWORD ?? "breadboard-local-dev",
     root: envString("OPENHARNESS_ROOT", defaultRoot()),
     agents: {
-      terminal: envString("OPENHARNESS_TERMINAL_AGENT", "breadboard-workbench"),
-      garden: envString("OPENHARNESS_GARDEN_AGENT", "breadboard-workbench"),
-      quartz: envString("OPENHARNESS_QUARTZ_AGENT", "breadboard-workbench"),
+      terminal: envString("OPENHARNESS_TERMINAL_AGENT", "breadboard-assistant"),
+      garden: envString("OPENHARNESS_GARDEN_AGENT", "breadboard-garden"),
+      quartz: envString("OPENHARNESS_QUARTZ_AGENT", "breadboard-quartz"),
       capabilityScout: envString(
         "OPENHARNESS_CAPABILITY_SCOUT_AGENT",
         "capability-scout",

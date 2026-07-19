@@ -9,6 +9,11 @@
 
 import db from "../db.ts";
 import type { OpenHarnessSurface } from "./config.ts";
+import type {
+  CapabilityDecision,
+  CapabilityMode,
+  CapabilityOperation,
+} from "./capability-policy.ts";
 
 export type FilesystemAccessMode = "restricted" | "full";
 
@@ -25,6 +30,8 @@ export interface RuntimeSessionRow {
   workspace_key: string;
   active_directory: string | null;
   filesystem_mode: FilesystemAccessMode;
+  capability_mode: CapabilityMode;
+  capability_decision_id: number | null;
   runtime_metadata: string | null;
   last_runtime_status: string | null;
   created_at: string;
@@ -168,6 +175,174 @@ export function setRuntimeStatus(id: number, status: string): void {
      SET last_runtime_status = ?, updated_at = datetime('now')
      WHERE id = ?`,
   ).run(status, id);
+}
+
+type CapabilityDecisionRow = {
+  id: number;
+  runtime_session_id: number;
+  mode: CapabilityMode;
+  requested_outcome: string;
+  implementation_required: number;
+  decision_reason: string;
+  decision_source: CapabilityDecision["decisionSource"];
+  authorized_roots: string;
+  authorized_path_patterns: string;
+  allowed_tools: string;
+  allowed_operations: string;
+  allowed_command_patterns: string;
+  selected_conditional_skills: string;
+  selected_connections: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+};
+
+export interface StoredCapabilityDecision extends CapabilityDecision {
+  id: number;
+  runtimeSessionId: number;
+}
+
+function stringList(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function presentCapabilityDecision(
+  row: CapabilityDecisionRow,
+): StoredCapabilityDecision {
+  return {
+    id: row.id,
+    runtimeSessionId: row.runtime_session_id,
+    mode: row.mode,
+    requestedOutcome: row.requested_outcome,
+    implementationRequired: row.implementation_required === 1,
+    decisionReason: row.decision_reason,
+    decisionSource: row.decision_source,
+    authorizedRoots: stringList(row.authorized_roots),
+    authorizedPathPatterns: stringList(row.authorized_path_patterns),
+    allowedTools: stringList(row.allowed_tools),
+    allowedOperations: stringList(
+      row.allowed_operations,
+    ) as CapabilityOperation[],
+    allowedCommandPatterns: stringList(row.allowed_command_patterns),
+    selectedConditionalSkills: stringList(row.selected_conditional_skills),
+    selectedConnections: stringList(row.selected_connections),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
+export function persistCapabilityDecision(
+  runtimeSessionId: number,
+  decision: CapabilityDecision,
+): StoredCapabilityDecision {
+  const insert = db.transaction(() => {
+    db.prepare(
+      `UPDATE openharness_capability_decisions
+       SET revoked_at = COALESCE(revoked_at, ?),
+           revocation_reason = COALESCE(revocation_reason, 'superseded')
+       WHERE runtime_session_id = ? AND revoked_at IS NULL`,
+    ).run(decision.createdAt, runtimeSessionId);
+    const result = db
+      .prepare(
+        `INSERT INTO openharness_capability_decisions
+         (runtime_session_id, mode, requested_outcome, implementation_required,
+          decision_reason, decision_source, authorized_roots,
+          authorized_path_patterns, allowed_tools, allowed_operations,
+          allowed_command_patterns, selected_conditional_skills,
+          selected_connections, created_at, expires_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        runtimeSessionId,
+        decision.mode,
+        decision.requestedOutcome,
+        decision.implementationRequired ? 1 : 0,
+        decision.decisionReason,
+        decision.decisionSource,
+        JSON.stringify(decision.authorizedRoots),
+        JSON.stringify(decision.authorizedPathPatterns),
+        JSON.stringify(decision.allowedTools),
+        JSON.stringify(decision.allowedOperations),
+        JSON.stringify(decision.allowedCommandPatterns),
+        JSON.stringify(decision.selectedConditionalSkills),
+        JSON.stringify(decision.selectedConnections),
+        decision.createdAt,
+        decision.expiresAt,
+        decision.revokedAt,
+      );
+    const id = Number(result.lastInsertRowid);
+    db.prepare(
+      `UPDATE openharness_runtime_sessions
+       SET capability_mode = ?, capability_decision_id = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+    ).run(decision.mode, id, runtimeSessionId);
+    return id;
+  });
+  const id = insert();
+  const row = db
+    .prepare("SELECT * FROM openharness_capability_decisions WHERE id = ?")
+    .get(id) as CapabilityDecisionRow;
+  return presentCapabilityDecision(row);
+}
+
+export function getActiveCapabilityDecision(
+  runtimeSessionId: number,
+  now = new Date(),
+): StoredCapabilityDecision | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM openharness_capability_decisions
+       WHERE runtime_session_id = ? AND revoked_at IS NULL
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(runtimeSessionId) as CapabilityDecisionRow | undefined;
+  if (!row) return null;
+  if (row.expires_at && Date.parse(row.expires_at) <= now.getTime()) {
+    revokeCapabilityDecision(runtimeSessionId, "expired", now);
+    return null;
+  }
+  return presentCapabilityDecision(row);
+}
+
+export function revokeCapabilityDecision(
+  runtimeSessionId: number,
+  reason: "completed" | "cancelled" | "expired" | "abandoned" | "migrated" | "superseded",
+  now = new Date(),
+): boolean {
+  const result = db.prepare(
+    `UPDATE openharness_capability_decisions
+     SET revoked_at = ?, revocation_reason = ?
+     WHERE runtime_session_id = ? AND revoked_at IS NULL`,
+  ).run(now.toISOString(), reason, runtimeSessionId);
+  db.prepare(
+    `UPDATE openharness_runtime_sessions
+     SET capability_mode = 'knowledge', capability_decision_id = NULL,
+         updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(runtimeSessionId);
+  return result.changes > 0;
+}
+
+export function migrateRuntimeSessionPolicy(
+  id: number,
+  agentName: string,
+): void {
+  revokeCapabilityDecision(id, "migrated");
+  db.prepare(
+    `UPDATE openharness_runtime_sessions
+     SET agent_name = ?, filesystem_mode = 'restricted',
+         capability_mode = 'knowledge', capability_decision_id = NULL,
+         updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(agentName, id);
 }
 
 export interface PersistMessageInput {

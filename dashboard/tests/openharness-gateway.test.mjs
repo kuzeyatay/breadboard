@@ -153,6 +153,44 @@ test("createSession routes a workspace directory and picks the garden agent", as
     const createReq = state.requests.find((r) => r.pathname === "/session" && r.method === "POST");
     assert.ok(createReq.query.directory.includes("gardens"));
     assert.equal(createReq.body.agent, "breadboard-garden");
+    const permissionReq = state.requests.find((r) => r.pathname.startsWith("/session/") && r.method === "PATCH");
+    assert.ok(permissionReq.body.permission.some((rule) => rule.permission === "edit" && rule.action === "deny"));
+    assert.ok(permissionReq.body.permission.some((rule) => rule.permission === "bash" && rule.action === "deny"));
+  } finally {
+    server.close();
+  }
+});
+
+test("applying a scoped decision sends only focused runtime permission rules", async () => {
+  const { server, port, state } = await startFakeServer();
+  try {
+    const gateway = makeGateway(port);
+    await gateway.applyCapabilityDecision({
+      openHarnessSessionId: "oh_session_1",
+      workspaceKey: "terminal/abc",
+      decision: {
+        mode: "scoped_implementation",
+        requestedOutcome: "Fix a component and run its test.",
+        implementationRequired: true,
+        decisionReason: "test",
+        decisionSource: "breadboard_server_policy_v1",
+        authorizedRoots: [path.join(os.tmpdir(), "bb-oh-gateway-test", "terminal", "abc")],
+        authorizedPathPatterns: [path.join(os.tmpdir(), "bb-oh-gateway-test", "terminal", "abc", "src", "component.tsx")],
+        allowedTools: ["read", "glob", "grep", "edit", "write", "patch", "apply_patch", "bash"],
+        allowedOperations: ["source_read", "code_write", "focused_test", "git_inspect"],
+        allowedCommandPatterns: ["node --test --experimental-strip-types tests/component.test.mjs"],
+        selectedConditionalSkills: [],
+        selectedConnections: [],
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        revokedAt: null,
+      },
+    });
+    const request = state.requests.find((item) => item.pathname.startsWith("/session/") && item.method === "PATCH");
+    const rules = request.body.permission;
+    assert.ok(rules.some((rule) => rule.permission === "edit" && rule.action === "allow"));
+    assert.ok(rules.some((rule) => rule.permission === "bash" && rule.pattern === "node --test --experimental-strip-types tests/component.test.mjs" && rule.action === "allow"));
+    assert.ok(!rules.some((rule) => /git push|deploy|commit/.test(rule.pattern) && rule.action === "allow"));
   } finally {
     server.close();
   }

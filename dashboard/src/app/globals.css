@@ -127,6 +127,26 @@ body {
   font-family: var(--font-source-sans), "Source Sans Pro", Arial, Helvetica, sans-serif;
 }
 
+.neumorphic-chat-bar {
+  border: 0;
+  background: var(--paper-surface);
+  box-shadow:
+    9px 9px 20px rgba(55, 74, 65, 0.18),
+    -9px -9px 20px rgba(255, 255, 255, 0.82),
+    inset 1px 1px 1px rgba(255, 255, 255, 0.72),
+    inset -1px -1px 1px rgba(55, 74, 65, 0.07);
+  transition: box-shadow 180ms ease;
+}
+
+.neumorphic-chat-bar:focus-within {
+  box-shadow:
+    0 0 0 2px rgba(79, 111, 104, 0.24),
+    7px 7px 17px rgba(55, 74, 65, 0.2),
+    -7px -7px 17px rgba(255, 255, 255, 0.86),
+    inset 1px 1px 1px rgba(255, 255, 255, 0.74),
+    inset -1px -1px 1px rgba(55, 74, 65, 0.08);
+}
+
 h1,
 h2,
 h3,

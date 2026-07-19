@@ -3,7 +3,11 @@ import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeSession, markStatus } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
-import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
+import {
+  recordAuditEvent,
+  revokeCapabilityDecision,
+} from "@/lib/openharness/runtime-store.ts";
+import { decideCapabilityMode } from "@/lib/openharness/capability-policy.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -22,12 +26,25 @@ export async function POST(
       throw new ApiError(400, "invalid_session_id", "Invalid session id.");
     }
     const session = authorizeRuntimeSession(userId, id);
-    await getOpenHarnessGateway().abortSession({
+    const gateway = getOpenHarnessGateway();
+    await gateway.abortSession({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
     });
     markStatus(session, "aborted");
+    revokeCapabilityDecision(session.row.id, "cancelled");
+    await gateway.applyCapabilityDecision({
+      openHarnessSessionId: session.openHarnessSessionId,
+      workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
+      decision: decideCapabilityMode({
+        surface: session.row.surface,
+        userId,
+        requestedOutcome: "Resume default knowledge work.",
+        authorizedRoot: session.activeDirectory,
+      }),
+    });
     recordAuditEvent({
       eventType: "session.cancelled",
       runtimeSessionId: session.row.id,
