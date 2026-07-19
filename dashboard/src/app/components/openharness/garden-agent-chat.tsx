@@ -220,7 +220,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     "rounded-md border border-gray-500 bg-gray-800 px-2 py-1 text-[11px] text-white";
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex h-[76vh] w-[480px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-2xl">
+    <div className="neu-surface-raised fixed bottom-4 right-4 z-50 flex h-[76vh] w-[480px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950">
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 px-4 py-2.5">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-gray-100">{gardenName ?? gardenSlug}</p>
@@ -399,7 +399,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
                     key={prompt}
                     onClick={() => sendSuggestedPrompt(prompt)}
                     disabled={busy}
-                    className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-xs text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-xs text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {prompt}
                   </button>

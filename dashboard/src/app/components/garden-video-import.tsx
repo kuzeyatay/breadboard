@@ -493,14 +493,14 @@ export default function GardenVideoImport({
                   }
                 }}
                 placeholder="https://www.youtube.com/watch?v=…"
-                className="h-8 min-w-0 flex-1 rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                className="neu-control h-8 min-w-0 flex-1 rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
                 aria-label="YouTube URL"
               />
               <button
                 type="button"
                 onClick={() => void checkYouTubeUrl()}
                 disabled={!youtubeUrl.trim() || Boolean(urlError) || previewLoading}
-                className="flex h-8 shrink-0 items-center justify-center rounded-md border border-gray-800 px-2.5 text-[11px] text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="neu-button flex h-8 shrink-0 items-center justify-center rounded-md border border-gray-800 px-2.5 text-[11px] text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                 title="Check video details"
               >
                 {previewLoading ? <Spinner /> : "Check"}
@@ -539,7 +539,7 @@ export default function GardenVideoImport({
             type="button"
             onClick={() => void handleSubmit()}
             disabled={!canSubmit}
-            className="flex h-8 w-full items-center justify-center gap-2 rounded-md border border-gray-800 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="neu-button flex h-8 w-full items-center justify-center gap-2 rounded-md border border-gray-800 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? <Spinner /> : null}
             Transcribe video

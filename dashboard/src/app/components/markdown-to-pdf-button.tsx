@@ -182,7 +182,7 @@ export default function MarkdownToPdfButton({
             ? "Download current page as PDF"
             : "Open a page to download as PDF"
         }
-        className="flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-gray-700 disabled:hover:text-gray-300"
+        className="neu-button flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-gray-700 disabled:hover:text-gray-300"
       >
         <svg
           className="h-3.5 w-3.5"
@@ -200,7 +200,7 @@ export default function MarkdownToPdfButton({
         {downloading ? "Exporting..." : label}
       </button>
       {error && (
-        <span className="absolute right-0 top-full z-20 mt-2 w-64 rounded-lg border border-red-900/70 bg-gray-950 px-3 py-2 text-xs text-red-300 shadow-xl">
+        <span className="neu-popover absolute right-0 top-full z-20 mt-2 w-64 rounded-lg border border-red-900/70 bg-gray-950 px-3 py-2 text-xs text-red-300">
           {error}
         </span>
       )}

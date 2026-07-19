@@ -103,7 +103,7 @@ export default function LearnConfirmationDialog({
         aria-modal="true"
         aria-labelledby="learn-confirmation-title"
         aria-describedby="learn-confirmation-description learn-confirmation-guidance"
-        className="w-full max-w-md overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-[0_24px_70px_rgba(15,26,22,0.34)]"
+        className="neu-dialog w-full max-w-md overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)]"
       >
         <div className="p-6 pb-5">
           <div className="flex items-start gap-3.5">
@@ -141,7 +141,7 @@ export default function LearnConfirmationDialog({
 
           <div
             id="learn-confirmation-guidance"
-            className="mt-5 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm leading-5 text-[var(--ink-muted)]"
+            className="neu-inset mt-5 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm leading-5 text-[var(--ink-muted)]"
           >
             <p className="font-semibold text-[var(--ink-heading)]">
               {content.guidanceLabel}
@@ -155,14 +155,14 @@ export default function LearnConfirmationDialog({
             ref={cancelRef}
             type="button"
             onClick={onCancel}
-            className="rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:bg-[var(--paper-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--botanical)] focus:ring-offset-2 focus:ring-offset-[var(--paper-surface)]"
+            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:bg-[var(--paper-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--botanical)] focus:ring-offset-2 focus:ring-offset-[var(--paper-surface)]"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            className="rounded-lg border border-[var(--danger-hover)] bg-[var(--danger)] px-4 py-2 text-sm font-semibold text-[#fffefb] transition hover:bg-[var(--danger-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--danger)] focus:ring-offset-2 focus:ring-offset-[var(--paper-surface)]"
+            className="neu-button-destructive rounded-lg border border-[var(--danger-hover)] bg-[var(--danger)] px-4 py-2 text-sm font-semibold text-[#fffefb] transition hover:bg-[var(--danger-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--danger)] focus:ring-offset-2 focus:ring-offset-[var(--paper-surface)]"
           >
             {content.confirmLabel}
           </button>

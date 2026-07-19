@@ -6,6 +6,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import SkillCreatorPanel from "./skill-creator-panel";
 
 type CatalogFilter = "all" | "trending" | "hot" | "official" | "installed" | "updates";
 
@@ -140,6 +141,7 @@ export default function SkillsCatalogPanel({
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [creating, setCreating] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -317,6 +319,16 @@ export default function SkillsCatalogPanel({
     }
   }
 
+  if (creating) {
+    return (
+      <SkillCreatorPanel
+        runtimeSessionId={runtimeSessionId}
+        onBack={() => setCreating(false)}
+        onInstalledChange={onInstalledChange}
+      />
+    );
+  }
+
   if (selected) {
     return (
       <section className="p-3" aria-label={`${selected.command} details`}>
@@ -329,9 +341,9 @@ export default function SkillsCatalogPanel({
           </div>
           <div className="flex flex-wrap gap-2">
             {selected.installationStatus === "installed" ? (
-              <button type="button" onClick={() => onUse(selected)} className="rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Use {selected.command}</button>
+              <button type="button" onClick={() => onUse(selected)} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Use {selected.command}</button>
             ) : null}
-            <a href={selected.pageUrl ?? `https://skills.sh/${selected.source}/${selected.slug}`} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium text-[var(--ink)]">Open source</a>
+            <a href={selected.pageUrl ?? `https://skills.sh/${selected.source}/${selected.slug}`} target="_blank" rel="noreferrer" className="neu-button rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium text-[var(--ink)]">Open source</a>
           </div>
         </div>
 
@@ -354,7 +366,7 @@ export default function SkillsCatalogPanel({
                 )) : <p className="mt-1 text-xs text-[var(--ink-muted)]">None declared or derived.</p>}
               </div>
               <label className="text-xs font-medium text-[var(--ink-heading)]">Runtime category
-                <select value={reviewClass} onChange={(event) => setReviewClass(event.target.value as typeof reviewClass)} className="mt-1 block w-full rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-2 text-xs">
+                <select value={reviewClass} onChange={(event) => setReviewClass(event.target.value as typeof reviewClass)} className="neu-control mt-1 block w-full rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-2 text-xs">
                   <option value="eligible_general">General guidance</option>
                   <option value="eligible_coding_conditional">Coding guidance (permissions still task-scoped)</option>
                 </select>
@@ -365,8 +377,8 @@ export default function SkillsCatalogPanel({
               <ul className="mt-2 max-h-40 overflow-y-auto font-mono text-[10px] text-[var(--ink-muted)]">{report.files.map((file) => <li key={file} className="break-all py-0.5">{file} · {report.fileHashes[file]}</li>)}</ul>
             </details>
             <div className="mt-4 flex justify-end gap-2">
-              <button disabled={actionBusy} type="button" onClick={() => void decideReview("reject")} className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium">Cancel</button>
-              <button disabled={actionBusy || !report.integrityVerified} type="button" onClick={() => void decideReview("promote")} className="rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">Approve and install</button>
+              <button disabled={actionBusy} type="button" onClick={() => void decideReview("reject")} className="neu-button rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium">Cancel</button>
+              <button disabled={actionBusy || !report.integrityVerified} type="button" onClick={() => void decideReview("promote")} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50">Approve and install</button>
             </div>
           </div>
         ) : detail?.detail ? (
@@ -390,8 +402,8 @@ export default function SkillsCatalogPanel({
               <ul className="mt-2 max-h-40 overflow-y-auto font-mono text-[10px] text-[var(--ink-muted)]">{detail.detail.files?.map((file) => <li key={file.path} className="break-all py-0.5">{file.path}</li>) ?? <li>No upstream snapshot is available.</li>}</ul>
             </details>
             <div className="flex flex-wrap justify-end gap-2">
-              {selected.installationStatus === "installed" ? <button disabled={actionBusy} type="button" onClick={() => void removeSkill()} className="rounded-lg border border-[#b87268] px-3 py-2 font-medium text-[#9a4438]">Remove</button> : null}
-              <button disabled={actionBusy} type="button" onClick={() => void prepareReview()} className="rounded-lg bg-[var(--botanical)] px-3 py-2 font-medium text-white">{selected.updateStatus === "update_available" ? "Review update" : selected.installationStatus === "installed" ? "Re-review" : "Review for install"}</button>
+              {selected.installationStatus === "installed" ? <button disabled={actionBusy} type="button" onClick={() => void removeSkill()} className="neu-button-destructive rounded-lg border border-[#b87268] px-3 py-2 font-medium text-[#9a4438]">Remove</button> : null}
+              <button disabled={actionBusy} type="button" onClick={() => void prepareReview()} className="neu-button-accent rounded-lg bg-[var(--botanical)] px-3 py-2 font-medium text-white">{selected.updateStatus === "update_available" ? "Review update" : selected.installationStatus === "installed" ? "Re-review" : "Review for install"}</button>
             </div>
           </div>
         ) : null}
@@ -403,11 +415,12 @@ export default function SkillsCatalogPanel({
     <section className="min-h-0" aria-label="skills.sh catalog">
       <div className="sticky top-0 z-10 bg-[var(--paper-raised)] px-3 pb-2 pt-3">
         <div className="flex gap-2">
-          <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="Search every public skill" aria-label="Search skills.sh" className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]" />
+          <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="Search every public skill" aria-label="Search skills.sh" className="neu-control min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm outline-none focus:border-[var(--botanical)]" />
           <button type="button" disabled={refreshing} onClick={() => void refresh()} className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium disabled:opacity-50">{refreshing ? "Refreshing…" : "Refresh"}</button>
+          <button type="button" onClick={() => setCreating(true)} className="neu-button rounded-lg border border-[var(--line)] px-3 py-2 text-xs font-medium text-[var(--botanical)]">Create</button>
         </div>
         <div className="mt-2 flex gap-1 overflow-x-auto" role="tablist" aria-label="Skill catalog views">
-          {FILTERS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={filter === item.id} onClick={() => { setFilter(item.id); setPage(0); }} className={`shrink-0 rounded-md px-2.5 py-1.5 text-xs ${filter === item.id ? "bg-[var(--paper-strong)] font-medium text-[var(--ink-heading)]" : "text-[var(--ink-muted)]"}`}>{item.label}</button>)}
+          {FILTERS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={filter === item.id} onClick={() => { setFilter(item.id); setPage(0); }} className={`shrink-0 rounded-md px-2.5 py-1.5 text-xs ${filter === item.id ? "neu-selected bg-[var(--paper-strong)] font-medium text-[var(--ink-heading)]" : "text-[var(--ink-muted)]"}`}>{item.label}</button>)}
         </div>
         <p className="mt-2 text-[10px] text-[var(--ink-muted)]" role="status">{catalogStatusText(status, pagination.total, query, refreshing)}</p>
         {status?.stale ? <p className="mt-1 text-[10px] text-[#9a6b19]">Showing a stale last-known-good catalog{status.lastFailure ? ` · ${status.lastFailure}` : ""}</p> : null}

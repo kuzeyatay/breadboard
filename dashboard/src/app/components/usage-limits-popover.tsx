@@ -72,7 +72,7 @@ export default function UsageLimitsPopover({
   buttonClassName = "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors",
   activeButtonClassName = "border-blue-800/60 bg-blue-950/30 text-blue-400",
   inactiveButtonClassName = "border-transparent text-gray-600 hover:bg-gray-800 hover:text-gray-300",
-  popoverClassName = "absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-xl border border-gray-700 bg-gray-900 p-4 text-xs shadow-2xl",
+  popoverClassName = "neu-popover absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-xl border border-gray-700 bg-gray-900 p-4 text-xs",
   showIcon = true,
   light = false,
 }: UsageLimitsPopoverProps) {
@@ -159,7 +159,7 @@ export default function UsageLimitsPopover({
                 onClick={() => void refreshUsage(false, true)}
                 disabled={loading}
                 title="Refresh the usage-limit snapshot"
-                className={`rounded-md border px-2 py-1 text-[11px] transition disabled:cursor-wait disabled:opacity-50 ${light ? "border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)]" : "border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300"}`}
+                className={`neu-button rounded-md border px-2 py-1 text-[11px] transition disabled:cursor-wait disabled:opacity-50 ${light ? "border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)]" : "border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300"}`}
               >
                 {loading ? "Refreshing..." : "Refresh"}
               </button>
@@ -190,7 +190,7 @@ export default function UsageLimitsPopover({
                           <span>{label}</span>
                           <span>Not reported</span>
                         </div>
-                        <div className={`h-1.5 rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`} />
+                        <div className={`neu-progress-track h-1.5 rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`} />
                         <p className={`mt-1 ${light ? "text-[var(--ink-muted)]" : "text-gray-600"}`}>
                           Unavailable in the latest response
                         </p>
@@ -214,7 +214,7 @@ export default function UsageLimitsPopover({
                           {used.toFixed(1)}% used, {left.toFixed(1)}% left
                         </span>
                       </div>
-                      <div className={`h-1.5 overflow-hidden rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`}>
+                      <div className={`neu-progress-track h-1.5 overflow-hidden rounded-full ${light ? "bg-[var(--line)]" : "bg-gray-800"}`}>
                         <div className={`h-full rounded-full ${color}`} style={{ width: `${used}%` }} />
                       </div>
                       {resetSeconds !== null ? (

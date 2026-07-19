@@ -67,7 +67,7 @@ export default function GardenAssistantSwitch(props: Props) {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="fixed bottom-4 right-4 z-50 rounded-full border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm text-gray-100 shadow-lg hover:bg-gray-800"
+          className="neu-button fixed bottom-4 right-4 z-50 rounded-full border border-gray-700 bg-gray-900 px-4 py-2.5 text-sm text-gray-100 hover:bg-gray-800"
         >
           Ask this garden
         </button>

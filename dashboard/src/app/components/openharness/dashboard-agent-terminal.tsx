@@ -375,7 +375,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   return (
     <section
       style={terminalStyle}
-      className="fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t text-gray-100"
+      className="neu-surface-raised fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t text-gray-100"
     >
       <div
         onPointerDown={handleResizeStart}
@@ -408,7 +408,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => setSidebarOpen((value) => !value)}
               style={{ animationDelay: "40ms" }}
-              className={`${headerItemAnim} flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white`}
+              className={`${headerItemAnim} neu-button-icon flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white`}
               title={sidebarOpen ? "Hide history" : "Show history"}
               aria-label="Toggle history"
             >
@@ -457,7 +457,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                   type="button"
                   onClick={startNewChat}
                   disabled={busy}
-                  className="flex w-full items-center gap-2 rounded-md border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-200 transition hover:border-gray-700 hover:bg-gray-900 disabled:opacity-50"
+                  className="neu-button flex w-full items-center gap-2 rounded-md border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-200 transition hover:border-gray-700 hover:bg-gray-900 disabled:opacity-50"
                 >
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -572,7 +572,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                           key={prompt}
                           onClick={() => sendSuggestedPrompt(prompt)}
                           disabled={busy || runtimeUnavailable}
-                          className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           {prompt}
                         </button>

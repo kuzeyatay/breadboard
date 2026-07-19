@@ -332,7 +332,7 @@ export default function LibraryGardenClient({ src, title }: Props) {
                   href={src}
                   target="_blank"
                   rel="noreferrer"
-                  className="rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
+                  className="neu-button rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white"
                 >
                   Open Quartz directly
                 </a>

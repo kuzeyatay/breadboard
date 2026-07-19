@@ -50,7 +50,7 @@ export default function RegisterPage() {
 
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
-      <div className="w-full max-w-sm">
+      <div className="neu-surface-raised w-full max-w-sm rounded-2xl border border-gray-800 bg-gray-900 p-6 sm:p-7">
         <h1 className="text-2xl font-semibold text-white text-center mb-8 tracking-tight">
           Create account
         </h1>
@@ -69,7 +69,7 @@ export default function RegisterPage() {
               type="text"
               autoComplete="one-time-code"
               required
-              className="w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
+              className="neu-control w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
               placeholder="SB-ABCD-1234"
             />
           </div>
@@ -90,7 +90,7 @@ export default function RegisterPage() {
               minLength={3}
               maxLength={30}
               pattern="[a-zA-Z0-9_-]+"
-              className="w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
+              className="neu-control w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
               placeholder="your-username"
             />
           </div>
@@ -108,7 +108,7 @@ export default function RegisterPage() {
               type="email"
               autoComplete="email"
               required
-              className="w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
+              className="neu-control w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
               placeholder="you@example.com"
             />
           </div>
@@ -128,7 +128,7 @@ export default function RegisterPage() {
                 autoComplete="new-password"
                 required
                 minLength={8}
-                className="w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 pr-10 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
+                className="neu-control w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 pr-10 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
                 placeholder="Min. 8 characters"
               />
               <button
@@ -166,7 +166,7 @@ export default function RegisterPage() {
                 autoComplete="new-password"
                 required
                 minLength={8}
-                className="w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 pr-10 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
+                className="neu-control w-full rounded-lg bg-gray-900 border border-gray-800 text-white px-4 py-2.5 pr-10 text-sm placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
                 placeholder="••••••••"
               />
             </div>
@@ -179,7 +179,7 @@ export default function RegisterPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full mt-2 rounded-lg bg-white text-gray-950 font-medium text-sm py-2.5 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="neu-button-primary w-full mt-2 rounded-lg bg-white text-gray-950 font-medium text-sm py-2.5 hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? 'Creating account…' : 'Create account'}
           </button>
