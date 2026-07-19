@@ -162,6 +162,8 @@ class CouncilRuntime:
             system=system,
             temperature=council_input.temperature,
             max_tokens=council_input.max_tokens,
+            reasoning_effort=council_input.reasoning_effort,
+            reasoning_summary=council_input.reasoning_summary,
         )
         try:
             text = self.router.call_model(call)
@@ -400,13 +402,14 @@ class CouncilRuntime:
             ranking.explanation if ranking else None,
         )
         try:
-            final = self._call(
+            final, reasoning = self._call_with_reasoning(
                 self.config.chairman_model,
                 BREADBOARD_COUNCIL_SYSTEM + "\n\n" + CHAIR_SYNTHESIZER_PROMPT,
                 [{"role": "user", "content": chair_prompt}],
                 council_input,
                 run,
             )
+            run.reasoning_summary = reasoning or ""
             self.ledger.record_event(
                 run.id,
                 ledger_events.EVENT_FINAL_SYNTHESIZED,
@@ -417,6 +420,9 @@ class CouncilRuntime:
             # Synthesis failed: fall back to the highest-ranked candidate.
             run.diagnostics["synthesisFailure"] = str(exc)
             best = self._best_candidate(candidates, ranking)
+            metadata = best.metadata if isinstance(best.metadata, dict) else {}
+            fallback_reasoning = metadata.get("reasoning")
+            run.reasoning_summary = fallback_reasoning if isinstance(fallback_reasoning, str) else ""
             self.ledger.record_event(
                 run.id,
                 ledger_events.EVENT_FINAL_SYNTHESIZED,
@@ -462,6 +468,7 @@ class CouncilRuntime:
             {"candidateId": candidate.id, "model": model, "role": "direct"},
         )
         run.final_answer = final
+        run.reasoning_summary = reasoning or ""
         self.ledger.record_event(
             run.id,
             ledger_events.EVENT_FINAL_SYNTHESIZED,

@@ -9,6 +9,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type ChangeEvent,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -28,6 +29,11 @@ import {
   DEFAULT_ASSISTANT_REASONING_EFFORT,
   type AssistantReasoningEffort,
 } from "@/lib/assistant-reasoning";
+import {
+  CHAT_ATTACHMENT_ACCEPT,
+  extractChatAttachments,
+  type ChatAttachment,
+} from "@/lib/chat-attachments";
 
 type TerminalScope = "mine" | "public";
 
@@ -148,6 +154,10 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   );
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
+  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
+  const [extractingAttachments, setExtractingAttachments] = useState(false);
+  const [attachmentStatus, setAttachmentStatus] = useState("");
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const isOpen = height > COLLAPSED_HEIGHT + 8;
 
@@ -256,10 +266,36 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
 
   const submit = useCallback(() => {
     const text = input.trim();
-    if (!text || runtimeUnavailable) return;
+    if ((!text && chatAttachments.length === 0) || runtimeUnavailable || busy) return;
+    const pendingAttachments = chatAttachments;
+    const displayText = text || "Please review the attached document(s).";
     setInput("");
-    void session.send(text, { model, reasoningEffort });
-  }, [input, model, reasoningEffort, runtimeUnavailable, session]);
+    setChatAttachments([]);
+    setAttachmentStatus("");
+    void session.send(displayText, {
+      model,
+      reasoningEffort,
+      attachments: pendingAttachments,
+    });
+  }, [busy, chatAttachments, input, model, reasoningEffort, runtimeUnavailable, session]);
+
+  const handleAttachmentInput = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files ?? []);
+      event.target.value = "";
+      if (files.length === 0) return;
+      setExtractingAttachments(true);
+      setAttachmentStatus("Reading documents…");
+      try {
+        const result = await extractChatAttachments(files);
+        setChatAttachments((current) => [...current, ...result.attachments]);
+        setAttachmentStatus([...result.errors, ...result.warnings].join(" · "));
+      } finally {
+        setExtractingAttachments(false);
+      }
+    },
+    [],
+  );
 
   const sendSuggestedPrompt = useCallback(
     (text: string) => {
@@ -287,6 +323,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     if (busy) return;
     session.reset();
     setInput("");
+    setChatAttachments([]);
+    setAttachmentStatus("");
     setSkillsOpen(false);
   }
 
@@ -295,6 +333,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     session.reset();
     session.setSessionId(item.id);
     session.setMessages(item.messages);
+    setChatAttachments([]);
+    setAttachmentStatus("");
     setSkillsOpen(false);
   }
 
@@ -376,12 +416,6 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
               </svg>
             </button>
-            <span
-              style={{ animationDelay: "130ms" }}
-              className={`${headerItemAnim} font-mono text-sm font-medium text-[#5f7f8e]`}
-            >
-              {"B"}
-            </span>
             <div className="min-w-0">
               <p
                 style={{ animationDelay: "210ms" }}
@@ -467,6 +501,14 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
           ) : null}
 
           <div className="flex min-w-0 flex-1 flex-col">
+            <input
+              ref={attachmentInputRef}
+              type="file"
+              accept={CHAT_ATTACHMENT_ACCEPT}
+              multiple
+              onChange={handleAttachmentInput}
+              className="hidden"
+            />
             {skillsOpen ? (
               <SkillReviewPanel
                 runtimeSessionId={session.sessionId}
@@ -492,6 +534,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 input={input}
                 onInputChange={setInput}
                 onSubmit={submit}
+                disabled={runtimeUnavailable}
                 onAbort={() => void session.abort()}
                 onPermissionDecision={(decision) => void session.respondToPermission(decision)}
                 onRetryMessage={retryMessage}
@@ -501,6 +544,15 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 onModelChange={setModel}
                 reasoningEffort={reasoningEffort}
                 onReasoningEffortChange={setReasoningEffort}
+                onAddDocuments={() => attachmentInputRef.current?.click()}
+                isAddingDocuments={extractingAttachments}
+                attachments={chatAttachments}
+                onRemoveAttachment={(index) =>
+                  setChatAttachments((current) =>
+                    current.filter((_, itemIndex) => itemIndex !== index),
+                  )
+                }
+                statusMessage={attachmentStatus}
                 emptyState={
                   <div className="flex flex-col items-center gap-5 py-8 text-center">
                     <div>

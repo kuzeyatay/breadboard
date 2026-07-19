@@ -121,6 +121,14 @@ export interface RawOpenHarnessEvent {
   properties?: Record<string, unknown>;
 }
 
+export interface OpenHarnessEventNormalizationState {
+  reasoningPartIds: Set<string>;
+}
+
+export function createOpenHarnessEventNormalizationState(): OpenHarnessEventNormalizationState {
+  return { reasoningPartIds: new Set<string>() };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -157,12 +165,13 @@ function timestamp(): string {
 /**
  * Translate one raw OpenHarness event into zero or one normalized events for
  * the given session. Events for other sessions, and event types we do not
- * surface, return null. This is a pure function so it can be unit-tested and
- * reused by every surface without touching the network.
+ * surface, return null. A per-subscription state lets us distinguish text
+ * deltas belonging to OpenHarness reasoning parts from assistant answer text.
  */
 export function normalizeOpenHarnessEvent(
   raw: RawOpenHarnessEvent,
   sessionId: string,
+  normalizationState?: OpenHarnessEventNormalizationState,
 ): NormalizedAgentEvent | null {
   const props = isRecord(raw.properties) ? raw.properties : {};
   const eventSession = extractSessionId(raw);
@@ -175,12 +184,17 @@ export function normalizeOpenHarnessEvent(
       const field = asString(props.field);
       const delta = asString(props.delta) ?? "";
       if (!delta) return null;
-      if (field === "reasoning") {
+      const partId = asString(props.partID) ?? asString(props.partId);
+      const isReasoningDelta =
+        field === "reasoning" ||
+        (field === "text" &&
+          Boolean(partId && normalizationState?.reasoningPartIds.has(partId)));
+      if (isReasoningDelta) {
         return {
           type: "reasoning.status",
           sessionId,
           timestamp: timestamp(),
-          payload: { label: "Thinking" },
+          payload: { label: "Thinking", detail: delta },
         };
       }
       // Any text-ish field (text, content) is streamed assistant output.
@@ -197,9 +211,28 @@ export function normalizeOpenHarnessEvent(
     }
 
     case "message.part.updated": {
-      // Tool activity arrives as an updated `tool` part with a nested state.
       const part = isRecord(props.part) ? props.part : undefined;
-      if (!part || asString(part.type) !== "tool") return null;
+      if (!part) return null;
+      const partType = asString(part.type);
+      if (partType === "reasoning") {
+        const partId = asString(part.id);
+        if (partId && normalizationState) {
+          const time = isRecord(part.time) ? part.time : undefined;
+          if (time?.end !== undefined) {
+            normalizationState.reasoningPartIds.delete(partId);
+          } else {
+            normalizationState.reasoningPartIds.add(partId);
+          }
+        }
+        return {
+          type: "reasoning.status",
+          sessionId,
+          timestamp: timestamp(),
+          payload: { label: "Thinking" },
+        };
+      }
+      // Tool activity arrives as an updated `tool` part with a nested state.
+      if (partType !== "tool") return null;
       const state = isRecord(part.state) ? part.state : undefined;
       const status = asString(state?.status);
       const toolName = asString(part.tool) ?? "tool";

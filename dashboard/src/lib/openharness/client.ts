@@ -237,10 +237,14 @@ export async function updateSessionPermissions(
   });
 }
 
-export interface PromptPart {
-  type: "text";
-  text: string;
-}
+export type PromptPart =
+  | { type: "text"; text: string }
+  | {
+      type: "file";
+      mime: string;
+      filename?: string;
+      url: string;
+    };
 
 export interface PromptBody {
   agent?: string;

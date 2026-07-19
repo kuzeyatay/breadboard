@@ -11,7 +11,6 @@ import {
 import { resolvePrompt, listPrompts } from "./prompts.ts";
 import {
   listApprovedSkills,
-  conditionalSkillRelevant,
   type SkillEligibility,
 } from "./skills.ts";
 import { ApiError } from "./route-core.ts";
@@ -63,7 +62,7 @@ export interface ResolvedCommandMessage {
 }
 
 const LEGACY_TOKEN = /^\/(skill|mcp|prompt):([a-z0-9][a-z0-9_.-]*)(?:\s+|$)/i;
-const CLEAN_TOKEN = /^\/([a-z0-9][a-z0-9_.-]*)(?:\s+|$)/i;
+const CLEAN_TOKEN = /^\/([a-z0-9][a-z0-9_.:-]*)(?:\s+|$)/i;
 
 function surfaceCompatibility(surface: OpenHarnessSurface): string {
   if (surface === "garden_chat") return "garden";
@@ -79,12 +78,12 @@ export function skillAvailableForContext(
   if (!skill.compatibleSurfaces.includes(surfaceCompatibility(context.surface) as never)) {
     return false;
   }
-  if (skill.classification === "eligible_general") return true;
+  // Installing guidance and authorizing code changes are separate decisions.
+  // A reviewed coding skill remains selectable; the task capability gate still
+  // controls whether any filesystem or implementation tools can be enabled.
   return (
-    skill.classification === "eligible_coding_conditional" &&
-    context.mode === "scoped_implementation" &&
-    context.surface === "dashboard_terminal" &&
-    conditionalSkillRelevant(skill, context.requestedOutcome)
+    skill.classification === "eligible_general" ||
+    skill.classification === "eligible_coding_conditional"
   );
 }
 
@@ -120,13 +119,10 @@ export function registryItemsForUser(
       enabled: true,
       healthy: true,
       classification: skill.classification,
-      requiredCapabilityMode:
-        skill.classification === "eligible_coding_conditional"
-          ? "scoped_implementation"
-          : "knowledge",
+      requiredCapabilityMode: "knowledge",
       version: skill.version,
       contentHash: skill.contentHash,
-      trustLabel: skill.contentHash ? "Reviewed and pinned" : "Bundled",
+      trustLabel: skill.contentHash ? "Reviewed and pinned" : "Reviewed installation",
     }));
   const connections: Omit<CommandHubItem, "token">[] = (userId === null ? [] : listMcpConnections(userId)).map(
     (connection) => ({

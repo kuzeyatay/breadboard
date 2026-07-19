@@ -14,7 +14,18 @@ const python = process.platform === "win32" ? "python" : "python3";
 
 const child = spawn(
   python,
-  ["chatmock.py", "serve", "--port", "8765", "--reasoning-effort", "low", "--reasoning-summary", "none"],
+  [
+    "chatmock.py",
+    "serve",
+    "--port",
+    "8765",
+    "--reasoning-effort",
+    "low",
+    "--reasoning-summary",
+    "detailed",
+    "--reasoning-compat",
+    "legacy",
+  ],
   { cwd: chatmockDir, env: process.env, stdio: "inherit" },
 );
 child.on("error", (error) => {

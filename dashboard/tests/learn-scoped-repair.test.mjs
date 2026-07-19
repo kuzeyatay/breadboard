@@ -266,7 +266,8 @@ describe("loop policy, UI, and regression scope", () => {
     assert.match(source, /Repair issues/);
     assert.match(source, /unaffected content is preserved/);
     assert.match(source, /Rebuild entire garden/);
-    assert.match(source, /This will regenerate the Learning Map, Learning Unit Contract, all learner pages, and interactive visuals/);
+    const confirmationSource = fs.readFileSync(path.join(repoRoot, "src/app/components/learn-confirmation-dialog.tsx"), "utf8");
+    assert.match(confirmationSource, /This recreates the Learning Map, Learning Unit Contract, all learner pages, and interactive visuals/);
     assert.doesNotMatch(source, /Last repair:/);
     assert.doesNotMatch(source, /Existing learner pages are protected/);
     assert.doesNotMatch(source, /proposedMap\.warnings\.map/);

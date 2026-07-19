@@ -156,7 +156,7 @@ test("skill classifications distinguish general, coding, unknown, incompatible, 
   assert.equal(classifySkill({ name: "stealer", description: "Credential theft and token exfiltration" }).classification, "blocked_security");
 });
 
-test("conditional coding skills are rejected in knowledge mode and allowed only after an independent gate", async (t) => {
+test("coding skill guidance remains visible while implementation authority stays independently gated", async (t) => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bb-conditional-skill-"));
   const previous = process.env.OPENHARNESS_SKILLS_APPROVED;
   process.env.OPENHARNESS_SKILLS_APPROVED = temporary;
@@ -172,10 +172,14 @@ test("conditional coding skills are rejected in knowledge mode and allowed only 
   fs.writeFileSync(path.join(temporary, "registry.json"), JSON.stringify({ skills: { "react-repair": { classification } } }));
   assert.equal(listApprovedSkills()[0].classification, "eligible_coding_conditional");
 
-  await assert.rejects(
-    () => resolveCommandMessage(1, "/skill:react-repair fix it", root, { mode: "knowledge", surface: "dashboard_terminal" }),
-    /not approved for the current surface and capability mode/,
+  const knowledge = await resolveCommandMessage(
+    1,
+    "/skill:react-repair explain what should be checked",
+    root,
+    { mode: "knowledge", surface: "dashboard_terminal" },
   );
+  assert.match(knowledge.text, /Reviewed skill guidance: react-repair/i);
+  assert.match(knowledge.text, /cannot widen the current tool/);
   const allowed = await resolveCommandMessage(
     1,
     "/react-repair Fix the React interface component.",

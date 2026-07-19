@@ -1,49 +1,45 @@
 ---
 title: "Spiking Neural Networks"
-date: "2026-07-17T21:10:28.480Z"
+date: "2026-07-19T08:54:59.487Z"
 knowledge_type: "learning-index"
 breadboardType: "learning_index"
 gardenId: "test2"
 generatedBy: "learn_button"
 generated_by: "learn_button"
-learningVersion: "learning_mrpflh5m_6rvz1xy"
-learningVersionId: "learning_mrpflh5m_6rvz1xy"
+learningVersion: "learning_mrrk75nd_e4hty8i"
+learningVersionId: "learning_mrrk75nd_e4hty8i"
 sourceSetHash: "9dd04069ae974ffd6ed432d1f1210f565e44a61dfe0994a45890c303d71157bc"
 ---
 
 # Spiking Neural Networks
 
-Learners will be able to connect biological spike generation to mathematical neuron models, explain how information is encoded and learned across time, compare source-covered training strategies, and evaluate SNN efficiency and benchmark claims in their architectural, software, and hardware contexts.
+Spiking Neural Networks connects Topic Overview with 1. Core Ideas and How They Work, 1.1 Why Spiking Neural Networks Exist so the ideas build in a clear order.
 
 Read the sections in order. Start with the [[learning/Topic Overview|Topic Overview]], then work through each numbered section.
-
-## Sections
-
-- [[learning/1. How Discrete Spike-based Representation Works/_index|1. How Discrete Spike-based Representation Works]]
-  - [[learning/1. How Discrete Spike-based Representation Works/1.1 Why Spiking Neural Networks Exist|1.1 Why Spiking Neural Networks Exist]]
-  - [[learning/1. How Discrete Spike-based Representation Works/1.2 Neurons, Synapses, and Spike Trains|1.2 Neurons, Synapses, and Spike Trains]]
-  - [[learning/1. How Discrete Spike-based Representation Works/1.3 How an Action Potential Unfolds|1.3 How an Action Potential Unfolds]]
-  - [[learning/1. How Discrete Spike-based Representation Works/1.4 Where SNN Energy Savings Come From|1.4 Where SNN Energy Savings Come From]]
-- [[learning/2. Describing Membrane Capacitance Formally/_index|2. Describing Membrane Capacitance Formally]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.1 The Hodgkin-Huxley Membrane Equation|2.1 The Hodgkin-Huxley Membrane Equation]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.2 The Leaky Integrate-and-Fire Neuron|2.2 The Leaky Integrate-and-Fire Neuron]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.3 Voltage Dynamics Across a Spiking Network|2.3 Voltage Dynamics Across a Spiking Network]]
-  - [[learning/2. Describing Membrane Capacitance Formally/2.4 A Quadratic Optimization View of Spiking Computation|2.4 A Quadratic Optimization View of Spiking Computation]]
-- [[learning/3. Describing Continuous Gradient Flow Formally/_index|3. Describing Continuous Gradient Flow Formally]]
-  - [[learning/3. Describing Continuous Gradient Flow Formally/3.1 From Constrained Gradient Descent to Spikes|3.1 From Constrained Gradient Descent to Spikes]]
-  - [[learning/3. Describing Continuous Gradient Flow Formally/3.2 Backpropagation Through Time|3.2 Backpropagation Through Time]]
-  - [[learning/3. Describing Continuous Gradient Flow Formally/3.3 Surrogate Gradients for Discrete Spikes|3.3 Surrogate Gradients for Discrete Spikes]]
-  - [[learning/3. Describing Continuous Gradient Flow Formally/3.4 Finite Differences and Information-Based Objectives|3.4 Finite Differences and Information-Based Objectives]]
-- [[learning/4. Describing Differentiable Spike Activation Formally/_index|4. Describing Differentiable Spike Activation Formally]]
-  - [[learning/4. Describing Differentiable Spike Activation Formally/4.1 Differentiable Spikes with Scheduled Sharpness|4.1 Differentiable Spikes with Scheduled Sharpness]]
-  - [[learning/4. Describing Differentiable Spike Activation Formally/4.2 Sparse Surrogate-Gradient Updates|4.2 Sparse Surrogate-Gradient Updates]]
-  - [[learning/4. Describing Differentiable Spike Activation Formally/4.3 Spike-Timing-Dependent Plasticity|4.3 Spike-Timing-Dependent Plasticity]]
-- [[learning/5. Methods and Evaluation/_index|5. Methods and Evaluation]]
-  - [[learning/5. Methods and Evaluation/5.1 Training Deep Spiking Networks Reliably|5.1 Training Deep Spiking Networks Reliably]]
-  - [[learning/5. Methods and Evaluation/5.2 Interpreting SNN Benchmark Results|5.2 Interpreting SNN Benchmark Results]]
-- [[learning/6. Rate Coding and Latency Coding Compared/_index|6. Rate Coding and Latency Coding Compared]]
-  - [[learning/6. Rate Coding and Latency Coding Compared/6.1 Rate, Latency, and Delta Spike Encoding|6.1 Rate, Latency, and Delta Spike Encoding]]
-  - [[learning/6. Rate Coding and Latency Coding Compared/6.2 Choosing an SNN Training Strategy|6.2 Choosing an SNN Training Strategy]]
-- [[learning/7. Applications and Practical Use/_index|7. Applications and Practical Use]]
-  - [[learning/7. Applications and Practical Use/7.1 Software, Neuromorphic Hardware, and Low-Power Applications|7.1 Software, Neuromorphic Hardware, and Low-Power Applications]]
-  - [[learning/7. Applications and Practical Use/7.2 When Spiking Neural Networks Are a Good Fit|7.2 When Spiking Neural Networks Are a Good Fit]]
+- [[learning/1. Core Ideas and How They Work/_index|1. Core Ideas and How They Work]]
+  - [[learning/1. Core Ideas and How They Work/1.1 Why Spiking Neural Networks Exist|1.1 Why Spiking Neural Networks Exist]]
+  - [[learning/1. Core Ideas and How They Work/1.2 Action Potentials and Spike Trains|1.2 Action Potentials and Spike Trains]]
+  - [[learning/1. Core Ideas and How They Work/1.3 Where SNN Efficiency Can Come From|1.3 Where SNN Efficiency Can Come From]]
+- [[learning/2. Describing Capacitive Membrane Current Formally/_index|2. Describing Capacitive Membrane Current Formally]]
+  - [[learning/2. Describing Capacitive Membrane Current Formally/2.1 The Hodgkin-Huxley Membrane Model|2.1 The Hodgkin-Huxley Membrane Model]]
+  - [[learning/2. Describing Capacitive Membrane Current Formally/2.2 The Leaky Integrate-and-Fire Neuron|2.2 The Leaky Integrate-and-Fire Neuron]]
+  - [[learning/2. Describing Capacitive Membrane Current Formally/2.3 Optimization Objectives and Spiking Voltage Dynamics|2.3 Optimization Objectives and Spiking Voltage Dynamics]]
+  - [[learning/2. Describing Capacitive Membrane Current Formally/2.4 Constraint Voltages and Boundary Correction|2.4 Constraint Voltages and Boundary Correction]]
+  - [[learning/2. Describing Capacitive Membrane Current Formally/2.5 Backpropagation Through Time|2.5 Backpropagation Through Time]]
+- [[learning/3. Describing Non-differentiable Spike Function Formally/_index|3. Describing Non-differentiable Spike Function Formally]]
+  - [[learning/3. Describing Non-differentiable Spike Function Formally/3.1 Surrogate Gradients for Discrete Spikes|3.1 Surrogate Gradients for Discrete Spikes]]
+  - [[learning/3. Describing Non-differentiable Spike Function Formally/3.2 Alternative Gradient and Spike Approximations|3.2 Alternative Gradient and Spike Approximations]]
+  - [[learning/3. Describing Non-differentiable Spike Function Formally/3.3 Sparse Surrogate-Gradient Computation|3.3 Sparse Surrogate-Gradient Computation]]
+  - [[learning/3. Describing Non-differentiable Spike Function Formally/3.4 Spike-Timing-Dependent Plasticity|3.4 Spike-Timing-Dependent Plasticity]]
+- [[learning/4. Methods and Evaluation/_index|4. Methods and Evaluation]]
+  - [[learning/4. Methods and Evaluation/4.1 Training Deep Spiking Networks|4.1 Training Deep Spiking Networks]]
+  - [[learning/4. Methods and Evaluation/4.2 Accuracy and Benchmark Context|4.2 Accuracy and Benchmark Context]]
+- [[learning/5. Rate Coding and Latency Coding Compared/_index|5. Rate Coding and Latency Coding Compared]]
+  - [[learning/5. Rate Coding and Latency Coding Compared/5.1 Rate, Latency, and Delta-Modulation Coding|5.1 Rate, Latency, and Delta-Modulation Coding]]
+  - [[learning/5. Rate Coding and Latency Coding Compared/5.2 Learning Beyond Conventional BPTT|5.2 Learning Beyond Conventional BPTT]]
+  - [[learning/5. Rate Coding and Latency Coding Compared/5.3 SNN Software and Neuromorphic Hardware|5.3 SNN Software and Neuromorphic Hardware]]
+- [[learning/6. Applications, Limits, and Open Questions/_index|6. Applications, Limits, and Open Questions]]
+  - [[learning/6. Applications, Limits, and Open Questions/6.1 Memory Traffic as an Efficiency Bottleneck|6.1 Memory Traffic as an Efficiency Bottleneck]]
+  - [[learning/6. Applications, Limits, and Open Questions/6.2 SNNs Under Power, Heat, and Size Constraints|6.2 SNNs Under Power, Heat, and Size Constraints]]
+  - [[learning/6. Applications, Limits, and Open Questions/6.3 Event-Based Spatiotemporal Classification|6.3 Event-Based Spatiotemporal Classification]]
+  - [[learning/6. Applications, Limits, and Open Questions/6.4 Choosing an SNN Training Strategy|6.4 Choosing an SNN Training Strategy]]

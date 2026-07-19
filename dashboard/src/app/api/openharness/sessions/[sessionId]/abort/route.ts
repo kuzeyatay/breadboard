@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { leastPrivilegeDecision } from "@/lib/openharness/dispatch-core.ts";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeSession, markStatus } from "@/lib/openharness/session-service.ts";
@@ -38,12 +39,7 @@ export async function POST(
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
-      decision: decideCapabilityMode({
-        surface: session.row.surface,
-        userId,
-        requestedOutcome: "Resume default knowledge work.",
-        authorizedRoot: session.activeDirectory,
-      }),
+      decision: leastPrivilegeDecision(session.activeDirectory),
     });
     recordAuditEvent({
       eventType: "session.cancelled",

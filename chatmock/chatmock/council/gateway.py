@@ -18,7 +18,7 @@ from flask import Response, current_app, jsonify, make_response
 
 from ..ask import chatmock_ask
 from ..http import build_cors_headers
-from ..model_registry import normalize_model_name
+from ..model_registry import extract_reasoning_from_model_name, normalize_model_name
 from .policy import council_enabled
 from .types import CouncilInput, CouncilRun, CouncilTokenUsage
 
@@ -30,6 +30,25 @@ def _payload_flag(payload: Dict[str, Any], *names: str) -> Any:
         if name in payload:
             return payload[name]
     return None
+
+
+def _request_reasoning(
+    payload: Dict[str, Any],
+    requested_model: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Read the same request-level reasoning overrides as non-Council routes."""
+    reasoning = payload.get("reasoning")
+    overrides = (
+        reasoning
+        if isinstance(reasoning, dict)
+        else extract_reasoning_from_model_name(requested_model) or {}
+    )
+    effort = overrides.get("effort")
+    summary = overrides.get("summary")
+    return (
+        effort.strip().lower() if isinstance(effort, str) and effort.strip() else None,
+        summary.strip().lower() if isinstance(summary, str) and summary.strip() else None,
+    )
 
 
 def council_bypass_reason(payload: Dict[str, Any], messages: List[Dict[str, Any]]) -> Optional[str]:
@@ -58,6 +77,7 @@ def _build_council_input(
 ) -> CouncilInput:
     temperature = payload.get("temperature")
     max_tokens = payload.get("max_tokens") or payload.get("max_completion_tokens")
+    reasoning_effort, reasoning_summary = _request_reasoning(payload, requested_model)
     return CouncilInput(
         messages=messages,
         task_type=_payload_flag(payload, "taskType", "task_type"),
@@ -69,6 +89,8 @@ def _build_council_input(
         requested_model=requested_model or normalized_model,
         temperature=temperature if isinstance(temperature, (int, float)) else None,
         max_tokens=max_tokens if isinstance(max_tokens, int) else None,
+        reasoning_effort=reasoning_effort,
+        reasoning_summary=reasoning_summary,
     )
 
 
@@ -186,6 +208,17 @@ def _sse_iter(
         return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     yield _chunk({"role": "assistant"}, None)
+    reasoning = run.reasoning_summary or ""
+    for start in range(0, len(reasoning), _STREAM_CHUNK_CHARS):
+        reasoning_delta = reasoning[start : start + _STREAM_CHUNK_CHARS]
+        yield _chunk(
+            {
+                "reasoning_content": reasoning_delta,
+                "reasoning_summary": reasoning_delta,
+                "reasoning": reasoning_delta,
+            },
+            None,
+        )
     text = run.final_answer or ""
     for start in range(0, len(text), _STREAM_CHUNK_CHARS):
         yield _chunk({"content": text[start : start + _STREAM_CHUNK_CHARS]}, None)
@@ -259,7 +292,19 @@ def maybe_handle_with_council(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": run.final_answer},
+                "message": {
+                    "role": "assistant",
+                    "content": run.final_answer,
+                    **(
+                        {
+                            "reasoning_content": run.reasoning_summary,
+                            "reasoning_summary": run.reasoning_summary,
+                            "reasoning": run.reasoning_summary,
+                        }
+                        if run.reasoning_summary
+                        else {}
+                    ),
+                },
                 "finish_reason": "stop",
             }
         ],
@@ -407,6 +452,17 @@ def _responses_message_item(run: CouncilRun) -> Dict[str, Any]:
     }
 
 
+def _responses_reasoning_item(run: CouncilRun) -> Optional[Dict[str, Any]]:
+    if not run.reasoning_summary:
+        return None
+    return {
+        "id": f"{run.id}-reasoning",
+        "type": "reasoning",
+        "status": "completed",
+        "summary": [{"type": "summary_text", "text": run.reasoning_summary}],
+    }
+
+
 def _responses_object(run: CouncilRun, model_name: str, created: int, include_diagnostics: bool) -> Dict[str, Any]:
     usage, usage_estimated = _resolved_usage(run)
     body: Dict[str, Any] = {
@@ -415,7 +471,10 @@ def _responses_object(run: CouncilRun, model_name: str, created: int, include_di
         "created_at": created,
         "status": "completed",
         "model": model_name,
-        "output": [_responses_message_item(run)],
+        "output": [
+            *([_responses_reasoning_item(run)] if run.reasoning_summary else []),
+            _responses_message_item(run),
+        ],
         "usage": _responses_usage(usage),
         "usageEstimated": usage_estimated,
         "metadata": {"councilRunId": run.id, "councilMode": run.council_mode},
@@ -442,10 +501,61 @@ def _responses_sse_iter(run: CouncilRun, model_name: str, created: int) -> Itera
         "metadata": {"councilRunId": run.id, "councilMode": run.council_mode},
     }
     yield _event({"type": "response.created", "response": in_progress})
+    reasoning_item = _responses_reasoning_item(run)
+    output_index = 0
+    if reasoning_item is not None:
+        yield _event(
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {**reasoning_item, "status": "in_progress", "summary": []},
+            }
+        )
+        yield _event(
+            {
+                "type": "response.reasoning_summary_part.added",
+                "item_id": reasoning_item["id"],
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": ""},
+            }
+        )
+        for start in range(0, len(run.reasoning_summary), _STREAM_CHUNK_CHARS):
+            yield _event(
+                {
+                    "type": "response.reasoning_summary_text.delta",
+                    "item_id": reasoning_item["id"],
+                    "output_index": 0,
+                    "summary_index": 0,
+                    "delta": run.reasoning_summary[start : start + _STREAM_CHUNK_CHARS],
+                }
+            )
+        yield _event(
+            {
+                "type": "response.reasoning_summary_text.done",
+                "item_id": reasoning_item["id"],
+                "output_index": 0,
+                "summary_index": 0,
+                "text": run.reasoning_summary,
+            }
+        )
+        yield _event(
+            {
+                "type": "response.reasoning_summary_part.done",
+                "item_id": reasoning_item["id"],
+                "output_index": 0,
+                "summary_index": 0,
+                "part": {"type": "summary_text", "text": run.reasoning_summary},
+            }
+        )
+        yield _event(
+            {"type": "response.output_item.done", "output_index": 0, "item": reasoning_item}
+        )
+        output_index = 1
     yield _event(
         {
             "type": "response.output_item.added",
-            "output_index": 0,
+            "output_index": output_index,
             "item": {**message_item, "status": "in_progress", "content": []},
         }
     )
@@ -455,12 +565,14 @@ def _responses_sse_iter(run: CouncilRun, model_name: str, created: int) -> Itera
             {
                 "type": "response.output_text.delta",
                 "item_id": message_item["id"],
-                "output_index": 0,
+                "output_index": output_index,
                 "content_index": 0,
                 "delta": text[start : start + _STREAM_CHUNK_CHARS],
             }
         )
-    yield _event({"type": "response.output_item.done", "output_index": 0, "item": message_item})
+    yield _event(
+        {"type": "response.output_item.done", "output_index": output_index, "item": message_item}
+    )
     yield _event(
         {
             "type": "response.completed",
@@ -499,6 +611,7 @@ def maybe_handle_responses_with_council(
     model_name = requested_model or normalize_model_name(requested_model, debug_model)
 
     temperature = payload.get("temperature")
+    reasoning_effort, reasoning_summary = _request_reasoning(payload, requested_model)
     council_input = CouncilInput(
         messages=messages,
         task_type=_field(fields, "taskType", "task_type"),
@@ -509,6 +622,8 @@ def maybe_handle_responses_with_council(
         include_diagnostics=bool(_field(fields, "includeCouncilDiagnostics", "include_council_diagnostics")),
         requested_model=normalize_model_name(requested_model, debug_model),
         temperature=temperature if isinstance(temperature, (int, float)) else None,
+        reasoning_effort=reasoning_effort,
+        reasoning_summary=reasoning_summary,
     )
     run = chatmock_ask(council_input)
 

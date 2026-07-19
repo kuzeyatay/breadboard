@@ -30,10 +30,8 @@ import {
 } from "@/lib/openharness/quartz-support.ts";
 import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
 import { resolveOpenHarnessEngine } from "@/lib/openharness/model-selection.ts";
-import {
-  decideCapabilityMode,
-  mergeCapabilityToolPolicy,
-} from "@/lib/openharness/capability-policy.ts";
+import { prepareTurn, mergeSelectedTools } from "@/lib/openharness/dispatch-core.ts";
+import { listFilesystemGrants } from "@/lib/openharness/filesystem-grant-store.ts";
 import { composeOpenHarnessSystemPrompt } from "@/lib/openharness/system-prompts.ts";
 
 export const dynamic = "force-dynamic";
@@ -118,12 +116,17 @@ export async function POST(request: Request) {
           { headers: cors },
         );
       }
-      const decision = decideCapabilityMode({
+      const prepared = prepareTurn({
+        request: text,
         surface: "quartz_ai",
         userId,
-        requestedOutcome: text,
-        authorizedRoot: session.activeDirectory,
+        // Anonymous readers have no grants and are isolated; an authenticated
+        // reader gets the same capability here as on any other surface.
+        grants: userId === null ? [] : listFilesystemGrants(userId),
+        workspaceRoot: session.activeDirectory,
+        isolated: userId === null,
       });
+      const decision = prepared.decision;
       const resolved = await resolveCommandMessage(
         userId,
         text,
@@ -180,7 +183,8 @@ export async function POST(request: Request) {
         directory: session.activeDirectory,
         agentName: session.agentName,
         text: resolved.text,
-        tools: mergeCapabilityToolPolicy(decision, resolved.tools),
+        // The brokered map is authoritative; a selector may only narrow it.
+        tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
         system: composeOpenHarnessSystemPrompt({
           surface: "quartz_ai",
           decision,
@@ -217,12 +221,17 @@ export async function POST(request: Request) {
       );
     }
 
-    const decision = decideCapabilityMode({
+    const prepared = prepareTurn({
+      request: text,
       surface: "quartz_ai",
       userId,
-      requestedOutcome: text,
-      authorizedRoot: created.activeDirectory,
+      // Anonymous readers have no grants and are isolated; an authenticated
+      // reader gets the same capability here as on any other surface.
+      grants: userId === null ? [] : listFilesystemGrants(userId),
+      workspaceRoot: created.activeDirectory,
+      isolated: userId === null,
     });
+    const decision = prepared.decision;
     const resolved = await resolveCommandMessage(
       userId,
       text,
@@ -279,7 +288,8 @@ export async function POST(request: Request) {
       directory: created.activeDirectory,
       agentName: created.agentName,
       text: resolved.text,
-      tools: mergeCapabilityToolPolicy(decision, resolved.tools),
+      // The brokered map is authoritative; a selector may only narrow it.
+        tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
       system: composeOpenHarnessSystemPrompt({
         surface: "quartz_ai",
         decision,

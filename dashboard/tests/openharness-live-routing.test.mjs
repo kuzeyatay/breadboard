@@ -160,9 +160,12 @@ test("routing mode implements required, preferred, and explicit legacy semantics
   assert.match(config, /mode !== "legacy"/);
 });
 
-test("Garden and Quartz use dedicated knowledge-only agents with proposal-only publication", () => {
+// The restricted per-surface agents still exist, but they are now the
+// ANONYMOUS profile rather than the ceiling for every garden/Quartz session.
+// An authenticated user gets the canonical assistant on every surface, with
+// capability decided by the server's broker from the task plan.
+test("restricted per-surface agents are retained for anonymous sessions", () => {
   const runtime = read("dashboard/src/lib/openharness/config.ts");
-  const adapter = read("dashboard/src/lib/openharness/garden-chat-adapter.ts");
   const garden = read("openharness-config/agent/breadboard-garden.md");
   const quartz = read("openharness-config/agent/breadboard-quartz.md");
   assert.match(
@@ -173,10 +176,47 @@ test("Garden and Quartz use dedicated knowledge-only agents with proposal-only p
     runtime,
     /quartz:\s*envString\("OPENHARNESS_QUARTZ_AGENT", "breadboard-quartz"\)/,
   );
-  assert.match(adapter, /Repository, shell, Git, package, build, test, deployment/);
-  assert.match(adapter, /changed only through typed Breadboard proposals/);
   assert.match(garden, /bash: deny/);
   assert.match(quartz, /skill: deny/);
+  // Agent selection keys off authentication, not surface.
+  assert.match(runtime, /authenticated/);
+});
+
+test("authenticated garden sessions use the canonical capable agent", async () => {
+  const { agentForSurface } = await import("../src/lib/openharness/config.ts");
+  const config = {
+    agents: {
+      terminal: "breadboard-assistant",
+      garden: "breadboard-garden",
+      quartz: "breadboard-quartz",
+      capabilityScout: "capability-scout",
+    },
+  };
+  for (const surface of ["dashboard_terminal", "garden_chat", "quartz_ai"]) {
+    assert.equal(
+      agentForSurface(config, surface, { authenticated: true }),
+      "breadboard-assistant",
+      `${surface} should use the canonical agent when authenticated`,
+    );
+  }
+  assert.equal(
+    agentForSurface(config, "quartz_ai", { authenticated: false }),
+    "breadboard-quartz",
+  );
+});
+
+test("garden turn context states real capability instead of asserting none exists", () => {
+  const adapter = read("dashboard/src/lib/openharness/garden-chat-adapter.ts");
+  // The old prompt hard-coded that shell/file/repository capability was
+  // unavailable. That became false once capability came from the task plan, and
+  // a prompt that misdescribes the runtime makes the agent refuse authorized
+  // work — so the claim must be gone.
+  assert.doesNotMatch(
+    adapter,
+    /Repository, shell, Git, package, build, test, deployment/,
+  );
+  assert.match(adapter, /Capabilities active for this turn/);
+  assert.match(adapter, /changed only through typed Breadboard proposals/);
 });
 
 test("Quartz graph emits bounded map context consumed only by dashboard proxy chat", () => {
@@ -205,16 +245,16 @@ test("production code contains no placeholder skill registry or fabricated manif
 
 test("the unified slash hub embeds Skills.sh discovery and the reviewed promotion flow", () => {
   const hub = read("dashboard/src/app/components/openharness/command-hub.tsx");
-  const review = read(
-    "dashboard/src/app/components/openharness/skill-review-panel.tsx",
+  const catalog = read(
+    "dashboard/src/app/components/openharness/skills-catalog-panel.tsx",
   );
-  assert.match(hub, /SkillReviewPanel/);
-  assert.match(hub, /appearance="embedded"/);
+  assert.match(hub, /SkillsCatalogPanel/);
   assert.match(
-    review,
-    /skills\/search[\s\S]*skills\/install[\s\S]*skills\/promote/,
+    catalog,
+    /skills\/search[\s\S]*skills\/detail[\s\S]*skills\/install[\s\S]*skills\/promote/,
   );
-  assert.match(review, /Downloaded to inactive quarantine/);
+  assert.match(catalog, /inactive quarantine/);
+  assert.match(catalog, /All[\s\S]*Trending[\s\S]*Hot[\s\S]*Official[\s\S]*Installed[\s\S]*Updates/);
 });
 
 test("the capability palette omits filesystem and repository administration", () => {

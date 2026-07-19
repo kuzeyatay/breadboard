@@ -30,6 +30,30 @@ $env:CHATMOCK_MODEL = if ($env:CHATMOCK_MODEL) { $env:CHATMOCK_MODEL } else { "g
 $env:OPENCODE_ENABLE_EXA = if ($env:OPENCODE_ENABLE_EXA) { $env:OPENCODE_ENABLE_EXA } else { "1" }
 $env:OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = if ($env:OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS) { $env:OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS } else { "true" }
 
+# Reuse an already-running instance instead of letting Bun fail to bind the
+# port and die with an opaque ServeError (mirrors the Scriberr launcher).
+$authHeader = @{
+  Authorization = "Basic " + [Convert]::ToBase64String(
+    [Text.Encoding]::ASCII.GetBytes("$($env:OPENCODE_SERVER_USERNAME):$password"))
+}
+$existingStatus = $null
+try {
+  $probe = Invoke-WebRequest -Uri "http://127.0.0.1:$port/global/health" -Headers $authHeader -TimeoutSec 3 -UseBasicParsing
+  $existingStatus = [int]$probe.StatusCode
+} catch {
+  $response = $_.Exception.Response
+  if ($response) { $existingStatus = [int]$response.StatusCode.value__ }
+}
+if ($existingStatus -eq 200) {
+  Write-Host "OpenHarness already running and healthy on 127.0.0.1:$port - reusing it." -ForegroundColor Green
+  exit 0
+}
+if ($null -ne $existingStatus) {
+  Write-Host "Port $port is already in use (the existing server answered HTTP $existingStatus)." -ForegroundColor Yellow
+  Write-Host "Stop the stale or differently-configured server (or another service on this port), or set OPENHARNESS_PORT, then retry." -ForegroundColor Yellow
+  exit 1
+}
+
 $bun = Get-Command bun -ErrorAction SilentlyContinue
 if (-not $bun) {
   Write-Host "Bun is not installed. OpenHarness requires Bun (bun@1.3.14+)." -ForegroundColor Yellow

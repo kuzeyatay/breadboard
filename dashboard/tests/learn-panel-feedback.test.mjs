@@ -79,6 +79,25 @@ test("destructive Learn actions use the custom confirmation dialog", () => {
   );
   assert.match(confirmationDialogSource, /role="alertdialog"/);
   assert.match(confirmationDialogSource, /aria-modal="true"/);
-  assert.match(confirmationDialogSource, /event\.key !== "Escape"/);
+  assert.match(confirmationDialogSource, /event\.key === "Escape"/);
   assert.match(confirmationDialogSource, /cancelRef\.current\?\.focus\(\)/);
+});
+
+test("rebuild and clear dialogs use the readable semantic light-theme palette", () => {
+  assert.match(confirmationDialogSource, /Rebuild the entire garden\?/);
+  assert.match(confirmationDialogSource, /Clear all Learn data\?/);
+  assert.match(confirmationDialogSource, /Before you rebuild/);
+  assert.match(confirmationDialogSource, /What stays/);
+  assert.match(confirmationDialogSource, /bg-\[var\(--paper-raised\)\]/);
+  assert.match(confirmationDialogSource, /text-\[var\(--ink-muted\)\]/);
+  assert.match(confirmationDialogSource, /bg-\[var\(--danger\)\]/);
+  assert.match(confirmationDialogSource, /text-\[#fffefb\]/);
+  assert.doesNotMatch(confirmationDialogSource, /text-amber-200|bg-amber-950/);
+});
+
+test("destructive Learn dialog keeps keyboard focus inside the two actions", () => {
+  assert.match(confirmationDialogSource, /event\.key !== "Tab"/);
+  assert.match(confirmationDialogSource, /event\.shiftKey/);
+  assert.match(confirmationDialogSource, /last\.focus\(\)/);
+  assert.match(confirmationDialogSource, /first\.focus\(\)/);
 });

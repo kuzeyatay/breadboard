@@ -59,6 +59,7 @@ class StubRouter:
         fail_reviews=False,
         fail_messages=None,
         usage_per_call: ModelTokenUsage | None = None,
+        reasoning_per_call: str | None = None,
     ) -> None:
         self.calls: list[ModelCall] = []
         self.fail_models = set(fail_models or [])
@@ -66,6 +67,7 @@ class StubRouter:
         self.fail_chair = fail_chair
         self.fail_reviews = fail_reviews
         self.usage_per_call = usage_per_call
+        self.reasoning_per_call = reasoning_per_call
 
     def effective_model(self, model: str) -> str:
         return model
@@ -73,6 +75,7 @@ class StubRouter:
     def call_model(self, call: ModelCall) -> str:
         self.calls.append(call)
         call.usage_out = self.usage_per_call
+        call.reasoning_out = self.reasoning_per_call
         system = call.system or ""
         prompt = _prompt_text(call)
 
@@ -107,6 +110,32 @@ class StubRouter:
 
 
 class ChatGptUpstreamProviderTests(unittest.TestCase):
+    @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
+    @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
+    def test_request_reasoning_overrides_server_defaults(self, mock_start, _mock_record) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp_reasoning"}},
+                ]
+            ),
+            None,
+        )
+        call = ModelCall(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="high",
+            reasoning_summary="detailed",
+        )
+
+        ChatGptUpstreamProvider(reasoning_effort="low", reasoning_summary="none").call_model(call)
+
+        self.assertEqual(
+            mock_start.call_args.kwargs["reasoning_param"],
+            {"effort": "high", "summary": "detailed"},
+        )
+
     @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
     @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
     def test_records_rate_limit_headers_for_council_calls(self, mock_start, mock_record) -> None:
@@ -222,19 +251,28 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
 
     def test_provider_router_propagates_reasoning_and_usage_out_params(self) -> None:
         usage = ModelTokenUsage(11, 7, 18, 3, 2)
+        routed_calls: list[ModelCall] = []
 
         class UsageUpstream:
             def call_model(self, routed_call: ModelCall) -> str:
+                routed_calls.append(routed_call)
                 routed_call.reasoning_out = "checked"
                 routed_call.usage_out = usage
                 return "answer"
 
         router = ProviderRouter(CouncilConfig(), upstream=UsageUpstream())
-        call = ModelCall(model="gpt-5.4", messages=[{"role": "user", "content": "hi"}])
+        call = ModelCall(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_effort="high",
+            reasoning_summary="detailed",
+        )
 
         self.assertEqual(router.call_model(call), "answer")
         self.assertEqual(call.reasoning_out, "checked")
         self.assertEqual(call.usage_out, usage)
+        self.assertEqual(routed_calls[0].reasoning_effort, "high")
+        self.assertEqual(routed_calls[0].reasoning_summary, "detailed")
 
 
 class CouncilRuntimeTests(unittest.TestCase):
@@ -268,6 +306,33 @@ class CouncilRuntimeTests(unittest.TestCase):
         self.assertEqual(run.final_answer, "CANDIDATE ANSWER from gpt-test")
         self.assertEqual(len(run.candidates), 1)
         self.assertEqual(len(router.calls), 1)
+
+    def test_direct_council_exposes_model_reasoning_summary(self) -> None:
+        runtime, _ = self._runtime(reasoning_per_call="Checked the relevant context.")
+        run = runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "hi"}],
+                requested_model="gpt-test",
+            )
+        )
+
+        self.assertEqual(run.reasoning_summary, "Checked the relevant context.")
+        self.assertEqual(run.to_dict()["reasoningSummary"], "Checked the relevant context.")
+
+    def test_reasoning_overrides_reach_every_council_model_call(self) -> None:
+        runtime, router = self._runtime()
+        runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "build the topic map"}],
+                task_type="topic_map",
+                reasoning_effort="high",
+                reasoning_summary="detailed",
+            )
+        )
+
+        self.assertTrue(router.calls)
+        self.assertEqual({call.reasoning_effort for call in router.calls}, {"high"})
+        self.assertEqual({call.reasoning_summary for call in router.calls}, {"detailed"})
 
     def test_lite_council_returns_answer_and_one_review(self) -> None:
         runtime, _ = self._runtime()
@@ -649,6 +714,38 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertEqual(usage_event["usage"]["completion_tokens_details"]["reasoning_tokens"], 2)
         self.assertFalse(usage_event["usageEstimated"])
 
+    def test_council_chat_response_exposes_reasoning_for_thinking_panel(self) -> None:
+        self.router.reasoning_per_call = "Checked the relevant context."
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        message = response.get_json()["choices"][0]["message"]
+        self.assertEqual(message["reasoning_content"], "Checked the relevant context.")
+
+        streamed = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        ).get_data(as_text=True)
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in streamed.splitlines()
+            if line.startswith("data: {")
+        ]
+        reasoning = "".join(
+            event["choices"][0]["delta"].get("reasoning_content", "")
+            for event in events
+            if event.get("choices")
+        )
+        self.assertEqual(reasoning, "Checked the relevant context.")
+
     def test_diagnostics_only_when_requested(self) -> None:
         response = self.client.post(
             "/v1/chat/completions",
@@ -799,6 +896,7 @@ class CouncilRouteTests(unittest.TestCase):
                     "gardenId": "physics-for-ee",
                     "pageId": "standing-waves",
                     "sourceContext": source_context,
+                    "reasoning": {"effort": "high", "summary": "detailed"},
                 },
             )
         self.assertEqual(response.status_code, 200)
@@ -807,6 +905,8 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertEqual(council_input.garden_id, "physics-for-ee")
         self.assertEqual(council_input.page_id, "standing-waves")
         self.assertEqual(council_input.source_context, source_context)
+        self.assertEqual(council_input.reasoning_effort, "high")
+        self.assertEqual(council_input.reasoning_summary, "detailed")
 
     def test_task_type_subsection_generation_selects_full_council(self) -> None:
         response = self.client.post(
@@ -939,6 +1039,33 @@ class CouncilResponsesRouteTests(unittest.TestCase):
             },
         )
         self.assertFalse(completed_response["usageEstimated"])
+
+    def test_responses_api_exposes_reasoning_summary(self) -> None:
+        self.router.reasoning_per_call = "Checked the relevant context."
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "gpt-5.4", "input": "hello"},
+        )
+        output = response.get_json()["output"]
+        self.assertEqual(output[0]["type"], "reasoning")
+        self.assertEqual(output[0]["summary"][0]["text"], "Checked the relevant context.")
+        self.assertEqual(output[1]["type"], "message")
+
+        streamed = self.client.post(
+            "/v1/responses",
+            json={"model": "gpt-5.4", "input": "hello", "stream": True},
+        ).get_data(as_text=True)
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in streamed.splitlines()
+            if line.startswith("data: {")
+        ]
+        summary = "".join(
+            event.get("delta", "")
+            for event in events
+            if event.get("type") == "response.reasoning_summary_text.delta"
+        )
+        self.assertEqual(summary, "Checked the relevant context.")
 
     @patch("chatmock.routes_openai.start_upstream_raw_request")
     def test_tool_request_bypasses_and_strips_council_fields(self, mock_start) -> None:

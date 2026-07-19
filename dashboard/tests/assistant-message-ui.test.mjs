@@ -33,6 +33,7 @@ test("thinking remains visible with response metadata and shimmers while active"
   assert.match(activity, /↓ counting tokens/);
   assert.match(activity, /!activities\.length && !usage && !reasoning/);
   assert.match(activity, /\{reasoning\}/);
+  assert.match(activity, /hasReasoningSummary/);
   assert.doesNotMatch(activity, /if \(!expanded && !active/);
   assert.doesNotMatch(activity, /setTimeout\(\(\) => setExpanded\(false\)/);
   assert.doesNotMatch(activity, /rounded-2xl border/);
@@ -45,20 +46,24 @@ test("thinking remains visible with response metadata and shimmers while active"
   );
 });
 
-test("activity states use full sentences without status glyphs", () => {
-  for (const renderer of [activity, quartzActivity]) {
-    assert.match(renderer, /function activityStatusSentence/);
-    assert.match(renderer, /Done thinking\./);
-    assert.match(renderer, /Finished writing the answer\./);
-    assert.match(renderer, /Permission is required\./);
-    assert.match(renderer, /Permission was denied\./);
-    assert.match(renderer, /\$\{phrase\} failed\./);
-    assert.match(renderer, /\$\{phrase\} was cancelled\./);
-    assert.doesNotMatch(renderer, /function statusGlyph/);
-    assert.doesNotMatch(renderer, /const glyph\s*=/);
-  }
+test("expanded dashboard thinking shows only ChatMock reasoning text", () => {
+  assert.match(activity, /expanded && hasReasoningSummary/);
+  assert.match(activity, /\{reasoning\}/);
+  assert.doesNotMatch(activity, /Done thinking\./);
+  assert.doesNotMatch(activity, /activityStatusSentence/);
+  assert.doesNotMatch(activity, /visibleActivities/);
+});
 
-  assert.match(activity, /\{activityStatusSentence\(item\)\}/);
+test("Quartz activity states use full sentences without status glyphs", () => {
+  assert.match(quartzActivity, /function activityStatusSentence/);
+  assert.match(quartzActivity, /Done thinking\./);
+  assert.match(quartzActivity, /Finished writing the answer\./);
+  assert.match(quartzActivity, /Permission is required\./);
+  assert.match(quartzActivity, /Permission was denied\./);
+  assert.match(quartzActivity, /\$\{phrase\} failed\./);
+  assert.match(quartzActivity, /\$\{phrase\} was cancelled\./);
+  assert.doesNotMatch(quartzActivity, /function statusGlyph/);
+  assert.doesNotMatch(quartzActivity, /const glyph\s*=/);
   assert.match(quartzActivity, /activityStatusSentence\(entry\)/);
 });
 

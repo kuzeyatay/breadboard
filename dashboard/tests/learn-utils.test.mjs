@@ -265,6 +265,61 @@ describe("learn route and council wiring", () => {
     assert.doesNotMatch(learnSource, /What is the main idea to take away from/);
   });
 
+  test("Learn is pinned to ChatMock Council, GPT-5.6 Sol, and high reasoning", () => {
+    const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
+    const workspaceSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+      "utf8",
+    );
+    const learnRoute = (action) => fs.readFileSync(
+      path.join(repoRoot, "src", "app", "api", "gardens", "[gardenId]", "learn", action, "route.ts"),
+      "utf8",
+    );
+
+    assert.match(learnSource, /export const LEARN_MODEL = "gpt-5\.6-sol"/);
+    assert.match(learnSource, /export const LEARN_REASONING = \{[\s\S]*?effort: "high"[\s\S]*?summary: "detailed"/);
+    assert.match(learnSource, /model,[\s\S]*?reasoning: LEARN_REASONING,[\s\S]*?withCouncil|withCouncil\([\s\S]*?reasoning: LEARN_REASONING/);
+    for (const action of ["plan", "generate", "regenerate", "rebuild", "confirm"]) {
+      assert.match(learnRoute(action), /model: LEARN_MODEL|const model = LEARN_MODEL/);
+      assert.doesNotMatch(learnRoute(action), /body\.model/);
+    }
+    assert.doesNotMatch(workspaceSource, /JSON\.stringify\(\{\s*model,/);
+    assert.doesNotMatch(workspaceSource, /Council · GPT-5\.6 Sol · High reasoning/);
+    assert.match(learnSource, /ChatMock is not connected\. Start or restart ChatMock on port 8765/);
+  });
+
+  test("an initial planning failure retries Learn instead of invoking repair", () => {
+    const workspaceSource = fs.readFileSync(
+      path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
+      "utf8",
+    );
+
+    assert.match(
+      workspaceSource,
+      /shouldRepairFailedJob =\s*status === "failed" && hasExistingLearnContent/,
+    );
+    assert.match(
+      workspaceSource,
+      /shouldRepairFromPrimaryAction[\s\S]*?\? handleRepairIssues[\s\S]*?: status === "cancelled"[\s\S]*?: handleLearnPrimary/,
+    );
+    assert.match(workspaceSource, /status === "failed"[\s\S]*?"Retry Learn"/);
+    assert.match(
+      workspaceSource,
+      /ChatMock was not connected\. Start or restart ChatMock, then choose Retry Learn\./,
+    );
+  });
+
+  test("Windows launcher waits for ChatMock before exposing the dashboard", () => {
+    const launcherSource = fs.readFileSync(path.resolve(repoRoot, "..", "start.bat"), "utf8");
+
+    assert.match(launcherSource, /127\.0\.0\.1:8765\/health/);
+    assert.match(launcherSource, /if errorlevel 1/);
+    assert.ok(
+      launcherSource.indexOf("8765/health") < launcherSource.indexOf('start "Dashboard"'),
+      "ChatMock health check must run before Dashboard starts",
+    );
+  });
+
   test("learn generation retries scaffold/meta-instruction failures before failing", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
 
@@ -365,11 +420,24 @@ describe("learn route and council wiring", () => {
       ),
       "utf8",
     );
+    const confirmationDialogSource = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "src",
+        "app",
+        "components",
+        "learn-confirmation-dialog.tsx",
+      ),
+      "utf8",
+    );
 
     assert.match(workspaceSource, /Clear Learn data/);
     assert.match(workspaceSource, /confirmClearLearnData: true/);
-    assert.match(workspaceSource, /Uploaded source documents/);
-    assert.match(workspaceSource, /notes outside the generated Learning folder will remain/);
+    assert.match(confirmationDialogSource, /Uploaded source documents/);
+    assert.match(
+      confirmationDialogSource,
+      /notes outside the generated Learning folder will remain/,
+    );
     assert.match(
       workspaceSource,
       /!learnState\?\.hasSources && status !== "failed" && !hasLearnData/,
@@ -398,7 +466,7 @@ describe("learn route and council wiring", () => {
     );
     assert.match(
       workspaceSource,
-      /status === "failed" \|\| staleReviewForExistingGarden\s*\? handleRepairIssues/,
+      /shouldRepairFromPrimaryAction[\s\S]*?\? handleRepairIssues/,
     );
     assert.match(
       learnSource,

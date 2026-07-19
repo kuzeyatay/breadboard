@@ -110,10 +110,18 @@ class ChatGptUpstreamProvider:
             if uses_codex_instructions(model) and isinstance(GPT5_CODEX_INSTRUCTIONS, str) and GPT5_CODEX_INSTRUCTIONS.strip()
             else BASE_INSTRUCTIONS
         )
+        reasoning_overrides = {
+            key: value
+            for key, value in {
+                "effort": call.reasoning_effort,
+                "summary": call.reasoning_summary,
+            }.items()
+            if isinstance(value, str) and value.strip()
+        }
         reasoning_param = build_reasoning_param(
             self.reasoning_effort,
             self.reasoning_summary,
-            None,
+            reasoning_overrides or None,
             allowed_efforts=allowed_efforts_for_model(model),
         )
 

@@ -19,15 +19,70 @@ import {
   recordAuditEvent,
 } from "@/lib/openharness/runtime-store.ts";
 import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
-import {
-  decideCapabilityMode,
-  mergeCapabilityToolPolicy,
-} from "@/lib/openharness/capability-policy.ts";
+import { prepareTurn, mergeSelectedTools } from "@/lib/openharness/dispatch-core.ts";
+import { listFilesystemGrants } from "@/lib/openharness/filesystem-grant-store.ts";
 import { composeOpenHarnessSystemPrompt } from "@/lib/openharness/system-prompts.ts";
 import { persistCapabilityDecision } from "@/lib/openharness/runtime-store.ts";
 import { scheduleCapabilityExpiry } from "@/lib/openharness/capability-lifecycle.ts";
+import type { ChatAttachment } from "@/lib/chat-attachments";
 
 export const dynamic = "force-dynamic";
+
+const MAX_MESSAGE_REQUEST_BYTES = 16 * 1024 * 1024;
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_TEXT_LENGTH = 2 * 1024 * 1024;
+const MAX_ATTACHMENT_DATA_URL_LENGTH = 12 * 1024 * 1024;
+
+function parseAttachments(value: unknown): ChatAttachment[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_ATTACHMENTS) {
+    throw new ApiError(
+      400,
+      "invalid_attachments",
+      `Attachments must be an array containing at most ${MAX_ATTACHMENTS} items.`,
+    );
+  }
+
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ApiError(400, "invalid_attachments", `Attachment ${index + 1} is invalid.`);
+    }
+    const attachment = item as Record<string, unknown>;
+    const name = requireString(attachment.name, `attachments[${index}].name`, 500);
+    if (/[\\/\0]/.test(name)) {
+      throw new ApiError(400, "invalid_attachments", `Attachment ${index + 1} has an invalid name.`);
+    }
+
+    if (attachment.type === "text") {
+      const text = requireString(
+        attachment.text,
+        `attachments[${index}].text`,
+        MAX_ATTACHMENT_TEXT_LENGTH,
+      );
+      return { type: "text", name, text };
+    }
+    if (attachment.type === "image") {
+      const dataUrl = requireString(
+        attachment.dataUrl,
+        `attachments[${index}].dataUrl`,
+        MAX_ATTACHMENT_DATA_URL_LENGTH,
+      );
+      if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) {
+        throw new ApiError(
+          400,
+          "invalid_attachments",
+          `Attachment ${index + 1} must be a base64 image data URL.`,
+        );
+      }
+      return { type: "image", name, dataUrl };
+    }
+    throw new ApiError(
+      400,
+      "invalid_attachments",
+      `Attachment ${index + 1} has an unsupported type.`,
+    );
+  });
+}
 
 function parseSessionId(value: string): number {
   const id = Number(value);
@@ -53,14 +108,20 @@ export async function POST(
     const runtimeSessionId = parseSessionId(sessionId);
     const session = authorizeRuntimeSession(userId, runtimeSessionId);
 
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, MAX_MESSAGE_REQUEST_BYTES);
     const text = requireString(body.text, "text", 200_000);
-    const decision = decideCapabilityMode({
+    const attachments = parseAttachments(body.attachments);
+    // Capability comes from the requested outcome plus the user's real
+    // filesystem grants — the same call Garden Chat makes, so the same task
+    // with the same grants yields the same capabilities on either surface.
+    const prepared = prepareTurn({
+      request: text,
       surface: session.row.surface,
       userId,
-      requestedOutcome: text,
-      authorizedRoot: session.activeDirectory,
+      grants: listFilesystemGrants(userId),
+      workspaceRoot: session.activeDirectory,
     });
+    const decision = prepared.decision;
     const resolved = await resolveCommandMessage(
       userId,
       text,
@@ -150,6 +211,36 @@ export async function POST(
         expiresAt: decision.expiresAt,
       },
     });
+    // A turn whose first step is unauthorized must not reach the model: it
+    // would produce prose that sounds like it acted. Return the pending
+    // requests so the client can render an approval prompt and resume the same
+    // task, exactly as Garden Chat does.
+    if (prepared.blocked) {
+      markStatus(session, "idle");
+      for (const pending of prepared.pendingPermissions) {
+        recordAuditEvent({
+          eventType: "permission.requested",
+          runtimeSessionId: session.row.id,
+          userId,
+          gardenId: session.row.garden_id,
+          payload: { permission: pending.capability, requestId: pending.id },
+        });
+      }
+      return NextResponse.json({
+        accepted: false,
+        blocked: true,
+        reason: "awaiting_permission",
+        plan: {
+          intendedOutcome: prepared.plan.intendedOutcome,
+          steps: prepared.plan.steps.map((step) => step.description),
+          riskLevel: prepared.plan.riskLevel,
+        },
+        pendingPermissions: prepared.pendingPermissions,
+        // Retained so approval can resume without the user restating the task.
+        request: text,
+      });
+    }
+
     markStatus(session, "busy");
     recordAuditEvent({
       eventType: "message.submitted",
@@ -158,6 +249,7 @@ export async function POST(
       gardenId: session.row.garden_id,
       payload: {
         characterCount: text.length,
+        attachmentCount: attachments.length,
         modelId: engine.model.modelID,
         reasoningEffort: engine.variant,
         reasoningEffortAdjusted: engine.adjusted,
@@ -172,7 +264,10 @@ export async function POST(
       directory: session.activeDirectory,
       agentName: session.agentName,
       text: resolved.text,
-      tools: mergeCapabilityToolPolicy(decision, resolved.tools),
+      attachments,
+      // The brokered map is authoritative; a selected skill/MCP tool may only
+      // narrow it, never widen it.
+      tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
       model: engine.model,
       variant: engine.variant,
       system: composeOpenHarnessSystemPrompt({

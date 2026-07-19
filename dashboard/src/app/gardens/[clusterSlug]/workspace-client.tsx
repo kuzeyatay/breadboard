@@ -281,6 +281,14 @@ function formatLearnMetricTokenCount(value: number): string {
   return formatTokenCount(value).replace(/K$/, "k");
 }
 
+function displayLearnError(message?: string): string {
+  const value = message?.trim() ?? "";
+  if (/^connection error\.?$/i.test(value)) {
+    return "ChatMock was not connected. Start or restart ChatMock, then choose Retry Learn.";
+  }
+  return value;
+}
+
 function Spinner({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg
@@ -2165,7 +2173,6 @@ export default function WorkspaceClient({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              model,
               sourceOnly: learnSourceOnly,
               ...(learnIncludedSourceSlugs !== null
                 ? { includedSourceIds: learnIncludedSourceSlugs }
@@ -2242,7 +2249,6 @@ export default function WorkspaceClient({
       fetchLearnStatus,
       learnIncludedSourceSlugs,
       learnSourceOnly,
-      model,
     ],
   );
 
@@ -2793,6 +2799,10 @@ export default function WorkspaceClient({
     const panelExpanded = learnPanelOpen;
     const staleReviewForExistingGarden =
       status === "awaiting_confirmation" && hasExistingLearnContent;
+    const shouldRepairFailedJob =
+      status === "failed" && hasExistingLearnContent;
+    const shouldRepairFromPrimaryAction =
+      shouldRepairFailedJob || staleReviewForExistingGarden;
     const canClosePanel =
       !active &&
       (status === "idle" ||
@@ -3083,10 +3093,11 @@ export default function WorkspaceClient({
                   {learnBusy ? "Repairing..." : "Repair issues"}
                 </button>
               )}
-              {(status === "complete" ||
-                status === "failed" ||
-                status === "cancelled" ||
-                status === "awaiting_confirmation") && (
+              {hasExistingLearnContent &&
+                (status === "complete" ||
+                  status === "failed" ||
+                  status === "cancelled" ||
+                  status === "awaiting_confirmation") && (
                 <button
                   type="button"
                   onClick={handleFullRebuild}
@@ -3112,7 +3123,7 @@ export default function WorkspaceClient({
                 <button
                   type="button"
                   onClick={
-                    status === "failed" || staleReviewForExistingGarden
+                    shouldRepairFromPrimaryAction
                       ? handleRepairIssues
                       : status === "cancelled"
                         ? handleGenerateAfterCancellation
@@ -3127,10 +3138,14 @@ export default function WorkspaceClient({
                   {learnBusy || active ? (
                     <Spinner className="h-3.5 w-3.5" />
                   ) : null}
-                  {status === "failed" || staleReviewForExistingGarden
+                  {shouldRepairFromPrimaryAction
                     ? learnBusy
                       ? "Repairing..."
                       : "Repair issues"
+                    : status === "failed"
+                      ? learnBusy
+                        ? "Retrying..."
+                        : "Retry Learn"
                     : status === "cancelled"
                       ? learnBusy
                         ? hasExistingLearnContent
@@ -3211,7 +3226,9 @@ export default function WorkspaceClient({
               </p>
             ) : null}
             {status === "failed" && job?.error ? (
-              <p className="mt-2 text-xs text-red-300">{job.error}</p>
+              <p className="mt-2 text-xs text-red-300">
+                {displayLearnError(job.error)}
+              </p>
             ) : null}
           </div>
         )}

@@ -123,12 +123,29 @@ export function readOpenHarnessConfig(): OpenHarnessConfig {
 }
 
 /**
- * The agent name Breadboard selects for a given surface. Browsers never choose
- * an agent — the surface determines it, and the gateway enforces it.
+ * The agent Breadboard selects for a session. Browsers never choose an agent.
+ *
+ * Authenticated sessions on every surface use the one canonical assistant. The
+ * per-surface `breadboard-garden` / `breadboard-quartz` manifests pinned
+ * `"*": false` plus blanket `permission: deny`, which made the manifest a hard
+ * ceiling: the server could not activate a tool the task plan justified, no
+ * matter what the user had authorized. Capability is decided by the server's
+ * capability broker, so the agent must be *able* to hold those tools and start
+ * with them switched off — which is exactly what `breadboard-assistant` does.
+ *
+ * Anonymous/public sessions keep the restricted Quartz manifest, so isolation
+ * is enforced by the agent definition as well as by the broker.
  */
-export function agentForSurface(config: OpenHarnessConfig, surface: OpenHarnessSurface): string {
-  if (surface === "garden_chat") return config.agents.garden;
-  if (surface === "quartz_ai") return config.agents.quartz;
+export function agentForSurface(
+  config: OpenHarnessConfig,
+  surface: OpenHarnessSurface,
+  options: { authenticated?: boolean } = {},
+): string {
+  const authenticated = options.authenticated !== false;
+  if (!authenticated) {
+    // Public Quartz and any other unauthenticated session.
+    return surface === "quartz_ai" ? config.agents.quartz : config.agents.garden;
+  }
   return config.agents.terminal;
 }
 

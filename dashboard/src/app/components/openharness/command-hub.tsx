@@ -16,8 +16,7 @@ import type {
   CommandHubItemKind,
 } from "@/lib/openharness/commands.ts";
 import type { OpenHarnessSurface } from "@/lib/openharness/config.ts";
-import type { SkillCandidate } from "@/lib/openharness/skills.ts";
-import SkillReviewPanel from "./skill-review-panel";
+import SkillsCatalogPanel from "./skills-catalog-panel";
 
 const LEGACY_PROMPTS_KEY = "sb_prompts_v1";
 const RECENTS_KEY = "breadboard:command-hub:recents:v1";
@@ -25,7 +24,7 @@ const FAVORITES_KEY = "breadboard:command-hub:favorites:v1";
 const MIGRATION_KEY = "breadboard:prompt-library:server-migrated:v1";
 
 type PaletteTab = "skill" | "mcp" | "prompt";
-type DetailView = "browse-skills" | "add-connection" | "manage-connections" | "new-prompt" | "manage-prompts" | null;
+type DetailView = "add-connection" | "manage-connections" | "new-prompt" | "manage-prompts" | null;
 
 type CommandResponse = {
   groups: {
@@ -39,15 +38,6 @@ type CommandResponse = {
     taskScoped: boolean;
   };
   notices?: { connections?: string | null };
-};
-
-type SkillSearchResponse = {
-  candidates?: SkillCandidate[];
-  nextCursor?: string | null;
-  provider?: string;
-  stale?: boolean;
-  error?: string;
-  message?: string;
 };
 
 export interface CommandHubHandle {
@@ -113,11 +103,7 @@ function CapabilityIcon({ kind }: { kind: CommandHubItemKind }) {
       </svg>
     );
   }
-  return (
-    <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-      <path strokeLinecap="round" strokeLinejoin="round" d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4L12 3Zm5.25 10.25.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
-    </svg>
-  );
+  return null;
 }
 
 function LoadingRows() {
@@ -159,13 +145,6 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [activeIndex, setActiveIndex] = useState(0);
     const [recents, setRecents] = useState<string[]>([]);
     const [favorites, setFavorites] = useState<string[]>([]);
-    const [skillQuery, setSkillQuery] = useState("");
-    const [skillResults, setSkillResults] = useState<SkillCandidate[]>([]);
-    const [skillCursor, setSkillCursor] = useState<string | null>(null);
-    const [skillLoading, setSkillLoading] = useState(false);
-    const [skillError, setSkillError] = useState<string | null>(null);
-    const [selectedSkill, setSelectedSkill] = useState<SkillCandidate | null>(null);
-    const [reviewReady, setReviewReady] = useState(false);
     const [detailMessage, setDetailMessage] = useState<string | null>(null);
     const [connectionKind, setConnectionKind] = useState<"remote" | "local">("remote");
     const [connectionName, setConnectionName] = useState("");
@@ -248,19 +227,48 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       onOpenChange(false);
     }
 
+    function chooseCatalogSkill(skill: {
+      upstreamId: string;
+      slashCommand: string;
+      command: string;
+      name: string;
+      description: string;
+      source: string;
+      approvedHash: string | null;
+    }) {
+      const registered = data?.groups.skills.find((item) => item.id === skill.upstreamId);
+      if (registered) {
+        choose(registered);
+        return;
+      }
+      onSelect({
+        id: skill.upstreamId,
+        kind: "skill",
+        slug: skill.slashCommand,
+        token: skill.slashCommand,
+        name: skill.name,
+        description: skill.description,
+        source: skill.source,
+        installed: true,
+        enabled: true,
+        healthy: true,
+        contentHash: skill.approvedHash ?? undefined,
+        trustLabel: "Reviewed and pinned",
+      });
+      onOpenChange(false);
+    }
+
     function handleKeyDown(event: KeyboardEvent<HTMLElement>): boolean {
       if (!open) return false;
       if (event.key === "Escape") {
         event.preventDefault();
-        if (detail || selectedSkill) {
-          setSelectedSkill(null);
-          setReviewReady(false);
+        if (detail) {
           setDetail(null);
           window.setTimeout(() => searchRef.current?.focus(), 0);
         } else onOpenChange(false);
         return true;
       }
-      if (detail || selectedSkill) return false;
+      if (detail || tab === "skill") return false;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         const direction = event.key === "ArrowDown" ? 1 : -1;
@@ -289,60 +297,6 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
         : [id, ...favorites].slice(0, 30);
       setFavorites(next);
       localStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
-    }
-
-    useEffect(() => {
-      if (detail !== "browse-skills" || !skillQuery.trim()) {
-        setSkillResults([]);
-        setSkillCursor(null);
-        setSkillError(null);
-        return;
-      }
-      const timer = window.setTimeout(() => void searchSkills(false), 320);
-      return () => window.clearTimeout(timer);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [detail, skillQuery, sessionId]);
-
-    async function searchSkills(append: boolean) {
-      const search = skillQuery.trim();
-      if (!search) return;
-      setSkillLoading(true);
-      setSkillError(null);
-      try {
-        const parameters = new URLSearchParams({ q: search });
-        if (sessionId) parameters.set("sessionId", String(sessionId));
-        if (requestedOutcome.trim()) parameters.set("outcome", requestedOutcome.slice(0, 4_000));
-        if (append && skillCursor) parameters.set("cursor", skillCursor);
-        const response = await fetch(`/api/openharness/skills/search?${parameters}`, { cache: "no-store" });
-        const payload = (await response.json().catch(() => ({}))) as SkillSearchResponse;
-        if (!response.ok) throw new Error(payload.message ?? payload.error ?? "Skill search is unavailable.");
-        const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-        setSkillResults((current) => append ? [...current, ...candidates.filter((candidate) => !current.some((item) => item.id === candidate.id))] : candidates);
-        setSkillCursor(payload.nextCursor ?? null);
-        if (payload.stale) setDetailMessage("Showing cached catalog results while the provider is unavailable.");
-      } catch (cause) {
-        setSkillError(cause instanceof Error ? cause.message : "Skill search is unavailable.");
-      } finally {
-        setSkillLoading(false);
-      }
-    }
-
-    async function quarantineSelectedSkill() {
-      if (!selectedSkill) return;
-      setDetailMessage("Downloading into quarantine for review…");
-      try {
-        const response = await fetch("/api/openharness/skills/install", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ package: selectedSkill.package, query: skillQuery }),
-        });
-        const payload = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
-        if (!response.ok) throw new Error(payload.message ?? payload.error ?? "The skill could not enter review.");
-        setReviewReady(true);
-        setDetailMessage("Downloaded into quarantine. Review is required before activation.");
-      } catch (cause) {
-        setDetailMessage(cause instanceof Error ? cause.message : "The skill could not enter review.");
-      }
     }
 
     async function saveConnection() {
@@ -537,7 +491,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                   </div>
                   <button type="button" onClick={() => onOpenChange(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]" aria-label="Close capabilities">×</button>
                 </div>
-                {!detail && !selectedSkill ? (
+                {tab !== "skill" && !detail ? (
                   <div className="relative mt-3">
                     <svg aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="6.5" /><path strokeLinecap="round" d="m16 16 4 4" /></svg>
                     <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} placeholder="Search skills, connections, and prompts" className="w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]" aria-label="Search capabilities" />
@@ -545,42 +499,25 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                 ) : null}
               </header>
 
-              {!detail && !selectedSkill ? (
+              {!detail ? (
                 <nav className="flex items-center gap-1 border-b border-[var(--line)] px-3 pt-2" role="tablist" aria-label="Capability types">
                   {tabs.map((item) => (
                     <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => { setTab(item.id); setActiveIndex(0); }} className={`relative px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[var(--botanical)] ${tab === item.id ? "font-medium text-[var(--ink-heading)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--botanical)]" : "text-[var(--ink-muted)] hover:text-[var(--ink)]"}`}>{item.label}</button>
                   ))}
                   <span className="flex-1" />
-                  <button type="button" onClick={() => { const nextDetail = tab === "skill" ? "browse-skills" : tab === "mcp" ? "add-connection" : "new-prompt"; if (nextDetail === "new-prompt") { setEditingPromptId(null); setPromptTitle(""); setPromptCategory("Custom"); setPromptContent(""); } setDetail(nextDetail); setDetailMessage(null); }} className="mb-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--botanical)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">{tab === "skill" ? "Browse skills" : tab === "mcp" ? "Add connection" : "New prompt"}</button>
+                  {tab === "skill" ? null : <button type="button" onClick={() => { const nextDetail = tab === "mcp" ? "add-connection" : "new-prompt"; if (nextDetail === "new-prompt") { setEditingPromptId(null); setPromptTitle(""); setPromptCategory("Custom"); setPromptContent(""); } setDetail(nextDetail); setDetailMessage(null); }} className="mb-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--botanical)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">{tab === "mcp" ? "Add connection" : "New prompt"}</button>}
                 </nav>
               ) : null}
 
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
-                {loading ? <LoadingRows /> : error ? (
+                {tab === "skill" && !detail ? (
+                  <SkillsCatalogPanel
+                    runtimeSessionId={sessionId ?? null}
+                    onUse={chooseCatalogSkill}
+                    onInstalledChange={loadPalette}
+                  />
+                ) : loading ? <LoadingRows /> : error ? (
                   <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center"><p className="text-sm text-[var(--ink)]">{error}</p><button type="button" onClick={() => void loadPalette()} className="mt-3 rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Try again</button></div>
-                ) : selectedSkill ? (
-                  reviewReady ? (
-                    <SkillReviewPanel runtimeSessionId={sessionId ?? null} appearance="embedded" onClose={() => { setSelectedSkill(null); setReviewReady(false); }} onApproved={async () => { setSelectedSkill(null); setReviewReady(false); await loadPalette(); }} />
-                  ) : (
-                    <div className="p-3">
-                      <button type="button" onClick={() => setSelectedSkill(null)} className="text-xs text-[var(--botanical)]">← Back to catalog</button>
-                      <div className="mt-4 flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]"><CapabilityIcon kind="skill" /></span><div><h3 className="font-semibold text-[var(--ink-heading)]">{selectedSkill.name}</h3><p className="mt-1 text-sm text-[var(--ink-muted)]">{selectedSkill.description || "The provider did not publish a description."}</p></div></div>
-                      <dl className="mt-5 grid grid-cols-[auto,1fr] gap-x-4 gap-y-2 text-xs"><dt className="text-[var(--ink-muted)]">Classification</dt><dd>{selectedSkill.classification.category}</dd><dt className="text-[var(--ink-muted)]">Source</dt><dd className="truncate">{selectedSkill.source}</dd><dt className="text-[var(--ink-muted)]">Installs</dt><dd>{selectedSkill.installs ?? "Not reported"}</dd><dt className="text-[var(--ink-muted)]">Review</dt><dd>{selectedSkill.classification.reasons.join(" ")}</dd></dl>
-                      <p className="mt-4 text-xs text-[var(--ink-muted)]">Selecting review downloads the exact package into quarantine. It is not installed, enabled, or executed until a separate review and promotion succeeds.</p>
-                      {detailMessage ? <p role="status" className="mt-3 text-xs text-[#8a6f00]">{detailMessage}</p> : null}
-                      <button type="button" onClick={() => void quarantineSelectedSkill()} className="mt-4 rounded-xl bg-[var(--botanical)] px-4 py-2.5 text-sm font-medium text-white">Review for install</button>
-                    </div>
-                  )
-                ) : detail === "browse-skills" ? (
-                  <div className="p-2">
-                    <div className="flex items-center gap-3"><button type="button" onClick={() => setDetail(null)} className="text-xs text-[var(--botanical)]">← Back</button><h3 className="font-semibold text-[var(--ink-heading)]">Browse reviewed knowledge-work skills</h3></div>
-                    <input autoFocus value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder="Search the skills catalog" className="mt-4 w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2.5 text-sm outline-none focus:border-[var(--botanical)]" />
-                    {!skillQuery ? <div className="mt-4"><p className="text-xs text-[var(--ink-muted)]">Try a knowledge-work category</p><div className="mt-2 flex flex-wrap gap-2">{["research", "writing", "study", "planning", "documents"].map((value) => <button key={value} type="button" onClick={() => setSkillQuery(value)} className="rounded-full bg-[var(--paper-strong)] px-3 py-1.5 text-xs capitalize">{value}</button>)}</div></div> : null}
-                    {skillLoading && !skillResults.length ? <LoadingRows /> : skillError ? <div className="mt-5 rounded-xl bg-[var(--paper-surface)] p-4 text-sm"><p>{skillError}</p><button type="button" onClick={() => void searchSkills(false)} className="mt-2 text-xs font-medium text-[var(--botanical)]">Retry</button></div> : skillQuery && !skillLoading && !skillResults.length ? <p className="py-10 text-center text-sm text-[var(--ink-muted)]">No eligible knowledge-work skills found.</p> : (
-                      <ul className="mt-3 space-y-1">{skillResults.map((candidate) => <li key={candidate.id}><button type="button" onClick={() => { setSelectedSkill(candidate); setDetailMessage(null); }} className="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left hover:bg-[var(--paper-surface)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"><span className="mt-0.5 text-[var(--botanical)]"><CapabilityIcon kind="skill" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-[var(--ink-heading)]">{candidate.name}</span><span className="mt-0.5 block line-clamp-1 text-xs text-[var(--ink-muted)]">{candidate.description || "Open details to inspect provider metadata and review evidence."}</span><span className="mt-1 block text-[10px] text-[var(--ink-muted)]">{candidate.classification.category} · {candidate.installs ? `${candidate.installs} installs` : candidate.provider}</span></span></button></li>)}</ul>
-                    )}
-                    {skillCursor ? <button type="button" disabled={skillLoading} onClick={() => void searchSkills(true)} className="mx-auto mt-3 block rounded-lg px-3 py-2 text-xs font-medium text-[var(--botanical)] disabled:opacity-50">{skillLoading ? "Loading…" : "Load more"}</button> : null}
-                  </div>
                 ) : detail === "manage-connections" ? (
                   <div className="p-3">
                     <div className="flex items-center gap-3"><button type="button" onClick={() => setDetail(null)} className="text-xs text-[var(--botanical)]">← Back</button><h3 className="font-semibold text-[var(--ink-heading)]">Manage connections</h3><button type="button" onClick={() => { setDetail("add-connection"); setDetailMessage(null); }} className="ml-auto text-xs font-medium text-[var(--botanical)]">Add connection</button></div>
@@ -615,7 +552,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                 ) : tabItems.length ? (
                   <ul role="listbox" aria-label={tabs.find((item) => item.id === tab)?.label} className="space-y-0.5">{tabItems.map((item, index) => { const enabled = Boolean(item.enabled && item.healthy); const favorite = favorites.includes(item.id) || item.favorite; return <li key={item.id} role="option" aria-selected={index === activeIndex}><div className={`group flex items-center gap-2 rounded-xl ${index === activeIndex ? "bg-[var(--paper-surface)]" : "hover:bg-[var(--paper-surface)]"}`}><button type="button" disabled={!enabled} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(item)} className="flex min-w-0 flex-1 items-start gap-3 px-3 py-3 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-55"><span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]"><CapabilityIcon kind={item.kind} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="truncate text-sm font-medium text-[var(--ink-heading)]">{item.name}</span>{recents.includes(item.id) ? <span className="text-[9px] uppercase tracking-wide text-[var(--ink-muted)]">Recent</span> : null}</span><span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">{item.description}</span><span className="mt-1 block truncate text-[10px] text-[var(--ink-muted)]">{item.category ?? (item.kind === "mcp" ? "Connection" : item.kind === "prompt" ? "Prompt" : "Skill")} · {item.requiredCapabilityMode === "scoped_implementation" ? "Task-scoped" : item.trustLabel ?? item.source ?? "Available"}{!enabled && item.unavailableReason ? ` · ${item.unavailableReason}` : ""}</span></span></button><button type="button" onClick={() => toggleFavorite(item.id)} className="mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] opacity-70 hover:bg-[var(--paper-strong)] hover:opacity-100 focus-visible:outline-2 focus-visible:outline-[var(--botanical)]" aria-label={`${favorite ? "Remove" : "Add"} ${item.name} ${favorite ? "from" : "to"} favorites`}>{favorite ? "★" : "☆"}</button></div></li>; })}</ul>
                 ) : (
-                  <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center"><span className="text-[var(--botanical)]"><CapabilityIcon kind={tab} /></span><p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">{query ? "No matching capabilities" : tab === "skill" ? "No compatible skills yet" : tab === "mcp" ? "No connections yet" : "No prompts yet"}</p><p className="mt-1 max-w-xs text-xs text-[var(--ink-muted)]">{query ? "Try a different search." : tab === "skill" ? "Browse the catalog to review a knowledge-work skill." : tab === "mcp" ? "Add a service you want to work with." : "Create a reusable instruction for your work."}</p></div>
+                  <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center"><span className="text-[var(--botanical)]"><CapabilityIcon kind={tab} /></span><p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">{query ? "No matching capabilities" : tab === "mcp" ? "No connections yet" : "No prompts yet"}</p><p className="mt-1 max-w-xs text-xs text-[var(--ink-muted)]">{query ? "Try a different search." : tab === "mcp" ? "Add a service you want to work with." : "Create a reusable instruction for your work."}</p></div>
                 )}
               </div>
               {data?.notices?.connections && tab === "mcp" && !detail ? <p className="border-t border-[var(--line)] px-4 py-2 text-[11px] text-[#8a6f00]">{data.notices.connections}</p> : null}

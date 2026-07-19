@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from chatmock.app import create_app
 from chatmock.session import reset_session_state
+from chatmock.utils import sse_translate_chat
 from websockets.sync.client import connect as ws_connect
 
 
@@ -69,6 +70,37 @@ class RouteTests(unittest.TestCase):
         self.assertIn("gpt-5.4", model_ids)
         self.assertIn("gpt-5.4-mini", model_ids)
         self.assertIn("gpt-5.3-codex-spark", model_ids)
+
+    def test_legacy_reasoning_stream_includes_openai_compatible_field(self) -> None:
+        upstream = FakeUpstream(
+            [
+                {"type": "response.reasoning_summary_text.delta", "delta": "Checked sources."},
+                {"type": "response.output_text.delta", "delta": "Answer"},
+                {"type": "response.completed", "response": {"id": "resp_reasoning"}},
+            ]
+        )
+
+        translated = b"".join(
+            sse_translate_chat(
+                upstream,
+                model="gpt-5.6-sol",
+                created=1,
+                reasoning_compat="legacy",
+            )
+        ).decode("utf-8")
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in translated.splitlines()
+            if line.startswith("data: {")
+        ]
+        reasoning_delta = next(
+            event["choices"][0]["delta"]
+            for event in events
+            if event.get("choices")
+            and event["choices"][0]["delta"].get("reasoning_content")
+        )
+        self.assertEqual(reasoning_delta["reasoning_content"], "Checked sources.")
+        self.assertEqual(reasoning_delta["reasoning_summary"], "Checked sources.")
 
     def test_ollama_tags_list(self) -> None:
         response = self.client.get("/api/tags")

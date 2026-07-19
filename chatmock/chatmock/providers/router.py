@@ -41,6 +41,8 @@ class ProviderRouter:
             system=call.system,
             temperature=call.temperature,
             max_tokens=call.max_tokens,
+            reasoning_effort=call.reasoning_effort,
+            reasoning_summary=call.reasoning_summary,
         )
         try:
             return self.upstream.call_model(routed_call)

@@ -13,7 +13,11 @@
 
 import db from "@/lib/db";
 import { getOpenHarnessGateway } from "./gateway.ts";
-import { readOpenHarnessConfig, type OpenHarnessSurface } from "./config.ts";
+import {
+  agentForSurface,
+  readOpenHarnessConfig,
+  type OpenHarnessSurface,
+} from "./config.ts";
 import { issueCapabilityToken } from "./capability-token.ts";
 import { allowedToolsForSurface } from "./tool-scopes.ts";
 import { directoryForWorkspaceKey, writeWorkspaceCapability } from "./workspace.ts";
@@ -58,12 +62,11 @@ function loadClusterBySlug(slug: string): ClusterRow | null {
 
 function canonicalizeRuntimePolicy(row: RuntimeSessionRow): RuntimeSessionRow {
   const config = readOpenHarnessConfig();
-  const expectedAgent =
-    row.surface === "garden_chat"
-      ? config.agents.garden
-      : row.surface === "quartz_ai"
-        ? config.agents.quartz
-        : config.agents.terminal;
+  // Authenticated sessions on every surface converge on the canonical
+  // assistant; only anonymous sessions keep a restricted per-surface manifest.
+  const expectedAgent = agentForSurface(config, row.surface, {
+    authenticated: row.user_id !== null,
+  });
   if (
     row.agent_name === expectedAgent &&
     (row.capability_mode === "knowledge" || Boolean(row.capability_decision_id))
@@ -175,6 +178,7 @@ export async function createSessionForSurface(
     title: options.title,
     metadata: { userId: options.userId, gardenId, pageSlug: options.pageSlug },
     filesystemMode: directorySelectionMode,
+    authenticated: options.userId !== null,
     // Historical user-selected directories are retained only as inactive
     // metadata. New Assistant sessions always start at Breadboard's
     // server-selected root; a persisted path is never restored as authority.

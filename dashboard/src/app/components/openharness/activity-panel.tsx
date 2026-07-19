@@ -22,38 +22,6 @@ interface Props {
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
 }
 
-function lowerFirst(value: string): string {
-  return value ? `${value.charAt(0).toLowerCase()}${value.slice(1)}` : value;
-}
-
-function activityStatusSentence(item: ActivityItem): string {
-  const rawLabel = item.label.trim().replace(/[.!?]+$/, "");
-  const phrase =
-    item.kind === "answer"
-      ? "Writing the answer"
-      : item.kind === "permission"
-        ? "Requesting permission"
-        : rawLabel || "Working";
-
-  if (item.status === "permission_required") return "Permission is required.";
-  if (item.status === "denied") return "Permission was denied.";
-  if (item.status === "failed") {
-    return item.kind === "permission"
-      ? "The permission request failed."
-      : `${phrase} failed.`;
-  }
-  if (item.status === "cancelled") {
-    return item.kind === "permission"
-      ? "The permission request was cancelled."
-      : `${phrase} was cancelled.`;
-  }
-  if (item.status === "running") return `${phrase}.`;
-  if (item.kind === "reasoning") return "Done thinking.";
-  if (item.kind === "answer") return "Finished writing the answer.";
-  if (item.kind === "permission") return "Permission was granted.";
-  return `Finished ${lowerFirst(phrase)}.`;
-}
-
 export default function ActivityPanel({
   activities,
   connection,
@@ -104,6 +72,7 @@ export default function ActivityPanel({
   const statusMetadata = [durationLabel, tokenLabel]
     .filter(Boolean)
     .join(" · ");
+  const hasReasoningSummary = Boolean(reasoning?.trim());
 
   return (
     <section className="my-1 text-[var(--ink)]">
@@ -132,31 +101,11 @@ export default function ActivityPanel({
         ) : null}
       </div>
 
-      {expanded ? (
+      {expanded && hasReasoningSummary ? (
         <div className="mt-1 space-y-2">
-          {reasoning ? (
-            <pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-[var(--ink-muted)]">
-              {reasoning}
-            </pre>
-          ) : null}
-          {activities.length ? (
-            <ol className="space-y-1.5 pl-0.5">
-              {activities.map((item) => (
-                <li key={item.id} className="text-xs">
-                  <span className="min-w-0">
-                    <span className="block text-[var(--ink)]">
-                      {activityStatusSentence(item)}
-                    </span>
-                    {item.detail ? (
-                      <span className="block truncate text-[10px] text-[var(--ink-muted)]">
-                        {item.detail}
-                      </span>
-                    ) : null}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          ) : null}
+          <pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-[var(--ink-muted)]">
+            {reasoning}
+          </pre>
         </div>
       ) : null}
 

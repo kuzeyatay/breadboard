@@ -711,7 +711,11 @@ def sse_translate_chat(
                             "choices": [
                                 {
                                     "index": 0,
-                                    "delta": {"reasoning_summary": delta_txt, "reasoning": delta_txt},
+                                    "delta": {
+                                        "reasoning_summary": delta_txt,
+                                        "reasoning": delta_txt,
+                                        "reasoning_content": delta_txt,
+                                    },
                                     "finish_reason": None,
                                 }
                             ],
@@ -724,7 +728,14 @@ def sse_translate_chat(
                             "created": created,
                             "model": model,
                             "choices": [
-                                {"index": 0, "delta": {"reasoning": delta_txt}, "finish_reason": None}
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "reasoning": delta_txt,
+                                        "reasoning_content": delta_txt,
+                                    },
+                                    "finish_reason": None,
+                                }
                             ],
                         }
                         yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")

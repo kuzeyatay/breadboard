@@ -20,7 +20,9 @@ const {
   rejectQuarantine,
   sanitizeSkillName,
   searchRegistry,
-  searchSkillCatalog,
+  listInstalledSkillsWithCli,
+  updateInstalledSkillsWithCli,
+  removeInstalledSkillsWithCli,
   classifySkill,
 } = await import("../src/lib/openharness/skills.ts");
 
@@ -64,26 +66,21 @@ test("parser ignores unrelated CLI prose instead of fabricating candidates", () 
   assert.equal(parseSkillSearchOutput("No skills found").length, 0);
 });
 
-test("catalog provider paginates official CLI results and reports the provider honestly", async () => {
-  const output = Array.from({ length: 8 }, (_, index) =>
-    `publisher/repository@research-${index} ${index + 1}.0K installs\nhttps://skills.sh/publisher/repository/research-${index}`,
-  ).join("\n");
-  const first = await searchSkillCatalog({
-    query: "research",
-    limit: 3,
-    runner: async () => ({ stdout: output, stderr: "" }),
-  });
-  assert.equal(first.provider, "cli");
-  assert.equal(first.stale, false);
-  assert.equal(first.candidates.length, 3);
-  assert.equal(first.nextCursor, "3");
-  const second = await searchSkillCatalog({
-    query: "research",
-    cursor: first.nextCursor,
-    limit: 3,
-    runner: async () => ({ stdout: output, stderr: "" }),
-  });
-  assert.equal(second.candidates[0].name, "research-3");
+test("official CLI management uses structured validated argv and JSON list output", async () => {
+  const calls = [];
+  const runner = async (args) => {
+    calls.push(args);
+    return { stdout: args[0] === "list" ? "\u001b[0m{\"skills\":[]}\u001b[0m" : "", stderr: "" };
+  };
+  assert.deepEqual(await listInstalledSkillsWithCli(runner), { skills: [] });
+  await updateInstalledSkillsWithCli(["alpha", "beta-skill"], runner);
+  await removeInstalledSkillsWithCli(["alpha"], runner);
+  assert.deepEqual(calls, [
+    ["list", "--json"],
+    ["update", "alpha", "beta-skill", "--project", "--yes"],
+    ["remove", "alpha", "--yes"],
+  ]);
+  await assert.rejects(() => updateInstalledSkillsWithCli(["alpha;whoami"], runner), /Invalid Skills CLI skill name/);
 });
 
 test("classification is deterministic and unknown skills are not silently trusted", () => {
@@ -299,8 +296,8 @@ test("approved coding skills are retained only in the conditional store", () => 
   );
 });
 
-test("promotion rejects a manifest whose name differs from the reviewed quarantine name", () => {
-  quarantineSkill({
+test("an upstream manifest-name difference is surfaced for review before promotion", () => {
+  const report = quarantineSkill({
     candidate: {
       ...candidate,
       name: "expected-name",
@@ -309,14 +306,84 @@ test("promotion rejects a manifest whose name differs from the reviewed quaranti
     },
     files: { "SKILL.md": "---\nname: different-name\n---\n" },
   });
-  assert.throws(
-    () => promoteSkill("expected-name"),
-    /manifest name does not match/,
+  assert.ok(report.risks.some((risk) => risk.includes("does not match")));
+  assert.throws(() => promoteSkill("expected-name"), /classifies it as eligible/);
+  const promoted = promoteSkill("expected-name", {
+    classificationOverride: "eligible_general",
+  });
+  assert.equal(
+    path.basename(promoted.promotedPath),
+    "expected-name",
   );
 });
 
+test("installed collisions invoke by qualified command with stable upstream identity and reviewed hash", async () => {
+  quarantineSkill({
+    candidate: {
+      ...candidate,
+      id: "owner/repo/shared",
+      upstreamId: "owner/repo/shared",
+      name: "shared",
+      package: "owner/repo@shared",
+      repository: "owner/repo",
+      slashCommand: "owner:shared",
+      storageKey: "shared-stable-key",
+      description: "Research and analysis guidance",
+    },
+    files: {
+      "SKILL.md": "---\nname: shared\ndescription: Research and analysis guidance\n---\n\nAsk focused questions.",
+    },
+  });
+  promoteSkill("shared-stable-key", {
+    classificationOverride: "eligible_general",
+    reviewer: 1,
+  });
+  const installed = listApprovedSkills().find((skill) => skill.id === "owner/repo/shared");
+  assert.equal(installed?.slug, "owner:shared");
+  assert.ok(installed?.contentHash);
+  const { resolveCommandMessage } = await import("../src/lib/openharness/commands.ts");
+  const resolved = await resolveCommandMessage(1, "/owner:shared challenge this plan");
+  assert.deepEqual(resolved.invocations, [{
+    kind: "skill",
+    slug: "owner:shared",
+    id: "owner/repo/shared",
+    contentHash: installed.contentHash,
+  }]);
+  assert.match(resolved.text, /Ask focused questions/);
+});
+
+test("an upstream revision stays inactive until a fresh update approval replaces it", () => {
+  const baseCandidate = {
+    ...candidate,
+    id: "updates/repo/revisable",
+    upstreamId: "updates/repo/revisable",
+    name: "revisable",
+    package: "updates/repo@revisable",
+    repository: "updates/repo",
+    slashCommand: "revisable",
+    storageKey: "revisable-stable-key",
+    description: "Research and analysis guidance",
+    version: "upstream-hash-one",
+  };
+  quarantineSkill({
+    candidate: baseCandidate,
+    files: { "SKILL.md": "---\nname: revisable\ndescription: Research guidance\n---\n\nVersion one." },
+  });
+  promoteSkill(baseCandidate.storageKey, { classificationOverride: "eligible_general", reviewer: 1 });
+  const approvedPath = path.join(process.env.OPENHARNESS_SKILLS_APPROVED, baseCandidate.storageKey, "SKILL.md");
+  assert.match(fs.readFileSync(approvedPath, "utf8"), /Version one/);
+  quarantineSkill({
+    candidate: { ...baseCandidate, version: "upstream-hash-two" },
+    files: { "SKILL.md": "---\nname: revisable\ndescription: Research guidance\n---\n\nVersion two." },
+  });
+  assert.match(fs.readFileSync(approvedPath, "utf8"), /Version one/);
+  assert.equal(inspectQuarantine(baseCandidate.storageKey).reviewState, "quarantined");
+  promoteSkill(baseCandidate.storageKey, { overwrite: true, classificationOverride: "eligible_general", reviewer: 1 });
+  assert.match(fs.readFileSync(approvedPath, "utf8"), /Version two/);
+});
+
 test("quarantine rejects traversal and reject removes only the quarantined skill", () => {
-  const report = quarantineSkill({
+  assert.throws(() => quarantineSkill({
     candidate: {
       ...candidate,
       name: "safe-skill",
@@ -327,8 +394,16 @@ test("quarantine rejects traversal and reject removes only the quarantined skill
       "SKILL.md": "---\nname: safe-skill\n---\n",
       "../escape.txt": "nope",
     },
+  }), /Unsafe skill file path/);
+  quarantineSkill({
+    candidate: {
+      ...candidate,
+      name: "safe-skill",
+      id: "x/y@safe-skill",
+      package: "x/y@safe-skill",
+    },
+    files: { "SKILL.md": "---\nname: safe-skill\n---\n" },
   });
-  assert.ok(!report.files.some((file) => file.includes("escape")));
   rejectQuarantine("safe-skill");
   assert.ok(
     !fs.existsSync(

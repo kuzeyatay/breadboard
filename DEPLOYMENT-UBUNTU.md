@@ -245,7 +245,7 @@ User=breadboard
 Group=breadboard
 Environment=HOME=/home/breadboard
 WorkingDirectory=/opt/breadboard/chatmock
-ExecStart=/opt/breadboard/chatmock/.venv/bin/chatmock serve --host 127.0.0.1 --port 8765 --reasoning-effort low --reasoning-summary none
+ExecStart=/opt/breadboard/chatmock/.venv/bin/chatmock serve --host 127.0.0.1 --port 8765 --reasoning-effort low --reasoning-summary detailed --reasoning-compat legacy
 Restart=always
 RestartSec=5
 
@@ -256,7 +256,7 @@ WantedBy=multi-user.target
 If you want the dashboard `Chat` selector to switch between a real `Localhost` target and a real `Host` target, change the ChatMock bind host to `0.0.0.0` instead:
 
 ```ini
-ExecStart=/opt/breadboard/chatmock/.venv/bin/chatmock serve --host 0.0.0.0 --port 8765 --reasoning-effort low --reasoning-summary none
+ExecStart=/opt/breadboard/chatmock/.venv/bin/chatmock serve --host 0.0.0.0 --port 8765 --reasoning-effort low --reasoning-summary detailed --reasoning-compat legacy
 ```
 
 Then set `OPENAI_HOST_BASE_URL` to the host/IP you want the dashboard to use for `Host`.

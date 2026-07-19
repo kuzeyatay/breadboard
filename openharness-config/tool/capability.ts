@@ -34,7 +34,7 @@ export const gap = tool({
 })
 
 export const search = tool({
-  description: "Search the real skills.sh ecosystem through Breadboard's official Skills CLI adapter. Metadata only.",
+  description: "Search the real skills.sh ecosystem through Breadboard's authenticated API adapter. Metadata only.",
   args: { query: tool.schema.string() },
   async execute(args, ctx) {
     return call(ctx.sessionID, "capability_search", { query: args.query })

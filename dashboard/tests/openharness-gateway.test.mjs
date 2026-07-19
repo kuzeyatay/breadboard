@@ -136,7 +136,13 @@ test("listModels flattens provider models", async () => {
   }
 });
 
-test("createSession routes a workspace directory and picks the garden agent", async () => {
+// An authenticated garden session now uses the canonical assistant rather than
+// the per-surface `breadboard-garden` manifest. That manifest pinned
+// `"*": false` plus blanket permission denies, which acted as a hard ceiling:
+// the server could not activate a tool the task plan justified even when the
+// user had authorized it. Capability is decided by the capability broker, so
+// the agent must be able to hold those tools and start with them switched off.
+test("createSession routes a workspace directory and picks the canonical agent when authenticated", async () => {
   const { server, port, state } = await startFakeServer();
   try {
     const gateway = makeGateway(port);
@@ -146,16 +152,42 @@ test("createSession routes a workspace directory and picks the garden agent", as
       gardenKey: "physics",
       title: "Garden chat",
       filesystemMode: "restricted",
+      authenticated: true,
     });
     assert.equal(session.openHarnessSessionId, "oh_session_1");
-    assert.equal(session.agentName, "breadboard-garden");
+    // The fixture names its canonical agent "breadboard-terminal"; production
+    // defaults it to "breadboard-assistant". Both are config.agents.terminal.
+    assert.equal(session.agentName, "breadboard-terminal");
     assert.equal(session.workspaceKey, "gardens/physics/abc");
     const createReq = state.requests.find((r) => r.pathname === "/session" && r.method === "POST");
     assert.ok(createReq.query.directory.includes("gardens"));
-    assert.equal(createReq.body.agent, "breadboard-garden");
+    assert.equal(createReq.body.agent, "breadboard-terminal");
+
+    // The ceiling moved to the broker, but the session must still START fully
+    // denied — a capable agent is not a permitted one.
     const permissionReq = state.requests.find((r) => r.pathname.startsWith("/session/") && r.method === "PATCH");
     assert.ok(permissionReq.body.permission.some((rule) => rule.permission === "edit" && rule.action === "deny"));
     assert.ok(permissionReq.body.permission.some((rule) => rule.permission === "bash" && rule.action === "deny"));
+  } finally {
+    server.close();
+  }
+});
+
+test("an anonymous session keeps the restricted per-surface agent", async () => {
+  const { server, port, state } = await startFakeServer();
+  try {
+    const gateway = makeGateway(port);
+    const session = await gateway.createSession({
+      surface: "quartz_ai",
+      sessionKey: "anon",
+      gardenKey: "physics",
+      filesystemMode: "restricted",
+      authenticated: false,
+    });
+    // Isolation is enforced by the agent definition as well as by the broker.
+    assert.equal(session.agentName, "breadboard-quartz");
+    const createReq = state.requests.find((r) => r.pathname === "/session" && r.method === "POST");
+    assert.equal(createReq.body.agent, "breadboard-quartz");
   } finally {
     server.close();
   }
@@ -196,7 +228,7 @@ test("applying a scoped decision sends only focused runtime permission rules", a
   }
 });
 
-test("sendMessage posts a text part to prompt_async", async () => {
+test("sendMessage posts text and document parts to prompt_async", async () => {
   const { server, port, state } = await startFakeServer();
   try {
     const gateway = makeGateway(port);
@@ -205,12 +237,32 @@ test("sendMessage posts a text part to prompt_async", async () => {
       workspaceKey: "terminal/abc",
       agentName: "breadboard-terminal",
       text: "hello",
+      attachments: [
+        { type: "text", name: "notes.txt", text: "garden notes" },
+        {
+          type: "image",
+          name: "diagram.png",
+          dataUrl: "data:image/png;base64,aW1hZ2U=",
+        },
+      ],
       model: { providerID: "chatmock", modelID: "gpt-5.6-terra" },
       variant: "xhigh",
       system: "Surface-specific context.",
     });
     const promptReq = state.requests.find((r) => r.pathname.endsWith("/prompt_async"));
     assert.equal(promptReq.body.parts[0].text, "hello");
+    assert.deepEqual(promptReq.body.parts[1], {
+      type: "file",
+      mime: "text/plain",
+      filename: "notes.txt",
+      url: `data:text/plain;base64,${Buffer.from("garden notes").toString("base64")}`,
+    });
+    assert.deepEqual(promptReq.body.parts[2], {
+      type: "file",
+      mime: "image/png",
+      filename: "diagram.png",
+      url: "data:image/png;base64,aW1hZ2U=",
+    });
     assert.equal(promptReq.body.agent, "breadboard-terminal");
     assert.deepEqual(promptReq.body.model, { providerID: "chatmock", modelID: "gpt-5.6-terra" });
     assert.equal(promptReq.body.variant, "xhigh");

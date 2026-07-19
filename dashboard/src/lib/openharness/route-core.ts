@@ -26,13 +26,16 @@ export function requireEnabled(): void {
 }
 
 /** Parse a JSON body with a hard size cap. Rejects oversized/invalid bodies. */
-export async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
+export async function readJsonBody(
+  request: Request,
+  maxBytes = MAX_REQUEST_BYTES,
+): Promise<Record<string, unknown>> {
   const lengthHeader = request.headers.get("content-length");
-  if (lengthHeader && Number(lengthHeader) > MAX_REQUEST_BYTES) {
+  if (lengthHeader && Number(lengthHeader) > maxBytes) {
     throw new ApiError(413, "payload_too_large", "Request body exceeds the size limit.");
   }
   const text = await request.text();
-  if (text.length > MAX_REQUEST_BYTES) {
+  if (text.length > maxBytes) {
     throw new ApiError(413, "payload_too_large", "Request body exceeds the size limit.");
   }
   if (!text.trim()) return {};

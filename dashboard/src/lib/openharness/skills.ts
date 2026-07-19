@@ -8,10 +8,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { SKILLS_SH_CLI_PACKAGE } from "./skills-sh-client.ts";
 
 const execFileAsync = promisify(execFile);
 const QUARANTINE_MANIFEST = ".breadboard-quarantine.json";
-const CLI_PACKAGE = process.env.SKILLS_CLI_PACKAGE?.trim() || "skills@1.5.9";
+const CLI_PACKAGE = process.env.SKILLS_CLI_PACKAGE?.trim() || SKILLS_SH_CLI_PACKAGE;
 const MAX_SKILL_FILES = 200;
 const MAX_SKILL_FILE_BYTES = 2_000_000;
 const MAX_SKILL_TOTAL_BYTES = 10_000_000;
@@ -72,6 +73,7 @@ export type SkillAvailableEvent = {
 
 export interface SkillCandidate {
   id: string;
+  upstreamId?: string;
   name: string;
   package: string;
   publisher: string;
@@ -84,73 +86,19 @@ export interface SkillCandidate {
   installCommand: string;
   requestedPermissions: SkillPermission[];
   provider?: "api" | "cli" | "cache";
+  slashCommand?: string;
+  storageKey?: string;
   classification: SkillClassification;
-}
-
-export interface SkillCatalogPage {
-  candidates: SkillCandidate[];
-  nextCursor: string | null;
-  provider: "api" | "cli" | "cache";
-  stale: boolean;
-}
-
-export interface SkillCatalogProvider {
-  id: "api" | "cli" | "cache";
-  available(): boolean;
-  search(input: {
-    query: string;
-    cursor: number;
-    limit: number;
-  }): Promise<SkillCatalogPage>;
-}
-
-const RELEVANCE_STOP_WORDS = new Set([
-  "add", "application", "build", "code", "coding", "component", "create",
-  "debug", "development", "edit", "feature", "file", "fix", "implement",
-  "implementation", "repair", "software", "source", "test", "update",
-]);
-
-/** Conditional skills must match the independently authorized task domain. */
-export function conditionalSkillRelevant(
-  skill: { name: string; description?: string; category?: string; instructions?: string },
-  requestedOutcome: string | undefined,
-): boolean {
-  const outcome = requestedOutcome?.toLowerCase().trim() ?? "";
-  if (!outcome) return false;
-  const words = (value: string) =>
-    new Set(
-      (value.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? []).filter(
-        (word) => !RELEVANCE_STOP_WORDS.has(word),
-      ),
-    );
-  const taskWords = words(outcome);
-  const skillWords = words(
-    `${skill.name} ${skill.description ?? ""} ${skill.category ?? ""} ${skill.instructions ?? ""}`,
-  );
-  if ([...taskWords].some((word) => skillWords.has(word))) return true;
-  if (
-    /\b(?:button|composer|css|frontend|interface|palette|react|ui)\b/i.test(outcome) &&
-    /\b(?:css|frontend|interface|react|ui)\b/i.test(
-      `${skill.name} ${skill.description ?? ""} ${skill.category ?? ""}`,
-    )
-  ) return true;
-  if (
-    /\b(?:api|authorization|backend|database|endpoint|route|server)\b/i.test(outcome) &&
-    /\b(?:api|backend|database|server)\b/i.test(
-      `${skill.name} ${skill.description ?? ""} ${skill.category ?? ""}`,
-    )
-  ) return true;
-  return false;
 }
 
 export type SkillsCliRunner = (
   args: string[],
-  options?: { cwd?: string },
+  options?: { cwd?: string; signal?: AbortSignal },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export async function runSkillsCli(
   args: string[],
-  options: { cwd?: string } = {},
+  options: { cwd?: string; signal?: AbortSignal } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   const windowsNpx = path.join(
     path.dirname(process.execPath),
@@ -173,6 +121,7 @@ export async function runSkillsCli(
       timeout: 60_000,
       maxBuffer: 2_000_000,
       env: { ...process.env, DISABLE_TELEMETRY: "1", DO_NOT_TRACK: "1" },
+      signal: options.signal,
     });
     return { stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
@@ -191,6 +140,48 @@ export async function runSkillsCli(
     }
     throw error;
   }
+}
+
+export async function listInstalledSkillsWithCli(
+  runner: SkillsCliRunner = runSkillsCli,
+  options: { cwd?: string; signal?: AbortSignal } = {},
+): Promise<unknown> {
+  const result = await runner(["list", "--json"], options);
+  try {
+    return JSON.parse(stripAnsi(result.stdout));
+  } catch {
+    throw new Error("The Skills CLI returned malformed list output");
+  }
+}
+
+export async function updateInstalledSkillsWithCli(
+  names: string[],
+  runner: SkillsCliRunner = runSkillsCli,
+  options: { cwd?: string; signal?: AbortSignal } = {},
+): Promise<void> {
+  const safeNames = names.map(validCliSkillName);
+  if (!safeNames.length) throw new Error("At least one installed skill is required");
+  await runner(["update", ...safeNames, "--project", "--yes"], options);
+}
+
+export async function removeInstalledSkillsWithCli(
+  names: string[],
+  runner: SkillsCliRunner = runSkillsCli,
+  options: { cwd?: string; signal?: AbortSignal } = {},
+): Promise<void> {
+  const safeNames = names.map(validCliSkillName);
+  if (!safeNames.length) throw new Error("At least one installed skill is required");
+  await runner(["remove", ...safeNames, "--yes"], options);
+}
+
+function validCliSkillName(value: string): string {
+  const name = value.trim();
+  if (!/^[a-z0-9][a-z0-9_.-]*$/i.test(name)) throw new Error(`Invalid Skills CLI skill name: ${value}`);
+  return name;
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
 }
 
 /** Search the real skills ecosystem through the official CLI. Metadata only. */
@@ -349,157 +340,6 @@ export function parseSkillSearchOutput(output: string): SkillCandidate[] {
     .slice(0, 100);
 }
 
-function catalogCacheFile(): string {
-  return path.join(repoRoot(), ".runtime", "skills-catalog-cache.json");
-}
-
-function readCatalogCache(query: string): SkillCandidate[] {
-  try {
-    const data = JSON.parse(fs.readFileSync(catalogCacheFile(), "utf8")) as {
-      queries?: Record<string, SkillCandidate[]>;
-    };
-    return Array.isArray(data.queries?.[query]) ? data.queries![query] : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCatalogCache(query: string, candidates: SkillCandidate[]): void {
-  const file = catalogCacheFile();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  let data: { queries: Record<string, SkillCandidate[]>; updatedAt?: string } = {
-    queries: {},
-  };
-  try {
-    data = JSON.parse(fs.readFileSync(file, "utf8")) as typeof data;
-  } catch {
-    data = { queries: {} };
-  }
-  data.queries ??= {};
-  data.queries[query] = candidates.slice(0, 100);
-  data.updatedAt = new Date().toISOString();
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
-}
-
-function pageCandidates(
-  candidates: SkillCandidate[],
-  cursor: number,
-  limit: number,
-  provider: SkillCatalogPage["provider"],
-  stale: boolean,
-): SkillCatalogPage {
-  const page = candidates.slice(cursor, cursor + limit).map((candidate) => ({
-    ...candidate,
-    provider,
-  }));
-  return {
-    candidates: page,
-    nextCursor: cursor + limit < candidates.length ? String(cursor + limit) : null,
-    provider,
-    stale,
-  };
-}
-
-export function skillCatalogProviders(
-  runner: SkillsCliRunner = runSkillsCli,
-): SkillCatalogProvider[] {
-  const apiUrl = process.env.SKILLS_CATALOG_API_URL?.trim();
-  return [
-    {
-      id: "api",
-      available: () => Boolean(apiUrl),
-      async search({ query, cursor, limit }) {
-        const url = new URL(apiUrl!);
-        url.searchParams.set("q", query);
-        url.searchParams.set("cursor", String(cursor));
-        url.searchParams.set("limit", String(limit));
-        const response = await fetch(url, {
-          headers: process.env.SKILLS_CATALOG_API_TOKEN
-            ? { Authorization: `Bearer ${process.env.SKILLS_CATALOG_API_TOKEN}` }
-            : undefined,
-        });
-        if (!response.ok) throw new Error(`Skills catalog returned ${response.status}`);
-        const payload = (await response.json()) as {
-          items?: Array<Record<string, unknown>>;
-          nextCursor?: unknown;
-        };
-        const candidates = (Array.isArray(payload.items) ? payload.items : []).flatMap(
-          (item): SkillCandidate[] => {
-            const name = typeof item.name === "string" ? item.name : "";
-            const repository = typeof item.repository === "string" ? item.repository : "";
-            if (!validPackage(repository, name)) return [];
-            const description = typeof item.description === "string" ? item.description : "";
-            const packageId = `${repository}@${name}`;
-            return [{
-              id: packageId,
-              name,
-              package: packageId,
-              publisher: repository.split("/")[0],
-              repository,
-              source: typeof item.source === "string" ? item.source : `https://github.com/${repository}`,
-              detailsUrl: typeof item.detailsUrl === "string" ? item.detailsUrl : `https://skills.sh/${repository}/${name}`,
-              installs: typeof item.installs === "string" ? item.installs : undefined,
-              description,
-              version: typeof item.version === "string" ? item.version : undefined,
-              installCommand: `npx skills add ${packageId}`,
-              requestedPermissions: [],
-              provider: "api",
-              classification: classifySkill({ name, description, repository }),
-            }];
-          },
-        );
-        writeCatalogCache(query, candidates);
-        return {
-          candidates,
-          nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
-          provider: "api",
-          stale: false,
-        };
-      },
-    },
-    {
-      id: "cli",
-      available: () => true,
-      async search({ query, cursor, limit }) {
-        const candidates = await searchRegistry(query, runner);
-        writeCatalogCache(query, candidates);
-        return pageCandidates(candidates, cursor, limit, "cli", false);
-      },
-    },
-    {
-      id: "cache",
-      available: () => true,
-      async search({ query, cursor, limit }) {
-        const candidates = readCatalogCache(query);
-        if (!candidates.length) throw new Error("No cached catalog results are available.");
-        return pageCandidates(candidates, cursor, limit, "cache", true);
-      },
-    },
-  ];
-}
-
-export async function searchSkillCatalog(input: {
-  query: string;
-  cursor?: string | null;
-  limit?: number;
-  runner?: SkillsCliRunner;
-}): Promise<SkillCatalogPage> {
-  const query = input.query.trim().slice(0, 200);
-  if (!query) return { candidates: [], nextCursor: null, provider: "cli", stale: false };
-  const cursor = Math.max(0, Number.parseInt(input.cursor ?? "0", 10) || 0);
-  const limit = Math.min(30, Math.max(1, input.limit ?? 12));
-  const errors: string[] = [];
-  for (const provider of skillCatalogProviders(input.runner)) {
-    if (!provider.available()) continue;
-    try {
-      return await provider.search({ query, cursor, limit });
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : `${provider.id} failed`);
-    }
-  }
-  throw new Error(`Skill catalog unavailable: ${errors.join("; ")}`);
-}
-
 function validPackage(repository: string, name: string): boolean {
   return (
     /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(repository) &&
@@ -538,6 +378,8 @@ export function conditionalRoot(): string {
 export interface ApprovedSkillSummary {
   id: string;
   slug: string;
+  upstreamSlug: string;
+  storageKey: string;
   name: string;
   description: string;
   source?: string;
@@ -576,6 +418,10 @@ function listApprovedSkillsAtRoot(root: string): ApprovedSkillSummary[] {
         return [];
       }
       const metadata = registry.skills?.[entry.name] ?? {};
+      // Only entries that passed Breadboard review are public commands. The
+      // repository's private agent workflows intentionally have no registry
+      // record and therefore never masquerade as skills.sh installations.
+      if (!registry.skills?.[entry.name]) return [];
       const frontmatter =
         markdown.match(/^---\s*[\r\n]([\s\S]*?)[\r\n]---/)?.[1] ?? "";
       const frontmatterValue = (key: string) =>
@@ -626,8 +472,19 @@ function listApprovedSkillsAtRoot(root: string): ApprovedSkillSummary[] {
             });
       return [
         {
-          id: `skill:${entry.name}`,
-          slug: entry.name,
+          id:
+            typeof metadata.upstreamId === "string"
+              ? metadata.upstreamId
+              : `skill:${entry.name}`,
+          slug:
+            typeof metadata.slashCommand === "string"
+              ? metadata.slashCommand
+              : entry.name,
+          upstreamSlug:
+            typeof metadata.slug === "string"
+              ? metadata.slug
+              : frontmatterValue("name") ?? entry.name,
+          storageKey: entry.name,
           name: frontmatterValue("name") ?? entry.name,
           description:
             frontmatterValue("description") ?? "Installed Breadboard skill",
@@ -677,6 +534,11 @@ export function sanitizeSkillName(name: string): string {
   return cleaned;
 }
 
+export function skillStorageKey(upstreamId: string, slug: string): string {
+  const suffix = crypto.createHash("sha256").update(upstreamId).digest("hex").slice(0, 10);
+  return sanitizeSkillName(`${slug}-${suffix}`);
+}
+
 function ensureInside(root: string, target: string): string {
   const resolvedRoot = path.resolve(root);
   const resolved = path.resolve(resolvedRoot, target);
@@ -688,6 +550,9 @@ function ensureInside(root: string, target: string): string {
 
 export interface QuarantineReport {
   name: string;
+  slug?: string;
+  upstreamId?: string;
+  slashCommand?: string;
   package: string;
   source: string;
   exactVersion?: string;
@@ -829,15 +694,38 @@ export function quarantineSkill(input: {
   candidate: SkillCandidate;
   files: Record<string, string | Buffer>;
 }): QuarantineReport {
-  const name = sanitizeSkillName(input.candidate.name);
+  const name = sanitizeSkillName(input.candidate.storageKey ?? input.candidate.name);
   if (input.candidate.classification?.classification === "blocked_security") {
     throw new Error("Breadboard policy blocks this skill from quarantine.");
   }
   const dir = ensureInside(quarantineRoot(), name);
+  const fileEntries = Object.entries(input.files);
+  if (fileEntries.length > MAX_SKILL_FILES) {
+    throw new Error(`Skill exceeds the ${MAX_SKILL_FILES}-file quarantine limit`);
+  }
+  let totalBytes = 0;
+  const normalizedPaths = new Set<string>();
+  for (const [relPath, contents] of fileEntries) {
+    if (!safeRelativePath(relPath)) {
+      throw new Error(`Unsafe skill file path: ${relPath}`);
+    }
+    const normalized = relPath.replace(/\\/g, "/");
+    if (normalizedPaths.has(normalized.toLowerCase())) {
+      throw new Error(`Duplicate skill file path: ${relPath}`);
+    }
+    normalizedPaths.add(normalized.toLowerCase());
+    const bytes = Buffer.isBuffer(contents) ? contents.byteLength : Buffer.byteLength(contents);
+    if (bytes > MAX_SKILL_FILE_BYTES) {
+      throw new Error("Skill contains a file larger than the quarantine limit");
+    }
+    totalBytes += bytes;
+    if (totalBytes > MAX_SKILL_TOTAL_BYTES) {
+      throw new Error("Skill exceeds the total quarantine size limit");
+    }
+  }
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
-  for (const [relPath, contents] of Object.entries(input.files)) {
-    if (!safeRelativePath(relPath)) continue;
+  for (const [relPath, contents] of fileEntries) {
     const target = ensureInside(dir, relPath);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, contents);
@@ -852,8 +740,9 @@ export function quarantineSkill(input: {
 }
 
 function safeRelativePath(value: string): boolean {
-  if (!value || path.isAbsolute(value)) return false;
-  return !value.split(/[\\/]+/).includes("..");
+  if (!value || value.includes("\0") || path.isAbsolute(value) || /^[a-z]:/i.test(value)) return false;
+  const parts = value.split(/[\\/]+/);
+  return !parts.includes("..") && !parts.includes("") && !parts.includes(".");
 }
 
 export function inspectQuarantine(
@@ -924,8 +813,9 @@ function inspectFiles(
   });
   const risks: string[] = [];
   if (!hasSkillMd) risks.push("Missing SKILL.md manifest.");
-  if (frontmatterName && sanitizeSkillName(frontmatterName) !== name)
-    risks.push(`Manifest name "${frontmatterName}" does not match "${name}".`);
+  const expectedManifestName = candidate?.name ?? saved?.slug ?? name;
+  if (frontmatterName && sanitizeSkillName(frontmatterName) !== sanitizeSkillName(expectedManifestName))
+    risks.push(`Manifest name "${frontmatterName}" does not match "${expectedManifestName}".`);
   if (discoveredScripts.length)
     risks.push(`Contains script files: ${discoveredScripts.join(", ")}`);
   if (externalNetworkRequirements.length)
@@ -944,6 +834,9 @@ function inspectFiles(
     risks.push("A skill with this name is already approved (name collision).");
   return {
     name,
+    slug: candidate?.name ?? saved?.slug ?? name,
+    upstreamId: candidate?.upstreamId ?? candidate?.id ?? saved?.upstreamId,
+    slashCommand: candidate?.slashCommand ?? saved?.slashCommand ?? candidate?.name ?? saved?.slug ?? name,
     package: candidate?.package ?? saved?.package ?? name,
     source: candidate?.source ?? saved?.source ?? "unknown",
     exactVersion: candidate?.version ?? saved?.exactVersion,
@@ -1018,7 +911,10 @@ export function promoteSkill(
     throw new Error("Refusing to promote a skill without a SKILL.md manifest");
   if (
     !report.frontmatterName ||
-    sanitizeSkillName(report.frontmatterName) !== report.name
+    (
+      sanitizeSkillName(report.frontmatterName) !== sanitizeSkillName(report.slug ?? report.name) &&
+      !report.upstreamId
+    )
   ) {
     throw new Error(
       "Refusing to promote a skill whose manifest name does not match its quarantine name",
@@ -1048,11 +944,16 @@ export function promoteSkill(
   );
   if ((fs.existsSync(target) || fs.existsSync(otherTarget)) && !options?.overwrite)
     throw new Error("A skill with this name is already approved");
-  fs.rmSync(target, { recursive: true, force: true });
-  if (options?.overwrite) fs.rmSync(otherTarget, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.cpSync(source, target, { recursive: true });
-  fs.rmSync(path.join(target, QUARANTINE_MANIFEST), { force: true });
+  const operationId = crypto.randomUUID();
+  const stagedTarget = ensureInside(destinationRoot, `${report.name}.promoting-${operationId}`);
+  const targetBackup = ensureInside(destinationRoot, `${report.name}.backup-${operationId}`);
+  const otherRoot = effectiveClassification === "eligible_coding_conditional"
+    ? approvedRoot()
+    : conditionalRoot();
+  const otherBackup = ensureInside(otherRoot, `${report.name}.backup-${operationId}`);
+  fs.cpSync(source, stagedTarget, { recursive: true });
+  fs.rmSync(path.join(stagedTarget, QUARANTINE_MANIFEST), { force: true });
   const approvedAgents = (options?.approvedAgents ?? []).filter((agent) =>
     APPROVABLE_AGENTS.has(agent),
   );
@@ -1088,7 +989,21 @@ export function promoteSkill(
     reviewer: options?.reviewer,
     reviewedAt: new Date().toISOString(),
   };
-  updateApprovedRegistry(approved, destinationRoot);
+  if (fs.existsSync(target)) fs.renameSync(target, targetBackup);
+  if (options?.overwrite && fs.existsSync(otherTarget)) fs.renameSync(otherTarget, otherBackup);
+  try {
+    fs.renameSync(stagedTarget, target);
+    updateApprovedRegistry(approved, destinationRoot);
+    if (fs.existsSync(otherBackup)) removeRegistryEntry(report.name, otherRoot);
+  } catch (error) {
+    fs.rmSync(target, { recursive: true, force: true });
+    if (fs.existsSync(targetBackup)) fs.renameSync(targetBackup, target);
+    if (fs.existsSync(otherBackup)) fs.renameSync(otherBackup, otherTarget);
+    fs.rmSync(stagedTarget, { recursive: true, force: true });
+    throw error;
+  }
+  fs.rmSync(targetBackup, { recursive: true, force: true });
+  fs.rmSync(otherBackup, { recursive: true, force: true });
   fs.rmSync(source, { recursive: true, force: true });
   return { promotedPath: target, report: approved };
 }
@@ -1098,6 +1013,32 @@ export function rejectQuarantine(name: string): void {
     recursive: true,
     force: true,
   });
+}
+
+export function removeApprovedSkill(storageKey: string): void {
+  const name = sanitizeSkillName(storageKey);
+  let removed = false;
+  for (const root of [approvedRoot(), conditionalRoot()]) {
+    const target = ensureInside(root, name);
+    if (!fs.existsSync(target)) continue;
+    fs.rmSync(target, { recursive: true, force: true });
+    removeRegistryEntry(name, root);
+    removed = true;
+  }
+  if (!removed) throw new Error("Approved skill content was not found");
+}
+
+function removeRegistryEntry(name: string, root: string): void {
+  const registryFile = path.join(root, "registry.json");
+  try {
+    const registry = JSON.parse(fs.readFileSync(registryFile, "utf8")) as {
+      skills?: Record<string, unknown>;
+    };
+    if (registry.skills) delete registry.skills[name];
+    fs.writeFileSync(registryFile, JSON.stringify(registry, null, 2), "utf8");
+  } catch {
+    // A missing registry cannot make removed content executable.
+  }
 }
 
 function updateApprovedRegistry(report: QuarantineReport, root: string): void {
@@ -1141,6 +1082,13 @@ function sameHashes(
   return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
 }
 
+export function canonicalSkillHash(fileHashes: Record<string, string>): string {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(Object.entries(fileHashes).sort(([left], [right]) => left.localeCompare(right))))
+    .digest("hex");
+}
+
 function sha256(value: Buffer): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
@@ -1149,6 +1097,9 @@ function listFilesRecursive(dir: string, depth = 20): string[] {
   if (depth < 0 || !fs.existsSync(dir)) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Skill content contains a symbolic link: ${entry.name}`);
+    }
     return entry.isDirectory() ? listFilesRecursive(full, depth - 1) : [full];
   });
 }

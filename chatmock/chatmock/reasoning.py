@@ -63,6 +63,9 @@ def apply_reasoning_to_message(
             message["reasoning_summary"] = reasoning_summary_text
         if reasoning_full_text:
             message["reasoning"] = reasoning_full_text
+        compatible_reasoning = reasoning_summary_text or reasoning_full_text
+        if compatible_reasoning:
+            message["reasoning_content"] = compatible_reasoning
         return message
 
     rtxt_parts: list[str] = []

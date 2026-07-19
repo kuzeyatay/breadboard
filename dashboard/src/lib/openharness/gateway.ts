@@ -35,14 +35,18 @@ import {
   type OpenHarnessModel,
   type OpenHarnessMcpConfig,
   type PromptBody,
+  type PromptPart,
 } from "./client.ts";
 import {
+  agentForSurface,
   readOpenHarnessConfig,
   type OpenHarnessConfig,
   type OpenHarnessSurface,
 } from "./config.ts";
 import type { FilesystemAccessMode } from "./runtime-store.ts";
+import type { ChatAttachment } from "../chat-attachments.ts";
 import {
+  createOpenHarnessEventNormalizationState,
   normalizeOpenHarnessEvent,
   type NormalizedAgentEvent,
   type RawOpenHarnessEvent,
@@ -84,6 +88,8 @@ export interface CreateAgentSessionInput {
   metadata?: Record<string, unknown>;
   filesystemMode: FilesystemAccessMode;
   previousDirectory?: string | null;
+  /** Anonymous sessions receive the restricted public agent. */
+  authenticated?: boolean;
 }
 
 export interface SendAgentMessageInput {
@@ -92,6 +98,7 @@ export interface SendAgentMessageInput {
   directory?: string;
   agentName: string;
   text: string;
+  attachments?: ChatAttachment[];
   model?: { providerID: string; modelID: string };
   variant?: string;
   system?: string;
@@ -110,6 +117,25 @@ export interface PermissionResponseInput {
 export interface OpenHarnessCapabilityDiscovery {
   tools: string[];
   mcp: Awaited<ReturnType<typeof fetchMcpStatus>>;
+}
+
+function attachmentPromptPart(attachment: ChatAttachment): PromptPart {
+  if (attachment.type === "text") {
+    return {
+      type: "file",
+      mime: "text/plain",
+      filename: attachment.name,
+      url: `data:text/plain;base64,${Buffer.from(attachment.text, "utf8").toString("base64")}`,
+    };
+  }
+
+  const mime = attachment.dataUrl.match(/^data:([^;,]+)[;,]/i)?.[1] ?? "application/octet-stream";
+  return {
+    type: "file",
+    mime,
+    filename: attachment.name,
+    url: attachment.dataUrl,
+  };
 }
 
 export class OpenHarnessGateway {
@@ -188,10 +214,11 @@ export class OpenHarnessGateway {
     return startMcpAuthentication(this.config, directory, name);
   }
 
-  agentForSurface(surface: OpenHarnessSurface): string {
-    if (surface === "garden_chat") return this.config.agents.garden;
-    if (surface === "quartz_ai") return this.config.agents.quartz;
-    return this.config.agents.terminal;
+  agentForSurface(
+    surface: OpenHarnessSurface,
+    options: { authenticated?: boolean } = {},
+  ): string {
+    return agentForSurface(this.config, surface, options);
   }
 
   async createSession(input: CreateAgentSessionInput): Promise<AgentSession> {
@@ -210,7 +237,9 @@ export class OpenHarnessGateway {
       },
       { create: true },
     );
-    const agentName = this.agentForSurface(input.surface);
+    const agentName = this.agentForSurface(input.surface, {
+      authenticated: input.authenticated,
+    });
     const session = await createSession(this.config, directory, {
       title: input.title,
       agent: agentName,
@@ -270,7 +299,10 @@ export class OpenHarnessGateway {
       .join("\n\n");
     const body: PromptBody = {
       agent: input.agentName,
-      parts: [{ type: "text", text: input.text }],
+      parts: [
+        { type: "text", text: input.text },
+        ...(input.attachments ?? []).map(attachmentPromptPart),
+      ],
       ...(input.model ? { model: input.model } : {}),
       ...(input.variant ? { variant: input.variant } : {}),
       system,
@@ -326,12 +358,14 @@ export class OpenHarnessGateway {
     const body = response.body;
     if (!body) return;
     onConnected?.();
+    const normalizationState = createOpenHarnessEventNormalizationState();
     for await (const raw of parseSseStream(readableToIterable(body))) {
       if (typeof raw.type !== "string") continue;
       const event = raw as unknown as RawOpenHarnessEvent;
       const normalized = normalizeOpenHarnessEvent(
         event,
         input.openHarnessSessionId,
+        normalizationState,
       );
       if (normalized) yield normalized;
       if (signal?.aborted) break;

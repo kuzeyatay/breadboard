@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { rebuildEntireGarden } from "@/lib/learn";
+import { LEARN_MODEL, rebuildEntireGarden } from "@/lib/learn";
 import { InvalidLearnOperationRequestError, isFullRebuildRequest, parseStartLearnOperationRequest } from "@/lib/learn-operation-mode";
-import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
+import { createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +34,7 @@ export async function POST(
     const client = createChatmockClient(baseURL);
     const job = await rebuildEntireGarden(cluster.slug, {
       userId, client, contentPath, includedSourceIds,
-      model: typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL,
+      model: LEARN_MODEL,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
       forceFullRebuild: true,
