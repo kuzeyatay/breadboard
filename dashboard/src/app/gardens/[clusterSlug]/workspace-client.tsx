@@ -15,6 +15,10 @@ import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import ActivityPanel from "@/app/components/openharness/activity-panel";
+import {
+  COMMAND_TEXT_CLASS,
+  splitLeadingCommandTokens,
+} from "@/app/components/openharness/command-text";
 import { useLegacyAgentActivity } from "@/app/components/openharness/use-legacy-agent-activity";
 import type {
   ActivityItem,
@@ -595,7 +599,18 @@ const ChatTranscript = memo(function ChatTranscript({
               )}
               {msg.content && (
                 <div className="w-full bg-gray-800 border border-gray-700 rounded-2xl rounded-tr-sm px-4 py-3 text-sm text-white">
-                  <ChatMarkdown content={msg.content} compact />
+                  {(() => {
+                    const split = splitLeadingCommandTokens(msg.content);
+                    if (!split) return <ChatMarkdown content={msg.content} compact />;
+                    return (
+                      <>
+                        <p className={`whitespace-pre-wrap ${COMMAND_TEXT_CLASS}`}>
+                          {split.command.trimEnd()}
+                        </p>
+                        {split.rest ? <ChatMarkdown content={split.rest} compact /> : null}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -2899,7 +2914,7 @@ export default function WorkspaceClient({
     if (!shouldShowPanel) return null;
 
     return (
-      <section className="mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3 shadow-sm">
+      <section className="neu-surface-raised mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3">
         <div className="flex flex-col gap-2">
           <div className="flex min-h-8 items-center justify-between gap-3">
             <div className="flex shrink-0 items-center gap-2">
@@ -2916,7 +2931,7 @@ export default function WorkspaceClient({
                 <button
                   type="button"
                   onClick={() => setLearnDocumentMenuOpen((open) => !open)}
-                  className="flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                  className="neu-button flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
                   aria-expanded={learnDocumentMenuOpen}
                   aria-haspopup="menu"
                   title="Choose which source documents Learn may use"
@@ -2957,7 +2972,7 @@ export default function WorkspaceClient({
                 </button>
                 {learnDocumentMenuOpen ? (
                   <div
-                    className="absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl"
+                    className="neu-popover absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2"
                     role="menu"
                     aria-label="Documents included in Learn"
                   >
@@ -3070,7 +3085,7 @@ export default function WorkspaceClient({
                   onClick={handleRepairIssues}
                   disabled={!canStart}
                   title="Repairs only failing pages and components; unaffected content is preserved"
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="neu-button-primary flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {learnBusy ? (
                     <Spinner className="h-3.5 w-3.5" />
@@ -3102,7 +3117,7 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleFullRebuild}
                   disabled={!canStart}
-                  className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-destructive rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Destructive: recreate the Learning Map, contract, all pages, and visuals"
                 >
                   Rebuild entire garden
@@ -3113,7 +3128,7 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleClearLearnData}
                   disabled={learnBusy || learnCancelBusy || active}
-                  className="rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-destructive rounded-lg border border-red-900/70 px-3 py-1.5 text-xs text-red-300 transition hover:border-red-700 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
                   title="Destructive: remove generated Learn content and Learn history while preserving sources and non-Learn notes"
                 >
                   Clear Learn data
@@ -3133,7 +3148,7 @@ export default function WorkspaceClient({
                     learnCancelBusy ||
                     (!canStart && status !== "awaiting_confirmation")
                   }
-                  className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="neu-button-primary flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {learnBusy || active ? (
                     <Spinner className="h-3.5 w-3.5" />
@@ -3162,7 +3177,7 @@ export default function WorkspaceClient({
                   type="button"
                   onClick={handleCancelLearn}
                   disabled={learnCancelBusy}
-                  className="flex items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
+                  className="neu-button-destructive flex items-center gap-1.5 rounded-lg border border-red-900/60 bg-red-950/30 px-3 py-1.5 text-sm font-medium text-red-300 transition-colors hover:border-red-700 hover:text-red-200 disabled:cursor-wait disabled:opacity-60"
                   title="Stop this Learn run"
                 >
                   {learnCancelBusy ? <Spinner className="h-3.5 w-3.5" /> : null}
@@ -3175,7 +3190,7 @@ export default function WorkspaceClient({
                   <button
                     type="button"
                     onClick={() => setLearnPanelOpen(false)}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
+                    className="neu-button-icon flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
                     aria-label="Close Learn panel"
                     title="Close"
                   >
@@ -3206,7 +3221,7 @@ export default function WorkspaceClient({
 
         {(active || status === "complete" || status === "failed") && (
           <div className="mt-3">
-            <div className="h-1.5 overflow-hidden rounded-full bg-gray-800">
+            <div className="neu-progress-track h-1.5 overflow-hidden rounded-full bg-gray-800">
               <div
                 className={[
                   "h-full rounded-full transition-all",
@@ -3507,7 +3522,7 @@ export default function WorkspaceClient({
       <button
         type="button"
         onClick={() => setLearnPanelOpen(true)}
-        className={`absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border shadow-md transition hover:scale-105 ${tone}`}
+        className={`neu-button-icon absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border transition hover:scale-105 ${tone}`}
         aria-label={`Open Learn panel. ${label}`}
         title={`${label}. Open Learn panel`}
       >
@@ -4615,7 +4630,7 @@ export default function WorkspaceClient({
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
+      <header className="neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
         <NavbarFlowerWind />
         <div className="relative z-10 flex items-center gap-3">
           <Link
@@ -4657,7 +4672,7 @@ export default function WorkspaceClient({
               type="button"
               onClick={handleForkCluster}
               disabled={isForking}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="neu-button flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {isForking ? (
                 <>
@@ -4686,7 +4701,7 @@ export default function WorkspaceClient({
           )}
           <Link
             href={`/garden/${clusterSlug}`}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
+            className="neu-button flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
           >
             <svg
               className="w-3.5 h-3.5"
@@ -4715,7 +4730,7 @@ export default function WorkspaceClient({
                     : "Open Learn panel"
                   : "Upload sources before learning"
               }
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="neu-button-primary flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <svg
                 className="w-3.5 h-3.5"
@@ -4737,7 +4752,7 @@ export default function WorkspaceClient({
             onClick={handleGenerateNotes}
             disabled={messages.length === 0 || isGenerating}
             title="Save the latest assistant response as a lesson page"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="neu-button flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isGenerating ? (
               <>
@@ -4772,7 +4787,7 @@ export default function WorkspaceClient({
         {leftSidebarOpen ? (
           <aside
             style={{ width: leftSidebarWidth }}
-            className="relative shrink-0 border-r border-gray-800 flex flex-col bg-gray-950"
+            className="neu-surface-subtle relative shrink-0 border-r border-gray-800 flex flex-col bg-gray-950"
           >
             {leftSidebarResizeHandle}
             {/* New chat */}
@@ -4780,7 +4795,7 @@ export default function WorkspaceClient({
               <button
                 onClick={handleNewChat}
                 disabled={isStreaming || loadingChats}
-                className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2.5 text-sm text-gray-300 rounded-lg border border-gray-800 hover:bg-gray-900 hover:text-white hover:border-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="neu-button flex-1 min-w-0 flex items-center gap-2 px-3 py-2.5 text-sm text-gray-300 rounded-lg border border-gray-800 hover:bg-gray-900 hover:text-white hover:border-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <svg
                   className="w-4 h-4 shrink-0"

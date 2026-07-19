@@ -14,6 +14,7 @@ import AssistantComposer, {
 } from "@/app/components/assistant-composer";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import ActivityPanel from "./activity-panel";
+import { UserMessageText } from "./command-text";
 import {
   DEFAULT_ASSISTANT_REASONING_EFFORT,
   type AssistantReasoningEffort,
@@ -117,7 +118,7 @@ export default function AgentRuntimePanel({
                   <div className={message.role === "user" ? "max-w-[80%]" : "w-full"}>
                     {message.role === "user" ? (
                       <div className="rounded-2xl rounded-br-sm bg-gray-800 px-4 py-2.5 text-sm leading-6 text-gray-100">
-                        <p className="whitespace-pre-wrap">{message.content}</p>
+                        <UserMessageText content={message.content} />
                       </div>
                     ) : (
                       <div className="text-sm leading-7 text-gray-200">

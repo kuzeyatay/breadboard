@@ -10,6 +10,7 @@ import type {
 import { useImperativeHandle, useRef, useState } from 'react';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import { CommandHub, type CommandHubHandle } from '@/app/components/openharness/command-hub';
+import { startsWithCommandToken } from '@/app/components/openharness/command-text';
 import { useYoloMode } from '@/app/components/use-yolo-mode';
 import type { CommandHubItem } from '@/lib/openharness/commands.ts';
 import type { OpenHarnessSurface } from '@/lib/openharness/config.ts';
@@ -151,13 +152,13 @@ export default function AssistantComposer({
 
   return (
     <div className={className}>
-      <div className="neumorphic-chat-bar relative rounded-[30px] p-2">
+      <div className="neu-composer relative rounded-[30px] p-2">
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 px-2 pb-1.5 pt-1">
             {attachments.map((attachment, index) => (
               <div
                 key={`${attachment.name}-${index}`}
-                className="flex max-w-[220px] items-center gap-1.5 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-2.5 py-1.5 text-xs text-[var(--ink)]"
+                className="neu-surface-subtle flex max-w-[220px] items-center gap-1.5 rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] px-2.5 py-1.5 text-xs text-[var(--ink)]"
               >
                 <svg className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
                   {attachment.type === 'image' ? (
@@ -202,7 +203,7 @@ export default function AssistantComposer({
               type="button"
               onClick={onAddDocuments}
               disabled={disabled || isAddingDocuments}
-              className={`flex shrink-0 items-center justify-center rounded-full text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:opacity-40 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
+              className={`neu-button-icon flex shrink-0 items-center justify-center rounded-full text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:opacity-40 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
               title="Add documents"
               aria-label="Add documents"
             >
@@ -245,7 +246,7 @@ export default function AssistantComposer({
             rows={1}
             placeholder={placeholder}
             disabled={disabled}
-            className={`max-h-40 min-h-[24px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1 text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${compact ? 'py-2 text-sm leading-5' : 'py-3 text-[15px] leading-6'}`}
+            className={`max-h-40 min-h-[24px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${startsWithCommandToken(value) ? 'font-medium text-[#1e40af]' : 'text-[var(--ink)]'} ${compact ? 'py-2 text-sm leading-5' : 'py-3 text-[15px] leading-6'}`}
             style={textareaStyle}
           />
 
@@ -253,7 +254,7 @@ export default function AssistantComposer({
             <button
               type="button"
               onClick={toggleIntelligence}
-              className={`flex items-center gap-1.5 rounded-full bg-[var(--paper-strong)] text-[var(--ink)] transition hover:bg-[var(--paper-bg)] ${compact ? 'h-9 px-2.5 text-xs' : 'h-11 px-3.5 text-sm'}`}
+              className={`neu-button flex items-center gap-1.5 rounded-full bg-[var(--paper-strong)] text-[var(--ink)] transition hover:bg-[var(--paper-bg)] ${compact ? 'h-9 px-2.5 text-xs' : 'h-11 px-3.5 text-sm'}`}
               title={`${selectedEffort.label} reasoning · ${formatAssistantModelName(model)}`}
               aria-expanded={showIntelligence}
             >
@@ -271,7 +272,7 @@ export default function AssistantComposer({
                   onClick={() => setShowIntelligence(false)}
                   aria-label="Close intelligence menu"
                 />
-                <div className="absolute bottom-full right-0 z-40 mb-2 w-64 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm shadow-[0_22px_70px_rgba(15,32,27,0.18)]">
+                <div className="neu-popover absolute bottom-full right-0 z-40 mb-2 w-64 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm">
                   <div className="px-2.5 pb-1.5 pt-1 text-sm text-[var(--ink-muted)]">Intelligence</div>
                   {EFFORT_OPTIONS.map((option) => (
                     <button
@@ -281,7 +282,7 @@ export default function AssistantComposer({
                         onReasoningEffortChange(option.value);
                         setShowIntelligence(false);
                       }}
-                      className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${option.value === reasoningEffort ? 'bg-[var(--paper-surface)] text-[var(--ink-heading)]' : 'text-[var(--ink)]'}`}
+                        className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${option.value === reasoningEffort ? 'neu-selected bg-[var(--paper-surface)] text-[var(--ink-heading)]' : 'text-[var(--ink)]'}`}
                     >
                       <span>
                         <span className="block">{option.label}</span>
@@ -305,7 +306,7 @@ export default function AssistantComposer({
                           onModelChange(item);
                           setShowIntelligence(false);
                         }}
-                        className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${item === model ? 'bg-[var(--paper-surface)] text-[var(--ink-heading)]' : 'text-[var(--ink)]'}`}
+                        className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${item === model ? 'neu-selected bg-[var(--paper-surface)] text-[var(--ink-heading)]' : 'text-[var(--ink)]'}`}
                       >
                         <span className="truncate">{formatAssistantModelName(item)}</span>
                         {item === model ? <CheckIcon /> : null}
@@ -329,10 +330,10 @@ export default function AssistantComposer({
                     </span>
                     <span
                       aria-hidden
-                      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${yoloMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
+                      className={`neu-inset relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${yoloMode ? 'bg-[var(--botanical)]' : 'bg-[var(--line-strong)]'}`}
                     >
                       <span
-                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ${yoloMode ? 'translate-x-5' : 'translate-x-0'}`}
+                        className={`neu-surface-raised absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-200 ${yoloMode ? 'translate-x-5' : 'translate-x-0'}`}
                       />
                     </span>
                   </button>
@@ -354,7 +355,7 @@ export default function AssistantComposer({
             type="button"
             onClick={onSubmit}
             disabled={!canSubmit || isSending || disabled}
-            className={`flex shrink-0 items-center justify-center rounded-full bg-[var(--botanical)] text-[var(--paper-raised)] transition hover:scale-[1.03] hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:hover:scale-100 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
+            className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full bg-[var(--botanical)] text-[var(--paper-raised)] transition hover:scale-[1.03] hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:hover:scale-100 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
             aria-label="Send"
             title="Send"
           >

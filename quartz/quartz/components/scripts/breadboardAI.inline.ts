@@ -31,6 +31,10 @@ interface QuartzCommandItem {
   unavailableReason?: string
 }
 
+// Mirrors the dashboard's slash-command token grammar: one or more leading
+// "/token" selectors, each followed by whitespace or end of text.
+const LEADING_COMMAND_RUN = /^(?:\/[a-z0-9][a-z0-9_.:-]*(?:\s+|$))+/i
+
 function setupPanel(root: HTMLElement) {
   const dashboard = root.dataset.dashboard || "http://localhost:3000"
   const gardenId = root.dataset.garden || ""
@@ -219,6 +223,11 @@ function setupPanel(root: HTMLElement) {
     closeCommands()
     input!.focus()
     input!.setSelectionRange(cursor, cursor)
+    syncCommandTint()
+  }
+
+  function syncCommandTint() {
+    input!.classList.toggle("breadboard-ai-input-command", /^\/[a-z0-9]/i.test(input!.value))
   }
 
   function renderCommands() {
@@ -345,7 +354,15 @@ function setupPanel(root: HTMLElement) {
   function addMessage(role: "user" | "assistant", text: string): HTMLElement {
     const el = document.createElement("div")
     el.className = `breadboard-ai-message breadboard-ai-${role}`
-    el.textContent = text
+    const command = role === "user" ? text.match(LEADING_COMMAND_RUN)?.[0] : undefined
+    if (command) {
+      const token = document.createElement("span")
+      token.className = "breadboard-ai-command-text"
+      token.textContent = command
+      el.append(token, text.slice(command.length))
+    } else {
+      el.textContent = text
+    }
     messages!.appendChild(el)
     messages!.scrollTop = messages!.scrollHeight
     return el
@@ -903,6 +920,7 @@ function setupPanel(root: HTMLElement) {
     event.preventDefault()
     const value = input.value
     input.value = ""
+    syncCommandTint()
     void send(value)
   })
   input.addEventListener("keydown", (event) => {
@@ -912,11 +930,13 @@ function setupPanel(root: HTMLElement) {
       const value = input.value
       if (!value.trim()) return
       input.value = ""
+      syncCommandTint()
       void send(value)
     }
   })
   input.addEventListener("input", () => {
     if (input.value === "/") void openCommands()
+    syncCommandTint()
   })
   stopBtn.addEventListener("click", () => {
     abortController?.abort()
