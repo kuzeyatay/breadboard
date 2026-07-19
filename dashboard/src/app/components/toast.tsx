@@ -35,7 +35,7 @@ export function Toaster({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss?
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`pointer-events-auto flex max-w-md items-start gap-3 rounded-lg border px-4 py-3 text-sm shadow-xl animate-in fade-in slide-in-from-bottom-2 ${
+          className={`neu-popover pointer-events-auto flex max-w-md items-start gap-3 rounded-lg border px-4 py-3 text-sm animate-in fade-in slide-in-from-bottom-2 ${
             t.type === 'error'
               ? 'bg-gray-950 border-red-600 text-red-400'
               : 'bg-gray-950 border-green-600 text-green-400'

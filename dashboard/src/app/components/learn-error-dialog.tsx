@@ -41,7 +41,7 @@ export default function LearnErrorDialog({
         aria-modal="true"
         aria-labelledby="learn-error-title"
         aria-describedby="learn-error-description"
-        className="w-full max-w-2xl rounded-lg border border-red-700 bg-gray-950 p-5 text-gray-100 shadow-2xl"
+        className="neu-dialog w-full max-w-2xl rounded-lg border border-red-700 bg-gray-950 p-5 text-gray-100"
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
@@ -73,7 +73,7 @@ export default function LearnErrorDialog({
           <button
             type="button"
             onClick={onDismiss}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition hover:border-gray-700 hover:text-gray-200"
+            className="neu-button-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition hover:border-gray-700 hover:text-gray-200"
             aria-label="Close Learn error"
             title="Close"
           >
@@ -140,7 +140,7 @@ export default function LearnErrorDialog({
           <button
             type="button"
             onClick={onDismiss}
-            className="rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 transition hover:border-gray-700 hover:text-white"
+            className="neu-button rounded-md border border-gray-800 px-3 py-2 text-sm text-gray-300 transition hover:border-gray-700 hover:text-white"
           >
             Close
           </button>
@@ -148,7 +148,7 @@ export default function LearnErrorDialog({
             <button
               type="button"
               onClick={onOpenPanel}
-              className="rounded-md bg-white px-3 py-2 text-sm font-medium text-gray-950 transition hover:bg-gray-100"
+              className="neu-button-primary rounded-md bg-white px-3 py-2 text-sm font-medium text-gray-950 transition hover:bg-gray-100"
             >
               {openPanelLabel}
             </button>

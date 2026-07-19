@@ -19,6 +19,38 @@
   --danger: #a45c5c; /* destructive / error */
   --danger-hover: #8f4d4d; /* destructive hover */
 
+  /* Restrained neumorphic material system. Every depth color is derived from
+     the existing Breadboard palette so these tokens refine hierarchy without
+     introducing a parallel theme. */
+  --neu-bg: var(--paper-bg);
+  --neu-surface: var(--paper-surface);
+  --neu-surface-raised: var(--paper-raised);
+  --neu-surface-pressed: color-mix(in srgb, var(--paper-surface) 78%, var(--paper-bg));
+  --neu-highlight: color-mix(in srgb, var(--paper-raised) 76%, transparent);
+  --neu-shadow: color-mix(in srgb, var(--ink) 13%, transparent);
+  --neu-shadow-soft: color-mix(in srgb, var(--ink) 8%, transparent);
+  --neu-shadow-strong: color-mix(in srgb, var(--ink) 20%, transparent);
+  --neu-border: color-mix(in srgb, var(--line-strong) 72%, var(--paper-raised));
+  --neu-focus: var(--botanical);
+  --neu-radius-sm: 0.5rem;
+  --neu-radius-md: 0.75rem;
+  --neu-radius-lg: 1rem;
+  --neu-duration: 160ms;
+  --neu-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --neu-raised-shadow:
+    5px 5px 12px var(--neu-shadow),
+    -5px -5px 12px var(--neu-highlight),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 68%, transparent);
+  --neu-soft-shadow:
+    3px 3px 8px var(--neu-shadow-soft),
+    -3px -3px 8px color-mix(in srgb, var(--neu-highlight) 76%, transparent);
+  --neu-strong-shadow:
+    9px 10px 24px var(--neu-shadow-strong),
+    -7px -7px 18px color-mix(in srgb, var(--neu-highlight) 86%, transparent);
+  --neu-inset-shadow:
+    inset 2px 2px 5px color-mix(in srgb, var(--ink) 12%, transparent),
+    inset -2px -2px 5px color-mix(in srgb, var(--paper-raised) 74%, transparent);
+
   /* Quartz-compatible aliases so existing var() references keep resolving. */
   --quartz-light: var(--paper-bg);
   --quartz-lightgray: var(--line);
@@ -127,24 +159,198 @@ body {
   font-family: var(--font-source-sans), "Source Sans Pro", Arial, Helvetica, sans-serif;
 }
 
-.neumorphic-chat-bar {
-  border: 0;
-  background: var(--paper-surface);
-  box-shadow:
-    9px 9px 20px rgba(55, 74, 65, 0.18),
-    -9px -9px 20px rgba(255, 255, 255, 0.82),
-    inset 1px 1px 1px rgba(255, 255, 255, 0.72),
-    inset -1px -1px 1px rgba(55, 74, 65, 0.07);
-  transition: box-shadow 180ms ease;
+/* Semantic depth primitives. They intentionally do not set dimensions or
+   spacing, allowing components to retain their current layout and density. */
+.neu-surface,
+.neu-surface-subtle,
+.neu-surface-raised,
+.neu-dialog,
+.neu-popover {
+  border-color: var(--neu-border);
+  background-color: var(--neu-surface);
 }
 
-.neumorphic-chat-bar:focus-within {
+.neu-surface {
+  box-shadow: var(--neu-raised-shadow);
+}
+
+.neu-surface-subtle {
+  box-shadow: var(--neu-soft-shadow);
+}
+
+.neu-surface-raised {
+  background-color: var(--neu-surface-raised);
+  box-shadow: var(--neu-raised-shadow);
+}
+
+.neu-inset,
+.neu-control,
+.neu-segmented,
+.neu-progress-track {
+  border-color: var(--neu-border);
+  background-color: var(--neu-surface-pressed);
+  box-shadow: var(--neu-inset-shadow);
+}
+
+.neu-button,
+.neu-button-primary,
+.neu-button-accent,
+.neu-button-destructive,
+.neu-button-icon {
+  border-color: var(--neu-border);
+  box-shadow: var(--neu-soft-shadow);
+  transition:
+    box-shadow var(--neu-duration) var(--neu-easing),
+    border-color var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing),
+    color var(--neu-duration) var(--neu-easing),
+    transform 90ms ease-out;
+}
+
+.neu-button,
+.neu-button-icon {
+  background-color: var(--neu-surface-raised);
+}
+
+.neu-button-primary {
+  border-color: color-mix(in srgb, var(--ink) 78%, var(--line));
+  background-color: var(--ink);
+  color: var(--paper-raised);
   box-shadow:
-    0 0 0 2px rgba(79, 111, 104, 0.24),
-    7px 7px 17px rgba(55, 74, 65, 0.2),
-    -7px -7px 17px rgba(255, 255, 255, 0.86),
-    inset 1px 1px 1px rgba(255, 255, 255, 0.74),
-    inset -1px -1px 1px rgba(55, 74, 65, 0.08);
+    3px 3px 8px color-mix(in srgb, var(--ink) 24%, transparent),
+    -2px -2px 6px color-mix(in srgb, var(--paper-raised) 52%, transparent),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 16%, transparent);
+}
+
+.neu-button-accent {
+  border-color: color-mix(in srgb, var(--botanical-hover) 76%, var(--line));
+  background-color: var(--botanical);
+  color: var(--paper-raised);
+  box-shadow:
+    3px 3px 8px color-mix(in srgb, var(--botanical-hover) 30%, transparent),
+    -2px -2px 6px color-mix(in srgb, var(--paper-raised) 50%, transparent),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 17%, transparent);
+}
+
+.neu-button-destructive {
+  border-color: var(--danger-hover);
+  background-color: var(--danger);
+  color: var(--paper-raised);
+  box-shadow:
+    3px 3px 8px color-mix(in srgb, var(--danger-hover) 30%, transparent),
+    -2px -2px 6px color-mix(in srgb, var(--paper-raised) 48%, transparent);
+}
+
+.neu-button:hover:not(:disabled),
+.neu-button-icon:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  box-shadow:
+    4px 4px 10px var(--neu-shadow),
+    -4px -4px 10px var(--neu-highlight);
+}
+
+.neu-button-primary:hover:not(:disabled) {
+  background-color: var(--ink-heading);
+}
+
+.neu-button-accent:hover:not(:disabled) {
+  background-color: var(--botanical-hover);
+}
+
+.neu-button-destructive:hover:not(:disabled) {
+  background-color: var(--danger-hover);
+}
+
+.neu-button:active:not(:disabled),
+.neu-button-primary:active:not(:disabled),
+.neu-button-accent:active:not(:disabled),
+.neu-button-destructive:active:not(:disabled),
+.neu-button-icon:active:not(:disabled) {
+  box-shadow: var(--neu-inset-shadow);
+  transform: translateY(1px);
+}
+
+.neu-selected {
+  box-shadow: var(--neu-inset-shadow);
+}
+
+.neu-control {
+  transition:
+    border-color var(--neu-duration) var(--neu-easing),
+    box-shadow var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing);
+}
+
+.neu-control:focus,
+.neu-control:focus-within,
+.neu-composer:focus-within,
+.neumorphic-chat-bar:focus-within {
+  border-color: var(--neu-focus);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--neu-focus) 22%, transparent),
+    var(--neu-inset-shadow);
+  outline: none;
+}
+
+.neu-segmented {
+  padding: 0.25rem;
+}
+
+.neu-segmented > [aria-pressed="true"],
+.neu-segmented > [aria-selected="true"],
+.neu-segmented > .is-selected {
+  background-color: var(--neu-surface-raised);
+  box-shadow: var(--neu-soft-shadow);
+}
+
+.neu-dialog,
+.neu-popover {
+  background-color: var(--neu-surface-raised);
+  box-shadow: var(--neu-strong-shadow);
+}
+
+.neu-popover {
+  box-shadow:
+    7px 8px 18px var(--neu-shadow-strong),
+    -5px -5px 14px var(--neu-highlight);
+}
+
+.neu-composer,
+.neumorphic-chat-bar {
+  border: 1px solid color-mix(in srgb, var(--neu-border) 55%, transparent);
+  background: var(--neu-surface);
+  box-shadow:
+    7px 8px 18px var(--neu-shadow),
+    -6px -6px 16px var(--neu-highlight),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 64%, transparent);
+  transition:
+    box-shadow var(--neu-duration) var(--neu-easing),
+    border-color var(--neu-duration) var(--neu-easing);
+}
+
+.neu-progress-track {
+  overflow: hidden;
+}
+
+.neu-button:focus-visible,
+.neu-button-primary:focus-visible,
+.neu-button-accent:focus-visible,
+.neu-button-destructive:focus-visible,
+.neu-button-icon:focus-visible,
+.neu-control:focus-visible {
+  outline: 2px solid var(--neu-focus);
+  outline-offset: 2px;
+}
+
+.neu-button:disabled,
+.neu-button-primary:disabled,
+.neu-button-accent:disabled,
+.neu-button-destructive:disabled,
+.neu-button-icon:disabled,
+.neu-control:disabled,
+.neu-disabled {
+  box-shadow: none;
+  opacity: 0.52;
 }
 
 h1,
@@ -349,6 +555,25 @@ b {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .neu-button,
+  .neu-button-primary,
+  .neu-button-accent,
+  .neu-button-destructive,
+  .neu-button-icon,
+  .neu-control,
+  .neu-composer,
+  .neumorphic-chat-bar {
+    transition-duration: 0.01ms;
+  }
+
+  .neu-button:active:not(:disabled),
+  .neu-button-primary:active:not(:disabled),
+  .neu-button-accent:active:not(:disabled),
+  .neu-button-destructive:active:not(:disabled),
+  .neu-button-icon:active:not(:disabled) {
+    transform: none;
+  }
+
   .terminal-boot-reveal,
   .terminal-boot-conceal {
     animation-duration: 0.01ms;
@@ -364,6 +589,36 @@ b {
     background: none;
     -webkit-text-fill-color: currentColor;
     animation: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .neu-surface,
+  .neu-surface-subtle,
+  .neu-surface-raised,
+  .neu-inset,
+  .neu-control,
+  .neu-segmented,
+  .neu-dialog,
+  .neu-popover,
+  .neu-composer,
+  .neumorphic-chat-bar,
+  .neu-button,
+  .neu-button-primary,
+  .neu-button-accent,
+  .neu-button-destructive,
+  .neu-button-icon {
+    border: 1px solid CanvasText;
+    box-shadow: none;
+  }
+
+  .neu-button:focus-visible,
+  .neu-button-primary:focus-visible,
+  .neu-button-accent:focus-visible,
+  .neu-button-destructive:focus-visible,
+  .neu-button-icon:focus-visible,
+  .neu-control:focus-visible {
+    outline: 2px solid Highlight;
   }
 }
 
@@ -396,7 +651,7 @@ b {
   border: 1px solid var(--lightgray);
   border-radius: 8px;
   background: var(--light);
-  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.28);
+  box-shadow: var(--neu-strong-shadow);
   overflow: hidden;
 }
 
@@ -441,6 +696,18 @@ b {
   font-weight: 500;
   line-height: 1;
   padding: 0.45rem 0.65rem;
+  box-shadow: var(--neu-soft-shadow);
+  transition:
+    box-shadow var(--neu-duration) var(--neu-easing),
+    border-color var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing);
+}
+
+.markdown-editor-close:active,
+.markdown-editor-cancel:active,
+.markdown-editor-save:active {
+  box-shadow: var(--neu-inset-shadow);
+  transform: translateY(1px);
 }
 
 .markdown-editor-close:hover,
@@ -484,6 +751,7 @@ b {
   font: inherit;
   font-size: 0.9rem;
   padding: 0.5rem 0.65rem;
+  box-shadow: var(--neu-inset-shadow);
 }
 
 .markdown-editor-field input:focus,
@@ -526,6 +794,7 @@ b {
   background: color-mix(in srgb, var(--light) 88%, transparent);
   padding: 0.3rem 0.5rem;
   cursor: text;
+  box-shadow: var(--neu-inset-shadow);
 }
 
 .markdown-editor-tags-box:focus-within {

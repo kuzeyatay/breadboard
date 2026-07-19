@@ -110,9 +110,9 @@ export default function ActivityPanel({
       ) : null}
 
       {pendingPermission ? (
-        <div className="mt-3 rounded-2xl bg-[var(--paper-strong)] px-4 py-3.5 shadow-[0_10px_30px_rgba(53,75,65,0.08)]">
+        <div className="neu-surface-subtle mt-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3.5">
           <div className="flex items-start gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--paper-raised)] text-[var(--botanical)] shadow-sm">
+            <span className="neu-surface-raised flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--paper-raised)] text-[var(--botanical)]">
               <svg
                 aria-hidden
                 className="h-4 w-4"
@@ -163,7 +163,7 @@ export default function ActivityPanel({
             <button
               type="button"
               onClick={() => onPermissionDecision("once")}
-              className="rounded-full bg-[var(--botanical)] px-4 py-2 text-xs font-medium text-white shadow-[0_4px_14px_rgba(32,91,69,0.18)] transition hover:bg-[var(--botanical-hover)]"
+              className="neu-button-accent rounded-full bg-[var(--botanical)] px-4 py-2 text-xs font-medium text-white transition hover:bg-[var(--botanical-hover)]"
             >
               Allow once
             </button>
@@ -171,7 +171,7 @@ export default function ActivityPanel({
               <button
                 type="button"
                 onClick={() => onPermissionDecision("always")}
-                className="rounded-full bg-[var(--paper-raised)] px-4 py-2 text-xs font-medium text-[var(--botanical)] shadow-[0_2px_10px_rgba(53,75,65,0.08)] transition hover:bg-[var(--paper-bg)]"
+                className="neu-button rounded-full bg-[var(--paper-raised)] px-4 py-2 text-xs font-medium text-[var(--botanical)] transition hover:bg-[var(--paper-bg)]"
               >
                 Allow similar for session
               </button>
@@ -179,7 +179,7 @@ export default function ActivityPanel({
             <button
               type="button"
               onClick={() => onPermissionDecision("reject")}
-              className="rounded-full bg-red-500/[0.07] px-3.5 py-2 text-xs font-medium text-[#a45f56] transition hover:bg-red-500/[0.12]"
+              className="neu-button-destructive rounded-full bg-red-500/[0.07] px-3.5 py-2 text-xs font-medium text-[#a45f56] transition hover:bg-red-500/[0.12]"
             >
               Deny
             </button>

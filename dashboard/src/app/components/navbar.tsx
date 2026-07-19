@@ -84,7 +84,7 @@ export default function NavBar({ email, username, actions }: Props) {
 
   return (
     <>
-      <nav className="relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 bg-gray-950 shrink-0">
+      <nav className="neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 bg-gray-950 shrink-0">
         <NavbarFlowerWind />
         <span className="relative z-10 flex items-center gap-2.5">
           {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
@@ -128,7 +128,7 @@ export default function NavBar({ email, username, actions }: Props) {
             if (e.target === e.currentTarget) setInviteOpen(false);
           }}
         >
-          <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
             <div className="mb-5">
               <h2 className="text-lg font-semibold text-white">
                 Invite someone
@@ -148,12 +148,12 @@ export default function NavBar({ email, username, actions }: Props) {
                     <input
                       value={inviteCode}
                       readOnly
-                      className="min-w-0 flex-1 bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white font-mono"
+                      className="neu-control min-w-0 flex-1 bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white font-mono"
                     />
                     <button
                       type="button"
                       onClick={copyInvite}
-                      className="px-4 py-2.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
+                      className="neu-button px-4 py-2.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
                     >
                       {copied ? "Copied" : "Copy"}
                     </button>
@@ -166,7 +166,7 @@ export default function NavBar({ email, username, actions }: Props) {
                   <button
                     type="button"
                     onClick={() => setInviteOpen(false)}
-                    className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
+                    className="neu-button flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
                   >
                     Done
                   </button>
@@ -174,7 +174,7 @@ export default function NavBar({ email, username, actions }: Props) {
                     type="button"
                     onClick={createInvite}
                     disabled={inviteLoading}
-                    className="flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                    className="neu-button-primary flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     {inviteLoading && <Spinner />}
                     {inviteLoading ? "Creating..." : "Create another"}
@@ -190,7 +190,7 @@ export default function NavBar({ email, username, actions }: Props) {
                   <button
                     type="button"
                     onClick={() => setInviteOpen(false)}
-                    className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
+                    className="neu-button flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
                   >
                     Cancel
                   </button>
@@ -198,7 +198,7 @@ export default function NavBar({ email, username, actions }: Props) {
                     type="button"
                     onClick={createInvite}
                     disabled={inviteLoading}
-                    className="flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                    className="neu-button-primary flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     {inviteLoading && <Spinner />}
                     {inviteLoading ? "Creating..." : "Create invite"}

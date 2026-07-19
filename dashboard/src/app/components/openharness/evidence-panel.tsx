@@ -21,7 +21,7 @@ export default function EvidencePanel({
     <section
       role="dialog"
       aria-label="Response evidence"
-      className="w-80 max-w-[calc(100vw-2rem)] rounded-xl bg-[var(--paper-raised)] p-3 text-xs text-[var(--ink)] shadow-lg"
+      className="neu-popover w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] p-3 text-xs text-[var(--ink)]"
     >
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-medium text-[var(--ink-heading)]">Evidence</h3>

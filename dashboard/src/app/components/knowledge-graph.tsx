@@ -204,7 +204,7 @@ function KnowledgeGraph({
       {sidebarOpen ? (
       <aside
         style={{ width: panelWidth } as CSSProperties}
-        className="relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col bg-gray-950"
+        className="neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col bg-gray-950"
       >
         {resizeHandle}
         {/* Header */}
@@ -247,7 +247,7 @@ function KnowledgeGraph({
 
           {/* Quartz graph preview */}
           <div
-            className="group relative block h-52 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30 mb-3"
+            className="neu-surface-subtle group relative block h-52 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30 mb-3"
           >
             {loading ? (
               <div className="h-full flex items-center justify-center text-xs text-gray-700">
@@ -293,7 +293,7 @@ function KnowledgeGraph({
       ) : (
         <aside
           style={{ width: panelWidth } as CSSProperties}
-          className="relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3"
+          className="neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3"
         >
           {resizeHandle}
           <svg

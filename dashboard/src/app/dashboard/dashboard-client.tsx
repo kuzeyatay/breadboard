@@ -1279,7 +1279,7 @@ export default function DashboardClient({
           type="button"
           onClick={() => setShowBgModal(true)}
           title="Change dashboard background"
-          className="absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:text-gray-300"
+          className="neu-button-icon absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:text-gray-300"
         >
           <svg
             className="h-4 w-4"
@@ -1319,13 +1319,13 @@ export default function DashboardClient({
             <div className="flex items-center gap-2">
               <Link
                 href="/garden"
-                className="px-4 py-2 text-sm font-medium text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
+                className="neu-button px-4 py-2 text-sm font-medium text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
               >
                 View garden
               </Link>
               <button
                 onClick={openModal}
-                className="px-4 py-2 bg-white text-gray-950 text-sm font-medium rounded-lg hover:bg-gray-100 transition-colors"
+                className="neu-button-primary px-4 py-2 bg-white text-gray-950 text-sm font-medium rounded-lg hover:bg-gray-100 transition-colors"
               >
                 New garden
               </button>
@@ -1333,7 +1333,7 @@ export default function DashboardClient({
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="flex rounded-lg border border-gray-800 bg-gray-900/60 p-1">
+            <div className="neu-segmented flex rounded-lg border border-gray-800 bg-gray-900/60 p-1">
               <button
                 type="button"
                 onClick={() => setClusterView("mine")}
@@ -1382,7 +1382,7 @@ export default function DashboardClient({
                     ? "Search your gardens"
                     : "Search public gardens"
                 }
-                className="w-full rounded-lg border border-gray-800 bg-gray-900 px-9 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-gray-600"
+                className="neu-control w-full rounded-lg border border-gray-800 bg-gray-900 px-9 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-gray-600"
               />
               {searchQuery && (
                 <button
@@ -1434,7 +1434,7 @@ export default function DashboardClient({
                 <button
                   type="button"
                   onClick={openClusterFolderModal}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
+                  className="neu-button inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
                 >
                   <svg
                     className="h-3.5 w-3.5"
@@ -1500,7 +1500,7 @@ export default function DashboardClient({
                               handleClusterBorderClick(e, cluster)
                             }
                             className={[
-                              "relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
+                              "neu-surface relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
                               resizingClusterId === cluster.id
                                 ? "select-none ring-1 ring-[#7b97aa]/50"
                                 : "",
@@ -1519,7 +1519,7 @@ export default function DashboardClient({
                             {canManage && colorClusterId === cluster.id && (
                               <div
                                 data-card-action="true"
-                                className="absolute left-3 top-3 z-20 w-36 rounded-lg border border-gray-800 bg-gray-950 p-2 shadow-xl"
+                                className="neu-popover absolute left-3 top-3 z-20 w-36 rounded-lg border border-gray-800 bg-gray-950 p-2"
                               >
                                 <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">
                                   Border color
@@ -1922,7 +1922,7 @@ export default function DashboardClient({
             role="dialog"
             aria-modal="true"
             aria-labelledby="new-cluster-title"
-            className="w-full max-w-sm rounded-xl border border-gray-800 bg-gray-900 p-5 shadow-xl"
+            className="neu-dialog w-full max-w-sm rounded-xl border border-gray-800 bg-gray-900 p-5"
           >
             <h2 id="new-cluster-title" className="mb-4 text-lg font-semibold">
               New cluster
@@ -1947,7 +1947,7 @@ export default function DashboardClient({
                   maxLength={80}
                   autoComplete="off"
                   autoFocus
-                  className="w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-gray-600"
+                  className="neu-control w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-2.5 text-sm text-white outline-none transition-colors focus:border-gray-600"
                 />
               </div>
 
@@ -1962,14 +1962,14 @@ export default function DashboardClient({
                   type="button"
                   onClick={closeClusterFolderModal}
                   disabled={isPending}
-                  className="rounded-lg border border-gray-800 px-4 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-50"
+                  className="neu-button rounded-lg border border-gray-800 px-4 py-2 text-sm text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-wait disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isPending || !clusterFolderName.trim()}
-                  className="flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="neu-button-primary flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-950 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {isPending ? <Spinner /> : null}
                   {isPending ? "Creating..." : "Create cluster"}
@@ -1987,7 +1987,7 @@ export default function DashboardClient({
             if (e.target === e.currentTarget) closeModal();
           }}
         >
-          <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-5">New garden</h2>
             <form onSubmit={handleCreate} className="space-y-4">
               <div>
@@ -2001,7 +2001,7 @@ export default function DashboardClient({
                   required
                   autoFocus
                   placeholder="My garden"
-                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
+                  className="neu-control w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
                 />
               </div>
               <div>
@@ -2013,7 +2013,7 @@ export default function DashboardClient({
                   onChange={(e) => setDescription(e.target.value)}
                   rows={3}
                   placeholder="What's this garden about?"
-                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors resize-none"
+                  className="neu-control w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors resize-none"
                 />
               </div>
               {error && <p className="text-sm text-red-400">{error}</p>}
@@ -2021,14 +2021,14 @@ export default function DashboardClient({
                 <button
                   type="button"
                   onClick={closeModal}
-                  className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
+                  className="neu-button flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isPending || !name.trim()}
-                  className="flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="neu-button-primary flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isPending && <Spinner />}
                   {isPending ? "Creating..." : "Create"}
@@ -2046,7 +2046,7 @@ export default function DashboardClient({
             if (e.target === e.currentTarget) closeEditModal();
           }}
         >
-          <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-5">Edit garden</h2>
             <form onSubmit={handleUpdateCluster} className="space-y-4">
               <div>
@@ -2059,7 +2059,7 @@ export default function DashboardClient({
                   onChange={(e) => setEditName(e.target.value)}
                   required
                   autoFocus
-                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
+                  className="neu-control w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors"
                 />
               </div>
               <div>
@@ -2071,7 +2071,7 @@ export default function DashboardClient({
                   onChange={(e) => setEditDescription(e.target.value)}
                   rows={4}
                   placeholder="What's this garden about?"
-                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors resize-none"
+                  className="neu-control w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-600 transition-colors resize-none"
                 />
               </div>
               {editError && <p className="text-sm text-red-400">{editError}</p>}
@@ -2079,14 +2079,14 @@ export default function DashboardClient({
                 <button
                   type="button"
                   onClick={closeEditModal}
-                  className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
+                  className="neu-button flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isPending || !editName.trim()}
-                  className="flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="neu-button-primary flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {isPending && <Spinner />}
                   {isPending ? "Saving..." : "Save"}
@@ -2104,7 +2104,7 @@ export default function DashboardClient({
             if (e.target === e.currentTarget) closeUploadModal();
           }}
         >
-          <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
             <div className="mb-5">
               <h2 className="text-lg font-semibold">Add documents</h2>
               <p className="text-sm text-gray-500 mt-0.5">
@@ -2386,7 +2386,7 @@ export default function DashboardClient({
             if (e.target === e.currentTarget) setShowBgModal(false);
           }}
         >
-          <div className="w-full max-w-sm bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <div className="neu-dialog w-full max-w-sm bg-gray-900 border border-gray-800 rounded-2xl p-6">
             <h2 className="text-base font-semibold mb-1">
               Dashboard background
             </h2>
