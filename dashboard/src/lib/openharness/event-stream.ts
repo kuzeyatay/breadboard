@@ -13,8 +13,10 @@ import {
   listRuntimeMessages,
   setRuntimeStatus,
   recordAuditEvent,
+  revokeCapabilityDecision,
 } from "./runtime-store.ts";
 import type { AuthorizedRuntimeSession } from "./session-service.ts";
+import { decideCapabilityMode } from "./capability-policy.ts";
 import {
   assessVerification,
   evidenceKindForTool,
@@ -126,6 +128,42 @@ export function buildSessionEventStream(
           );
         } catch {
           // Persistence is best-effort; never crash the stream.
+        }
+        const revocationReason =
+          status === "idle"
+            ? "completed"
+            : status === "aborted"
+              ? "cancelled"
+              : "abandoned";
+        if (revokeCapabilityDecision(session.row.id, revocationReason)) {
+          recordAuditEvent({
+            eventType: "capability.revoked",
+            runtimeSessionId: session.row.id,
+            userId: session.row.user_id,
+            gardenId: session.row.garden_id,
+            payload: { reason: revocationReason, restoredMode: "knowledge" },
+          });
+          const restoredDecision = decideCapabilityMode({
+            surface: session.row.surface,
+            userId: session.row.user_id,
+            requestedOutcome: "Resume default knowledge work.",
+            authorizedRoot: session.activeDirectory,
+          });
+          void gateway
+            .applyCapabilityDecision({
+              openHarnessSessionId: session.openHarnessSessionId,
+              workspaceKey: session.workspaceKey,
+              directory: session.activeDirectory,
+              decision: restoredDecision,
+            })
+            .catch(() => {
+              recordAuditEvent({
+                eventType: "capability.runtime_restore_failed",
+                runtimeSessionId: session.row.id,
+                userId: session.row.user_id,
+                gardenId: session.row.garden_id,
+              });
+            });
         }
       };
 

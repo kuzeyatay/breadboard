@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "default_agent": "breadboard-workbench",
+  "default_agent": "breadboard-assistant",
   "model": "chatmock/{env:CHATMOCK_MODEL}",
   "subagent_depth": 2,
   "provider": {

@@ -572,14 +572,14 @@ export default function KnowledgeTerminal({ scope }: Props) {
             style={{ animationDelay: '130ms' }}
             className={`${headerItemAnim} font-mono text-sm font-medium text-[#5f7f8e]`}
           >
-            {'>_'}
+            {'B'}
           </span>
           <div className="min-w-0">
             <p
               style={{ animationDelay: '210ms' }}
               className={`${headerItemAnim} truncate text-sm font-semibold text-[#172A22]`}
             >
-              {isPublic ? 'Public knowledge hub' : 'Knowledge base terminal'}
+              {isPublic ? 'Public knowledge assistant' : 'Breadboard Assistant'}
             </p>
             <p
               style={{ animationDelay: '300ms' }}

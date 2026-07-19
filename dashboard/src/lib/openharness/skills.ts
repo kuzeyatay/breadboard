@@ -15,7 +15,32 @@ const CLI_PACKAGE = process.env.SKILLS_CLI_PACKAGE?.trim() || "skills@1.5.9";
 const MAX_SKILL_FILES = 200;
 const MAX_SKILL_FILE_BYTES = 2_000_000;
 const MAX_SKILL_TOTAL_BYTES = 10_000_000;
-const APPROVABLE_AGENTS = new Set(["breadboard-workbench"]);
+const APPROVABLE_AGENTS = new Set([
+  "breadboard-assistant",
+  "breadboard-garden",
+  "breadboard-quartz",
+  "breadboard-document",
+]);
+const CLASSIFIER_VERSION = "breadboard-skill-policy-v1";
+
+export type SkillEligibility =
+  | "eligible_general"
+  | "eligible_coding_conditional"
+  | "blocked_security"
+  | "blocked_incompatible"
+  | "needs_review"
+  | "unknown";
+
+export interface SkillClassification {
+  classification: SkillEligibility;
+  category: string;
+  reasons: string[];
+  evidenceFields: string[];
+  classifierVersion: string;
+  compatibleModes: Array<"knowledge" | "technical_read" | "scoped_implementation">;
+  compatibleSurfaces: Array<"assistant" | "garden" | "quartz" | "document">;
+  classifiedAt: string;
+}
 
 export type SkillPermission =
   | "filesystem-read"
@@ -58,6 +83,64 @@ export interface SkillCandidate {
   version?: string;
   installCommand: string;
   requestedPermissions: SkillPermission[];
+  provider?: "api" | "cli" | "cache";
+  classification: SkillClassification;
+}
+
+export interface SkillCatalogPage {
+  candidates: SkillCandidate[];
+  nextCursor: string | null;
+  provider: "api" | "cli" | "cache";
+  stale: boolean;
+}
+
+export interface SkillCatalogProvider {
+  id: "api" | "cli" | "cache";
+  available(): boolean;
+  search(input: {
+    query: string;
+    cursor: number;
+    limit: number;
+  }): Promise<SkillCatalogPage>;
+}
+
+const RELEVANCE_STOP_WORDS = new Set([
+  "add", "application", "build", "code", "coding", "component", "create",
+  "debug", "development", "edit", "feature", "file", "fix", "implement",
+  "implementation", "repair", "software", "source", "test", "update",
+]);
+
+/** Conditional skills must match the independently authorized task domain. */
+export function conditionalSkillRelevant(
+  skill: { name: string; description?: string; category?: string; instructions?: string },
+  requestedOutcome: string | undefined,
+): boolean {
+  const outcome = requestedOutcome?.toLowerCase().trim() ?? "";
+  if (!outcome) return false;
+  const words = (value: string) =>
+    new Set(
+      (value.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? []).filter(
+        (word) => !RELEVANCE_STOP_WORDS.has(word),
+      ),
+    );
+  const taskWords = words(outcome);
+  const skillWords = words(
+    `${skill.name} ${skill.description ?? ""} ${skill.category ?? ""} ${skill.instructions ?? ""}`,
+  );
+  if ([...taskWords].some((word) => skillWords.has(word))) return true;
+  if (
+    /\b(?:button|composer|css|frontend|interface|palette|react|ui)\b/i.test(outcome) &&
+    /\b(?:css|frontend|interface|react|ui)\b/i.test(
+      `${skill.name} ${skill.description ?? ""} ${skill.category ?? ""}`,
+    )
+  ) return true;
+  if (
+    /\b(?:api|authorization|backend|database|endpoint|route|server)\b/i.test(outcome) &&
+    /\b(?:api|backend|database|server)\b/i.test(
+      `${skill.name} ${skill.description ?? ""} ${skill.category ?? ""}`,
+    )
+  ) return true;
+  return false;
 }
 
 export type SkillsCliRunner = (
@@ -118,7 +201,104 @@ export async function searchRegistry(
   const normalized = query.trim().slice(0, 200);
   if (!normalized) return [];
   const result = await runner(["find", normalized]);
-  return parseSkillSearchOutput(result.stdout);
+  return parseSkillSearchOutput(result.stdout).map((candidate) => ({
+    ...candidate,
+    provider: "cli" as const,
+  }));
+}
+
+export function classifySkill(input: {
+  name: string;
+  description?: string;
+  repository?: string;
+  manifest?: string;
+  requestedPermissions?: SkillPermission[];
+}): SkillClassification {
+  const fields = [
+    input.name,
+    input.description ?? "",
+    input.repository ?? "",
+    input.manifest ?? "",
+  ];
+  const text = fields.join("\n").toLowerCase();
+  const evidenceFields = [
+    "name",
+    ...(input.description ? ["description"] : []),
+    ...(input.repository ? ["repository"] : []),
+    ...(input.manifest ? ["SKILL.md"] : []),
+    ...(input.requestedPermissions?.length ? ["requested_permissions"] : []),
+  ];
+  const security =
+    /\b(credential theft|exfiltrat|malware|ransomware|privilege escalation|persistence|evade authorization|steal (?:password|token|secret)|exploit development|reverse shell|botnet)\b/i;
+  const incompatible =
+    /\b(force[- ]push automation|production deploy(?:ment)? automation|global package installer|kernel module|firmware flasher)\b/i;
+  const coding =
+    /\b(api development|backend|build config|code review|code generation|coding|database migration|debug(?:ger|ging)?|devops|frontend|full[- ]stack|mobile development|package integration|programming|react|refactor|repository|software architecture|software test|typescript|web development)\b/i;
+  const general =
+    /\b(analysis|brainstorm|business|communication|decision|document|editing|education|explain|image|knowledge|literature|marketing|meeting|pdf|planning|presentation|productivity|quiz|research|spreadsheet|study|summari[sz]|teaching|translation|travel|visual design|writing)\b/i;
+  const now = new Date().toISOString();
+  if (security.test(text)) {
+    return {
+      classification: "blocked_security",
+      category: "Prohibited",
+      reasons: ["The primary capability matches Breadboard's prohibited security automation policy."],
+      evidenceFields,
+      classifierVersion: CLASSIFIER_VERSION,
+      compatibleModes: [],
+      compatibleSurfaces: [],
+      classifiedAt: now,
+    };
+  }
+  if (incompatible.test(text)) {
+    return {
+      classification: "blocked_incompatible",
+      category: "Incompatible",
+      reasons: ["The primary workflow requires operations Breadboard does not safely support."],
+      evidenceFields,
+      classifierVersion: CLASSIFIER_VERSION,
+      compatibleModes: [],
+      compatibleSurfaces: [],
+      classifiedAt: now,
+    };
+  }
+  if (coding.test(text)) {
+    return {
+      classification: "eligible_coding_conditional",
+      category: "Implementation",
+      reasons: ["The primary purpose is software implementation or repository engineering."],
+      evidenceFields,
+      classifierVersion: CLASSIFIER_VERSION,
+      compatibleModes: ["scoped_implementation"],
+      compatibleSurfaces: ["assistant"],
+      classifiedAt: now,
+    };
+  }
+  if (general.test(text)) {
+    return {
+      classification: "eligible_general",
+      category: "Knowledge work",
+      reasons: ["The primary purpose is compatible with research, learning, writing, analysis, or productivity."],
+      evidenceFields,
+      classifierVersion: CLASSIFIER_VERSION,
+      compatibleModes: ["knowledge", "technical_read", "scoped_implementation"],
+      compatibleSurfaces: ["assistant", "garden", "quartz", "document"],
+      classifiedAt: now,
+    };
+  }
+  return {
+    classification: input.manifest ? "needs_review" : "unknown",
+    category: "Unclassified",
+    reasons: [
+      input.manifest
+        ? "The available metadata is mixed or ambiguous and requires human review."
+        : "The provider did not supply enough evidence for a safe eligibility decision.",
+    ],
+    evidenceFields,
+    classifierVersion: CLASSIFIER_VERSION,
+    compatibleModes: [],
+    compatibleSurfaces: [],
+    classifiedAt: now,
+  };
 }
 
 export function parseSkillSearchOutput(output: string): SkillCandidate[] {
@@ -159,10 +339,165 @@ export function parseSkillSearchOutput(output: string): SkillCandidate[] {
           // Search output does not declare permissions. They are derived from the
           // downloaded manifest/files in quarantine, never guessed as approved.
           requestedPermissions: [],
+          classification: classifySkill({
+            name,
+            repository,
+          }),
         },
       ];
     })
-    .slice(0, 10);
+    .slice(0, 100);
+}
+
+function catalogCacheFile(): string {
+  return path.join(repoRoot(), ".runtime", "skills-catalog-cache.json");
+}
+
+function readCatalogCache(query: string): SkillCandidate[] {
+  try {
+    const data = JSON.parse(fs.readFileSync(catalogCacheFile(), "utf8")) as {
+      queries?: Record<string, SkillCandidate[]>;
+    };
+    return Array.isArray(data.queries?.[query]) ? data.queries![query] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCatalogCache(query: string, candidates: SkillCandidate[]): void {
+  const file = catalogCacheFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let data: { queries: Record<string, SkillCandidate[]>; updatedAt?: string } = {
+    queries: {},
+  };
+  try {
+    data = JSON.parse(fs.readFileSync(file, "utf8")) as typeof data;
+  } catch {
+    data = { queries: {} };
+  }
+  data.queries ??= {};
+  data.queries[query] = candidates.slice(0, 100);
+  data.updatedAt = new Date().toISOString();
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+}
+
+function pageCandidates(
+  candidates: SkillCandidate[],
+  cursor: number,
+  limit: number,
+  provider: SkillCatalogPage["provider"],
+  stale: boolean,
+): SkillCatalogPage {
+  const page = candidates.slice(cursor, cursor + limit).map((candidate) => ({
+    ...candidate,
+    provider,
+  }));
+  return {
+    candidates: page,
+    nextCursor: cursor + limit < candidates.length ? String(cursor + limit) : null,
+    provider,
+    stale,
+  };
+}
+
+export function skillCatalogProviders(
+  runner: SkillsCliRunner = runSkillsCli,
+): SkillCatalogProvider[] {
+  const apiUrl = process.env.SKILLS_CATALOG_API_URL?.trim();
+  return [
+    {
+      id: "api",
+      available: () => Boolean(apiUrl),
+      async search({ query, cursor, limit }) {
+        const url = new URL(apiUrl!);
+        url.searchParams.set("q", query);
+        url.searchParams.set("cursor", String(cursor));
+        url.searchParams.set("limit", String(limit));
+        const response = await fetch(url, {
+          headers: process.env.SKILLS_CATALOG_API_TOKEN
+            ? { Authorization: `Bearer ${process.env.SKILLS_CATALOG_API_TOKEN}` }
+            : undefined,
+        });
+        if (!response.ok) throw new Error(`Skills catalog returned ${response.status}`);
+        const payload = (await response.json()) as {
+          items?: Array<Record<string, unknown>>;
+          nextCursor?: unknown;
+        };
+        const candidates = (Array.isArray(payload.items) ? payload.items : []).flatMap(
+          (item): SkillCandidate[] => {
+            const name = typeof item.name === "string" ? item.name : "";
+            const repository = typeof item.repository === "string" ? item.repository : "";
+            if (!validPackage(repository, name)) return [];
+            const description = typeof item.description === "string" ? item.description : "";
+            const packageId = `${repository}@${name}`;
+            return [{
+              id: packageId,
+              name,
+              package: packageId,
+              publisher: repository.split("/")[0],
+              repository,
+              source: typeof item.source === "string" ? item.source : `https://github.com/${repository}`,
+              detailsUrl: typeof item.detailsUrl === "string" ? item.detailsUrl : `https://skills.sh/${repository}/${name}`,
+              installs: typeof item.installs === "string" ? item.installs : undefined,
+              description,
+              version: typeof item.version === "string" ? item.version : undefined,
+              installCommand: `npx skills add ${packageId}`,
+              requestedPermissions: [],
+              provider: "api",
+              classification: classifySkill({ name, description, repository }),
+            }];
+          },
+        );
+        writeCatalogCache(query, candidates);
+        return {
+          candidates,
+          nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
+          provider: "api",
+          stale: false,
+        };
+      },
+    },
+    {
+      id: "cli",
+      available: () => true,
+      async search({ query, cursor, limit }) {
+        const candidates = await searchRegistry(query, runner);
+        writeCatalogCache(query, candidates);
+        return pageCandidates(candidates, cursor, limit, "cli", false);
+      },
+    },
+    {
+      id: "cache",
+      available: () => true,
+      async search({ query, cursor, limit }) {
+        const candidates = readCatalogCache(query);
+        if (!candidates.length) throw new Error("No cached catalog results are available.");
+        return pageCandidates(candidates, cursor, limit, "cache", true);
+      },
+    },
+  ];
+}
+
+export async function searchSkillCatalog(input: {
+  query: string;
+  cursor?: string | null;
+  limit?: number;
+  runner?: SkillsCliRunner;
+}): Promise<SkillCatalogPage> {
+  const query = input.query.trim().slice(0, 200);
+  if (!query) return { candidates: [], nextCursor: null, provider: "cli", stale: false };
+  const cursor = Math.max(0, Number.parseInt(input.cursor ?? "0", 10) || 0);
+  const limit = Math.min(30, Math.max(1, input.limit ?? 12));
+  const errors: string[] = [];
+  for (const provider of skillCatalogProviders(input.runner)) {
+    if (!provider.available()) continue;
+    try {
+      return await provider.search({ query, cursor, limit });
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : `${provider.id} failed`);
+    }
+  }
+  throw new Error(`Skill catalog unavailable: ${errors.join("; ")}`);
 }
 
 function validPackage(repository: string, name: string): boolean {
@@ -192,6 +527,14 @@ export function approvedRoot(): string {
   );
 }
 
+/** Coding-oriented skills are reviewed and retained outside the general store. */
+export function conditionalRoot(): string {
+  return (
+    process.env.OPENHARNESS_SKILLS_CONDITIONAL ??
+    path.join(repoRoot(), "openharness-skills", "conditional")
+  );
+}
+
 export interface ApprovedSkillSummary {
   id: string;
   slug: string;
@@ -202,11 +545,14 @@ export interface ApprovedSkillSummary {
   contentHash?: string;
   enabled: boolean;
   healthy: boolean;
+  classification: SkillEligibility;
+  category: string;
+  compatibleModes: SkillClassification["compatibleModes"];
+  compatibleSurfaces: SkillClassification["compatibleSurfaces"];
+  instructions: string;
 }
 
-/** Read only the server-owned approved registry and manifests exposed to OpenHarness. */
-export function listApprovedSkills(): ApprovedSkillSummary[] {
-  const root = approvedRoot();
+function listApprovedSkillsAtRoot(root: string): ApprovedSkillSummary[] {
   if (!fs.existsSync(root)) return [];
   let registry: { skills?: Record<string, Record<string, unknown>> } = {};
   try {
@@ -252,6 +598,32 @@ export function listApprovedSkills(): ApprovedSkillSummary[] {
             .update(JSON.stringify(pinnedHashes))
             .digest("hex")
         : undefined;
+      let integrityVerified = pinnedHashes.length === 0;
+      if (pinnedHashes.length) {
+        try {
+          const directory = path.join(root, entry.name);
+          const currentHashes = Object.fromEntries(
+            listFilesRecursive(directory).map((file) => [
+              path.relative(directory, file),
+              crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"),
+            ]),
+          );
+          integrityVerified = sameHashes(
+            Object.fromEntries(pinnedHashes),
+            currentHashes,
+          );
+        } catch {
+          integrityVerified = false;
+        }
+      }
+      const classified =
+        metadata.classification && typeof metadata.classification === "object"
+          ? (metadata.classification as SkillClassification)
+          : classifySkill({
+              name: frontmatterValue("name") ?? entry.name,
+              description: frontmatterValue("description"),
+              manifest: markdown,
+            });
       return [
         {
           id: `skill:${entry.name}`,
@@ -264,12 +636,35 @@ export function listApprovedSkills(): ApprovedSkillSummary[] {
           version:
             typeof metadata.version === "string" ? metadata.version : undefined,
           contentHash,
-          enabled: true,
-          healthy: true,
+          enabled: integrityVerified,
+          healthy: integrityVerified,
+          classification: classified.classification,
+          category: classified.category,
+          compatibleModes: classified.compatibleModes,
+          compatibleSurfaces: classified.compatibleSurfaces,
+          instructions: markdown,
         },
       ];
     })
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/**
+ * Read the general and conditional registries. Returning conditional entries
+ * here does not activate them: command resolution and every surface filter the
+ * classification against the current server-owned capability mode.
+ */
+export function listApprovedSkills(): ApprovedSkillSummary[] {
+  const bySlug = new Map<string, ApprovedSkillSummary>();
+  for (const skill of [
+    ...listApprovedSkillsAtRoot(approvedRoot()),
+    ...listApprovedSkillsAtRoot(conditionalRoot()),
+  ]) {
+    bySlug.set(skill.slug, skill);
+  }
+  return [...bySlug.values()].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
 }
 
 export function sanitizeSkillName(name: string): string {
@@ -311,6 +706,10 @@ export interface QuarantineReport {
   reviewState: "quarantined" | "approved";
   approvedAgents: string[];
   approvedPermissions?: SkillPermission[];
+  classification: SkillClassification;
+  reviewOverride?: SkillEligibility;
+  reviewer?: number;
+  reviewedAt?: string;
 }
 
 /**
@@ -431,6 +830,9 @@ export function quarantineSkill(input: {
   files: Record<string, string | Buffer>;
 }): QuarantineReport {
   const name = sanitizeSkillName(input.candidate.name);
+  if (input.candidate.classification?.classification === "blocked_security") {
+    throw new Error("Breadboard policy blocks this skill from quarantine.");
+  }
   const dir = ensureInside(quarantineRoot(), name);
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
@@ -513,6 +915,13 @@ function inspectFiles(
     externalNetworkRequirements,
     candidate?.requestedPermissions ?? saved?.requestedPermissions ?? [],
   );
+  const classification = classifySkill({
+    name: frontmatterName ?? name,
+    description: candidate?.description,
+    repository: candidate?.repository,
+    manifest: skillMarkdown,
+    requestedPermissions,
+  });
   const risks: string[] = [];
   if (!hasSkillMd) risks.push("Missing SKILL.md manifest.");
   if (frontmatterName && sanitizeSkillName(frontmatterName) !== name)
@@ -553,7 +962,20 @@ function inspectFiles(
       ? `${risks.length} risk signal(s) require review.`
       : "No static risk signals detected; human review is still required.",
     reviewState: "quarantined",
-    approvedAgents: saved?.approvedAgents ?? ["breadboard-workbench"],
+    approvedAgents: saved?.approvedAgents ?? ["breadboard-assistant"],
+    classification: saved?.reviewOverride
+      ? {
+          ...classification,
+          classification: saved.reviewOverride,
+          reasons: [
+            ...classification.reasons,
+            "An authenticated reviewer supplied an explicit eligibility override.",
+          ],
+        }
+      : classification,
+    reviewOverride: saved?.reviewOverride,
+    reviewer: saved?.reviewer,
+    reviewedAt: saved?.reviewedAt,
   };
 }
 
@@ -585,6 +1007,8 @@ export function promoteSkill(
     overwrite?: boolean;
     approvedAgents?: string[];
     approvedPermissions?: SkillPermission[];
+    classificationOverride?: "eligible_general" | "eligible_coding_conditional";
+    reviewer?: number;
   },
 ): { promotedPath: string; report: QuarantineReport } {
   const report = inspectQuarantine(name);
@@ -600,11 +1024,32 @@ export function promoteSkill(
       "Refusing to promote a skill whose manifest name does not match its quarantine name",
     );
   }
+  const effectiveClassification =
+    options?.classificationOverride ?? report.classification.classification;
+  if (
+    effectiveClassification !== "eligible_general" &&
+    effectiveClassification !== "eligible_coding_conditional"
+  ) {
+    throw new Error(
+      "Refusing to promote a skill until Breadboard classifies it as eligible.",
+    );
+  }
   const source = ensureInside(quarantineRoot(), report.name);
-  const target = ensureInside(approvedRoot(), report.name);
-  if (fs.existsSync(target) && !options?.overwrite)
+  const destinationRoot =
+    effectiveClassification === "eligible_coding_conditional"
+      ? conditionalRoot()
+      : approvedRoot();
+  const target = ensureInside(destinationRoot, report.name);
+  const otherTarget = ensureInside(
+    effectiveClassification === "eligible_coding_conditional"
+      ? approvedRoot()
+      : conditionalRoot(),
+    report.name,
+  );
+  if ((fs.existsSync(target) || fs.existsSync(otherTarget)) && !options?.overwrite)
     throw new Error("A skill with this name is already approved");
   fs.rmSync(target, { recursive: true, force: true });
+  if (options?.overwrite) fs.rmSync(otherTarget, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.cpSync(source, target, { recursive: true });
   fs.rmSync(path.join(target, QUARANTINE_MANIFEST), { force: true });
@@ -616,10 +1061,34 @@ export function promoteSkill(
     reviewState: "approved" as const,
     approvedAgents: approvedAgents.length
       ? approvedAgents
-      : ["breadboard-workbench"],
+      : ["breadboard-assistant"],
     approvedPermissions: options?.approvedPermissions ?? [],
+    classification: {
+      ...report.classification,
+      classification: effectiveClassification,
+      compatibleModes:
+        effectiveClassification === "eligible_coding_conditional"
+          ? ["scoped_implementation" as const]
+          : [
+              "knowledge" as const,
+              "technical_read" as const,
+              "scoped_implementation" as const,
+            ],
+      compatibleSurfaces:
+        effectiveClassification === "eligible_coding_conditional"
+          ? ["assistant" as const]
+          : [
+              "assistant" as const,
+              "garden" as const,
+              "quartz" as const,
+              "document" as const,
+            ],
+    },
+    reviewOverride: options?.classificationOverride,
+    reviewer: options?.reviewer,
+    reviewedAt: new Date().toISOString(),
   };
-  updateApprovedRegistry(approved);
+  updateApprovedRegistry(approved, destinationRoot);
   fs.rmSync(source, { recursive: true, force: true });
   return { promotedPath: target, report: approved };
 }
@@ -631,9 +1100,9 @@ export function rejectQuarantine(name: string): void {
   });
 }
 
-function updateApprovedRegistry(report: QuarantineReport): void {
-  const file = path.join(approvedRoot(), "registry.json");
-  fs.mkdirSync(approvedRoot(), { recursive: true });
+function updateApprovedRegistry(report: QuarantineReport, root: string): void {
+  const file = path.join(root, "registry.json");
+  fs.mkdirSync(root, { recursive: true });
   let registry: { skills: Record<string, unknown> } = { skills: {} };
   try {
     registry = JSON.parse(fs.readFileSync(file, "utf8")) as {

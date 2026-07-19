@@ -108,38 +108,49 @@ const BreadboardAI: QuartzComponent = ({ fileData }: QuartzComponentProps) => {
         </section>
 
         <form class="breadboard-ai-composer">
-          <textarea
-            class="breadboard-ai-input"
-            rows={2}
-            placeholder="Ask about this page…"
-            aria-label="Ask about this page"
-          ></textarea>
           <div class="breadboard-ai-command-hub" hidden>
+            <div class="breadboard-ai-command-heading">
+              <strong>Use a capability</strong>
+              <button type="button" class="breadboard-ai-command-close" aria-label="Close capabilities">×</button>
+            </div>
             <input
               class="breadboard-ai-command-search"
               type="search"
-              placeholder="Search skills, MCP, and prompts…"
-              aria-label="Search commands"
+              placeholder="Search skills, connections, and prompts"
+              aria-label="Search capabilities"
             />
+            <div class="breadboard-ai-command-tabs" role="tablist" aria-label="Capability types">
+              <button type="button" role="tab" data-command-tab="skill" aria-selected="true">Skills</button>
+              <button type="button" role="tab" data-command-tab="mcp" aria-selected="false">Connections</button>
+              <button type="button" role="tab" data-command-tab="prompt" aria-selected="false">Prompts</button>
+            </div>
             <div class="breadboard-ai-command-results"></div>
             <div class="breadboard-ai-command-status" aria-live="polite"></div>
           </div>
-          <div class="breadboard-ai-composer-row">
+          <div class="breadboard-ai-composer-shell">
             <button
               type="button"
               class="breadboard-ai-command-button"
-              aria-label="Open command hub"
+              aria-label="Open capabilities"
               aria-expanded="false"
             >
               /
             </button>
-            <div class="breadboard-ai-intelligence" hidden>
-              <select class="breadboard-ai-model" aria-label="Model"></select>
-              <select class="breadboard-ai-effort" aria-label="Reasoning effort"></select>
+            <textarea
+              class="breadboard-ai-input"
+              rows={1}
+              placeholder="Ask about this page…"
+              aria-label="Ask about this page"
+            ></textarea>
+            <div class="breadboard-ai-composer-row">
+              <div class="breadboard-ai-intelligence" hidden>
+                <select class="breadboard-ai-model" aria-label="Model"></select>
+                <select class="breadboard-ai-effort" aria-label="Reasoning effort"></select>
+              </div>
+              <button type="submit" class="breadboard-ai-send">
+                Send
+              </button>
             </div>
-            <button type="submit" class="breadboard-ai-send">
-              Send
-            </button>
           </div>
         </form>
       </div>

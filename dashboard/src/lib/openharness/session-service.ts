@@ -21,9 +21,11 @@ import {
   createRuntimeSession,
   getRuntimeSessionById,
   getOpenHarnessUserSettings,
+  setOpenHarnessUserSettings,
   setOpenHarnessSessionId,
   setRuntimeStatus,
   recordAuditEvent,
+  migrateRuntimeSessionPolicy,
   type RuntimeSessionRow,
   type FilesystemAccessMode,
 } from "./runtime-store.ts";
@@ -52,6 +54,37 @@ function loadClusterBySlug(slug: string): ClusterRow | null {
     .prepare("SELECT id, slug, user_id, visibility, chat_accessible FROM clusters WHERE slug = ?")
     .get(slug) as ClusterRow | undefined;
   return row ?? null;
+}
+
+function canonicalizeRuntimePolicy(row: RuntimeSessionRow): RuntimeSessionRow {
+  const config = readOpenHarnessConfig();
+  const expectedAgent =
+    row.surface === "garden_chat"
+      ? config.agents.garden
+      : row.surface === "quartz_ai"
+        ? config.agents.quartz
+        : config.agents.terminal;
+  if (
+    row.agent_name === expectedAgent &&
+    (row.capability_mode === "knowledge" || Boolean(row.capability_decision_id))
+  ) {
+    return row;
+  }
+  const previousAgent = row.agent_name;
+  migrateRuntimeSessionPolicy(row.id, expectedAgent);
+  recordAuditEvent({
+    eventType: "session.capability_policy_migrated",
+    runtimeSessionId: row.id,
+    userId: row.user_id,
+    gardenId: row.garden_id,
+    payload: {
+      previousAgent,
+      agent: expectedAgent,
+      mode: "knowledge",
+      broadPermissionsRestored: false,
+    },
+  });
+  return getRuntimeSessionById(row.id)!;
 }
 
 /**
@@ -121,8 +154,19 @@ export async function createSessionForSurface(
   const settings = options.userId === null
     ? { filesystemMode: "restricted" as const, lastActiveDirectory: null }
     : getOpenHarnessUserSettings(options.userId);
+  const migratedBroadSetting =
+    options.userId !== null && settings.filesystemMode === "full";
+  if (migratedBroadSetting) {
+    setOpenHarnessUserSettings(options.userId!, { filesystemMode: "restricted" });
+  }
   // sessionKey is a fresh random id so workspaces never collide across sessions.
   const sessionKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  // The terminal starts in the server-selected authorized workspace so a
+  // later task-scoped decision does not need to move an OpenHarness session
+  // between instances. Runtime permissions still begin at knowledge/default
+  // deny; a historical "full" setting is retained only as inactive metadata.
+  const directorySelectionMode =
+    options.surface === "dashboard_terminal" ? "full" : "restricted";
   const created = await gateway.createSession({
     surface: options.surface,
     sessionKey,
@@ -130,8 +174,11 @@ export async function createSessionForSurface(
     pageKey: options.pageSlug ?? undefined,
     title: options.title,
     metadata: { userId: options.userId, gardenId, pageSlug: options.pageSlug },
-    filesystemMode: settings.filesystemMode,
-    previousDirectory: settings.lastActiveDirectory,
+    filesystemMode: directorySelectionMode,
+    // Historical user-selected directories are retained only as inactive
+    // metadata. New Assistant sessions always start at Breadboard's
+    // server-selected root; a persisted path is never restored as authority.
+    previousDirectory: null,
   });
 
   const row = createRuntimeSession({
@@ -144,10 +191,12 @@ export async function createSessionForSurface(
     pageSlug: options.pageSlug ?? null,
     workspaceKey: created.workspaceKey,
     activeDirectory: created.directory,
-    filesystemMode: settings.filesystemMode,
+    filesystemMode: "restricted",
     openHarnessSessionId: created.openHarnessSessionId,
     runtimeMetadata: {
       title: options.title,
+      inactiveLegacyFilesystemMode: settings.filesystemMode,
+      inactiveLegacyDirectory: settings.lastActiveDirectory,
       ...(options.clientToken ? { clientToken: options.clientToken } : {}),
     },
   });
@@ -157,7 +206,7 @@ export async function createSessionForSurface(
     openHarnessSessionId: created.openHarnessSessionId,
     workspaceKey: created.workspaceKey,
     activeDirectory: created.directory,
-    filesystemMode: settings.filesystemMode,
+    filesystemMode: "restricted",
     agentName: created.agentName,
   };
   recordAuditEvent({
@@ -167,6 +216,21 @@ export async function createSessionForSurface(
     gardenId,
     payload: { surface: options.surface, agent: created.agentName, pageSlug: options.pageSlug ?? null },
   });
+  if (migratedBroadSetting) {
+    recordAuditEvent({
+      eventType: "settings.broad_filesystem_deactivated",
+      runtimeSessionId: row.id,
+      userId: options.userId,
+      gardenId,
+      payload: {
+        previousMode: "full",
+        mode: "restricted",
+        previousDirectoryRetainedAsInactiveHistory: Boolean(
+          settings.lastActiveDirectory,
+        ),
+      },
+    });
+  }
   recordAuditEvent({
     eventType: "agent.selected",
     runtimeSessionId: row.id,
@@ -227,7 +291,7 @@ export function authorizeRuntimeSession(
   userId: number | null,
   runtimeSessionId: number,
 ): AuthorizedRuntimeSession {
-  const row = getRuntimeSessionById(runtimeSessionId);
+  let row = getRuntimeSessionById(runtimeSessionId);
   if (!row) throw new ApiError(404, "session_not_found", "Session not found.");
 
   // Ownership: the session's user must match. Anonymous (public Quartz) sessions
@@ -243,13 +307,15 @@ export function authorizeRuntimeSession(
   if (!row.openharness_session_id) {
     throw new ApiError(409, "session_not_ready", "Runtime session is not initialized.");
   }
+  row = canonicalizeRuntimePolicy(row);
+  const config = readOpenHarnessConfig();
   return {
     row,
-    openHarnessSessionId: row.openharness_session_id,
+    openHarnessSessionId: row.openharness_session_id!,
     workspaceKey: row.workspace_key,
     activeDirectory:
-      row.active_directory ?? directoryForWorkspaceKey(readOpenHarnessConfig(), row.workspace_key),
-    filesystemMode: row.filesystem_mode === "full" ? "full" : "restricted",
+      row.active_directory ?? directoryForWorkspaceKey(config, row.workspace_key),
+    filesystemMode: "restricted",
     agentName: row.agent_name,
   };
 }
@@ -264,7 +330,7 @@ export function authorizeQuartzRuntimeSession(
   runtimeSessionId: number,
   auth: { userId: number | null; clientToken: string | null },
 ): AuthorizedRuntimeSession {
-  const row = getRuntimeSessionById(runtimeSessionId);
+  let row = getRuntimeSessionById(runtimeSessionId);
   if (!row || row.surface !== "quartz_ai") {
     throw new ApiError(404, "session_not_found", "Session not found.");
   }
@@ -284,13 +350,14 @@ export function authorizeQuartzRuntimeSession(
   if (!row.openharness_session_id) {
     throw new ApiError(409, "session_not_ready", "Runtime session is not initialized.");
   }
+  row = canonicalizeRuntimePolicy(row);
   return {
     row,
-    openHarnessSessionId: row.openharness_session_id,
+    openHarnessSessionId: row.openharness_session_id!,
     workspaceKey: row.workspace_key,
     activeDirectory:
       row.active_directory ?? directoryForWorkspaceKey(readOpenHarnessConfig(), row.workspace_key),
-    filesystemMode: row.filesystem_mode === "full" ? "full" : "restricted",
+    filesystemMode: "restricted",
     agentName: row.agent_name,
   };
 }

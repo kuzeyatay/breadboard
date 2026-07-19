@@ -7,7 +7,7 @@ import {
   requireString,
   ApiError,
 } from "@/lib/openharness/route-helpers.ts";
-import { downloadSkillToQuarantine, searchRegistry } from "@/lib/openharness/skills.ts";
+import { downloadSkillToQuarantine, searchSkillCatalog } from "@/lib/openharness/skills.ts";
 import { recordAuditEvent, recordSkillDecision } from "@/lib/openharness/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
@@ -23,10 +23,16 @@ export async function POST(request: Request) {
     const packageId = requireString(body.package ?? body.name, "package", 240);
     const skillName = packageId.includes("@") ? packageId.slice(packageId.lastIndexOf("@") + 1) : packageId;
     const query = typeof body.query === "string" && body.query.trim() ? body.query : skillName;
-    const candidate = (await searchRegistry(query)).find(
+    const candidate = (await searchSkillCatalog({ query, limit: 30 })).candidates.find(
       (value) => value.package === packageId || (body.name === value.name && !packageId.includes("@")),
     );
     if (!candidate) throw new ApiError(404, "candidate_not_found", "That skill was not returned by the official registry.");
+    if (candidate.classification.classification === "blocked_security") {
+      throw new ApiError(403, "skill_blocked_security", "Breadboard policy prohibits this skill.");
+    }
+    if (candidate.classification.classification === "blocked_incompatible") {
+      throw new ApiError(422, "skill_incompatible", "This skill is incompatible with Breadboard's supported environment.");
+    }
 
     const report = await downloadSkillToQuarantine(candidate);
     recordSkillDecision({
@@ -40,7 +46,12 @@ export async function POST(request: Request) {
     recordAuditEvent({
       eventType: "skill.quarantined",
       userId,
-      payload: { package: report.package, exactVersion: report.exactVersion, fileHashes: report.fileHashes },
+      payload: {
+        package: report.package,
+        exactVersion: report.exactVersion,
+        fileHashes: report.fileHashes,
+        classification: report.classification,
+      },
     });
     return NextResponse.json({ report });
   } catch (error) {

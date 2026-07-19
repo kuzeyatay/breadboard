@@ -5342,7 +5342,7 @@ export default function WorkspaceClient({
           </main>
 
           {/* Input area */}
-          <div className="shrink-0 border-t border-gray-800 px-4 py-4">
+          <div className="shrink-0 px-4 py-4">
             {/* Chat attachment preview strip */}
             {selectedChatDocuments.length > 0 && (
               <div className="mx-auto mb-2 flex max-w-5xl flex-wrap items-center gap-1.5">
@@ -5390,6 +5390,7 @@ export default function WorkspaceClient({
             />
 
             <AssistantComposer
+              capabilitySurface="garden_chat"
               className="mx-auto w-full max-w-5xl"
               value={input}
               onChange={setInput}

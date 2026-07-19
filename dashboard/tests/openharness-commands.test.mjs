@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mcpToolSelection,
+  assignCommandTokens,
   resolveCommandMessage,
 } from "../src/lib/openharness/commands.ts";
 
@@ -35,7 +36,7 @@ test("a prompt token resolves server-side and preserves user text", async () => 
     1,
     "/prompt:study-guide focus on chapter two",
   );
-  assert.match(result.text, /Server-resolved prompt template: Study guide/);
+  assert.match(result.text, /Server-resolved prompt: Study guide/);
   assert.match(result.text, /User request\]\nfocus on chapter two/);
   assert.deepEqual(result.invocations, [
     { kind: "prompt", slug: "study-guide", id: "dp-2" },
@@ -45,11 +46,28 @@ test("a prompt token resolves server-side and preserves user text", async () => 
 test("malformed and conflicting slash commands are rejected clearly", async () => {
   await assert.rejects(
     () => resolveCommandMessage(1, "/prompt study"),
-    /Malformed slash command/,
+    /unavailable in the current surface or task mode/,
   );
   await assert.rejects(
     () => resolveCommandMessage(1, "/prompt:study-guide /skill:test do it"),
     /cannot be combined/,
+  );
+});
+
+test("clean tokens resolve and collisions receive deterministic visible namespaces", async () => {
+  const result = await resolveCommandMessage(1, "/study-guide focus on chapter two");
+  assert.match(result.text, /Server-resolved prompt: Study guide/);
+  assert.deepEqual(
+    assignCommandTokens([
+      { kind: "skill", slug: "shared" },
+      { kind: "prompt", slug: "shared" },
+      { kind: "mcp", slug: "drive" },
+    ]),
+    [
+      { kind: "skill", slug: "shared", token: "skill-shared" },
+      { kind: "prompt", slug: "shared", token: "prompt-shared" },
+      { kind: "mcp", slug: "drive", token: "drive" },
+    ],
   );
 });
 

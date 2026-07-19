@@ -364,6 +364,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
       ) : (
         <AgentRuntimePanel
           compact
+          sessionId={session.sessionId}
+          surface="garden_chat"
           messages={session.messages}
           connection={session.connection}
           error={session.error}

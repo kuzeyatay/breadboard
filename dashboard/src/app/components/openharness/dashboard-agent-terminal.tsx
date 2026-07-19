@@ -190,7 +190,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     [],
   );
 
-  const session = useAgentSession("dashboard_terminal", { title: "Terminal session" });
+  const session = useAgentSession("dashboard_terminal", { title: "Assistant conversation" });
   const busy =
     session.connection === "connecting" ||
     session.connection === "streaming" ||
@@ -380,20 +380,20 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
               style={{ animationDelay: "130ms" }}
               className={`${headerItemAnim} font-mono text-sm font-medium text-[#5f7f8e]`}
             >
-              {">_"}
+              {"B"}
             </span>
             <div className="min-w-0">
               <p
                 style={{ animationDelay: "210ms" }}
                 className={`${headerItemAnim} truncate text-sm font-semibold text-[#172A22]`}
               >
-                {isPublic ? "Public knowledge hub" : "Knowledge base terminal"}
+                {isPublic ? "Public knowledge assistant" : "Breadboard Assistant"}
               </p>
               <p
                 style={{ animationDelay: "300ms" }}
                 className={`${headerItemAnim} truncate text-[11px] text-[#5F6F68]`}
               >
-                {scopeTagline} · OpenHarness
+                {scopeTagline}
               </p>
             </div>
             <div className={`${headerItemAnim} ml-auto flex items-center gap-2`} style={{ animationDelay: "380ms" }}>
@@ -482,6 +482,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
             ) : (
               <AgentRuntimePanel
                 compact
+                sessionId={session.sessionId}
+                surface="dashboard_terminal"
                 messages={session.messages}
                 connection={session.connection}
                 error={runtimeUnavailable ? "OpenHarness is required but unavailable. No legacy request was sent." : session.error}

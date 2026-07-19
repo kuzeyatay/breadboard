@@ -1210,7 +1210,7 @@ export default function GardenAssistant({
         )}
       </div>
 
-      <div className="border-t border-gray-800 p-3">
+      <div className="p-3">
         <input
           ref={attachmentInputRef}
           type="file"
@@ -1220,6 +1220,7 @@ export default function GardenAssistant({
           className="hidden"
         />
         <AssistantComposer
+          capabilitySurface="garden_chat"
           compact
           value={input}
           onChange={setInput}

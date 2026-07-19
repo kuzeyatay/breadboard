@@ -19,6 +19,13 @@ import {
   recordAuditEvent,
 } from "@/lib/openharness/runtime-store.ts";
 import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
+import {
+  decideCapabilityMode,
+  mergeCapabilityToolPolicy,
+} from "@/lib/openharness/capability-policy.ts";
+import { composeOpenHarnessSystemPrompt } from "@/lib/openharness/system-prompts.ts";
+import { persistCapabilityDecision } from "@/lib/openharness/runtime-store.ts";
+import { scheduleCapabilityExpiry } from "@/lib/openharness/capability-lifecycle.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -48,11 +55,24 @@ export async function POST(
 
     const body = await readJsonBody(request);
     const text = requireString(body.text, "text", 200_000);
+    const decision = decideCapabilityMode({
+      surface: session.row.surface,
+      userId,
+      requestedOutcome: text,
+      authorizedRoot: session.activeDirectory,
+    });
     const resolved = await resolveCommandMessage(
       userId,
       text,
       session.activeDirectory,
+      { mode: decision.mode, surface: session.row.surface },
     );
+    decision.selectedConditionalSkills = resolved.invocations
+      .filter((item) => item.kind === "skill" && decision.mode === "scoped_implementation")
+      .map((item) => item.slug);
+    decision.selectedConnections = resolved.invocations
+      .filter((item) => item.kind === "mcp")
+      .map((item) => item.slug);
     const engine = resolveOpenHarnessEngine(body.model, body.reasoningEffort);
     const continuation =
       body.continuation && typeof body.continuation === "object"
@@ -63,7 +83,7 @@ export async function POST(
         throw new ApiError(
           403,
           "invalid_continuation",
-          "Only terminal tasks can be resumed.",
+          "Only authenticated Assistant implementation tasks can be resumed.",
         );
       }
       const parentTaskId = requireString(
@@ -100,6 +120,36 @@ export async function POST(
       });
     }
 
+    await getOpenHarnessGateway().applyCapabilityDecision({
+      openHarnessSessionId: session.openHarnessSessionId,
+      workspaceKey: session.workspaceKey,
+      directory: session.activeDirectory,
+      decision,
+    });
+    const storedDecision = persistCapabilityDecision(session.row.id, decision);
+    scheduleCapabilityExpiry(session, decision, storedDecision.id);
+    recordAuditEvent({
+      eventType: "capability.decision",
+      runtimeSessionId: session.row.id,
+      userId,
+      gardenId: session.row.garden_id,
+      payload: {
+        decisionId: storedDecision.id,
+        mode: decision.mode,
+        requestedOutcome: decision.requestedOutcome,
+        implementationRequired: decision.implementationRequired,
+        decisionReason: decision.decisionReason,
+        decisionSource: decision.decisionSource,
+        authorizedRoots: decision.authorizedRoots,
+        authorizedPathPatterns: decision.authorizedPathPatterns,
+        allowedTools: decision.allowedTools,
+        allowedOperations: decision.allowedOperations,
+        allowedCommandPatterns: decision.allowedCommandPatterns,
+        selectedConditionalSkills: decision.selectedConditionalSkills,
+        selectedConnections: decision.selectedConnections,
+        expiresAt: decision.expiresAt,
+      },
+    });
     markStatus(session, "busy");
     recordAuditEvent({
       eventType: "message.submitted",
@@ -112,6 +162,8 @@ export async function POST(
         reasoningEffort: engine.variant,
         reasoningEffortAdjusted: engine.adjusted,
         commands: resolved.invocations,
+        capabilityDecisionId: storedDecision.id,
+        capabilityMode: decision.mode,
       },
     });
     await getOpenHarnessGateway().sendMessage({
@@ -120,12 +172,23 @@ export async function POST(
       directory: session.activeDirectory,
       agentName: session.agentName,
       text: resolved.text,
-      tools: resolved.tools,
+      tools: mergeCapabilityToolPolicy(decision, resolved.tools),
       model: engine.model,
       variant: engine.variant,
+      system: composeOpenHarnessSystemPrompt({
+        surface: session.row.surface,
+        decision,
+      }),
     });
 
-    return NextResponse.json({ accepted: true });
+    return NextResponse.json({
+      accepted: true,
+      capability: {
+        mode: decision.mode,
+        expiresAt: decision.expiresAt,
+        decisionId: storedDecision.id,
+      },
+    });
   } catch (error) {
     return apiErrorResponse(error);
   }

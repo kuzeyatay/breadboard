@@ -58,18 +58,35 @@ export async function POST(request: Request) {
     if (Number.isInteger(runtimeSessionId) && runtimeSessionId > 0) {
       const runtime = authorizeRuntimeSession(userId, runtimeSessionId);
       if (runtime.row.surface !== "dashboard_terminal") {
-        throw new ApiError(403, "invalid_parent_session", "Skills can resume only a terminal session.");
+        throw new ApiError(403, "invalid_parent_session", "Skills can resume only an authenticated Assistant task.");
       }
       capabilityGap = getLatestCapabilityGap(runtime.row.id);
     }
     // Third-party promoted skills are attached only to the permissioned terminal
     // profile. Garden, Quartz, document, and scout profiles explicitly deny
     // dynamic skill execution.
-    const approvedAgents = ["breadboard-workbench"];
+    const classificationOverride =
+      body.classificationOverride === "eligible_general" ||
+      body.classificationOverride === "eligible_coding_conditional"
+        ? body.classificationOverride
+        : undefined;
+    const effectiveClassification =
+      classificationOverride ?? report.classification.classification;
+    const approvedAgents =
+      effectiveClassification === "eligible_coding_conditional"
+        ? ["breadboard-assistant"]
+        : [
+            "breadboard-assistant",
+            "breadboard-garden",
+            "breadboard-quartz",
+            "breadboard-document",
+          ];
     const result = promoteSkill(name, {
       overwrite: Boolean(body.overwrite),
       approvedAgents,
       approvedPermissions,
+      classificationOverride,
+      reviewer: userId,
     });
     recordSkillDecision({
       skillName: report.name,
@@ -90,7 +107,12 @@ export async function POST(request: Request) {
     recordAuditEvent({
       eventType: "skill.promoted",
       userId,
-      payload: { package: result.report.package, exactVersion: result.report.exactVersion, approvedPermissions },
+      payload: {
+        package: result.report.package,
+        exactVersion: result.report.exactVersion,
+        approvedPermissions,
+        classification: result.report.classification,
+      },
     });
     if (continuation) {
       recordAuditEvent({

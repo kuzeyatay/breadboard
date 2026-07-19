@@ -160,28 +160,23 @@ test("routing mode implements required, preferred, and explicit legacy semantics
   assert.match(config, /mode !== "legacy"/);
 });
 
-test("Garden and Quartz use the shared capable workbench with proposal-only Garden publication", () => {
+test("Garden and Quartz use dedicated knowledge-only agents with proposal-only publication", () => {
   const runtime = read("dashboard/src/lib/openharness/config.ts");
   const adapter = read("dashboard/src/lib/openharness/garden-chat-adapter.ts");
-  const workbench = read("openharness-config/agent/breadboard-workbench.md");
+  const garden = read("openharness-config/agent/breadboard-garden.md");
+  const quartz = read("openharness-config/agent/breadboard-quartz.md");
   assert.match(
     runtime,
-    /garden:\s*envString\("OPENHARNESS_GARDEN_AGENT", "breadboard-workbench"\)/,
+    /garden:\s*envString\("OPENHARNESS_GARDEN_AGENT", "breadboard-garden"\)/,
   );
   assert.match(
     runtime,
-    /quartz:\s*envString\("OPENHARNESS_QUARTZ_AGENT", "breadboard-workbench"\)/,
+    /quartz:\s*envString\("OPENHARNESS_QUARTZ_AGENT", "breadboard-quartz"\)/,
   );
-  assert.match(
-    adapter,
-    /general filesystem, web, shell, skill, and subagent tools remain available/,
-  );
-  assert.match(
-    adapter,
-    /Published Garden content is still changed only through typed Breadboard proposals/,
-  );
-  assert.match(workbench, /task: true/);
-  assert.match(workbench, /websearch: true/);
+  assert.match(adapter, /Repository, shell, Git, package, build, test, deployment/);
+  assert.match(adapter, /changed only through typed Breadboard proposals/);
+  assert.match(garden, /bash: deny/);
+  assert.match(quartz, /skill: deny/);
 });
 
 test("Quartz graph emits bounded map context consumed only by dashboard proxy chat", () => {
@@ -222,16 +217,14 @@ test("the unified slash hub embeds Skills.sh discovery and the reviewed promotio
   assert.match(review, /Downloaded to inactive quarantine/);
 });
 
-test("the slash hub configures validated full-filesystem directories", () => {
+test("the capability palette omits filesystem and repository administration", () => {
   const hub = read("dashboard/src/app/components/openharness/command-hub.tsx");
-  const settingsRoute = read(
-    "dashboard/src/app/api/openharness/settings/route.ts",
-  );
-  assert.match(hub, /fetch\("\/api\/openharness\/settings"/);
-  assert.match(hub, /filesystemSettings\.accessibleRoots\.map/);
-  assert.match(hub, /Changes apply only to new chat sessions/);
-  assert.match(settingsRoute, /canonicalAccessibleDirectory/);
-  assert.match(settingsRoute, /discoverFilesystemRoots/);
+  assert.doesNotMatch(hub, /\/api\/openharness\/settings/);
+  assert.doesNotMatch(hub, /accessibleRoots|filesystemMode|activeDirectory/);
+  assert.match(hub, /Use a capability/);
+  assert.match(hub, /Skills/);
+  assert.match(hub, /Connections/);
+  assert.match(hub, /Prompts/);
 });
 
 test("terminal exposes explicit quarantine review and resumes a recorded capability gap", () => {

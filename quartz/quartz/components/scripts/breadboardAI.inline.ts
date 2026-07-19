@@ -23,6 +23,7 @@ interface QuartzCommandItem {
   id: string
   kind: "skill" | "mcp" | "prompt"
   slug: string
+  token: string
   name: string
   description: string
   enabled?: boolean
@@ -50,6 +51,8 @@ function setupPanel(root: HTMLElement) {
   const commandSearch = root.querySelector<HTMLInputElement>(".breadboard-ai-command-search")
   const commandResults = root.querySelector<HTMLElement>(".breadboard-ai-command-results")
   const commandStatus = root.querySelector<HTMLElement>(".breadboard-ai-command-status")
+  const commandClose = root.querySelector<HTMLButtonElement>(".breadboard-ai-command-close")
+  const commandTabs = Array.from(root.querySelectorAll<HTMLButtonElement>("[data-command-tab]"))
   const activity = root.querySelector<HTMLElement>(".breadboard-ai-activity")
   const activityTitle = root.querySelector<HTMLElement>(".breadboard-ai-activity-title")
   const activityToggle = root.querySelector<HTMLButtonElement>(".breadboard-ai-activity-toggle")
@@ -75,6 +78,7 @@ function setupPanel(root: HTMLElement) {
   let abortController: AbortController | null = null
   let commandItems: QuartzCommandItem[] = []
   let activeCommandIndex = 0
+  let activeCommandTab: QuartzCommandItem["kind"] = "skill"
   let intelligenceLoaded = false
   const activityEntries = new Map<string, { label: string; detail?: string; status: string }>()
 
@@ -195,23 +199,23 @@ function setupPanel(root: HTMLElement) {
 
   function filteredCommands(): QuartzCommandItem[] {
     const query = commandSearch?.value.trim().toLowerCase() || ""
+    const tabItems = commandItems.filter((item) => item.kind === activeCommandTab)
     return query
-      ? commandItems.filter((item) =>
+      ? tabItems.filter((item) =>
           `${item.name} ${item.slug} ${item.description}`.toLowerCase().includes(query),
         )
-      : commandItems
+      : tabItems
   }
 
   function insertCommand(item: QuartzCommandItem) {
     if (item.enabled === false || item.healthy === false) return
     const start = input!.selectionStart
-    const end = input!.selectionEnd
-    const token = `/${item.kind}:${item.slug} `
+    const token = `/${item.token} `
     const replaceInitialSlash = input!.value === "/"
     input!.value = replaceInitialSlash
       ? token
-      : `${input!.value.slice(0, start)}${token}${input!.value.slice(end)}`
-    const cursor = replaceInitialSlash ? token.length : start + token.length
+      : `${token}${input!.value}`
+    const cursor = replaceInitialSlash ? token.length : token.length + start
     closeCommands()
     input!.focus()
     input!.setSelectionRange(cursor, cursor)
@@ -224,17 +228,17 @@ function setupPanel(root: HTMLElement) {
     if (!items.length) {
       const empty = document.createElement("p")
       empty.className = "breadboard-ai-command-empty"
-      empty.textContent = "No commands match this search."
+      empty.textContent = "No capabilities match this search."
       commandResults.appendChild(empty)
       return
     }
     activeCommandIndex = Math.min(activeCommandIndex, items.length - 1)
-    for (const kind of ["skill", "mcp", "prompt"] as const) {
+    for (const kind of [activeCommandTab] as const) {
       const group = items.filter((item) => item.kind === kind)
       if (!group.length) continue
       const heading = document.createElement("h4")
       heading.textContent =
-        kind === "mcp" ? "MCP connections" : `${kind[0].toUpperCase()}${kind.slice(1)}s`
+        kind === "mcp" ? "Connections" : `${kind[0].toUpperCase()}${kind.slice(1)}s`
       commandResults.appendChild(heading)
       for (const item of group) {
         const button = document.createElement("button")
@@ -244,7 +248,7 @@ function setupPanel(root: HTMLElement) {
         button.disabled = item.enabled === false || item.healthy === false
         button.dataset.commandIndex = String(index)
         const title = document.createElement("span")
-        title.textContent = `${item.name}  /${item.kind}:${item.slug}`
+        title.textContent = item.name
         const description = document.createElement("small")
         description.textContent = button.disabled
           ? item.unavailableReason || "Unavailable"
@@ -268,25 +272,25 @@ function setupPanel(root: HTMLElement) {
     if (!commandHub || !commandButton || !commandSearch || !commandStatus) return
     commandHub.hidden = false
     commandButton.setAttribute("aria-expanded", "true")
-    commandStatus.textContent = "Loading commands…"
+    commandStatus.textContent = "Loading capabilities…"
     commandSearch.focus()
     try {
       const response = await fetch(`${dashboard}/api/quartz-ai/commands`, {
         credentials: "include",
       })
-      if (!response.ok) throw new Error("Commands are unavailable.")
+      if (!response.ok) throw new Error("Capabilities are unavailable.")
       const payload = (await response.json()) as { groups?: Record<string, QuartzCommandItem[]> }
       commandItems = [
         ...(payload.groups?.skills || []),
         ...(payload.groups?.mcp || []),
         ...(payload.groups?.prompts || []),
       ]
-      commandStatus.textContent = "Select inserts a token; it does not send."
+      commandStatus.textContent = ""
       activeCommandIndex = 0
       renderCommands()
     } catch (error) {
       commandStatus.textContent =
-        error instanceof Error ? error.message : "Commands are unavailable."
+        error instanceof Error ? error.message : "Capabilities are unavailable."
     }
   }
 
@@ -299,6 +303,22 @@ function setupPanel(root: HTMLElement) {
   commandButton?.addEventListener("click", () =>
     commandHub?.hidden ? void openCommands() : closeCommands(),
   )
+  commandClose?.addEventListener("click", () => {
+    closeCommands()
+    input!.focus()
+  })
+  for (const tab of commandTabs) {
+    tab.addEventListener("click", () => {
+      const value = tab.dataset.commandTab
+      if (value !== "skill" && value !== "mcp" && value !== "prompt") return
+      activeCommandTab = value
+      activeCommandIndex = 0
+      for (const candidate of commandTabs) {
+        candidate.setAttribute("aria-selected", String(candidate === tab))
+      }
+      renderCommands()
+    })
+  }
   commandSearch?.addEventListener("input", () => {
     activeCommandIndex = 0
     renderCommands()

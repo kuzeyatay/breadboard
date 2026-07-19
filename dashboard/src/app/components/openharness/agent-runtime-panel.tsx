@@ -22,6 +22,7 @@ import type {
   ConnectionState,
   PermissionPrompt,
 } from "./use-agent-session";
+import type { OpenHarnessSurface } from "@/lib/openharness/config.ts";
 
 interface Props {
   messages: AgentMessage[];
@@ -43,6 +44,8 @@ interface Props {
   reasoningEffort?: AssistantReasoningEffort;
   onReasoningEffortChange?: (effort: AssistantReasoningEffort) => void;
   compact?: boolean;
+  sessionId?: number | null;
+  surface?: OpenHarnessSurface;
 }
 
 export default function AgentRuntimePanel({
@@ -65,6 +68,8 @@ export default function AgentRuntimePanel({
   reasoningEffort,
   onReasoningEffortChange,
   compact,
+  sessionId,
+  surface = "dashboard_terminal",
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const streaming = connection === "streaming" || connection === "connecting" || connection === "waiting";
@@ -175,6 +180,8 @@ export default function AgentRuntimePanel({
           onModelChange={onModelChange ?? (() => undefined)}
           reasoningEffort={reasoningEffort ?? DEFAULT_ASSISTANT_REASONING_EFFORT}
           onReasoningEffortChange={onReasoningEffortChange ?? (() => undefined)}
+          capabilitySessionId={sessionId}
+          capabilitySurface={surface}
         />
       </div>
     </div>

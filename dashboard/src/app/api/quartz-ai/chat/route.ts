@@ -15,6 +15,7 @@ import {
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
 import {
   appendRuntimeMessage,
+  persistCapabilityDecision,
   recordAuditEvent,
 } from "@/lib/openharness/runtime-store.ts";
 import {
@@ -29,6 +30,11 @@ import {
 } from "@/lib/openharness/quartz-support.ts";
 import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
 import { resolveOpenHarnessEngine } from "@/lib/openharness/model-selection.ts";
+import {
+  decideCapabilityMode,
+  mergeCapabilityToolPolicy,
+} from "@/lib/openharness/capability-policy.ts";
+import { composeOpenHarnessSystemPrompt } from "@/lib/openharness/system-prompts.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -112,15 +118,43 @@ export async function POST(request: Request) {
           { headers: cors },
         );
       }
+      const decision = decideCapabilityMode({
+        surface: "quartz_ai",
+        userId,
+        requestedOutcome: text,
+        authorizedRoot: session.activeDirectory,
+      });
       const resolved = await resolveCommandMessage(
         userId,
         text,
         session.activeDirectory,
+        { mode: decision.mode, surface: "quartz_ai" },
       );
       appendRuntimeMessage({
         runtimeSessionId: session.row.id,
         role: "user",
         content: text,
+      });
+      const gateway = getOpenHarnessGateway();
+      await gateway.applyCapabilityDecision({
+        openHarnessSessionId: session.openHarnessSessionId,
+        workspaceKey: session.workspaceKey,
+        directory: session.activeDirectory,
+        decision,
+      });
+      const storedDecision = persistCapabilityDecision(session.row.id, decision);
+      recordAuditEvent({
+        eventType: "capability.decision",
+        runtimeSessionId: session.row.id,
+        userId,
+        gardenId,
+        payload: {
+          decisionId: storedDecision.id,
+          mode: "knowledge",
+          implementationRequired: false,
+          decisionReason: decision.decisionReason,
+          decisionSource: decision.decisionSource,
+        },
       });
       markStatus(session, "busy");
       recordAuditEvent({
@@ -136,16 +170,22 @@ export async function POST(request: Request) {
           commands: resolved.invocations,
           modelId: engine.model.modelID,
           reasoningEffort: engine.variant,
+          capabilityDecisionId: storedDecision.id,
+          capabilityMode: decision.mode,
         },
       });
-      await getOpenHarnessGateway().sendMessage({
+      await gateway.sendMessage({
         openHarnessSessionId: session.openHarnessSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         agentName: session.agentName,
         text: resolved.text,
-        tools: resolved.tools,
-        system: systemContext,
+        tools: mergeCapabilityToolPolicy(decision, resolved.tools),
+        system: composeOpenHarnessSystemPrompt({
+          surface: "quartz_ai",
+          decision,
+          additional: systemContext,
+        }),
         model: engine.model,
         variant: engine.variant,
       });
@@ -177,15 +217,43 @@ export async function POST(request: Request) {
       );
     }
 
+    const decision = decideCapabilityMode({
+      surface: "quartz_ai",
+      userId,
+      requestedOutcome: text,
+      authorizedRoot: created.activeDirectory,
+    });
     const resolved = await resolveCommandMessage(
       userId,
       text,
       created.activeDirectory,
+      { mode: decision.mode, surface: "quartz_ai" },
     );
     appendRuntimeMessage({
       runtimeSessionId: created.row.id,
       role: "user",
       content: text,
+    });
+    const gateway = getOpenHarnessGateway();
+    await gateway.applyCapabilityDecision({
+      openHarnessSessionId: created.openHarnessSessionId,
+      workspaceKey: created.workspaceKey,
+      directory: created.activeDirectory,
+      decision,
+    });
+    const storedDecision = persistCapabilityDecision(created.row.id, decision);
+    recordAuditEvent({
+      eventType: "capability.decision",
+      runtimeSessionId: created.row.id,
+      userId,
+      gardenId,
+      payload: {
+        decisionId: storedDecision.id,
+        mode: "knowledge",
+        implementationRequired: false,
+        decisionReason: decision.decisionReason,
+        decisionSource: decision.decisionSource,
+      },
     });
     markStatus(created, "busy");
     recordAuditEvent({
@@ -201,16 +269,22 @@ export async function POST(request: Request) {
         commands: resolved.invocations,
         modelId: engine.model.modelID,
         reasoningEffort: engine.variant,
+        capabilityDecisionId: storedDecision.id,
+        capabilityMode: decision.mode,
       },
     });
-    await getOpenHarnessGateway().sendMessage({
+    await gateway.sendMessage({
       openHarnessSessionId: created.openHarnessSessionId,
       workspaceKey: created.workspaceKey,
       directory: created.activeDirectory,
       agentName: created.agentName,
       text: resolved.text,
-      tools: resolved.tools,
-      system: systemContext,
+      tools: mergeCapabilityToolPolicy(decision, resolved.tools),
+      system: composeOpenHarnessSystemPrompt({
+        surface: "quartz_ai",
+        decision,
+        additional: systemContext,
+      }),
       model: engine.model,
       variant: engine.variant,
     });

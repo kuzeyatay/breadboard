@@ -368,20 +368,51 @@
   .breadboard-ai-composer {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    padding: 0.65rem 0.85rem;
-    border-top: 1px solid var(--bb-ai-border);
+    gap: 0.55rem;
+    padding: 0.75rem 0.9rem 0.9rem;
+    border-top: 0;
+
+    .breadboard-ai-composer-shell {
+      display: flex;
+      align-items: flex-end;
+      gap: 0.35rem;
+      min-width: 0;
+      padding: 0.35rem 0.4rem 0.35rem 0.55rem;
+      border: 0;
+      border-radius: 999px;
+      background: #111821;
+      box-shadow:
+        8px 8px 18px rgba(0, 0, 0, 0.46),
+        -6px -6px 16px rgba(68, 87, 105, 0.2),
+        inset 1px 1px 1px rgba(255, 255, 255, 0.055),
+        inset -1px -1px 1px rgba(0, 0, 0, 0.28);
+      transition: box-shadow 180ms ease;
+
+      &:focus-within {
+        box-shadow:
+          0 0 0 2px rgba(95, 127, 142, 0.38),
+          7px 7px 16px rgba(0, 0, 0, 0.48),
+          -5px -5px 14px rgba(68, 87, 105, 0.22),
+          inset 1px 1px 1px rgba(255, 255, 255, 0.06),
+          inset -1px -1px 1px rgba(0, 0, 0, 0.28);
+      }
+    }
 
     .breadboard-ai-input {
-      width: 100%;
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 2.35rem;
+      max-height: 8rem;
       resize: none;
-      border-radius: 0.5rem;
-      border: 1px solid var(--bb-ai-border);
-      background: #0f141b;
+      border: 0;
+      border-radius: 0;
+      outline: 0;
+      background: transparent;
       color: var(--bb-ai-fg);
-      padding: 0.5rem 0.6rem;
+      padding: 0.5rem 0.3rem;
       font: inherit;
       font-size: 0.85rem;
+      line-height: 1.35;
     }
     .breadboard-ai-command-hub {
       max-height: 20rem;
@@ -394,6 +425,22 @@
       &[hidden] {
         display: none;
       }
+      .breadboard-ai-command-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.2rem 0.25rem 0.55rem;
+        font-size: 0.8rem;
+      }
+      .breadboard-ai-command-close {
+        width: 1.75rem;
+        height: 1.75rem;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: var(--bb-ai-muted);
+        font-size: 1rem;
+      }
       .breadboard-ai-command-search {
         box-sizing: border-box;
         width: 100%;
@@ -402,6 +449,29 @@
         background: #111827;
         color: var(--bb-ai-fg);
         padding: 0.45rem 0.55rem;
+      }
+      .breadboard-ai-command-tabs {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.2rem;
+        margin-top: 0.4rem;
+        padding: 0.2rem;
+        border-radius: 0.5rem;
+        background: #111827;
+
+        button {
+          border: 0;
+          border-radius: 0.4rem;
+          background: transparent;
+          color: var(--bb-ai-muted);
+          padding: 0.4rem;
+          font-size: 0.7rem;
+
+          &[aria-selected="true"] {
+            background: #1f2937;
+            color: var(--bb-ai-fg);
+          }
+        }
       }
       h4 {
         margin: 0.65rem 0.35rem 0.25rem;
@@ -443,11 +513,11 @@
     .breadboard-ai-composer-row {
       display: flex;
       align-items: center;
-      justify-content: flex-end;
-      gap: 0.5rem;
+      flex: 0 0 auto;
+      gap: 0.35rem;
     }
     .breadboard-ai-command-button {
-      margin-right: auto;
+      flex: 0 0 auto;
       font-family: monospace;
     }
     .breadboard-ai-intelligence {
@@ -471,15 +541,15 @@
     }
     button {
       padding: 0.35rem 0.85rem;
-      border-radius: 0.5rem;
-      border: 1px solid var(--bb-ai-border);
-      background: #111827;
+      border-radius: 999px;
+      border: 0;
+      background: transparent;
       color: var(--bb-ai-fg);
       cursor: pointer;
       font-size: 0.8rem;
 
       &:hover {
-        background: #1f2937;
+        background: rgba(255, 255, 255, 0.07);
       }
       &:disabled {
         opacity: 0.5;
@@ -489,7 +559,6 @@
     .breadboard-ai-send {
       background: var(--bb-ai-accent);
       color: #0b0f14;
-      border-color: var(--bb-ai-accent);
     }
   }
 }

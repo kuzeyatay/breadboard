@@ -1,9 +1,7 @@
 import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth-options";
-import type { CommandHubItem } from "@/lib/openharness/commands.ts";
-import { listPrompts } from "@/lib/openharness/prompts.ts";
-import { listApprovedSkills } from "@/lib/openharness/skills.ts";
+import { registryItemsForUser } from "@/lib/openharness/commands.ts";
 import { corsHeaders } from "@/lib/openharness/quartz-support.ts";
 import { apiErrorResponse, requireEnabled } from "@/lib/openharness/route-helpers.ts";
 
@@ -24,25 +22,20 @@ export async function GET(request: Request) {
   try {
     requireEnabled();
     const userId = await optionalUserId();
-    const skills: CommandHubItem[] = listApprovedSkills().map((skill) => ({ ...skill, kind: "skill", installed: true }));
-    const prompts: CommandHubItem[] = listPrompts(userId ?? -1).map((prompt) => ({
-      id: prompt.id,
-      kind: "prompt",
-      slug: prompt.slug,
-      name: prompt.title,
-      description: `${prompt.category} prompt`,
-      installed: true,
-      enabled: true,
-      healthy: true,
-      favorite: prompt.favorite,
-    }));
+    const items = registryItemsForUser(userId, {
+      mode: "knowledge",
+      surface: "quartz_ai",
+    });
+    // Public Quartz receives only bundled compatible skills. Private prompts
+    // and connections are included only for an authenticated reader, and no
+    // memory placeholder is fabricated when an adapter is absent.
     return NextResponse.json({
       groups: {
-        skills,
-        mcp: [{ id: "mcp:gbrain", kind: "mcp", slug: "gbrain", name: "GBrain", description: "Durable memory", installed: false, enabled: false, healthy: false, unavailableReason: "Not configured" } satisfies CommandHubItem],
-        prompts,
+        skills: items.filter((item) => item.kind === "skill"),
+        mcp: userId === null ? [] : items.filter((item) => item.kind === "mcp"),
+        prompts: userId === null ? [] : items.filter((item) => item.kind === "prompt"),
       },
-      runtime: { healthy: true },
+      capability: { mode: "knowledge", expiresAt: null, taskScoped: false },
     }, { headers: cors });
   } catch (error) {
     const response = apiErrorResponse(error);
