@@ -1,6 +1,6 @@
 ---
 name: find-skills
-description: Discover real candidate skills through the official Skills CLI adapter. Metadata-only; never installs, promotes, or executes.
+description: Discover real candidate skills through the authenticated skills.sh API adapter. Metadata-only; never installs, promotes, or executes.
 ---
 
 # Find skills

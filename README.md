@@ -343,7 +343,7 @@ This starts:
 ##### ChatMock
 ```bash
 cd chatmock
-python chatmock.py serve --port 8765 --reasoning-effort low --reasoning-summary none
+python chatmock.py serve --port 8765 --reasoning-effort low --reasoning-summary detailed --reasoning-compat legacy
 ```
 
 ##### Quartz

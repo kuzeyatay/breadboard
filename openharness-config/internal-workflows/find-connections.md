@@ -1,9 +1,7 @@
----
-name: breadboard-find-connections
-description: Find and explain connections between notes, concepts, or sections within a Breadboard garden using its knowledge graph. Use when a reader asks how two ideas relate or wants to discover related material.
----
-
 # Find connections
+
+Internal first-party workflow. This is an agent-profile instruction, not a
+public skills.sh catalog entry or an installable slash command.
 
 Procedure for surfacing meaningful relationships in a garden.
 

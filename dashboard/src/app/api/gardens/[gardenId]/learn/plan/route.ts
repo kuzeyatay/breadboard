@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { getLearnStatusSnapshot, runLearnPipeline } from "@/lib/learn";
-import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
+import { getLearnStatusSnapshot, LEARN_MODEL, runLearnPipeline } from "@/lib/learn";
+import { createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -47,7 +47,7 @@ export async function POST(
       client,
       contentPath,
       includedSourceIds,
-      model: typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL,
+      model: LEARN_MODEL,
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
       autoConfirmTopicMap: body.skipManualReview === true,

@@ -28,11 +28,13 @@ import {
   evidenceKindForTool,
   type EvidenceRecord,
 } from "./evidence.ts";
-import {
-  decideCapabilityMode,
-  mergeCapabilityToolPolicy,
-} from "./capability-policy.ts";
 import { composeOpenHarnessSystemPrompt } from "./system-prompts.ts";
+import {
+  prepareTurn,
+  mergeSelectedTools,
+  type PreparedTurn,
+} from "./dispatch-core.ts";
+import { listFilesystemGrants } from "./filesystem-grant-store.ts";
 
 type GardenChatPayload = {
   clusterSlug?: unknown;
@@ -99,12 +101,22 @@ export async function openGardenAgentChat(
         pageSlug: page?.slug,
         chatSessionId,
       });
-  const decision = decideCapabilityMode({
+  // Capability now comes from the requested outcome plus the user's real
+  // filesystem grants, not from a surface check. Garden Chat is no longer
+  // capped at knowledge tools: an authenticated user asking for an action they
+  // have authorized gets the same capability here as in the terminal.
+  const prepared = prepareTurn({
+    request: text,
+    priorRequests: messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content)
+      .slice(-6, -1),
     surface: "garden_chat",
     userId,
-    requestedOutcome: text,
-    authorizedRoot: session.activeDirectory,
+    grants: listFilesystemGrants(userId),
+    workspaceRoot: session.activeDirectory,
   });
+  const decision = prepared.decision;
   const resolved = await resolveCommandMessage(
     userId,
     text,
@@ -152,16 +164,24 @@ export async function openGardenAgentChat(
       commands: resolved.invocations,
       capabilityDecisionId: storedDecision.id,
       capabilityMode: decision.mode,
+      intendedOutcome: prepared.plan.intendedOutcome,
+      requiredCapabilities: prepared.plan.requiredCapabilities,
+      grantedCapabilities: prepared.grant.grantedCapabilities,
+      withheldCapabilities: prepared.grant.withheldCapabilities,
+      pendingPermissions: prepared.pendingPermissions.map((item) => item.id),
+      riskLevel: prepared.plan.riskLevel,
     },
   });
-  return legacyGardenEventStream(session, signal, () =>
+  return legacyGardenEventStream(session, signal, prepared, () =>
     gateway.sendMessage({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
       agentName: session.agentName,
       text: resolved.text,
-      tools: mergeCapabilityToolPolicy(decision, resolved.tools),
+      // The brokered map is authoritative. A selected MCP/skill tool may only
+      // narrow it, never widen it.
+      tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
       model: engine.model,
       variant: engine.variant,
       system: composeOpenHarnessSystemPrompt({
@@ -172,6 +192,7 @@ export async function openGardenAgentChat(
           chatSessionId,
           page,
           payload.selectedDocumentSlugs,
+          prepared,
         ),
       }),
     }),
@@ -208,17 +229,29 @@ function parseActivePage(
   return slug ? { slug, title } : null;
 }
 
+/**
+ * Surface context for the turn.
+ *
+ * This deliberately no longer asserts that shell, file, and repository
+ * capabilities are unavailable. That sentence became false once capability
+ * started coming from the task plan, and a prompt that misdescribes the
+ * runtime is exactly the failure mode to avoid — the agent would refuse work
+ * it was actually authorized to do. The capability set is stated from the
+ * brokered grant instead, so the prompt always matches the real tool map.
+ */
 function gardenTurnContext(
   gardenSlug: string,
   chatSessionId: number,
   page: { slug: string; title?: string } | null,
   selectedDocumentSlugs: unknown,
+  prepared: PreparedTurn,
 ): string {
   const selected = Array.isArray(selectedDocumentSlugs)
     ? selectedDocumentSlugs
         .filter((value): value is string => typeof value === "string")
         .slice(0, 12)
     : [];
+  const roots = prepared.grant.authorizedRoots;
   return [
     `Authorized garden: ${gardenSlug}`,
     `Breadboard chat session: ${chatSessionId}`,
@@ -228,16 +261,29 @@ function gardenTurnContext(
     selected.length
       ? `User-selected garden documents: ${selected.join(", ")}`
       : "",
-    "Garden context is authoritative for this surface. Repository, shell, Git, package, build, test, deployment, and direct file-mutation capabilities are unavailable.",
+    `Identified goal: ${prepared.plan.intendedOutcome}`,
+    `Capabilities active for this turn: ${
+      prepared.grant.grantedCapabilities.join(", ") || "conversation only"
+    }.`,
+    roots.length
+      ? `Approved local folders: ${roots
+          .map((root) => `${root.displayName} (${root.canonicalPath})`)
+          .join("; ")}.`
+      : "No local folders are approved for this turn.",
+    prepared.grant.withheldCapabilities.length
+      ? `Withheld pending the user's approval: ${prepared.grant.withheldCapabilities.join(", ")}. Breadboard has already shown the user a permission request; do not ask for approval in prose and do not restate the task.`
+      : "",
     "Published Garden content is changed only through typed Breadboard proposals.",
   ]
     .filter(Boolean)
     .join("\n");
 }
 
+
 function legacyGardenEventStream(
   session: AuthorizedRuntimeSession,
   requestSignal: AbortSignal,
+  prepared: PreparedTurn,
   sendMessage: () => Promise<void>,
 ): Response {
   const gateway = getOpenHarnessGateway();
@@ -271,6 +317,52 @@ function legacyGardenEventStream(
         fallback: false,
         sessionId: session.row.id,
       });
+      // Tell the client what this turn understood and what it may do, so the
+      // UI can show active work rather than a bare spinner.
+      emit({
+        type: "plan",
+        intendedOutcome: prepared.plan.intendedOutcome,
+        steps: prepared.plan.steps.map((step) => step.description),
+        capabilities: prepared.grant.grantedCapabilities,
+        riskLevel: prepared.plan.riskLevel,
+      });
+      // Missing authority is a request, not a refusal: the client renders an
+      // approval prompt and re-sends, and the same task continues.
+      for (const pending of prepared.pendingPermissions) {
+        emit({
+          type: "permission",
+          requestId: pending.id,
+          kind: pending.kind,
+          permission: pending.capability,
+          message: pending.message,
+          path: pending.path,
+          operations: pending.operations,
+        });
+        recordAuditEvent({
+          eventType: "permission.requested",
+          runtimeSessionId: session.row.id,
+          userId: session.row.user_id,
+          gardenId: session.row.garden_id,
+          payload: { permission: pending.capability, requestId: pending.id },
+        });
+      }
+      if (prepared.blocked) {
+        // Nothing in the plan can run yet. Do not prompt the model: a turn that
+        // cannot act must not produce prose that sounds like it acted.
+        emit({
+          type: "blocked",
+          reason: "awaiting_permission",
+          pending: prepared.pendingPermissions.map((item) => item.id),
+        });
+        markStatus(session, "idle");
+        // Nothing executed under this decision. It is abandoned rather than
+        // completed; approving the permission produces a fresh decision on the
+        // resumed turn.
+        revokeCapabilityDecision(session.row.id, "abandoned");
+        output.enqueue(encoder.encode("data: [DONE]\n\n"));
+        output.close();
+        return;
+      }
       try {
         let connected!: () => void;
         const ready = new Promise<void>((resolve) => {

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isYoloModeEnabled, useYoloMode } from "@/app/components/use-yolo-mode";
 import type { AssistantReasoningEffort } from "@/lib/assistant-reasoning";
+import type { ChatAttachment } from "@/lib/chat-attachments";
 import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
@@ -131,6 +132,7 @@ export interface UseAgentSessionResult {
       model?: string;
       reasoningEffort?: AssistantReasoningEffort;
       continuation?: SkillContinuation;
+      attachments?: ChatAttachment[];
     },
   ) => Promise<void>;
   respondToPermission: (
@@ -317,6 +319,13 @@ export function useAgentSession(
               commit(assistant);
               break;
             case "reasoning.status":
+              if (typeof payload.detail === "string" && payload.detail) {
+                assistant = {
+                  ...assistant,
+                  reasoning: `${assistant.reasoning ?? ""}${payload.detail}`,
+                };
+                commit(assistant);
+              }
               upsertActivity({
                 id: "reasoning",
                 kind: "reasoning",
@@ -483,6 +492,7 @@ export function useAgentSession(
         model?: string;
         reasoningEffort?: AssistantReasoningEffort;
         continuation?: SkillContinuation;
+        attachments?: ChatAttachment[];
       },
     ) => {
       const trimmed = text.trim();
@@ -563,6 +573,7 @@ export function useAgentSession(
               model: options?.model,
               reasoningEffort: options?.reasoningEffort,
               continuation: options?.continuation,
+              attachments: options?.attachments,
             }),
           },
         );

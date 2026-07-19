@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { LearnRepairPendingMapError, runLearnRepairOperation } from "@/lib/learn";
+import { LEARN_MODEL, LearnRepairPendingMapError, runLearnRepairOperation } from "@/lib/learn";
 import { InvalidLearnOperationRequestError, parseStartLearnOperationRequest } from "@/lib/learn-operation-mode";
-import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
+import { createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ export async function POST(
     }
     const { baseURL } = resolveChatmockBaseUrl(request);
     const client = createChatmockClient(baseURL);
-    const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : DEFAULT_MODEL;
+    const model = LEARN_MODEL;
     const result = await runLearnRepairOperation({
       gardenId: cluster.slug, userId, client, model, contentPath, request: operation,
     });

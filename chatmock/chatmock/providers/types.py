@@ -30,6 +30,10 @@ class ModelCall:
     system: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    # Per-request reasoning overrides. Council must preserve these through
+    # every seat and the chairman instead of falling back to server defaults.
+    reasoning_effort: Optional[str] = None
+    reasoning_summary: Optional[str] = None
     # Out-param: providers set this to the model's reasoning-summary trace (the
     # "thinking") when the upstream streams it, so the council can surface it.
     reasoning_out: Optional[str] = None

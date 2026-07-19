@@ -3,9 +3,10 @@ import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import {
   confirmLearningMap,
   getLearnStatusSnapshot,
+  LEARN_MODEL,
   runTextbookGeneration,
 } from "@/lib/learn";
-import { DEFAULT_MODEL, createChatmockClient } from "@/lib/knowledge";
+import { createChatmockClient } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -57,10 +58,7 @@ export async function POST(
         client,
         contentPath,
         confirmedLearningMapId: learningMap.id,
-        model:
-          typeof body.model === "string" && body.model.trim()
-            ? body.model.trim()
-            : DEFAULT_MODEL,
+        model: LEARN_MODEL,
         sourceOnly: body.sourceOnly !== false,
         includeSourceSnapshots: body.includeSourceSnapshots === true,
       });

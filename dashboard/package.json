@@ -9,11 +9,13 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --test --experimental-strip-types tests/*.test.mjs",
+    "sync:skills": "node --experimental-strip-types scripts/sync-skills-catalog.ts",
     "validate:garden": "node --experimental-strip-types ../scripts/validate-breadboard-garden.ts",
     "migrate:semantics": "node --experimental-strip-types ../scripts/migrate-garden-semantics.ts",
     "evaluate:retrieval": "node --experimental-strip-types ../scripts/evaluate-semantic-retrieval.ts"
   },
   "dependencies": {
+    "@vercel/oidc": "^3.8.0",
     "adm-zip": "^0.5.17",
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^12.9.0",

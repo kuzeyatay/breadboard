@@ -6,6 +6,14 @@ const terminal = fs.readFileSync(
   new URL("../src/app/components/openharness/dashboard-agent-terminal.tsx", import.meta.url),
   "utf8",
 );
+const runtime = fs.readFileSync(
+  new URL("../src/app/components/openharness/agent-runtime-panel.tsx", import.meta.url),
+  "utf8",
+);
+const agentSession = fs.readFileSync(
+  new URL("../src/app/components/openharness/use-agent-session.ts", import.meta.url),
+  "utf8",
+);
 
 test("OpenHarness terminal uses the original Breadboard terminal shell", () => {
   assert.match(terminal, /breadboard:knowledge-terminal-height/);
@@ -40,4 +48,14 @@ test("the restored shell retains OpenHarness runtime capabilities", () => {
   assert.match(terminal, /<SkillReviewPanel/);
   assert.match(terminal, /Review skills/);
   assert.match(terminal, /api\/openharness\/sessions\?surface=dashboard_terminal/);
+});
+
+test("the OpenHarness composer adds documents immediately after the slash control", () => {
+  assert.match(terminal, /accept=\{CHAT_ATTACHMENT_ACCEPT\}/);
+  assert.match(terminal, /extractChatAttachments\(files\)/);
+  assert.match(terminal, /onAddDocuments=\{\(\) => attachmentInputRef\.current\?\.click\(\)\}/);
+  assert.match(terminal, /attachments=\{chatAttachments\}/);
+  assert.match(runtime, /canSubmit=\{Boolean\(input\.trim\(\) \|\| attachments\?\.length\)\}/);
+  assert.match(runtime, /onAddDocuments=\{onAddDocuments\}/);
+  assert.match(agentSession, /attachments: options\?\.attachments/);
 });

@@ -1,9 +1,7 @@
----
-name: breadboard-generate-quiz
-description: Generate a grounded quiz from a Breadboard page or garden section, with questions and answer keys drawn only from the garden's own content. Use when a reader asks to be quizzed or to self-test.
----
-
 # Generate a quiz
+
+Internal first-party workflow. This is an agent-profile instruction, not a
+public skills.sh catalog entry or an installable slash command.
 
 Procedure for producing a grounded self-test.
 

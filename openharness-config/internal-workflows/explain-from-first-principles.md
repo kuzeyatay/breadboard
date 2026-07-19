@@ -1,9 +1,7 @@
----
-name: breadboard-explain-from-first-principles
-description: Explain a concept from a Breadboard garden starting from its most basic assumptions and building up, grounded in the garden's own sources. Use when a reader asks to understand something deeply or "from scratch".
----
-
 # Explain from first principles
+
+Internal first-party workflow. This is an agent-profile instruction, not a
+public skills.sh catalog entry or an installable slash command.
 
 Procedure for grounded, bottom-up explanation using a garden's material.
 

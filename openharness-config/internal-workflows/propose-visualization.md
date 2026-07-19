@@ -1,9 +1,7 @@
----
-name: breadboard-propose-visualization
-description: Draft and submit a typed proposal for an interactive visualization on a Breadboard page. Produces a reviewable proposal, never a direct publish. Use when a concept would be clearer with a visual.
----
-
 # Propose a visualization
+
+Internal first-party workflow. This is an agent-profile instruction, not a
+public skills.sh catalog entry or an installable slash command.
 
 Procedure for proposing an interactive visualization.
 

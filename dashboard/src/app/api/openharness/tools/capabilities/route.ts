@@ -3,10 +3,12 @@ import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/
 import { tokenAllows, verifyCapabilityToken } from "@/lib/openharness/capability-token.ts";
 import { getRuntimeSessionById, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 import {
-  searchRegistry,
+  classifySkill,
   type CapabilityGap,
   type SkillPermission,
 } from "@/lib/openharness/skills.ts";
+import { SkillsShClient } from "@/lib/openharness/skills-sh-client.ts";
+import { getSkillsCatalogStore } from "@/lib/openharness/skills-catalog-store.ts";
 import { capabilityForInternalToolRequest } from "@/lib/openharness/tool-service-auth.ts";
 
 export const dynamic = "force-dynamic";
@@ -37,14 +39,48 @@ export async function POST(request: Request) {
     if (action === "capability_search") {
       const query = typeof args.query === "string" ? args.query.trim().slice(0, 200) : "";
       if (!query) throw new ApiError(400, "query_required", "A capability query is required.");
-      const candidates = await searchRegistry(query);
+      let stale = false;
+      let values: Array<{
+        id: string; source: string; slug: string; name: string; installs: number;
+        installUrl: string | null; url: string | null;
+      }>;
+      try {
+        values = await new SkillsShClient().search(query, 100);
+      } catch {
+        stale = true;
+        values = getSkillsCatalogStore().list({ query, page: 0, perPage: 100 }).skills.map((skill) => ({
+          id: skill.upstreamId,
+          source: skill.source,
+          slug: skill.slug,
+          name: skill.name,
+          installs: skill.installs,
+          installUrl: skill.installUrl,
+          url: skill.pageUrl,
+        }));
+      }
+      const candidates = values.map((skill) => ({
+        id: skill.id,
+        upstreamId: skill.id,
+        name: skill.slug,
+        package: `${skill.source}@${skill.slug}`,
+        publisher: skill.source.split("/")[0],
+        repository: skill.source,
+        source: skill.installUrl ?? skill.source,
+        detailsUrl: skill.url ?? `https://skills.sh/${skill.id}`,
+        installs: String(skill.installs),
+        description: "",
+        installCommand: `npx skills add ${skill.installUrl ?? skill.source} --skill ${skill.slug}`,
+        requestedPermissions: [],
+        provider: stale ? "cache" : "api",
+        classification: classifySkill({ name: skill.name, repository: skill.source }),
+      }));
       recordAuditEvent({
         eventType: "skill.search",
         runtimeSessionId: session.id,
         userId: session.user_id,
-        payload: { query, resultCount: candidates.length, delegatedTo: "breadboard-capability-scout" },
+        payload: { query, resultCount: candidates.length, delegatedTo: "breadboard-capability-scout", provider: stale ? "last-known-good" : "skills.sh/api/v1", stale },
       });
-      return NextResponse.json({ candidates });
+      return NextResponse.json({ candidates, stale, provider: stale ? "last-known-good" : "skills.sh/api/v1" });
     }
 
     const requiredPermissions = Array.isArray(args.requiredPermissions)

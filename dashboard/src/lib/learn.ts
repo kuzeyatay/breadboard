@@ -385,6 +385,14 @@ interface CouncilCallResult {
   councilMode?: string;
 }
 
+/** Learn is an intentionally fixed ChatMock Council workload. It must not
+ * inherit the interactive assistant's currently selected model. */
+export const LEARN_MODEL = "gpt-5.6-sol";
+export const LEARN_REASONING = {
+  effort: "high",
+  summary: "detailed",
+} as const;
+
 type CouncilJsonResult = CouncilCallResult & { parsed: unknown | null };
 
 interface GeneratedPageRecord {
@@ -1742,6 +1750,7 @@ async function callCouncilText({
     withCouncil(
       {
         model,
+        reasoning: LEARN_REASONING,
         messages: [
           { role: "system" as const, content: system },
           { role: "user" as const, content: user },
@@ -1963,9 +1972,16 @@ async function callPlanningJsonWithRetry({
 }
 
 function errorMessage(error: unknown, fallback = "Request failed"): string {
-  if (error instanceof Error && error.message.trim()) return error.message.trim();
-  if (typeof error === "string" && error.trim()) return error.trim();
-  return fallback;
+  const message =
+    error instanceof Error && error.message.trim()
+      ? error.message.trim()
+      : typeof error === "string" && error.trim()
+        ? error.trim()
+        : fallback;
+  if (/^(connection error\.?|fetch failed)$/i.test(message) || /\beconnrefused\b/i.test(message)) {
+    return "ChatMock is not connected. Start or restart ChatMock on port 8765, then retry Learn.";
+  }
+  return message;
 }
 
 function errorField(error: unknown, field: "name" | "code" | "status"): string {
@@ -3140,7 +3156,7 @@ export async function runLearnPlanning({
       }
       throw new LearnCancelledError();
     }
-    const message = error instanceof Error ? error.message : "Learn planning failed";
+    const message = errorMessage(error, "Learn planning failed");
     const failedJob = getLatestLearnJob(gardenId);
     const lastInternalStep = failedJob?.id === job.id ? failedJob.currentStep.trim() : "";
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
@@ -7133,7 +7149,7 @@ export async function runTextbookGeneration({
       }
       throw new LearnCancelledError();
     }
-    const message = error instanceof Error ? error.message : "Lesson generation failed";
+    const message = errorMessage(error, "Lesson generation failed");
     const failedJob = getLatestLearnJob(gardenId);
     const lastInternalStep = failedJob?.id === job.id ? failedJob.currentStep.trim() : "";
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
@@ -7325,7 +7341,7 @@ export async function runLearnRepairOperation({
     if (isLearnCancellation(job.id, error)) {
       throw new LearnCancelledError();
     }
-    const raw = error instanceof Error ? error.message : String(error);
+    const raw = errorMessage(error, "Learn repair failed");
     const message = raw.length > 700 ? `${raw.slice(0, 697)}...` : raw;
     appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_failed", { jobId: job.id, error: message });
     updateLearnJob(job.id, { status: "failed", currentStep: "Repair stopped with remaining blockers", error: message });

@@ -1,4 +1,5 @@
 import { decideCapabilityMode, type CapabilityDecision } from "./capability-policy.ts";
+import { leastPrivilegeDecision } from "./dispatch-core.ts";
 import { getOpenHarnessGateway } from "./gateway.ts";
 import {
   getActiveCapabilityDecision,
@@ -40,12 +41,7 @@ export function scheduleCapabilityExpiry(
         openHarnessSessionId: session.openHarnessSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
-        decision: decideCapabilityMode({
-          surface: session.row.surface,
-          userId: session.row.user_id,
-          requestedOutcome: "Resume default knowledge work.",
-          authorizedRoot: session.activeDirectory,
-        }),
+        decision: leastPrivilegeDecision(session.activeDirectory),
       });
       recordAuditEvent({
         eventType: "capability.expired",

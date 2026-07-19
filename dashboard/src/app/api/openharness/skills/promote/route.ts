@@ -11,9 +11,11 @@ import {
   promoteSkill,
   rejectQuarantine,
   inspectQuarantine,
+  canonicalSkillHash,
   type SkillAvailableEvent,
   type SkillPermission,
 } from "@/lib/openharness/skills.ts";
+import { getSkillsCatalogStore } from "@/lib/openharness/skills-catalog-store.ts";
 import {
   getLatestCapabilityGap,
   recordAuditEvent,
@@ -37,7 +39,13 @@ export async function POST(request: Request) {
     if (!decision) throw new ApiError(400, "invalid_decision", "decision must be promote or reject.");
 
     if (decision === "reject") {
+      const report = inspectQuarantine(name);
       rejectQuarantine(name);
+      if (report.upstreamId) {
+        const store = getSkillsCatalogStore();
+        const existing = store.get(report.upstreamId);
+        if (existing && existing.installationStatus !== "installed") store.markRemoved(report.upstreamId);
+      }
       recordSkillDecision({ skillName: name, decision: "rejected", decidedBy: userId });
       recordAuditEvent({ eventType: "skill.rejected", userId, payload: { name } });
       return NextResponse.json({ name, status: "rejected" });
@@ -81,13 +89,28 @@ export async function POST(request: Request) {
             "breadboard-quartz",
             "breadboard-document",
           ];
+    const store = getSkillsCatalogStore();
+    const catalogSkill = report.upstreamId ? store.get(report.upstreamId) : null;
+    const isApprovedUpdate = Boolean(
+      catalogSkill?.approvedHash &&
+      report.exactVersion &&
+      catalogSkill.approvedHash !== report.exactVersion,
+    );
     const result = promoteSkill(name, {
-      overwrite: Boolean(body.overwrite),
+      overwrite: Boolean(body.overwrite) || isApprovedUpdate,
       approvedAgents,
       approvedPermissions,
       classificationOverride,
       reviewer: userId,
     });
+    if (report.upstreamId && report.exactVersion) {
+      store.markInstalled({
+        upstreamId: report.upstreamId,
+        approvedHash: report.exactVersion,
+        localHash: canonicalSkillHash(result.report.fileHashes),
+        installedPath: result.promotedPath,
+      });
+    }
     recordSkillDecision({
       skillName: report.name,
       decision: "promoted",
@@ -110,6 +133,7 @@ export async function POST(request: Request) {
       payload: {
         package: result.report.package,
         exactVersion: result.report.exactVersion,
+        upstreamId: result.report.upstreamId,
         approvedPermissions,
         classification: result.report.classification,
       },

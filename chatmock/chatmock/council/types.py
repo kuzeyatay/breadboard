@@ -80,6 +80,8 @@ class CouncilInput:
     requested_model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    reasoning_effort: Optional[str] = None
+    reasoning_summary: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.user_prompt:
@@ -168,6 +170,7 @@ class CouncilRun:
     messages: List[ChatMessage]
     council_mode: str
     final_answer: str = ""
+    reasoning_summary: str = ""
     garden_id: Optional[str] = None
     page_id: Optional[str] = None
     task_type: Optional[str] = None
@@ -234,6 +237,7 @@ class CouncilRun:
             "reviews": [r.to_dict() for r in self.reviews],
             "aggregateRanking": self.aggregate_ranking.to_dict() if self.aggregate_ranking else None,
             "finalAnswer": self.final_answer,
+            "reasoningSummary": self.reasoning_summary or None,
             "diagnostics": self.diagnostics or None,
             "usage": {
                 "inputTokens": usage.input_tokens,
@@ -255,6 +259,7 @@ class CouncilRun:
             "reviews": [r.to_dict() for r in self.reviews],
             "aggregateRanking": self.aggregate_ranking.to_dict() if self.aggregate_ranking else None,
             "finalAnswer": self.final_answer,
+            "reasoningSummary": self.reasoning_summary or None,
         }
 
 

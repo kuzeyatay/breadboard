@@ -1,14 +1,12 @@
----
-name: breadboard-propose-page-revision
-description: Draft and submit a typed proposal to revise a Breadboard page. Never edits published markdown directly — produces a reviewable proposal. Use when a reader identifies a mistake or improvement.
----
-
 # Propose a page revision
+
+Internal first-party workflow. This is an agent-profile instruction, not a
+public skills.sh catalog entry or an installable slash command.
 
 Procedure for proposing (never applying) a page change.
 
 1. Confirm the issue: retrieve the page with `garden_get_page` and trace the
-   questionable claim to its source (see `breadboard-trace-source`).
+   questionable claim to its source using the internal source-tracing workflow.
 2. Validate the target with `garden_run_proposal_validation` to confirm the page
    exists and a revision (rather than a new note) is appropriate.
 3. Draft the revision. Prepare:

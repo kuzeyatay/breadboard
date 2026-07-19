@@ -1,9 +1,7 @@
----
-name: breadboard-trace-source
-description: Trace a statement or claim on a Breadboard page back to the original source document and anchor it cites. Use when a reader asks "where does this come from?" or wants to verify a claim.
----
-
 # Trace to source
+
+Internal first-party workflow. This is an agent-profile instruction, not a
+public skills.sh catalog entry or an installable slash command.
 
 Procedure for grounding a claim in its original source.
 
@@ -14,6 +12,6 @@ Procedure for grounding a claim in its original source.
    (page/section), and the exact excerpt that supports (or fails to support) the
    claim.
 4. If the claim is not supported by any cited source, say so plainly and suggest
-   proposing a correction with `breadboard-propose-page-revision`.
+   proposing a correction through the internal page-revision workflow.
 
 Always cite the specific source anchor, not just the garden.

@@ -1,9 +1,7 @@
----
-name: breadboard-debug-dashboard
-description: Debug the Breadboard Next.js dashboard — locate a failing route/component, reproduce with a focused test or dev run, and propose a fix. Terminal-only; requires repo access and permissioned commands.
----
-
 # Debug the dashboard
+
+Internal first-party workflow. This is an agent-profile instruction, not a
+public skills.sh catalog entry or an installable slash command.
 
 Procedure for diagnosing a Breadboard dashboard issue. This is a terminal-only
 skill; it uses repo inspection and permissioned commands.

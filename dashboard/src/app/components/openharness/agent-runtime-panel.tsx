@@ -9,7 +9,9 @@
 
 import { useEffect, useRef } from "react";
 import ChatMarkdown from "@/app/components/chat-markdown";
-import AssistantComposer from "@/app/components/assistant-composer";
+import AssistantComposer, {
+  type ComposerAttachment,
+} from "@/app/components/assistant-composer";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import ActivityPanel from "./activity-panel";
 import {
@@ -43,6 +45,12 @@ interface Props {
   onModelChange?: (model: string) => void;
   reasoningEffort?: AssistantReasoningEffort;
   onReasoningEffortChange?: (effort: AssistantReasoningEffort) => void;
+  disabled?: boolean;
+  onAddDocuments?: () => void;
+  isAddingDocuments?: boolean;
+  attachments?: ComposerAttachment[];
+  onRemoveAttachment?: (index: number) => void;
+  statusMessage?: string;
   compact?: boolean;
   sessionId?: number | null;
   surface?: OpenHarnessSurface;
@@ -67,6 +75,12 @@ export default function AgentRuntimePanel({
   onModelChange,
   reasoningEffort,
   onReasoningEffortChange,
+  disabled,
+  onAddDocuments,
+  isAddingDocuments,
+  attachments,
+  onRemoveAttachment,
+  statusMessage,
   compact,
   sessionId,
   surface = "dashboard_terminal",
@@ -173,13 +187,19 @@ export default function AgentRuntimePanel({
           onChange={onInputChange}
           onSubmit={onSubmit}
           placeholder={placeholder ?? "Ask the agent…"}
+          disabled={disabled || streaming}
           isSending={streaming}
-          canSubmit={Boolean(input.trim())}
+          canSubmit={Boolean(input.trim() || attachments?.length)}
           model={model ?? ""}
           models={models ?? []}
           onModelChange={onModelChange ?? (() => undefined)}
           reasoningEffort={reasoningEffort ?? DEFAULT_ASSISTANT_REASONING_EFFORT}
           onReasoningEffortChange={onReasoningEffortChange ?? (() => undefined)}
+          onAddDocuments={onAddDocuments}
+          isAddingDocuments={isAddingDocuments}
+          attachments={attachments}
+          onRemoveAttachment={onRemoveAttachment}
+          statusMessage={statusMessage}
           capabilitySessionId={sessionId}
           capabilitySurface={surface}
         />

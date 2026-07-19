@@ -40,6 +40,12 @@ test("readJsonBody rejects oversized actual body", async () => {
   await assert.rejects(readJsonBody(jsonRequest(big)), (err) => err instanceof ApiError && err.status === 413);
 });
 
+test("readJsonBody supports a route-specific authenticated upload limit", async () => {
+  const body = { text: "a".repeat(MAX_REQUEST_BYTES + 10) };
+  const parsed = await readJsonBody(jsonRequest(body), MAX_REQUEST_BYTES * 2);
+  assert.equal(parsed.text.length, body.text.length);
+});
+
 test("requireString validates presence and length", () => {
   assert.equal(requireString("ok", "field"), "ok");
   assert.throws(() => requireString("", "field"), (err) => err instanceof ApiError);

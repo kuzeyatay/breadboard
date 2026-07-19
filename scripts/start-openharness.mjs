@@ -39,6 +39,41 @@ const env = {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS || "true",
 };
 
+// Reuse an already-running instance instead of letting Bun fail to bind the
+// port and die with an opaque ServeError (mirrors the Scriberr launcher).
+async function probeExistingServer() {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
+      headers: {
+        Authorization: `Basic ${Buffer.from(
+          `${env.OPENCODE_SERVER_USERNAME}:${password}`,
+        ).toString("base64")}`,
+      },
+      signal: AbortSignal.timeout(2_500),
+    });
+    return response.status;
+  } catch {
+    return null; // Nothing answering HTTP — the port is presumably free.
+  }
+}
+
+const existingStatus = await probeExistingServer();
+if (existingStatus === 200) {
+  console.log(
+    `[openharness] Already running and healthy on 127.0.0.1:${port} — reusing it.`,
+  );
+  process.exit(0);
+}
+if (existingStatus !== null) {
+  console.error(
+    `[openharness] Port ${port} is already in use (the existing server answered HTTP ${existingStatus}).`,
+  );
+  console.error(
+    "[openharness] Stop the stale or differently-configured server (or another service on this port), or set OPENHARNESS_PORT to a free port, then retry.",
+  );
+  process.exit(1);
+}
+
 const bunCmd = process.platform === "win32" ? "bun.exe" : "bun";
 const child = spawn(
   bunCmd,

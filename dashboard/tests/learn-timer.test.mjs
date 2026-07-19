@@ -186,7 +186,7 @@ test("collapsed Learn indicator expires two minutes after a non-loading state", 
   );
 });
 
-test("failed Learn jobs expose scoped repair and a separate full rebuild action", () => {
+test("failed Learn jobs choose retry or scoped repair from the current garden state", () => {
   const workspaceSource = fs.readFileSync(
     new URL(
       "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -197,13 +197,17 @@ test("failed Learn jobs expose scoped repair and a separate full rebuild action"
 
   assert.match(
     workspaceSource,
-    /showPrimaryAction =[\s\S]*?status === "failed" \|\| status === "cancelled"/,
+    /showPrimaryAction =[\s\S]*?status === "failed"[\s\S]*?status === "cancelled"/,
+  );
+  assert.match(
+    workspaceSource,
+    /shouldRepairFailedJob =\s*status === "failed" && hasExistingLearnContent/,
   );
   assert.match(
     workspaceSource,
     /async function handleRepairIssues\(\)[\s\S]*?postLearnAction\("regenerate", \{ mode: "repair" \}\)/,
   );
-  assert.match(workspaceSource, /status === "failed"[\s\S]*?"Repair issues"/);
+  assert.match(workspaceSource, /status === "failed"[\s\S]*?"Retry Learn"/);
   assert.match(workspaceSource, /endpoint === "regenerate"[\s\S]*?unaffected pages were preserved/);
   assert.match(workspaceSource, /handleFullRebuild[\s\S]*?forceFullRebuild: true/);
 });
@@ -227,7 +231,10 @@ test("Learn failures stay in the panel without opening a dialog or toast", () =>
   assert.ok(catchStart >= 0 && catchEnd > catchStart);
   assert.doesNotMatch(workspaceSource, /LearnErrorDialog/);
   assert.doesNotMatch(quartzAssistantSource, /LearnErrorDialog|learn-error-dismissal/);
-  assert.match(workspaceSource, /status === "failed" && job\?\.error[\s\S]*?\{job\.error\}/);
+  assert.match(
+    workspaceSource,
+    /status === "failed" && job\?\.error[\s\S]*?displayLearnError\(job\.error\)/,
+  );
   assert.match(
     learnActionCatch,
     /if \(isCancel \|\| endpoint === "clear"\) \{[\s\S]*?addToast\(message\)/,
@@ -280,7 +287,7 @@ test("cancelled Learn jobs recover according to the current garden state", () =>
 
   assert.match(
     workspaceSource,
-    /showPrimaryAction =[\s\S]*?status === "failed" \|\| status === "cancelled"/,
+    /showPrimaryAction =[\s\S]*?status === "failed"[\s\S]*?status === "cancelled"/,
   );
   const primaryStart = workspaceSource.indexOf("async function handleLearnPrimary()");
   const primaryEnd = workspaceSource.indexOf("async function handleConfirmAndGenerate()", primaryStart);
@@ -300,7 +307,7 @@ test("cancelled Learn jobs recover according to the current garden state", () =>
   assert.match(workspaceSource, /status === "cancelled"[\s\S]*?"Repair issues"[\s\S]*?"Generate"/);
   assert.match(
     workspaceSource,
-    /status === "complete" \|\| status === "failed" \|\| status === "cancelled"[\s\S]*?Rebuild entire garden/,
+    /hasExistingLearnContent &&[\s\S]*?status === "complete"[\s\S]*?status === "failed"[\s\S]*?status === "cancelled"[\s\S]*?Rebuild entire garden/,
   );
 
   const assistantSource = fs.readFileSync(

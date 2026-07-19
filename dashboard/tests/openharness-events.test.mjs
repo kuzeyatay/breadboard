@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  createOpenHarnessEventNormalizationState,
   normalizeOpenHarnessEvent,
   extractSessionId,
   encodeSseEvent,
@@ -33,11 +34,46 @@ test("maps reasoning deltas to reasoning.status", () => {
     "s1",
   );
   assert.equal(event?.type, "reasoning.status");
-  assert.equal(
-    event?.payload.detail,
-    undefined,
-    "private reasoning text must not reach the browser",
+  assert.equal(event?.payload.detail, "thinking...");
+});
+
+test("keeps structured reasoning-part deltas out of assistant answer text", () => {
+  const state = createOpenHarnessEventNormalizationState();
+  const started = normalizeOpenHarnessEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          id: "reasoning-1",
+          sessionID: "s1",
+          type: "reasoning",
+          text: "",
+          time: { start: 1 },
+        },
+      },
+    },
+    "s1",
+    state,
   );
+  assert.equal(started?.type, "reasoning.status");
+
+  const summary = normalizeOpenHarnessEvent(
+    {
+      type: "message.part.delta",
+      properties: {
+        sessionID: "s1",
+        messageID: "m1",
+        partID: "reasoning-1",
+        field: "text",
+        delta: "Checking the relevant sources.",
+      },
+    },
+    "s1",
+    state,
+  );
+  assert.equal(summary?.type, "reasoning.status");
+  assert.equal(summary?.payload.detail, "Checking the relevant sources.");
 });
 
 test("drops events belonging to a different session", () => {

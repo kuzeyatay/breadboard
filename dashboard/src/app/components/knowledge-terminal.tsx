@@ -568,12 +568,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
             </svg>
           </button>
-          <span
-            style={{ animationDelay: '130ms' }}
-            className={`${headerItemAnim} font-mono text-sm font-medium text-[#5f7f8e]`}
-          >
-            {'B'}
-          </span>
           <div className="min-w-0">
             <p
               style={{ animationDelay: '210ms' }}

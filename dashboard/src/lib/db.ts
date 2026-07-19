@@ -398,6 +398,32 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_openharness_mcp_connections_user
     ON openharness_mcp_connections(user_id, enabled, updated_at DESC);
+
+  -- Persistent, per-user grants over real local folders. A grant is the ONLY
+  -- way OpenHarness may touch a path outside its ephemeral workspace. Paths are
+  -- stored canonicalized (and symlink-resolved) by the server; a path appearing
+  -- in a chat message never implies a grant.
+  CREATE TABLE IF NOT EXISTS openharness_filesystem_grants (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    canonical_path TEXT    NOT NULL,
+    display_name   TEXT    NOT NULL,
+    perm_read      INTEGER NOT NULL DEFAULT 1,
+    perm_create    INTEGER NOT NULL DEFAULT 0,
+    perm_modify    INTEGER NOT NULL DEFAULT 0,
+    perm_move      INTEGER NOT NULL DEFAULT 0,
+    perm_delete    INTEGER NOT NULL DEFAULT 0,
+    perm_execute   INTEGER NOT NULL DEFAULT 0,
+    -- One-time grants are consumed when the turn that requested them ends.
+    scope          TEXT    NOT NULL DEFAULT 'remembered'
+                   CHECK (scope IN ('remembered','one_time')),
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    revoked_at     TEXT,
+    UNIQUE(user_id, canonical_path)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_openharness_fs_grants_user
+    ON openharness_filesystem_grants(user_id, revoked_at);
 `);
 
 ensureColumn("openharness_runtime_sessions", "active_directory", "active_directory TEXT");

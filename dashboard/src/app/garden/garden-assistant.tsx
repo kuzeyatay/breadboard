@@ -56,6 +56,20 @@ interface ChatSession {
   messages: ChatMessage[];
 }
 
+/**
+ * A filesystem access request raised by the server mid-turn. `originalText` and
+ * `history` are kept so approving resumes the same task automatically — the
+ * user should never have to retype the request they already made.
+ */
+interface PermissionRequest {
+  requestId: string;
+  message: string;
+  path?: string;
+  operations: string[];
+  originalText: string;
+  history: ChatMessage[];
+}
+
 interface GraphStats {
   documents: number;
   topics: number;
@@ -365,6 +379,8 @@ export default function GardenAssistant({
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
+  const [approvingPermission, setApprovingPermission] = useState(false);
   const agentActivity = useLegacyAgentActivity();
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
@@ -409,10 +425,53 @@ export default function GardenAssistant({
   }, [activeClusterSlug]);
 
   useEffect(() => {
-    const sessions = loadQuartzChatSessions(activeClusterSlug);
-    setChatSessions(sessions);
-    setActiveChatId(sessions[0]?.id ?? null);
-    setMessages(sessions[0]?.messages ?? []);
+    // The local cache is a fast first paint only. Server-side chat sessions are
+    // authoritative: a cached entry whose id no longer exists (notably the
+    // legacy `Date.now()` ids this component used to mint) can never be
+    // addressed by the OpenHarness runtime, so it is dropped on reconcile.
+    const cached = loadQuartzChatSessions(activeClusterSlug);
+    setChatSessions(cached);
+    setActiveChatId(cached[0]?.id ?? null);
+    setMessages(cached[0]?.messages ?? []);
+
+    if (!activeClusterSlug) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(
+          `/api/chat-sessions?clusterSlug=${encodeURIComponent(activeClusterSlug)}`,
+        );
+        if (!response.ok) return;
+        const body = (await response.json()) as { sessions?: ChatSession[] };
+        const serverSessions = body.sessions;
+        if (cancelled || !Array.isArray(serverSessions)) return;
+
+        const serverIds = new Set(serverSessions.map((session) => session.id));
+        setChatSessions((previous) => {
+          // Keep cached transcripts for sessions the server still knows about,
+          // so an in-flight reply is not lost by the reconcile.
+          const cachedById = new Map(previous.map((session) => [session.id, session]));
+          const reconciled = serverSessions
+            .map((session) => ({
+              ...session,
+              messages: session.messages?.length
+                ? session.messages
+                : (cachedById.get(session.id)?.messages ?? []),
+            }))
+            .slice(0, MAX_QUARTZ_CHAT_SESSIONS);
+          persistQuartzChatSessions(activeClusterSlug, reconciled);
+          return reconciled;
+        });
+        setActiveChatId((current) =>
+          current !== null && serverIds.has(current) ? current : (serverSessions[0]?.id ?? null),
+        );
+      } catch {
+        /* offline: the cached view stays until the next successful reconcile */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [activeClusterSlug]);
 
   useEffect(() => {
@@ -550,25 +609,44 @@ export default function GardenAssistant({
     });
   }
 
+  /**
+   * Create a real server-side chat session.
+   *
+   * This previously minted a local `Date.now()` id and stored it only in
+   * localStorage. The OpenHarness garden adapter authorizes the incoming
+   * `chatSessionId` against `chat_sessions` for (id, user_id, cluster_id), so a
+   * timestamp id could never match a row and every turn failed with
+   * `chat_session_not_found` before reaching the runtime. The id must be
+   * server-issued for the session to be addressable at all.
+   */
   async function createChatSession(title = 'New chat'): Promise<ChatSession | null> {
     if (!activeClusterSlug) return null;
-    const now = new Date().toISOString();
-    const session: ChatSession = {
-      id: Date.now(),
-      title,
-      created_at: now,
-      updated_at: now,
-      isOwn: true,
-      messages: [],
-    };
-    setChatSessions((previous) => {
-      const sessions = [session, ...previous].slice(0, MAX_QUARTZ_CHAT_SESSIONS);
-      persistQuartzChatSessions(activeClusterSlug, sessions);
-      return sessions;
-    });
-    setActiveChatId(session.id);
-    setMessages([]);
-    return session;
+    try {
+      const response = await fetch('/api/chat-sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clusterSlug: activeClusterSlug, title }),
+      });
+      if (!response.ok) return null;
+      const body = (await response.json()) as { session?: ChatSession };
+      const created = body.session;
+      if (!created || typeof created.id !== 'number') return null;
+
+      const session: ChatSession = { ...created, isOwn: true, messages: [] };
+      setChatSessions((previous) => {
+        const sessions = [session, ...previous.filter((entry) => entry.id !== session.id)].slice(
+          0,
+          MAX_QUARTZ_CHAT_SESSIONS,
+        );
+        persistQuartzChatSessions(activeClusterSlug, sessions);
+        return sessions;
+      });
+      setActiveChatId(session.id);
+      setMessages([]);
+      return session;
+    } catch {
+      return null;
+    }
   }
 
   async function persistChatSession(sessionId: number, nextMessages: ChatMessage[], title?: string) {
@@ -646,6 +724,7 @@ export default function GardenAssistant({
 
     let activityStarted = false;
     let agentFailed = false;
+    let pendingApproval: PermissionRequest | null = null;
     try {
       if (activeMarkdown && wantsOpenMarkdownEdit(text) && pendingAttachments.length === 0) {
         const response = await fetch('/api/markdown-edit', {
@@ -825,6 +904,38 @@ export default function GardenAssistant({
               assistantMessage = { ...assistantMessage, verification: event.verification as VerificationSummary };
               updateAssistant();
             }
+            if (event.type === 'plan' && typeof event.intendedOutcome === 'string') {
+              // Show the identified goal while work is in flight, so a
+              // multi-step task reads as active work rather than a stall.
+              assistantMessage = {
+                ...assistantMessage,
+                thinking: `${assistantMessage.thinking ?? ''}\n${event.intendedOutcome}`.trim(),
+              };
+              updateAssistant();
+            }
+            if (event.type === 'permission' && event.kind === 'filesystem') {
+              // A missing grant is a request, not a refusal. Capture it so the
+              // user can approve inline; `text` is retained so the same task
+              // resumes without the user retyping it.
+              pendingApproval = {
+                requestId: String(event.requestId ?? ''),
+                message: String(event.message ?? 'Additional access is required.'),
+                path: typeof event.path === 'string' ? event.path : undefined,
+                operations: Array.isArray(event.operations)
+                  ? (event.operations as string[])
+                  : [],
+                originalText: text,
+                history,
+              };
+            }
+            if (event.type === 'blocked' && pendingApproval) {
+              setPermissionRequest(pendingApproval);
+              assistantMessage = {
+                ...assistantMessage,
+                content: assistantMessage.content || pendingApproval.message,
+              };
+              updateAssistant();
+            }
           } catch {
             // Ignore malformed stream fragments and keep reading.
           }
@@ -848,6 +959,49 @@ export default function GardenAssistant({
     } finally {
       if (activityStarted) agentActivity.finish(agentFailed);
       setIsStreaming(false);
+    }
+  }
+
+  /**
+   * Approve the folder the server asked for, then resume the original task.
+   *
+   * The grant is created server-side (which canonicalizes the path, verifies it
+   * exists, and resolves symlinks); only the operations the paused turn actually
+   * needed are requested, so approving a read never confers write. On success
+   * the stored request is re-dispatched automatically.
+   */
+  async function approvePermission(request: PermissionRequest, scope: 'remembered' | 'one_time') {
+    if (approvingPermission || !request.path) return;
+    setApprovingPermission(true);
+    try {
+      const permissions = Object.fromEntries(
+        request.operations.map((operation) => [operation, true]),
+      );
+      const response = await fetch('/api/openharness/filesystem-grants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: request.path, permissions, scope }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessages((previous) => [
+          ...previous,
+          {
+            role: 'assistant',
+            content:
+              typeof body.message === 'string'
+                ? body.message
+                : 'That folder could not be approved.',
+            sources: [],
+          },
+        ]);
+        return;
+      }
+      setPermissionRequest(null);
+      // Resume the same task. The user does not restate it.
+      await sendMessage(request.originalText, request.history);
+    } finally {
+      setApprovingPermission(false);
     }
   }
 
@@ -1211,6 +1365,45 @@ export default function GardenAssistant({
       </div>
 
       <div className="p-3">
+        {permissionRequest && (
+          <div className="mb-3 rounded-lg border border-amber-300/60 bg-amber-50/80 p-3 text-sm dark:border-amber-400/30 dark:bg-amber-950/30">
+            <p className="font-medium text-amber-900 dark:text-amber-200">Access needed</p>
+            <p className="mt-1 text-amber-900/90 dark:text-amber-100/90">
+              {permissionRequest.message}
+            </p>
+            {permissionRequest.path && (
+              <p className="mt-1 break-all font-mono text-xs text-amber-900/70 dark:text-amber-100/70">
+                {permissionRequest.path}
+              </p>
+            )}
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={approvingPermission}
+                onClick={() => approvePermission(permissionRequest, 'remembered')}
+                className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+              >
+                {approvingPermission ? 'Approving…' : 'Allow and remember'}
+              </button>
+              <button
+                type="button"
+                disabled={approvingPermission}
+                onClick={() => approvePermission(permissionRequest, 'one_time')}
+                className="rounded-md border border-amber-500/60 px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-60 dark:text-amber-200"
+              >
+                Allow once
+              </button>
+              <button
+                type="button"
+                disabled={approvingPermission}
+                onClick={() => setPermissionRequest(null)}
+                className="rounded-md px-3 py-1.5 text-xs font-medium text-amber-900/70 disabled:opacity-60 dark:text-amber-200/70"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        )}
         <input
           ref={attachmentInputRef}
           type="file"

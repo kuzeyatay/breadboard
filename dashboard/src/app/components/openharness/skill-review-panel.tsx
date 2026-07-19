@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import type { SkillContinuation } from "./use-agent-session";
 
 type SkillCandidate = {
+  upstreamId: string;
   name: string;
   package: string;
   repository: string;
@@ -97,8 +98,7 @@ export default function SkillReviewPanel({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          package: candidate.package,
-          query: query.trim() || candidate.name,
+          upstreamId: candidate.upstreamId,
         }),
       });
       const body = await response.json().catch(() => ({}));

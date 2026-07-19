@@ -4,6 +4,7 @@
 // both the dashboard terminal/garden events route and the Quartz AI events
 // route so the streaming + persistence policy lives in one place.
 
+import { leastPrivilegeDecision } from "./dispatch-core.ts";
 import db from "../db.ts";
 import { getOpenHarnessGateway } from "./gateway.ts";
 import { encodeSseEvent, type NormalizedAgentEvent } from "./events.ts";
@@ -143,12 +144,7 @@ export function buildSessionEventStream(
             gardenId: session.row.garden_id,
             payload: { reason: revocationReason, restoredMode: "knowledge" },
           });
-          const restoredDecision = decideCapabilityMode({
-            surface: session.row.surface,
-            userId: session.row.user_id,
-            requestedOutcome: "Resume default knowledge work.",
-            authorizedRoot: session.activeDirectory,
-          });
+          const restoredDecision = leastPrivilegeDecision(session.activeDirectory);
           void gateway
             .applyCapabilityDecision({
               openHarnessSessionId: session.openHarnessSessionId,
