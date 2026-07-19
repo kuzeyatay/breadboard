@@ -13,6 +13,7 @@ import {
 import AssistantComposer from '@/app/components/assistant-composer';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
 import ActivityPanel from '@/app/components/openharness/activity-panel';
+import { UserMessageText } from '@/app/components/openharness/command-text';
 import { useLegacyAgentActivity } from '@/app/components/openharness/use-legacy-agent-activity';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import {
@@ -1172,7 +1173,7 @@ export default function GardenAssistant({
 
   const chatPanel = (
     <aside
-      className="fixed inset-x-3 bottom-3 top-20 z-40 flex flex-col overflow-hidden rounded-md border border-gray-800 bg-gray-900 text-gray-100 shadow-2xl lg:absolute lg:inset-y-0 lg:left-auto lg:right-0 lg:h-full lg:w-[var(--assistant-panel-width)] lg:rounded-none lg:border-y-0 lg:border-l lg:border-r-0"
+      className="neu-surface-raised fixed inset-x-3 bottom-3 top-20 z-40 flex flex-col overflow-hidden rounded-md border border-gray-800 bg-gray-900 text-gray-100 lg:absolute lg:inset-y-0 lg:left-auto lg:right-0 lg:h-full lg:w-[var(--assistant-panel-width)] lg:rounded-none lg:border-y-0 lg:border-l lg:border-r-0"
       style={chatPanelStyle}
     >
       <div className="border-b border-gray-800 px-4 py-3">
@@ -1192,7 +1193,7 @@ export default function GardenAssistant({
                 learnBusy ||
                 isAssistantLearnActive(learnState?.job?.status)
               }
-              className="rounded-md border border-gray-700 bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:border-gray-800 disabled:bg-gray-800 disabled:text-gray-500"
+              className="neu-button-primary rounded-md border border-gray-700 bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-950 transition hover:bg-white disabled:cursor-not-allowed disabled:border-gray-800 disabled:bg-gray-800 disabled:text-gray-500"
               title={learnState?.buttonLabel ?? 'Learn'}
             >
               {learnBusy || isAssistantLearnActive(learnState?.job?.status)
@@ -1202,7 +1203,7 @@ export default function GardenAssistant({
             <button
               type="button"
               onClick={() => setChatOpen(false)}
-              className="rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white"
+              className="neu-button rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 transition hover:border-gray-500 hover:text-white"
             >
               Hide
             </button>
@@ -1216,7 +1217,7 @@ export default function GardenAssistant({
             { label: 'Concepts', value: stats.conceptNodes },
             { label: 'Links', value: stats.links },
           ].map((item) => (
-            <div key={item.label} className="rounded-md border border-gray-800 bg-gray-950/60 px-2 py-1.5">
+            <div key={item.label} className="neu-inset rounded-md border border-gray-800 bg-gray-950/60 px-2 py-1.5">
               <div className="font-medium text-gray-100">{formatNumber(item.value)}</div>
               <div>{item.label}</div>
             </div>
@@ -1228,7 +1229,7 @@ export default function GardenAssistant({
             type="button"
             onClick={() => setShowHistory(true)}
             disabled={!activeClusterSlug}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
+            className="neu-button-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition hover:border-gray-700 hover:text-gray-300"
             title="Chat history"
             aria-label="Chat history"
           >
@@ -1289,7 +1290,7 @@ export default function GardenAssistant({
                   key={prompt}
                   onClick={() => void sendMessage(prompt)}
                   disabled={isStreaming || !hasActiveCluster}
-                  className="block w-full rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="neu-button block w-full rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {prompt}
                 </button>
@@ -1336,7 +1337,7 @@ export default function GardenAssistant({
                       {message.content ? <ChatMarkdown content={message.content} compact /> : null}
                     </>
                   ) : (
-                    <p className="whitespace-pre-wrap">{message.content}</p>
+                    <UserMessageText content={message.content} />
                   )}
                   {message.attachmentNames?.length ? (
                     <p className="mt-1.5 text-[11px] text-gray-500">
@@ -1449,7 +1450,7 @@ export default function GardenAssistant({
         if (event.target === event.currentTarget) setShowHistory(false);
       }}
     >
-      <div className="flex max-h-[78vh] w-full max-w-lg flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 shadow-2xl sm:rounded-md">
+      <div className="neu-dialog flex max-h-[78vh] w-full max-w-lg flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 sm:rounded-md">
         <div className="flex items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold text-white">Quartz AI history</h2>
@@ -1460,14 +1461,14 @@ export default function GardenAssistant({
               type="button"
               onClick={() => void startNewChat()}
               disabled={isStreaming || !activeClusterSlug}
-              className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 disabled:opacity-50"
+              className="neu-button-primary rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950 disabled:opacity-50"
             >
               New chat
             </button>
             <button
               type="button"
               onClick={() => setShowHistory(false)}
-              className="rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300"
+              className="neu-button rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300"
             >
               Close
             </button>
@@ -1530,7 +1531,7 @@ export default function GardenAssistant({
         if (event.target === event.currentTarget) setShowPrompts(false);
       }}
     >
-      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 shadow-2xl sm:rounded-md">
+      <div className="neu-dialog flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 sm:rounded-md">
         <div className="flex items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold text-white">Prompt library</h2>
@@ -1540,14 +1541,14 @@ export default function GardenAssistant({
             <button
               type="button"
               onClick={openNewPrompt}
-              className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950"
+              className="neu-button-primary rounded-md bg-white px-3 py-1.5 text-xs font-medium text-gray-950"
             >
               New prompt
             </button>
             <button
               type="button"
               onClick={() => setShowPrompts(false)}
-              className="rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300"
+              className="neu-button rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300"
             >
               Close
             </button>
@@ -1558,7 +1559,7 @@ export default function GardenAssistant({
             value={promptSearch}
             onChange={(event) => setPromptSearch(event.target.value)}
             placeholder="Search prompts..."
-            className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-600 focus:border-gray-500"
+            className="neu-control w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-600 focus:border-gray-500"
           />
           <div className="flex gap-1.5 overflow-x-auto">
             {PROMPT_CATEGORIES.map((category) => (
@@ -1635,7 +1636,7 @@ export default function GardenAssistant({
           event.preventDefault();
           if (editingPrompt.title.trim() && editingPrompt.content.trim()) savePrompt(editingPrompt);
         }}
-        className="w-full max-w-lg rounded-md border border-gray-800 bg-gray-900 p-5 shadow-2xl"
+        className="neu-dialog w-full max-w-lg rounded-md border border-gray-800 bg-gray-900 p-5"
       >
         <h2 className="mb-4 text-lg font-semibold text-white">
           {editingPrompt.id ? 'Edit prompt' : 'New prompt'}
@@ -1649,7 +1650,7 @@ export default function GardenAssistant({
                 prompt ? { ...prompt, title: event.target.value } : prompt,
               )
             }
-            className="w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-gray-600"
+            className="neu-control w-full rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-gray-600"
           />
         </label>
         <div className="mb-3">
@@ -1681,21 +1682,21 @@ export default function GardenAssistant({
               )
             }
             rows={5}
-            className="w-full resize-none rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-gray-600"
+            className="neu-control w-full resize-none rounded-md border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-gray-600"
           />
         </label>
         <div className="mt-4 flex gap-3">
           <button
             type="button"
             onClick={() => setEditingPrompt(null)}
-            className="flex-1 rounded-md border border-gray-800 py-2 text-sm text-gray-400 hover:text-white"
+            className="neu-button flex-1 rounded-md border border-gray-800 py-2 text-sm text-gray-400 hover:text-white"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={!editingPrompt.title.trim() || !editingPrompt.content.trim()}
-            className="flex-1 rounded-md bg-white py-2 text-sm font-medium text-gray-950 disabled:opacity-50"
+            className="neu-button-primary flex-1 rounded-md bg-white py-2 text-sm font-medium text-gray-950 disabled:opacity-50"
           >
             Save prompt
           </button>
@@ -1729,7 +1730,7 @@ export default function GardenAssistant({
       <button
         type="button"
         onClick={() => setChatOpen(true)}
-        className="fixed bottom-5 right-5 z-[70] rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 shadow-xl transition hover:border-gray-500 hover:bg-gray-900"
+        className="neu-button fixed bottom-5 right-5 z-[70] rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 transition hover:border-gray-500 hover:bg-gray-900"
       >
         Ask map
       </button>

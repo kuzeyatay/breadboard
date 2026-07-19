@@ -4,6 +4,9 @@
   --bb-ai-border: #1f2937;
   --bb-ai-accent: #5f7f8e;
   --bb-ai-muted: #9ca3af;
+  /* Command-token blue; kept lighter than the dashboard's #1e40af because this
+     panel is a fixed dark theme and true dark blue is illegible on #1f2937. */
+  --bb-ai-command: #6c9ef8;
 
   .breadboard-ai-toggle {
     position: fixed;
@@ -206,6 +209,10 @@
     .breadboard-ai-assistant {
       align-self: flex-start;
       color: #e5e7eb;
+    }
+    .breadboard-ai-command-text {
+      color: var(--bb-ai-command);
+      font-weight: 600;
     }
     .breadboard-ai-markdown {
       white-space: normal;
@@ -413,6 +420,11 @@
       font: inherit;
       font-size: 0.85rem;
       line-height: 1.35;
+
+      &.breadboard-ai-input-command {
+        color: var(--bb-ai-command);
+        font-weight: 500;
+      }
     }
     .breadboard-ai-command-hub {
       max-height: 20rem;

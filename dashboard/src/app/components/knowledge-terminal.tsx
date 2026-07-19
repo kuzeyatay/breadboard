@@ -12,6 +12,7 @@ import {
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
 import ChatMarkdown from '@/app/components/chat-markdown';
+import { UserMessageText } from '@/app/components/openharness/command-text';
 import {
   DEFAULT_ASSISTANT_MODELS,
   DEFAULT_MODEL,
@@ -520,7 +521,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     : 'terminal-boot-reveal';
 
   const terminalClassName =
-    'fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t text-gray-100';
+    'neu-surface-raised fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t text-gray-100';
 
   return (
     <>
@@ -560,7 +561,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => setSidebarOpen((value) => !value)}
             style={{ animationDelay: '40ms' }}
-            className={`${headerItemAnim} flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white`}
+            className={`${headerItemAnim} neu-button-icon flex h-7 w-7 items-center justify-center rounded-md border border-gray-800 text-gray-400 transition hover:border-gray-700 hover:text-white`}
             title={sidebarOpen ? 'Hide history' : 'Show history'}
             aria-label="Toggle history"
           >
@@ -596,7 +597,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                 type="button"
                 onClick={startNewChat}
                 disabled={isStreaming}
-                className="flex w-full items-center gap-2 rounded-md border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-200 transition hover:border-gray-700 hover:bg-gray-900 disabled:opacity-50"
+                className="neu-button flex w-full items-center gap-2 rounded-md border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-200 transition hover:border-gray-700 hover:bg-gray-900 disabled:opacity-50"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -620,7 +621,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                         disabled={isStreaming}
                         className={`min-w-0 flex-1 rounded-md px-2.5 py-2 text-left transition ${
                           session.id === activeId
-                            ? 'bg-gray-800 text-white'
+                            ? 'neu-selected bg-gray-800 text-white'
                             : 'text-gray-400 hover:bg-gray-900 hover:text-gray-200'
                         }`}
                       >
@@ -706,7 +707,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                         key={prompt}
                         onClick={() => void sendMessage(prompt)}
                         disabled={isStreaming}
-                        className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-sm text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {prompt}
                       </button>
@@ -720,7 +721,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                       <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
                         {message.role === 'user' ? (
                           <div className="rounded-2xl rounded-br-sm bg-gray-800 px-4 py-2.5 text-sm leading-6 text-gray-100">
-                            <p className="whitespace-pre-wrap">{message.content}</p>
+                            <UserMessageText content={message.content} />
                             {message.attachmentNames?.length ? (
                               <p className="mt-1.5 text-[11px] text-gray-400">
                                 {message.attachmentNames.join(' · ')}
@@ -730,7 +731,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
                         ) : (
                           <div className="text-sm leading-7 text-gray-200">
                             {message.thinking ? (
-                              <details className="mb-2 rounded-md border border-gray-800 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
+                              <details className="neu-inset mb-2 rounded-md border border-gray-800 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
                                 <summary className="cursor-pointer text-gray-300">Thinking</summary>
                                 <pre className="mt-2 whitespace-pre-wrap font-sans leading-5">{message.thinking}</pre>
                               </details>
