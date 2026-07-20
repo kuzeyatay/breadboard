@@ -422,8 +422,10 @@ export default function SkillsCatalogPanel({
         <div className="mt-2 flex gap-1 overflow-x-auto" role="tablist" aria-label="Skill catalog views">
           {FILTERS.map((item) => <button key={item.id} type="button" role="tab" aria-selected={filter === item.id} onClick={() => { setFilter(item.id); setPage(0); }} className={`shrink-0 rounded-md px-2.5 py-1.5 text-xs ${filter === item.id ? "neu-selected bg-[var(--paper-strong)] font-medium text-[var(--ink-heading)]" : "text-[var(--ink-muted)]"}`}>{item.label}</button>)}
         </div>
-        <p className="mt-2 text-[10px] text-[var(--ink-muted)]" role="status">{catalogStatusText(status, pagination.total, query, refreshing)}</p>
-        {status?.stale ? <p className="mt-1 text-[10px] text-[#9a6b19]">Showing a stale last-known-good catalog{status.lastFailure ? ` · ${status.lastFailure}` : ""}</p> : null}
+        <p className="mt-2 text-[10px] text-[var(--ink-muted)]" role="status">
+          {catalogStatusText(status, pagination.total, query, refreshing)}
+          {status?.stale ? <span className="text-[#9a6b19]"> · Showing a stale last-known-good catalog{status.lastFailure ? ` · ${status.lastFailure}` : ""}</span> : null}
+        </p>
         {error ? <p className="mt-2 rounded-md bg-[var(--paper-surface)] px-2 py-1.5 text-xs text-[#9a4438]">{error}</p> : null}
       </div>
       <div onKeyDown={onRowsKeyDown}>

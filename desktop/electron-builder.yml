@@ -1,0 +1,60 @@
+appId: com.breadboard.desktop
+productName: Breadboard
+copyright: "Breadboard"
+electronLanguages:
+  - en-US
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - dist/**/*
+  - package.json
+  - "!node_modules/**/*"
+
+asar: true
+
+# All services, runtimes and read-only assets ship as plain resources (not
+# inside the ASAR): they are executed / read by external runtimes.
+extraResources:
+  - from: build-resources/app-services
+    to: app-services
+  - from: build-resources/runtimes
+    to: runtimes
+  - from: build-resources/bun-cache
+    to: bun-cache
+  - from: build-resources/licenses
+    to: licenses
+  - from: assets
+    to: assets
+  - from: resources/bin
+    to: bin
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/icon.ico
+  # Unsigned for now: no signing credentials exist in this repository. See
+  # docs/DESKTOP_RELEASE_CHECKLIST.md before shipping externally.
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Breadboard
+  artifactName: "Breadboard-Setup-${version}-x64.${ext}"
+  # User data lives under %APPDATA%/breadboard-desktop and is never removed by
+  # the uninstaller.
+  deleteAppDataOnUninstall: false
+
+# Auto-update is intentionally disabled until a signed release endpoint
+# exists (see docs/DESKTOP_RELEASE_CHECKLIST.md).
+publish: null

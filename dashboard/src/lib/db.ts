@@ -2,8 +2,9 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
+import { databaseDir } from "./runtime-paths.ts";
 
-const DB_PATH = path.join(process.cwd(), "db", "brain.db");
+const DB_PATH = path.join(databaseDir(), "brain.db");
 
 // Singleton — prevents duplicate connections during Next.js hot-reloading in dev
 const globalWithDb = global as typeof globalThis & { db?: Database.Database };
@@ -424,6 +425,44 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_openharness_fs_grants_user
     ON openharness_filesystem_grants(user_id, revoked_at);
+
+  -- Breadboard-owned run identity makes steering and cancellation explicit
+  -- without exposing OpenHarness ids to the browser. Only one run may be
+  -- active for a runtime session at a time.
+  CREATE TABLE IF NOT EXISTS openharness_runs (
+    id                 TEXT PRIMARY KEY,
+    runtime_session_id INTEGER NOT NULL REFERENCES openharness_runtime_sessions(id) ON DELETE CASCADE,
+    instruction        TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'active'
+                       CHECK (status IN ('active','completed','cancelled','error')),
+    dispatch_json      TEXT NOT NULL DEFAULT '{}',
+    started_at         TEXT NOT NULL,
+    finished_at        TEXT
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_openharness_runs_one_active
+    ON openharness_runs(runtime_session_id) WHERE status = 'active';
+  CREATE INDEX IF NOT EXISTS idx_openharness_runs_session_started
+    ON openharness_runs(runtime_session_id, started_at DESC);
+
+  CREATE TABLE IF NOT EXISTS openharness_steer_requests (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime_session_id INTEGER NOT NULL REFERENCES openharness_runtime_sessions(id) ON DELETE CASCADE,
+    run_id             TEXT NOT NULL REFERENCES openharness_runs(id) ON DELETE CASCADE,
+    client_request_id  TEXT NOT NULL,
+    content            TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','accepted','failed')),
+    error_code         TEXT,
+    result_run_id      TEXT,
+    result_mode        TEXT CHECK (result_mode IN ('steer','follow_up')),
+    created_at         TEXT NOT NULL,
+    accepted_at        TEXT,
+    UNIQUE(runtime_session_id, client_request_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_openharness_steer_requests_run
+    ON openharness_steer_requests(run_id, created_at);
 `);
 
 ensureColumn("openharness_runtime_sessions", "active_directory", "active_directory TEXT");
@@ -431,6 +470,16 @@ ensureColumn(
   "openharness_runtime_sessions",
   "filesystem_mode",
   "filesystem_mode TEXT NOT NULL DEFAULT 'restricted' CHECK (filesystem_mode IN ('restricted','full'))",
+);
+ensureColumn(
+  "openharness_steer_requests",
+  "result_run_id",
+  "result_run_id TEXT",
+);
+ensureColumn(
+  "openharness_steer_requests",
+  "result_mode",
+  "result_mode TEXT CHECK (result_mode IN ('steer','follow_up'))",
 );
 ensureColumn(
   "openharness_runtime_sessions",

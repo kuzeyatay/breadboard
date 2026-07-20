@@ -5,3 +5,13 @@
 .runtime/
 openharness-skills/quarantine/
 openharness-skills/approved/
+
+# Desktop shell build artifacts
+desktop/node_modules/
+desktop/dist/
+desktop/dist-tests/
+desktop/build-resources/
+desktop/release/
+
+# Desktop-mode Next build output
+dashboard/.next-desktop/

@@ -8,7 +8,11 @@ import {
   recordAuditEvent,
   revokeCapabilityDecision,
 } from "@/lib/openharness/runtime-store.ts";
-import { decideCapabilityMode } from "@/lib/openharness/capability-policy.ts";
+import {
+  finishRuntimeRun,
+  getActiveRuntimeRun,
+  getLatestRuntimeRun,
+} from "@/lib/openharness/run-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -27,12 +31,45 @@ export async function POST(
       throw new ApiError(400, "invalid_session_id", "Invalid session id.");
     }
     const session = authorizeRuntimeSession(userId, id);
+    const activeRun = getActiveRuntimeRun(session.row.id);
+    if (!activeRun) {
+      const latest = getLatestRuntimeRun(session.row.id);
+      return NextResponse.json({
+        aborted: false,
+        alreadyFinished: true,
+        runId: latest?.id ?? null,
+        status: latest?.status ?? "completed",
+      });
+    }
     const gateway = getOpenHarnessGateway();
-    await gateway.abortSession({
-      openHarnessSessionId: session.openHarnessSessionId,
-      workspaceKey: session.workspaceKey,
-      directory: session.activeDirectory,
-    });
+    try {
+      await gateway.abortSession({
+        openHarnessSessionId: session.openHarnessSessionId,
+        workspaceKey: session.workspaceKey,
+        directory: session.activeDirectory,
+      });
+    } catch (error) {
+      if (!getActiveRuntimeRun(session.row.id)) {
+        const latest = getLatestRuntimeRun(session.row.id);
+        return NextResponse.json({
+          aborted: false,
+          alreadyFinished: true,
+          runId: latest?.id ?? activeRun.id,
+          status: latest?.status ?? "completed",
+        });
+      }
+      throw error;
+    }
+    const cancelled = finishRuntimeRun(activeRun.id, "cancelled");
+    if (!cancelled) {
+      const latest = getLatestRuntimeRun(session.row.id);
+      return NextResponse.json({
+        aborted: false,
+        alreadyFinished: true,
+        runId: latest?.id ?? activeRun.id,
+        status: latest?.status ?? "completed",
+      });
+    }
     markStatus(session, "aborted");
     revokeCapabilityDecision(session.row.id, "cancelled");
     await gateway.applyCapabilityDecision({
@@ -47,7 +84,12 @@ export async function POST(
       userId,
       gardenId: session.row.garden_id,
     });
-    return NextResponse.json({ aborted: true });
+    return NextResponse.json({
+      aborted: true,
+      alreadyFinished: false,
+      runId: activeRun.id,
+      status: "cancelled",
+    });
   } catch (error) {
     return apiErrorResponse(error);
   }

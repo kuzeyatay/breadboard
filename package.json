@@ -9,6 +9,13 @@
     "dev:chatmock": "node scripts/start-chatmock.mjs",
     "dev:openharness": "node scripts/start-openharness.mjs",
     "dev:scriberr": "node scripts/start-scriberr.mjs",
-    "test:dashboard": "npm --prefix dashboard test"
+    "test:dashboard": "npm --prefix dashboard test",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:build": "npm --prefix desktop run build",
+    "desktop:build:dashboard": "node desktop/scripts/build-dashboard.mjs",
+    "desktop:prepare": "npm --prefix desktop run prepare:runtimes && npm --prefix desktop run prepare:app",
+    "desktop:test": "npm --prefix desktop test",
+    "desktop:verify": "npm --prefix desktop run verify:package",
+    "desktop:dist:win": "npm --prefix desktop run dist:win"
   }
 }

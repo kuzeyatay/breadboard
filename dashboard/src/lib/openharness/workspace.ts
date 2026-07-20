@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import type { OpenHarnessConfig, OpenHarnessSurface } from "./config.ts";
 import type { FilesystemAccessMode } from "./runtime-store.ts";
+import { repositoryRoot } from "../runtime-paths.ts";
 
 export interface WorkspaceRequest {
   surface: OpenHarnessSurface;
@@ -101,9 +102,9 @@ export function resolveWorkspace(
 
 function breadboardRepoRoot(): string | null {
   const cwd = path.resolve(process.cwd());
-  const candidates = path.basename(cwd).toLowerCase() === "dashboard"
+  const candidates = [repositoryRoot(), ...(path.basename(cwd).toLowerCase() === "dashboard"
     ? [path.dirname(cwd), cwd]
-    : [cwd, path.dirname(cwd)];
+    : [cwd, path.dirname(cwd)])];
   return candidates.find((candidate) =>
     fs.existsSync(path.join(candidate, "openharness-config")) &&
     fs.existsSync(path.join(candidate, "dashboard")),

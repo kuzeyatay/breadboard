@@ -16,8 +16,8 @@ import AssistantComposer from "@/app/components/assistant-composer";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
 import ActivityPanel from "@/app/components/openharness/activity-panel";
 import {
-  COMMAND_TEXT_CLASS,
   splitLeadingCommandTokens,
+  UserMessageText,
 } from "@/app/components/openharness/command-text";
 import { useLegacyAgentActivity } from "@/app/components/openharness/use-legacy-agent-activity";
 import type {
@@ -577,7 +577,7 @@ const ChatTranscript = memo(function ChatTranscript({
                   {msg.attachmentNames.map((name) => (
                     <span
                       key={name}
-                      className="flex items-center gap-1 px-2 py-0.5 bg-gray-900 border border-gray-700 rounded-md text-xs text-gray-400"
+                      className="neu-inset flex items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-0.5 text-xs text-[var(--ink-muted)]"
                     >
                       <svg
                         className="w-3 h-3 shrink-0"
@@ -598,24 +598,17 @@ const ChatTranscript = memo(function ChatTranscript({
                 </div>
               )}
               {msg.content && (
-                <div className="w-full bg-gray-800 border border-gray-700 rounded-2xl rounded-tr-sm px-4 py-3 text-sm text-white">
-                  {(() => {
-                    const split = splitLeadingCommandTokens(msg.content);
-                    if (!split) return <ChatMarkdown content={msg.content} compact />;
-                    return (
-                      <>
-                        <p className={`whitespace-pre-wrap ${COMMAND_TEXT_CLASS}`}>
-                          {split.command.trimEnd()}
-                        </p>
-                        {split.rest ? <ChatMarkdown content={split.rest} compact /> : null}
-                      </>
-                    );
-                  })()}
+                <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
+                  {splitLeadingCommandTokens(msg.content) ? (
+                    <UserMessageText content={msg.content} />
+                  ) : (
+                    <ChatMarkdown content={msg.content} compact />
+                  )}
                 </div>
               )}
             </div>
           ) : (
-            <div className="w-full flex flex-col gap-2">
+            <div className="flex w-full flex-col gap-2">
               {msg.usage ||
               msg.thinking ||
               (i === lastAssistantIndex &&
@@ -631,7 +624,7 @@ const ChatTranscript = memo(function ChatTranscript({
                 />
               ) : null}
               {msg.content ? (
-                <div className="max-w-[90%] text-sm text-gray-200 leading-relaxed">
+                <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
                   <ChatMarkdown content={msg.content} />
                 </div>
               ) : null}

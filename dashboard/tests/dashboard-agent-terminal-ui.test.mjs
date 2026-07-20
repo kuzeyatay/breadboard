@@ -55,7 +55,7 @@ test("the OpenHarness composer adds documents immediately after the slash contro
   assert.match(terminal, /extractChatAttachments\(files\)/);
   assert.match(terminal, /onAddDocuments=\{\(\) => attachmentInputRef\.current\?\.click\(\)\}/);
   assert.match(terminal, /attachments=\{chatAttachments\}/);
-  assert.match(runtime, /canSubmit=\{Boolean\(input\.trim\(\) \|\| attachments\?\.length\)\}/);
+  assert.match(runtime, /canSubmit=\{Boolean\(input\.trim\(\) \|\| \(!streaming && attachments\?\.length\)\)\}/);
   assert.match(runtime, /onAddDocuments=\{onAddDocuments\}/);
   assert.match(agentSession, /attachments: options\?\.attachments/);
 });

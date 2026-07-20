@@ -11,6 +11,7 @@
 // OpenHarness is disabled.
 
 import path from "node:path";
+import { repositoryRoot } from "../runtime-paths.ts";
 
 export type OpenHarnessSurface =
   | "dashboard_terminal"
@@ -88,13 +89,9 @@ function normalizeBaseUrl(value: string): string {
  * across platforms. Callers can override with OPENHARNESS_ROOT.
  */
 function defaultRoot(): string {
-  // process.cwd() is the dashboard package dir under `next dev`/`next start`.
-  // The runtime dir lives one level up, at the repo root, so all services can
-  // share it and it is covered by the repo .gitignore.
-  const root = path.basename(process.cwd()).toLowerCase() === "dashboard"
-    ? path.resolve(process.cwd(), "..")
-    : process.cwd();
-  return path.join(root, ".runtime", "openharness");
+  // The runtime dir lives at the repo root (dev) or wherever the desktop
+  // shell's BREADBOARD_REPO_ROOT points; OPENHARNESS_ROOT overrides entirely.
+  return path.join(repositoryRoot(), ".runtime", "openharness");
 }
 
 export function readOpenHarnessConfig(): OpenHarnessConfig {

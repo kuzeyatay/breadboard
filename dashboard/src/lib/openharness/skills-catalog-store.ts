@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { databaseDir } from "../runtime-paths.ts";
 import type {
   SkillsShAudit,
   SkillsShDetail,
@@ -88,10 +89,7 @@ const storeCache = new Map<string, SkillsCatalogStore>();
 
 export function catalogDatabasePath(): string {
   if (process.env.SKILLS_CATALOG_DB?.trim()) return path.resolve(process.env.SKILLS_CATALOG_DB.trim());
-  const dashboardRoot = path.basename(process.cwd()).toLowerCase() === "dashboard"
-    ? process.cwd()
-    : path.join(process.cwd(), "dashboard");
-  return path.join(dashboardRoot, "db", "skills-catalog.db");
+  return path.join(databaseDir(), "skills-catalog.db");
 }
 
 export function getSkillsCatalogStore(): SkillsCatalogStore {

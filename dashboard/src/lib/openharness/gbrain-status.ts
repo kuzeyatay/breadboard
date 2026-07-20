@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { OpenHarnessMcpStatus } from "./client.ts";
+import { repositoryRoot as breadboardRepositoryRoot } from "../runtime-paths.ts";
 
 export interface GBrainCapabilityState {
   provider: "gbrain";
@@ -21,9 +22,7 @@ export interface GBrainCapabilityState {
 }
 
 function repositoryRoot(): string {
-  return path.basename(process.cwd()).toLowerCase() === "dashboard"
-    ? path.resolve(process.cwd(), "..")
-    : process.cwd();
+  return breadboardRepositoryRoot();
 }
 
 function configuredCheckout(): string {

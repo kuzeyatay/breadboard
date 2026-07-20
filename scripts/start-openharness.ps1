@@ -12,6 +12,39 @@ $openharnessDir = Join-Path $repoRoot "openharness"
 $configDir = Join-Path $repoRoot "openharness-config"
 $port = if ($env:OPENHARNESS_PORT) { $env:OPENHARNESS_PORT } else { "4096" }
 
+# `start.bat` launches this script directly, while Next loads dashboard/.env.local
+# itself. Import only the shared OpenHarness credential values when the parent
+# process did not already provide them so both services authenticate with the
+# same values. Values are never written to the console.
+$dashboardEnv = Join-Path $repoRoot "dashboard\.env.local"
+function Read-LocalEnvValue([string]$name) {
+  if (-not (Test-Path -LiteralPath $dashboardEnv)) { return $null }
+  $prefix = "$name="
+  $line = Get-Content -LiteralPath $dashboardEnv | Where-Object {
+    $_.StartsWith($prefix, [System.StringComparison]::Ordinal)
+  } | Select-Object -Last 1
+  if (-not $line) { return $null }
+  $value = $line.Substring($prefix.Length).Trim()
+  if (
+    $value.Length -ge 2 -and
+    (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+     ($value.StartsWith("'") -and $value.EndsWith("'")))
+  ) {
+    return $value.Substring(1, $value.Length - 2)
+  }
+  return $value
+}
+
+if (-not $env:OPENHARNESS_USERNAME) {
+  $env:OPENHARNESS_USERNAME = Read-LocalEnvValue "OPENHARNESS_USERNAME"
+}
+if (-not $env:OPENHARNESS_PASSWORD) {
+  $env:OPENHARNESS_PASSWORD = Read-LocalEnvValue "OPENHARNESS_PASSWORD"
+}
+if (-not $env:OPENHARNESS_TOOL_SECRET) {
+  $env:OPENHARNESS_TOOL_SECRET = Read-LocalEnvValue "OPENHARNESS_TOOL_SECRET"
+}
+
 if (-not (Test-Path $openharnessDir)) {
   Write-Host "OpenHarness directory not found at $openharnessDir" -ForegroundColor Red
   exit 1

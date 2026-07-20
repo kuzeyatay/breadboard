@@ -176,6 +176,12 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     void session.send(text, { model, reasoningEffort });
   }, [input, model, reasoningEffort, session]);
 
+  const steer = useCallback(async () => {
+    const text = input.trim();
+    if (!text) return;
+    if (await session.steer(text)) setInput("");
+  }, [input, session]);
+
   const sendSuggestedPrompt = useCallback(
     (text: string) => {
       if (busy) return;
@@ -368,12 +374,17 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           surface="garden_chat"
           messages={session.messages}
           connection={session.connection}
+          runState={session.runState}
+          activeInstruction={session.activeInstruction}
+          steerFeedback={session.steerFeedback}
+          steerError={session.steerError}
           error={session.error}
           pendingPermission={session.pendingPermission}
           activities={session.activities}
           input={input}
           onInputChange={setInput}
           onSubmit={submit}
+          onSteer={() => void steer()}
           onAbort={() => void session.abort()}
           onPermissionDecision={(decision) => void session.respondToPermission(decision)}
           onRetryMessage={retryMessage}

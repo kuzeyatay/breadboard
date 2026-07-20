@@ -495,6 +495,7 @@ export function presentRuntimeMessage(row: RuntimeMessageRow): {
     status: "completed" | "failed";
   }>;
   verification?: Record<string, unknown>;
+  interrupted: boolean;
 } {
   let runtime: {
     calls?: Array<Record<string, unknown>>;
@@ -537,6 +538,7 @@ export function presentRuntimeMessage(row: RuntimeMessageRow): {
       status: call.success === false ? "failed" : "completed",
     })),
     verification: runtime.verification,
+    interrupted: row.runtime_status === "aborted",
   };
 }
 

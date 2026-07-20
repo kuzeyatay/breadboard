@@ -1,3 +1,295 @@
 @use "./base.scss";
 
-// put your custom CSS here!
+/* Breadboard's reading surface uses the same restrained material vocabulary as
+ * the dashboard. These are derived from Quartz's existing theme variables;
+ * article content remains flat and only navigation/control surfaces opt in. */
+:root {
+  --neu-q-bg: var(--light);
+  --neu-q-surface: color-mix(in srgb, var(--light) 91%, white);
+  --neu-q-pressed: color-mix(in srgb, var(--light) 88%, var(--lightgray));
+  --neu-q-border: color-mix(in srgb, var(--lightgray) 76%, var(--light));
+  --neu-q-highlight: color-mix(in srgb, var(--light) 62%, white);
+  --neu-q-shadow: color-mix(in srgb, var(--dark) 12%, transparent);
+  --neu-q-shadow-strong: color-mix(in srgb, var(--dark) 20%, transparent);
+  --neu-q-focus: var(--secondary);
+  --neu-q-duration: 160ms;
+  --neu-q-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --neu-q-soft-shadow:
+    3px 3px 8px var(--neu-q-shadow),
+    -3px -3px 8px color-mix(in srgb, var(--neu-q-highlight) 76%, transparent);
+  --neu-q-raised-shadow:
+    5px 5px 12px var(--neu-q-shadow), -5px -5px 12px var(--neu-q-highlight),
+    inset 1px 1px 0 color-mix(in srgb, var(--neu-q-highlight) 68%, transparent);
+  --neu-q-floating-shadow:
+    9px 10px 24px var(--neu-q-shadow-strong),
+    -7px -7px 18px color-mix(in srgb, var(--neu-q-highlight) 82%, transparent);
+  --neu-q-inset-shadow:
+    inset 2px 2px 5px color-mix(in srgb, var(--dark) 12%, transparent),
+    inset -2px -2px 5px color-mix(in srgb, var(--neu-q-highlight) 72%, transparent);
+}
+
+.search > .search-button,
+button.mobile-explorer,
+button.desktop-explorer,
+.markdown-action-button,
+.markdown-editor-close,
+.markdown-editor-image,
+.markdown-editor-cancel,
+.folder-pdf-open,
+.folder-pdf-close,
+.folder-pdf-select-all,
+.folder-pdf-clear,
+.folder-pdf-up,
+.folder-pdf-down,
+.folder-pdf-cancel,
+.global-graph-close {
+  border-color: var(--neu-q-border);
+  background: var(--neu-q-surface);
+  box-shadow: var(--neu-q-soft-shadow);
+  transition:
+    box-shadow var(--neu-q-duration) var(--neu-q-easing),
+    border-color var(--neu-q-duration) var(--neu-q-easing),
+    background-color var(--neu-q-duration) var(--neu-q-easing),
+    color var(--neu-q-duration) var(--neu-q-easing);
+}
+
+.search > .search-button:hover,
+button.mobile-explorer:hover,
+button.desktop-explorer:hover,
+.markdown-action-button:hover,
+.markdown-editor-close:hover,
+.markdown-editor-image:hover,
+.markdown-editor-cancel:hover,
+.folder-pdf-open:hover,
+.folder-pdf-close:hover,
+.folder-pdf-select-all:hover,
+.folder-pdf-clear:hover,
+.folder-pdf-up:hover,
+.folder-pdf-down:hover,
+.folder-pdf-cancel:hover,
+.global-graph-close:hover {
+  border-color: var(--secondary);
+  box-shadow:
+    4px 4px 10px var(--neu-q-shadow),
+    -4px -4px 10px var(--neu-q-highlight);
+}
+
+.search > .search-button:active,
+button.mobile-explorer:active,
+button.desktop-explorer:active,
+.markdown-action-button:active,
+.markdown-editor-close:active,
+.markdown-editor-image:active,
+.markdown-editor-cancel:active,
+.folder-pdf-open:active,
+.folder-pdf-close:active,
+.folder-pdf-select-all:active,
+.folder-pdf-clear:active,
+.folder-pdf-up:active,
+.folder-pdf-down:active,
+.folder-pdf-cancel:active,
+.global-graph-close:active {
+  box-shadow: var(--neu-q-inset-shadow);
+  transform: translateY(1px);
+}
+
+button.mobile-explorer,
+button.desktop-explorer {
+  width: fit-content;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--neu-q-border);
+  border-radius: 7px;
+}
+
+.dashboard-back-link {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--neu-q-border);
+  border-radius: 7px;
+  background: var(--neu-q-surface);
+  box-shadow: var(--neu-q-soft-shadow);
+}
+
+.search > .search-container > .search-space > *,
+.popover > .popover-inner,
+.markdown-editor-panel,
+.folder-pdf-panel {
+  border-color: var(--neu-q-border);
+  background: var(--neu-q-surface);
+  box-shadow: var(--neu-q-floating-shadow);
+}
+
+.search > .search-container > .search-space > input,
+.markdown-editor-field input,
+.markdown-editor-field select,
+.markdown-editor-tags-box,
+.folder-pdf-panel input:not([type="checkbox"]),
+.global-graph-search-input {
+  border-color: var(--neu-q-border);
+  background: var(--neu-q-pressed);
+  box-shadow: var(--neu-q-inset-shadow);
+}
+
+.search > .search-container > .search-space > input:focus,
+.markdown-editor-field input:focus,
+.markdown-editor-field select:focus,
+.markdown-editor-tags-box:focus-within,
+.folder-pdf-panel input:not([type="checkbox"]):focus,
+.global-graph-search-input:focus {
+  border-color: var(--neu-q-focus);
+  outline: 2px solid color-mix(in srgb, var(--neu-q-focus) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.markdown-editor-save,
+.folder-pdf-export-button {
+  box-shadow:
+    3px 3px 8px color-mix(in srgb, var(--dark) 24%, transparent),
+    -2px -2px 6px color-mix(in srgb, var(--neu-q-highlight) 55%, transparent);
+}
+
+.graph > .graph-outer,
+.home-overview .cluster-card {
+  border-color: var(--neu-q-border);
+  box-shadow: var(--neu-q-raised-shadow);
+}
+
+.graph > .graph-outer {
+  /* Depth belongs to the graph housing, never to the canvas itself. */
+  isolation: isolate;
+}
+
+.global-graph-search {
+  border-color: var(--neu-q-border);
+  box-shadow: var(--neu-q-floating-shadow);
+}
+
+.home-overview-stats > * {
+  box-shadow: var(--neu-q-inset-shadow);
+}
+
+.breadboard-ai .breadboard-ai-toggle {
+  box-shadow:
+    5px 6px 14px color-mix(in srgb, var(--bb-ai-bg) 68%, transparent),
+    -3px -3px 10px color-mix(in srgb, var(--bb-ai-accent) 16%, transparent);
+}
+
+.breadboard-ai .breadboard-ai-panel,
+.breadboard-ai .breadboard-ai-command-hub {
+  box-shadow:
+    9px 10px 24px color-mix(in srgb, var(--bb-ai-bg) 76%, transparent),
+    -4px -4px 14px color-mix(in srgb, var(--bb-ai-accent) 14%, transparent);
+}
+
+.breadboard-ai .breadboard-ai-composer-shell,
+.breadboard-ai .breadboard-ai-command-search,
+.breadboard-ai .breadboard-ai-model,
+.breadboard-ai .breadboard-ai-effort {
+  box-shadow:
+    inset 2px 2px 5px color-mix(in srgb, var(--bb-ai-bg) 68%, transparent),
+    inset -2px -2px 5px color-mix(in srgb, var(--bb-ai-accent) 12%, transparent);
+}
+
+:where(
+  .search > .search-button,
+  button.mobile-explorer,
+  button.desktop-explorer,
+  .dashboard-back-link,
+  .markdown-action-button,
+  .markdown-editor-close,
+  .markdown-editor-image,
+  .markdown-editor-cancel,
+  .markdown-editor-save,
+  .folder-pdf-open,
+  .folder-pdf-close,
+  .folder-pdf-select-all,
+  .folder-pdf-clear,
+  .folder-pdf-up,
+  .folder-pdf-down,
+  .folder-pdf-cancel,
+  .folder-pdf-export-button,
+  .global-graph-close
+):focus-visible {
+  outline: 2px solid var(--neu-q-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search > .search-button,
+  button.mobile-explorer,
+  button.desktop-explorer,
+  .markdown-action-button,
+  .markdown-editor-close,
+  .markdown-editor-image,
+  .markdown-editor-cancel,
+  .folder-pdf-open,
+  .folder-pdf-close,
+  .folder-pdf-select-all,
+  .folder-pdf-clear,
+  .folder-pdf-up,
+  .folder-pdf-down,
+  .folder-pdf-cancel,
+  .global-graph-close {
+    transition-duration: 0.01ms;
+  }
+
+  .search > .search-button:active,
+  button.mobile-explorer:active,
+  button.desktop-explorer:active,
+  .markdown-action-button:active,
+  .markdown-editor-close:active,
+  .markdown-editor-image:active,
+  .markdown-editor-cancel:active,
+  .folder-pdf-open:active,
+  .folder-pdf-close:active,
+  .folder-pdf-select-all:active,
+  .folder-pdf-clear:active,
+  .folder-pdf-up:active,
+  .folder-pdf-down:active,
+  .folder-pdf-cancel:active,
+  .global-graph-close:active {
+    transform: none;
+  }
+}
+
+@media (max-width: 800px) {
+  /* The title/back/search row is intentionally dense on phones. Keep Search
+   * as an icon-sized tactile control so the existing header does not create a
+   * horizontal scrollbar after depth is added. */
+  .search {
+    flex: 0 0 2.4rem;
+    max-width: 2.4rem;
+  }
+
+  .search > .search-button {
+    width: 2.25rem;
+    padding: 0;
+  }
+
+  .search > .search-button > p {
+    display: none;
+  }
+
+  .dashboard-back-link {
+    flex-shrink: 1;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.8rem;
+    line-height: 1.15;
+  }
+}
+
+@media (forced-colors: active) {
+  .search > .search-button,
+  button.mobile-explorer,
+  button.desktop-explorer,
+  .dashboard-back-link,
+  .popover > .popover-inner,
+  .graph > .graph-outer,
+  .home-overview .cluster-card,
+  .markdown-editor-panel,
+  .folder-pdf-panel,
+  .global-graph-search,
+  .global-graph-close {
+    border: 1px solid CanvasText;
+    box-shadow: none;
+  }
+}

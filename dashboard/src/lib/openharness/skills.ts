@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { SKILLS_SH_CLI_PACKAGE } from "./skills-sh-client.ts";
+import { repositoryRoot } from "../runtime-paths.ts";
 
 const execFileAsync = promisify(execFile);
 const QUARANTINE_MANIFEST = ".breadboard-quarantine.json";
@@ -348,9 +349,7 @@ function validPackage(repository: string, name: string): boolean {
 }
 
 function repoRoot(): string {
-  return path.basename(process.cwd()).toLowerCase() === "dashboard"
-    ? path.resolve(process.cwd(), "..")
-    : process.cwd();
+  return repositoryRoot();
 }
 
 export function quarantineRoot(): string {
