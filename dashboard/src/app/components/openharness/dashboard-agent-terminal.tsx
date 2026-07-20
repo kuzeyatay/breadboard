@@ -279,6 +279,12 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     });
   }, [busy, chatAttachments, input, model, reasoningEffort, runtimeUnavailable, session]);
 
+  const steer = useCallback(async () => {
+    const text = input.trim();
+    if (!text || runtimeUnavailable) return;
+    if (await session.steer(text)) setInput("");
+  }, [input, runtimeUnavailable, session]);
+
   const handleAttachmentInput = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(event.target.files ?? []);
@@ -528,12 +534,17 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 surface="dashboard_terminal"
                 messages={session.messages}
                 connection={session.connection}
+                runState={session.runState}
+                activeInstruction={session.activeInstruction}
+                steerFeedback={session.steerFeedback}
+                steerError={session.steerError}
                 error={runtimeUnavailable ? "OpenHarness is required but unavailable. No legacy request was sent." : session.error}
                 pendingPermission={session.pendingPermission}
                 activities={session.activities}
                 input={input}
                 onInputChange={setInput}
                 onSubmit={submit}
+                onSteer={() => void steer()}
                 disabled={runtimeUnavailable}
                 onAbort={() => void session.abort()}
                 onPermissionDecision={(decision) => void session.respondToPermission(decision)}

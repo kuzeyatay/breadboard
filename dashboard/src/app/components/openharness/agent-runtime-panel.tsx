@@ -22,6 +22,7 @@ import {
 import type {
   AgentMessage,
   ActivityItem,
+  AgentRunState,
   ConnectionState,
   PermissionPrompt,
 } from "./use-agent-session";
@@ -30,12 +31,17 @@ import type { OpenHarnessSurface } from "@/lib/openharness/config.ts";
 interface Props {
   messages: AgentMessage[];
   connection: ConnectionState;
+  runState: AgentRunState;
+  activeInstruction: string | null;
+  steerFeedback: string | null;
+  steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
   activities: ActivityItem[];
   input: string;
   onInputChange: (value: string) => void;
   onSubmit: () => void;
+  onSteer: () => void;
   onAbort: () => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onRetryMessage?: (messageIndex: number) => void;
@@ -60,12 +66,17 @@ interface Props {
 export default function AgentRuntimePanel({
   messages,
   connection,
+  runState,
+  activeInstruction,
+  steerFeedback,
+  steerError,
   error,
   pendingPermission,
   activities,
   input,
   onInputChange,
   onSubmit,
+  onSteer,
   onAbort,
   onPermissionDecision,
   onRetryMessage,
@@ -117,7 +128,7 @@ export default function AgentRuntimePanel({
                 >
                   <div className={message.role === "user" ? "max-w-[80%]" : "w-full"}>
                     {message.role === "user" ? (
-                      <div className="rounded-2xl rounded-br-sm bg-gray-800 px-4 py-2.5 text-sm leading-6 text-gray-100">
+                      <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
                         <UserMessageText content={message.content} />
                       </div>
                     ) : (
@@ -133,11 +144,17 @@ export default function AgentRuntimePanel({
                             usage={message.usage}
                             reasoning={message.reasoning}
                             onAbort={onAbort}
+                            showAbort={false}
                             onPermissionDecision={onPermissionDecision}
                           />
                         ) : null}
                         {message.content ? (
                           <ChatMarkdown content={message.content} compact />
+                        ) : null}
+                        {message.interrupted ? (
+                          <p className="mt-2 text-[11px] text-[var(--ink-muted)]" role="status">
+                            Interrupted
+                          </p>
                         ) : null}
                         {message.sources && message.sources.length > 0 ? (
                           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -188,9 +205,9 @@ export default function AgentRuntimePanel({
           onChange={onInputChange}
           onSubmit={onSubmit}
           placeholder={placeholder ?? "Ask the agent…"}
-          disabled={disabled || streaming}
+          disabled={disabled}
           isSending={streaming}
-          canSubmit={Boolean(input.trim() || attachments?.length)}
+          canSubmit={Boolean(input.trim() || (!streaming && attachments?.length))}
           model={model ?? ""}
           models={models ?? []}
           onModelChange={onModelChange ?? (() => undefined)}
@@ -203,6 +220,13 @@ export default function AgentRuntimePanel({
           statusMessage={statusMessage}
           capabilitySessionId={sessionId}
           capabilitySurface={surface}
+          runState={runState}
+          activeInstruction={activeInstruction}
+          onSteer={onSteer}
+          onStop={onAbort}
+          steerFeedback={steerFeedback}
+          steerError={steerError}
+          permissionPending={Boolean(pendingPermission)}
         />
       </div>
     </div>

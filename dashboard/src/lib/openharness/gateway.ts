@@ -62,6 +62,7 @@ import {
   permissionRulesForDecision,
   type CapabilityDecision,
 } from "./capability-policy.ts";
+import { openHarnessMessageId } from "./message-id.ts";
 
 const PERMISSION_HANDOFF_SYSTEM = [
   "Permission decisions are handled outside the conversation by Breadboard controls.",
@@ -310,6 +311,22 @@ export class OpenHarnessGateway {
       ...(input.messageId ? { messageID: input.messageId } : {}),
     };
     await promptAsync(this.config, directory, input.openHarnessSessionId, body);
+  }
+
+  /**
+   * Add a course correction to the currently running session. OpenHarness's
+   * prompt loop reads newly persisted user messages at its next safe boundary,
+   * so this deliberately uses the same session and does not open another run
+   * or event stream. `messageId` is the client request id for upstream retry
+   * idempotency as well as Breadboard's durable dedupe record.
+   */
+  async steerRun(
+    input: SendAgentMessageInput & { clientRequestId: string },
+  ): Promise<void> {
+    await this.sendMessage({
+      ...input,
+      messageId: openHarnessMessageId(input.clientRequestId),
+    });
   }
 
   async abortSession(input: {

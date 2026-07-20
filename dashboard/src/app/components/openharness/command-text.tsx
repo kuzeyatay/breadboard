@@ -21,12 +21,9 @@ export function startsWithCommandToken(content: string): boolean {
 }
 
 export function UserMessageText({ content }: { content: string }) {
+  // A message that starts with a command is a command invocation, so the whole
+  // message (token and the arguments that follow) renders in command blue.
   const split = splitLeadingCommandTokens(content);
   if (!split) return <p className="whitespace-pre-wrap">{content}</p>;
-  return (
-    <p className="whitespace-pre-wrap">
-      <span className={COMMAND_TEXT_CLASS}>{split.command}</span>
-      {split.rest}
-    </p>
-  );
+  return <p className={`whitespace-pre-wrap ${COMMAND_TEXT_CLASS}`}>{content}</p>;
 }

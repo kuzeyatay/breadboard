@@ -19,6 +19,7 @@ interface Props {
   usage?: ChatTokenUsage;
   reasoning?: string;
   onAbort: () => void;
+  showAbort?: boolean;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
 }
 
@@ -29,6 +30,7 @@ export default function ActivityPanel({
   usage,
   reasoning,
   onAbort,
+  showAbort = true,
   onPermissionDecision,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
@@ -90,7 +92,7 @@ export default function ActivityPanel({
           </span>
           <span>({statusMetadata})</span>
         </button>
-        {active ? (
+        {active && showAbort ? (
           <button
             type="button"
             onClick={onAbort}

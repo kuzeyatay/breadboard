@@ -25,6 +25,9 @@ const quartzActivity = source(
 );
 
 test("thinking remains visible with response metadata and shimmers while active", () => {
+  const thinkingStart = activity.indexOf("{expanded && hasReasoningSummary");
+  const thinkingEnd = activity.indexOf("{pendingPermission ?", thinkingStart);
+  const thinkingBlock = activity.slice(thinkingStart, thinkingEnd);
   assert.match(activity, /thinking-shimmer/);
   assert.match(activity, /text-left text-sm leading-6/);
   assert.match(activity, /statusMetadata/);
@@ -36,7 +39,8 @@ test("thinking remains visible with response metadata and shimmers while active"
   assert.match(activity, /hasReasoningSummary/);
   assert.doesNotMatch(activity, /if \(!expanded && !active/);
   assert.doesNotMatch(activity, /setTimeout\(\(\) => setExpanded\(false\)/);
-  assert.doesNotMatch(activity, /rounded-2xl border/);
+  assert.ok(thinkingStart >= 0 && thinkingEnd > thinkingStart);
+  assert.doesNotMatch(thinkingBlock, /rounded-2xl border/);
   assert.match(globalStyles, /@keyframes thinking-shimmer/);
   assert.match(globalStyles, /background-position: -180% 0/);
   assert.match(globalStyles, /background-position: 180% 0/);
@@ -73,7 +77,8 @@ test("evidence opens from the overflow menu without a standalone disclosure", ()
   assert.doesNotMatch(evidence, /<details/);
   assert.doesNotMatch(evidence, /<summary/);
   assert.doesNotMatch(evidence, /View evidence/);
-  assert.doesNotMatch(evidence, /border border-/);
+  assert.match(evidence, /neu-popover/);
+  assert.match(evidence, /border border-\[var\(--line\)\]/);
 
   const menuStart = actions.indexOf('aria-label="More response actions menu"');
   const menuEnd = actions.indexOf("{evidenceOpen", menuStart);
@@ -142,17 +147,18 @@ test("activity and actions render with assistant messages, not above composers",
   assert.equal(gardenAssistant.match(/<ActivityPanel/g)?.length, 1);
 });
 
-test("permission requests use a borderless, softly layered action card", () => {
+test("permission requests use a softly layered action card", () => {
   const start = activity.indexOf("{pendingPermission ? (");
   const block = activity.slice(start, start + 6_000);
   assert.ok(start >= 0);
-  assert.match(block, /rounded-2xl bg-\[var\(--paper-strong\)\]/);
+  assert.match(block, /neu-surface-subtle/);
+  assert.match(block, /bg-\[var\(--paper-strong\)\]/);
   assert.match(block, /Permission required/);
   assert.match(block, /rounded-full bg-amber-500\/10/);
   assert.match(block, /rounded-full bg-\[var\(--botanical\)\]/);
   assert.match(block, /Allow similar for session/);
   assert.match(block, /bg-red-500\/\[0\.07\]/);
-  assert.doesNotMatch(block, /\bborder(?:-|\b)/);
+  assert.match(block, /border border-\[var\(--line\)\]/);
 });
 
 test("OpenHarness tool names stay out of assistant responses", () => {

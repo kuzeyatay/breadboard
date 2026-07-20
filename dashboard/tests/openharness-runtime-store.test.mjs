@@ -56,6 +56,18 @@ function applyMigration(db) {
       kind TEXT NOT NULL, page_slug TEXT, rationale TEXT, payload TEXT NOT NULL, evidence_anchors TEXT,
       status TEXT DEFAULT 'pending', created_by_user_id INTEGER, runtime_session_id INTEGER,
       created_at TEXT DEFAULT (datetime('now')), decided_at TEXT);
+    CREATE TABLE IF NOT EXISTS openharness_runs (
+      id TEXT PRIMARY KEY, runtime_session_id INTEGER NOT NULL,
+      instruction TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+      dispatch_json TEXT NOT NULL DEFAULT '{}', started_at TEXT NOT NULL,
+      finished_at TEXT);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_openharness_runs_one_active
+      ON openharness_runs(runtime_session_id) WHERE status = 'active';
+    CREATE TABLE IF NOT EXISTS openharness_steer_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, runtime_session_id INTEGER NOT NULL,
+      run_id TEXT NOT NULL, client_request_id TEXT NOT NULL, content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', error_code TEXT, created_at TEXT NOT NULL,
+      accepted_at TEXT, UNIQUE(runtime_session_id, client_request_id));
   `);
   ensureColumn(db, "chat_messages", "tool_calls", "tool_calls TEXT");
   ensureColumn(db, "chat_messages", "permission_decisions", "permission_decisions TEXT");
@@ -131,7 +143,9 @@ test("migration on an empty database creates all runtime tables", () => {
     "openharness_capability_decisions",
     "openharness_messages",
     "openharness_proposals",
+    "openharness_runs",
     "openharness_runtime_sessions",
+    "openharness_steer_requests",
   ]);
   db.close();
 });

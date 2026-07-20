@@ -1,0 +1,517 @@
+{
+  "generatedAt": "2026-07-19T15:29:52.780Z",
+  "results": [
+    {
+      "label": "dashboard-mobile",
+      "url": "http://localhost:3000/dashboard",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "devicePixelRatio": 1
+      },
+      "documentWidth": 390,
+      "horizontalOverflow": false,
+      "overflow": [
+        {
+          "tag": "span",
+          "className": "absolute right-0 top-0 h-full w-24 bg-gradient-to-r from-transparent to-white/70",
+          "left": -96,
+          "right": 0
+        },
+        {
+          "tag": "span",
+          "className": "navbar-flower-wind_plant__jh9T9",
+          "left": 367,
+          "right": 393
+        },
+        {
+          "tag": "span",
+          "className": "navbar-flower-wind_plant__jh9T9",
+          "left": 387,
+          "right": 411
+        },
+        {
+          "tag": "span",
+          "className": "navbar-flower-wind_plantSprite__Ry9D8",
+          "left": 390,
+          "right": 408
+        },
+        {
+          "tag": "svg",
+          "className": "[object SVGAnimatedString]",
+          "left": 390,
+          "right": 408
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 390,
+          "right": 407
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 392,
+          "right": 394
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 394,
+          "right": 396
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 397,
+          "right": 399
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 400,
+          "right": 401
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 402,
+          "right": 404
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 391,
+          "right": 395
+        }
+      ],
+      "tactileControlCount": 5,
+      "unnamedTactileControls": [],
+      "keyboardFocus": {
+        "tag": "button",
+        "label": "Use the local assistant endpoint configured for the dashboard server.",
+        "outlineStyle": "auto",
+        "outlineWidth": "1px",
+        "boxShadow": "none"
+      },
+      "reducedMotion": {
+        "matches": true,
+        "sampledClass": "neu-button-icon absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:t",
+        "transitionDuration": "1e-05s",
+        "animationDuration": "0s"
+      },
+      "forcedColors": {
+        "matches": true,
+        "sampledClass": "neu-button-icon absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:t",
+        "borderStyle": "solid",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "label": "garden-chat-mobile",
+      "url": "http://localhost:3000/garden/test2?chat=1",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "devicePixelRatio": 1
+      },
+      "documentWidth": 390,
+      "horizontalOverflow": false,
+      "overflow": [
+        {
+          "tag": "span",
+          "className": "absolute right-0 top-0 h-full w-24 bg-gradient-to-r from-transparent to-white/70",
+          "left": -96,
+          "right": 0
+        },
+        {
+          "tag": "span",
+          "className": "navbar-flower-wind_plant__jh9T9",
+          "left": 389,
+          "right": 415
+        },
+        {
+          "tag": "span",
+          "className": "navbar-flower-wind_plantSprite__Ry9D8",
+          "left": 394,
+          "right": 410
+        },
+        {
+          "tag": "svg",
+          "className": "[object SVGAnimatedString]",
+          "left": 394,
+          "right": 410
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 394,
+          "right": 409
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 396,
+          "right": 398
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 397,
+          "right": 399
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 400,
+          "right": 402
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 402,
+          "right": 404
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 405,
+          "right": 406
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 395,
+          "right": 398
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 402,
+          "right": 406
+        }
+      ],
+      "tactileControlCount": 9,
+      "unnamedTactileControls": [],
+      "keyboardFocus": {
+        "tag": "a",
+        "label": "Back to garden",
+        "outlineStyle": "auto",
+        "outlineWidth": "1px",
+        "boxShadow": "none"
+      },
+      "reducedMotion": {
+        "matches": true,
+        "sampledClass": "neu-button flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gr",
+        "transitionDuration": "1e-05s",
+        "animationDuration": "0s"
+      },
+      "forcedColors": {
+        "matches": true,
+        "sampledClass": "neu-button flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gr",
+        "borderStyle": "solid",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "label": "dashboard-200-percent-equivalent",
+      "url": "http://localhost:3000/dashboard",
+      "viewport": {
+        "width": 720,
+        "height": 450,
+        "devicePixelRatio": 2
+      },
+      "documentWidth": 720,
+      "horizontalOverflow": false,
+      "overflow": [
+        {
+          "tag": "span",
+          "className": "absolute right-0 top-0 h-full w-24 bg-gradient-to-r from-transparent to-white/70",
+          "left": -96,
+          "right": 0
+        },
+        {
+          "tag": "span",
+          "className": "navbar-flower-wind_plant__jh9T9",
+          "left": 706,
+          "right": 730
+        },
+        {
+          "tag": "span",
+          "className": "navbar-flower-wind_plantSprite__Ry9D8",
+          "left": 707,
+          "right": 730
+        },
+        {
+          "tag": "svg",
+          "className": "[object SVGAnimatedString]",
+          "left": 707,
+          "right": 730
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 708,
+          "right": 728
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 721,
+          "right": 723
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 724,
+          "right": 726
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 719,
+          "right": 723
+        },
+        {
+          "tag": "rect",
+          "className": "[object SVGAnimatedString]",
+          "left": 722,
+          "right": 726
+        }
+      ],
+      "tactileControlCount": 5,
+      "unnamedTactileControls": [],
+      "keyboardFocus": {
+        "tag": "button",
+        "label": "Use the local assistant endpoint configured for the dashboard server.",
+        "outlineStyle": "auto",
+        "outlineWidth": "1px",
+        "boxShadow": "none"
+      },
+      "reducedMotion": {
+        "matches": true,
+        "sampledClass": "neu-button-icon absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:t",
+        "transitionDuration": "1e-05s",
+        "animationDuration": "0s"
+      },
+      "forcedColors": {
+        "matches": true,
+        "sampledClass": "neu-button-icon absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:t",
+        "borderStyle": "solid",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "label": "quartz-mobile",
+      "url": "http://127.0.0.1:8082/",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "devicePixelRatio": 1
+      },
+      "documentWidth": 390,
+      "horizontalOverflow": false,
+      "overflow": [
+        {
+          "tag": "li",
+          "className": "",
+          "left": -354,
+          "right": 16
+        },
+        {
+          "tag": "div",
+          "className": "folder-container",
+          "left": -354,
+          "right": 16
+        },
+        {
+          "tag": "svg",
+          "className": "[object SVGAnimatedString]",
+          "left": -354,
+          "right": -342
+        },
+        {
+          "tag": "polyline",
+          "className": "[object SVGAnimatedString]",
+          "left": -351,
+          "right": -346
+        },
+        {
+          "tag": "div",
+          "className": "",
+          "left": -337,
+          "right": -279
+        },
+        {
+          "tag": "a",
+          "className": "folder-title",
+          "left": -337,
+          "right": -279
+        },
+        {
+          "tag": "li",
+          "className": "explorer-file source-document",
+          "left": -337,
+          "right": 16
+        },
+        {
+          "tag": "div",
+          "className": "explorer-flag-menu",
+          "left": -332,
+          "right": -316
+        },
+        {
+          "tag": "button",
+          "className": "explorer-flag-button",
+          "left": -332,
+          "right": -316
+        },
+        {
+          "tag": "span",
+          "className": "explorer-flag-swatch",
+          "left": -331,
+          "right": -317
+        },
+        {
+          "tag": "a",
+          "className": "",
+          "left": -310,
+          "right": 9
+        },
+        {
+          "tag": "li",
+          "className": "explorer-file source-document",
+          "left": -337,
+          "right": 16
+        }
+      ],
+      "tactileControlCount": 2,
+      "unnamedTactileControls": [],
+      "keyboardFocus": {
+        "tag": "a",
+        "label": "breadboard",
+        "outlineStyle": "auto",
+        "outlineWidth": "1px",
+        "boxShadow": "none"
+      },
+      "reducedMotion": {
+        "matches": true,
+        "sampledClass": "search-button",
+        "transitionDuration": "1e-05s",
+        "animationDuration": "0s"
+      },
+      "forcedColors": {
+        "matches": true,
+        "sampledClass": "search-button",
+        "borderStyle": "solid",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "label": "quartz-200-percent-equivalent",
+      "url": "http://127.0.0.1:8082/",
+      "viewport": {
+        "width": 720,
+        "height": 450,
+        "devicePixelRatio": 2
+      },
+      "documentWidth": 720,
+      "horizontalOverflow": false,
+      "overflow": [
+        {
+          "tag": "li",
+          "className": "",
+          "left": -684,
+          "right": 16
+        },
+        {
+          "tag": "div",
+          "className": "folder-container",
+          "left": -684,
+          "right": 16
+        },
+        {
+          "tag": "svg",
+          "className": "[object SVGAnimatedString]",
+          "left": -684,
+          "right": -672
+        },
+        {
+          "tag": "polyline",
+          "className": "[object SVGAnimatedString]",
+          "left": -681,
+          "right": -676
+        },
+        {
+          "tag": "div",
+          "className": "",
+          "left": -667,
+          "right": -609
+        },
+        {
+          "tag": "a",
+          "className": "folder-title",
+          "left": -667,
+          "right": -609
+        },
+        {
+          "tag": "li",
+          "className": "explorer-file source-document",
+          "left": -667,
+          "right": 16
+        },
+        {
+          "tag": "div",
+          "className": "explorer-flag-menu",
+          "left": -662,
+          "right": -646
+        },
+        {
+          "tag": "button",
+          "className": "explorer-flag-button",
+          "left": -662,
+          "right": -646
+        },
+        {
+          "tag": "span",
+          "className": "explorer-flag-swatch",
+          "left": -661,
+          "right": -647
+        },
+        {
+          "tag": "a",
+          "className": "",
+          "left": -640,
+          "right": 9
+        },
+        {
+          "tag": "li",
+          "className": "explorer-file source-document",
+          "left": -667,
+          "right": 16
+        }
+      ],
+      "tactileControlCount": 2,
+      "unnamedTactileControls": [],
+      "keyboardFocus": {
+        "tag": "a",
+        "label": "breadboard",
+        "outlineStyle": "auto",
+        "outlineWidth": "1px",
+        "boxShadow": "none"
+      },
+      "reducedMotion": {
+        "matches": true,
+        "sampledClass": "search-button",
+        "transitionDuration": "1e-05s",
+        "animationDuration": "0s"
+      },
+      "forcedColors": {
+        "matches": true,
+        "sampledClass": "search-button",
+        "borderStyle": "solid",
+        "boxShadow": "none"
+      }
+    }
+  ]
+}

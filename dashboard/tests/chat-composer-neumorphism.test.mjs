@@ -11,6 +11,10 @@ const workspace = source(
   "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
 );
 const garden = source("../src/app/garden/garden-assistant.tsx");
+const runtime = source(
+  "../src/app/components/openharness/agent-runtime-panel.tsx",
+);
+const terminal = source("../src/app/components/knowledge-terminal.tsx");
 const quartzComponent = source(
   "../../quartz/quartz/components/BreadboardAI.tsx",
 );
@@ -19,11 +23,11 @@ const quartzStyles = source(
 );
 
 test("dashboard chat surfaces share a borderless neumorphic composer", () => {
-  assert.match(composer, /neumorphic-chat-bar relative rounded-\[30px\] p-2/);
-  assert.match(globalStyles, /\.neumorphic-chat-bar \{[\s\S]*?border: 0;/);
-  assert.match(globalStyles, /9px 9px 20px/);
-  assert.match(globalStyles, /-9px -9px 20px/);
-  assert.match(globalStyles, /\.neumorphic-chat-bar:focus-within/);
+  assert.match(composer, /neu-composer relative rounded-\[30px\] p-2/);
+  assert.match(globalStyles, /\.neu-composer,[\s\S]*?\.neumorphic-chat-bar \{/);
+  assert.match(globalStyles, /7px 8px 18px var\(--neu-shadow\)/);
+  assert.match(globalStyles, /-6px -6px 16px var\(--neu-highlight\)/);
+  assert.match(globalStyles, /\.neu-composer:focus-within/);
   assert.doesNotMatch(workspace, /shrink-0 border-t border-gray-800 px-4 py-4/);
   assert.doesNotMatch(garden, /border-t border-gray-800 p-3/);
 });
@@ -48,4 +52,17 @@ test("Quartz uses the same raised pill structure without input borders", () => {
     quartzStyles,
     /\.breadboard-ai-composer \{[\s\S]*?border-top: 0;/,
   );
+});
+
+test("user chat messages use warm neumorphic bubbles while assistant replies stay flat", () => {
+  for (const transcript of [workspace, garden, runtime, terminal]) {
+    assert.match(transcript, /neu-chat-message-user/);
+    assert.doesNotMatch(transcript, /neu-chat-message-assistant/);
+  }
+  assert.match(globalStyles, /--neu-chat-user-surface:/);
+  assert.match(
+    globalStyles,
+    /\.neu-chat-message-user \{[\s\S]*?background: var\(--neu-chat-user-surface\);[\s\S]*?box-shadow:/,
+  );
+  assert.doesNotMatch(globalStyles, /\.neu-chat-message-assistant \{/);
 });

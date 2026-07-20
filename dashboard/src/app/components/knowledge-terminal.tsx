@@ -720,10 +720,10 @@ export default function KnowledgeTerminal({ scope }: Props) {
                     <div key={`${message.role}-${index}`} className={message.role === 'user' ? 'flex justify-end' : ''}>
                       <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
                         {message.role === 'user' ? (
-                          <div className="rounded-2xl rounded-br-sm bg-gray-800 px-4 py-2.5 text-sm leading-6 text-gray-100">
+                          <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
                             <UserMessageText content={message.content} />
                             {message.attachmentNames?.length ? (
-                              <p className="mt-1.5 text-[11px] text-gray-400">
+                              <p className="mt-1.5 text-[11px] text-[var(--ink-muted)]">
                                 {message.attachmentNames.join(' · ')}
                               </p>
                             ) : null}

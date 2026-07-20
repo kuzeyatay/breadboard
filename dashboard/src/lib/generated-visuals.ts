@@ -936,6 +936,17 @@ function sandboxRuntimePath(): string {
     path.resolve(cwd, "../quartz/quartz/components/scripts/generatedVisualSandbox.inline.js"),
     path.resolve(cwd, "quartz/quartz/components/scripts/generatedVisualSandbox.inline.js"),
   ];
+  // Desktop/packaged installs: the Quartz workspace is wherever
+  // QUARTZ_CONTENT_PATH points (content lives inside the workspace).
+  const contentPath = process.env.QUARTZ_CONTENT_PATH?.trim();
+  if (contentPath) {
+    candidates.unshift(
+      path.resolve(
+        path.dirname(path.resolve(contentPath)),
+        "quartz/components/scripts/generatedVisualSandbox.inline.js",
+      ),
+    );
+  }
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
 }
 

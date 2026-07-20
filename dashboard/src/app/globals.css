@@ -26,6 +26,7 @@
   --neu-surface: var(--paper-surface);
   --neu-surface-raised: var(--paper-raised);
   --neu-surface-pressed: color-mix(in srgb, var(--paper-surface) 78%, var(--paper-bg));
+  --neu-chat-user-surface: color-mix(in srgb, var(--paper-surface) 78%, var(--botanical-3));
   --neu-highlight: color-mix(in srgb, var(--paper-raised) 76%, transparent);
   --neu-shadow: color-mix(in srgb, var(--ink) 13%, transparent);
   --neu-shadow-soft: color-mix(in srgb, var(--ink) 8%, transparent);
@@ -328,6 +329,28 @@ body {
     border-color var(--neu-duration) var(--neu-easing);
 }
 
+.neu-active-task-rail {
+  border: 1px solid color-mix(in srgb, var(--neu-border) 48%, transparent);
+  background: color-mix(in srgb, var(--paper-strong) 70%, var(--neu-surface));
+  box-shadow:
+    inset 2px 2px 5px color-mix(in srgb, var(--neu-shadow) 54%, transparent),
+    inset -2px -2px 5px color-mix(in srgb, var(--neu-highlight) 66%, transparent);
+}
+
+.neu-chat-message {
+  border: 1px solid var(--neu-border);
+  color: var(--ink);
+}
+
+.neu-chat-message-user {
+  border-color: color-mix(in srgb, var(--line-strong) 58%, var(--paper-raised));
+  background: var(--neu-chat-user-surface);
+  box-shadow:
+    4px 5px 12px color-mix(in srgb, var(--ink) 11%, transparent),
+    -3px -3px 9px color-mix(in srgb, var(--paper-raised) 72%, transparent),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 62%, transparent);
+}
+
 .neu-progress-track {
   overflow: hidden;
 }
@@ -562,7 +585,9 @@ b {
   .neu-button-icon,
   .neu-control,
   .neu-composer,
-  .neumorphic-chat-bar {
+  .neu-active-task-rail,
+  .neumorphic-chat-bar,
+  .neu-chat-message {
     transition-duration: 0.01ms;
   }
 
@@ -590,6 +615,12 @@ b {
     -webkit-text-fill-color: currentColor;
     animation: none;
   }
+
+  .markdown-editor-close:active,
+  .markdown-editor-cancel:active,
+  .markdown-editor-save:active {
+    transform: none;
+  }
 }
 
 @media (forced-colors: active) {
@@ -602,12 +633,25 @@ b {
   .neu-dialog,
   .neu-popover,
   .neu-composer,
+  .neu-active-task-rail,
   .neumorphic-chat-bar,
+  .neu-chat-message,
   .neu-button,
   .neu-button-primary,
   .neu-button-accent,
   .neu-button-destructive,
   .neu-button-icon {
+    border: 1px solid CanvasText;
+    box-shadow: none;
+  }
+
+  .markdown-editor-panel,
+  .markdown-editor-close,
+  .markdown-editor-cancel,
+  .markdown-editor-save,
+  .markdown-editor-field input,
+  .markdown-editor-field select,
+  .markdown-editor-tags-box {
     border: 1px solid CanvasText;
     box-shadow: none;
   }

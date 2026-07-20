@@ -1,0 +1,168 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+/**
+ * Single authority for every filesystem location the desktop app uses.
+ *
+ * Two modes:
+ *  - dev:      running from the repository checkout (`electron . --breadboard-dev`
+ *              or app.isPackaged === false). Services run from the repo the way
+ *              the existing dev scripts do.
+ *  - packaged: running from an installed build. Immutable program files live
+ *              under `process.resourcesPath`; every mutable byte lives under
+ *              the OS user-data directory.
+ */
+export type DesktopMode = "dev" | "packaged";
+
+export interface ResolvedPaths {
+  readonly mode: DesktopMode;
+  /** Repo root (dev) or `<resources>/app` (packaged): a directory that mirrors
+   * the repo layout for read-only assets (openharness-config, chatmock, ...). */
+  readonly appRoot: string;
+  /** Read-only resources root (equals appRoot in dev). */
+  readonly resourcesRoot: string;
+  /** Base of all mutable data (Electron userData in packaged mode). */
+  readonly dataRoot: string;
+  /** Dashboard SQLite directory (contains brain.db, skills-catalog.db). */
+  readonly databaseDir: string;
+  /** Quartz workspace (mutable: content/, public/, .quartz-cache). */
+  readonly quartzWorkspace: string;
+  readonly quartzContent: string;
+  /** OpenHarness session workspace root. */
+  readonly openharnessRoot: string;
+  /** Skill stores. */
+  readonly skillsQuarantine: string;
+  readonly skillsApproved: string;
+  readonly skillsConditional: string;
+  readonly logsDir: string;
+  readonly runtimeDir: string;
+  readonly configDir: string;
+  readonly backupsDir: string;
+  readonly tempDir: string;
+  /** Where the Next.js standalone server.js lives (packaged) or the dashboard
+   * package dir (dev). */
+  readonly dashboardServerDir: string;
+  /** OpenHarness runtime workspace: the repo checkout in dev; a provisioned
+   * copy under user data in packaged mode (Bun's isolated installs use
+   * machine-absolute junctions, so node_modules must be created on the target
+   * machine). */
+  readonly openharnessAppDir: string;
+  /** Bundled runtimes (bun, python) in packaged mode; empty string in dev. */
+  readonly runtimesDir: string;
+  /** Bundled auxiliary binaries (ffmpeg, yt-dlp) when present. */
+  readonly binDir: string;
+}
+
+export interface PathResolverInput {
+  readonly isPackaged: boolean;
+  readonly forceDev: boolean;
+  /** Electron app.getPath("userData"). */
+  readonly userDataDir: string;
+  /** process.resourcesPath when packaged. */
+  readonly electronResourcesPath: string | undefined;
+  /** Directory of the compiled desktop main (dist/main) — used to find the repo
+   * root in dev mode. */
+  readonly moduleDir: string;
+}
+
+export function repoRootFromModuleDir(moduleDir: string): string {
+  // dist/main -> dist -> desktop -> repo root
+  return path.resolve(moduleDir, "..", "..", "..");
+}
+
+export function resolvePaths(input: PathResolverInput): ResolvedPaths {
+  const mode: DesktopMode = input.isPackaged && !input.forceDev ? "packaged" : "dev";
+  const dataRoot = path.join(input.userDataDir, "Data");
+
+  if (mode === "dev") {
+    const repoRoot = repoRootFromModuleDir(input.moduleDir);
+    assertDir(repoRoot, "repository root");
+    const quartzWorkspace = path.join(repoRoot, "quartz");
+    return {
+      mode,
+      appRoot: repoRoot,
+      resourcesRoot: repoRoot,
+      dataRoot: repoRoot,
+      databaseDir: path.join(repoRoot, "dashboard", "db"),
+      quartzWorkspace,
+      quartzContent: path.join(quartzWorkspace, "content"),
+      openharnessRoot: path.join(repoRoot, ".runtime", "openharness"),
+      skillsQuarantine: path.join(repoRoot, ".agents", "skills-quarantine"),
+      skillsApproved: path.join(repoRoot, ".agents", "skills"),
+      skillsConditional: path.join(repoRoot, ".agents", "skills-conditional"),
+      logsDir: path.join(repoRoot, ".runtime", "desktop-logs"),
+      runtimeDir: path.join(repoRoot, ".runtime", "desktop"),
+      configDir: path.join(repoRoot, ".runtime", "desktop-config"),
+      backupsDir: path.join(repoRoot, ".runtime", "desktop-backups"),
+      tempDir: path.join(repoRoot, ".runtime", "desktop-temp"),
+      dashboardServerDir: path.join(repoRoot, "dashboard"),
+      openharnessAppDir: path.join(repoRoot, "openharness"),
+      runtimesDir: "",
+      binDir: path.join(repoRoot, "desktop", "resources", "bin"),
+    };
+  }
+
+  const resources = input.electronResourcesPath;
+  if (!resources) {
+    throw new Error("Packaged mode requires process.resourcesPath");
+  }
+  const appRoot = path.join(resources, "app-services");
+  const quartzWorkspace = path.join(dataRoot, "quartz");
+  return {
+    mode,
+    appRoot,
+    resourcesRoot: resources,
+    dataRoot,
+    databaseDir: path.join(dataRoot, "database"),
+    quartzWorkspace,
+    quartzContent: path.join(quartzWorkspace, "content"),
+    openharnessRoot: path.join(dataRoot, "runtime", "openharness"),
+    skillsQuarantine: path.join(dataRoot, "skills", "quarantine"),
+    skillsApproved: path.join(dataRoot, "skills", "approved"),
+    skillsConditional: path.join(dataRoot, "skills", "conditional"),
+    logsDir: path.join(dataRoot, "logs"),
+    runtimeDir: path.join(dataRoot, "runtime"),
+    configDir: path.join(dataRoot, "config"),
+    backupsDir: path.join(dataRoot, "backups"),
+    tempDir: path.join(dataRoot, "temp"),
+    dashboardServerDir: path.join(appRoot, "dashboard-standalone", "dashboard"),
+    openharnessAppDir: path.join(dataRoot, "agent-runtime"),
+    runtimesDir: path.join(resources, "runtimes"),
+    binDir: path.join(resources, "bin"),
+  };
+}
+
+/** Directories that must exist before services start (mutable side only). */
+export function mutableDirectories(paths: ResolvedPaths): string[] {
+  return [
+    paths.databaseDir,
+    paths.quartzContent,
+    paths.openharnessRoot,
+    paths.skillsQuarantine,
+    paths.skillsApproved,
+    paths.skillsConditional,
+    paths.logsDir,
+    paths.runtimeDir,
+    paths.configDir,
+    paths.backupsDir,
+    paths.tempDir,
+  ];
+}
+
+export function ensureMutableDirectories(paths: ResolvedPaths): void {
+  for (const dir of mutableDirectories(paths)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function assertDir(dir: string, label: string): void {
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    throw new Error(`Expected ${label} at ${dir}`);
+  }
+}
+
+/** Normalize + validate that `child` stays inside `parent` (path traversal guard). */
+export function isInside(parent: string, child: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}

@@ -2,12 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OpenHarnessSurface } from "./config.ts";
 import type { CapabilityDecision } from "./capability-policy.ts";
-
-function repositoryRoot(): string {
-  return path.basename(process.cwd()).toLowerCase() === "dashboard"
-    ? path.resolve(process.cwd(), "..")
-    : process.cwd();
-}
+import { repositoryRoot } from "../runtime-paths.ts";
 
 function readSystemPrompt(name: string): string {
   const file = path.join(

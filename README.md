@@ -74,6 +74,41 @@ Each **cluster** acts like its own knowledge environment. You can upload source 
 
 ---
 
+## Desktop App (Windows)
+
+Breadboard ships as a native Windows desktop application: an Electron shell
+that starts, supervises, and cleanly shuts down the whole local stack
+(ChatMock → OpenHarness → Quartz → dashboard) with no terminal windows and no
+manual `start.bat` or localhost URLs.
+
+- **Develop**: `cd desktop && npm install`, then `npm run desktop:dev` from
+  the repo root (uses the normal dev servers; existing scripts unchanged).
+- **Build the installer**: `npm run desktop:build:dashboard` →
+  `npm run desktop:prepare` → `npm run desktop:test` →
+  `npm run desktop:verify` → `npm run desktop:dist:win`
+  (produces `desktop/release/Breadboard-Setup-<version>-x64.exe`).
+- **Runtime architecture**: the Electron main process is the lifecycle owner;
+  services run on bundled Node/Bun/Python runtimes, bind `127.0.0.1` only,
+  and use per-launch ports and per-install secrets. See
+  `docs/DESKTOP_ARCHITECTURE.md`.
+- **Data**: everything mutable lives in `%APPDATA%/breadboard-desktop/Data/`
+  (databases, gardens, config, `logs/`). The installer never touches it; an
+  existing dev checkout's data can be imported (copied) on first launch —
+  see `docs/DESKTOP_ARCHITECTURE.md` (migration) and
+  `docs/DESKTOP_TROUBLESHOOTING.md`.
+- **Optional dependencies**: Docker (only for the optional Scriberr
+  transcription mode), ffmpeg/yt-dlp (video ingestion; the app reports the
+  capability unavailable when absent).
+- **Signing / updates**: the installer is currently unsigned and auto-update
+  is disabled by design — see `docs/DESKTOP_RELEASE_CHECKLIST.md`.
+
+Full docs: `docs/DESKTOP_ARCHITECTURE.md`, `docs/DESKTOP_RUNTIME_AUDIT.md`,
+`docs/DESKTOP_DEVELOPMENT.md`, `docs/DESKTOP_PACKAGING.md`,
+`docs/DESKTOP_SECURITY.md`, `docs/DESKTOP_TROUBLESHOOTING.md`,
+`docs/DESKTOP_RELEASE_CHECKLIST.md`.
+
+---
+
 ## Architecture
 
 ```mermaid

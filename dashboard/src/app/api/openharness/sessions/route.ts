@@ -14,6 +14,7 @@ import {
   runtimeSessionTitle,
 } from "@/lib/openharness/runtime-store.ts";
 import { OPENHARNESS_SURFACES, type OpenHarnessSurface } from "@/lib/openharness/config.ts";
+import { getActiveRuntimeRun } from "@/lib/openharness/run-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -31,18 +32,24 @@ export async function GET(request: Request) {
     const userId = await requireUserId();
     requireEnabled();
     const surface = parseSurface(new URL(request.url).searchParams.get("surface"));
-    const sessions = listRuntimeSessionsForUser(surface, userId).map((row) => ({
-      id: row.id,
-      title: runtimeSessionTitle(row),
-      gardenId: row.garden_id,
-      pageSlug: row.page_slug,
-      status: row.last_runtime_status,
-      activeDirectory: row.active_directory,
-      filesystemMode: row.filesystem_mode,
-      capabilityMode: row.capability_mode ?? "knowledge",
-      updatedAt: row.updated_at,
-      messages: listRuntimeMessages(row.id).map(presentRuntimeMessage),
-    }));
+    const sessions = listRuntimeSessionsForUser(surface, userId).map((row) => {
+      const activeRun = getActiveRuntimeRun(row.id);
+      return {
+        id: row.id,
+        title: runtimeSessionTitle(row),
+        gardenId: row.garden_id,
+        pageSlug: row.page_slug,
+        status: row.last_runtime_status,
+        activeDirectory: row.active_directory,
+        filesystemMode: row.filesystem_mode,
+        capabilityMode: row.capability_mode ?? "knowledge",
+        updatedAt: row.updated_at,
+        activeRun: activeRun
+          ? { id: activeRun.id, instruction: activeRun.instruction }
+          : null,
+        messages: listRuntimeMessages(row.id).map(presentRuntimeMessage),
+      };
+    });
     return NextResponse.json({ sessions });
   } catch (error) {
     return apiErrorResponse(error);

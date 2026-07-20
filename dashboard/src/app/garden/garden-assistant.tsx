@@ -1310,7 +1310,7 @@ export default function GardenAssistant({
                 <div
                   className={
                     message.role === 'user'
-                      ? 'rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm leading-6 text-gray-100'
+                      ? 'neu-chat-message neu-chat-message-user rounded-xl rounded-tr-sm px-3 py-2 text-sm leading-6'
                       : 'text-sm leading-6 text-gray-200'
                   }
                 >

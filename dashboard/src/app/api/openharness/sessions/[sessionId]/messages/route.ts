@@ -25,6 +25,11 @@ import { composeOpenHarnessSystemPrompt } from "@/lib/openharness/system-prompts
 import { persistCapabilityDecision } from "@/lib/openharness/runtime-store.ts";
 import { scheduleCapabilityExpiry } from "@/lib/openharness/capability-lifecycle.ts";
 import type { ChatAttachment } from "@/lib/chat-attachments";
+import {
+  beginRuntimeRun,
+  finishRuntimeRun,
+  getActiveRuntimeRun,
+} from "@/lib/openharness/run-store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -111,6 +116,13 @@ export async function POST(
     const body = await readJsonBody(request, MAX_MESSAGE_REQUEST_BYTES);
     const text = requireString(body.text, "text", 200_000);
     const attachments = parseAttachments(body.attachments);
+    if (getActiveRuntimeRun(session.row.id)) {
+      throw new ApiError(
+        409,
+        "run_already_active",
+        "This session already has an active run. Steer or stop it first.",
+      );
+    }
     // Capability comes from the requested outcome plus the user's real
     // filesystem grants — the same call Garden Chat makes, so the same task
     // with the same grants yields the same capabilities on either surface.
@@ -241,6 +253,21 @@ export async function POST(
       });
     }
 
+    const tools = mergeSelectedTools(prepared.grant.allowedTools, resolved.tools);
+    const system = composeOpenHarnessSystemPrompt({
+      surface: session.row.surface,
+      decision,
+    });
+    const run = beginRuntimeRun({
+      runtimeSessionId: session.row.id,
+      instruction: text,
+      dispatch: {
+        model: engine.model,
+        variant: engine.variant,
+        tools,
+        system,
+      },
+    });
     markStatus(session, "busy");
     recordAuditEvent({
       eventType: "message.submitted",
@@ -258,26 +285,29 @@ export async function POST(
         capabilityMode: decision.mode,
       },
     });
-    await getOpenHarnessGateway().sendMessage({
-      openHarnessSessionId: session.openHarnessSessionId,
-      workspaceKey: session.workspaceKey,
-      directory: session.activeDirectory,
-      agentName: session.agentName,
-      text: resolved.text,
-      attachments,
-      // The brokered map is authoritative; a selected skill/MCP tool may only
-      // narrow it, never widen it.
-      tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
-      model: engine.model,
-      variant: engine.variant,
-      system: composeOpenHarnessSystemPrompt({
-        surface: session.row.surface,
-        decision,
-      }),
-    });
+    try {
+      await getOpenHarnessGateway().sendMessage({
+        openHarnessSessionId: session.openHarnessSessionId,
+        workspaceKey: session.workspaceKey,
+        directory: session.activeDirectory,
+        agentName: session.agentName,
+        text: resolved.text,
+        attachments,
+        // The brokered map is authoritative; a selected skill/MCP tool may only
+        // narrow it, never widen it.
+        tools,
+        model: engine.model,
+        variant: engine.variant,
+        system,
+      });
+    } catch (error) {
+      finishRuntimeRun(run.id, "error");
+      throw error;
+    }
 
     return NextResponse.json({
       accepted: true,
+      runId: run.id,
       capability: {
         mode: decision.mode,
         expiresAt: decision.expiresAt,

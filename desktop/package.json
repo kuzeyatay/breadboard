@@ -1,0 +1,29 @@
+{
+  "name": "breadboard-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Breadboard desktop shell: Electron lifecycle owner and local service supervisor.",
+  "main": "dist/main/main.js",
+  "author": "Breadboard",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "dev": "npm run build && electron . --breadboard-dev",
+    "start": "electron .",
+    "test": "npm run build && node --test dist-tests/tests/*.test.js",
+    "test:build": "tsc -p tsconfig.tests.json",
+    "pretest": "npm run test:build",
+    "prepare:runtimes": "node scripts/prepare-runtimes.mjs",
+    "prepare:app": "node scripts/prepare-app-resources.mjs",
+    "rebuild:native": "electron-rebuild -m ../dashboard -o better-sqlite3,bcrypt",
+    "dist:win": "npm run build && node scripts/dist-win.mjs",
+    "verify:package": "node scripts/verify-package.mjs"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "@types/node": "^22.10.2",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2"
+  }
+}

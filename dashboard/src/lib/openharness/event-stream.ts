@@ -17,13 +17,13 @@ import {
   revokeCapabilityDecision,
 } from "./runtime-store.ts";
 import type { AuthorizedRuntimeSession } from "./session-service.ts";
-import { decideCapabilityMode } from "./capability-policy.ts";
 import {
   assessVerification,
   evidenceKindForTool,
   type EvidenceRecord,
   type VerificationSummary,
 } from "./evidence.ts";
+import { finishActiveRuntimeRun } from "./run-store.ts";
 
 function persistAssistantOnce(
   session: AuthorizedRuntimeSession,
@@ -116,6 +116,14 @@ export function buildSessionEventStream(
         persisted = true;
         finalStatus = status;
         setRuntimeStatus(session.row.id, status);
+        finishActiveRuntimeRun(
+          session.row.id,
+          status === "idle"
+            ? "completed"
+            : status === "aborted"
+              ? "cancelled"
+              : "error",
+        );
         const verification = assessVerification(assistantText, evidence);
         try {
           persistAssistantOnce(
@@ -253,7 +261,7 @@ export function buildSessionEventStream(
               event.payload.status === "failed"
             ) {
               finalize(event.payload.status);
-              emit({ type: "done" });
+              emit({ type: event.payload.status === "aborted" ? "cancelled" : "done" });
               break;
             }
           }

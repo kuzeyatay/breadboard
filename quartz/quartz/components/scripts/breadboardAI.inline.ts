@@ -227,7 +227,11 @@ function setupPanel(root: HTMLElement) {
   }
 
   function syncCommandTint() {
-    input!.classList.toggle("breadboard-ai-input-command", /^\/[a-z0-9]/i.test(input!.value))
+    // Tint only while the draft is nothing but command tokens; once arguments
+    // follow, the single-color input goes back to normal ink (the transcript
+    // still tints the full submitted invocation).
+    const run = input!.value.match(LEADING_COMMAND_RUN)?.[0]
+    input!.classList.toggle("breadboard-ai-input-command", Boolean(run) && run!.length === input!.value.length)
   }
 
   function renderCommands() {
@@ -354,15 +358,11 @@ function setupPanel(root: HTMLElement) {
   function addMessage(role: "user" | "assistant", text: string): HTMLElement {
     const el = document.createElement("div")
     el.className = `breadboard-ai-message breadboard-ai-${role}`
-    const command = role === "user" ? text.match(LEADING_COMMAND_RUN)?.[0] : undefined
-    if (command) {
-      const token = document.createElement("span")
-      token.className = "breadboard-ai-command-text"
-      token.textContent = command
-      el.append(token, text.slice(command.length))
-    } else {
-      el.textContent = text
+    // A command invocation tints the whole message, arguments included.
+    if (role === "user" && LEADING_COMMAND_RUN.test(text)) {
+      el.classList.add("breadboard-ai-command-text")
     }
+    el.textContent = text
     messages!.appendChild(el)
     messages!.scrollTop = messages!.scrollHeight
     return el

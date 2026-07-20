@@ -67,6 +67,7 @@ export interface ActivityItem {
 }
 
 export interface AgentMessage {
+  id?: string;
   role: "user" | "assistant";
   content: string;
   reasoning?: string;
@@ -75,6 +76,9 @@ export interface AgentMessage {
   proposal?: unknown;
   usage?: ChatTokenUsage;
   verification?: VerificationSummary;
+  interrupted?: boolean;
+  courseCorrection?: boolean;
+  clientRequestId?: string;
 }
 
 export interface SkillContinuation {
@@ -108,6 +112,39 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
 export type ConnectionState =
   "idle" | "connecting" | "streaming" | "waiting" | "error";
 
+export type AgentRunState =
+  | "idle"
+  | "submitting"
+  | "connecting"
+  | "running"
+  | "waiting_for_permission"
+  | "steering"
+  | "stopping"
+  | "completed"
+  | "cancelled"
+  | "error";
+
+export function isActiveAgentRunState(state: AgentRunState): boolean {
+  return (
+    state === "submitting" ||
+    state === "connecting" ||
+    state === "running" ||
+    state === "waiting_for_permission" ||
+    state === "steering" ||
+    state === "stopping"
+  );
+}
+
+function connectionForRunState(state: AgentRunState): ConnectionState {
+  if (state === "submitting" || state === "connecting") return "connecting";
+  if (state === "waiting_for_permission") return "waiting";
+  if (state === "running" || state === "steering" || state === "stopping") {
+    return "streaming";
+  }
+  if (state === "error") return "error";
+  return "idle";
+}
+
 interface CreateOptions {
   gardenSlug?: string;
   pageSlug?: string;
@@ -120,6 +157,11 @@ export interface UseAgentSessionResult {
   filesystemMode: "restricted" | "full";
   messages: AgentMessage[];
   connection: ConnectionState;
+  runState: AgentRunState;
+  activeRunId: string | null;
+  activeInstruction: string | null;
+  steerFeedback: string | null;
+  steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
   activeTools: ToolActivity[];
@@ -135,6 +177,7 @@ export interface UseAgentSessionResult {
       attachments?: ChatAttachment[];
     },
   ) => Promise<void>;
+  steer: (text: string) => Promise<boolean>;
   respondToPermission: (
     decision: "once" | "always" | "reject",
   ) => Promise<void>;
@@ -192,6 +235,16 @@ export function useAgentSession(
   );
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("idle");
+  const [runState, setRunState] = useState<AgentRunState>("idle");
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [activeInstruction, setActiveInstruction] = useState<string | null>(null);
+  const [steerFeedback, setSteerFeedback] = useState<string | null>(null);
+  const [steerError, setSteerError] = useState<string | null>(null);
+  const [runToResume, setRunToResume] = useState<{
+    sessionId: number;
+    runId: string;
+    instruction: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] =
     useState<PermissionPrompt | null>(null);
@@ -199,7 +252,23 @@ export function useAgentSession(
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<number | null>(null);
+  const runStateRef = useRef<AgentRunState>("idle");
+  const activeRunIdRef = useRef<string | null>(null);
+  const activeStreamRef = useRef<Promise<"completed" | "cancelled" | "failed"> | null>(null);
+  const steeringRef = useRef(false);
+  const stopRequestedRef = useRef(false);
+  const resumedRunIdRef = useRef<string | null>(null);
+  const latestSendOptionsRef = useRef<{
+    model?: string;
+    reasoningEffort?: AssistantReasoningEffort;
+  }>({});
   const [yoloMode] = useYoloMode();
+
+  const transition = useCallback((next: AgentRunState) => {
+    runStateRef.current = next;
+    setRunState(next);
+    setConnection(connectionForRunState(next));
+  }, []);
 
   // Breadboard owns the durable transcript. Restore the newest matching
   // runtime session after a refresh; OpenHarness ids remain server-side.
@@ -231,12 +300,31 @@ export function useAgentSession(
           restored.filesystemMode === "full" ? "full" : "restricted",
         );
         setMessages(normalizeRestoredMessages(restored.messages));
+        const restoredRun =
+          restored.activeRun && typeof restored.activeRun === "object"
+            ? (restored.activeRun as Record<string, unknown>)
+            : null;
+        if (
+          restoredRun &&
+          typeof restoredRun.id === "string" &&
+          typeof restoredRun.instruction === "string"
+        ) {
+          activeRunIdRef.current = restoredRun.id;
+          setActiveRunId(restoredRun.id);
+          setActiveInstruction(restoredRun.instruction);
+          transition("connecting");
+          setRunToResume({
+            sessionId: restored.id,
+            runId: restoredRun.id,
+            instruction: restoredRun.instruction,
+          });
+        }
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [surface, createOptions?.gardenSlug, createOptions?.pageSlug]);
+  }, [surface, createOptions?.gardenSlug, createOptions?.pageSlug, transition]);
 
   const streamEvents = useCallback(
     async (
@@ -244,7 +332,7 @@ export function useAgentSession(
       assistant: AgentMessage,
       commit: (message: AgentMessage) => void,
       onConnected: () => void,
-    ) => {
+    ): Promise<"completed" | "cancelled" | "failed"> => {
       const controller = new AbortController();
       abortRef.current = controller;
       const response = await fetch(
@@ -261,6 +349,7 @@ export function useAgentSession(
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let failed = false;
       const tools = new Map<string, ToolActivity>();
       const upsertActivity = (item: ActivityItem) => {
         setActivities((current) => {
@@ -404,7 +493,7 @@ export function useAgentSession(
               };
               if (isYoloModeEnabled()) {
                 setPendingPermission(null);
-                setConnection("streaming");
+                if (runStateRef.current !== "stopping") transition("running");
                 try {
                   await submitPermissionDecision(
                     prompt.requestId,
@@ -412,7 +501,7 @@ export function useAgentSession(
                     "always",
                   );
                 } catch (permissionError) {
-                  setConnection("error");
+                  transition("error");
                   setError(
                     permissionError instanceof Error
                       ? permissionError.message
@@ -430,14 +519,25 @@ export function useAgentSession(
                 status: "permission_required",
                 startedAt: new Date().toISOString(),
               });
-              setConnection("waiting");
+              if (runStateRef.current !== "stopping") {
+                transition("waiting_for_permission");
+              }
               break;
             }
             case "session.status":
-              if (payload.status === "waiting") setConnection("waiting");
-              else if (payload.status === "busy") setConnection("streaming");
+              if (runStateRef.current !== "stopping") {
+                if (payload.status === "waiting") {
+                  transition("waiting_for_permission");
+                } else if (
+                  payload.status === "busy" &&
+                  runStateRef.current !== "steering"
+                ) {
+                  transition("running");
+                }
+              }
               break;
             case "error":
+              failed = true;
               setError(
                 String(payload.message ?? "The agent reported an error."),
               );
@@ -462,7 +562,9 @@ export function useAgentSession(
                     : item,
                 ),
               );
-              return;
+              assistant = { ...assistant, interrupted: true };
+              commit(assistant);
+              return "cancelled";
             case "done":
               setActivities((current) =>
                 current.map((item) =>
@@ -475,15 +577,115 @@ export function useAgentSession(
                     : item,
                 ),
               );
-              return;
+              return failed ? "failed" : "completed";
             default:
               break;
           }
         }
       }
+      return failed ? "failed" : "completed";
     },
-    [],
+    [transition],
   );
+
+  const adoptDispatchedRun = useCallback(
+    async (activeSessionId: number, runId: string, instruction: string) => {
+      await activeStreamRef.current?.catch(() => undefined);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+      const assistant: AgentMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: "",
+        sources: [],
+        tools: [],
+      };
+      setMessages((current) => [...current, assistant]);
+      const commit = (message: AgentMessage) => {
+        setMessages((current) => {
+          const next = [...current];
+          const index = next.findIndex(
+            (candidate) => candidate.id === assistant.id,
+          );
+          if (index >= 0) next[index] = { ...message };
+          return next;
+        });
+      };
+
+      activeRunIdRef.current = runId;
+      setActiveRunId(runId);
+      setActiveInstruction(instruction);
+      setError(null);
+      setActiveTools([]);
+      setActivities([
+        {
+          id: "reasoning",
+          kind: "reasoning",
+          label: "Thinking",
+          status: "running",
+          startedAt: new Date().toISOString(),
+        },
+      ]);
+      transition("connecting");
+
+      let adoptedStream: Promise<"completed" | "cancelled" | "failed"> | null = null;
+      try {
+        let markConnected!: () => void;
+        const connected = new Promise<void>((resolve) => {
+          markConnected = resolve;
+        });
+        const streamPromise = streamEvents(
+          activeSessionId,
+          assistant,
+          commit,
+          markConnected,
+        );
+        adoptedStream = streamPromise;
+        activeStreamRef.current = streamPromise;
+        await Promise.race([
+          connected,
+          streamPromise.then(() => {
+            throw new Error(
+              "The follow-up event stream closed before it became ready.",
+            );
+          }),
+        ]);
+        if (activeRunIdRef.current === runId) transition("running");
+        const outcome = await streamPromise;
+        if (activeRunIdRef.current !== runId) return;
+        activeRunIdRef.current = null;
+        setActiveRunId(null);
+        if (outcome === "cancelled") transition("cancelled");
+        else if (outcome === "failed") transition("error");
+        else transition("completed");
+      } catch (streamError) {
+        if ((streamError as Error).name !== "AbortError") {
+          setError(
+            streamError instanceof Error
+              ? streamError.message
+              : "The follow-up event stream failed.",
+          );
+          transition("error");
+        }
+      } finally {
+        if (activeStreamRef.current === adoptedStream) {
+          activeStreamRef.current = null;
+          abortRef.current = null;
+        }
+      }
+    },
+    [streamEvents, transition],
+  );
+
+  useEffect(() => {
+    if (!runToResume || resumedRunIdRef.current === runToResume.runId) return;
+    resumedRunIdRef.current = runToResume.runId;
+    void adoptDispatchedRun(
+      runToResume.sessionId,
+      runToResume.runId,
+      runToResume.instruction,
+    );
+  }, [adoptDispatchedRun, runToResume]);
 
   const send = useCallback(
     async (
@@ -496,10 +698,19 @@ export function useAgentSession(
       },
     ) => {
       const trimmed = text.trim();
-      if (!trimmed || connection === "streaming" || connection === "connecting")
-        return;
+      if (!trimmed || isActiveAgentRunState(runStateRef.current)) return;
+      latestSendOptionsRef.current = {
+        model: options?.model,
+        reasoningEffort: options?.reasoningEffort,
+      };
+      stopRequestedRef.current = false;
       setError(null);
-      setConnection("connecting");
+      setSteerError(null);
+      setSteerFeedback(null);
+      setActiveInstruction(trimmed);
+      setActiveRunId(null);
+      activeRunIdRef.current = null;
+      transition("submitting");
       setActiveTools([]);
       setActivities([
         {
@@ -511,8 +722,13 @@ export function useAgentSession(
         },
       ]);
 
-      const userMessage: AgentMessage = { role: "user", content: trimmed };
+      const userMessage: AgentMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: trimmed,
+      };
       const assistant: AgentMessage = {
+        id: crypto.randomUUID(),
         role: "assistant",
         content: "",
         sources: [],
@@ -524,7 +740,10 @@ export function useAgentSession(
       const commit = (message: AgentMessage) => {
         setMessages((current) => {
           const next = [...current];
-          next[next.length - 1] = { ...message };
+          const assistantIndex = next.findIndex(
+            (candidate) => candidate.id === assistant.id,
+          );
+          if (assistantIndex >= 0) next[assistantIndex] = { ...message };
           return next;
         });
       };
@@ -537,11 +756,15 @@ export function useAgentSession(
           { activeDirectory, filesystemMode },
         );
         const activeSessionId = ensured.id;
+        if (stopRequestedRef.current) {
+          transition("cancelled");
+          return;
+        }
         sessionRef.current = activeSessionId;
         setSessionId(activeSessionId);
         setActiveDirectory(ensured.activeDirectory);
         setFilesystemMode(ensured.filesystemMode);
-        setConnection("streaming");
+        transition("connecting");
 
         // Open the event stream, then dispatch the message so no early deltas are
         // missed. The stream stays open until the turn goes idle.
@@ -555,6 +778,7 @@ export function useAgentSession(
           commit,
           markConnected,
         );
+        activeStreamRef.current = streamPromise;
         await Promise.race([
           connected,
           streamPromise.then(() => {
@@ -563,6 +787,11 @@ export function useAgentSession(
             );
           }),
         ]);
+        if (stopRequestedRef.current) {
+          abortRef.current?.abort();
+          transition("cancelled");
+          return;
+        }
         const sendResponse = await fetch(
           `/api/openharness/sessions/${activeSessionId}/messages`,
           {
@@ -585,31 +814,162 @@ export function useAgentSession(
               : "The agent could not accept the message.",
           );
         }
-        await streamPromise;
-        setConnection("idle");
+        const responseBody = await sendResponse.json().catch(() => ({}));
+        if (typeof responseBody.runId !== "string" || !responseBody.runId) {
+          throw new Error("The agent did not return an active run id.");
+        }
+        activeRunIdRef.current = responseBody.runId;
+        setActiveRunId(responseBody.runId);
+        if (stopRequestedRef.current) {
+          transition("stopping");
+          await fetch(
+            `/api/openharness/sessions/${activeSessionId}/abort`,
+            { method: "POST" },
+          ).catch(() => undefined);
+        } else if (runStateRef.current !== "stopping") {
+          transition("running");
+        }
+        const outcome = await streamPromise;
+        activeRunIdRef.current = null;
+        setActiveRunId(null);
+        if (outcome === "cancelled") transition("cancelled");
+        else if (outcome === "failed") transition("error");
+        else transition("completed");
       } catch (err) {
         abortRef.current?.abort();
         if ((err as Error).name === "AbortError") {
-          setConnection("idle");
+          if (runStateRef.current !== "cancelled") transition("idle");
           return;
         }
         setError(
           err instanceof Error ? err.message : "The agent is unavailable.",
         );
-        setConnection("error");
+        activeRunIdRef.current = null;
+        setActiveRunId(null);
+        transition("error");
       } finally {
         abortRef.current = null;
+        activeStreamRef.current = null;
       }
     },
     [
       activeDirectory,
-      connection,
       createOptions,
       filesystemMode,
       messages,
       streamEvents,
       surface,
+      transition,
     ],
+  );
+
+  const steer = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim();
+      const activeSessionId = sessionRef.current;
+      const runId = activeRunIdRef.current;
+      if (!trimmed || !activeSessionId || !runId || steeringRef.current) {
+        return false;
+      }
+
+      steeringRef.current = true;
+      const clientRequestId = crypto.randomUUID();
+      setSteerError(null);
+      setSteerFeedback(null);
+      transition("steering");
+      try {
+        const response = await fetch(
+          `/api/openharness/sessions/${activeSessionId}/steer`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              runId,
+              text: trimmed,
+              clientRequestId,
+            }),
+          },
+        );
+        const body = await response.json().catch(() => ({}));
+
+        // This is the only automatic fallback: the server authoritatively says
+        // the run ended before it could accept steering. Reuse the same
+        // Breadboard session and let normal send create the next run.
+        if (response.status === 409 && body.code === "run_not_active") {
+          await activeStreamRef.current?.catch(() => undefined);
+          await Promise.resolve();
+          activeRunIdRef.current = null;
+          setActiveRunId(null);
+          if (isActiveAgentRunState(runStateRef.current)) {
+            transition("completed");
+          }
+          setSteerFeedback("Run finished; sent as a follow-up.");
+          void send(trimmed, latestSendOptionsRef.current);
+          return true;
+        }
+        if (!response.ok) {
+          throw new Error(
+            typeof body.error === "string"
+              ? body.error
+              : "The course correction could not be applied.",
+          );
+        }
+
+        setMessages((current) => {
+          if (
+            current.some(
+              (message) => message.clientRequestId === clientRequestId,
+            )
+          ) {
+            return current;
+          }
+          return [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              role: "user",
+              content: trimmed,
+              courseCorrection: true,
+              clientRequestId,
+            },
+          ];
+        });
+        setActiveInstruction(trimmed);
+        if (body.mode === "follow_up" && typeof body.runId === "string") {
+          setSteerFeedback("Run finished; continuing as a follow-up.");
+          void adoptDispatchedRun(activeSessionId, body.runId, trimmed);
+          return true;
+        }
+        setSteerFeedback("Course correction applied.");
+        if (
+          activeRunIdRef.current === runId &&
+          runStateRef.current !== "stopping"
+        ) {
+          transition(
+            pendingPermission ? "waiting_for_permission" : "running",
+          );
+        }
+        return true;
+      } catch (steeringError) {
+        setSteerError(
+          steeringError instanceof Error
+            ? steeringError.message
+            : "The course correction could not be applied.",
+        );
+        if (
+          activeRunIdRef.current === runId &&
+          runStateRef.current !== "stopping"
+        ) {
+          transition(
+            pendingPermission ? "waiting_for_permission" : "running",
+          );
+        }
+        return false;
+      } finally {
+        steeringRef.current = false;
+      }
+    },
+    [adoptDispatchedRun, pendingPermission, send, transition],
   );
 
   const respondToPermission = useCallback(
@@ -618,7 +978,7 @@ export function useAgentSession(
       const activeSessionId = sessionRef.current;
       if (!prompt || !activeSessionId) return;
       setPendingPermission(null);
-      setConnection("streaming");
+      transition("running");
       try {
         await submitPermissionDecision(
           prompt.requestId,
@@ -627,7 +987,7 @@ export function useAgentSession(
         );
       } catch (permissionError) {
         setPendingPermission(prompt);
-        setConnection("error");
+        transition("error");
         setError(
           permissionError instanceof Error
             ? permissionError.message
@@ -647,7 +1007,7 @@ export function useAgentSession(
         ),
       );
     },
-    [pendingPermission],
+    [pendingPermission, transition],
   );
 
   useEffect(() => {
@@ -660,14 +1020,82 @@ export function useAgentSession(
 
   const abort = useCallback(async () => {
     const activeSessionId = sessionRef.current;
-    abortRef.current?.abort();
-    if (activeSessionId) {
-      await fetch(`/api/openharness/sessions/${activeSessionId}/abort`, {
-        method: "POST",
-      }).catch(() => undefined);
+    if (!isActiveAgentRunState(runStateRef.current)) return;
+    setError(null);
+    stopRequestedRef.current = true;
+    transition("stopping");
+    if (!activeSessionId || !activeRunIdRef.current) {
+      abortRef.current?.abort();
+      transition("cancelled");
+      setPendingPermission(null);
+      setActivities((current) =>
+        current.map((item) =>
+          item.status === "running" || item.status === "permission_required"
+            ? {
+                ...item,
+                status: "cancelled",
+                completedAt: new Date().toISOString(),
+              }
+            : item,
+        ),
+      );
+      return;
     }
-    setConnection("idle");
+    try {
+      const response = await fetch(
+        `/api/openharness/sessions/${activeSessionId}/abort`,
+        { method: "POST" },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof body.error === "string"
+            ? body.error
+            : "The active run could not be stopped.",
+        );
+      }
+
+      if (body.alreadyFinished && body.status === "completed") {
+        activeRunIdRef.current = null;
+        setActiveRunId(null);
+        transition("completed");
+        return;
+      }
+
+      if (activeStreamRef.current) {
+        await Promise.race([
+          activeStreamRef.current.catch(() => "failed" as const),
+          new Promise<"timeout">((resolve) => {
+            window.setTimeout(() => resolve("timeout"), 2_000);
+          }),
+        ]);
+      }
+      if (runStateRef.current === "stopping") {
+        abortRef.current?.abort();
+        activeRunIdRef.current = null;
+        setActiveRunId(null);
+        transition("cancelled");
+      }
+    } catch (stopError) {
+      setError(
+        stopError instanceof Error
+          ? stopError.message
+          : "The active run could not be stopped.",
+      );
+      transition(pendingPermission ? "waiting_for_permission" : "running");
+      return;
+    }
     setPendingPermission(null);
+    setMessages((current) => {
+      const next = [...current];
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        if (next[index].role === "assistant") {
+          next[index] = { ...next[index], interrupted: true };
+          break;
+        }
+      }
+      return next;
+    });
     setActivities((current) =>
       current.map((item) =>
         item.status === "running" || item.status === "permission_required"
@@ -677,9 +1105,9 @@ export function useAgentSession(
               completedAt: new Date().toISOString(),
             }
           : item,
-      ),
+        ),
     );
-  }, []);
+  }, [pendingPermission, transition]);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
@@ -687,12 +1115,19 @@ export function useAgentSession(
     setSessionId(null);
     setActiveDirectory(null);
     setMessages([]);
-    setConnection("idle");
+    transition("idle");
+    activeRunIdRef.current = null;
+    stopRequestedRef.current = false;
+    resumedRunIdRef.current = null;
+    setActiveRunId(null);
+    setActiveInstruction(null);
+    setSteerFeedback(null);
+    setSteerError(null);
     setError(null);
     setPendingPermission(null);
     setActiveTools([]);
     setActivities([]);
-  }, []);
+  }, [transition]);
 
   const setSessionIdExternal = useCallback((id: number | null) => {
     sessionRef.current = id;
@@ -705,6 +1140,11 @@ export function useAgentSession(
     filesystemMode,
     messages,
     connection,
+    runState,
+    activeRunId,
+    activeInstruction,
+    steerFeedback,
+    steerError,
     error,
     pendingPermission,
     activeTools,
@@ -712,6 +1152,7 @@ export function useAgentSession(
     setMessages,
     setSessionId: setSessionIdExternal,
     send,
+    steer,
     respondToPermission,
     abort,
     reset,
