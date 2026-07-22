@@ -35,7 +35,7 @@ export function corsHeaders(origin: string | null): Record<string, string> {
   const allowed = origin && allowlist.includes(origin) ? origin : allowlist[0] ?? "*";
   return {
     "Access-Control-Allow-Origin": allowed,
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Quartz-Client-Token",
     "Access-Control-Allow-Credentials": "true",
     Vary: "Origin",

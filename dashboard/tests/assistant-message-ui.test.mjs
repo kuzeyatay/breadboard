@@ -15,6 +15,13 @@ const runtime = source(
 const agentSession = source(
   "../src/app/components/openharness/use-agent-session.ts",
 );
+const sessionsRoute = source("../src/app/api/openharness/sessions/route.ts");
+const eventStream = source("../src/lib/openharness/event-stream.ts");
+const conversationStore = source("../src/lib/conversations/store.ts");
+const chatSessionsRoute = source("../src/app/api/chat-sessions/route.ts");
+const chatSessionRoute = source(
+  "../src/app/api/chat-sessions/[sessionId]/route.ts",
+);
 const workspace = source(
   "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
 );
@@ -34,6 +41,10 @@ test("thinking remains visible with response metadata and shimmers while active"
   assert.match(activity, /statusMetadata/);
   assert.match(activity, /formatResponseDuration/);
   assert.match(activity, /assistantResponseElapsedMs/);
+  assert.match(
+    activity,
+    /reportedDurationMs: responseDurationMs \?\? usage\?\.responseDurationMs/,
+  );
   assert.match(timing, /Math\.min\(\.\.\.starts\)/);
   assert.match(timing, /Math\.max\(\.\.\.completions\)/);
   assert.match(
@@ -51,12 +62,39 @@ test("thinking remains visible with response metadata and shimmers while active"
   assert.ok(thinkingStart >= 0 && thinkingEnd > thinkingStart);
   assert.doesNotMatch(thinkingBlock, /rounded-2xl border/);
   assert.match(globalStyles, /@keyframes thinking-shimmer/);
-  assert.match(globalStyles, /background-position: -180% 0/);
-  assert.match(globalStyles, /background-position: 180% 0/);
+  assert.match(
+    globalStyles,
+    /@keyframes thinking-shimmer[\s\S]*?from \{\s*background-position: 180% 0;[\s\S]*?to \{\s*background-position: -180% 0;/,
+  );
   assert.match(
     globalStyles,
     /prefers-reduced-motion:[\s\S]*?\.thinking-shimmer/,
   );
+});
+
+test("completed response duration remains attached to restored assistant messages", () => {
+  assert.match(agentSession, /responseDurationMs\?: number/);
+  assert.match(agentSession, /commitResponseDuration/);
+  assert.match(
+    agentSession,
+    /responseDurationMs: Math\.max\(0, completedAtMs - responseStartedAtMs\)/,
+  );
+  assert.match(runtime, /message\.responseDurationMs !== undefined/);
+  assert.match(
+    runtime,
+    /responseDurationMs=\{message\.responseDurationMs\}/,
+  );
+  assert.match(eventStream, /\.\.\.\(responseDurationMs !== undefined/);
+  assert.match(sessionsRoute, /presented\.metadata\.responseDurationMs/);
+  assert.match(sessionsRoute, /presented\.updatedAt/);
+  assert.match(conversationStore, /updatedAt: row\.updated_at/);
+  for (const transcript of [workspace, gardenAssistant]) {
+    assert.match(transcript, /responseDurationMs\?: number/);
+    assert.match(transcript, /responseDurationMs=\{/);
+  }
+  assert.match(chatSessionRoute, /mergeRuntimeMetadata/);
+  assert.match(chatSessionRoute, /metadata\.responseDurationMs/);
+  assert.match(chatSessionsRoute, /parseResponseDuration/);
 });
 
 test("expanded dashboard thinking shows only ChatMock reasoning text", () => {
@@ -163,7 +201,8 @@ test("permission requests use a softly layered action card", () => {
   assert.match(block, /neu-surface-subtle/);
   assert.match(block, /bg-\[var\(--paper-strong\)\]/);
   assert.match(block, /Permission required/);
-  assert.match(block, /rounded-full bg-amber-500\/10/);
+  assert.doesNotMatch(block, /pendingPermission\.risk/);
+  assert.doesNotMatch(block, /M12 3\.75 5\.25 6\.5/);
   assert.match(block, /rounded-full bg-\[var\(--botanical\)\]/);
   assert.match(block, /Allow similar for session/);
   assert.match(block, /bg-red-500\/\[0\.07\]/);

@@ -64,6 +64,7 @@ export interface StartConversationTurnInput {
   attachments?: ChatAttachment[];
   confirmedPermissionIds?: string[];
   retry?: boolean;
+  branchGroupId?: string;
 }
 
 export type StartConversationTurnResult =
@@ -108,6 +109,7 @@ export async function startConversationTurn(
         activeGardenSlug: context.activeGardenSlug ?? null,
         activePageSlug: context.activePageSlug ?? null,
         attachmentNames: (input.attachments ?? []).map((attachment) => attachment.name),
+        ...(input.branchGroupId ? { branchGroupId: input.branchGroupId } : {}),
       },
     });
   } catch (error) {

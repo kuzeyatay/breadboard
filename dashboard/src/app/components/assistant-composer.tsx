@@ -48,13 +48,13 @@ interface Props {
   onRemoveAttachment?: (index: number) => void;
   utilityActions?: ReactNode;
   statusMessage?: string;
+  headerContent?: ReactNode;
   className?: string;
   compact?: boolean;
   capabilitySessionId?: string | number | null;
   capabilitySurface?: OpenHarnessSurface;
   runState?: AgentRunState;
   onQueueSteer?: (text: string) => void;
-  steerQueued?: boolean;
   onStop?: () => void;
   permissionPending?: boolean;
 }
@@ -113,13 +113,13 @@ export default function AssistantComposer({
   onRemoveAttachment,
   utilityActions,
   statusMessage,
+  headerContent,
   className = '',
   compact = false,
   capabilitySessionId,
   capabilitySurface = 'dashboard_terminal',
   runState = 'idle',
   onQueueSteer,
-  steerQueued = false,
   onStop,
   permissionPending = false,
 }: Props) {
@@ -145,7 +145,6 @@ export default function AssistantComposer({
     activeRun &&
     canSubmit &&
     Boolean(onQueueSteer) &&
-    !steerQueued &&
     runState !== 'steering' &&
     runState !== 'stopping';
 
@@ -188,6 +187,11 @@ export default function AssistantComposer({
   return (
     <div className={className}>
       <div className="neu-composer relative rounded-[30px] p-2">
+        {headerContent ? (
+          <div className="mb-1 border-b border-[var(--line)] px-1 pb-1.5">
+            {headerContent}
+          </div>
+        ) : null}
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 px-2 pb-1.5 pt-1">
             {attachments.map((attachment, index) => (

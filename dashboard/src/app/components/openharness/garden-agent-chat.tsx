@@ -12,18 +12,14 @@
 // the proposals reviewer.
 
 import { useCallback, useEffect, useState } from "react";
+import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import AgentRuntimePanel from "./agent-runtime-panel";
 import SkillReviewPanel from "./skill-review-panel";
 import { useAgentSession, type AgentMessage } from "./use-agent-session";
 import {
   DEFAULT_ASSISTANT_MODELS,
-  DEFAULT_MODEL,
   mergeAssistantModels,
 } from "@/lib/ai-models";
-import {
-  DEFAULT_ASSISTANT_REASONING_EFFORT,
-  type AssistantReasoningEffort,
-} from "@/lib/assistant-reasoning";
 
 interface Props {
   gardenSlug: string;
@@ -67,11 +63,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   const [input, setInput] = useState("");
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [view, setView] = useState<PanelView>("chat");
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
-  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
-    DEFAULT_ASSISTANT_REASONING_EFFORT,
-  );
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const session = useAgentSession("garden_chat", { gardenSlug, title: `${gardenName ?? gardenSlug} chat` });
   const busy =
@@ -181,11 +174,28 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     return session.steer(trimmed);
   }, [session]);
 
-  const sendQueued = useCallback((text: string) => {
+  const sendQueued = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    void session.send(trimmed, { model, reasoningEffort });
+    await session.send(trimmed, { model, reasoningEffort });
   }, [model, reasoningEffort, session]);
+
+  const editMessage = useCallback(
+    (messageIndex: number, text: string, branchGroupId: string) => {
+      void session.send(text, {
+        model,
+        reasoningEffort,
+        historyOverride: session.messages.slice(0, messageIndex),
+        branchGroupId,
+      });
+    },
+    [model, reasoningEffort, session],
+  );
+
+  const selectBranch = useCallback(
+    (messages: typeof session.messages) => session.setMessages(messages),
+    [session],
+  );
 
   const sendSuggestedPrompt = useCallback(
     (text: string) => {
@@ -389,6 +399,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           onSubmit={submit}
           onSteer={steer}
           onSendQueued={sendQueued}
+          onEditMessage={editMessage}
+          onSelectBranch={selectBranch}
           onAbort={() => void session.abort()}
           onPermissionDecision={(decision) => void session.respondToPermission(decision)}
           onRetryMessage={retryMessage}

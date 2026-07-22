@@ -14,6 +14,7 @@ import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
 import AssistantMessageActions from "@/app/components/assistant-message-actions";
+import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import ActivityPanel from "@/app/components/openharness/activity-panel";
 import {
   splitLeadingCommandTokens,
@@ -39,13 +40,8 @@ import { useToast, Toaster } from "@/app/components/toast";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
 import {
   DEFAULT_ASSISTANT_MODELS,
-  DEFAULT_MODEL,
   mergeAssistantModels,
 } from "@/lib/ai-models";
-import {
-  DEFAULT_ASSISTANT_REASONING_EFFORT,
-  type AssistantReasoningEffort,
-} from "@/lib/assistant-reasoning";
 import {
   formatExactTokenCount,
   formatTokenCount,
@@ -69,6 +65,7 @@ interface Message {
   thinking?: string;
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
+  responseDurationMs?: number;
   verification?: VerificationSummary;
 }
 
@@ -609,7 +606,8 @@ const ChatTranscript = memo(function ChatTranscript({
             </div>
           ) : (
             <div className="flex w-full flex-col gap-2">
-              {msg.usage ||
+              {msg.responseDurationMs !== undefined ||
+              msg.usage ||
               msg.thinking ||
               (i === lastAssistantIndex &&
                 (isStreaming || pendingPermission || activities.length > 0)) ? (
@@ -619,6 +617,7 @@ const ChatTranscript = memo(function ChatTranscript({
                   pendingPermission={i === lastAssistantIndex ? pendingPermission : null}
                   usage={msg.usage}
                   reasoning={msg.thinking}
+                  responseDurationMs={msg.responseDurationMs}
                   onAbort={onAbort}
                   onPermissionDecision={onPermissionDecision}
                 />
@@ -961,9 +960,7 @@ export default function WorkspaceClient({
   const learnSkipManualReviewRef = useRef(false);
   const lastSyncedLearnSelectionRef = useRef<string | null>(null);
   const autoConfirmingLearnJobRef = useRef<string | null>(null);
-  // Reasoning effort
-  const [reasoningEffort, setReasoningEffort] =
-    useState<AssistantReasoningEffort>(DEFAULT_ASSISTANT_REASONING_EFFORT);
+  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
 
   // Prompts
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
@@ -981,7 +978,6 @@ export default function WorkspaceClient({
   const [isSavingNote, setIsSavingNote] = useState(false);
 
   // Model selector
-  const [model, setModel] = useState(DEFAULT_MODEL);
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
@@ -2399,6 +2395,7 @@ export default function WorkspaceClient({
     const pendingAttachments =
       textOverride === undefined ? chatAttachments : [];
     if ((!text && pendingAttachments.length === 0) || isStreaming) return;
+    const responseStartedAt = performance.now();
 
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
     const firstMessageTitle = chatTitleFromFirstMessage(
@@ -2481,6 +2478,9 @@ export default function WorkspaceClient({
             : "Failed to save this to the garden.";
       } finally {
         setIsGenerating(false);
+        assistantMsg.responseDurationMs = Math.round(
+          performance.now() - responseStartedAt,
+        );
         finalMessages = [...nextMessages, { ...assistantMsg }];
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
@@ -2517,6 +2517,9 @@ export default function WorkspaceClient({
             ? err.message
             : "Failed to update markdown tags.";
       } finally {
+        assistantMsg.responseDurationMs = Math.round(
+          performance.now() - responseStartedAt,
+        );
         finalMessages = [...nextMessages, { ...assistantMsg }];
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
@@ -2526,7 +2529,6 @@ export default function WorkspaceClient({
       return;
     }
 
-    const responseStartedAt = performance.now();
     let agentFailed = false;
     try {
       const signal = agentActivity.start();
@@ -2658,6 +2660,11 @@ export default function WorkspaceClient({
       updateChatMessages(sessionId, finalMessages);
     } finally {
       agentActivity.finish(agentFailed);
+      assistantMsg.responseDurationMs = Math.round(
+        performance.now() - responseStartedAt,
+      );
+      finalMessages = [...nextMessages, { ...assistantMsg }];
+      updateChatMessages(sessionId, finalMessages);
       await persistChatSession(sessionId, finalMessages, title);
       setIsStreaming(false);
       textareaRef.current?.focus();

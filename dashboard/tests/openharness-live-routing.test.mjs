@@ -288,7 +288,7 @@ test("the capability palette omits filesystem and repository administration", ()
   assert.match(hub, /Prompts/);
 });
 
-test("terminal exposes explicit quarantine review and resumes a recorded capability gap", () => {
+test("quarantine review remains available without a terminal navbar control", () => {
   const terminal = read(
     "dashboard/src/app/components/openharness/dashboard-agent-terminal.tsx",
   );
@@ -301,7 +301,8 @@ test("terminal exposes explicit quarantine review and resumes a recorded capabil
   const messages = read(
     "dashboard/src/app/api/openharness/sessions/[sessionId]/messages/route.ts",
   );
-  assert.match(terminal, /Review skills/);
+  assert.doesNotMatch(terminal, /Review skills/);
+  assert.doesNotMatch(terminal, /SkillReviewPanel/);
   assert.match(
     review,
     /skills\/search[\s\S]*skills\/install[\s\S]*skills\/promote/,

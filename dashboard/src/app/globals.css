@@ -574,10 +574,10 @@ b {
 
 @keyframes thinking-shimmer {
   from {
-    background-position: -180% 0;
+    background-position: 180% 0;
   }
   to {
-    background-position: 180% 0;
+    background-position: -180% 0;
   }
 }
 

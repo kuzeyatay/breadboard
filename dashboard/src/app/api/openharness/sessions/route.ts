@@ -49,12 +49,24 @@ export async function GET(request: Request) {
         activeDirectory: runtime?.active_directory ?? null,
         filesystemMode: runtime?.filesystem_mode ?? "restricted",
         capabilityMode: runtime?.capability_mode ?? "knowledge",
-        activeRun: activeRun ? { id: activeRun.id, instruction: activeRun.instruction } : null,
+        activeRun: activeRun
+          ? { id: activeRun.id, instruction: activeRun.instruction, startedAt: activeRun.started_at }
+          : null,
         messages: listConversationMessages(conversation.id).map((message) => {
           const presented = presentConversationMessage(message);
           const calls = Array.isArray(presented.metadata.toolCalls)
             ? presented.metadata.toolCalls as Array<Record<string, unknown>>
             : [];
+          const metadataDuration = Number(presented.metadata.responseDurationMs);
+          const timestampDuration = Math.max(
+            0,
+            Date.parse(presented.updatedAt) - Date.parse(presented.createdAt),
+          );
+          const responseDurationMs = Number.isFinite(metadataDuration) && metadataDuration >= 0
+            ? metadataDuration
+            : presented.status !== "pending" && Number.isFinite(timestampDuration)
+              ? timestampDuration
+              : undefined;
           return {
             ...presented,
             tools: calls.map((call, index) => ({
@@ -66,6 +78,10 @@ export async function GET(request: Request) {
             verification: presented.metadata.verification,
             proposal: presented.metadata.proposal,
             interrupted: presented.status === "aborted",
+            ...(typeof presented.metadata.branchGroupId === "string"
+              ? { branchGroupId: presented.metadata.branchGroupId }
+              : {}),
+            ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
           };
         }),
       };

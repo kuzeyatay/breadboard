@@ -363,6 +363,10 @@ db.exec(`
     filesystem_mode       TEXT NOT NULL DEFAULT 'restricted'
                           CHECK (filesystem_mode IN ('restricted','full')),
     last_active_directory TEXT,
+    default_model         TEXT NOT NULL DEFAULT 'gpt-5.6-sol',
+    reasoning_effort      TEXT NOT NULL DEFAULT 'high'
+                          CHECK (reasoning_effort IN ('none','low','medium','high','xhigh','max')),
+    intelligence_preference_set INTEGER NOT NULL DEFAULT 0,
     updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -501,6 +505,21 @@ ensureColumn(
   "openharness_capability_decisions",
   "allowed_command_patterns",
   "allowed_command_patterns TEXT NOT NULL DEFAULT '[]'",
+);
+ensureColumn(
+  "openharness_user_settings",
+  "default_model",
+  "default_model TEXT NOT NULL DEFAULT 'gpt-5.6-sol'",
+);
+ensureColumn(
+  "openharness_user_settings",
+  "reasoning_effort",
+  "reasoning_effort TEXT NOT NULL DEFAULT 'high' CHECK (reasoning_effort IN ('none','low','medium','high','xhigh','max'))",
+);
+ensureColumn(
+  "openharness_user_settings",
+  "intelligence_preference_set",
+  "intelligence_preference_set INTEGER NOT NULL DEFAULT 0",
 );
 
 // Additional per-message runtime metadata. These are nullable so historical

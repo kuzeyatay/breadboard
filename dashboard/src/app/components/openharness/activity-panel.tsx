@@ -19,6 +19,7 @@ interface Props {
   pendingPermission: PermissionPrompt | null;
   usage?: ChatTokenUsage;
   reasoning?: string;
+  responseDurationMs?: number;
   onAbort: () => void;
   showAbort?: boolean;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
@@ -30,6 +31,7 @@ export default function ActivityPanel({
   pendingPermission,
   usage,
   reasoning,
+  responseDurationMs,
   onAbort,
   showAbort = true,
   onPermissionDecision,
@@ -45,9 +47,9 @@ export default function ActivityPanel({
       activities,
       active,
       now,
-      reportedDurationMs: usage?.responseDurationMs,
+      reportedDurationMs: responseDurationMs ?? usage?.responseDurationMs,
     }),
-    [active, activities, now, usage?.responseDurationMs],
+    [active, activities, now, responseDurationMs, usage?.responseDurationMs],
   );
 
   useEffect(() => {
@@ -62,7 +64,7 @@ export default function ActivityPanel({
     };
   }, [active]);
 
-  if (!activities.length && !usage && !reasoning) return null;
+  if (!activities.length && !usage && !reasoning && responseDurationMs === undefined) return null;
   const durationLabel =
     elapsedMs === null ? null : formatResponseDuration(elapsedMs);
   const tokenLabel = usage
@@ -112,55 +114,27 @@ export default function ActivityPanel({
 
       {pendingPermission ? (
         <div className="neu-surface-subtle mt-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3.5">
-          <div className="flex items-start gap-3">
-            <span className="neu-surface-raised flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--paper-raised)] text-[var(--botanical)]">
-              <svg
-                aria-hidden
-                className="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.8}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 3.75 5.25 6.5v4.75c0 4.18 2.77 7.73 6.75 9 3.98-1.27 6.75-4.82 6.75-9V6.5L12 3.75Z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9.5 12.1 11.2 14l3.6-4"
-                />
-              </svg>
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-medium text-[var(--ink-heading)]">
-                  Permission required
-                </p>
-                <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium capitalize tracking-wide text-[#936222]">
-                  {pendingPermission.risk}
-                </span>
-              </div>
-              <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
-                {pendingPermission.description}
-              </p>
-              {pendingPermission.command ? (
-                <code className="mt-2 block overflow-x-auto rounded-lg bg-black/[0.035] px-2.5 py-1.5 text-[10px] text-[var(--ink)]">
-                  {pendingPermission.command}
-                </code>
-              ) : null}
-              {pendingPermission.affectedPaths.length ? (
-                <ul className="mt-2 space-y-0.5 font-mono text-[10px] text-[var(--ink-muted)]">
-                  {pendingPermission.affectedPaths.map((path) => (
-                    <li key={path}>{path}</li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--ink-heading)]">
+              Permission required
+            </p>
+            <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
+              {pendingPermission.description}
+            </p>
+            {pendingPermission.command ? (
+              <code className="mt-2 block overflow-x-auto rounded-lg bg-black/[0.035] px-2.5 py-1.5 text-[10px] text-[var(--ink)]">
+                {pendingPermission.command}
+              </code>
+            ) : null}
+            {pendingPermission.affectedPaths.length ? (
+              <ul className="mt-2 space-y-0.5 font-mono text-[10px] text-[var(--ink-muted)]">
+                {pendingPermission.affectedPaths.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            ) : null}
           </div>
-          <div className="mt-3.5 flex flex-wrap items-center gap-2 pl-12">
+          <div className="mt-3.5 flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={() => onPermissionDecision("once")}

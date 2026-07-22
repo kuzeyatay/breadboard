@@ -10,10 +10,17 @@ export const DEFAULT_ASSISTANT_MODELS: readonly string[] = [
   'gpt-5.4',
 ];
 
+export function normalizeAssistantModelId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized && normalized.length <= 128 && /^[a-z0-9._:/-]+$/i.test(normalized)
+    ? normalized
+    : null;
+}
+
 export function mergeAssistantModels(modelIds: readonly unknown[]): string[] {
   const validIds = modelIds.flatMap((modelId) => {
-    if (typeof modelId !== 'string') return [];
-    const normalized = modelId.trim();
+    const normalized = normalizeAssistantModelId(modelId);
     return normalized ? [normalized] : [];
   });
   return Array.from(new Set([...DEFAULT_ASSISTANT_MODELS, ...validIds]));

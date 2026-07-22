@@ -52,6 +52,7 @@ export async function POST(
             typeof value === "string" && value.length > 0 && value.length <= 500)
         : undefined,
       retry: body.retry === true,
+      branchGroupId: stringValue(body.branchGroupId)?.slice(0, 128),
     });
 
     if (!result.accepted) {

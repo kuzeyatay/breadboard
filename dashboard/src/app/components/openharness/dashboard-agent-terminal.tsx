@@ -14,21 +14,16 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
+import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import AgentRuntimePanel from "./agent-runtime-panel";
-import SkillReviewPanel from "./skill-review-panel";
 import {
   useAgentSession,
   type AgentMessage,
 } from "./use-agent-session";
 import {
   DEFAULT_ASSISTANT_MODELS,
-  DEFAULT_MODEL,
   mergeAssistantModels,
 } from "@/lib/ai-models";
-import {
-  DEFAULT_ASSISTANT_REASONING_EFFORT,
-  type AssistantReasoningEffort,
-} from "@/lib/assistant-reasoning";
 import {
   CHAT_ATTACHMENT_ACCEPT,
   extractChatAttachments,
@@ -147,12 +142,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [input, setInput] = useState("");
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
-  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
-    DEFAULT_ASSISTANT_REASONING_EFFORT,
-  );
-  const [skillsOpen, setSkillsOpen] = useState(false);
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
@@ -201,6 +192,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   );
 
   const session = useAgentSession("dashboard_terminal", { title: "Assistant conversation" });
+  const runtimeOnline = !runtimeUnavailable && session.connection !== "error";
   const busy =
     session.connection === "connecting" ||
     session.connection === "streaming" ||
@@ -282,11 +274,29 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     return session.steer(trimmed);
   }, [runtimeUnavailable, session]);
 
-  const sendQueued = useCallback((text: string) => {
+  const sendQueued = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || runtimeUnavailable) return;
-    void session.send(trimmed, { model, reasoningEffort });
+    await session.send(trimmed, { model, reasoningEffort });
   }, [model, reasoningEffort, runtimeUnavailable, session]);
+
+  const editMessage = useCallback(
+    (messageIndex: number, text: string, branchGroupId: string) => {
+      if (runtimeUnavailable) return;
+      void session.send(text, {
+        model,
+        reasoningEffort,
+        historyOverride: session.messages.slice(0, messageIndex),
+        branchGroupId,
+      });
+    },
+    [model, reasoningEffort, runtimeUnavailable, session],
+  );
+
+  const selectBranch = useCallback(
+    (messages: typeof session.messages) => session.setMessages(messages),
+    [session],
+  );
 
   const handleAttachmentInput = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -334,7 +344,6 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     setInput("");
     setChatAttachments([]);
     setAttachmentStatus("");
-    setSkillsOpen(false);
   }
 
   function openHistorySession(item: RuntimeHistorySession) {
@@ -344,7 +353,6 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     session.setMessages(item.messages);
     setChatAttachments([]);
     setAttachmentStatus("");
-    setSkillsOpen(false);
   }
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
@@ -425,27 +433,23 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5" />
               </svg>
             </button>
-            <div className="min-w-0">
+            <div
+              style={{ animationDelay: "210ms" }}
+              className={`${headerItemAnim} flex min-w-0 items-center gap-2`}
+            >
+              <span
+                role="status"
+                aria-label={runtimeOnline ? "OpenHarness is available" : "OpenHarness is unavailable"}
+                title={runtimeOnline ? "OpenHarness available" : "OpenHarness unavailable"}
+                className={`h-2 w-2 shrink-0 rounded-full ${
+                  runtimeOnline ? "bg-[#4F805E]" : "bg-[#B65B5B]"
+                }`}
+              />
               <p
-                style={{ animationDelay: "210ms" }}
-                className={`${headerItemAnim} truncate text-sm font-semibold text-[#172A22]`}
+                className="truncate text-sm font-semibold text-[#172A22]"
               >
                 Terminal
               </p>
-            </div>
-            <div className={`${headerItemAnim} ml-auto flex items-center gap-2`} style={{ animationDelay: "380ms" }}>
-              <span className="rounded-full border border-[#A9C1B1] px-2 py-0.5 text-[10px] text-[#4A5B46]">
-                {runtimeUnavailable ? "unavailable" : session.connection === "idle" ? "ready" : session.connection}
-              </span>
-              <button
-                type="button"
-                disabled={runtimeUnavailable}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={() => setSkillsOpen(true)}
-                className="rounded-md border border-[#A9C1B1] px-2 py-0.5 text-[11px] text-[#4A5B46] hover:bg-[#e2dcc9] disabled:opacity-50"
-              >
-                Review skills
-              </button>
             </div>
           </>
         ) : null}
@@ -512,20 +516,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
               onChange={handleAttachmentInput}
               className="hidden"
             />
-            {skillsOpen ? (
-              <SkillReviewPanel
-                runtimeSessionId={session.sessionId}
-                onClose={() => setSkillsOpen(false)}
-                onResume={async (continuation) => {
-                  setSkillsOpen(false);
-                  await session.send(
-                    `The reviewed skill ${continuation.skillId} is now approved with permissions: ${continuation.approvedPermissions.join(", ") || "none"}. Resume parent task ${continuation.parentTaskId} and use it only for ${continuation.capability}.`,
-                    { continuation, model, reasoningEffort },
-                  );
-                }}
-              />
-            ) : (
-              <AgentRuntimePanel
+            <AgentRuntimePanel
                 compact
                 sessionId={session.sessionId}
                 surface="dashboard_terminal"
@@ -541,6 +532,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 onSubmit={submit}
                 onSteer={steer}
                 onSendQueued={sendQueued}
+                onEditMessage={editMessage}
+                onSelectBranch={selectBranch}
                 disabled={runtimeUnavailable}
                 onAbort={() => void session.abort()}
                 onPermissionDecision={(decision) => void session.respondToPermission(decision)}
@@ -588,7 +581,6 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                   </div>
                 }
               />
-            )}
           </div>
         </div>
       ) : null}
