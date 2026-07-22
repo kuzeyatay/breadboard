@@ -1,6 +1,6 @@
 // Installed-application smoke test.
 //
-// Usage:  node scripts/smoke-test.mjs "<path to installed Breadboard.exe>"
+// Usage: node scripts/smoke-test.mjs "<installed Breadboard.exe>" "<isolated user-data dir>" [results.json]
 //
 // Launches the installed app, discovers the dynamically allocated ports from
 // the desktop log, exercises the running stack over HTTP (health, register,
@@ -11,22 +11,31 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const exePath = process.argv[2];
+const userData = process.argv[3];
+const resultsFile = process.argv[4] ? path.resolve(process.argv[4]) : null;
 if (!exePath || !fs.existsSync(exePath)) {
-  console.error("Usage: node scripts/smoke-test.mjs <path-to-Breadboard.exe>");
+  console.error(
+    "Usage: node scripts/smoke-test.mjs <path-to-Breadboard.exe> <isolated-user-data-dir> [results.json]",
+  );
+  process.exit(2);
+}
+if (!userData || !path.isAbsolute(userData)) {
+  console.error("The smoke test requires an absolute isolated user-data directory.");
   process.exit(2);
 }
 
-const userData = path.join(process.env.APPDATA ?? "", "breadboard-desktop");
 const desktopLog = path.join(userData, "Data", "logs", "desktop.log");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const results = [];
 let failures = 0;
+let appPid = null;
 
 function record(name, ok, detail = "") {
-  results.push({ name, ok, detail });
+  results.push({ name, ok, detail, checkedAt: new Date().toISOString() });
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
   if (!ok) failures += 1;
 }
@@ -69,16 +78,16 @@ function readEndpoints(minStartedAt) {
  * repo name — is not misreported as a leftover.
  */
 function breadboardProcesses() {
-  const installDir = path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Breadboard");
-  const dataDir = path.join(process.env.APPDATA ?? "", "breadboard-desktop");
+  const installDir = path.dirname(exePath);
+  const dataDir = userData;
   const out = spawnSync(
     "powershell.exe",
     [
       "-NoProfile",
       "-Command",
       `$install='${installDir.replace(/'/g, "''")}'; $data='${dataDir.replace(/'/g, "''")}'; ` +
-        `Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($install)) -or ($_.CommandLine -and $_.CommandLine.Contains($data)) } | ` +
-        `Select-Object ProcessId,Name | ConvertTo-Json -Compress`,
+        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne ${process.pid} -and $_.ProcessId -ne $PID -and (($_.ExecutablePath -and $_.ExecutablePath.StartsWith($install)) -or ($_.CommandLine -and $_.CommandLine.Contains($data))) } | ` +
+        `Select-Object ProcessId,Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress`,
     ],
     { encoding: "utf8" },
   );
@@ -91,17 +100,66 @@ function breadboardProcesses() {
 }
 
 function launchApp() {
-  const child = spawn(exePath, [], { detached: true, stdio: "ignore" });
+  const appEnv = { ...process.env };
+  delete appEnv.ELECTRON_RUN_AS_NODE;
+  const child = spawn(
+    exePath,
+    [`--breadboard-user-data-dir=${userData}`],
+    { detached: true, stdio: "ignore", env: appEnv },
+  );
+  appPid = child.pid ?? null;
   child.unref();
 }
 
 function closeApp() {
-  // Graceful: ask the main window to close (WM_CLOSE via taskkill without /F).
-  spawnSync("taskkill", ["/im", "Breadboard.exe"], { encoding: "utf8" });
+  if (appPid !== null) {
+    spawnSync("taskkill", ["/pid", String(appPid)], { encoding: "utf8" });
+  }
 }
 
 function forceCloseApp() {
-  spawnSync("taskkill", ["/f", "/t", "/im", "Breadboard.exe"], { encoding: "utf8" });
+  if (appPid !== null) {
+    spawnSync("taskkill", ["/f", "/t", "/pid", String(appPid)], { encoding: "utf8" });
+  }
+}
+
+function mainWindowInfo() {
+  if (appPid === null) return null;
+  const output = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-Command",
+      `Get-Process -Id ${appPid} -ErrorAction SilentlyContinue | ` +
+        `Select-Object Id,MainWindowHandle,MainWindowTitle,Responding | ConvertTo-Json -Compress`,
+    ],
+    { encoding: "utf8" },
+  );
+  try {
+    return JSON.parse(output.stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
+function writeResults(exitCode) {
+  const summary = {
+    executable: exePath,
+    installDirectory: path.dirname(exePath),
+    userData,
+    desktopLog,
+    passed: results.length - failures,
+    failed: failures,
+    total: results.length,
+    exitCode,
+    finishedAt: new Date().toISOString(),
+    checks: results,
+  };
+  if (resultsFile) {
+    fs.mkdirSync(path.dirname(resultsFile), { recursive: true });
+    fs.writeFileSync(resultsFile, JSON.stringify(summary, null, 2));
+  }
+  return summary;
 }
 
 async function waitForReady(maxMs, minStartedAt) {
@@ -127,11 +185,46 @@ async function main() {
   record("app becomes ready (all required services healthy)", urls !== null);
   if (!urls) {
     forceCloseApp();
+    writeResults(1);
     process.exit(1);
   }
   console.log(`[smoke] endpoints: ${JSON.stringify(urls)}`);
 
+  const managedProcesses = breadboardProcesses();
+  const repositoryReferences = managedProcesses.filter((entry) =>
+    [entry.ExecutablePath, entry.CommandLine].some(
+      (value) => typeof value === "string" && value.toLowerCase().includes(repoRoot.toLowerCase()),
+    ),
+  );
+  record(
+    "installed processes do not reference the repository checkout",
+    repositoryReferences.length === 0,
+    repositoryReferences.map((entry) => `${entry.Name}(${entry.ProcessId})`).join(", "),
+  );
+
   const base = urls.dashboard;
+
+  const windowInfo = mainWindowInfo();
+  record(
+    "installed main window is visible and responding",
+    Boolean(windowInfo?.MainWindowHandle) && windowInfo?.Responding === true,
+    windowInfo ? JSON.stringify(windowInfo) : "no window process information",
+  );
+
+  const dashboardPage = await fetchOk(`${base}/`, {}, 15_000);
+  const dashboardHtml = dashboardPage?.ok ? await dashboardPage.text() : "";
+  record(
+    "dashboard HTML renders from the packaged server",
+    dashboardPage?.ok === true && /<html/i.test(dashboardHtml),
+    `status ${dashboardPage?.status}, ${dashboardHtml.length} bytes`,
+  );
+  const staticMatch = dashboardHtml.match(/["'](\/_next\/static\/[^"']+)["']/);
+  const staticAsset = staticMatch ? await fetchOk(`${base}${staticMatch[1]}`, {}, 15_000) : null;
+  record(
+    "packaged Next.js static asset loads",
+    staticAsset?.ok === true,
+    staticMatch?.[1] ?? "no static asset reference found",
+  );
 
   // Quartz serves the garden.
   const quartz = await fetchOk(`${urls.quartz}/`, {}, 10000);
@@ -162,11 +255,12 @@ async function main() {
   }
   record("initial invite code exists in desktop config", inviteCode !== null);
   const username = `smoke${Date.now().toString(36)}`;
+  const email = `${username}@local.test`;
   const password = "Smoke-test-1234";
   const register = await fetchOk(`${base}/api/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password, email: `${username}@local.test`, inviteCode }),
+    body: JSON.stringify({ username, password, email, inviteCode }),
   });
   record(
     "account registration succeeds with the seeded invite code",
@@ -197,7 +291,7 @@ async function main() {
         "Content-Type": "application/x-www-form-urlencoded",
         Cookie: cookieHeader(),
       },
-      body: new URLSearchParams({ csrfToken: csrf, username, password, json: "true" }).toString(),
+      body: new URLSearchParams({ csrfToken: csrf, email, password, json: "true" }).toString(),
       redirect: "manual",
     });
     collect(login);
@@ -225,7 +319,7 @@ async function main() {
     );
     if (clusterResponse?.ok) {
       const cluster = await clusterResponse.json();
-      clusterSlug = cluster?.slug ?? cluster?.cluster?.slug ?? null;
+      clusterSlug = cluster?.slug ?? null;
       clusterOk = clusterSlug !== null;
     }
     if (clusterOk) {
@@ -233,14 +327,16 @@ async function main() {
       const form = new FormData();
       form.append("file", new Blob([markdown], { type: "text/markdown" }), "smoke-note.md");
       form.append("clusterSlug", clusterSlug);
+      form.append("generateMap", "false");
       const ingest = await fetchOk(
         `${base}/api/ingest`,
         { method: "POST", headers: { Cookie: cookieHeader() }, body: form },
         120000,
       );
-      ingestOk = ingest !== null && ingest.ok;
-      if (!ingestOk && ingest) {
-        console.log(`[smoke] ingest status ${ingest.status}: ${(await ingest.text()).slice(0, 300)}`);
+      const ingestBody = ingest ? await ingest.text() : "";
+      ingestOk = ingest?.ok === true && /"type":"result"/.test(ingestBody);
+      if (!ingestOk) {
+        console.log(`[smoke] ingest status ${ingest?.status}: ${ingestBody.slice(0, 500)}`);
       }
     }
   }
@@ -295,7 +391,7 @@ async function main() {
           "Content-Type": "application/x-www-form-urlencoded",
           Cookie: [...jar2.entries()].map(([k, v]) => `${k}=${v}`).join("; "),
         },
-        body: new URLSearchParams({ csrfToken: csrf2, username, password, json: "true" }).toString(),
+        body: new URLSearchParams({ csrfToken: csrf2, email, password, json: "true" }).toString(),
         redirect: "manual",
       });
       collect2(login2);
@@ -321,12 +417,29 @@ async function main() {
   }
   record("final quit leaves no managed processes", finalLeftovers.length === 0);
 
+  let fatalLogLines = [];
+  if (fs.existsSync(desktopLog)) {
+    fatalLogLines = fs
+      .readFileSync(desktopLog, "utf8")
+      .split(/\r?\n/)
+      .filter((line) => /fatal startup error|installation is incomplete|could not start/i.test(line));
+  }
+  record(
+    "desktop log contains no fatal startup errors",
+    fatalLogLines.length === 0,
+    fatalLogLines.slice(-3).join(" | "),
+  );
+
   console.log(`\n[smoke] ${results.length - failures}/${results.length} checks passed`);
-  process.exit(failures === 0 ? 0 : 1);
+  const exitCode = failures === 0 ? 0 : 1;
+  writeResults(exitCode);
+  process.exit(exitCode);
 }
 
 main().catch((error) => {
   console.error("[smoke] fatal:", error);
+  record("smoke test completed without an uncaught error", false, error instanceof Error ? error.message : String(error));
   forceCloseApp();
+  writeResults(1);
   process.exit(1);
 });

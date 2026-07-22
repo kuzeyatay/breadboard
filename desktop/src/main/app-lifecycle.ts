@@ -40,6 +40,7 @@ import {
 } from "./provisioning";
 import { WindowManager, defaultPreloadPath, defaultStartupHtmlPath } from "./window-manager";
 import { allowedOriginsFor, installGlobalSecurity } from "./security";
+import { IPC_CHANNELS } from "../shared/ipc-contract";
 
 export interface StartupFailure {
   serviceId: string;
@@ -418,21 +419,21 @@ export class AppLifecycle {
     } else {
       this.startupState = this.snapshotServices("ready", "Ready");
     }
-    this.windows.sendToRenderer("breadboard:startup-state", this.startupState);
+    this.windows.sendToRenderer(IPC_CHANNELS.startupState, this.startupState);
   }
 
   private setStartupState(state: StartupState): void {
     this.startupState = state;
-    this.windows.sendToRenderer("breadboard:startup-state", state);
+    this.windows.sendToRenderer(IPC_CHANNELS.startupState, state);
   }
 
   private registerIpcHandlers(): void {
-    ipcMain.handle("breadboard:get-versions", () => ({
+    ipcMain.handle(IPC_CHANNELS.getVersions, () => ({
       app: app.getVersion(),
       electron: process.versions.electron ?? "unknown",
     }));
-    ipcMain.handle("breadboard:get-startup-state", () => this.startupState);
-    ipcMain.handle("breadboard:retry-service", async (_event, serviceId: unknown) => {
+    ipcMain.handle(IPC_CHANNELS.getStartupState, () => this.startupState);
+    ipcMain.handle(IPC_CHANNELS.retryService, async (_event, serviceId: unknown) => {
       if (typeof serviceId !== "string") return false;
       const known = this.services
         .allStatuses()
@@ -468,10 +469,10 @@ export class AppLifecycle {
         return false;
       }
     });
-    ipcMain.handle("breadboard:open-logs", async () => {
+    ipcMain.handle(IPC_CHANNELS.openLogs, async () => {
       await shell.openPath(this.logs.directory);
     });
-    ipcMain.handle("breadboard:copy-diagnostics", () => {
+    ipcMain.handle(IPC_CHANNELS.copyDiagnostics, () => {
       const diagnostics = {
         app: app.getVersion(),
         electron: process.versions.electron,
@@ -482,10 +483,10 @@ export class AppLifecycle {
       };
       clipboard.writeText(JSON.stringify(diagnostics, null, 2));
     });
-    ipcMain.handle("breadboard:quit", () => {
+    ipcMain.handle(IPC_CHANNELS.quit, () => {
       app.quit();
     });
-    ipcMain.handle("breadboard:pick-folder", async () => {
+    ipcMain.handle(IPC_CHANNELS.pickFolder, async () => {
       const window = this.windows.window;
       if (!window) return null;
       const result = await dialog.showOpenDialog(window, {

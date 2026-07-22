@@ -578,7 +578,32 @@ describe("ReadTool", () => {
         }),
       ).toEqual({ type: "json", value: { entries: [], truncated: false } })
       expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["src"], save: ["*"] }])
-      expect(listCalls).toEqual([{ offset: 2, limit: 10 }])
+      expect(listCalls).toEqual([
+        { offset: 2, limit: 10, recursive: undefined, sort: undefined },
+      ])
+    }),
+  )
+
+  it.effect("passes recursive size sorting through for largest-file questions", () =>
+    Effect.gen(function* () {
+      resolvedType = "directory"
+      const registry = yield* ToolRegistry.Service
+
+      expect(
+        yield* executeTool(registry, {
+          sessionID,
+          ...toolIdentity,
+          call: {
+            type: "tool-call",
+            id: "call-read-largest-file",
+            name: "read",
+            input: { path: "Downloads", recursive: true, sort: "size_desc", limit: 1 },
+          },
+        }),
+      ).toEqual({ type: "json", value: { entries: [], truncated: false } })
+      expect(listCalls).toEqual([
+        { offset: undefined, limit: 1, recursive: true, sort: "size_desc" },
+      ])
     }),
   )
 

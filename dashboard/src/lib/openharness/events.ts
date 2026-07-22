@@ -106,6 +106,7 @@ export type NormalizedAgentEvent =
 export type NormalizedAgentEventType = NormalizedAgentEvent["type"];
 
 export type PermissionRisk =
+  | "read"
   | "write"
   | "overwrite"
   | "move"

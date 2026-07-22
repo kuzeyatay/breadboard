@@ -23,11 +23,57 @@ import type { TaskCapability, TaskPlan } from "./task-plan.ts";
 import {
   candidatePathsForAlias,
   describePermissions,
+  isWithinRoot,
   permissionsForCapabilities,
+  realPathAllowingMissing,
   type ApprovedFilesystemRoot,
   type FilesystemOperation,
   type FilesystemPermissions,
 } from "./filesystem-paths.ts";
+
+function normalizedFolderName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\\/]+$/, "")
+    .split(/[\\/]/)
+    .at(-1)!
+    .replace(/s$/, "");
+}
+
+function grantCoversResource(
+  grant: ApprovedFilesystemRoot,
+  resource: TaskPlan["requiredResources"][number],
+): boolean {
+  if (resource.kind !== "path") return true;
+  if (resource.absolute) {
+    return isWithinRoot(
+      realPathAllowingMissing(grant.canonicalPath),
+      realPathAllowingMissing(resource.value),
+    );
+  }
+
+  // Spoken aliases are compared by their user-facing/root folder names first,
+  // which also keeps tests and imported grants portable across operating
+  // systems. Candidate paths then cover redirected folders such as OneDrive.
+  const alias = normalizedFolderName(resource.value);
+  if (
+    normalizedFolderName(grant.displayName) === alias ||
+    normalizedFolderName(grant.canonicalPath) === alias
+  ) {
+    return true;
+  }
+  const candidates = candidatePathsForAlias(resource.value);
+  // A relative code/file path such as src/lib/auth.ts is interpreted within
+  // the already granted working root; it is not a well-known-folder alias.
+  if (candidates.length === 0) return true;
+  return candidates.some((candidate) =>
+    isWithinRoot(
+      realPathAllowingMissing(grant.canonicalPath),
+      realPathAllowingMissing(candidate),
+    ),
+  );
+}
 
 export interface RuntimePermissionRule {
   permission: string;
@@ -90,7 +136,7 @@ const GARDEN_WRITE_TOOLS = [
   "garden_propose_visualization",
 ] as const;
 
-const FS_READ_TOOLS = ["read", "glob", "grep", "list"] as const;
+const FS_READ_TOOLS = ["read", "glob", "grep"] as const;
 const FS_WRITE_TOOLS = ["write", "edit", "patch", "apply_patch"] as const;
 const WEB_TOOLS = ["webfetch", "websearch"] as const;
 
@@ -234,10 +280,21 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
     // operation the class implies.
     if (FILESYSTEM_CAPABILITIES.has(capability)) {
       const operations = operationsForCapability(capability);
-      const satisfying = input.grants.filter((grant) =>
+      const operationGrants = input.grants.filter((grant) =>
         operations.every((operation) => grant.permissions[operation]),
       );
-      if (satisfying.length === 0) {
+      const pathResources = input.plan.requiredResources.filter(
+        (resource) => resource.kind === "path",
+      );
+      const satisfying = pathResources.length
+        ? operationGrants.filter((grant) =>
+            pathResources.some((resource) => grantCoversResource(grant, resource)),
+          )
+        : operationGrants;
+      const everyPathCovered = pathResources.every((resource) =>
+        operationGrants.some((grant) => grantCoversResource(grant, resource)),
+      );
+      if (satisfying.length === 0 || !everyPathCovered) {
         withheld.add(capability);
         pending.push(buildFilesystemRequest(capability, operations, input.plan));
         continue;
@@ -362,6 +419,8 @@ function buildPermissionRules(
     { permission: "bash", pattern: "*", action: "deny" },
     { permission: "task", pattern: "*", action: "deny" },
     { permission: "skill", pattern: "*", action: "deny" },
+    { permission: "webfetch", pattern: "*", action: "deny" },
+    { permission: "websearch", pattern: "*", action: "deny" },
   ];
 
   const allow = (permission: string, pattern: string) =>
@@ -385,6 +444,10 @@ function buildPermissionRules(
   for (const root of roots) {
     const glob = `${portable(root.canonicalPath)}/**`;
     if (canRead && root.permissions.read) {
+      // OpenHarness checks external_directory before it checks the read tool's
+      // own permission. Both rules must cover the approved root or an otherwise
+      // valid filesystem grant still fails at runtime.
+      allow("external_directory", glob);
       allow("read", glob);
       allow("glob", glob);
       allow("grep", glob);
@@ -398,6 +461,10 @@ function buildPermissionRules(
 
   if (granted.has("subagent")) allow("task", "*");
   if (granted.has("skill")) allow("skill", "*");
+  if (granted.has("web_research")) {
+    allow("webfetch", "*");
+    allow("websearch", "*");
+  }
 
   // Command execution is scoped to the granted roots rather than opened
   // globally, so a temporary script for an operational task cannot wander.

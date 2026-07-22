@@ -108,7 +108,30 @@ test("with a read grant the same request executes", () => {
   assert.equal(grant.pendingPermissions.length, 0);
   assert.equal(grant.executable, true);
   assert.ok(enabledTools(grant).includes("read"));
+  assert.ok(allows(grant, "external_directory", "/home/me/Documents/**"));
   assert.ok(allows(grant, "read", "/home/me/Documents/**"));
+});
+
+test("a grant for another folder does not authorize Downloads", () => {
+  const grant = broker("whats the biggest file in my Downloads folder?", {
+    grants: [
+      grantRoot({
+        displayName: "Documents",
+        canonicalPath: "/home/me/Documents",
+      }),
+    ],
+  });
+  assert.ok(grant.withheldCapabilities.includes("filesystem_read"));
+  assert.equal(grant.executable, false);
+  assert.ok(grant.pendingPermissions.some((item) => item.path?.toLowerCase().includes("downloads")));
+});
+
+test("weather research enables web tools and their runtime permissions", () => {
+  const grant = broker("whats the weather in bodrum?");
+  assert.ok(enabledTools(grant).includes("webfetch"));
+  assert.ok(enabledTools(grant).includes("websearch"));
+  assert.ok(allows(grant, "webfetch", "*"));
+  assert.ok(allows(grant, "websearch", "*"));
 });
 
 test("a read-only grant does not satisfy an organize request", () => {

@@ -4,31 +4,38 @@
 
 1. Bump `desktop/package.json` version (drives installer name, workspace
    provisioning version, About info).
-2. `npm run desktop:build:dashboard` — clean standalone build.
-3. `npm run desktop:prepare` — runtimes + staged resources (records versions
+2. `npm ci --prefix dashboard`, `npm ci --prefix quartz`, and
+   `npm ci --prefix desktop` — validate lockfiles and install dependencies.
+3. `npm audit --prefix quartz --omit=dev` — no known production dependency
+   advisories in the shipped Quartz runtime.
+4. `npm run desktop:build:dashboard` — clean standalone build.
+5. `npm run desktop:prepare` — runtimes + staged resources (records versions
    in `build-resources/runtimes/runtimes-manifest.json`).
-4. `npm run desktop:test` — full desktop suite green.
-5. `npm run desktop:verify` — staged-resource guard green.
-6. `npm run desktop:dist:win` — NSIS installer.
-7. `npm run desktop:verify` again — now also validates `release/win-unpacked`.
-8. Installed smoke test on a machine/profile without the repo checkout
-   (checklist in DESKTOP_PACKAGING.md / final report): install → launch from
-   shortcut → register/login → create cluster → ingest a small file →
-   `sources/` visible in Quartz → Garden Chat + terminal reach OpenHarness →
-   restart persists DB/files → quit leaves no `bun.exe`/`python.exe`/service
-   `node.exe` → uninstall keeps `%APPDATA%/breadboard-desktop`.
+6. `npm run desktop:test` — full desktop suite green.
+7. `npm run desktop:verify` — staged-resource guard green.
+8. `npm run desktop:dist:win` — NSIS installer.
+9. `npm run desktop:verify` again — now also validates `release/win-unpacked`.
+10. `npm run desktop:smoke:installed -- "<release>\Breadboard-Setup-<version>-x64.exe"`
+   — installs the actual NSIS artifact, launches the installed entry point
+   outside the checkout, verifies window/assets/services/auth/garden creation/
+   ingestion, restarts to verify DB and file persistence, checks process-tree
+   cleanup and fatal logs, then uninstalls and confirms user data remains.
+11. Inspect `installed-smoke-summary.json`, `app-smoke-results.json`, and
+   `app-smoke.log` in the evidence directory. Every check must pass.
 
 ## Signing status — **currently unsigned**
 
-There are no code-signing credentials in this repository.
-`electron-builder.yml` sets `signAndEditExecutable: false`. Consequences:
+There are no code-signing credentials in this repository. Windows resource
+editing is still enabled so `Breadboard.exe` embeds the Breadboard icon and
+product metadata. Consequences of the missing certificate:
 
 - SmartScreen will warn on first run; users must choose "Run anyway".
 - Do not distribute externally in this state.
 
 To enable signing: obtain an EV/OV certificate (or Azure Trusted Signing),
-configure `win.signtoolOptions`/`WIN_CSC_*` env vars, remove
-`signAndEditExecutable: false`, and verify the signed artifact.
+configure `win.signtoolOptions` and the provider credentials (`WIN_CSC_LINK` /
+`WIN_CSC_KEY_PASSWORD` for certificate-based signing), and verify the signed
+artifact.
 
 ## Update status — **auto-update disabled by design**
 

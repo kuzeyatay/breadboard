@@ -471,6 +471,29 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("recursively lists the largest file with its size", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const folder = path.join(dir, "dir")
+      yield* put(path.join(folder, "small.txt"), "small")
+      yield* put(path.join(folder, "nested", "largest.bin"), Buffer.alloc(64))
+
+      const result = yield* exec(dir, {
+        filePath: folder,
+        recursive: true,
+        sort: "size_desc",
+        limit: 1,
+      })
+
+      expect(result.output).toContain(`nested${path.sep}largest.bin\t64 bytes`)
+      expect(result.output).not.toContain("small.txt")
+      expect(result.metadata.display).toMatchObject({
+        type: "directory",
+        entries: [`nested${path.sep}largest.bin\t64 bytes`],
+      })
+    }),
+  )
+
   it.live("truncates long lines", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()

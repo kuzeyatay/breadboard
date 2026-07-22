@@ -295,7 +295,7 @@ export default function AssistantComposer({
                     <div
                       ref={commandBackdropRef}
                       aria-hidden
-                      className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap break-words px-1 ${compact ? 'py-2 text-sm leading-5' : 'py-3 text-[15px] leading-6'}`}
+                      className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap break-words px-1 ${compact ? 'py-2 text-sm leading-5' : 'py-2.5 text-[15px] leading-6'}`}
                     >
                       <span className="text-[#1e40af]">{commandSplit.command}</span>
                       <span className="text-[var(--ink)]">{commandSplit.rest}</span>
@@ -339,7 +339,7 @@ export default function AssistantComposer({
                     rows={1}
                     placeholder={activeRun ? 'Ask for follow-up changes' : placeholder}
                     disabled={composerDisabled}
-                    className={`max-h-40 min-h-[24px] w-full resize-none overflow-y-auto bg-transparent px-1 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${commandSplit ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'py-2 text-sm leading-5' : 'py-3 text-[15px] leading-6'}`}
+                    className={`max-h-40 min-h-[24px] w-full resize-none overflow-y-auto bg-transparent px-1 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${commandSplit ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'py-2 text-sm leading-5' : 'py-2.5 text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
                 </>

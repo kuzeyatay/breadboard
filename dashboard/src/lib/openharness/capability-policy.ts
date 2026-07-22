@@ -425,28 +425,52 @@ export function permissionRulesForDecision(
     { permission: "bash", pattern: "*", action: "deny" },
     { permission: "task", pattern: "*", action: "deny" },
     { permission: "skill", pattern: "*", action: "deny" },
+    { permission: "webfetch", pattern: "*", action: "deny" },
+    { permission: "websearch", pattern: "*", action: "deny" },
   ];
-  if (decision.mode === "knowledge") return rules;
-  if (decision.mode === "technical_read") {
-    rules.push(
-      { permission: "read", pattern: "*", action: "allow" },
-      { permission: "glob", pattern: "*", action: "allow" },
-      { permission: "grep", pattern: "*", action: "allow" },
-    );
-    return rules;
+
+  const tools = new Set(decision.allowedTools);
+  if (tools.has("webfetch")) {
+    rules.push({ permission: "webfetch", pattern: "*", action: "allow" });
   }
+  if (tools.has("websearch")) {
+    rules.push({ permission: "websearch", pattern: "*", action: "allow" });
+  }
+
   for (const pattern of decision.authorizedPathPatterns ?? []) {
-    rules.push(
-      { permission: "read", pattern, action: "allow" },
-      { permission: "glob", pattern, action: "allow" },
-      { permission: "grep", pattern, action: "allow" },
-      { permission: "edit", pattern, action: "allow" },
-      { permission: "write", pattern, action: "allow" },
-      { permission: "patch", pattern, action: "allow" },
-    );
+    if (tools.has("read") || tools.has("glob") || tools.has("grep")) {
+      rules.push({ permission: "external_directory", pattern, action: "allow" });
+    }
+    if (tools.has("read")) {
+      rules.push({ permission: "read", pattern, action: "allow" });
+    }
+    if (tools.has("glob")) {
+      rules.push({ permission: "glob", pattern, action: "allow" });
+    }
+    if (tools.has("grep")) {
+      rules.push({ permission: "grep", pattern, action: "allow" });
+    }
+    if (tools.has("edit")) {
+      rules.push({ permission: "edit", pattern, action: "allow" });
+    }
+    if (tools.has("write")) {
+      rules.push({ permission: "write", pattern, action: "allow" });
+    }
+    if (tools.has("patch") || tools.has("apply_patch")) {
+      rules.push({ permission: "patch", pattern, action: "allow" });
+    }
   }
-  for (const pattern of decision.allowedCommandPatterns ?? []) {
-    rules.push({ permission: "bash", pattern, action: "allow" });
+
+  if (tools.has("bash")) {
+    for (const pattern of decision.allowedCommandPatterns ?? []) {
+      rules.push({ permission: "bash", pattern, action: "allow" });
+    }
+  }
+  if (tools.has("task")) {
+    rules.push({ permission: "task", pattern: "*", action: "allow" });
+  }
+  if (tools.has("skill")) {
+    rules.push({ permission: "skill", pattern: "*", action: "allow" });
   }
   return rules;
 }

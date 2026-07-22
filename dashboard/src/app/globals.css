@@ -160,6 +160,61 @@ body {
   font-family: var(--font-source-sans), "Source Sans Pro", Arial, Helvetica, sans-serif;
 }
 
+/* Electron's Windows controls remain native, but the surrounding chrome is
+   rendered by Breadboard so the desktop window belongs to the light botanical
+   UI instead of inheriting a black OS title bar. This element stays absent in
+   normal browser sessions because only the preload bridge sets the attribute. */
+.desktop-title-bar {
+  display: none;
+}
+
+html[data-breadboard-desktop="true"] {
+  --breadboard-titlebar-height: 40px;
+}
+
+html[data-breadboard-desktop="true"] .desktop-title-bar {
+  z-index: 1000;
+  display: flex;
+  width: 100%;
+  height: var(--breadboard-titlebar-height);
+  flex: 0 0 var(--breadboard-titlebar-height);
+  align-items: center;
+  padding: 0 150px 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-surface);
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--paper-raised) 65%, transparent);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.desktop-title-bar-brand {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.55rem;
+  font-family: var(--font-schibsted), var(--font-source-sans), sans-serif;
+  font-size: 0.82rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.desktop-title-bar-brand img {
+  width: 23px;
+  height: 23px;
+  flex: none;
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+html[data-breadboard-desktop="true"] body > .h-screen {
+  height: calc(100vh - var(--breadboard-titlebar-height));
+}
+
+html[data-breadboard-desktop="true"] body > .min-h-screen {
+  min-height: calc(100vh - var(--breadboard-titlebar-height));
+}
+
 /* Semantic depth primitives. They intentionally do not set dimensions or
    spacing, allowing components to retain their current layout and density. */
 .neu-surface,

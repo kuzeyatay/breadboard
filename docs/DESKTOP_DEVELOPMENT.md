@@ -2,9 +2,22 @@
 
 ## Prerequisites
 
-The repository's normal dev toolchain: Node ≥ 20, Bun ≥ 1.3.14, Python ≥ 3.11
-(with pip), npm dependencies installed in `dashboard/`, `quartz/`,
-`openharness/` (bun install), plus `cd desktop && npm install`.
+The tested desktop toolchain is Windows 10/11 x64, Node ≥ 22, npm, Bun ≥
+1.3.14, and Python ≥ 3.11 with pip. Windows x64 is the only supported
+installer target. The shell and pure unit tests are portable, but non-Windows
+desktop development and packaging are not release-verified.
+
+Install dependencies from the repository root:
+
+```bat
+npm ci --prefix dashboard
+npm ci --prefix quartz
+npm ci --prefix desktop
+cd openharness && bun install && cd ..
+```
+
+ChatMock is source-only Python; its dependencies are assembled into the
+packaged runtime by `npm run desktop:prepare`.
 
 ## Dev mode
 
@@ -44,7 +57,24 @@ path resolution, config validation/redaction, port allocation, dependency
 ordering + cycles, health-check semantics and timeouts, required vs optional
 failure, restart-loop protection, reverse-order shutdown, grandchild
 process-tree termination, migration planning/idempotency, and renderer
-navigation lockdown. The service-manager tests spawn real child processes.
+navigation lockdown. It also checks the complete preload/IPC channel contract,
+startup data-directory validation, security-sensitive BrowserWindow options,
+and launches a real Electron process to verify the sandboxed preload bridge.
+The service-manager tests spawn real child processes. On non-Windows hosts the
+real-Electron integration test is explicitly skipped.
+
+Dashboard checks are separate:
+
+```bat
+npm --prefix dashboard run lint
+npm --prefix dashboard test
+```
+
+The production standalone build performs Next.js TypeScript validation:
+
+```bat
+npm run desktop:build:dashboard
+```
 
 ## Iterating on the shell
 
@@ -56,3 +86,15 @@ navigation lockdown. The service-manager tests spawn real child processes.
 
 After edits: `npm run build` inside `desktop/` (or just re-run
 `npm run desktop:dev`).
+
+## Environment and launch overrides
+
+- `BREADBOARD_DESKTOP_RELEASE_DIR`: overrides the installer output directory.
+- `BREADBOARD_MIGRATE_FROM`: explicit dev checkout to offer for first-run copy migration.
+- `CHATMOCK_MODEL`: overrides the default local ChatMock model passed to services.
+- `--breadboard-dev`: forces repository-backed development mode.
+- `--breadboard-user-data-dir=<absolute-path>`: isolates Electron data for automated installed testing; filesystem roots and relative paths are rejected.
+
+`NEXTAUTH_SECRET`, service ports, OpenHarness credentials/capability secrets,
+data paths, and internal URLs are generated or resolved by the Electron main
+process. They should not be hard-coded in a packaged launch.

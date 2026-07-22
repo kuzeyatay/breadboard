@@ -283,7 +283,7 @@ export async function recordClusterView(
 export async function createCluster(
   name: string,
   description: string,
-): Promise<void> {
+): Promise<string> {
   try {
     const userId = await requireUserId();
     const slug = uniqueClusterSlug(name);
@@ -306,6 +306,7 @@ export async function createCluster(
     await publishQuartzAfterMutation(`create cluster ${slug}`);
     revalidatePath("/dashboard");
     revalidatePath("/garden");
+    return slug;
   } catch (err) {
     throw new Error(
       err instanceof Error ? err.message : "Failed to create garden",

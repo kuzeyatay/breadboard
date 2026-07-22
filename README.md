@@ -81,12 +81,16 @@ that starts, supervises, and cleanly shuts down the whole local stack
 (ChatMock → OpenHarness → Quartz → dashboard) with no terminal windows and no
 manual `start.bat` or localhost URLs.
 
-- **Develop**: `cd desktop && npm install`, then `npm run desktop:dev` from
+- **Develop**: `npm ci --prefix desktop`, then `npm run desktop:dev` from
   the repo root (uses the normal dev servers; existing scripts unchanged).
 - **Build the installer**: `npm run desktop:build:dashboard` →
   `npm run desktop:prepare` → `npm run desktop:test` →
   `npm run desktop:verify` → `npm run desktop:dist:win`
-  (produces `desktop/release/Breadboard-Setup-<version>-x64.exe`).
+  (produces `%LOCALAPPDATA%/breadboard-desktop-build/release/Breadboard-Setup-<version>-x64.exe`).
+- **Installed smoke test**: `npm run desktop:smoke:installed -- "<installer.exe>"`
+  installs the NSIS artifact, drives the installed stack with isolated data,
+  verifies restart/persistence/process cleanup, uninstalls it, and restores a
+  pre-existing per-user installation if one was present.
 - **Runtime architecture**: the Electron main process is the lifecycle owner;
   services run on bundled Node/Bun/Python runtimes, bind `127.0.0.1` only,
   and use per-launch ports and per-install secrets. See
@@ -105,7 +109,8 @@ manual `start.bat` or localhost URLs.
 Full docs: `docs/DESKTOP_ARCHITECTURE.md`, `docs/DESKTOP_RUNTIME_AUDIT.md`,
 `docs/DESKTOP_DEVELOPMENT.md`, `docs/DESKTOP_PACKAGING.md`,
 `docs/DESKTOP_SECURITY.md`, `docs/DESKTOP_TROUBLESHOOTING.md`,
-`docs/DESKTOP_RELEASE_CHECKLIST.md`.
+`docs/DESKTOP_RELEASE_CHECKLIST.md`,
+`docs/DESKTOP_IMPLEMENTATION_REPORT_2026-07-21.md`.
 
 ---
 

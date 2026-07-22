@@ -11,6 +11,7 @@ import { AbsolutePath, PositiveInt, RelativePath } from "../schema"
 export const MAX_READ_LINES = 2_000
 export const MAX_READ_BYTES = 50 * 1024
 export const MAX_MEDIA_INGEST_BYTES = 20 * 1024 * 1024
+export const MAX_DIRECTORY_SCAN_ENTRIES = 100_000
 const MAX_LINE_LENGTH = 2_000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 
@@ -72,6 +73,8 @@ export type ReadError =
 export const PageInput = Schema.Struct({
   offset: PositiveInt.pipe(Schema.optional),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_READ_LINES)).pipe(Schema.optional),
+  recursive: Schema.Boolean.pipe(Schema.optional),
+  sort: Schema.Literals(["name", "size_desc"]).pipe(Schema.optional),
 })
 export type PageInput = typeof PageInput.Type
 
@@ -84,8 +87,14 @@ export class TextPage extends Schema.Class<TextPage>("ReadTool.TextPage")({
   next: PositiveInt.pipe(Schema.optional),
 }) {}
 
+export class ListEntry extends Schema.Class<ListEntry>("ReadTool.ListEntry")({
+  path: RelativePath,
+  type: Schema.Literals(["file", "directory"]),
+  sizeBytes: Schema.Number.pipe(Schema.optional),
+}) {}
+
 export class ListPage extends Schema.Class<ListPage>("ReadTool.ListPage")({
-  entries: Schema.Array(FileSystem.Entry),
+  entries: Schema.Array(ListEntry),
   truncated: Schema.Boolean,
   next: PositiveInt.pipe(Schema.optional),
 }) {}
@@ -323,31 +332,55 @@ export const read = Effect.fn("ReadTool.read")(function* (
 
 export const list = Effect.fn("ReadTool.list")(function* (fs: FSUtil.Interface, input: string, page: PageInput = {}) {
   const real = yield* fs.realPath(input)
-  const items = yield* fs.readDirectoryEntries(real)
   const offset = page.offset ?? 1
   const limit = Math.min(page.limit ?? MAX_READ_LINES, MAX_READ_LINES)
+  const direct = page.recursive
+    ? undefined
+    : (yield* fs.readDirectoryEntries(real)).map((item) => ({
+        absolute: path.join(real, item.name),
+        relative: item.name,
+      }))
+  const recursive = page.recursive
+    ? yield* fs.glob("**/*", { cwd: real, absolute: true, include: "file", dot: true })
+    : []
+  const scanTruncated = recursive.length > MAX_DIRECTORY_SCAN_ENTRIES
+  const candidates =
+    direct ??
+    recursive.slice(0, MAX_DIRECTORY_SCAN_ENTRIES).map((absolute) => ({
+      absolute,
+      relative: path.relative(real, absolute),
+    }))
   const entries = yield* Effect.forEach(
-    items,
+    candidates,
     (item) =>
       Effect.gen(function* () {
-        const absolute = path.join(real, item.name)
-        const target = yield* fs.realPath(absolute).pipe(Effect.catch(() => Effect.void))
+        const target = yield* fs.realPath(item.absolute).pipe(Effect.catch(() => Effect.void))
         if (!target || !FSUtil.contains(real, target)) return
         const info = yield* fs.stat(target).pipe(Effect.catch(() => Effect.void))
-        const type = info?.type === "Directory" ? "directory" : info?.type === "File" ? "file" : undefined
+        if (!info) return
+        const type = info.type === "Directory" ? "directory" : info.type === "File" ? "file" : undefined
         if (!type) return
-        return FileSystem.Entry.make({
-          path: RelativePath.make(item.name + (type === "directory" ? path.sep : "")),
+        return new ListEntry({
+          path: RelativePath.make(item.relative + (type === "directory" ? path.sep : "")),
           type,
+          ...(type === "file" ? { sizeBytes: Number(info.size) } : {}),
         })
       }),
     { concurrency: 16 },
   )
   const visible = entries
-    .filter((item): item is FileSystem.Entry => item !== undefined)
-    .sort((a, b) => (a.type === b.type ? a.path.localeCompare(b.path) : a.type === "directory" ? -1 : 1))
+    .filter((item): item is ListEntry => item !== undefined)
+    .sort((a, b) =>
+      page.sort === "size_desc"
+        ? (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1) || a.path.localeCompare(b.path)
+        : a.type === b.type
+          ? a.path.localeCompare(b.path)
+          : a.type === "directory"
+            ? -1
+            : 1,
+    )
   const selected = visible.slice(offset - 1, offset - 1 + limit)
-  const truncated = offset - 1 + selected.length < visible.length
+  const truncated = scanTruncated || offset - 1 + selected.length < visible.length
   return new ListPage({ entries: selected, truncated, ...(truncated ? { next: offset + selected.length } : {}) })
 })
 

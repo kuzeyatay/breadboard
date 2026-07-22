@@ -132,6 +132,12 @@ export async function POST(
       userId,
       grants: listFilesystemGrants(userId),
       workspaceRoot: session.activeDirectory,
+      confirmedPermissionIds: Array.isArray(body.confirmedPermissionIds)
+        ? body.confirmedPermissionIds.filter(
+            (value): value is string =>
+              typeof value === "string" && value.length > 0 && value.length <= 500,
+          )
+        : undefined,
     });
     const decision = prepared.decision;
     const resolved = await resolveCommandMessage(
@@ -174,22 +180,6 @@ export async function POST(
         runtimeSessionId: session.row.id,
         userId,
         payload: { parentTaskId, skillId },
-      });
-    }
-
-    // Persist the user's message before dispatching so it is durable even if the
-    // runtime call fails.
-    if (session.row.chat_session_id) {
-      appendChatMessage({
-        chatSessionId: session.row.chat_session_id,
-        role: "user",
-        content: text,
-      });
-    } else {
-      appendRuntimeMessage({
-        runtimeSessionId: session.row.id,
-        role: "user",
-        content: text,
       });
     }
 
@@ -250,6 +240,24 @@ export async function POST(
         pendingPermissions: prepared.pendingPermissions,
         // Retained so approval can resume without the user restating the task.
         request: text,
+      });
+    }
+
+    // The request becomes part of the durable transcript only once it can
+    // actually run. A blocked preflight is retained by the client and retried
+    // after approval; persisting it here would duplicate the user message when
+    // that retry is accepted.
+    if (session.row.chat_session_id) {
+      appendChatMessage({
+        chatSessionId: session.row.chat_session_id,
+        role: "user",
+        content: text,
+      });
+    } else {
+      appendRuntimeMessage({
+        runtimeSessionId: session.row.id,
+        role: "user",
+        content: text,
       });
     }
 

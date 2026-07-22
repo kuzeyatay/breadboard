@@ -5,6 +5,7 @@ import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { ReadToolFileSystem } from "@opencode-ai/core/tool/read-filesystem"
+import { RelativePath } from "@opencode-ai/core/schema"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(LayerNode.compile(LayerNode.group([FSUtil.node, LayerNodePlatform.filesystem])))
@@ -47,6 +48,30 @@ describe("ReadToolFileSystem", () => {
 
       expect(error).toBeInstanceOf(FSUtil.FileSystemError)
       if (error instanceof FSUtil.FileSystemError) expect(error.method).toBe("readDirectoryEntries")
+    }),
+  )
+
+  it.effect("recursively sorts directory files by size", () =>
+    Effect.gen(function* () {
+      const { fs, files, directory } = yield* fixture
+      const nested = path.join(directory, "nested")
+      yield* files.makeDirectory(nested)
+      yield* files.writeFileString(path.join(directory, "small.txt"), "small")
+      yield* files.writeFileString(path.join(nested, "largest.bin"), "x".repeat(64))
+
+      const result = yield* ReadToolFileSystem.list(fs, directory, {
+        recursive: true,
+        sort: "size_desc",
+        limit: 1,
+      })
+
+      expect(result.entries).toEqual([
+        {
+          path: RelativePath.make(path.join("nested", "largest.bin")),
+          type: "file",
+          sizeBytes: 64,
+        },
+      ])
     }),
   )
 

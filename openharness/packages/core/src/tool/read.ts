@@ -23,6 +23,12 @@ const LocationInput = Schema.Struct({
   limit: ReadToolFileSystem.PageInput.fields.limit.annotate({
     description: "The maximum number of directory entries or text lines to read",
   }),
+  recursive: ReadToolFileSystem.PageInput.fields.recursive.annotate({
+    description: "For directories, include files in nested folders",
+  }),
+  sort: ReadToolFileSystem.PageInput.fields.sort.annotate({
+    description: "For directories, sort by name or largest file size first",
+  }),
 })
 const Input = LocationInput
 const Output = Schema.Union([FileSystem.Content, ReadToolFileSystem.TextPage, ReadToolFileSystem.ListPage])
@@ -39,7 +45,7 @@ const layer = Layer.effectDiscard(
       .register({
         [name]: Tool.make({
           description:
-            "Read a text file or supported image, page through a large UTF-8 text file by line offset, or list a directory page. Relative paths resolve from the current location; absolute paths inside it are accepted, while external absolute paths require external_directory approval.",
+            "Read a text file or supported image, page through a large UTF-8 text file by line offset, or list a directory page with file sizes. For questions such as the largest file in a folder, set recursive to true, sort to size_desc, and use the first entry. Relative paths resolve from the current location; absolute paths inside it are accepted, while external absolute paths require external_directory approval.",
           input: Input,
           output: Output,
           toModelOutput: ({ input, output }) => {
@@ -78,7 +84,12 @@ const layer = Layer.effectDiscard(
                 source,
               })
               if (type === "directory")
-                return yield* reader.list(absolute, { offset: input.offset, limit: input.limit })
+                return yield* reader.list(absolute, {
+                  offset: input.offset,
+                  limit: input.limit,
+                  recursive: input.recursive,
+                  sort: input.sort,
+                })
               const content = yield* reader.read(absolute, resource, {
                 offset: input.offset,
                 limit: input.limit,

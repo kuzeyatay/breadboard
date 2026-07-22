@@ -95,6 +95,12 @@ test("organizing Downloads is filesystem read and write", () => {
   assert.ok(!c.has("coding"));
 });
 
+test("casual whats phrasing still recognizes a Downloads inspection", () => {
+  const c = caps("whats the biggest file in my downloads folder?");
+  assert.ok(c.has("filesystem_read"));
+  assert.ok(!c.has("filesystem_write"));
+});
+
 test("deleting duplicates needs confirmation and a destructive capability", () => {
   const p = plan("Delete duplicate files after showing me the candidates.");
   assert.ok(p.requiredCapabilities.includes("destructive_filesystem"));
@@ -133,6 +139,12 @@ test("downloading and transcribing a video needs web, media and write", () => {
 
 test("researching current information is web research", () => {
   assert.ok(caps("Search the web for the latest news on this topic.").has("web_research"));
+});
+
+test("a weather question activates live web research without requiring the word current", () => {
+  const c = caps("whats the weather in bodrum?");
+  assert.ok(c.has("web_research"));
+  assert.ok(!c.has("filesystem_read"));
 });
 
 test("research plus garden write selects both", () => {

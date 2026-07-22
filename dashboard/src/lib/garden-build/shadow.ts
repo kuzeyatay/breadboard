@@ -106,7 +106,7 @@ export async function runCanonicalGardenShadowBuild(gardenDir: string, gardenSlu
   state.fingerprint = fingerprintGardenBuildState(state);
   const finalIssues = mergeGardenIssues([state.issueState.active, state.issueState.warnings, validateGardenBuildInvariants(state)]);
   const canonicalBlockers = finalIssues.filter((issue) => issue.severity === "blocking");
-  let snapshot = canonicalBlockers.length ? undefined : createAcceptedGardenSnapshot(state);
+  const snapshot = canonicalBlockers.length ? undefined : createAcceptedGardenSnapshot(state);
   let manifest: RenderedGardenManifest | undefined;
   let projection: ProjectionValidationResult | undefined;
   let renderRoot: string | undefined;
