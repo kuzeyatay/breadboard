@@ -11,13 +11,5 @@ export default function DesktopTitleBar() {
     };
   }, []);
 
-  return (
-    <div className="desktop-title-bar" aria-label="Breadboard window title bar">
-      <span className="desktop-title-bar-brand">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/breadboard-icon-20260426.png" alt="" />
-        <span>breadboard</span>
-      </span>
-    </div>
-  );
+  return <div className="desktop-title-bar" aria-label="Window controls" />;
 }

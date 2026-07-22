@@ -14,6 +14,8 @@ export interface RuntimeRunRow {
 }
 
 export interface RuntimeRunDispatch {
+  conversationPublicId?: string;
+  clientMessageId?: string;
   model?: { providerID: string; modelID: string };
   variant?: string;
   system?: string;

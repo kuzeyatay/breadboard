@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { assistantResponseElapsedMs } from "@/lib/assistant-activity-timing";
 import {
   formatResponseDuration,
   formatTokenCount,
@@ -39,28 +40,26 @@ export default function ActivityPanel({
     connection === "connecting" ||
     connection === "streaming" ||
     connection === "waiting";
-  const startedAt = activities[0]?.startedAt;
-  const completedAt = [...activities]
-    .reverse()
-    .find((item) => item.completedAt)?.completedAt;
-  const elapsedMs = useMemo(() => {
-    if (usage?.responseDurationMs !== undefined)
-      return usage.responseDurationMs;
-    if (!startedAt) return null;
-    const start = new Date(startedAt).getTime();
-    const end = active
-      ? now
-      : completedAt
-        ? new Date(completedAt).getTime()
-        : now;
-    const value = end - start;
-    return Number.isFinite(value) ? Math.max(0, value) : null;
-  }, [active, completedAt, now, startedAt, usage?.responseDurationMs]);
+  const elapsedMs = useMemo(
+    () => assistantResponseElapsedMs({
+      activities,
+      active,
+      now,
+      reportedDurationMs: usage?.responseDurationMs,
+    }),
+    [active, activities, now, usage?.responseDurationMs],
+  );
 
   useEffect(() => {
-    if (!active) return;
+    // Capture the exact transition to both active and terminal states instead
+    // of leaving the display on the previous one-second interval tick.
+    const transitionTick = window.setTimeout(() => setNow(Date.now()), 0);
+    if (!active) return () => window.clearTimeout(transitionTick);
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(transitionTick);
+      window.clearInterval(timer);
+    };
   }, [active]);
 
   if (!activities.length && !usage && !reasoning) return null;

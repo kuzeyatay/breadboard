@@ -13357,6 +13357,7 @@ var ReaderMode = /* @__PURE__ */ __name(({ displayClass, cfg }) => {
 }, "ReaderMode");
 ReaderMode.beforeDOMLoaded = readermode_inline_default;
 ReaderMode.css = readermode_default;
+var ReaderMode_default = /* @__PURE__ */ __name((() => ReaderMode), "default");
 
 // quartz/util/theme.ts
 var DEFAULT_SANS_SERIF = 'system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"';
@@ -14123,7 +14124,6 @@ document.querySelectorAll(".page-title-link").forEach(function(el) {
   });
 });
 `;
-var PageTitle_default = /* @__PURE__ */ __name((() => PageTitle), "default");
 
 // quartz/components/ContentMeta.tsx
 import readingTime2 from "reading-time";
@@ -14304,6 +14304,7 @@ var explorer_inline_default = "";
 // quartz/components/Explorer.tsx
 import { jsx as jsx24, jsxs as jsxs14 } from "preact/jsx-runtime";
 var defaultOptions14 = {
+  showTitle: true,
   folderDefaultState: "collapsed",
   folderClickBehavior: "link",
   useSavedState: true,
@@ -14366,7 +14367,11 @@ var Explorer_default = /* @__PURE__ */ __name(((userOpts) => {
     return /* @__PURE__ */ jsxs14(
       "div",
       {
-        class: classNames(displayClass, "explorer"),
+        class: classNames(
+          displayClass,
+          "explorer",
+          opts.showTitle ? "has-title" : "titleless"
+        ),
         "data-behavior": opts.folderClickBehavior,
         "data-collapsed": opts.folderDefaultState,
         "data-savestate": opts.useSavedState,
@@ -14406,7 +14411,7 @@ var Explorer_default = /* @__PURE__ */ __name(((userOpts) => {
               )
             }
           ),
-          /* @__PURE__ */ jsxs14(
+          opts.showTitle ? /* @__PURE__ */ jsxs14(
             "button",
             {
               type: "button",
@@ -14433,7 +14438,7 @@ var Explorer_default = /* @__PURE__ */ __name(((userOpts) => {
                 )
               ]
             }
-          ),
+          ) : null,
           /* @__PURE__ */ jsx24("div", { id, class: "explorer-content", "aria-expanded": false, role: "group", children: /* @__PURE__ */ jsx24(OverflowList2, { class: "explorer-ul" }) }),
           /* @__PURE__ */ jsx24("template", { id: "template-file", children: /* @__PURE__ */ jsx24("li", { children: /* @__PURE__ */ jsx24("a", { href: "#" }) }) }),
           /* @__PURE__ */ jsx24("template", { id: "template-folder", children: /* @__PURE__ */ jsxs14("li", { children: [
@@ -14886,105 +14891,6 @@ var ConditionalRender_default = /* @__PURE__ */ __name(((config2) => {
 
 // quartz/components/DashboardBackLink.tsx
 import { jsx as jsx37 } from "preact/jsx-runtime";
-function clusterSlug(fileSlug) {
-  const firstSegment = fileSlug?.split("/").filter(Boolean)[0];
-  if (!firstSegment || firstSegment === "index" || firstSegment === "tags") return void 0;
-  return firstSegment;
-}
-__name(clusterSlug, "clusterSlug");
-var DashboardBackLink_default = /* @__PURE__ */ __name(((opts) => {
-  const DashboardBackLink = /* @__PURE__ */ __name(({ fileData, displayClass }) => {
-    const dashboardBaseUrl = (opts?.dashboardBaseUrl ?? process.env.DASHBOARD_URL ?? process.env.NEXT_PUBLIC_DASHBOARD_URL ?? "").replace(/\/+$/, "");
-    const slug = clusterSlug(fileData.slug);
-    const href = slug ? `${dashboardBaseUrl || ""}/clusters/${encodeURIComponent(slug)}` : `${dashboardBaseUrl || ""}/dashboard`;
-    const label = slug ? "Back to cluster" : "Back to dashboard";
-    return /* @__PURE__ */ jsx37(
-      "a",
-      {
-        class: `${displayClass ?? ""} dashboard-back-link`,
-        href,
-        target: "_top",
-        "data-dashboard-base-url": dashboardBaseUrl,
-        "data-cluster-slug": slug ?? "",
-        children: label
-      }
-    );
-  }, "DashboardBackLink");
-  DashboardBackLink.css = `
-.dashboard-back-link {
-  display: inline-flex;
-  width: fit-content;
-  align-items: center;
-  gap: 0.35rem;
-  margin-top: 0.75rem;
-  color: var(--secondary);
-  font-size: 0.95rem;
-  font-weight: 500;
-}
-
-.dashboard-back-link::before {
-  content: "";
-  display: inline-block;
-  width: 0.45rem;
-  height: 0.45rem;
-  border-left: 2px solid currentColor;
-  border-bottom: 2px solid currentColor;
-  transform: rotate(45deg);
-}
-
-.dashboard-back-link:hover {
-  color: var(--tertiary);
-}
-`;
-  DashboardBackLink.afterDOMLoaded = `
-function resolveDashboardBaseUrl(fallback) {
-  const trimmed = (fallback || "").replace(/\\/+$/, "")
-  if (trimmed && !/^https?:\\/\\/(?:localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)(?::\\d+)?$/i.test(trimmed)) {
-    return trimmed
-  }
-  try {
-    if (trimmed) {
-      const fallbackUrl = new URL(trimmed)
-      if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(fallbackUrl.hostname)) {
-        return fallbackUrl.protocol + "//" + fallbackUrl.hostname + ":3000"
-      }
-    }
-  } catch {}
-  try {
-    if (document.referrer) {
-      const ref = new URL(document.referrer)
-      if (!/^garden\\./i.test(ref.hostname)) {
-        return ref.origin.replace(/\\/+$/, "")
-      }
-    }
-  } catch {}
-  try {
-    const current = new URL(window.location.href)
-    if (/^garden\\./i.test(current.hostname)) {
-      return current.origin.replace("//garden.", "//")
-    }
-    if (/^(localhost|127(?:\\.\\d+){3}|0\\.0\\.0\\.0)$/i.test(current.hostname) || current.port === "8081") {
-      return current.protocol + "//" + current.hostname + ":3000"
-    }
-    return current.origin.replace(/\\/+$/, "")
-  } catch {}
-  return trimmed
-}
-
-function patchDashboardBackLinks() {
-  document.querySelectorAll(".dashboard-back-link").forEach(function(el) {
-    const base = resolveDashboardBaseUrl(el.getAttribute("data-dashboard-base-url"))
-    const slug = el.getAttribute("data-cluster-slug") || ""
-    const href = slug ? base + "/clusters/" + encodeURIComponent(slug) : base + "/dashboard"
-    if (href) el.setAttribute("href", href)
-  })
-}
-
-patchDashboardBackLinks()
-document.addEventListener("nav", patchDashboardBackLinks)
-`;
-  return DashboardBackLink;
-}), "default");
 
 // quartz/components/MarkdownActions.tsx
 import { jsx as jsx38, jsxs as jsxs21 } from "preact/jsx-runtime";
@@ -15855,13 +15761,13 @@ function clusterCards(allFiles, allowedClusters = [], clusterOrder = []) {
   const cards = allFiles.filter((file) => {
     const slug = String(file.slug ?? "");
     const fm = file.frontmatter;
-    const clusterSlug2 = slug.replace(/\/index$/, "");
-    const isAllowedCluster = allowed.size > 0 && allowed.has(clusterSlug2);
-    return slug.endsWith("/index") && (fm?.knowledge_type === "cluster-index" || isAllowedCluster) && fm?.knowledge_type !== "garden-overview" && (allowed.size === 0 || allowed.has(clusterSlug2));
+    const clusterSlug = slug.replace(/\/index$/, "");
+    const isAllowedCluster = allowed.size > 0 && allowed.has(clusterSlug);
+    return slug.endsWith("/index") && (fm?.knowledge_type === "cluster-index" || isAllowedCluster) && fm?.knowledge_type !== "garden-overview" && (allowed.size === 0 || allowed.has(clusterSlug));
   }).map((file) => {
     const fm = file.frontmatter;
     const fullSlug = file.slug;
-    const clusterSlug2 = String(file.slug ?? "").replace(/\/index$/, "");
+    const clusterSlug = String(file.slug ?? "").replace(/\/index$/, "");
     const stats = {
       sources: statFromText(file.text, "Source documents"),
       pages: statFromText(file.text, "Textbook pages"),
@@ -15871,7 +15777,7 @@ function clusterCards(allFiles, allowedClusters = [], clusterOrder = []) {
     const fallbackDescription = `${stats.sources ?? "0"} source documents, ${stats.pages ?? "0"} textbook pages, and ${stats.links ?? "0"} links.`;
     return {
       slug: fullSlug,
-      clusterSlug: clusterSlug2,
+      clusterSlug,
       title: typeof fm?.title === "string" ? fm.title : simplifySlug(fullSlug),
       description: typeof fm?.description === "string" && fm.description.trim() ? fm.description.trim() : fallbackDescription,
       stats
@@ -15977,8 +15883,8 @@ var FolderPdfExport = /* @__PURE__ */ __name(({ fileData, allFiles }) => {
   const pageSlug = fileData.slug ?? "";
   if (!pageSlug.endsWith("/index") || pageSlug.startsWith("tags/")) return null;
   const folderSlug = pageSlug.replace(/\/index$/, "");
-  const clusterSlug2 = folderSlug.split("/").filter(Boolean)[0] ?? "";
-  if (!clusterSlug2) return null;
+  const clusterSlug = folderSlug.split("/").filter(Boolean)[0] ?? "";
+  if (!clusterSlug) return null;
   const prefix = `${folderSlug}/`;
   const documents = allFiles.filter((file) => {
     const slug = file.slug ?? "";
@@ -15994,7 +15900,7 @@ var FolderPdfExport = /* @__PURE__ */ __name(({ fileData, allFiles }) => {
     "div",
     {
       class: "folder-pdf-export",
-      "data-cluster-slug": clusterSlug2,
+      "data-cluster-slug": clusterSlug,
       "data-folder-slug": folderSlug,
       "data-folder-title": folderTitle,
       children: [
@@ -16649,18 +16555,22 @@ var defaultContentPageLayout = {
     TagList_default()
   ],
   left: [
-    PageTitle_default(),
-    DashboardBackLink_default(),
     MobileOnly_default(Spacer_default()),
     Flex_default({
+      gap: "0.75rem",
       components: [
         {
           Component: Search_default(),
-          grow: true
+          basis: "14rem",
+          shrink: false
+        },
+        {
+          Component: ReaderMode_default(),
+          shrink: false
         }
       ]
     }),
-    Explorer_default()
+    Explorer_default({ showTitle: false })
   ],
   right: [
     ConditionalRender_default({
@@ -16704,18 +16614,22 @@ var defaultListPageLayout = {
     FolderPdfExport_default()
   ],
   left: [
-    PageTitle_default(),
-    DashboardBackLink_default(),
     MobileOnly_default(Spacer_default()),
     Flex_default({
+      gap: "0.75rem",
       components: [
         {
           Component: Search_default(),
-          grow: true
+          basis: "14rem",
+          shrink: false
+        },
+        {
+          Component: ReaderMode_default(),
+          shrink: false
         }
       ]
     }),
-    Explorer_default()
+    Explorer_default({ showTitle: false })
   ],
   right: [
     ConditionalRender_default({

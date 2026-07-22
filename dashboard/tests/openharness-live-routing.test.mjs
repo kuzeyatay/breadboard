@@ -118,11 +118,13 @@ test("terminal preflight permissions create a scoped folder grant and resume the
   assert.match(hook, /scope: decision === "always" \? "remembered" : "one_time"/);
   assert.match(hook, /await send\(blocked\.text/);
   assert.match(route, /confirmedPermissionIds:/);
+  const turnService = read("dashboard/src/lib/conversations/turn-service.ts");
   assert.ok(
-    route.indexOf("if (prepared.blocked)") <
-      route.indexOf("appendRuntimeMessage({"),
-    "blocked turns must pause before the user message is durably appended",
+    turnService.indexOf("reserveConversationTurn({") <
+      turnService.indexOf("if (prepared.blocked)"),
+    "canonical user and pending-assistant rows must be reserved before preflight",
   );
+  assert.match(turnService, /if \(prepared\.blocked\)[\s\S]*failAssistantMessage\([\s\S]*error: "awaiting_permission"/);
 });
 
 test("OpenHarness model provider is environment-driven ChatMock", () => {
@@ -307,5 +309,7 @@ test("terminal exposes explicit quarantine review and resumes a recorded capabil
   assert.match(review, /Files and SHA-256/);
   assert.match(review, /approvedPermissions/);
   assert.match(promote, /getLatestCapabilityGap[\s\S]*skill\.available/);
-  assert.match(messages, /task\.resumed/);
+  const turnService = read("dashboard/src/lib/conversations/turn-service.ts");
+  assert.match(messages, /startConversationTurn/);
+  assert.match(turnService, /eventType: "task\.resumed"/);
 });

@@ -6,14 +6,14 @@
 // URL — everything sensitive stays server-side.
 
 interface SessionState {
-  sessionId: number | null
+  sessionId: string | number | null
   clientToken: string | null
   model: string | null
   effort: string | null
 }
 
 interface QuartzSessionItem {
-  id: number
+  id: string | number
   title: string
   updatedAt: string
   messages: Array<{ role?: unknown; content?: unknown }>
@@ -34,6 +34,8 @@ interface QuartzCommandItem {
 // Mirrors the dashboard's slash-command token grammar: one or more leading
 // "/token" selectors, each followed by whitespace or end of text.
 const LEADING_COMMAND_RUN = /^(?:\/[a-z0-9][a-z0-9_.:-]*(?:\s+|$))+/i
+const ASSISTANT_MODEL_STORAGE_KEY = "breadboard:assistant-model"
+const ASSISTANT_EFFORT_STORAGE_KEY = "breadboard:assistant-reasoning-effort"
 
 function setupPanel(root: HTMLElement) {
   const dashboard = root.dataset.dashboard || "http://localhost:3000"
@@ -88,13 +90,20 @@ function setupPanel(root: HTMLElement) {
 
   function loadState(): SessionState {
     const defaults: SessionState = { sessionId: null, clientToken: null, model: null, effort: null }
+    let restored = defaults
     try {
       const raw = sessionStorage.getItem(storageKey)
-      if (raw) return { ...defaults, ...(JSON.parse(raw) as Partial<SessionState>) }
+      if (raw) restored = { ...defaults, ...(JSON.parse(raw) as Partial<SessionState>) }
     } catch {
       /* ignore */
     }
-    return defaults
+    try {
+      restored.model = localStorage.getItem(ASSISTANT_MODEL_STORAGE_KEY) || restored.model
+      restored.effort = localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY) || restored.effort
+    } catch {
+      /* ignore */
+    }
+    return restored
   }
   function saveState() {
     try {
@@ -144,9 +153,13 @@ function setupPanel(root: HTMLElement) {
   async function loadIntelligence() {
     if (!intelligence || !modelSelect || !effortSelect) return
     try {
-      const response = await fetch(`${dashboard}/api/quartz-ai/models`, {
-        credentials: "include",
-      })
+      const [response, preferenceResponse] = await Promise.all([
+        fetch(`${dashboard}/api/quartz-ai/models`, { credentials: "include" }),
+        fetch(`${dashboard}/api/assistant-preferences`, {
+          credentials: "include",
+          cache: "no-store",
+        }).catch(() => null),
+      ])
       if (!response.ok) return
       const data = (await response.json()) as {
         models?: unknown
@@ -172,6 +185,19 @@ function setupPanel(root: HTMLElement) {
       const defaultModel = typeof data.defaultModel === "string" ? data.defaultModel : models[0]
       const defaultEffort =
         typeof data.defaultReasoningEffort === "string" ? data.defaultReasoningEffort : efforts[0]
+      if (preferenceResponse?.ok) {
+        const preference = (await preferenceResponse.json()) as {
+          model?: unknown
+          reasoningEffort?: unknown
+          userPreference?: unknown
+        }
+        if (preference.userPreference === true) {
+          if (typeof preference.model === "string") state.model = preference.model
+          if (typeof preference.reasoningEffort === "string") {
+            state.effort = preference.reasoningEffort
+          }
+        }
+      }
       modelSelect.value =
         state.model && models.includes(state.model)
           ? state.model
@@ -186,19 +212,47 @@ function setupPanel(root: HTMLElement) {
             : efforts[0]
       state.model = modelSelect.value
       state.effort = effortSelect.value
+      try {
+        localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, state.model)
+        localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, state.effort)
+      } catch {
+        /* ignore */
+      }
       saveState()
       intelligence.hidden = false
     } catch {
       /* picker stays hidden; server defaults apply */
     }
   }
+
+  function saveIntelligencePreference(value: { model?: string; reasoningEffort?: string }) {
+    void fetch(`${dashboard}/api/assistant-preferences`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(value),
+    }).catch(() => undefined)
+  }
+
   modelSelect?.addEventListener("change", () => {
     state.model = modelSelect.value
+    try {
+      localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, state.model)
+    } catch {
+      /* ignore */
+    }
     saveState()
+    saveIntelligencePreference({ model: state.model })
   })
   effortSelect?.addEventListener("change", () => {
     state.effort = effortSelect.value
+    try {
+      localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, state.effort)
+    } catch {
+      /* ignore */
+    }
     saveState()
+    saveIntelligencePreference({ reasoningEffort: state.effort })
   })
 
   function filteredCommands(): QuartzCommandItem[] {
@@ -459,10 +513,10 @@ function setupPanel(root: HTMLElement) {
     const data = (await response.json()) as { sessions?: unknown }
     return (Array.isArray(data.sessions) ? data.sessions : []).flatMap((item) => {
       const record = (item ?? {}) as Record<string, unknown>
-      return Number.isInteger(record.id)
+      return Number.isInteger(record.id) || (typeof record.id === "string" && record.id.startsWith("conv_"))
         ? [
             {
-              id: record.id as number,
+              id: record.id as string | number,
               title: typeof record.title === "string" ? record.title : "New chat",
               updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
               messages: Array.isArray(record.messages)
@@ -739,7 +793,7 @@ function setupPanel(root: HTMLElement) {
   }
 
   async function streamEvents(
-    sessionId: number,
+    sessionId: string | number,
     assistantEl: HTMLElement,
     dispatch: () => Promise<void>,
   ) {
@@ -845,7 +899,7 @@ function setupPanel(root: HTMLElement) {
     }
   }
 
-  async function send(promptText: string) {
+  async function send(promptText: string, clientMessageId = crypto.randomUUID(), retry = false) {
     const trimmed = promptText.trim()
     if (!trimmed) return
     clearError()
@@ -854,11 +908,13 @@ function setupPanel(root: HTMLElement) {
     setBusy(true)
     try {
       const turn = {
+        clientMessageId,
         text: trimmed,
         sessionId: state.sessionId,
         clientToken: state.clientToken,
         model: state.model || undefined,
         reasoningEffort: state.effort || undefined,
+        retry,
         context: {
           gardenId,
           pageSlug,
@@ -906,7 +962,7 @@ function setupPanel(root: HTMLElement) {
       } else {
         showError(
           error instanceof Error ? error.message : "The assistant is unavailable.",
-          () => void send(trimmed),
+          () => void send(trimmed, clientMessageId, true),
         )
         assistantEl.remove()
       }

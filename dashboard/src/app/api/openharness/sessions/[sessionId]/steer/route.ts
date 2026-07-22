@@ -7,9 +7,10 @@ import {
   requireEnabled,
   requireString,
 } from "@/lib/openharness/route-helpers.ts";
-import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
+import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
 import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
+import { appendConversationSteerMessage } from "@/lib/conversations/store.ts";
 import {
   acceptSteerRequest,
   beginRuntimeRun,
@@ -22,14 +23,6 @@ import {
 
 export const dynamic = "force-dynamic";
 
-function parseSessionId(value: string): number {
-  const id = Number(value);
-  if (!Number.isInteger(id) || id <= 0) {
-    throw new ApiError(400, "invalid_session_id", "Invalid session id.");
-  }
-  return id;
-}
-
 // POST: enqueue a course correction on the existing active run. It deliberately
 // does not create a session, run, assistant placeholder, or SSE subscription.
 export async function POST(
@@ -40,7 +33,7 @@ export async function POST(
     const userId = await requireUserId();
     requireEnabled();
     const { sessionId } = await params;
-    const session = authorizeRuntimeSession(userId, parseSessionId(sessionId));
+    const session = authorizeRuntimeReference(userId, sessionId);
     const body = await readJsonBody(request);
     const runId = requireString(body.runId, "runId", 200);
     const text = requireString(body.text, "text", 200_000);
@@ -135,6 +128,14 @@ export async function POST(
       resultRunId: adoptedRun.id,
       resultMode: stillActive ? "steer" : "follow_up",
     });
+    if (session.row.conversation_id !== null) {
+      appendConversationSteerMessage({
+        conversationId: session.row.conversation_id,
+        clientMessageId: `steer:${clientRequestId}`,
+        surface: session.row.surface,
+        content: text,
+      });
+    }
     recordAuditEvent({
       eventType: stillActive ? "run.steered" : "run.steer_fallback",
       runtimeSessionId: session.row.id,

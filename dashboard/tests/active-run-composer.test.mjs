@@ -30,7 +30,7 @@ const abortRoute = source(
 const eventStream = source("../src/lib/openharness/event-stream.ts");
 const database = source("../src/lib/db.ts");
 
-test("the shared composer exposes the complete active-run state model", () => {
+test("the shared composer keeps its controls stable during an active run", () => {
   for (const state of [
     "idle",
     "submitting",
@@ -45,22 +45,43 @@ test("the shared composer exposes the complete active-run state model", () => {
   ]) {
     assert.match(sessionHook, new RegExp(`"${state}"`));
   }
-  assert.match(composer, /Ask for follow-up changes/);
-  assert.match(composer, /Apply this course correction to the active run/);
+  assert.match(composer, /placeholder=\{placeholder\}/);
+  assert.doesNotMatch(composer, /Ask for follow-up changes/);
+  assert.doesNotMatch(composer, /neu-active-task-rail/);
+  assert.doesNotMatch(composer, /activeInstruction/);
+  assert.doesNotMatch(composer, /Run permissions are enforced/);
+  assert.doesNotMatch(composer, /locked during run/);
+  assert.match(composer, /aria-disabled=\{activeRun\}/);
+  assert.match(composer, /activeRun && permissionPending/);
+  assert.match(composer, /onQueueSteer\?\.\(text\)/);
+  assert.doesNotMatch(composer, /pendingSteer|applyingSteer|steerError/);
+  assert.match(runtimePanel, /onQueueSteer=\{setQueuedFollowUp\}/);
+  assert.match(runtimePanel, /if \(await onSteer\(queuedFollowUp\)\) setQueuedFollowUp\(null\)/);
+  assert.match(runtimePanel, /Steer the active response with this message/);
+  assert.match(runtimePanel, /Discard queued follow-up message/);
+  assert.match(runtimePanel, /onSendQueued\(text\)/);
+  assert.doesNotMatch(composer, /Run status:/);
+  assert.doesNotMatch(sessionHook, /Course correction applied/);
+  assert.doesNotMatch(sessionHook, /steerFeedback/);
   assert.match(composer, /aria-label=\{runState === 'stopping' \? 'Stopping active run' : 'Stop active run'\}/);
   assert.match(composer, /h-11 w-11/);
-  assert.match(composer, /locked during run/);
   assert.match(runtimePanel, /disabled=\{disabled\}/);
 });
 
 test("Dashboard terminal and Garden Chat share real steering controls", () => {
   for (const surface of [terminal, garden]) {
     assert.match(surface, /runState=\{session\.runState\}/);
-    assert.match(surface, /activeInstruction=\{session\.activeInstruction\}/);
-    assert.match(surface, /await session\.steer\(text\)/);
-    assert.match(surface, /onSteer=/);
+    assert.doesNotMatch(surface, /activeInstruction=\{session\.activeInstruction\}/);
+    assert.match(surface, /return session\.steer\(trimmed\)/);
+    assert.match(surface, /onSteer=\{steer\}/);
+    assert.match(surface, /onSendQueued=\{sendQueued\}/);
     assert.match(surface, /onAbort=\{\(\) => void session\.abort\(\)\}/);
   }
+});
+
+test("the dashboard assistant header is labeled only as Terminal", () => {
+  assert.match(terminal, />\s*Terminal\s*</);
+  assert.doesNotMatch(terminal, /Breadboard Assistant|Public knowledge assistant|scopeTagline/);
 });
 
 test("steering reuses the active session and only falls back on run_not_active", () => {
@@ -93,7 +114,7 @@ test("steering maps request UUIDs to deterministic native OpenHarness message ID
 
 test("the steer route enforces auth, ownership, active-run validation, dedupe, and audit", () => {
   assert.match(steerRoute, /requireUserId\(\)/);
-  assert.match(steerRoute, /authorizeRuntimeSession\(userId/);
+  assert.match(steerRoute, /authorizeRuntimeReference\(userId/);
   assert.match(steerRoute, /requestedRun\.runtime_session_id !== session\.row\.id/);
   assert.match(steerRoute, /"run_not_active"/);
   assert.match(steerRoute, /reserveSteerRequest/);
@@ -101,6 +122,7 @@ test("the steer route enforces auth, ownership, active-run validation, dedupe, a
   assert.match(steerRoute, /acceptSteerRequest/);
   assert.match(steerRoute, /eventType: stillActive \? "run\.steered" : "run\.steer_fallback"/);
   assert.match(steerRoute, /getOpenHarnessGateway\(\)\.steerRun/);
+  assert.match(steerRoute, /appendConversationSteerMessage/);
 });
 
 test("Stop is idempotent and cancelled output remains distinct from failure", () => {

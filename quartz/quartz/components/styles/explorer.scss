@@ -35,6 +35,10 @@
   min-height: 1.2rem;
   flex: 0 1 auto;
 
+  &.titleless > .explorer-content {
+    margin-top: 0;
+  }
+
   &.collapsed {
     flex: 0 1 1.2rem;
 

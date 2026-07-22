@@ -39,11 +39,25 @@ export function capabilityForInternalToolRequest(request: Request): string | nul
   }
   return issueCapabilityToken({
     userId: row.user_id ?? 0,
+    conversationId: row.conversation_id ?? undefined,
     surface: row.surface,
     breadboardSessionId: String(row.id),
     openHarnessSessionId: row.openharness_session_id,
     gardenId: row.garden_id ?? undefined,
+    allowedGardenIds: parseAllowedGardenIds(row.allowed_garden_ids),
+    activeGardenId: row.cluster_id ?? undefined,
     pageSlug: row.page_slug ?? undefined,
     allowedTools: allowedToolsForSurface(row.surface),
   });
+}
+
+function parseAllowedGardenIds(value: string): number[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is number => Number.isInteger(item) && item > 0)
+      : [];
+  } catch {
+    return [];
+  }
 }

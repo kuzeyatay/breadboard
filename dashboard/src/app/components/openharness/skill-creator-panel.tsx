@@ -25,7 +25,7 @@ type CreatorReport = {
 };
 
 interface Props {
-  runtimeSessionId: number | null;
+  runtimeSessionId: string | number | null;
   onBack: () => void;
   onInstalledChange?: () => void | Promise<void>;
 }

@@ -118,6 +118,7 @@ export interface CapabilityGrant {
 /* ------------------------------------------------------------------ */
 
 const GARDEN_READ_TOOLS = [
+  "garden_list",
   "garden_search",
   "garden_get_page",
   "garden_get_page_context",

@@ -11,6 +11,7 @@ import type { OpenHarnessSurface } from "./config.ts";
 
 // Read-only + proposal Breadboard tools for garden chat.
 export const GARDEN_TOOLS = [
+  "garden_list",
   "garden_search",
   "garden_get_page",
   "garden_get_page_context",
@@ -28,6 +29,7 @@ export const GARDEN_TOOLS = [
 
 // Quartz page AI is read-only by default; write-like tools are proposal-only.
 export const QUARTZ_TOOLS = [
+  "garden_list",
   "garden_search",
   "garden_get_page",
   "garden_get_page_context",
@@ -54,7 +56,7 @@ export function allowedToolsForSurface(surface: OpenHarnessSurface): string[] {
   if (surface === "quartz_ai") return [...QUARTZ_TOOLS];
   // The dashboard terminal's tools are governed by the OpenHarness agent config
   // and per-action permission prompts, not by a fixed Breadboard allowlist.
-  return ["capability_gap", "capability_search"];
+  return [...GARDEN_TOOLS, "capability_gap", "capability_search"];
 }
 
 export function isProposalTool(tool: string): boolean {

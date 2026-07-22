@@ -13,6 +13,7 @@ const modelsRoute = read("../src/app/api/quartz-ai/models/route.ts");
 const sessionsRoute = read("../src/app/api/quartz-ai/sessions/route.ts");
 const openharnessSessionsRoute = read("../src/app/api/openharness/sessions/route.ts");
 const runtimeStore = read("../src/lib/openharness/runtime-store.ts");
+const conversationStore = read("../src/lib/conversations/store.ts");
 const component = read("../../quartz/quartz/components/BreadboardAI.tsx");
 const inline = read("../../quartz/quartz/components/scripts/breadboardAI.inline.ts");
 const styles = read("../../quartz/quartz/components/styles/breadboardAI.scss");
@@ -38,8 +39,8 @@ test("quartz models route serves the intelligence picker with CORS", () => {
 
 test("quartz sessions route lists page history safely", () => {
   assert.match(sessionsRoute, /authorizeQuartzAccess\(gardenId, userId\)/);
-  assert.match(sessionsRoute, /listRuntimeSessionsForUser\("quartz_ai", userId\)/);
-  assert.match(sessionsRoute, /row\.garden_id === gardenId && row\.page_slug === pageSlug/);
+  assert.match(sessionsRoute, /listConversationsForUser\(userId\)/);
+  assert.match(sessionsRoute, /listConversationMessages\(conversation\.id\)/);
   // Anonymous readers only ever get the session bound to their client token.
   assert.match(sessionsRoute, /authorizeQuartzRuntimeSession\(sessionId, \{\s*\n\s*userId: null,\s*\n\s*clientToken,/);
   assert.match(sessionsRoute, /export async function OPTIONS/);
@@ -49,8 +50,9 @@ test("quartz sessions route lists page history safely", () => {
 test("session transcript presentation is shared, not duplicated", () => {
   assert.match(runtimeStore, /export function presentRuntimeMessage/);
   assert.match(runtimeStore, /export function runtimeSessionTitle/);
-  assert.match(openharnessSessionsRoute, /presentRuntimeMessage/);
-  assert.match(openharnessSessionsRoute, /runtimeSessionTitle/);
+  assert.match(conversationStore, /export function presentConversationMessage/);
+  assert.match(openharnessSessionsRoute, /presentConversationMessage/);
+  assert.match(sessionsRoute, /presentConversationMessage/);
   assert.doesNotMatch(openharnessSessionsRoute, /function parseMessages/);
 });
 

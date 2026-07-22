@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  --titlebar-height: 40px;
+  --titlebar-height: 32px;
   --bg: #10251c;
   --bg-raise: #162e24;
   --panel: #172e24;
@@ -36,28 +36,9 @@ body {
   z-index: 1000;
   display: flex;
   height: var(--titlebar-height);
-  align-items: center;
-  padding: 0 150px 0 10px;
-  border-bottom: 1px solid #bccfc2;
   background: #faf7ef;
-  color: #13201b;
   user-select: none;
   -webkit-app-region: drag;
-}
-
-.desktop-titlebar-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.55rem;
-  font-size: 0.82rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.desktop-titlebar-brand img {
-  width: 23px;
-  height: 23px;
-  pointer-events: none;
 }
 
 .shell {

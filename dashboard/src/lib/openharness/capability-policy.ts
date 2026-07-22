@@ -66,6 +66,7 @@ const HIGH_IMPACT =
 const KNOWLEDGE_TOOLS = [
   "webfetch",
   "websearch",
+  "garden_list",
   "garden_search",
   "garden_get_page",
   "garden_get_page_context",

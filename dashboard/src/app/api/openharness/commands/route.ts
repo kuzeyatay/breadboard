@@ -14,7 +14,7 @@ import {
 import {
   getActiveCapabilityDecision,
 } from "@/lib/openharness/runtime-store.ts";
-import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
+import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
 import {
   listMcpConnections,
   runtimeMcpConfig,
@@ -34,11 +34,10 @@ export async function GET(request: Request) {
     const userId = await requireUserId();
     requireEnabled();
     const url = new URL(request.url);
-    const requestedSessionId = Number(url.searchParams.get("sessionId"));
-    const session =
-      Number.isInteger(requestedSessionId) && requestedSessionId > 0
-        ? authorizeRuntimeSession(userId, requestedSessionId)
-        : null;
+    const requestedSessionId = url.searchParams.get("sessionId");
+    const session = requestedSessionId
+      ? authorizeRuntimeReference(userId, requestedSessionId)
+      : null;
     const surface = session?.row.surface ?? requestedSurface(url.searchParams.get("surface"));
     const activeDecision = session
       ? getActiveCapabilityDecision(session.row.id)

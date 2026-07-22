@@ -17,6 +17,8 @@ import { repositoryRoot } from "../runtime-paths.ts";
 export interface WorkspaceRequest {
   surface: OpenHarnessSurface;
   sessionKey: string;
+  /** Canonical authenticated conversations are surface-independent. */
+  conversationKey?: string;
   gardenKey?: string;
   pageKey?: string;
   filesystemMode?: FilesystemAccessMode;
@@ -49,6 +51,9 @@ export function sanitizeSegment(value: string): string {
 /** Compute the workspace key (relative path fragments) for a request. */
 export function workspaceKeyFor(request: WorkspaceRequest): string {
   const session = sanitizeSegment(request.sessionKey);
+  if (request.conversationKey) {
+    return path.posix.join("conversations", sanitizeSegment(request.conversationKey), session);
+  }
   if (request.surface === "garden_chat") {
     return path.posix.join("gardens", sanitizeSegment(request.gardenKey ?? "unknown"), session);
   }

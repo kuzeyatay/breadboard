@@ -1,9 +1,10 @@
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth-options";
 import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
-import { authorizeQuartzRuntimeSession } from "@/lib/openharness/session-service.ts";
+import { authorizeConversationRuntime, authorizeQuartzRuntimeSession } from "@/lib/openharness/session-service.ts";
 import { buildSessionEventStream } from "@/lib/openharness/event-stream.ts";
 import { corsHeaders } from "@/lib/openharness/quartz-support.ts";
+import { getConversationForUser } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,12 @@ export async function GET(request: Request) {
     requireEnabled();
     const userId = await optionalUserId();
     const url = new URL(request.url);
-    const sessionId = Number(url.searchParams.get("sessionId"));
+    const rawSessionId = url.searchParams.get("sessionId");
+    if (userId !== null && rawSessionId?.startsWith("conv_")) {
+      const conversation = getConversationForUser(rawSessionId, userId);
+      return buildSessionEventStream(authorizeConversationRuntime(conversation), request.signal, cors);
+    }
+    const sessionId = Number(rawSessionId);
     if (!Number.isInteger(sessionId) || sessionId <= 0) {
       throw new ApiError(400, "invalid_session_id", "A valid sessionId is required.");
     }

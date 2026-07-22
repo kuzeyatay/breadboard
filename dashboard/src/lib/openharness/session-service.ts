@@ -7,8 +7,9 @@
 //     browser is allowed to reference
 //   - capability-token minting for garden/quartz tool calls
 //
-// Browsers reference only Breadboard runtime-session ids (numeric). The
-// OpenHarness session id, workspace directory, and agent are never accepted from
+// Authenticated browsers reference opaque Breadboard conversation ids. Numeric
+// runtime ids remain only on the isolated anonymous/legacy compatibility path.
+// The OpenHarness session id, workspace directory, and agent are never accepted from
 // the client — they are derived here from the authorized DB record.
 
 import db from "@/lib/db";
@@ -23,11 +24,14 @@ import { allowedToolsForSurface } from "./tool-scopes.ts";
 import { directoryForWorkspaceKey, writeWorkspaceCapability } from "./workspace.ts";
 import {
   createRuntimeSession,
+  getRuntimeSessionByConversation,
   getRuntimeSessionById,
   getOpenHarnessUserSettings,
   setOpenHarnessUserSettings,
   setOpenHarnessSessionId,
   setRuntimeStatus,
+  updateRuntimeActiveContext,
+  replaceRuntimeIdentity,
   recordAuditEvent,
   migrateRuntimeSessionPolicy,
   type RuntimeSessionRow,
@@ -35,6 +39,10 @@ import {
 } from "./runtime-store.ts";
 import { ApiError } from "./route-helpers.ts";
 import { listMcpConnections, runtimeMcpConfig } from "./mcp-connections.ts";
+import {
+  getConversationForUser,
+  type ConversationRow,
+} from "../conversations/store.ts";
 
 export interface AuthorizedRuntimeSession {
   row: RuntimeSessionRow;
@@ -193,6 +201,7 @@ export async function createSessionForSurface(
     clusterId,
     gardenId,
     pageSlug: options.pageSlug ?? null,
+    allowedGardenIds: clusterId === null ? [] : [clusterId],
     workspaceKey: created.workspaceKey,
     activeDirectory: created.directory,
     filesystemMode: "restricted",
@@ -368,15 +377,265 @@ export function authorizeQuartzRuntimeSession(
 
 /** Mint a capability token scoped to this session's surface + garden. */
 export function mintCapabilityToken(session: AuthorizedRuntimeSession, userId: number): string {
+  const allowedGardenIds = parseAllowedGardenIds(session.row.allowed_garden_ids);
   return issueCapabilityToken({
     userId,
+    conversationId: session.row.conversation_id ?? undefined,
     surface: session.row.surface,
     breadboardSessionId: String(session.row.id),
     openHarnessSessionId: session.openHarnessSessionId,
     gardenId: session.row.garden_id ?? undefined,
+    allowedGardenIds,
+    activeGardenId: session.row.cluster_id ?? undefined,
     pageSlug: session.row.page_slug ?? undefined,
     allowedTools: allowedToolsForSurface(session.row.surface),
   });
+}
+
+export interface AuthorizedGardenSummary {
+  id: number;
+  slug: string;
+  name: string;
+  isOwner: boolean;
+}
+
+/** Server-derived workspace authorization; no client list participates. */
+export function listAuthorizedGardens(userId: number): AuthorizedGardenSummary[] {
+  const rows = db.prepare(`
+    SELECT id, slug, name, CASE WHEN user_id = ? THEN 1 ELSE 0 END AS is_owner
+    FROM clusters
+    WHERE user_id = ? OR (visibility = 'public' AND chat_accessible = 1)
+    ORDER BY is_owner DESC, lower(name), id
+  `).all(userId, userId) as Array<{
+    id: number;
+    slug: string;
+    name: string;
+    is_owner: number;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    isOwner: row.is_owner === 1,
+  }));
+}
+
+/**
+ * Resolve the one runtime owned by an authenticated conversation and replace
+ * its temporary surface/garden/page context for this turn.
+ */
+export async function resolveConversationRuntime(input: {
+  conversation: ConversationRow;
+  surface: OpenHarnessSurface;
+  activeGardenSlug?: string | null;
+  activePageSlug?: string | null;
+  forceRecreate?: boolean;
+}): Promise<AuthorizedRuntimeSession> {
+  const gardens = normalizedAuthorizedGardens(input.conversation.user_id);
+  let active: { clusterId: number; slug: string } | null = null;
+  if (input.activeGardenSlug) {
+    const access = authorizeGardenAccess(input.conversation.user_id, input.activeGardenSlug);
+    if (!gardens.some((garden) => garden.id === access.clusterId)) {
+      throw new ApiError(404, "garden_not_found", "Garden not found.");
+    }
+    active = { clusterId: access.clusterId, slug: access.slug };
+  }
+  if (input.activePageSlug && !active) {
+    throw new ApiError(400, "garden_required", "An active page requires an active garden.");
+  }
+
+  let row = getRuntimeSessionByConversation(input.conversation.id);
+  if (row && row.user_id !== input.conversation.user_id) {
+    throw new ApiError(404, "session_not_found", "Session not found.");
+  }
+  if (!row) {
+    row = await createConversationRuntime(input.conversation, input.surface, active, input.activePageSlug ?? null, gardens);
+  } else {
+    row = updateRuntimeActiveContext({
+      runtimeSessionId: row.id,
+      surface: input.surface,
+      clusterId: active?.clusterId ?? null,
+      gardenId: active?.slug ?? null,
+      pageSlug: input.activePageSlug ?? null,
+      allowedGardenIds: gardens.map((garden) => garden.id),
+    });
+    if (input.forceRecreate || !row.openharness_session_id) {
+      row = await recreateConversationRuntime(row, input.conversation, input.surface);
+    }
+  }
+  if (!row.openharness_session_id) {
+    throw new ApiError(409, "session_not_ready", "Runtime session is not initialized.");
+  }
+  row = canonicalizeRuntimePolicy(row);
+  const authorized = authorizedRuntime(row);
+  refreshWorkspaceCapability(authorized);
+  return authorized;
+}
+
+export function authorizeConversationRuntime(
+  conversation: ConversationRow,
+): AuthorizedRuntimeSession {
+  let row = getRuntimeSessionByConversation(conversation.id);
+  if (!row || row.user_id !== conversation.user_id || !row.openharness_session_id) {
+    throw new ApiError(404, "session_not_found", "Session not found.");
+  }
+  if (row.garden_id) authorizeGardenAccess(conversation.user_id, row.garden_id);
+  row = canonicalizeRuntimePolicy(row);
+  return authorizedRuntime(row);
+}
+
+/** Compatibility resolver while non-chat controls move from numeric runtimes. */
+export function authorizeRuntimeReference(
+  userId: number,
+  reference: unknown,
+): AuthorizedRuntimeSession {
+  if (typeof reference === "string" && reference.startsWith("conv_")) {
+    return authorizeConversationRuntime(getConversationForUser(reference, userId));
+  }
+  const numeric = typeof reference === "number" ? reference : Number(reference);
+  if (!Number.isInteger(numeric) || numeric <= 0) {
+    throw new ApiError(400, "invalid_session_id", "A valid conversation id is required.");
+  }
+  return authorizeRuntimeSession(userId, numeric);
+}
+
+async function createConversationRuntime(
+  conversation: ConversationRow,
+  surface: OpenHarnessSurface,
+  active: { clusterId: number; slug: string } | null,
+  pageSlug: string | null,
+  gardens: AuthorizedGardenSummary[],
+): Promise<RuntimeSessionRow> {
+  const gateway = getOpenHarnessGateway();
+  const created = await gateway.createSession({
+    surface,
+    sessionKey: conversation.public_id,
+    conversationKey: conversation.public_id,
+    title: conversation.title,
+    metadata: { conversationPublicId: conversation.public_id },
+    filesystemMode: "restricted",
+    authenticated: true,
+  });
+  const row = createRuntimeSession({
+    conversationId: conversation.id,
+    surface,
+    userId: conversation.user_id,
+    chatSessionId: conversation.legacy_chat_session_id,
+    agentName: created.agentName,
+    clusterId: active?.clusterId ?? null,
+    gardenId: active?.slug ?? null,
+    pageSlug,
+    allowedGardenIds: gardens.map((garden) => garden.id),
+    workspaceKey: created.workspaceKey,
+    activeDirectory: created.directory,
+    filesystemMode: "restricted",
+    openHarnessSessionId: created.openHarnessSessionId,
+    runtimeMetadata: { title: conversation.title, conversationPublicId: conversation.public_id },
+  });
+  await loadMcpConnectionsForRuntime(row, created.directory);
+  recordAuditEvent({
+    eventType: "conversation.runtime_created",
+    runtimeSessionId: row.id,
+    userId: conversation.user_id,
+    gardenId: active?.slug ?? null,
+    payload: { conversationPublicId: conversation.public_id, allowedGardenCount: gardens.length },
+  });
+  return row;
+}
+
+async function recreateConversationRuntime(
+  row: RuntimeSessionRow,
+  conversation: ConversationRow,
+  surface: OpenHarnessSurface,
+): Promise<RuntimeSessionRow> {
+  const gateway = getOpenHarnessGateway();
+  const created = await gateway.createSession({
+    surface,
+    sessionKey: `${conversation.public_id}-${Date.now().toString(36)}`,
+    conversationKey: conversation.public_id,
+    title: conversation.title,
+    metadata: { conversationPublicId: conversation.public_id, rehydrated: true },
+    filesystemMode: "restricted",
+    authenticated: true,
+  });
+  const replaced = replaceRuntimeIdentity({
+    runtimeSessionId: row.id,
+    openHarnessSessionId: created.openHarnessSessionId,
+    workspaceKey: created.workspaceKey,
+    activeDirectory: created.directory,
+    agentName: created.agentName,
+    runtimeMetadata: { title: conversation.title, conversationPublicId: conversation.public_id, rehydrated: true },
+  });
+  await loadMcpConnectionsForRuntime(replaced, created.directory);
+  recordAuditEvent({
+    eventType: "conversation.runtime_recreated",
+    runtimeSessionId: row.id,
+    userId: conversation.user_id,
+    gardenId: row.garden_id,
+    payload: { conversationPublicId: conversation.public_id },
+  });
+  return replaced;
+}
+
+async function loadMcpConnectionsForRuntime(row: RuntimeSessionRow, directory: string): Promise<void> {
+  if (row.user_id === null) return;
+  const gateway = getOpenHarnessGateway();
+  for (const connection of listMcpConnections(row.user_id, true)) {
+    try {
+      await gateway.addMcpConnection(directory, connection.slug, runtimeMcpConfig(connection));
+    } catch {
+      recordAuditEvent({
+        eventType: "mcp.load_failed",
+        runtimeSessionId: row.id,
+        userId: row.user_id,
+        gardenId: row.garden_id,
+        payload: { slug: connection.slug, reason: "MCP connection failed to load." },
+      });
+    }
+  }
+}
+
+function authorizedRuntime(row: RuntimeSessionRow): AuthorizedRuntimeSession {
+  return {
+    row,
+    openHarnessSessionId: row.openharness_session_id!,
+    workspaceKey: row.workspace_key,
+    activeDirectory: row.active_directory ?? directoryForWorkspaceKey(readOpenHarnessConfig(), row.workspace_key),
+    filesystemMode: "restricted",
+    agentName: row.agent_name,
+  };
+}
+
+function refreshWorkspaceCapability(session: AuthorizedRuntimeSession): void {
+  const config = readOpenHarnessConfig();
+  const runtimeDirectory = directoryForWorkspaceKey(config, session.workspaceKey);
+  writeWorkspaceCapability(runtimeDirectory, {
+    token: mintCapabilityToken(session, session.row.user_id ?? 0),
+    dashboardUrl: config.dashboardInternalUrl,
+    surface: session.row.surface,
+    gardenId: session.row.garden_id ?? undefined,
+    pageSlug: session.row.page_slug ?? undefined,
+  });
+}
+
+function normalizedAuthorizedGardens(userId: number): AuthorizedGardenSummary[] {
+  const rows = db.prepare(`
+    SELECT id, slug, name, user_id FROM clusters
+    WHERE user_id = ? OR (visibility = 'public' AND chat_accessible = 1)
+    ORDER BY CASE WHEN user_id = ? THEN 0 ELSE 1 END, lower(name), id
+  `).all(userId, userId) as Array<{ id: number; slug: string; name: string; user_id: number }>;
+  return rows.map((row) => ({ ...row, isOwner: row.user_id === userId }));
+}
+
+function parseAllowedGardenIds(value: string): number[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is number => Number.isInteger(item) && item > 0)
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export function markStatus(session: AuthorizedRuntimeSession, status: string): void {

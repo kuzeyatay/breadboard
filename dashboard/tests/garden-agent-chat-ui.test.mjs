@@ -34,7 +34,8 @@ test("garden chat offers the terminal's model and reasoning-effort picker", () =
 
 test("garden chat has terminal-style history, new chat, and skill review", () => {
   assert.match(chat, /api\/openharness\/sessions\?surface=garden_chat/);
-  assert.match(chat, /item\.gardenId === gardenSlug/);
+  assert.doesNotMatch(chat, /item\.gardenId === gardenSlug/);
+  assert.match(chat, /id: string/);
   assert.match(chat, /New chat/);
   assert.match(chat, /Recents/);
   assert.match(chat, /openHistorySession/);

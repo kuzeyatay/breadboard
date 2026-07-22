@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import GardenAssistant from '@/app/garden/garden-assistant';
+import GardenAssistantSwitch from '@/app/components/openharness/garden-assistant-switch';
 import { QUARTZ_BASE_URL, quartzUrl } from '@/lib/quartz-url';
 import {
   exportFolderPdf,
@@ -512,7 +512,7 @@ export default function GardenClient({
         title={`${clusterName} garden`}
       />
 
-      <GardenAssistant
+      <GardenAssistantSwitch
         activeClusterSlug={activeCluster}
         activeClusterName={activeCluster === clusterSlug ? clusterName : activeCluster}
         activeMarkdown={activeMarkdown}

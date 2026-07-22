@@ -7,7 +7,7 @@
 // all embed this so the runtime experience stays consistent and the surface
 // wrappers stay thin.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import AssistantComposer, {
   type ComposerAttachment,
@@ -32,8 +32,6 @@ interface Props {
   messages: AgentMessage[];
   connection: ConnectionState;
   runState: AgentRunState;
-  activeInstruction: string | null;
-  steerFeedback: string | null;
   steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
@@ -41,7 +39,8 @@ interface Props {
   input: string;
   onInputChange: (value: string) => void;
   onSubmit: () => void;
-  onSteer: () => void;
+  onSteer: (text: string) => Promise<boolean>;
+  onSendQueued: (text: string) => void;
   onAbort: () => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onRetryMessage?: (messageIndex: number) => void;
@@ -59,7 +58,7 @@ interface Props {
   onRemoveAttachment?: (index: number) => void;
   statusMessage?: string;
   compact?: boolean;
-  sessionId?: number | null;
+  sessionId?: string | null;
   surface?: OpenHarnessSurface;
 }
 
@@ -67,8 +66,6 @@ export default function AgentRuntimePanel({
   messages,
   connection,
   runState,
-  activeInstruction,
-  steerFeedback,
   steerError,
   error,
   pendingPermission,
@@ -77,6 +74,7 @@ export default function AgentRuntimePanel({
   onInputChange,
   onSubmit,
   onSteer,
+  onSendQueued,
   onAbort,
   onPermissionDecision,
   onRetryMessage,
@@ -98,7 +96,16 @@ export default function AgentRuntimePanel({
   surface = "dashboard_terminal",
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
+  const [queuedFollowUp, setQueuedFollowUp] = useState<string | null>(null);
+  const [applyingSteer, setApplyingSteer] = useState(false);
   const streaming = connection === "streaming" || connection === "connecting" || connection === "waiting";
+  const activeRun =
+    runState === "submitting" ||
+    runState === "connecting" ||
+    runState === "running" ||
+    runState === "waiting_for_permission" ||
+    runState === "steering" ||
+    runState === "stopping";
   const lastAssistantIndex = messages.reduce(
     (lastIndex, message, index) =>
       message.role === "assistant" ? index : lastIndex,
@@ -107,13 +114,30 @@ export default function AgentRuntimePanel({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [messages, connection]);
+  }, [messages, connection, queuedFollowUp]);
+
+  useEffect(() => {
+    if (!queuedFollowUp || activeRun || applyingSteer) return;
+    const text = queuedFollowUp;
+    setQueuedFollowUp(null);
+    onSendQueued(text);
+  }, [activeRun, applyingSteer, onSendQueued, queuedFollowUp]);
+
+  async function applyQueuedSteer() {
+    if (!queuedFollowUp || !activeRun || applyingSteer) return;
+    setApplyingSteer(true);
+    try {
+      if (await onSteer(queuedFollowUp)) setQueuedFollowUp(null);
+    } finally {
+      setApplyingSteer(false);
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-5">
-          {messages.length === 0 ? (
+          {messages.length === 0 && !queuedFollowUp ? (
             emptyState ?? (
               <p className="py-8 text-center text-sm text-gray-500">
                 Ask the agent anything. It can use tools, and will ask before doing anything sensitive.
@@ -185,13 +209,45 @@ export default function AgentRuntimePanel({
                   </div>
                 </div>
               ))}
+              {queuedFollowUp ? (
+                <div className="flex justify-end">
+                  <div className="neu-surface-subtle flex w-full max-w-[80%] items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--ink)]">
+                    <svg className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
+                    </svg>
+                    <span className="min-w-0 flex-1 truncate" title={queuedFollowUp}>{queuedFollowUp}</span>
+                    <button
+                      type="button"
+                      onClick={() => void applyQueuedSteer()}
+                      disabled={applyingSteer || !activeRun || runState === "stopping"}
+                      className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-45"
+                      aria-label="Steer the active response with this message"
+                    >
+                      <span aria-hidden>→</span>
+                      <span>{applyingSteer ? "Steering..." : "Steer"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQueuedFollowUp(null)}
+                      disabled={applyingSteer}
+                      className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] disabled:opacity-45"
+                      aria-label="Discard queued follow-up message"
+                      title="Discard"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div ref={endRef} />
             </div>
           )}
 
-          {error ? (
+          {error || steerError ? (
             <div className="mt-4 rounded-lg border border-red-800/60 bg-red-950/30 px-4 py-3 text-xs text-red-300">
-              {error}
+              {error || steerError}
             </div>
           ) : null}
         </div>
@@ -221,11 +277,9 @@ export default function AgentRuntimePanel({
           capabilitySessionId={sessionId}
           capabilitySurface={surface}
           runState={runState}
-          activeInstruction={activeInstruction}
-          onSteer={onSteer}
+          onQueueSteer={setQueuedFollowUp}
+          steerQueued={Boolean(queuedFollowUp)}
           onStop={onAbort}
-          steerFeedback={steerFeedback}
-          steerError={steerError}
           permissionPending={Boolean(pendingPermission)}
         />
       </div>

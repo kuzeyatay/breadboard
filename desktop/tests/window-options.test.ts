@@ -17,6 +17,11 @@ test("main window options enforce renderer isolation", () => {
   assert.equal(options.backgroundColor, "#e6f0e6");
   assert.equal(options.titleBarStyle, "hidden");
   assert.deepEqual(options.titleBarOverlay, BREADBOARD_TITLE_BAR);
+  assert.deepEqual(options.titleBarOverlay, {
+    color: "#faf7ef",
+    symbolColor: "#13201b",
+    height: 32,
+  });
   assert.equal(options.webPreferences?.contextIsolation, true);
   assert.equal(options.webPreferences?.nodeIntegration, false);
   assert.equal(options.webPreferences?.sandbox, true);

@@ -7,6 +7,7 @@ const source = (relativePath) =>
 
 const actions = source("../src/app/components/assistant-message-actions.tsx");
 const activity = source("../src/app/components/openharness/activity-panel.tsx");
+const timing = source("../src/lib/assistant-activity-timing.ts");
 const evidence = source("../src/app/components/openharness/evidence-panel.tsx");
 const runtime = source(
   "../src/app/components/openharness/agent-runtime-panel.tsx",
@@ -32,6 +33,14 @@ test("thinking remains visible with response metadata and shimmers while active"
   assert.match(activity, /text-left text-sm leading-6/);
   assert.match(activity, /statusMetadata/);
   assert.match(activity, /formatResponseDuration/);
+  assert.match(activity, /assistantResponseElapsedMs/);
+  assert.match(timing, /Math\.min\(\.\.\.starts\)/);
+  assert.match(timing, /Math\.max\(\.\.\.completions\)/);
+  assert.match(
+    timing,
+    /if \(startedAt !== null\)[\s\S]*return Math\.max\(0, end - startedAt\);[\s\S]*return typeof input\.reportedDurationMs/,
+    "live wall-clock timestamps must take precedence over provider duration",
+  );
   assert.match(activity, /formatTokenCount/);
   assert.match(activity, /↓ counting tokens/);
   assert.match(activity, /!activities\.length && !usage && !reasoning/);

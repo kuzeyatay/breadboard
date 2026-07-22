@@ -42,7 +42,7 @@ interface Props {
 }
 
 interface RuntimeHistorySession {
-  id: number;
+  id: string;
   title: string;
   updatedAt: string;
   messages: AgentMessage[];
@@ -206,9 +206,6 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     session.connection === "streaming" ||
     session.connection === "waiting";
   const isPublic = scope === "public";
-  const scopeTagline = isPublic
-    ? "Chat across all public gardens"
-    : "Chat across every garden you own";
 
   useEffect(() => {
     const onResize = () => setHeight((current) => clampHeight(current));
@@ -244,7 +241,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
         const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
         setHistory(
           sessions
-            .filter((item: { id?: unknown }) => Number.isInteger(item.id))
+            .filter((item: { id?: unknown }) => typeof item.id === "string" && item.id.startsWith("conv_"))
             .map((item: {
               id: number;
               title?: unknown;
@@ -279,11 +276,17 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     });
   }, [busy, chatAttachments, input, model, reasoningEffort, runtimeUnavailable, session]);
 
-  const steer = useCallback(async () => {
-    const text = input.trim();
-    if (!text || runtimeUnavailable) return;
-    if (await session.steer(text)) setInput("");
-  }, [input, runtimeUnavailable, session]);
+  const steer = useCallback(async (text: string): Promise<boolean> => {
+    const trimmed = text.trim();
+    if (!trimmed || runtimeUnavailable) return false;
+    return session.steer(trimmed);
+  }, [runtimeUnavailable, session]);
+
+  const sendQueued = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || runtimeUnavailable) return;
+    void session.send(trimmed, { model, reasoningEffort });
+  }, [model, reasoningEffort, runtimeUnavailable, session]);
 
   const handleAttachmentInput = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -427,13 +430,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 style={{ animationDelay: "210ms" }}
                 className={`${headerItemAnim} truncate text-sm font-semibold text-[#172A22]`}
               >
-                {isPublic ? "Public knowledge assistant" : "Breadboard Assistant"}
-              </p>
-              <p
-                style={{ animationDelay: "300ms" }}
-                className={`${headerItemAnim} truncate text-[11px] text-[#5F6F68]`}
-              >
-                {scopeTagline}
+                Terminal
               </p>
             </div>
             <div className={`${headerItemAnim} ml-auto flex items-center gap-2`} style={{ animationDelay: "380ms" }}>
@@ -535,8 +532,6 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 messages={session.messages}
                 connection={session.connection}
                 runState={session.runState}
-                activeInstruction={session.activeInstruction}
-                steerFeedback={session.steerFeedback}
                 steerError={session.steerError}
                 error={runtimeUnavailable ? "OpenHarness is required but unavailable. No legacy request was sent." : session.error}
                 pendingPermission={session.pendingPermission}
@@ -544,7 +539,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 input={input}
                 onInputChange={setInput}
                 onSubmit={submit}
-                onSteer={() => void steer()}
+                onSteer={steer}
+                onSendQueued={sendQueued}
                 disabled={runtimeUnavailable}
                 onAbort={() => void session.abort()}
                 onPermissionDecision={(decision) => void session.respondToPermission(decision)}

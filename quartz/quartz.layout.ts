@@ -88,18 +88,22 @@ export const defaultContentPageLayout: PageLayout = {
     Component.TagList(),
   ],
   left: [
-    Component.PageTitle(),
-    Component.DashboardBackLink(),
     Component.MobileOnly(Component.Spacer()),
     Component.Flex({
+      gap: "0.75rem",
       components: [
         {
           Component: Component.Search(),
-          grow: true,
+          basis: "14rem",
+          shrink: false,
+        },
+        {
+          Component: Component.ReaderMode(),
+          shrink: false,
         },
       ],
     }),
-    Component.Explorer(),
+    Component.Explorer({ showTitle: false }),
   ],
   right: [
     Component.ConditionalRender({
@@ -145,18 +149,22 @@ export const defaultListPageLayout: PageLayout = {
     Component.FolderPdfExport(),
   ],
   left: [
-    Component.PageTitle(),
-    Component.DashboardBackLink(),
     Component.MobileOnly(Component.Spacer()),
     Component.Flex({
+      gap: "0.75rem",
       components: [
         {
           Component: Component.Search(),
-          grow: true,
+          basis: "14rem",
+          shrink: false,
+        },
+        {
+          Component: Component.ReaderMode(),
+          shrink: false,
         },
       ],
     }),
-    Component.Explorer(),
+    Component.Explorer({ showTitle: false }),
   ],
   right: [
     Component.ConditionalRender({
