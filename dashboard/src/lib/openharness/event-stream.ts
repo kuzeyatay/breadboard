@@ -48,7 +48,16 @@ function persistAssistantOnce(
     if (!clientMessageId) {
       throw new Error("Canonical runtime run is missing clientMessageId.");
     }
-    const metadata = { toolCalls, verification, runtimeStatus };
+    const startedAt = activeRun ? Date.parse(activeRun.started_at) : Number.NaN;
+    const responseDurationMs = Number.isFinite(startedAt)
+      ? Math.max(0, Date.now() - startedAt)
+      : undefined;
+    const metadata = {
+      toolCalls,
+      verification,
+      runtimeStatus,
+      ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+    };
     if (runtimeStatus === "idle") {
       completeAssistantMessage({
         conversationId: session.row.conversation_id,

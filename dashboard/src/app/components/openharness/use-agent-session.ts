@@ -74,6 +74,7 @@ export interface ActivityItem {
 
 export interface AgentMessage {
   id?: string;
+  clientMessageId?: string;
   role: "user" | "assistant";
   content: string;
   reasoning?: string;
@@ -81,10 +82,12 @@ export interface AgentMessage {
   tools?: ToolActivity[];
   proposal?: unknown;
   usage?: ChatTokenUsage;
+  responseDurationMs?: number;
   verification?: VerificationSummary;
   interrupted?: boolean;
   courseCorrection?: boolean;
   clientRequestId?: string;
+  branchGroupId?: string;
 }
 
 export interface SkillContinuation {
@@ -94,12 +97,14 @@ export interface SkillContinuation {
   approvedPermissions: string[];
 }
 
-interface AgentSendOptions {
+export interface AgentSendOptions {
   model?: string;
   reasoningEffort?: AssistantReasoningEffort;
   continuation?: SkillContinuation;
   attachments?: ChatAttachment[];
   confirmedPermissionIds?: string[];
+  historyOverride?: AgentMessage[];
+  branchGroupId?: string;
 }
 
 interface BlockedTurn {
@@ -123,10 +128,25 @@ function normalizeRestoredMessages(value: unknown): AgentMessage[] {
     })
     .map((message) => {
       const usage = normalizeChatTokenUsage(message.usage);
-      if (usage) return { ...message, usage };
-      const messageWithoutUsage = { ...message };
-      delete messageWithoutUsage.usage;
-      return messageWithoutUsage;
+      const normalized = { ...message };
+      if (usage) normalized.usage = usage;
+      else delete normalized.usage;
+      if (
+        typeof message.responseDurationMs === "number" &&
+        Number.isFinite(message.responseDurationMs) &&
+        message.responseDurationMs >= 0
+      ) {
+        normalized.responseDurationMs = Math.trunc(message.responseDurationMs);
+      } else {
+        delete normalized.responseDurationMs;
+      }
+      if (
+        typeof message.branchGroupId !== "string" ||
+        !message.branchGroupId.trim()
+      ) {
+        delete normalized.branchGroupId;
+      }
+      return normalized;
     });
 }
 
@@ -258,6 +278,7 @@ export function useAgentSession(
     sessionId: string;
     runId: string;
     instruction: string;
+    startedAt?: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] =
@@ -336,6 +357,10 @@ export function useAgentSession(
             sessionId: restored.id,
             runId: restoredRun.id,
             instruction: restoredRun.instruction,
+            startedAt:
+              typeof restoredRun.startedAt === "string"
+                ? restoredRun.startedAt
+                : undefined,
           });
         }
       })
@@ -351,6 +376,7 @@ export function useAgentSession(
       assistant: AgentMessage,
       commit: (message: AgentMessage) => void,
       onConnected: () => void,
+      responseStartedAtMs: number,
     ): Promise<"completed" | "cancelled" | "failed"> => {
       const controller = new AbortController();
       abortRef.current = controller;
@@ -389,6 +415,14 @@ export function useAgentSession(
           };
           return next;
         });
+      };
+
+      const commitResponseDuration = (completedAtMs = Date.now()) => {
+        assistant = {
+          ...assistant,
+          responseDurationMs: Math.max(0, completedAtMs - responseStartedAtMs),
+        };
+        commit(assistant);
       };
 
       const flushAssistant = () => {
@@ -578,6 +612,7 @@ export function useAgentSession(
               commit(assistant);
               break;
             case "cancelled":
+              commitResponseDuration();
               setActivities((current) =>
                 current.map((item) =>
                   item.status === "running" ||
@@ -594,6 +629,7 @@ export function useAgentSession(
               commit(assistant);
               return "cancelled";
             case "done":
+              commitResponseDuration();
               setActivities((current) =>
                 current.map((item) =>
                   item.status === "running"
@@ -611,13 +647,19 @@ export function useAgentSession(
           }
         }
       }
+      commitResponseDuration();
       return failed ? "failed" : "completed";
     },
     [createOptions?.gardenSlug, createOptions?.pageSlug, surface, transition],
   );
 
   const adoptDispatchedRun = useCallback(
-    async (activeSessionId: string, runId: string, instruction: string) => {
+    async (
+      activeSessionId: string,
+      runId: string,
+      instruction: string,
+      startedAt?: string,
+    ) => {
       await activeStreamRef.current?.catch(() => undefined);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
@@ -645,13 +687,17 @@ export function useAgentSession(
       setActiveInstruction(instruction);
       setError(null);
       setActiveTools([]);
+      const parsedStartedAt = startedAt ? Date.parse(startedAt) : Number.NaN;
+      const responseStartedAtMs = Number.isFinite(parsedStartedAt)
+        ? parsedStartedAt
+        : Date.now();
       setActivities([
         {
           id: "reasoning",
           kind: "reasoning",
           label: "Thinking",
           status: "running",
-          startedAt: new Date().toISOString(),
+          startedAt: new Date(responseStartedAtMs).toISOString(),
         },
       ]);
       transition("connecting");
@@ -667,6 +713,7 @@ export function useAgentSession(
           assistant,
           commit,
           markConnected,
+          responseStartedAtMs,
         );
         adoptedStream = streamPromise;
         activeStreamRef.current = streamPromise;
@@ -712,6 +759,7 @@ export function useAgentSession(
       runToResume.sessionId,
       runToResume.runId,
       runToResume.instruction,
+      runToResume.startedAt,
     );
   }, [adoptDispatchedRun, runToResume]);
 
@@ -727,7 +775,7 @@ export function useAgentSession(
               message.id !== resumedBlockedTurn.userMessageId &&
               message.id !== resumedBlockedTurn.assistantMessageId,
           )
-        : messages;
+        : options?.historyOverride ?? messages;
       if (resumedBlockedTurn) blockedTurnRef.current = null;
       latestSendOptionsRef.current = {
         model: options?.model,
@@ -741,13 +789,14 @@ export function useAgentSession(
       activeRunIdRef.current = null;
       transition("submitting");
       setActiveTools([]);
+      const responseStartedAtMs = Date.now();
       setActivities([
         {
           id: "reasoning",
           kind: "reasoning",
           label: "Thinking",
           status: "running",
-          startedAt: new Date().toISOString(),
+          startedAt: new Date(responseStartedAtMs).toISOString(),
         },
       ]);
 
@@ -755,14 +804,22 @@ export function useAgentSession(
         id: resumedBlockedTurn?.userMessageId ?? crypto.randomUUID(),
         role: "user",
         content: trimmed,
+        ...(options?.branchGroupId
+          ? { branchGroupId: options.branchGroupId }
+          : {}),
       };
+      userMessage.clientMessageId = userMessage.id;
       const assistant: AgentMessage = {
         id: resumedBlockedTurn?.assistantMessageId ?? crypto.randomUUID(),
         role: "assistant",
         content: "",
         sources: [],
         tools: [],
+        ...(options?.branchGroupId
+          ? { branchGroupId: options.branchGroupId }
+          : {}),
       };
+      assistant.clientMessageId = userMessage.id;
       const baseline = [...transcript, userMessage, assistant];
       setMessages(baseline);
 
@@ -807,6 +864,7 @@ export function useAgentSession(
           assistant,
           commit,
           markConnected,
+          responseStartedAtMs,
         );
         activeStreamRef.current = streamPromise;
         await Promise.race([
@@ -841,6 +899,7 @@ export function useAgentSession(
               attachments: options?.attachments,
               confirmedPermissionIds: options?.confirmedPermissionIds,
               retry: Boolean(resumedBlockedTurn),
+              branchGroupId: options?.branchGroupId,
             }),
           },
         );

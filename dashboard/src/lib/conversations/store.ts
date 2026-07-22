@@ -48,6 +48,7 @@ export interface PresentedConversationMessage {
   sources: unknown;
   usage: unknown;
   createdAt: string;
+  updatedAt: string;
 }
 
 export class ConversationStoreError extends Error {
@@ -431,6 +432,7 @@ function finishAssistantMessage(input: {
     );
     if (!row) throw new ConversationStoreError(404, "turn_not_found", "Conversation turn not found.");
     if (row.status !== "pending") return row;
+    const mergedMetadata = { ...parseObject(row.metadata), ...input.metadata };
     database.prepare(`
       UPDATE conversation_messages
       SET content = ?, status = ?, metadata = ?, sources = ?, token_usage = ?,
@@ -439,7 +441,7 @@ function finishAssistantMessage(input: {
     `).run(
       input.content,
       input.status,
-      input.metadata ? JSON.stringify(input.metadata) : null,
+      Object.keys(mergedMetadata).length > 0 ? JSON.stringify(mergedMetadata) : null,
       input.sources === undefined ? null : JSON.stringify(input.sources),
       input.tokenUsage === undefined ? null : JSON.stringify(input.tokenUsage),
       row.id,
@@ -472,6 +474,7 @@ export function presentConversationMessage(row: ConversationMessageRow): Present
     sources: parseUnknown(row.sources),
     usage: parseUnknown(row.token_usage),
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

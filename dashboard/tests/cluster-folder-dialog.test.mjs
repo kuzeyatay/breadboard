@@ -20,3 +20,12 @@ test("new cluster uses the styled dashboard dialog instead of a browser prompt",
   assert.doesNotMatch(source, /Create a named group for related gardens/);
   assert.doesNotMatch(source, /e\.g\. EE Year 1/);
 });
+
+test("gardens outside named clusters stay flat without an Ungrouped folder", () => {
+  assert.doesNotMatch(source, /__ungrouped__/);
+  assert.doesNotMatch(source, /["']Ungrouped["']/);
+  assert.match(
+    source,
+    /filteredClusters\.filter\(\(c\) => !c\.folder\)[\s\S]*?entries\.push\(\{ kind: "card", cluster \}\)/,
+  );
+});

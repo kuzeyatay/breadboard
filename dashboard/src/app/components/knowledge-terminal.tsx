@@ -12,22 +12,19 @@ import {
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
 import ChatMarkdown from '@/app/components/chat-markdown';
+import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import { UserMessageText } from '@/app/components/openharness/command-text';
 import {
   DEFAULT_ASSISTANT_MODELS,
-  DEFAULT_MODEL,
   mergeAssistantModels,
 } from '@/lib/ai-models';
-import {
-  DEFAULT_ASSISTANT_REASONING_EFFORT,
-  type AssistantReasoningEffort,
-} from '@/lib/assistant-reasoning';
 import {
   CHAT_ATTACHMENT_ACCEPT,
   extractChatAttachments,
   type ChatAttachment,
 } from '@/lib/chat-attachments';
 import {
+  formatResponseDuration,
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from '@/lib/chat-token-usage';
@@ -40,6 +37,7 @@ interface ChatMessage {
   thinking?: string;
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
+  responseDurationMs?: number;
 }
 
 interface ChatSession {
@@ -196,10 +194,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
-  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
-    DEFAULT_ASSISTANT_REASONING_EFFORT,
-  );
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
@@ -448,7 +443,13 @@ export default function KnowledgeTerminal({ scope }: Props) {
           }
         }
       }
-      updateSessionMessages(session.id, [...nextMessages, assistantMessage], sessionTitle);
+      assistantMessage = {
+        ...assistantMessage,
+        responseDurationMs: Math.round(performance.now() - responseStartedAt),
+      };
+      const finalMessages = [...nextMessages, assistantMessage];
+      setMessages(finalMessages);
+      updateSessionMessages(session.id, finalMessages, sessionTitle);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Assistant could not answer right now';
       const finalMessages: ChatMessage[] = [
@@ -457,6 +458,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
           role: 'assistant',
           content: `I could not reach the knowledge base assistant yet. ${message}`,
           sources: [],
+          responseDurationMs: Math.round(performance.now() - responseStartedAt),
         },
       ];
       setMessages(finalMessages);
@@ -730,9 +732,19 @@ export default function KnowledgeTerminal({ scope }: Props) {
                           </div>
                         ) : (
                           <div className="text-sm leading-7 text-gray-200">
+                            {message.responseDurationMs !== undefined && !message.thinking ? (
+                              <p className="mb-1 text-sm text-[var(--ink-muted)]">
+                                Thinking ({formatResponseDuration(message.responseDurationMs)})
+                              </p>
+                            ) : null}
                             {message.thinking ? (
                               <details className="neu-inset mb-2 rounded-md border border-gray-800 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
-                                <summary className="cursor-pointer text-gray-300">Thinking</summary>
+                                <summary className="cursor-pointer text-gray-300">
+                                  Thinking
+                                  {message.responseDurationMs !== undefined
+                                    ? ` (${formatResponseDuration(message.responseDurationMs)})`
+                                    : ''}
+                                </summary>
                                 <pre className="mt-2 whitespace-pre-wrap font-sans leading-5">{message.thinking}</pre>
                               </details>
                             ) : null}

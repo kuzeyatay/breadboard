@@ -45,9 +45,19 @@ test("the restored shell retains OpenHarness runtime capabilities", () => {
   assert.match(terminal, /onAbort=/);
   assert.match(terminal, /model=\{model\}/);
   assert.match(terminal, /reasoningEffort=\{reasoningEffort\}/);
-  assert.match(terminal, /<SkillReviewPanel/);
-  assert.match(terminal, /Review skills/);
+  assert.doesNotMatch(terminal, /<SkillReviewPanel/);
+  assert.doesNotMatch(terminal, /Review skills/);
   assert.match(terminal, /api\/openharness\/sessions\?surface=dashboard_terminal/);
+});
+
+test("the terminal header uses only a restrained runtime health dot", () => {
+  assert.match(
+    terminal,
+    /runtimeOnline = !runtimeUnavailable && session\.connection !== "error"/,
+  );
+  assert.match(terminal, /aria-label=\{runtimeOnline \? "OpenHarness is available"/);
+  assert.match(terminal, /runtimeOnline \? "bg-\[#4F805E\]" : "bg-\[#B65B5B\]"/);
+  assert.doesNotMatch(terminal, /session\.connection === "idle" \? "ready"/);
 });
 
 test("the OpenHarness composer adds documents immediately after the slash control", () => {

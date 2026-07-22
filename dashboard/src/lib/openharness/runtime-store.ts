@@ -8,6 +8,12 @@
 // reconnect.
 
 import db from "../db.ts";
+import { DEFAULT_MODEL } from "../ai-models.ts";
+import {
+  ASSISTANT_REASONING_EFFORTS,
+  DEFAULT_ASSISTANT_REASONING_EFFORT,
+  type AssistantReasoningEffort,
+} from "../assistant-reasoning.ts";
 import type { OpenHarnessSurface } from "./config.ts";
 import type {
   CapabilityDecision,
@@ -155,6 +161,9 @@ export function getRuntimeSessionByOpenHarnessId(
 export interface OpenHarnessUserSettings {
   filesystemMode: FilesystemAccessMode;
   lastActiveDirectory: string | null;
+  defaultModel: string;
+  reasoningEffort: AssistantReasoningEffort;
+  intelligencePreferenceSet: boolean;
 }
 
 export function getOpenHarnessUserSettings(
@@ -162,17 +171,28 @@ export function getOpenHarnessUserSettings(
 ): OpenHarnessUserSettings {
   const row = db
     .prepare(
-      "SELECT filesystem_mode, last_active_directory FROM openharness_user_settings WHERE user_id = ?",
+      `SELECT filesystem_mode, last_active_directory, default_model,
+              reasoning_effort, intelligence_preference_set
+       FROM openharness_user_settings WHERE user_id = ?`,
     )
     .get(userId) as
     | {
         filesystem_mode: FilesystemAccessMode;
         last_active_directory: string | null;
+        default_model: string;
+        reasoning_effort: string;
+        intelligence_preference_set: number;
       }
     | undefined;
   return {
     filesystemMode: row?.filesystem_mode === "full" ? "full" : "restricted",
     lastActiveDirectory: row?.last_active_directory ?? null,
+    defaultModel: row?.default_model?.trim() || DEFAULT_MODEL,
+    reasoningEffort:
+      row && ASSISTANT_REASONING_EFFORTS.includes(row.reasoning_effort as AssistantReasoningEffort)
+        ? row.reasoning_effort as AssistantReasoningEffort
+        : DEFAULT_ASSISTANT_REASONING_EFFORT,
+    intelligencePreferenceSet: row?.intelligence_preference_set === 1,
   };
 }
 
@@ -187,16 +207,33 @@ export function setOpenHarnessUserSettings(
       input.lastActiveDirectory === undefined
         ? current.lastActiveDirectory
         : input.lastActiveDirectory,
+    defaultModel: input.defaultModel?.trim() || current.defaultModel,
+    reasoningEffort: input.reasoningEffort ?? current.reasoningEffort,
+    intelligencePreferenceSet:
+      input.defaultModel !== undefined || input.reasoningEffort !== undefined
+        ? true
+        : current.intelligencePreferenceSet,
   };
   db.prepare(
     `INSERT INTO openharness_user_settings
-       (user_id, filesystem_mode, last_active_directory, updated_at)
-     VALUES (?, ?, ?, datetime('now'))
+       (user_id, filesystem_mode, last_active_directory, default_model,
+        reasoning_effort, intelligence_preference_set, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET
        filesystem_mode = excluded.filesystem_mode,
        last_active_directory = excluded.last_active_directory,
+       default_model = excluded.default_model,
+       reasoning_effort = excluded.reasoning_effort,
+       intelligence_preference_set = excluded.intelligence_preference_set,
        updated_at = datetime('now')`,
-  ).run(userId, next.filesystemMode, next.lastActiveDirectory);
+  ).run(
+    userId,
+    next.filesystemMode,
+    next.lastActiveDirectory,
+    next.defaultModel,
+    next.reasoningEffort,
+    next.intelligencePreferenceSet ? 1 : 0,
+  );
   return next;
 }
 

@@ -12,19 +12,15 @@ import {
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
+import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
 import ActivityPanel from '@/app/components/openharness/activity-panel';
 import { UserMessageText } from '@/app/components/openharness/command-text';
 import { useLegacyAgentActivity } from '@/app/components/openharness/use-legacy-agent-activity';
 import ChatMarkdown from '@/app/components/chat-markdown';
 import {
   DEFAULT_ASSISTANT_MODELS,
-  DEFAULT_MODEL,
   mergeAssistantModels,
 } from '@/lib/ai-models';
-import {
-  DEFAULT_ASSISTANT_REASONING_EFFORT,
-  type AssistantReasoningEffort,
-} from '@/lib/assistant-reasoning';
 import {
   CHAT_ATTACHMENT_ACCEPT,
   extractChatAttachments,
@@ -44,6 +40,7 @@ interface ChatMessage {
   thinking?: string;
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
+  responseDurationMs?: number;
   verification?: VerificationSummary;
 }
 
@@ -386,10 +383,7 @@ export default function GardenAssistant({
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
-  const [reasoningEffort, setReasoningEffort] = useState<AssistantReasoningEffort>(
-    DEFAULT_ASSISTANT_REASONING_EFFORT,
-  );
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
@@ -782,6 +776,7 @@ export default function GardenAssistant({
             .join('\n'),
           sources: [title || slug],
           ...(usage ? { usage } : {}),
+          responseDurationMs: Math.round(performance.now() - responseStartedAt),
         };
         const finalMessages = [...nextMessages, assistantMessage];
         setMessages(finalMessages);
@@ -942,7 +937,13 @@ export default function GardenAssistant({
           }
         }
       }
-      await persistChatSession(session.id, [...nextMessages, assistantMessage], sessionTitle);
+      assistantMessage = {
+        ...assistantMessage,
+        responseDurationMs: Math.round(performance.now() - responseStartedAt),
+      };
+      const finalMessages = [...nextMessages, assistantMessage];
+      setMessages(finalMessages);
+      await persistChatSession(session.id, finalMessages, sessionTitle);
     } catch (error) {
       const aborted = error instanceof Error && error.name === 'AbortError';
       agentFailed = !aborted;
@@ -953,6 +954,7 @@ export default function GardenAssistant({
           role: 'assistant',
           content: `I could not reach the assistant for this garden yet. ${message}`,
           sources: [],
+          responseDurationMs: Math.round(performance.now() - responseStartedAt),
         },
       ];
       setMessages(finalMessages);
@@ -1316,7 +1318,8 @@ export default function GardenAssistant({
                 >
                   {message.role === 'assistant' ? (
                     <>
-                      {message.usage ||
+                      {message.responseDurationMs !== undefined ||
+                      message.usage ||
                       message.thinking ||
                       (index === messages.length - 1 &&
                         (isStreaming ||
@@ -1328,6 +1331,7 @@ export default function GardenAssistant({
                           pendingPermission={index === messages.length - 1 ? agentActivity.pendingPermission : null}
                           usage={message.usage}
                           reasoning={message.thinking}
+                          responseDurationMs={message.responseDurationMs}
                           onAbort={agentActivity.abort}
                           onPermissionDecision={(decision) =>
                             void agentActivity.respondToPermission(decision)

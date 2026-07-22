@@ -55,11 +55,15 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(composer, /activeRun && permissionPending/);
   assert.match(composer, /onQueueSteer\?\.\(text\)/);
   assert.doesNotMatch(composer, /pendingSteer|applyingSteer|steerError/);
-  assert.match(runtimePanel, /onQueueSteer=\{setQueuedFollowUp\}/);
-  assert.match(runtimePanel, /if \(await onSteer\(queuedFollowUp\)\) setQueuedFollowUp\(null\)/);
-  assert.match(runtimePanel, /Steer the active response with this message/);
-  assert.match(runtimePanel, /Discard queued follow-up message/);
-  assert.match(runtimePanel, /onSendQueued\(text\)/);
+  assert.match(composer, /headerContent/);
+  assert.doesNotMatch(composer, /steerQueued/);
+  assert.match(runtimePanel, /onQueueSteer=\{queueFollowUp\}/);
+  assert.match(runtimePanel, /queuedFollowUps\.map/);
+  assert.match(runtimePanel, /await onSteer\(item\.text\)/);
+  assert.match(runtimePanel, /Steer the active response with:/);
+  assert.match(runtimePanel, /Delete queued message:/);
+  assert.match(runtimePanel, /Edit queued message:/);
+  assert.match(runtimePanel, /onSendQueued\(next\.text\)/);
   assert.doesNotMatch(composer, /Run status:/);
   assert.doesNotMatch(sessionHook, /Course correction applied/);
   assert.doesNotMatch(sessionHook, /steerFeedback/);
@@ -75,6 +79,8 @@ test("Dashboard terminal and Garden Chat share real steering controls", () => {
     assert.match(surface, /return session\.steer\(trimmed\)/);
     assert.match(surface, /onSteer=\{steer\}/);
     assert.match(surface, /onSendQueued=\{sendQueued\}/);
+    assert.match(surface, /onEditMessage=\{editMessage\}/);
+    assert.match(surface, /onSelectBranch=\{selectBranch\}/);
     assert.match(surface, /onAbort=\{\(\) => void session\.abort\(\)\}/);
   }
 });

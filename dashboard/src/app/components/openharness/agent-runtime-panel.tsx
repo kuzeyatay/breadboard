@@ -40,7 +40,13 @@ interface Props {
   onInputChange: (value: string) => void;
   onSubmit: () => void;
   onSteer: (text: string) => Promise<boolean>;
-  onSendQueued: (text: string) => void;
+  onSendQueued: (text: string) => Promise<void>;
+  onEditMessage?: (
+    messageIndex: number,
+    text: string,
+    branchGroupId: string,
+  ) => void;
+  onSelectBranch?: (messages: AgentMessage[]) => void;
   onAbort: () => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onRetryMessage?: (messageIndex: number) => void;
@@ -62,6 +68,57 @@ interface Props {
   surface?: OpenHarnessSurface;
 }
 
+interface QueuedFollowUp {
+  id: string;
+  text: string;
+}
+
+interface ConversationBranchGroup {
+  id: string;
+  activeIndex: number;
+  variants: AgentMessage[][];
+}
+
+const BRANCH_STORAGE_PREFIX = "breadboard:conversation-branches:";
+
+function messageBranchId(message: AgentMessage, index: number): string {
+  return (
+    message.branchGroupId ??
+    message.clientMessageId ??
+    message.id ??
+    `message-${index}-${message.content.slice(0, 48)}`
+  );
+}
+
+function cloneMessages(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    sources: message.sources ? [...message.sources] : undefined,
+  }));
+}
+
+function loadBranchGroups(sessionId: string): Record<string, ConversationBranchGroup> {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(`${BRANCH_STORAGE_PREFIX}${sessionId}`) ?? "{}",
+    ) as Record<string, ConversationBranchGroup>;
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, group]) =>
+        Boolean(
+          group &&
+            typeof group.id === "string" &&
+            Number.isInteger(group.activeIndex) &&
+            Array.isArray(group.variants) &&
+            group.variants.length > 1,
+        ),
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
 export default function AgentRuntimePanel({
   messages,
   connection,
@@ -75,6 +132,8 @@ export default function AgentRuntimePanel({
   onSubmit,
   onSteer,
   onSendQueued,
+  onEditMessage,
+  onSelectBranch,
   onAbort,
   onPermissionDecision,
   onRetryMessage,
@@ -96,8 +155,19 @@ export default function AgentRuntimePanel({
   surface = "dashboard_terminal",
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
-  const [queuedFollowUp, setQueuedFollowUp] = useState<string | null>(null);
-  const [applyingSteer, setApplyingSteer] = useState(false);
+  const copiedUserTimerRef = useRef<number | null>(null);
+  const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
+  const [applyingSteerId, setApplyingSteerId] = useState<string | null>(null);
+  const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null);
+  const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null);
+  const [queuedEditText, setQueuedEditText] = useState("");
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [messageEditText, setMessageEditText] = useState("");
+  const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
+  const [branchGroups, setBranchGroups] = useState<
+    Record<string, ConversationBranchGroup>
+  >({});
+  const [branchStorageSession, setBranchStorageSession] = useState<string | null>(null);
   const streaming = connection === "streaming" || connection === "connecting" || connection === "waiting";
   const activeRun =
     runState === "submitting" ||
@@ -114,30 +184,212 @@ export default function AgentRuntimePanel({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [messages, connection, queuedFollowUp]);
+  }, [messages, connection]);
 
   useEffect(() => {
-    if (!queuedFollowUp || activeRun || applyingSteer) return;
-    const text = queuedFollowUp;
-    setQueuedFollowUp(null);
-    onSendQueued(text);
-  }, [activeRun, applyingSteer, onSendQueued, queuedFollowUp]);
-
-  async function applyQueuedSteer() {
-    if (!queuedFollowUp || !activeRun || applyingSteer) return;
-    setApplyingSteer(true);
-    try {
-      if (await onSteer(queuedFollowUp)) setQueuedFollowUp(null);
-    } finally {
-      setApplyingSteer(false);
+    if (
+      queuedFollowUps.length === 0 ||
+      activeRun ||
+      applyingSteerId ||
+      sendingQueuedId
+    ) {
+      return;
     }
+    const next = queuedFollowUps[0];
+    setQueuedFollowUps((current) => current.filter((item) => item.id !== next.id));
+    setSendingQueuedId(next.id);
+    void onSendQueued(next.text).finally(() => setSendingQueuedId(null));
+  }, [
+    activeRun,
+    applyingSteerId,
+    onSendQueued,
+    queuedFollowUps,
+    sendingQueuedId,
+  ]);
+
+  useEffect(
+    () => () => {
+      if (copiedUserTimerRef.current !== null) {
+        window.clearTimeout(copiedUserTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!sessionId) {
+      setBranchGroups({});
+      setBranchStorageSession(null);
+      return;
+    }
+    setBranchGroups(loadBranchGroups(sessionId));
+    setBranchStorageSession(sessionId);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || branchStorageSession !== sessionId) return;
+    try {
+      window.localStorage.setItem(
+        `${BRANCH_STORAGE_PREFIX}${sessionId}`,
+        JSON.stringify(branchGroups),
+      );
+    } catch {
+      // Branch switching remains available for this page even if storage is full.
+    }
+  }, [branchGroups, branchStorageSession, sessionId]);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+    setBranchGroups((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [groupId, group] of Object.entries(current)) {
+        const isVisible = messages.some(
+          (message, index) =>
+            message.role === "user" && messageBranchId(message, index) === groupId,
+        );
+        if (!isVisible || group.variants[group.activeIndex] === messages) continue;
+        const variants = [...group.variants];
+        variants[group.activeIndex] = messages;
+        next[groupId] = { ...group, variants };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [messages]);
+
+  function queueFollowUp(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setQueuedFollowUps((current) => [
+      ...current,
+      { id: crypto.randomUUID(), text: trimmed },
+    ]);
+  }
+
+  async function applyQueuedSteer(item: QueuedFollowUp) {
+    if (!activeRun || applyingSteerId) return;
+    setApplyingSteerId(item.id);
+    try {
+      if (await onSteer(item.text)) {
+        setQueuedFollowUps((current) =>
+          current.filter((candidate) => candidate.id !== item.id),
+        );
+      }
+    } finally {
+      setApplyingSteerId(null);
+    }
+  }
+
+  function beginQueuedEdit(item: QueuedFollowUp) {
+    setEditingQueuedId(item.id);
+    setQueuedEditText(item.text);
+  }
+
+  function saveQueuedEdit(itemId: string) {
+    const text = queuedEditText.trim();
+    if (!text) return;
+    setQueuedFollowUps((current) =>
+      current.map((item) => (item.id === itemId ? { ...item, text } : item)),
+    );
+    setEditingQueuedId(null);
+    setQueuedEditText("");
+  }
+
+  async function copyUserMessage(message: AgentMessage, messageId: string) {
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(message.content);
+    } catch {
+      return;
+    }
+    setCopiedUserId(messageId);
+    if (copiedUserTimerRef.current !== null) {
+      window.clearTimeout(copiedUserTimerRef.current);
+    }
+    copiedUserTimerRef.current = window.setTimeout(
+      () => setCopiedUserId(null),
+      1_600,
+    );
+  }
+
+  function beginMessageEdit(message: AgentMessage, messageId: string) {
+    setEditingMessageId(messageId);
+    setMessageEditText(message.content);
+  }
+
+  function saveMessageEdit(message: AgentMessage, messageIndex: number) {
+    const text = messageEditText.trim();
+    if (!text || text === message.content || !onEditMessage) {
+      setEditingMessageId(null);
+      return;
+    }
+    const groupId = messageBranchId(message, messageIndex);
+    const currentSnapshot = cloneMessages(messages);
+    const existing = branchGroups[groupId];
+    const variants = existing
+      ? existing.variants.map((variant) => cloneMessages(variant))
+      : [currentSnapshot];
+    if (existing) variants[existing.activeIndex] = currentSnapshot;
+    const newIndex = variants.length;
+    variants.push([
+      ...cloneMessages(messages.slice(0, messageIndex)),
+      {
+        ...message,
+        id: crypto.randomUUID(),
+        content: text,
+        branchGroupId: groupId,
+      },
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: "",
+        sources: [],
+        tools: [],
+        branchGroupId: groupId,
+      },
+    ]);
+    setBranchGroups((current) => ({
+      ...current,
+      [groupId]: { id: groupId, activeIndex: newIndex, variants },
+    }));
+    setEditingMessageId(null);
+    setMessageEditText("");
+    onEditMessage(messageIndex, text, groupId);
+  }
+
+  function branchForAssistant(message: AgentMessage, messageIndex: number) {
+    if (message.role !== "assistant") return null;
+    let userIndex = messageIndex - 1;
+    while (userIndex >= 0 && messages[userIndex]?.role !== "user") userIndex -= 1;
+    if (userIndex < 0) return null;
+    const groupId =
+      message.branchGroupId ?? messageBranchId(messages[userIndex], userIndex);
+    const group = branchGroups[groupId];
+    return group && group.variants.length > 1 ? group : null;
+  }
+
+  function switchBranch(group: ConversationBranchGroup, direction: -1 | 1) {
+    if (activeRun || !onSelectBranch) return;
+    const targetIndex = Math.min(
+      group.variants.length - 1,
+      Math.max(0, group.activeIndex + direction),
+    );
+    if (targetIndex === group.activeIndex) return;
+    const variants = group.variants.map((variant) => cloneMessages(variant));
+    variants[group.activeIndex] = cloneMessages(messages);
+    setBranchGroups((current) => ({
+      ...current,
+      [group.id]: { ...group, activeIndex: targetIndex, variants },
+    }));
+    onSelectBranch(cloneMessages(variants[targetIndex]));
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-5">
-          {messages.length === 0 && !queuedFollowUp ? (
+          {messages.length === 0 ? (
             emptyState ?? (
               <p className="py-8 text-center text-sm text-gray-500">
                 Ask the agent anything. It can use tools, and will ask before doing anything sensitive.
@@ -148,17 +400,94 @@ export default function AgentRuntimePanel({
               {messages.map((message, index) => (
                 <div
                   key={`${message.role}-${index}`}
-                  className={message.role === "user" ? "flex justify-end" : ""}
+                  className={message.role === "user" ? "group flex justify-end" : ""}
                 >
                   <div className={message.role === "user" ? "max-w-[80%]" : "w-full"}>
                     {message.role === "user" ? (
-                      <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
-                        <UserMessageText content={message.content} />
-                      </div>
+                      editingMessageId === messageBranchId(message, index) ? (
+                        <div className="neu-chat-message neu-chat-message-user min-w-64 rounded-2xl rounded-br-sm p-2">
+                          <textarea
+                            value={messageEditText}
+                            onChange={(event) => setMessageEditText(event.target.value)}
+                            rows={Math.min(6, Math.max(2, messageEditText.split("\n").length))}
+                            className="max-h-40 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-[var(--ink)] outline-none"
+                            aria-label="Edit message"
+                            autoFocus
+                          />
+                          <div className="mt-1 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setEditingMessageId(null)}
+                              className="rounded-full px-3 py-1 text-xs text-[var(--ink-muted)] hover:bg-[var(--paper-strong)]"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveMessageEdit(message, index)}
+                              disabled={!messageEditText.trim()}
+                              className="rounded-full bg-[var(--botanical)] px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
+                            >
+                              Send
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
+                            <UserMessageText content={message.content} />
+                          </div>
+                          <div className="mt-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void copyUserMessage(
+                                  message,
+                                  messageBranchId(message, index),
+                                )
+                              }
+                              className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)]"
+                              title={copiedUserId === messageBranchId(message, index) ? "Copied" : "Copy message"}
+                              aria-label={copiedUserId === messageBranchId(message, index) ? "Message copied" : "Copy message"}
+                            >
+                              {copiedUserId === messageBranchId(message, index) ? (
+                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4 4L19 6" />
+                                </svg>
+                              ) : (
+                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                                  <rect x="8" y="8" width="11" height="11" rx="2" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+                                </svg>
+                              )}
+                            </button>
+                            {onEditMessage ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  beginMessageEdit(
+                                    message,
+                                    messageBranchId(message, index),
+                                  )
+                                }
+                                disabled={activeRun}
+                                className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] disabled:cursor-not-allowed disabled:opacity-35"
+                                title="Edit message"
+                                aria-label="Edit message and create a branch"
+                              >
+                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+                                </svg>
+                              </button>
+                            ) : null}
+                          </div>
+                        </>
+                      )
                     ) : (
                       <div className="text-sm leading-7 text-gray-200">
                         {message.usage ||
                         message.reasoning ||
+                        message.responseDurationMs !== undefined ||
                         (index === lastAssistantIndex &&
                           (streaming || pendingPermission || activities.length > 0)) ? (
                           <ActivityPanel
@@ -167,6 +496,7 @@ export default function AgentRuntimePanel({
                             pendingPermission={index === lastAssistantIndex ? pendingPermission : null}
                             usage={message.usage}
                             reasoning={message.reasoning}
+                            responseDurationMs={message.responseDurationMs}
                             onAbort={onAbort}
                             showAbort={false}
                             onPermissionDecision={onPermissionDecision}
@@ -197,6 +527,17 @@ export default function AgentRuntimePanel({
                           <AssistantMessageActions
                             content={message.content}
                             verification={message.verification}
+                            branch={(() => {
+                              const branch = branchForAssistant(message, index);
+                              return branch
+                                ? {
+                                    current: branch.activeIndex + 1,
+                                    total: branch.variants.length,
+                                    onPrevious: () => switchBranch(branch, -1),
+                                    onNext: () => switchBranch(branch, 1),
+                                  }
+                                : undefined;
+                            })()}
                             onRetry={
                               index === lastAssistantIndex && onRetryMessage
                                 ? () => onRetryMessage(index)
@@ -209,38 +550,6 @@ export default function AgentRuntimePanel({
                   </div>
                 </div>
               ))}
-              {queuedFollowUp ? (
-                <div className="flex justify-end">
-                  <div className="neu-surface-subtle flex w-full max-w-[80%] items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] px-3 py-2 text-sm text-[var(--ink)]">
-                    <svg className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
-                    </svg>
-                    <span className="min-w-0 flex-1 truncate" title={queuedFollowUp}>{queuedFollowUp}</span>
-                    <button
-                      type="button"
-                      onClick={() => void applyQueuedSteer()}
-                      disabled={applyingSteer || !activeRun || runState === "stopping"}
-                      className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-45"
-                      aria-label="Steer the active response with this message"
-                    >
-                      <span aria-hidden>→</span>
-                      <span>{applyingSteer ? "Steering..." : "Steer"}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setQueuedFollowUp(null)}
-                      disabled={applyingSteer}
-                      className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] disabled:opacity-45"
-                      aria-label="Discard queued follow-up message"
-                      title="Discard"
-                    >
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              ) : null}
               <div ref={endRef} />
             </div>
           )}
@@ -274,11 +583,116 @@ export default function AgentRuntimePanel({
           attachments={attachments}
           onRemoveAttachment={onRemoveAttachment}
           statusMessage={statusMessage}
+          headerContent={
+            queuedFollowUps.length > 0 ? (
+              <div className="space-y-0.5 py-0.5">
+                {queuedFollowUps.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex min-h-9 items-center gap-2 rounded-xl px-2 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)]"
+                  >
+                    <svg className="h-4 w-4 shrink-0 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
+                    </svg>
+                    {editingQueuedId === item.id ? (
+                      <form
+                        className="flex min-w-0 flex-1 items-center gap-1.5"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          saveQueuedEdit(item.id);
+                        }}
+                      >
+                        <input
+                          value={queuedEditText}
+                          onChange={(event) => setQueuedEditText(event.target.value)}
+                          className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-1 text-sm text-[var(--ink)] outline-none focus:border-[var(--line-strong)]"
+                          aria-label="Edit queued message"
+                          autoFocus
+                        />
+                        <button type="submit" className="rounded-lg px-2 py-1 text-xs text-[var(--botanical)] hover:bg-[var(--paper-surface)]">
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingQueuedId(null)}
+                          className="rounded-lg px-2 py-1 text-xs hover:bg-[var(--paper-surface)]"
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <span className="min-w-0 flex-1 truncate" title={item.text}>
+                          {item.text}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void applyQueuedSteer(item)}
+                          disabled={
+                            Boolean(applyingSteerId) ||
+                            !activeRun ||
+                            runState === "stopping"
+                          }
+                          className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
+                          aria-label={`Steer the active response with: ${item.text}`}
+                        >
+                          <svg
+                            className="h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={1.7}
+                            aria-hidden
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M19.5 8.25H9.75a4.5 4.5 0 0 0-4.5 4.5v.75m0 0 3-3m-3 3 3 3"
+                            />
+                          </svg>
+                          <span>
+                            {applyingSteerId === item.id ? "Steering..." : "Steer"}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setQueuedFollowUps((current) =>
+                              current.filter((candidate) => candidate.id !== item.id),
+                            )
+                          }
+                          disabled={applyingSteerId === item.id}
+                          className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
+                          aria-label={`Delete queued message: ${item.text}`}
+                          title="Delete queued message"
+                        >
+                          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 7.5h15m-9-3h3m-7.5 3 .75 12h10.5l.75-12M9.75 10.5v6m4.5-6v6" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => beginQueuedEdit(item)}
+                          disabled={applyingSteerId === item.id}
+                          className="rounded-lg p-1.5 transition hover:bg-[var(--paper-surface)] hover:text-[var(--ink)] disabled:opacity-40"
+                          aria-label={`Edit queued message: ${item.text}`}
+                          title="Edit queued message"
+                        >
+                          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z" />
+                          </svg>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : undefined
+          }
           capabilitySessionId={sessionId}
           capabilitySurface={surface}
           runState={runState}
-          onQueueSteer={setQueuedFollowUp}
-          steerQueued={Boolean(queuedFollowUp)}
+          onQueueSteer={queueFollowUp}
           onStop={onAbort}
           permissionPending={Boolean(pendingPermission)}
         />

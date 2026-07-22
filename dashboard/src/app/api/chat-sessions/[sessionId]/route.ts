@@ -6,6 +6,7 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import db from "@/lib/db";
+import type { VerificationSummary } from "@/lib/openharness/evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,47 @@ interface ChatMessage {
   content: string;
   sources?: string[];
   usage?: ChatTokenUsage;
+  responseDurationMs?: number;
+  verification?: VerificationSummary;
+}
+
+function normalizeVerification(value: unknown): VerificationSummary | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const state = (value as { state?: unknown }).state;
+  if (
+    ![
+      "verified",
+      "partially_verified",
+      "unverified",
+      "contradicted",
+      "not_applicable",
+    ].includes(String(state))
+  ) {
+    return undefined;
+  }
+  return value as VerificationSummary;
+}
+
+function mergeRuntimeMetadata(
+  previous: string | null,
+  message: ChatMessage,
+): string | null {
+  let metadata: Record<string, unknown> = {};
+  try {
+    const parsed = previous ? JSON.parse(previous) : null;
+    metadata = Array.isArray(parsed)
+      ? { calls: parsed }
+      : parsed && typeof parsed === "object"
+        ? { ...(parsed as Record<string, unknown>) }
+        : {};
+  } catch {
+    metadata = {};
+  }
+  if (message.verification) metadata.verification = message.verification;
+  if (message.responseDurationMs !== undefined) {
+    metadata.responseDurationMs = message.responseDurationMs;
+  }
+  return Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
 }
 
 function cleanTitle(value: unknown): string | null {
@@ -49,7 +91,21 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
     const usage = role === "assistant"
       ? normalizeChatTokenUsage(record.usage) ?? undefined
       : undefined;
-    messages.push({ role, content, sources, ...(usage ? { usage } : {}) });
+    const rawDuration = Number(record.responseDurationMs);
+    const responseDurationMs =
+      role === "assistant" && Number.isFinite(rawDuration) && rawDuration >= 0
+        ? Math.trunc(rawDuration)
+        : undefined;
+    const verification =
+      role === "assistant" ? normalizeVerification(record.verification) : undefined;
+    messages.push({
+      role,
+      content,
+      sources,
+      ...(usage ? { usage } : {}),
+      ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
+      ...(verification ? { verification } : {}),
+    });
   }
 
   return messages;
@@ -161,7 +217,7 @@ export async function PATCH(
             ? JSON.stringify(message.sources)
             : null,
           message.usage ? JSON.stringify(message.usage) : null,
-          prior?.tool_calls ?? null,
+          mergeRuntimeMetadata(prior?.tool_calls ?? null, message),
           prior?.permission_decisions ?? null,
           prior?.runtime_error ?? null,
           prior?.runtime_status ?? null,

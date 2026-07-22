@@ -289,7 +289,7 @@ export default function DashboardClient({
   }, [initialClusterFolders]);
 
   type ClusterRenderEntry =
-    | { kind: "header"; folder: string | null; key: string }
+    | { kind: "header"; folder: string; key: string }
     | { kind: "card"; cluster: Cluster };
 
   const clusterRenderList = useMemo<ClusterRenderEntry[]>(() => {
@@ -308,13 +308,12 @@ export default function DashboardClient({
       return filteredClusters.map((cluster) => ({ kind: "card", cluster }));
     }
 
+    // Gardens that have not been placed in a named cluster remain ordinary,
+    // always-visible cards. Creating the first named cluster must not wrap all
+    // existing gardens in a synthetic fallback folder.
     const entries: ClusterRenderEntry[] = [];
-    const ungroupedKey = "__ungrouped__";
-    entries.push({ kind: "header", folder: null, key: ungroupedKey });
-    if (expandedClusterFolders.has(ungroupedKey)) {
-      for (const cluster of filteredClusters.filter((c) => !c.folder)) {
-        entries.push({ kind: "card", cluster });
-      }
+    for (const cluster of filteredClusters.filter((c) => !c.folder)) {
+      entries.push({ kind: "card", cluster });
     }
     for (const name of ordered) {
       const key = `folder:${name}`;
@@ -335,7 +334,7 @@ export default function DashboardClient({
   const clusterSections = useMemo(() => {
     const sections: {
       key: string;
-      header: { folder: string | null; key: string } | null;
+      header: { folder: string; key: string } | null;
       cards: Cluster[];
     }[] = [];
     let current: (typeof sections)[number] | null = null;
@@ -371,7 +370,7 @@ export default function DashboardClient({
     const count = myClusters.filter((c) => c.folder === name).length;
     const ok = window.confirm(
       count > 0
-        ? `Delete cluster "${name}"? Its ${count} garden${count === 1 ? "" : "s"} will be moved to Ungrouped (the gardens are not deleted).`
+        ? `Delete cluster "${name}"? Its ${count} garden${count === 1 ? "" : "s"} will remain on the main Gardens page (the gardens are not deleted).`
         : `Delete cluster "${name}"?`,
     );
     if (!ok) return;
@@ -465,12 +464,10 @@ export default function DashboardClient({
     });
   }
 
-  function renderFolderHeader(folder: string | null, key: string) {
+  function renderFolderHeader(folder: string, key: string) {
     const isOver = dragOverFolderKey === key;
     const isExpanded = expandedClusterFolders.has(key);
-    const count = folder
-      ? myClusters.filter((c) => c.folder === folder).length
-      : myClusters.filter((c) => !c.folder).length;
+    const count = myClusters.filter((c) => c.folder === folder).length;
     return (
       <div
         key={key}
@@ -538,7 +535,7 @@ export default function DashboardClient({
           />
         </svg>
         <span className="text-sm font-medium text-gray-300">
-          {folder ?? "Ungrouped"}
+          {folder}
         </span>
         <span className="text-[11px] text-gray-600">{count}</span>
         {folder && (

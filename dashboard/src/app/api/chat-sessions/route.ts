@@ -17,6 +17,7 @@ interface ChatMessage {
   content: string;
   sources?: string[];
   usage?: ChatTokenUsage;
+  responseDurationMs?: number;
   verification?: VerificationSummary;
 }
 
@@ -74,6 +75,19 @@ function parseVerification(value: string | null): VerificationSummary | undefine
     const state = (verification as { state?: unknown }).state;
     if (!["verified", "partially_verified", "unverified", "contradicted", "not_applicable"].includes(String(state))) return undefined;
     return verification as VerificationSummary;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseResponseDuration(value: string | null): number | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as { responseDurationMs?: unknown };
+    const duration = Number(parsed?.responseDurationMs);
+    return Number.isFinite(duration) && duration >= 0
+      ? Math.trunc(duration)
+      : undefined;
   } catch {
     return undefined;
   }
@@ -171,11 +185,13 @@ function readSessions(
     const existing = bySession.get(message.session_id) ?? [];
     const usage = parseTokenUsage(message.token_usage);
     const verification = parseVerification(message.tool_calls);
+    const responseDurationMs = parseResponseDuration(message.tool_calls);
     existing.push({
       role: message.role,
       content: message.content,
       sources: parseSources(message.sources),
       ...(usage ? { usage } : {}),
+      ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(verification ? { verification } : {}),
     });
     bySession.set(message.session_id, existing);
