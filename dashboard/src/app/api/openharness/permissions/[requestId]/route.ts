@@ -6,7 +6,7 @@ import {
   requireEnabled,
   ApiError,
 } from "@/lib/openharness/route-helpers.ts";
-import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
+import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
 import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 
@@ -30,16 +30,12 @@ export async function POST(
       throw new ApiError(400, "invalid_request_id", "Invalid permission request id.");
     }
     const body = await readJsonBody(request);
-    const runtimeSessionId = Number(body.sessionId);
-    if (!Number.isInteger(runtimeSessionId) || runtimeSessionId <= 0) {
-      throw new ApiError(400, "invalid_session_id", "A valid sessionId is required.");
-    }
     const decision = typeof body.decision === "string" ? body.decision : "";
     if (!DECISIONS.has(decision)) {
       throw new ApiError(400, "invalid_decision", "decision must be once, always, or reject.");
     }
 
-    const session = authorizeRuntimeSession(userId, runtimeSessionId);
+    const session = authorizeRuntimeReference(userId, body.sessionId);
     await getOpenHarnessGateway().respondToPermission({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,

@@ -104,7 +104,7 @@ type QuarantineReport = {
 };
 
 interface Props {
-  runtimeSessionId: number | null;
+  runtimeSessionId: string | number | null;
   onUse: (skill: CatalogSkill) => void;
   onInstalledChange?: () => void | Promise<void>;
 }

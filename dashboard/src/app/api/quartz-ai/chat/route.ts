@@ -33,6 +33,14 @@ import { resolveOpenHarnessEngine } from "@/lib/openharness/model-selection.ts";
 import { prepareTurn, mergeSelectedTools } from "@/lib/openharness/dispatch-core.ts";
 import { listFilesystemGrants } from "@/lib/openharness/filesystem-grant-store.ts";
 import { composeOpenHarnessSystemPrompt } from "@/lib/openharness/system-prompts.ts";
+import {
+  createConversation,
+  getConversationById,
+  getConversationForUser,
+} from "@/lib/conversations/store.ts";
+import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
+import { getRuntimeSessionById } from "@/lib/openharness/runtime-store.ts";
+import { resolveConversationRuntime } from "@/lib/openharness/session-service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -90,6 +98,69 @@ export async function POST(request: Request) {
       pageContext,
       context.selectedText,
     );
+
+    // Signed-in Quartz uses the same canonical conversation and runtime as the
+    // Terminal and Garden Chat. Anonymous readers continue below on their
+    // browser-token-bound, public-only runtime and never touch private memory.
+    if (userId !== null) {
+      const suppliedConversationId = typeof body.sessionId === "string" ? body.sessionId : null;
+      let conversation = suppliedConversationId?.startsWith("conv_")
+        ? getConversationForUser(suppliedConversationId, userId)
+        : null;
+      if (!conversation && Number.isInteger(Number(body.sessionId)) && Number(body.sessionId) > 0) {
+        const legacy = getRuntimeSessionById(Number(body.sessionId));
+        if (legacy?.user_id === userId && legacy.conversation_id !== null) {
+          conversation = getConversationById(legacy.conversation_id);
+        }
+      }
+      conversation ??= createConversation({
+        userId,
+        title: context.pageTitle ?? pageSlug,
+        scopeKind: "page",
+        defaultGardenId: cluster.id,
+      });
+
+      if (prepareOnly) {
+        await resolveConversationRuntime({
+          conversation,
+          surface: "quartz_ai",
+          activeGardenSlug: gardenId,
+          activePageSlug: pageSlug,
+        });
+        return NextResponse.json(
+          { sessionId: conversation.public_id, clientToken: null, prepared: true },
+          { headers: cors },
+        );
+      }
+      const clientMessageId = requireString(body.clientMessageId, "clientMessageId", 128);
+      const result = await startConversationTurn({
+        conversation,
+        clientMessageId,
+        text,
+        surface: "quartz_ai",
+        surfaceContext: {
+          activeGardenSlug: gardenId,
+          activePageSlug: pageSlug,
+          pageTitle: context.pageTitle,
+          selectedText: context.selectedText,
+          graphContext: context.graph,
+          authorizedContext: systemContext,
+        },
+        model: body.model,
+        reasoningEffort: body.reasoningEffort,
+        retry: body.retry === true,
+      });
+      return NextResponse.json(
+        {
+          sessionId: conversation.public_id,
+          accepted: result.accepted,
+          ...(!result.accepted && "blocked" in result
+            ? { blocked: true, pendingPermissions: result.pendingPermissions }
+            : {}),
+        },
+        { headers: cors },
+      );
+    }
 
     const existingSessionId = Number(body.sessionId);
     const clientToken =

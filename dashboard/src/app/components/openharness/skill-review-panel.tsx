@@ -30,7 +30,7 @@ type QuarantineReport = {
 };
 
 interface Props {
-  runtimeSessionId: number | null;
+  runtimeSessionId: string | number | null;
   onClose: () => void;
   onResume?: (continuation: SkillContinuation) => Promise<void>;
   onApproved?: () => void | Promise<void>;

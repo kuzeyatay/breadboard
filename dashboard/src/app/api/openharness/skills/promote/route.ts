@@ -21,7 +21,7 @@ import {
   recordAuditEvent,
   recordSkillDecision,
 } from "@/lib/openharness/runtime-store.ts";
-import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
+import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -61,10 +61,11 @@ export async function POST(request: Request) {
           typeof value === "string" && report.requestedPermissions.includes(value as SkillPermission),
         )
       : [];
-    const runtimeSessionId = Number(body.runtimeSessionId);
+    let runtimeSessionId: number | null = null;
     let capabilityGap: Record<string, unknown> | null = null;
-    if (Number.isInteger(runtimeSessionId) && runtimeSessionId > 0) {
-      const runtime = authorizeRuntimeSession(userId, runtimeSessionId);
+    if (body.runtimeSessionId !== null && body.runtimeSessionId !== undefined) {
+      const runtime = authorizeRuntimeReference(userId, body.runtimeSessionId);
+      runtimeSessionId = runtime.row.id;
       if (runtime.row.surface !== "dashboard_terminal") {
         throw new ApiError(403, "invalid_parent_session", "Skills can resume only an authenticated Assistant task.");
       }

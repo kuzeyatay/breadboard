@@ -27,7 +27,7 @@ export default async function GardenPage({
 
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
-      <header className="relative flex items-center justify-between gap-4 px-6 py-3.5 border-b border-gray-800 shrink-0">
+      <header className="relative flex items-center justify-between gap-4 bg-[#faf7ef] px-6 py-3.5 border-b border-gray-800 shrink-0">
         <NavbarFlowerWind />
         <div className="relative z-10 flex items-center gap-3 min-w-0">
           <Link

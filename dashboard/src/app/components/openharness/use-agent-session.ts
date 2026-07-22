@@ -7,7 +7,7 @@
 // lands in dashboard-client.tsx.
 //
 // The browser only ever talks to Breadboard's /api/openharness/* routes. It
-// references sessions by their Breadboard runtime-session id; the OpenHarness
+// references conversations by an opaque Breadboard id; the OpenHarness
 // session id, workspace, and agent are all server-derived.
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -173,7 +173,7 @@ interface CreateOptions {
 }
 
 export interface UseAgentSessionResult {
-  sessionId: number | null;
+  sessionId: string | null;
   activeDirectory: string | null;
   filesystemMode: "restricted" | "full";
   messages: AgentMessage[];
@@ -181,14 +181,13 @@ export interface UseAgentSessionResult {
   runState: AgentRunState;
   activeRunId: string | null;
   activeInstruction: string | null;
-  steerFeedback: string | null;
   steerError: string | null;
   error: string | null;
   pendingPermission: PermissionPrompt | null;
   activeTools: ToolActivity[];
   activities: ActivityItem[];
   setMessages: (messages: AgentMessage[]) => void;
-  setSessionId: (id: number | null) => void;
+  setSessionId: (id: string | null) => void;
   send: (
     text: string,
     options?: AgentSendOptions,
@@ -204,13 +203,13 @@ export interface UseAgentSessionResult {
 async function ensureSession(
   surface: AgentSurface,
   options: CreateOptions | undefined,
-  currentId: number | null,
+  currentId: string | null,
   current: {
     activeDirectory: string | null;
     filesystemMode: "restricted" | "full";
   },
 ): Promise<{
-  id: number;
+  id: string;
   activeDirectory: string | null;
   filesystemMode: "restricted" | "full";
 }> {
@@ -230,7 +229,7 @@ async function ensureSession(
   }
   const data = await response.json();
   return {
-    id: data.session.id as number,
+    id: data.session.id as string,
     activeDirectory:
       typeof data.session.activeDirectory === "string"
         ? data.session.activeDirectory
@@ -244,7 +243,7 @@ export function useAgentSession(
   surface: AgentSurface,
   createOptions?: CreateOptions,
 ): UseAgentSessionResult {
-  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [activeDirectory, setActiveDirectory] = useState<string | null>(null);
   const [filesystemMode, setFilesystemMode] = useState<"restricted" | "full">(
     "restricted",
@@ -254,10 +253,9 @@ export function useAgentSession(
   const [runState, setRunState] = useState<AgentRunState>("idle");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeInstruction, setActiveInstruction] = useState<string | null>(null);
-  const [steerFeedback, setSteerFeedback] = useState<string | null>(null);
   const [steerError, setSteerError] = useState<string | null>(null);
   const [runToResume, setRunToResume] = useState<{
-    sessionId: number;
+    sessionId: string;
     runId: string;
     instruction: string;
   } | null>(null);
@@ -267,7 +265,7 @@ export function useAgentSession(
   const [activeTools, setActiveTools] = useState<ToolActivity[]>([]);
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const abortRef = useRef<AbortController | null>(null);
-  const sessionRef = useRef<number | null>(null);
+  const sessionRef = useRef<string | null>(null);
   const runStateRef = useRef<AgentRunState>("idle");
   const activeRunIdRef = useRef<string | null>(null);
   const activeStreamRef = useRef<Promise<"completed" | "cancelled" | "failed"> | null>(null);
@@ -298,16 +296,20 @@ export function useAgentSession(
       .then((data) => {
         if (cancelled || sessionRef.current) return;
         const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+        const preferredId = window.localStorage.getItem("breadboard-active-conversation");
         const restored = sessions.find(
+          (candidate: { id?: unknown }) => candidate.id === preferredId,
+        ) ?? sessions.find(
           (candidate: { gardenId?: unknown; pageSlug?: unknown }) =>
             (!createOptions?.gardenSlug ||
               candidate.gardenId === createOptions.gardenSlug) &&
             (!createOptions?.pageSlug ||
               candidate.pageSlug === createOptions.pageSlug),
-        );
-        if (!restored || !Number.isInteger(restored.id)) return;
+        ) ?? sessions[0];
+        if (!restored || typeof restored.id !== "string" || !restored.id.startsWith("conv_")) return;
         sessionRef.current = restored.id;
         setSessionId(restored.id);
+        window.localStorage.setItem("breadboard-active-conversation", restored.id);
         setActiveDirectory(
           typeof restored.activeDirectory === "string"
             ? restored.activeDirectory
@@ -345,15 +347,18 @@ export function useAgentSession(
 
   const streamEvents = useCallback(
     async (
-      activeSessionId: number,
+      activeSessionId: string,
       assistant: AgentMessage,
       commit: (message: AgentMessage) => void,
       onConnected: () => void,
     ): Promise<"completed" | "cancelled" | "failed"> => {
       const controller = new AbortController();
       abortRef.current = controller;
+      const streamContext = new URLSearchParams({ surface });
+      if (createOptions?.gardenSlug) streamContext.set("gardenSlug", createOptions.gardenSlug);
+      if (createOptions?.pageSlug) streamContext.set("pageSlug", createOptions.pageSlug);
       const response = await fetch(
-        `/api/openharness/sessions/${activeSessionId}/events`,
+        `/api/openharness/sessions/${activeSessionId}/events?${streamContext.toString()}`,
         {
           method: "GET",
           headers: { Accept: "text/event-stream" },
@@ -375,7 +380,13 @@ export function useAgentSession(
           );
           if (index < 0) return [...current, item];
           const next = [...current];
-          next[index] = { ...next[index], ...item };
+          next[index] = {
+            ...next[index],
+            ...item,
+            // Repeated reasoning/tool events update status and detail without
+            // restarting the full response timer.
+            startedAt: next[index].startedAt,
+          };
           return next;
         });
       };
@@ -602,11 +613,11 @@ export function useAgentSession(
       }
       return failed ? "failed" : "completed";
     },
-    [transition],
+    [createOptions?.gardenSlug, createOptions?.pageSlug, surface, transition],
   );
 
   const adoptDispatchedRun = useCallback(
-    async (activeSessionId: number, runId: string, instruction: string) => {
+    async (activeSessionId: string, runId: string, instruction: string) => {
       await activeStreamRef.current?.catch(() => undefined);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
@@ -725,7 +736,6 @@ export function useAgentSession(
       stopRequestedRef.current = false;
       setError(null);
       setSteerError(null);
-      setSteerFeedback(null);
       setActiveInstruction(trimmed);
       setActiveRunId(null);
       activeRunIdRef.current = null;
@@ -742,12 +752,12 @@ export function useAgentSession(
       ]);
 
       const userMessage: AgentMessage = {
-        id: crypto.randomUUID(),
+        id: resumedBlockedTurn?.userMessageId ?? crypto.randomUUID(),
         role: "user",
         content: trimmed,
       };
       const assistant: AgentMessage = {
-        id: crypto.randomUUID(),
+        id: resumedBlockedTurn?.assistantMessageId ?? crypto.randomUUID(),
         role: "assistant",
         content: "",
         sources: [],
@@ -781,6 +791,7 @@ export function useAgentSession(
         }
         sessionRef.current = activeSessionId;
         setSessionId(activeSessionId);
+        window.localStorage.setItem("breadboard-active-conversation", activeSessionId);
         setActiveDirectory(ensured.activeDirectory);
         setFilesystemMode(ensured.filesystemMode);
         transition("connecting");
@@ -817,12 +828,19 @@ export function useAgentSession(
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              clientMessageId: userMessage.id,
               text: trimmed,
+              surface,
+              surfaceContext: {
+                activeGardenSlug: createOptions?.gardenSlug,
+                activePageSlug: createOptions?.pageSlug,
+              },
               model: options?.model,
               reasoningEffort: options?.reasoningEffort,
               continuation: options?.continuation,
               attachments: options?.attachments,
               confirmedPermissionIds: options?.confirmedPermissionIds,
+              retry: Boolean(resumedBlockedTurn),
             }),
           },
         );
@@ -960,7 +978,6 @@ export function useAgentSession(
       steeringRef.current = true;
       const clientRequestId = crypto.randomUUID();
       setSteerError(null);
-      setSteerFeedback(null);
       transition("steering");
       try {
         const response = await fetch(
@@ -988,7 +1005,6 @@ export function useAgentSession(
           if (isActiveAgentRunState(runStateRef.current)) {
             transition("completed");
           }
-          setSteerFeedback("Run finished; sent as a follow-up.");
           void send(trimmed, latestSendOptionsRef.current);
           return true;
         }
@@ -1021,11 +1037,9 @@ export function useAgentSession(
         });
         setActiveInstruction(trimmed);
         if (body.mode === "follow_up" && typeof body.runId === "string") {
-          setSteerFeedback("Run finished; continuing as a follow-up.");
           void adoptDispatchedRun(activeSessionId, body.runId, trimmed);
           return true;
         }
-        setSteerFeedback("Course correction applied.");
         if (
           activeRunIdRef.current === runId &&
           runStateRef.current !== "stopping"
@@ -1297,6 +1311,7 @@ export function useAgentSession(
     abortRef.current?.abort();
     sessionRef.current = null;
     setSessionId(null);
+    window.localStorage.removeItem("breadboard-active-conversation");
     setActiveDirectory(null);
     setMessages([]);
     transition("idle");
@@ -1305,7 +1320,6 @@ export function useAgentSession(
     resumedRunIdRef.current = null;
     setActiveRunId(null);
     setActiveInstruction(null);
-    setSteerFeedback(null);
     setSteerError(null);
     setError(null);
     setPendingPermission(null);
@@ -1313,9 +1327,10 @@ export function useAgentSession(
     setActivities([]);
   }, [transition]);
 
-  const setSessionIdExternal = useCallback((id: number | null) => {
+  const setSessionIdExternal = useCallback((id: string | null) => {
     sessionRef.current = id;
     setSessionId(id);
+    if (id) window.localStorage.setItem("breadboard-active-conversation", id);
   }, []);
 
   return {
@@ -1327,7 +1342,6 @@ export function useAgentSession(
     runState,
     activeRunId,
     activeInstruction,
-    steerFeedback,
     steerError,
     error,
     pendingPermission,

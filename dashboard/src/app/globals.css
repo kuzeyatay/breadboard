@@ -160,16 +160,14 @@ body {
   font-family: var(--font-source-sans), "Source Sans Pro", Arial, Helvetica, sans-serif;
 }
 
-/* Electron's Windows controls remain native, but the surrounding chrome is
-   rendered by Breadboard so the desktop window belongs to the light botanical
-   UI instead of inheriting a black OS title bar. This element stays absent in
-   normal browser sessions because only the preload bridge sets the attribute. */
+/* Electron's native Windows controls sit over this compact drag strip. It is
+   absent in browser sessions because only the preload bridge sets the attribute. */
 .desktop-title-bar {
   display: none;
 }
 
 html[data-breadboard-desktop="true"] {
-  --breadboard-titlebar-height: 40px;
+  --breadboard-titlebar-height: 32px;
 }
 
 html[data-breadboard-desktop="true"] .desktop-title-bar {
@@ -178,33 +176,9 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   width: 100%;
   height: var(--breadboard-titlebar-height);
   flex: 0 0 var(--breadboard-titlebar-height);
-  align-items: center;
-  padding: 0 150px 0 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--paper-surface);
-  color: var(--ink);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--paper-raised) 65%, transparent);
+  background: #faf7ef;
   user-select: none;
   -webkit-app-region: drag;
-}
-
-.desktop-title-bar-brand {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.55rem;
-  font-family: var(--font-schibsted), var(--font-source-sans), sans-serif;
-  font-size: 0.82rem;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-}
-
-.desktop-title-bar-brand img {
-  width: 23px;
-  height: 23px;
-  flex: none;
-  border-radius: 5px;
-  pointer-events: none;
 }
 
 html[data-breadboard-desktop="true"] body > .h-screen {
@@ -382,14 +356,6 @@ html[data-breadboard-desktop="true"] body > .min-h-screen {
   transition:
     box-shadow var(--neu-duration) var(--neu-easing),
     border-color var(--neu-duration) var(--neu-easing);
-}
-
-.neu-active-task-rail {
-  border: 1px solid color-mix(in srgb, var(--neu-border) 48%, transparent);
-  background: color-mix(in srgb, var(--paper-strong) 70%, var(--neu-surface));
-  box-shadow:
-    inset 2px 2px 5px color-mix(in srgb, var(--neu-shadow) 54%, transparent),
-    inset -2px -2px 5px color-mix(in srgb, var(--neu-highlight) 66%, transparent);
 }
 
 .neu-chat-message {
@@ -640,7 +606,6 @@ b {
   .neu-button-icon,
   .neu-control,
   .neu-composer,
-  .neu-active-task-rail,
   .neumorphic-chat-bar,
   .neu-chat-message {
     transition-duration: 0.01ms;
@@ -688,7 +653,6 @@ b {
   .neu-dialog,
   .neu-popover,
   .neu-composer,
-  .neu-active-task-rail,
   .neumorphic-chat-bar,
   .neu-chat-message,
   .neu-button,

@@ -3,6 +3,7 @@ description: Breadboard Quartz page AI — page-scoped, read-only-by-default ass
 mode: primary
 temperature: 0.3
 tools:
+  garden_list: true
   "*": false
   garden_search: true
   garden_get_page: true

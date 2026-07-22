@@ -83,6 +83,7 @@ export interface AgentSession {
 export interface CreateAgentSessionInput {
   surface: OpenHarnessSurface;
   sessionKey: string;
+  conversationKey?: string;
   gardenKey?: string;
   pageKey?: string;
   title?: string;
@@ -226,6 +227,7 @@ export class OpenHarnessGateway {
     const request: WorkspaceRequest = {
       surface: input.surface,
       sessionKey: input.sessionKey,
+      conversationKey: input.conversationKey,
       gardenKey: input.gardenKey,
       pageKey: input.pageKey,
     };

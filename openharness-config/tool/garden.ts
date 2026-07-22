@@ -9,8 +9,8 @@
 //   3. returns the bounded, structured result to the model.
 //
 // The garden/quartz agents have no shell, file, git, or network tools — only
-// these. The capability token pins the garden scope server-side, so the model
-// cannot reach another garden by changing an argument.
+// these. Breadboard intersects every requested garden with the token's
+// server-derived authorization set, so a model argument can never grant access.
 //
 // Tool naming: this file is `garden.ts`, so each export `X` is exposed to the
 // model as `garden_X` (e.g. export `search` → tool `garden_search`).
@@ -37,98 +37,113 @@ async function callBreadboard(sessionID: string, toolName: string, args: Record<
   return { title: toolName, output: JSON.stringify(data.data ?? data) }
 }
 
+export const list = tool({
+  description: "List the Gardens this conversation is currently authorized to inspect.",
+  args: {},
+  async execute(_args, ctx) {
+    return callBreadboard(ctx.sessionID, "garden_list", {})
+  },
+})
+
 export const search = tool({
   description:
     "Search this garden's grounded knowledge (pages, sources, concepts) and return the most relevant excerpts with their source citations. Use this to answer questions from the garden's own material.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     query: tool.schema.string().describe("What to search for in the garden"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_search", { query: args.query })
+    return callBreadboard(ctx.sessionID, "garden_search", { gardenId: args.gardenId, query: args.query })
   },
 })
 
 export const get_page = tool({
   description: "Fetch a single page from this garden by slug, including its content and metadata.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     slug: tool.schema.string().describe("The page slug or relative path"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_page", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_page", { gardenId: args.gardenId, slug: args.slug })
   },
 })
 
 export const get_page_context = tool({
   description: "Fetch a page plus its graph neighbors and backlinks, for tracing relationships.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     slug: tool.schema.string().describe("The page slug or relative path"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_page_context", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_page_context", { gardenId: args.gardenId, slug: args.slug })
   },
 })
 
 export const get_source_excerpt = tool({
   description: "Fetch a source document excerpt from this garden by slug, for citing original material.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     slug: tool.schema.string().describe("The source page slug"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_source_excerpt", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_source_excerpt", { gardenId: args.gardenId, slug: args.slug })
   },
 })
 
 export const get_source_figure = tool({
   description: "Fetch a source figure/anchor reference from this garden by slug.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     slug: tool.schema.string().describe("The source page slug"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_source_figure", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_source_figure", { gardenId: args.gardenId, slug: args.slug })
   },
 })
 
 export const get_graph_neighbors = tool({
   description: "Fetch the knowledge-graph neighbors of a page/concept in this garden.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     slug: tool.schema.string().describe("The node slug"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_graph_neighbors", { slug: args.slug })
+    return callBreadboard(ctx.sessionID, "garden_get_graph_neighbors", { gardenId: args.gardenId, slug: args.slug })
   },
 })
 
 export const get_learning_spine = tool({
   description: "Fetch this garden's Learning Spine (ordered learning pages) to understand progression.",
-  args: {},
-  async execute(_args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_learning_spine", {})
+  args: { gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional() },
+  async execute(args, ctx) {
+    return callBreadboard(ctx.sessionID, "garden_get_learning_spine", { gardenId: args.gardenId })
   },
 })
 
 export const get_content_inventory = tool({
   description: "Fetch a bounded inventory of this garden's documents, topics, and stats.",
-  args: {},
-  async execute(_args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_content_inventory", {})
+  args: { gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional() },
+  async execute(args, ctx) {
+    return callBreadboard(ctx.sessionID, "garden_get_content_inventory", { gardenId: args.gardenId })
   },
 })
 
 export const get_recent_events = tool({
   description: "Fetch recent agent proposal activity for this garden.",
-  args: {},
-  async execute(_args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_get_recent_events", {})
+  args: { gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional() },
+  async execute(args, ctx) {
+    return callBreadboard(ctx.sessionID, "garden_get_recent_events", { gardenId: args.gardenId })
   },
 })
 
 export const run_proposal_validation = tool({
   description: "Validate a proposed change against this garden before proposing it (checks page existence, etc.).",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     pageSlug: tool.schema.string().describe("The page the proposal targets"),
   },
   async execute(args, ctx) {
-    return callBreadboard(ctx.sessionID, "garden_run_proposal_validation", { pageSlug: args.pageSlug })
+    return callBreadboard(ctx.sessionID, "garden_run_proposal_validation", { gardenId: args.gardenId, pageSlug: args.pageSlug })
   },
 })
 
@@ -136,6 +151,7 @@ export const create_note_proposal = tool({
   description:
     "Propose a NEW note for this garden. This does NOT publish anything — it creates a proposal the user reviews and applies through Breadboard. Cite evidence anchors.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     title: tool.schema.string().describe("Proposed note title"),
     content: tool.schema.string().describe("Proposed note markdown content"),
     rationale: tool.schema.string().describe("Why this note should exist"),
@@ -144,6 +160,7 @@ export const create_note_proposal = tool({
   async execute(args, ctx) {
     return callBreadboard(ctx.sessionID, "garden_create_note_proposal", {
       title: args.title,
+      gardenId: args.gardenId,
       content: args.content,
       rationale: args.rationale,
       evidenceAnchorIds: args.evidenceAnchorIds,
@@ -155,6 +172,7 @@ export const propose_page_revision = tool({
   description:
     "Propose a revision to an existing page. This does NOT overwrite anything — it creates a proposal the user reviews, diffs, validates, and applies through Breadboard.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     pageSlug: tool.schema.string().describe("The page to revise"),
     patchOrReplacement: tool.schema.string().describe("The proposed replacement markdown or patch"),
     rationale: tool.schema.string().describe("Why this revision is warranted"),
@@ -164,6 +182,7 @@ export const propose_page_revision = tool({
   async execute(args, ctx) {
     return callBreadboard(ctx.sessionID, "garden_propose_page_revision", {
       pageSlug: args.pageSlug,
+      gardenId: args.gardenId,
       patchOrReplacement: args.patchOrReplacement,
       rationale: args.rationale,
       evidenceAnchorIds: args.evidenceAnchorIds,
@@ -176,6 +195,7 @@ export const propose_visualization = tool({
   description:
     "Propose an interactive visualization for a page. Creates a proposal the user reviews and applies; nothing is published directly.",
   args: {
+    gardenId: tool.schema.string().describe("Target Garden slug; omit to use the active Garden").optional(),
     pageSlug: tool.schema.string().describe("The page the visualization belongs to"),
     description: tool.schema.string().describe("What the visualization shows"),
     spec: tool.schema.record(tool.schema.string(), tool.schema.any()).describe("Structured visualization spec").default({}),
@@ -184,6 +204,7 @@ export const propose_visualization = tool({
   async execute(args, ctx) {
     return callBreadboard(ctx.sessionID, "garden_propose_visualization", {
       pageSlug: args.pageSlug,
+      gardenId: args.gardenId,
       description: args.description,
       spec: args.spec,
       rationale: args.rationale,

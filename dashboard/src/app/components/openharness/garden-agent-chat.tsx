@@ -42,7 +42,7 @@ interface Proposal {
 }
 
 interface RuntimeHistorySession {
-  id: number;
+  id: string;
   title: string;
   updatedAt: string;
   messages: AgentMessage[];
@@ -131,9 +131,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
         const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
         setHistory(
           sessions
-            .filter(
-              (item: { id?: unknown; gardenId?: unknown }) =>
-                Number.isInteger(item.id) && item.gardenId === gardenSlug,
+            .filter((item: { id?: unknown }) =>
+              typeof item.id === "string" && item.id.startsWith("conv_"),
             )
             .map((item: {
               id: number;
@@ -176,11 +175,17 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     void session.send(text, { model, reasoningEffort });
   }, [input, model, reasoningEffort, session]);
 
-  const steer = useCallback(async () => {
-    const text = input.trim();
-    if (!text) return;
-    if (await session.steer(text)) setInput("");
-  }, [input, session]);
+  const steer = useCallback(async (text: string): Promise<boolean> => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    return session.steer(trimmed);
+  }, [session]);
+
+  const sendQueued = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    void session.send(trimmed, { model, reasoningEffort });
+  }, [model, reasoningEffort, session]);
 
   const sendSuggestedPrompt = useCallback(
     (text: string) => {
@@ -375,8 +380,6 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           messages={session.messages}
           connection={session.connection}
           runState={session.runState}
-          activeInstruction={session.activeInstruction}
-          steerFeedback={session.steerFeedback}
           steerError={session.steerError}
           error={session.error}
           pendingPermission={session.pendingPermission}
@@ -384,7 +387,8 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           input={input}
           onInputChange={setInput}
           onSubmit={submit}
-          onSteer={() => void steer()}
+          onSteer={steer}
+          onSendQueued={sendQueued}
           onAbort={() => void session.abort()}
           onPermissionDecision={(decision) => void session.respondToPermission(decision)}
           onRetryMessage={retryMessage}

@@ -50,14 +50,12 @@ interface Props {
   statusMessage?: string;
   className?: string;
   compact?: boolean;
-  capabilitySessionId?: number | null;
+  capabilitySessionId?: string | number | null;
   capabilitySurface?: OpenHarnessSurface;
   runState?: AgentRunState;
-  activeInstruction?: string | null;
-  onSteer?: () => void;
+  onQueueSteer?: (text: string) => void;
+  steerQueued?: boolean;
   onStop?: () => void;
-  steerFeedback?: string | null;
-  steerError?: string | null;
   permissionPending?: boolean;
 }
 
@@ -120,11 +118,9 @@ export default function AssistantComposer({
   capabilitySessionId,
   capabilitySurface = 'dashboard_terminal',
   runState = 'idle',
-  activeInstruction,
-  onSteer,
+  onQueueSteer,
+  steerQueued = false,
   onStop,
-  steerFeedback,
-  steerError,
   permissionPending = false,
 }: Props) {
   const [showIntelligence, setShowIntelligence] = useState(false);
@@ -145,9 +141,11 @@ export default function AssistantComposer({
     runState === 'steering' ||
     runState === 'stopping';
   const composerDisabled = disabled || runState === 'stopping';
-  const canSteer =
+  const canQueueSteer =
     activeRun &&
     canSubmit &&
+    Boolean(onQueueSteer) &&
+    !steerQueued &&
     runState !== 'steering' &&
     runState !== 'stopping';
 
@@ -159,6 +157,14 @@ export default function AssistantComposer({
 
   function assignTextareaRef(node: HTMLTextAreaElement | null) {
     internalTextareaRef.current = node;
+  }
+
+  function queueSteer() {
+    const text = value.trim();
+    if (!text || !canQueueSteer) return;
+    onQueueSteer?.(text);
+    onChange('');
+    window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
   }
 
   function insertCommand(item: CommandHubItem) {
@@ -182,26 +188,6 @@ export default function AssistantComposer({
   return (
     <div className={className}>
       <div className="neu-composer relative rounded-[30px] p-2">
-        {activeRun ? (
-          <div className="neu-active-task-rail mx-1 mb-1 flex min-h-10 items-center gap-2 rounded-2xl px-3 py-1.5">
-            <svg className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8} aria-hidden>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5M17.25 16.5h-8.5a2 2 0 0 1-2-2v-.75m0 0L9 16m-2.25-2.25L9 11.5" />
-            </svg>
-            <span className="min-w-0 flex-1 truncate text-xs text-[var(--ink)]" title={activeInstruction ?? undefined}>
-              {activeInstruction || 'Preparing the active run...'}
-            </span>
-            <button
-              type="button"
-              onClick={onSteer}
-              disabled={!canSteer}
-              className="neu-button min-h-8 shrink-0 rounded-full px-3 text-xs font-medium text-[var(--ink)] transition hover:text-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-45"
-              title="Apply this course correction to the active run"
-            >
-              {runState === 'steering' ? 'Steering...' : 'Steer'}
-            </button>
-          </div>
-        ) : null}
-
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 px-2 pb-1.5 pt-1">
             {attachments.map((attachment, index) => (
@@ -266,15 +252,15 @@ export default function AssistantComposer({
             </button>
           ) : null}
 
-          {activeRun ? (
+          {activeRun && permissionPending ? (
             <span
-              className={`hidden h-9 w-9 shrink-0 items-center justify-center rounded-full sm:flex ${permissionPending ? 'text-[#a86b3b]' : 'text-[var(--ink-muted)]'}`}
-              title={permissionPending ? 'Permission decision required' : 'Run permissions are enforced'}
-              aria-label={permissionPending ? 'Permission decision required' : 'Run permissions are enforced'}
+              className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#a86b3b] sm:flex"
+              title="Permission decision required"
+              aria-label="Permission decision required"
             >
               <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 3.75 5.25 6v5.25c0 4.14 2.83 7.98 6.75 9 3.92-1.02 6.75-4.86 6.75-9V6L12 3.75Z" />
-                {permissionPending ? <path strokeLinecap="round" d="M12 8.25v4.5m0 3h.008" /> : <path strokeLinecap="round" strokeLinejoin="round" d="m9.5 12 1.6 1.6 3.4-3.7" />}
+                <path strokeLinecap="round" d="M12 8.25v4.5m0 3h.008" />
               </svg>
             </span>
           ) : null}
@@ -295,7 +281,7 @@ export default function AssistantComposer({
                     <div
                       ref={commandBackdropRef}
                       aria-hidden
-                      className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap break-words px-1 ${compact ? 'py-2 text-sm leading-5' : 'py-2.5 text-[15px] leading-6'}`}
+                      className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap break-words px-1 ${compact ? 'pb-[7px] pt-[9px] text-sm leading-5' : 'pb-[9px] pt-[11px] text-[15px] leading-6'}`}
                     >
                       <span className="text-[#1e40af]">{commandSplit.command}</span>
                       <span className="text-[var(--ink)]">{commandSplit.rest}</span>
@@ -323,8 +309,7 @@ export default function AssistantComposer({
                       }
                       event.preventDefault();
                       if (activeRun) {
-                        if (!canSteer) return;
-                        onSteer?.();
+                        queueSteer();
                         return;
                       }
                       if (!canSubmit || isSending || disabled) return;
@@ -337,9 +322,9 @@ export default function AssistantComposer({
                       }
                     }}
                     rows={1}
-                    placeholder={activeRun ? 'Ask for follow-up changes' : placeholder}
+                    placeholder={placeholder}
                     disabled={composerDisabled}
-                    className={`max-h-40 min-h-[24px] w-full resize-none overflow-y-auto bg-transparent px-1 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${commandSplit ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'py-2 text-sm leading-5' : 'py-2.5 text-[15px] leading-6'}`}
+                    className={`max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${commandSplit ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'min-h-9 pb-[7px] pt-[9px] text-sm leading-5' : 'min-h-11 pb-[9px] pt-[11px] text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
                 </>
@@ -348,30 +333,23 @@ export default function AssistantComposer({
           </div>
 
           <div className="relative shrink-0 self-end">
-            {activeRun ? (
-              <div
-                className={`flex h-9 max-w-20 items-center gap-1.5 truncate rounded-full px-2 text-xs text-[var(--ink-muted)] sm:max-w-40 sm:px-2.5 ${compact ? '' : 'sm:h-11 sm:px-3'}`}
-                title={`${formatAssistantModelName(model)} / ${selectedEffort.label} reasoning (locked during run)`}
-                aria-label={`${formatAssistantModelName(model)}, ${selectedEffort.label} reasoning, locked during run`}
-              >
-                <span className="hidden truncate sm:inline">{formatAssistantModelName(model)}</span>
-                <span className="hidden sm:inline" aria-hidden>/</span>
-                <span className="shrink-0">{selectedEffort.label}</span>
-              </div>
-            ) : (
             <button
               type="button"
-              onClick={toggleIntelligence}
+              onClick={() => {
+                if (!activeRun) toggleIntelligence();
+              }}
               className={`neu-button flex items-center gap-1.5 rounded-full bg-[var(--paper-strong)] text-[var(--ink)] transition hover:bg-[var(--paper-bg)] ${compact ? 'h-9 px-2.5 text-xs' : 'h-11 px-3.5 text-sm'}`}
-              title={`${selectedEffort.label} reasoning · ${formatAssistantModelName(model)}`}
-              aria-expanded={showIntelligence}
+              title={activeRun
+                ? `${selectedEffort.label} reasoning (available when this response finishes)`
+                : `${selectedEffort.label} reasoning · ${formatAssistantModelName(model)}`}
+              aria-expanded={!activeRun && showIntelligence}
+              aria-disabled={activeRun}
             >
               <span>{selectedEffort.label}</span>
               <svg className="h-3.5 w-3.5 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
               </svg>
             </button>
-            )}
 
             {showIntelligence && !activeRun ? (
               <>
@@ -461,16 +439,6 @@ export default function AssistantComposer({
           </div>
 
           {activeRun ? (
-            <span
-              className="relative flex h-9 w-6 shrink-0 items-center justify-center text-[var(--ink-muted)]"
-              title={runState.replaceAll('_', ' ')}
-              aria-label={`Run status: ${runState.replaceAll('_', ' ')}`}
-            >
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--botanical)]" />
-            </span>
-          ) : null}
-
-          {activeRun ? (
             <button
               type="button"
               onClick={onStop}
@@ -501,14 +469,14 @@ export default function AssistantComposer({
           )}
         </div>
 
-        {statusMessage || steerFeedback || steerError ? (
+        {statusMessage ? (
           <div className="flex min-h-7 items-center gap-3 px-3 pb-1 pt-1.5 text-[11px]">
             <p
-              className={`min-w-0 flex-1 ${steerError ? 'text-[#9a4f4f]' : steerFeedback ? 'text-[var(--botanical)]' : 'text-[#8a6f00]'}`}
-              role={steerError ? 'alert' : 'status'}
+              className="min-w-0 flex-1 text-[#8a6f00]"
+              role="status"
               aria-live="polite"
             >
-              {steerError || steerFeedback || statusMessage}
+              {statusMessage}
             </p>
           </div>
         ) : null}

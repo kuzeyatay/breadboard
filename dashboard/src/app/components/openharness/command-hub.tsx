@@ -50,7 +50,7 @@ interface Props {
   onSelect: (item: CommandHubItem) => void;
   disabled?: boolean;
   compact?: boolean;
-  sessionId?: number | null;
+  sessionId?: string | number | null;
   surface?: OpenHarnessSurface;
   requestedOutcome?: string;
 }

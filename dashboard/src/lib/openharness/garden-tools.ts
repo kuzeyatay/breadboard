@@ -39,10 +39,11 @@ interface ClusterRow {
   user_id: number;
 }
 
-function loadCluster(gardenId: string): ClusterRow | null {
-  const row = db
-    .prepare("SELECT id, slug, name, user_id FROM clusters WHERE slug = ?")
-    .get(gardenId) as ClusterRow | undefined;
+function loadClusterByIdentifier(gardenId: string | number): ClusterRow | null {
+  const row = db.prepare(`
+    SELECT id, slug, name, user_id FROM clusters
+    WHERE ${typeof gardenId === "number" ? "id" : "slug"} = ?
+  `).get(gardenId) as ClusterRow | undefined;
   return row ?? null;
 }
 
@@ -81,17 +82,41 @@ export async function executeGardenTool(input: {
   }
   const token = verified.token;
 
-  // The garden is pinned by the token; a mismatched arg is rejected.
-  const requestedGarden = typeof input.args.gardenId === "string" ? input.args.gardenId : undefined;
-  if (!tokenAllows(token, { tool: input.tool, gardenId: requestedGarden })) {
+  if (!tokenAllows(token, { tool: input.tool })) {
     return { ok: false, tool: input.tool, error: "Tool not permitted for this session's scope." };
   }
-  const gardenId = token.gardenId;
-  if (!gardenId) {
-    return { ok: false, tool: input.tool, error: "This session is not scoped to a garden." };
+
+  if (input.tool === "garden_list") {
+    const allowed = token.allowedGardenIds ?? (token.activeGardenId ? [token.activeGardenId] : []);
+    const placeholders = allowed.map(() => "?").join(",");
+    const gardens = allowed.length
+      ? db.prepare(`SELECT id, slug, name FROM clusters WHERE id IN (${placeholders}) ORDER BY lower(name), id`)
+          .all(...allowed)
+      : [];
+    return { ok: true, tool: input.tool, data: { gardens } };
   }
-  const cluster = loadCluster(gardenId);
+
+  const requestedGarden = typeof input.args.gardenId === "string" || typeof input.args.gardenId === "number"
+    ? input.args.gardenId
+    : token.gardenId ?? token.activeGardenId;
+  if (requestedGarden === undefined) {
+    return { ok: false, tool: input.tool, error: "Specify a gardenId for this workspace-level request." };
+  }
+  if (
+    !token.allowedGardenIds &&
+    typeof requestedGarden === "string" &&
+    !tokenAllows(token, { tool: input.tool, gardenId: requestedGarden })
+  ) {
+    return { ok: false, tool: input.tool, error: "Tool not permitted for this session's scope." };
+  }
+  const cluster = loadClusterByIdentifier(requestedGarden);
   if (!cluster) return { ok: false, tool: input.tool, error: "Garden not found." };
+  const permitted = token.allowedGardenIds
+    ? tokenAllows(token, { tool: input.tool, gardenId: cluster.id })
+    : tokenAllows(token, { tool: input.tool, gardenId: cluster.slug });
+  if (!permitted) {
+    return { ok: false, tool: input.tool, error: "Garden is outside this session's authorized set." };
+  }
 
   try {
     if (isProposalTool(input.tool)) {

@@ -117,10 +117,12 @@ test("a blocked turn never prompts the model", () => {
 const terminalRoute = read(
   "dashboard/src/app/api/openharness/sessions/[sessionId]/messages/route.ts",
 );
+const turnService = read("dashboard/src/lib/conversations/turn-service.ts");
 
-test("the terminal route uses the same planner as garden chat", () => {
-  assert.match(terminalRoute, /prepareTurn/);
-  assert.match(terminalRoute, /listFilesystemGrants/);
+test("the terminal route delegates to the canonical turn planner", () => {
+  assert.match(terminalRoute, /startConversationTurn/);
+  assert.match(turnService, /prepareTurn/);
+  assert.match(turnService, /listFilesystemGrants/);
   assert.doesNotMatch(
     terminalRoute,
     /decideCapabilityMode/,
@@ -132,6 +134,7 @@ const quartzRoute = read("dashboard/src/app/api/quartz-ai/chat/route.ts");
 
 test("the quartz route uses the same planner as the other surfaces", () => {
   assert.match(quartzRoute, /prepareTurn/);
+  assert.match(quartzRoute, /startConversationTurn/);
   assert.doesNotMatch(quartzRoute, /decideCapabilityMode/);
   // Both branches (existing session and freshly created session) converted.
   assert.equal((quartzRoute.match(/prepareTurn\(\{/g) ?? []).length, 2);
@@ -207,7 +210,7 @@ test("an authenticated quartz turn reaches the same capability as the terminal",
 test("no surface still imports the legacy capability policy", () => {
   for (const [name, source] of [
     ["garden chat adapter", adapter],
-    ["terminal messages route", terminalRoute],
+    ["canonical turn service", turnService],
     ["quartz chat route", quartzRoute],
   ]) {
     assert.doesNotMatch(
@@ -219,15 +222,15 @@ test("no surface still imports the legacy capability policy", () => {
 });
 
 test("both surfaces short-circuit a blocked turn and preserve it for retry", () => {
-  assert.match(terminalRoute, /if \(prepared\.blocked\)/);
+  assert.match(turnService, /if \(prepared\.blocked\)/);
   assert.match(adapter, /if \(prepared\.blocked\)/);
   // The terminal returns the request so approval can resume it.
-  assert.match(terminalRoute, /pendingPermissions: prepared\.pendingPermissions/);
-  assert.match(terminalRoute, /request: text/);
+  assert.match(turnService, /pendingPermissions: prepared\.pendingPermissions/);
+  assert.match(turnService, /request: input\.text/);
 });
 
 test("both surfaces apply the brokered tool map through one shared helper", () => {
-  for (const source of [adapter, terminalRoute]) {
+  for (const source of [adapter, turnService]) {
     assert.match(source, /mergeSelectedTools\(prepared\.grant\.allowedTools/);
     assert.match(source, /from "[^"]*dispatch-core\.ts"/);
   }
@@ -235,7 +238,7 @@ test("both surfaces apply the brokered tool map through one shared helper", () =
   const core = read("dashboard/src/lib/openharness/dispatch-core.ts");
   assert.match(core, /export function mergeSelectedTools/);
   assert.doesNotMatch(adapter, /function mergeSelectedTools/);
-  assert.doesNotMatch(terminalRoute, /function mergeSelectedTools/);
+  assert.doesNotMatch(turnService, /function mergeSelectedTools/);
 });
 
 test("the brokered tool map is authoritative over selected tools", async () => {

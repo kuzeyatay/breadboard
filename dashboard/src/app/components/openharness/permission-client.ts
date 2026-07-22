@@ -2,7 +2,7 @@ export type PermissionDecision = "once" | "always" | "reject";
 
 export async function submitPermissionDecision(
   requestId: string,
-  sessionId: number,
+  sessionId: string | number,
   decision: PermissionDecision,
 ): Promise<void> {
   let response: Response;

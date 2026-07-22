@@ -9,11 +9,16 @@ import {
 import { authorizeQuartzRuntimeSession } from "@/lib/openharness/session-service.ts";
 import {
   listRuntimeMessages,
-  listRuntimeSessionsForUser,
   presentRuntimeMessage,
   runtimeSessionTitle,
   type RuntimeSessionRow,
 } from "@/lib/openharness/runtime-store.ts";
+import {
+  listConversationMessages,
+  listConversationsForUser,
+  presentConversation,
+  presentConversationMessage,
+} from "@/lib/conversations/store.ts";
 import {
   authorizeQuartzAccess,
   corsHeaders,
@@ -61,9 +66,12 @@ export async function GET(request: Request) {
     authorizeQuartzAccess(gardenId, userId);
 
     if (userId !== null) {
-      const sessions = listRuntimeSessionsForUser("quartz_ai", userId)
-        .filter((row) => row.garden_id === gardenId && row.page_slug === pageSlug)
-        .map(presentSession);
+      const sessions = listConversationsForUser(userId).map((conversation) => ({
+        ...presentConversation(conversation),
+        gardenId,
+        pageSlug,
+        messages: listConversationMessages(conversation.id).map(presentConversationMessage),
+      }));
       return NextResponse.json({ sessions }, { headers: cors });
     }
 

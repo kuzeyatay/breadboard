@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { leastPrivilegeDecision } from "@/lib/openharness/dispatch-core.ts";
 import { requireUserId } from "@/lib/server-auth";
-import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
-import { authorizeRuntimeSession, markStatus } from "@/lib/openharness/session-service.ts";
+import { apiErrorResponse, requireEnabled } from "@/lib/openharness/route-helpers.ts";
+import { authorizeRuntimeReference, markStatus } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
 import {
   recordAuditEvent,
@@ -12,7 +12,9 @@ import {
   finishRuntimeRun,
   getActiveRuntimeRun,
   getLatestRuntimeRun,
+  parseRuntimeRunDispatch,
 } from "@/lib/openharness/run-store.ts";
+import { failAssistantMessage } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,11 +28,7 @@ export async function POST(
     const userId = await requireUserId();
     requireEnabled();
     const { sessionId } = await params;
-    const id = Number(sessionId);
-    if (!Number.isInteger(id) || id <= 0) {
-      throw new ApiError(400, "invalid_session_id", "Invalid session id.");
-    }
-    const session = authorizeRuntimeSession(userId, id);
+    const session = authorizeRuntimeReference(userId, sessionId);
     const activeRun = getActiveRuntimeRun(session.row.id);
     if (!activeRun) {
       const latest = getLatestRuntimeRun(session.row.id);
@@ -59,6 +57,17 @@ export async function POST(
         });
       }
       throw error;
+    }
+    if (session.row.conversation_id !== null) {
+      const clientMessageId = parseRuntimeRunDispatch(activeRun).clientMessageId;
+      if (clientMessageId) {
+        failAssistantMessage({
+          conversationId: session.row.conversation_id,
+          clientMessageId,
+          status: "aborted",
+          error: "cancelled_by_user",
+        });
+      }
     }
     const cancelled = finishRuntimeRun(activeRun.id, "cancelled");
     if (!cancelled) {

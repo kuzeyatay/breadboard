@@ -27,6 +27,8 @@ test("the shared composer sends on Enter without breaking commands or multiline 
   assert.match(block, /event\.key !== 'Enter'/);
   assert.match(block, /event\.shiftKey/);
   assert.match(block, /event\.nativeEvent\.isComposing/);
+  assert.match(block, /if \(activeRun\)/);
+  assert.match(block, /queueSteer\(\)/);
   assert.match(block, /!canSubmit \|\| isSending \|\| disabled/);
   assert.match(block, /onSubmit\(\)/);
 });

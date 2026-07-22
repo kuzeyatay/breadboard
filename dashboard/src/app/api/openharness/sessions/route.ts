@@ -6,13 +6,18 @@ import {
   requireEnabled,
   ApiError,
 } from "@/lib/openharness/route-helpers.ts";
-import { createSessionForSurface } from "@/lib/openharness/session-service.ts";
 import {
-  listRuntimeSessionsForUser,
-  listRuntimeMessages,
-  presentRuntimeMessage,
-  runtimeSessionTitle,
-} from "@/lib/openharness/runtime-store.ts";
+  createConversation,
+  listConversationMessages,
+  listConversationsForUser,
+  presentConversation,
+  presentConversationMessage,
+} from "@/lib/conversations/store.ts";
+import {
+  authorizeGardenAccess,
+  resolveConversationRuntime,
+} from "@/lib/openharness/session-service.ts";
+import { getRuntimeSessionByConversation } from "@/lib/openharness/runtime-store.ts";
 import { OPENHARNESS_SURFACES, type OpenHarnessSurface } from "@/lib/openharness/config.ts";
 import { getActiveRuntimeRun } from "@/lib/openharness/run-store.ts";
 
@@ -25,29 +30,44 @@ function parseSurface(value: unknown): OpenHarnessSurface {
   throw new ApiError(400, "invalid_surface", "A valid surface is required.");
 }
 
-// GET: list this user's runtime sessions for a surface, with their persisted
-// transcripts, so the UI can restore history after a refresh.
+// All authenticated surfaces list the same canonical conversations. `surface`
+// is retained as UI context only; it is not a persistence partition.
 export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
     requireEnabled();
-    const surface = parseSurface(new URL(request.url).searchParams.get("surface"));
-    const sessions = listRuntimeSessionsForUser(surface, userId).map((row) => {
-      const activeRun = getActiveRuntimeRun(row.id);
+    parseSurface(new URL(request.url).searchParams.get("surface"));
+    const sessions = listConversationsForUser(userId).map((conversation) => {
+      const runtime = getRuntimeSessionByConversation(conversation.id);
+      const activeRun = runtime ? getActiveRuntimeRun(runtime.id) : null;
       return {
-        id: row.id,
-        title: runtimeSessionTitle(row),
-        gardenId: row.garden_id,
-        pageSlug: row.page_slug,
-        status: row.last_runtime_status,
-        activeDirectory: row.active_directory,
-        filesystemMode: row.filesystem_mode,
-        capabilityMode: row.capability_mode ?? "knowledge",
-        updatedAt: row.updated_at,
-        activeRun: activeRun
-          ? { id: activeRun.id, instruction: activeRun.instruction }
-          : null,
-        messages: listRuntimeMessages(row.id).map(presentRuntimeMessage),
+        ...presentConversation(conversation),
+        surface: runtime?.surface ?? null,
+        gardenId: runtime?.garden_id ?? null,
+        pageSlug: runtime?.page_slug ?? null,
+        status: runtime?.last_runtime_status ?? "idle",
+        activeDirectory: runtime?.active_directory ?? null,
+        filesystemMode: runtime?.filesystem_mode ?? "restricted",
+        capabilityMode: runtime?.capability_mode ?? "knowledge",
+        activeRun: activeRun ? { id: activeRun.id, instruction: activeRun.instruction } : null,
+        messages: listConversationMessages(conversation.id).map((message) => {
+          const presented = presentConversationMessage(message);
+          const calls = Array.isArray(presented.metadata.toolCalls)
+            ? presented.metadata.toolCalls as Array<Record<string, unknown>>
+            : [];
+          return {
+            ...presented,
+            tools: calls.map((call, index) => ({
+              toolCallId: String(call.toolCallId ?? `tool-${index}`),
+              toolName: String(call.toolName ?? "tool"),
+              summary: typeof call.summary === "string" ? call.summary : undefined,
+              status: call.success === false ? "failed" : "completed",
+            })),
+            verification: presented.metadata.verification,
+            proposal: presented.metadata.proposal,
+            interrupted: presented.status === "aborted",
+          };
+        }),
       };
     });
     return NextResponse.json({ sessions });
@@ -56,35 +76,46 @@ export async function GET(request: Request) {
   }
 }
 
-// POST: create a new runtime session for a surface (terminal by default).
+// New chats are durable before an OpenHarness runtime is needed. The returned
+// id is opaque and remains stable across Terminal, Garden Chat, and Quartz.
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
     requireEnabled();
     const body = await readJsonBody(request);
     const surface = parseSurface(body.surface ?? "dashboard_terminal");
-    const title = typeof body.title === "string" ? body.title.slice(0, 120) : undefined;
-    const gardenSlug = typeof body.gardenSlug === "string" ? body.gardenSlug : undefined;
-    const pageSlug = typeof body.pageSlug === "string" ? body.pageSlug : undefined;
-
-    const session = await createSessionForSurface({
+    const title = typeof body.title === "string" ? body.title.slice(0, 200) : undefined;
+    const gardenSlug = typeof body.gardenSlug === "string" && body.gardenSlug.trim()
+      ? body.gardenSlug.trim()
+      : undefined;
+    const garden = gardenSlug ? authorizeGardenAccess(userId, gardenSlug) : null;
+    const conversation = createConversation({
       userId,
-      surface,
       title,
-      gardenSlug,
-      pageSlug,
+      scopeKind: surface === "quartz_ai" && garden
+        ? "page"
+        : garden
+          ? "garden"
+          : "global",
+      defaultGardenId: garden?.clusterId ?? null,
     });
-
+    const runtime = await resolveConversationRuntime({
+      conversation,
+      surface,
+      activeGardenSlug: garden?.slug ?? null,
+      activePageSlug: typeof body.pageSlug === "string" ? body.pageSlug.slice(0, 500) : null,
+    });
     return NextResponse.json({
       session: {
-        id: session.row.id,
-        surface: session.row.surface,
-        agentName: session.agentName,
-        gardenId: session.row.garden_id,
-        pageSlug: session.row.page_slug,
-        activeDirectory: session.activeDirectory,
-        filesystemMode: session.filesystemMode,
+        ...presentConversation(conversation),
+        surface,
+        agentName: "breadboard-assistant",
+        gardenId: garden?.slug ?? null,
+        pageSlug: typeof body.pageSlug === "string" ? body.pageSlug.slice(0, 500) : null,
+        activeDirectory: runtime.activeDirectory,
+        filesystemMode: "restricted",
         capabilityMode: "knowledge",
+        messages: [],
       },
     });
   } catch (error) {

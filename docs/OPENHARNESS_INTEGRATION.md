@@ -12,6 +12,10 @@ garden and Learning Spine generation, council/critic loops, deterministic repair
 semantic audit, finalization, publication, and embeddings do not use
 OpenHarness.
 
+The canonical cross-surface conversation, memory, authorization, compaction,
+failure-recovery, and migration design is documented in
+[`OPENHARNESS_CONVERSATION_MEMORY.md`](./OPENHARNESS_CONVERSATION_MEMORY.md).
+
 ## Phase 1 audit: paths that existed before this integration
 
 The initial repository audit found these real runtime paths:
@@ -120,11 +124,25 @@ dashboard mode, and the configured terminal/garden/Quartz/scout agents.
 
 ## Sessions, events, and cancellation
 
-Breadboard is the durable user-visible record. Additive database objects include:
+Breadboard is the durable user-visible record. Authenticated Terminal, Garden
+Chat, and Quartz requests share one opaque conversation API and one unified turn
+service. A conversation owns one primary OpenHarness runtime; its active surface,
+garden, and page are replaced on every request and are not ownership boundaries.
+Additive database objects include:
+
+- `conversations`: surface-independent, user-owned chats with opaque public ids.
+- `conversation_messages`: canonical, idempotent, ordered transcripts with
+  pending/complete/failed/aborted lifecycle state.
+- `conversation_memory_state`: rolling summary, structured working state,
+  compaction cursor, and version.
+- `durable_memories`: scoped, ranked, candidate/confirmed/superseded cross-chat
+  memory records.
 
 - `openharness_runtime_sessions`: surface, Breadboard binding, OpenHarness id,
-  agent, garden/page scope, workspace key, metadata, and runtime status.
-- `openharness_messages`: durable terminal and Quartz transcripts.
+  conversation binding, replaceable garden/page context, authorized garden set,
+  workspace key, metadata, and runtime status.
+- `openharness_messages`: retained compatibility transcripts for legacy and
+  anonymous runtime paths.
 - `openharness_proposals`: typed note/page-revision/visualization proposals.
 - `openharness_skill_audit`: skill search, quarantine, review, promotion, and
   rejection records.
@@ -137,11 +155,11 @@ authorized session and normalizes it as `assistant.delta`,
 `assistant.completed`, `reasoning.status`, `tool.started`, `tool.completed`,
 `permission.requested`, `session.status`, and `error`.
 
-The dashboard Assistant restores its latest surface session after refresh. Garden chats are
-bound to their existing `chatSessionId`, so a restored Breadboard conversation
-reuses its OpenHarness runtime record. Stop sends a browser abort and a
-server-side OpenHarness abort. Quartz uses `/api/quartz-ai/abort` for the same
-behavior.
+The dashboard Assistant restores its latest owned conversation after refresh.
+The same opaque conversation id can move across authenticated surfaces and reuse
+its runtime. Stop sends a browser abort and a server-side OpenHarness abort.
+Quartz uses `/api/quartz-ai/abort` for the same behavior. Anonymous Quartz remains
+on an isolated browser-token-bound runtime and cannot attach to private memory.
 
 ## Migration and compatibility
 

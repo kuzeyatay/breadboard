@@ -2,6 +2,7 @@
 description: Searches the active authorized Garden, traces sources and graph context, and creates reviewable proposals.
 mode: subagent
 tools:
+  garden_list: true
   "*": false
   garden_search: true
   garden_get_page: true

@@ -11,7 +11,7 @@ import {
   type FilesystemAccessMode,
 } from "@/lib/openharness/runtime-store.ts";
 import { toolPolicyForDecision, decideCapabilityMode } from "@/lib/openharness/capability-policy.ts";
-import { authorizeRuntimeSession } from "@/lib/openharness/session-service.ts";
+import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
 import {
   apiErrorResponse,
   requireEnabled,
@@ -48,13 +48,10 @@ export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
     requireEnabled();
-    const requestedSessionId = Number(
-      new URL(request.url).searchParams.get("sessionId"),
-    );
-    const session =
-      Number.isInteger(requestedSessionId) && requestedSessionId > 0
-        ? authorizeRuntimeSession(userId, requestedSessionId)
-        : null;
+    const requestedSessionId = new URL(request.url).searchParams.get("sessionId");
+    const session = requestedSessionId
+      ? authorizeRuntimeReference(userId, requestedSessionId)
+      : null;
     const settings = getOpenHarnessUserSettings(userId);
     const activeDecision = session
       ? getActiveCapabilityDecision(session.row.id)
@@ -176,7 +173,7 @@ export async function GET(request: Request) {
       });
     }
     return NextResponse.json({
-      sessionId: session ? String(session.row.id) : "unbound",
+      sessionId: requestedSessionId ?? "unbound",
       agent: session?.agentName ?? "breadboard-assistant",
       capabilityMode: effectiveDecision.mode,
       activeDirectory,

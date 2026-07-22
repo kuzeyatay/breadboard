@@ -18,11 +18,16 @@ import type { OpenHarnessSurface } from "./config.ts";
 
 export interface CapabilityScope {
   userId: number;
+  /** Canonical Breadboard conversation database id; never accepted from a model. */
+  conversationId?: number;
   surface: OpenHarnessSurface;
   /** Breadboard chat-session id (numeric) as a string, if applicable. */
   breadboardSessionId?: string;
   openHarnessSessionId: string;
   gardenId?: string;
+  /** Server-derived authorization set. The active garden is only a hint. */
+  allowedGardenIds?: number[];
+  activeGardenId?: number;
   pageSlug?: string;
   allowedTools: string[];
 }
@@ -62,6 +67,9 @@ export function issueCapabilityToken(
   const token: CapabilityToken = {
     ...scope,
     allowedTools: [...scope.allowedTools],
+    allowedGardenIds: scope.allowedGardenIds
+      ? [...new Set(scope.allowedGardenIds)].sort((a, b) => a - b)
+      : undefined,
     iat: now,
     exp: now + (options?.ttlMs ?? DEFAULT_TTL_MS),
   };
@@ -96,6 +104,16 @@ export function verifyCapabilityToken(raw: unknown, now = Date.now()): VerifyRes
   } catch {
     return { ok: false, reason: "malformed" };
   }
+  if (
+    !Number.isInteger(parsed.userId) ||
+    !Array.isArray(parsed.allowedTools) ||
+    !parsed.allowedTools.every((tool) => typeof tool === "string") ||
+    (parsed.allowedGardenIds !== undefined &&
+      (!Array.isArray(parsed.allowedGardenIds) ||
+        !parsed.allowedGardenIds.every((id) => Number.isInteger(id) && id > 0)))
+  ) {
+    return { ok: false, reason: "malformed" };
+  }
   if (typeof parsed.exp !== "number" || parsed.exp < now) {
     return { ok: false, reason: "expired" };
   }
@@ -105,12 +123,16 @@ export function verifyCapabilityToken(raw: unknown, now = Date.now()): VerifyRes
 /** Whether a verified token authorizes a specific tool + garden combination. */
 export function tokenAllows(
   token: CapabilityToken,
-  input: { tool: string; gardenId?: string },
+  input: { tool: string; gardenId?: string | number },
 ): boolean {
   if (!token.allowedTools.includes(input.tool)) return false;
+  if (typeof input.gardenId === "number") {
+    if (token.allowedGardenIds) return token.allowedGardenIds.includes(input.gardenId);
+    return token.activeGardenId === input.gardenId;
+  }
   // A garden-scoped token may only act on its own garden. A tool argument that
   // names another garden is rejected here rather than trusted.
-  if (input.gardenId !== undefined && token.gardenId !== undefined && input.gardenId !== token.gardenId) {
+  if (typeof input.gardenId === "string" && token.gardenId !== undefined && input.gardenId !== token.gardenId) {
     return false;
   }
   return true;

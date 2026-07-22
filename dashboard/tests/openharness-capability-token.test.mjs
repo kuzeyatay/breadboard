@@ -62,3 +62,19 @@ test("tokenAllows enforces tool + garden scope", () => {
     assert.equal(tokenAllows(verified.token, { tool: "bash", gardenId: "physics" }), false);
   }
 });
+
+test("workspace capability permits only server-derived garden ids", () => {
+  const token = issueCapabilityToken({
+    ...scope,
+    conversationId: 42,
+    allowedGardenIds: [9, 3, 9],
+    activeGardenId: 3,
+  });
+  const verified = verifyCapabilityToken(token);
+  assert.ok(verified.ok);
+  if (verified.ok) {
+    assert.deepEqual(verified.token.allowedGardenIds, [3, 9]);
+    assert.equal(tokenAllows(verified.token, { tool: "garden_search", gardenId: 9 }), true);
+    assert.equal(tokenAllows(verified.token, { tool: "garden_search", gardenId: 10 }), false);
+  }
+});

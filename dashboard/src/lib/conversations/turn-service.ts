@@ -1,0 +1,432 @@
+import type { ChatAttachment } from "../chat-attachments.ts";
+import { resolveCommandMessage } from "../openharness/commands.ts";
+import { prepareTurn, mergeSelectedTools } from "../openharness/dispatch-core.ts";
+import { listFilesystemGrants } from "../openharness/filesystem-grant-store.ts";
+import { getOpenHarnessGateway } from "../openharness/gateway.ts";
+import { openHarnessMessageId } from "../openharness/message-id.ts";
+import { resolveOpenHarnessEngine } from "../openharness/model-selection.ts";
+import {
+  beginRuntimeRun,
+  finishRuntimeRun,
+  getActiveRuntimeRun,
+  type RuntimeRunRow,
+} from "../openharness/run-store.ts";
+import {
+  listAuthorizedGardens,
+  authorizeConversationRuntime,
+  markStatus,
+  resolveConversationRuntime,
+  type AuthorizedRuntimeSession,
+} from "../openharness/session-service.ts";
+import {
+  persistCapabilityDecision,
+  recordAuditEvent,
+} from "../openharness/runtime-store.ts";
+import { scheduleCapabilityExpiry } from "../openharness/capability-lifecycle.ts";
+import { composeOpenHarnessSystemPrompt } from "../openharness/system-prompts.ts";
+import { ApiError } from "../openharness/route-helpers.ts";
+import type { OpenHarnessSurface } from "../openharness/config.ts";
+import {
+  reserveConversationTurn,
+  retryAssistantMessage,
+  annotateConversationTurn,
+  failAssistantMessage,
+  updateConversation,
+  ConversationStoreError,
+  type ConversationRow,
+  type ConversationMessageRow,
+} from "./store.ts";
+import {
+  composeMemoryContext,
+  loadConversationMemoryBundle,
+  maintainDurableMemoryFromUserTurn,
+} from "./memory.ts";
+
+export interface ConversationSurfaceContext {
+  activeGardenSlug?: string;
+  activePageSlug?: string;
+  pageTitle?: string;
+  selectedText?: string;
+  selectedDocumentIds?: string[];
+  graphContext?: unknown;
+  /** Server-assembled, authorized page context; never accepted from a browser. */
+  authorizedContext?: string;
+}
+
+export interface StartConversationTurnInput {
+  conversation: ConversationRow;
+  clientMessageId: string;
+  text: string;
+  surface: OpenHarnessSurface;
+  surfaceContext?: ConversationSurfaceContext;
+  model?: unknown;
+  reasoningEffort?: unknown;
+  attachments?: ChatAttachment[];
+  confirmedPermissionIds?: string[];
+  retry?: boolean;
+}
+
+export type StartConversationTurnResult =
+  | {
+      accepted: true;
+      session: AuthorizedRuntimeSession;
+      run: RuntimeRunRow;
+      userMessage: ConversationMessageRow;
+      replayed: boolean;
+      capability: { mode: string; expiresAt: string | null; decisionId: number };
+    }
+  | {
+      accepted: false;
+      blocked: true;
+      session: AuthorizedRuntimeSession;
+      reason: "awaiting_permission";
+      pendingPermissions: unknown[];
+      request: string;
+      plan: { intendedOutcome: string; steps: string[]; riskLevel: string };
+    }
+  | {
+      accepted: false;
+      replayed: true;
+      status: "complete" | "pending";
+      session: AuthorizedRuntimeSession;
+      run: RuntimeRunRow | null;
+    };
+
+/** Shared authenticated turn pipeline for Terminal, Garden Chat, and Quartz. */
+export async function startConversationTurn(
+  input: StartConversationTurnInput,
+): Promise<StartConversationTurnResult> {
+  const context = normalizeSurfaceContext(input.surfaceContext);
+  let reservation;
+  try {
+    reservation = reserveConversationTurn({
+      conversation: input.conversation,
+      clientMessageId: input.clientMessageId,
+      surface: input.surface,
+      content: input.text,
+      metadata: {
+        activeGardenSlug: context.activeGardenSlug ?? null,
+        activePageSlug: context.activePageSlug ?? null,
+        attachmentNames: (input.attachments ?? []).map((attachment) => attachment.name),
+      },
+    });
+  } catch (error) {
+    throw asApiError(error);
+  }
+
+  if (!reservation.isNew) {
+    const assistant = reservation.assistantMessage;
+    if (assistant.status === "complete") {
+      return {
+        accepted: false,
+        replayed: true,
+        status: "complete",
+        session: authorizeConversationRuntime(input.conversation),
+        run: null,
+      };
+    }
+    if (assistant.status === "pending") {
+      const existingSession = authorizeConversationRuntime(input.conversation);
+      return {
+        accepted: false,
+        replayed: true,
+        status: "pending",
+        session: existingSession,
+        run: getActiveRuntimeRun(existingSession.row.id),
+      };
+    }
+    if (!input.retry && !(input.confirmedPermissionIds?.length)) {
+      throw new ApiError(409, "turn_requires_retry", "This failed turn requires an explicit retry.");
+    }
+    retryAssistantMessage(input.conversation.id, input.clientMessageId);
+  }
+
+  let session = await resolveConversationRuntime({
+    conversation: input.conversation,
+    surface: input.surface,
+    activeGardenSlug: context.activeGardenSlug ?? null,
+    activePageSlug: context.activePageSlug ?? null,
+  });
+  annotateConversationTurn({
+    conversationId: input.conversation.id,
+    clientMessageId: input.clientMessageId,
+    metadata: {
+      activeGardenId: session.row.cluster_id,
+      activeGardenSlug: session.row.garden_id,
+      activePageSlug: session.row.page_slug,
+    },
+  });
+
+  const activeRun = getActiveRuntimeRun(session.row.id);
+  if (activeRun) {
+    failAssistantMessage({
+      conversationId: input.conversation.id,
+      clientMessageId: input.clientMessageId,
+      status: "failed",
+      error: "runtime_run_already_active",
+    });
+    throw new ApiError(409, "run_already_active", "This conversation already has an active run.");
+  }
+
+  const memory = loadConversationMemoryBundle({
+    conversation: reservation.conversation,
+    query: input.text,
+    activeGardenId: session.row.cluster_id,
+    projectScopeId: "breadboard",
+  });
+  const prepared = prepareTurn({
+    request: input.text,
+    priorRequests: memory.recentMessages
+      .filter((message) => message.role === "user" && message.client_message_id !== input.clientMessageId)
+      .slice(-8)
+      .map((message) => message.content),
+    surface: input.surface,
+    userId: input.conversation.user_id,
+    grants: listFilesystemGrants(input.conversation.user_id),
+    workspaceRoot: session.activeDirectory,
+    confirmedPermissionIds: input.confirmedPermissionIds,
+  });
+  const decision = prepared.decision;
+  const resolved = await resolveCommandMessage(
+    input.conversation.user_id,
+    input.text,
+    session.activeDirectory,
+    { mode: decision.mode, surface: input.surface },
+  );
+  decision.selectedConditionalSkills = resolved.invocations
+    .filter((invocation) => invocation.kind === "skill" && decision.mode === "scoped_implementation")
+    .map((invocation) => invocation.slug);
+  decision.selectedConnections = resolved.invocations
+    .filter((invocation) => invocation.kind === "mcp")
+    .map((invocation) => invocation.slug);
+  const engine = resolveOpenHarnessEngine(input.model, input.reasoningEffort);
+
+  await getOpenHarnessGateway().applyCapabilityDecision({
+    openHarnessSessionId: session.openHarnessSessionId,
+    workspaceKey: session.workspaceKey,
+    directory: session.activeDirectory,
+    decision,
+  });
+  const storedDecision = persistCapabilityDecision(session.row.id, decision);
+  scheduleCapabilityExpiry(session, decision, storedDecision.id);
+  recordAuditEvent({
+    eventType: "conversation.capability_decision",
+    runtimeSessionId: session.row.id,
+    userId: input.conversation.user_id,
+    gardenId: session.row.garden_id,
+    payload: {
+      conversationPublicId: input.conversation.public_id,
+      decisionId: storedDecision.id,
+      mode: decision.mode,
+      allowedTools: decision.allowedTools,
+      allowedGardenIds: parseAllowedGardenIds(session.row.allowed_garden_ids),
+    },
+  });
+
+  if (prepared.blocked) {
+    markStatus(session, "idle");
+    failAssistantMessage({
+      conversationId: input.conversation.id,
+      clientMessageId: input.clientMessageId,
+      status: "failed",
+      error: "awaiting_permission",
+      metadata: { pendingPermissions: prepared.pendingPermissions },
+    });
+    return {
+      accepted: false,
+      blocked: true,
+      session,
+      reason: "awaiting_permission",
+      plan: {
+        intendedOutcome: prepared.plan.intendedOutcome,
+        steps: prepared.plan.steps.map((step) => step.description),
+        riskLevel: prepared.plan.riskLevel,
+      },
+      pendingPermissions: prepared.pendingPermissions,
+      request: input.text,
+    };
+  }
+
+  if (input.retry || (input.confirmedPermissionIds?.length ?? 0) > 0) {
+    recordAuditEvent({
+      eventType: "task.resumed",
+      runtimeSessionId: session.row.id,
+      userId: input.conversation.user_id,
+      gardenId: session.row.garden_id,
+      payload: {
+        conversationPublicId: input.conversation.public_id,
+        clientMessageId: input.clientMessageId,
+        confirmedPermissionIds: input.confirmedPermissionIds ?? [],
+      },
+    });
+  }
+
+  maintainDurableMemoryFromUserTurn({
+    conversation: reservation.conversation,
+    content: input.text,
+    activeGardenId: session.row.cluster_id,
+  });
+  if (reservation.conversation.title === "New chat") {
+    updateConversation(reservation.conversation, { title: titleFromMessage(input.text) });
+  }
+
+  const tools = mergeSelectedTools(prepared.grant.allowedTools, resolved.tools);
+  const system = composeOpenHarnessSystemPrompt({
+    surface: input.surface,
+    decision,
+    additional: [
+      composeMemoryContext(memory),
+      authorizedGardenContext(input.conversation.user_id, session.row.garden_id),
+      renderSurfaceContext(input.surface, context),
+    ].filter(Boolean).join("\n\n"),
+  });
+  const run = beginRuntimeRun({
+    runtimeSessionId: session.row.id,
+    instruction: input.text,
+    dispatch: {
+      conversationPublicId: input.conversation.public_id,
+      clientMessageId: input.clientMessageId,
+      model: engine.model,
+      variant: engine.variant,
+      tools,
+      system,
+    },
+  });
+  markStatus(session, "busy");
+
+  const dispatch = async (target: AuthorizedRuntimeSession) => {
+    await getOpenHarnessGateway().sendMessage({
+      openHarnessSessionId: target.openHarnessSessionId,
+      workspaceKey: target.workspaceKey,
+      directory: target.activeDirectory,
+      agentName: target.agentName,
+      text: resolved.text,
+      attachments: input.attachments,
+      tools,
+      model: engine.model,
+      variant: engine.variant,
+      system,
+      messageId: openHarnessMessageId(input.clientMessageId),
+    });
+  };
+
+  try {
+    await dispatch(session);
+  } catch (firstError) {
+    try {
+      session = await resolveConversationRuntime({
+        conversation: input.conversation,
+        surface: input.surface,
+        activeGardenSlug: context.activeGardenSlug ?? null,
+        activePageSlug: context.activePageSlug ?? null,
+        forceRecreate: true,
+      });
+      await getOpenHarnessGateway().applyCapabilityDecision({
+        openHarnessSessionId: session.openHarnessSessionId,
+        workspaceKey: session.workspaceKey,
+        directory: session.activeDirectory,
+        decision,
+      });
+      await dispatch(session);
+    } catch (retryError) {
+      finishRuntimeRun(run.id, "error");
+      markStatus(session, "failed");
+      failAssistantMessage({
+        conversationId: input.conversation.id,
+        clientMessageId: input.clientMessageId,
+        status: "failed",
+        error: retryError instanceof Error ? retryError.message : "runtime_dispatch_failed",
+      });
+      throw firstError;
+    }
+  }
+
+  recordAuditEvent({
+    eventType: "conversation.message_submitted",
+    runtimeSessionId: session.row.id,
+    userId: input.conversation.user_id,
+    gardenId: session.row.garden_id,
+    payload: {
+      conversationPublicId: input.conversation.public_id,
+      clientMessageId: input.clientMessageId,
+      surface: input.surface,
+      modelId: engine.model.modelID,
+      reasoningEffort: engine.variant,
+    },
+  });
+  return {
+    accepted: true,
+    session,
+    run,
+    userMessage: reservation.userMessage,
+    replayed: !reservation.isNew,
+    capability: { mode: decision.mode, expiresAt: decision.expiresAt, decisionId: storedDecision.id },
+  };
+}
+
+function normalizeSurfaceContext(value: ConversationSurfaceContext | undefined): ConversationSurfaceContext {
+  if (!value) return {};
+  return {
+    activeGardenSlug: bounded(value.activeGardenSlug, 160),
+    activePageSlug: bounded(value.activePageSlug, 500),
+    pageTitle: bounded(value.pageTitle, 500),
+    selectedText: bounded(value.selectedText, 4_000),
+    selectedDocumentIds: Array.isArray(value.selectedDocumentIds)
+      ? value.selectedDocumentIds.filter((item): item is string => typeof item === "string")
+          .slice(0, 20).map((item) => item.slice(0, 300))
+      : undefined,
+    graphContext: value.graphContext,
+    authorizedContext: bounded(value.authorizedContext, 20_000),
+  };
+}
+
+function renderSurfaceContext(surface: OpenHarnessSurface, context: ConversationSurfaceContext): string {
+  const lines = [
+    "# active_surface_context",
+    `Surface: ${surface}`,
+    `Active Garden: ${context.activeGardenSlug ?? "none"}`,
+    `Active page: ${context.activePageSlug ?? "none"}`,
+    context.pageTitle ? `Page title: ${context.pageTitle}` : "",
+    context.selectedText ? `Current selection:\n${context.selectedText}` : "",
+    context.selectedDocumentIds?.length ? `Selected document ids: ${context.selectedDocumentIds.join(", ")}` : "",
+    context.graphContext ? `Bounded graph interaction:\n${JSON.stringify(context.graphContext).slice(0, 8_000)}` : "",
+    context.authorizedContext ?? "",
+    "This section is replaced on every turn. 'none' means no prior Garden/page remains active.",
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function authorizedGardenContext(userId: number, activeGardenSlug: string | null): string {
+  const gardens = listAuthorizedGardens(userId);
+  return [
+    "# server_authorized_gardens",
+    `Active Garden relevance hint: ${activeGardenSlug ?? "none"}`,
+    gardens.length
+      ? gardens.map((garden) => `- ${garden.slug} (${garden.name}; id=${garden.id}; ${garden.isOwner ? "owned" : "public"})`).join("\n")
+      : "No Gardens are currently authorized.",
+    "This list describes retrieval scope only. It does not authorize mutations.",
+  ].join("\n");
+}
+
+function parseAllowedGardenIds(value: string): number[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is number => Number.isInteger(item)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function titleFromMessage(value: string): string {
+  return value.trim().replace(/\s+/g, " ").slice(0, 80) || "New chat";
+}
+
+function bounded(value: unknown, max: number): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, max) : undefined;
+}
+
+function asApiError(error: unknown): unknown {
+  return error instanceof ConversationStoreError
+    ? new ApiError(error.status, error.code, error.message)
+    : error;
+}

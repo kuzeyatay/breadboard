@@ -24,6 +24,12 @@ import {
   type VerificationSummary,
 } from "./evidence.ts";
 import { finishActiveRuntimeRun } from "./run-store.ts";
+import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "./run-store.ts";
+import {
+  completeAssistantMessage,
+  failAssistantMessage,
+} from "../conversations/store.ts";
+import { compactConversationMemoryIfNeeded } from "../conversations/memory.ts";
 
 function persistAssistantOnce(
   session: AuthorizedRuntimeSession,
@@ -34,6 +40,37 @@ function persistAssistantOnce(
   runtimeStatus: string,
   tokenUsage?: unknown,
 ): void {
+  if (session.row.conversation_id !== null) {
+    const activeRun = getActiveRuntimeRun(session.row.id);
+    const clientMessageId = activeRun
+      ? parseRuntimeRunDispatch(activeRun).clientMessageId
+      : undefined;
+    if (!clientMessageId) {
+      throw new Error("Canonical runtime run is missing clientMessageId.");
+    }
+    const metadata = { toolCalls, verification, runtimeStatus };
+    if (runtimeStatus === "idle") {
+      completeAssistantMessage({
+        conversationId: session.row.conversation_id,
+        clientMessageId,
+        content,
+        metadata,
+        sources,
+        tokenUsage,
+      });
+      compactConversationMemoryIfNeeded(session.row.conversation_id);
+    } else {
+      failAssistantMessage({
+        conversationId: session.row.conversation_id,
+        clientMessageId,
+        status: runtimeStatus === "aborted" ? "aborted" : "failed",
+        content,
+        metadata,
+        error: runtimeStatus,
+      });
+    }
+    return;
+  }
   if (!content.trim() && toolCalls.length === 0) return;
   if (session.row.chat_session_id) {
     const last = db
@@ -101,7 +138,9 @@ export function buildSessionEventStream(
   const toolCalls: Array<Record<string, unknown>> = [];
   const evidence: EvidenceRecord[] = [];
   let persisted = false;
-  let finalStatus = "idle";
+  // An event stream that closes without an explicit terminal runtime status is
+  // a failure, not a completed answer.
+  let finalStatus = "failed";
   let tokenUsage: unknown;
 
   const readable = new ReadableStream<Uint8Array>({
@@ -116,14 +155,6 @@ export function buildSessionEventStream(
         persisted = true;
         finalStatus = status;
         setRuntimeStatus(session.row.id, status);
-        finishActiveRuntimeRun(
-          session.row.id,
-          status === "idle"
-            ? "completed"
-            : status === "aborted"
-              ? "cancelled"
-              : "error",
-        );
         const verification = assessVerification(assistantText, evidence);
         try {
           persistAssistantOnce(
@@ -136,8 +167,46 @@ export function buildSessionEventStream(
             tokenUsage,
           );
         } catch {
-          // Persistence is best-effort; never crash the stream.
+          // Do not strand the canonical placeholder in `pending` if final
+          // persistence fails. A later explicit retry can safely reuse the
+          // same client id; if completion committed before an unrelated error,
+          // this is an idempotent no-op.
+          if (session.row.conversation_id !== null) {
+            try {
+              const activeRun = getActiveRuntimeRun(session.row.id);
+              const clientMessageId = activeRun
+                ? parseRuntimeRunDispatch(activeRun).clientMessageId
+                : undefined;
+              if (clientMessageId) {
+                failAssistantMessage({
+                  conversationId: session.row.conversation_id,
+                  clientMessageId,
+                  status: status === "aborted" ? "aborted" : "failed",
+                  content: assistantText,
+                  error: "assistant_persistence_failed",
+                });
+              }
+            } catch {
+              // The audit below is the final recovery path if SQLite itself is
+              // unavailable. Never hide the original stream outcome.
+            }
+          }
+          recordAuditEvent({
+            eventType: "conversation.persistence_failed",
+            runtimeSessionId: session.row.id,
+            userId: session.row.user_id,
+            gardenId: session.row.garden_id,
+            payload: { status },
+          });
         }
+        finishActiveRuntimeRun(
+          session.row.id,
+          status === "idle"
+            ? "completed"
+            : status === "aborted"
+              ? "cancelled"
+              : "error",
+        );
         const revocationReason =
           status === "idle"
             ? "completed"

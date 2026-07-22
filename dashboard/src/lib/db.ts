@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
 import { databaseDir } from "./runtime-paths.ts";
+import { ensureConversationSchema } from "./conversations/schema.ts";
 
 const DB_PATH = path.join(databaseDir(), "brain.db");
 
@@ -510,6 +511,11 @@ ensureColumn("chat_messages", "runtime_error", "runtime_error TEXT");
 ensureColumn("chat_messages", "runtime_status", "runtime_status TEXT");
 // Whether a garden/quartz message carried a typed proposal (JSON payload).
 ensureColumn("chat_messages", "proposal", "proposal TEXT");
+
+// Canonical, surface-independent conversation and memory ownership. This runs
+// after the legacy chat and OpenHarness tables exist so its guarded backfill can
+// preserve every user-visible transcript without a destructive migration.
+ensureConversationSchema(db);
 
 // Persist cluster-group folders even while they contain no clusters yet.
 db.exec(`

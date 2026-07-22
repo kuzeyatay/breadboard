@@ -17,9 +17,7 @@ import {
   deleteClusterFolder,
 } from "@/app/actions/clusters";
 import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
-import type { ChatmockTarget } from "@/lib/chatmock-target";
 import NavBar from "@/app/components/navbar";
-import ChatmockTargetSwitch from "@/app/components/chatmock-target-switch";
 import DashboardAgentTerminal from "@/app/components/openharness/dashboard-agent-terminal";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
@@ -35,7 +33,6 @@ interface Props {
   initialClusters: Cluster[];
   initialPublicClusters: Cluster[];
   initialClusterFolders: string[];
-  initialChatmockTarget: ChatmockTarget;
 }
 
 const ACCEPTED =
@@ -148,7 +145,6 @@ export default function DashboardClient({
   initialClusters,
   initialPublicClusters,
   initialClusterFolders,
-  initialChatmockTarget,
 }: Props) {
   const router = useRouter();
   const { toasts, addToast, dismissToast } = useToast();
@@ -1270,7 +1266,6 @@ export default function DashboardClient({
       <NavBar
         email={userEmail}
         username={username}
-        actions={<ChatmockTargetSwitch initialTarget={initialChatmockTarget} />}
       />
 
       {/* Background image pen button */}

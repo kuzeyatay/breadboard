@@ -19,6 +19,7 @@ export type FilesystemAccessMode = "restricted" | "full";
 
 export interface RuntimeSessionRow {
   id: number;
+  conversation_id: number | null;
   surface: OpenHarnessSurface;
   user_id: number | null;
   chat_session_id: number | null;
@@ -27,6 +28,7 @@ export interface RuntimeSessionRow {
   cluster_id: number | null;
   garden_id: string | null;
   page_slug: string | null;
+  allowed_garden_ids: string;
   workspace_key: string;
   active_directory: string | null;
   filesystem_mode: FilesystemAccessMode;
@@ -39,6 +41,7 @@ export interface RuntimeSessionRow {
 }
 
 export interface CreateRuntimeSessionInput {
+  conversationId?: number | null;
   surface: OpenHarnessSurface;
   userId: number | null;
   chatSessionId: number | null;
@@ -46,6 +49,7 @@ export interface CreateRuntimeSessionInput {
   clusterId: number | null;
   gardenId: string | null;
   pageSlug: string | null;
+  allowedGardenIds?: number[];
   workspaceKey: string;
   activeDirectory: string;
   filesystemMode: FilesystemAccessMode;
@@ -59,12 +63,13 @@ export function createRuntimeSession(
   const result = db
     .prepare(
       `INSERT INTO openharness_runtime_sessions
-         (surface, user_id, chat_session_id, openharness_session_id, agent_name,
+         (conversation_id, surface, user_id, chat_session_id, openharness_session_id, agent_name,
           cluster_id, garden_id, page_slug, workspace_key, active_directory,
-          filesystem_mode, runtime_metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          filesystem_mode, runtime_metadata, allowed_garden_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
+      input.conversationId ?? null,
       input.surface,
       input.userId,
       input.chatSessionId,
@@ -77,6 +82,7 @@ export function createRuntimeSession(
       input.activeDirectory,
       input.filesystemMode,
       input.runtimeMetadata ? JSON.stringify(input.runtimeMetadata) : null,
+      JSON.stringify(input.allowedGardenIds ?? []),
     );
   return getRuntimeSessionById(Number(result.lastInsertRowid))!;
 }
@@ -86,6 +92,42 @@ export function getRuntimeSessionById(id: number): RuntimeSessionRow | null {
     .prepare("SELECT * FROM openharness_runtime_sessions WHERE id = ?")
     .get(id) as RuntimeSessionRow | undefined;
   return row ?? null;
+}
+
+export function getRuntimeSessionByConversation(
+  conversationId: number,
+): RuntimeSessionRow | null {
+  const row = db.prepare(`
+    SELECT * FROM openharness_runtime_sessions
+    WHERE conversation_id = ?
+    ORDER BY id DESC LIMIT 1
+  `).get(conversationId) as RuntimeSessionRow | undefined;
+  return row ?? null;
+}
+
+/** Replace (never merge) temporary context so stale gardens cannot leak. */
+export function updateRuntimeActiveContext(input: {
+  runtimeSessionId: number;
+  surface: OpenHarnessSurface;
+  clusterId: number | null;
+  gardenId: string | null;
+  pageSlug: string | null;
+  allowedGardenIds: number[];
+}): RuntimeSessionRow {
+  db.prepare(`
+    UPDATE openharness_runtime_sessions
+    SET surface = ?, cluster_id = ?, garden_id = ?, page_slug = ?,
+        allowed_garden_ids = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    input.surface,
+    input.clusterId,
+    input.gardenId,
+    input.pageSlug,
+    JSON.stringify([...new Set(input.allowedGardenIds)].sort((a, b) => a - b)),
+    input.runtimeSessionId,
+  );
+  return getRuntimeSessionById(input.runtimeSessionId)!;
 }
 
 export function getRuntimeSessionByChatSession(
@@ -167,6 +209,31 @@ export function setOpenHarnessSessionId(
      SET openharness_session_id = ?, updated_at = datetime('now')
      WHERE id = ?`,
   ).run(openHarnessSessionId, id);
+}
+
+export function replaceRuntimeIdentity(input: {
+  runtimeSessionId: number;
+  openHarnessSessionId: string;
+  workspaceKey: string;
+  activeDirectory: string;
+  agentName: string;
+  runtimeMetadata?: Record<string, unknown>;
+}): RuntimeSessionRow {
+  db.prepare(`
+    UPDATE openharness_runtime_sessions
+    SET openharness_session_id = ?, workspace_key = ?, active_directory = ?,
+        agent_name = ?, runtime_metadata = COALESCE(?, runtime_metadata),
+        last_runtime_status = 'rehydrated', updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    input.openHarnessSessionId,
+    input.workspaceKey,
+    input.activeDirectory,
+    input.agentName,
+    input.runtimeMetadata ? JSON.stringify(input.runtimeMetadata) : null,
+    input.runtimeSessionId,
+  );
+  return getRuntimeSessionById(input.runtimeSessionId)!;
 }
 
 export function setRuntimeStatus(id: number, status: string): void {

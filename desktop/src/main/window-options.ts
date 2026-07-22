@@ -3,7 +3,7 @@ import type { BrowserWindowConstructorOptions } from "electron";
 export const BREADBOARD_TITLE_BAR = {
   color: "#faf7ef",
   symbolColor: "#13201b",
-  height: 40,
+  height: 32,
 } as const;
 
 export function mainWindowOptions(
