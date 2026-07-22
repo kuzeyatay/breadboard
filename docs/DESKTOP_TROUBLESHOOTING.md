@@ -61,3 +61,46 @@ If a machine crash leaves orphans: `taskkill /f /im bun.exe`,
   and restart (content is preserved).
 - Complete reset: close the app and delete `%APPDATA%/breadboard-desktop/Data`
   — this deletes your gardens; export first.
+
+## `npm ci` reports `EPERM` on a native `.node` file
+
+A running dashboard or stale standalone verification server is loading the
+native module. Use `Get-CimInstance Win32_Process` to identify the exact
+`node.exe` whose command line points into this checkout, stop only that stale
+process, and rerun `npm ci --prefix dashboard`. Do not delete or replace the
+native binary while a process has it loaded.
+
+## Installer build runs out of disk space
+
+Keep at least 12 GB free before the pipeline. The stage, unpacked app, NSIS
+archive, installer, and temporary 64 MB NSIS chunks coexist. Release output
+defaults to `%LOCALAPPDATA%/breadboard-desktop-build/release` so OneDrive does
+not lock builder output. Remove only verified generated output directories or
+set `BREADBOARD_DESKTOP_RELEASE_DIR` to a local disk with more free space.
+
+## Installed smoke evidence
+
+Pass an explicit evidence directory as the second argument when needed:
+
+```bat
+npm run desktop:smoke:installed -- "<installer.exe>" "C:\temp\breadboard-smoke"
+```
+
+The summary JSON records installer hash/size/version/signing status, install
+and data paths, every app-level check, exit codes, and uninstall/restoration
+results. The normal user-data directory is preserved.
+
+Keep at least 6 GB free before starting an installed smoke run. Repeated runs
+retain each isolated `user-data/Data` tree by design and can eventually make
+NSIS fail or crash during extraction. Preserve `installed-smoke-summary.json`,
+`app-smoke-results.json`, and `app-smoke.log`, then remove only old evidence
+directories' `user-data` subdirectories if space is needed.
+
+## OpenHarness lock install cannot reach `pkg.pr.new`
+
+The full upstream OpenHarness workspace has pinned preview packages hosted at
+`pkg.pr.new`. `bun install --frozen-lockfile` requires that host and can fail
+with `FailedToOpenSocket` on a restricted or transient network. Retry from a
+network that can reach `https://pkg.pr.new/`. The packaged desktop closure is
+validated separately by `npm run desktop:prepare`, which builds the bundled
+Bun cache and must complete successfully before release.

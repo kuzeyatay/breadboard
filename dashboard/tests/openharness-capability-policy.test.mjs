@@ -148,6 +148,31 @@ test("selected tools cannot widen the server decision", () => {
   assert.ok(!rules.some((rule) => rule.pattern.includes("git push") && rule.action === "allow"));
 });
 
+test("runtime permission projection preserves scoped files and brokered web tools", () => {
+  const scoped = permissionRulesForDecision({
+    mode: "technical_read",
+    requestedOutcome: "Inspect Downloads.",
+    implementationRequired: false,
+    decisionReason: "test",
+    decisionSource: "test",
+    authorizedRoots: ["/home/me/Downloads"],
+    authorizedPathPatterns: ["/home/me/Downloads/**"],
+    allowedTools: ["read", "glob", "grep", "webfetch", "websearch"],
+    allowedOperations: [],
+    allowedCommandPatterns: [],
+    selectedConditionalSkills: [],
+    selectedConnections: [],
+    createdAt: new Date(0).toISOString(),
+    expiresAt: null,
+    revokedAt: null,
+  });
+  assert.ok(scoped.some((rule) => rule.permission === "external_directory" && rule.pattern === "/home/me/Downloads/**" && rule.action === "allow"));
+  assert.ok(scoped.some((rule) => rule.permission === "read" && rule.pattern === "/home/me/Downloads/**" && rule.action === "allow"));
+  assert.ok(!scoped.some((rule) => rule.permission === "read" && rule.pattern === "*" && rule.action === "allow"));
+  assert.ok(scoped.some((rule) => rule.permission === "webfetch" && rule.action === "allow"));
+  assert.ok(scoped.some((rule) => rule.permission === "websearch" && rule.action === "allow"));
+});
+
 test("skill classifications distinguish general, coding, unknown, incompatible, and prohibited", () => {
   assert.equal(classifySkill({ name: "research-synthesis", description: "Literature review and structured writing" }).classification, "eligible_general");
   assert.equal(classifySkill({ name: "react-repair", description: "Debug and edit React frontend code" }).classification, "eligible_coding_conditional");

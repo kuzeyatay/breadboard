@@ -1,6 +1,7 @@
 import { BrowserWindow, app } from "electron";
 import * as path from "node:path";
 import { hardenWindow, type AllowedOrigins } from "./security";
+import { mainWindowOptions } from "./window-options";
 
 export interface WindowManagerOptions {
   allowed: AllowedOrigins;
@@ -27,25 +28,9 @@ export class WindowManager {
 
   createMainWindow(): BrowserWindow {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) return this.mainWindow;
-    const window = new BrowserWindow({
-      width: 1440,
-      height: 920,
-      minWidth: 980,
-      minHeight: 640,
-      show: false,
-      autoHideMenuBar: true,
-      backgroundColor: "#10251c",
-      title: "Breadboard",
-      ...(this.options.iconPath ? { icon: this.options.iconPath } : {}),
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        webviewTag: false,
-        preload: this.options.preloadPath,
-        spellcheck: false,
-      },
-    });
+    const window = new BrowserWindow(
+      mainWindowOptions(this.options.preloadPath, this.options.iconPath),
+    );
     hardenWindow(window, this.options.allowed);
     window.once("ready-to-show", () => window.show());
     window.on("closed", () => {

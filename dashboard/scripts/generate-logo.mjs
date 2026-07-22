@@ -95,9 +95,9 @@ async function writePng(relPath, svg, size) {
   fs.writeFileSync(target, await renderPng(svg, size));
   console.log("wrote", relPath);
 }
-async function writeIco(relPath, svg) {
+async function writeIco(relPath, svg, sizes = [16, 32, 48]) {
   const target = path.resolve(repoRoot, relPath);
-  fs.writeFileSync(target, await buildIco(svg, [16, 32, 48]));
+  fs.writeFileSync(target, await buildIco(svg, sizes));
   console.log("wrote", relPath);
 }
 
@@ -109,6 +109,11 @@ async function main() {
   await writePng("dashboard/src/app/apple-icon.png", ICON_SVG, 180);
   await writeIco("dashboard/public/breadboard-favicon-20260426.ico", ICON_SVG);
   await writeIco("dashboard/src/app/favicon.ico", ICON_SVG);
+  await writeIco(
+    "desktop/assets/icon.ico",
+    ICON_SVG,
+    [16, 24, 32, 48, 64, 128, 256],
+  );
 
   // Quartz garden favicon source
   await writePng("quartz/quartz/static/icon.png", ICON_SVG, 512);
@@ -127,6 +132,10 @@ async function main() {
   fs.writeFileSync(
     path.resolve(repoRoot, "dashboard/public/breadboard-logo.svg"),
     LOGO_SVG,
+  );
+  fs.writeFileSync(
+    path.resolve(repoRoot, "desktop/src/startup/breadboard-icon.svg"),
+    ICON_SVG,
   );
   console.log("done");
 }

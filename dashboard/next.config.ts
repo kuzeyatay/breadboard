@@ -61,6 +61,12 @@ const nextConfig: NextConfig = {
       'tsconfig.tsbuildinfo',
     ],
   },
+  outputFileTracingIncludes: {
+    '/api/ingest': [
+      'node_modules/@napi-rs/canvas/**/*',
+      'node_modules/@napi-rs/canvas-win32-x64-msvc/**/*',
+    ],
+  },
   outputFileTracingRoot: path.resolve(process.cwd(), ".."),
   turbopack: {
     root: path.resolve(process.cwd(), ".."),

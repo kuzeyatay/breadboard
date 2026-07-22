@@ -46,6 +46,12 @@ export interface PermissionPrompt {
   sourcePath?: string;
   destinationPath?: string;
   allowSession: boolean;
+  /** A Breadboard capability preflight pauses before any OpenHarness run. */
+  preflight?: {
+    kind: "filesystem" | "confirmation" | "connection";
+    path?: string;
+    operations: string[];
+  };
 }
 
 export interface ActivityItem {
@@ -86,6 +92,21 @@ export interface SkillContinuation {
   skillId: string;
   capability: string;
   approvedPermissions: string[];
+}
+
+interface AgentSendOptions {
+  model?: string;
+  reasoningEffort?: AssistantReasoningEffort;
+  continuation?: SkillContinuation;
+  attachments?: ChatAttachment[];
+  confirmedPermissionIds?: string[];
+}
+
+interface BlockedTurn {
+  text: string;
+  options?: AgentSendOptions;
+  userMessageId: string;
+  assistantMessageId: string;
 }
 
 function normalizeRestoredMessages(value: unknown): AgentMessage[] {
@@ -170,12 +191,7 @@ export interface UseAgentSessionResult {
   setSessionId: (id: number | null) => void;
   send: (
     text: string,
-    options?: {
-      model?: string;
-      reasoningEffort?: AssistantReasoningEffort;
-      continuation?: SkillContinuation;
-      attachments?: ChatAttachment[];
-    },
+    options?: AgentSendOptions,
   ) => Promise<void>;
   steer: (text: string) => Promise<boolean>;
   respondToPermission: (
@@ -258,6 +274,7 @@ export function useAgentSession(
   const steeringRef = useRef(false);
   const stopRequestedRef = useRef(false);
   const resumedRunIdRef = useRef<string | null>(null);
+  const blockedTurnRef = useRef<BlockedTurn | null>(null);
   const latestSendOptionsRef = useRef<{
     model?: string;
     reasoningEffort?: AssistantReasoningEffort;
@@ -688,17 +705,19 @@ export function useAgentSession(
   }, [adoptDispatchedRun, runToResume]);
 
   const send = useCallback(
-    async (
-      text: string,
-      options?: {
-        model?: string;
-        reasoningEffort?: AssistantReasoningEffort;
-        continuation?: SkillContinuation;
-        attachments?: ChatAttachment[];
-      },
-    ) => {
+    async (text: string, options?: AgentSendOptions) => {
       const trimmed = text.trim();
       if (!trimmed || isActiveAgentRunState(runStateRef.current)) return;
+      const resumedBlockedTurn =
+        blockedTurnRef.current?.text === trimmed ? blockedTurnRef.current : null;
+      const transcript = resumedBlockedTurn
+        ? messages.filter(
+            (message) =>
+              message.id !== resumedBlockedTurn.userMessageId &&
+              message.id !== resumedBlockedTurn.assistantMessageId,
+          )
+        : messages;
+      if (resumedBlockedTurn) blockedTurnRef.current = null;
       latestSendOptionsRef.current = {
         model: options?.model,
         reasoningEffort: options?.reasoningEffort,
@@ -734,7 +753,7 @@ export function useAgentSession(
         sources: [],
         tools: [],
       };
-      const baseline = [...messages, userMessage, assistant];
+      const baseline = [...transcript, userMessage, assistant];
       setMessages(baseline);
 
       const commit = (message: AgentMessage) => {
@@ -803,6 +822,7 @@ export function useAgentSession(
               reasoningEffort: options?.reasoningEffort,
               continuation: options?.continuation,
               attachments: options?.attachments,
+              confirmedPermissionIds: options?.confirmedPermissionIds,
             }),
           },
         );
@@ -815,6 +835,71 @@ export function useAgentSession(
           );
         }
         const responseBody = await sendResponse.json().catch(() => ({}));
+        if (
+          responseBody.blocked === true &&
+          Array.isArray(responseBody.pendingPermissions)
+        ) {
+          const pending = responseBody.pendingPermissions.find(
+            (value: unknown) => value && typeof value === "object",
+          ) as Record<string, unknown> | undefined;
+          if (!pending) {
+            throw new Error("The agent paused without a permission request.");
+          }
+          const operations = Array.isArray(pending.operations)
+            ? pending.operations.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [];
+          const path = typeof pending.path === "string" ? pending.path : undefined;
+          const kind =
+            pending.kind === "filesystem" ||
+            pending.kind === "connection" ||
+            pending.kind === "confirmation"
+              ? pending.kind
+              : "confirmation";
+          const prompt: PermissionPrompt = {
+            requestId: String(pending.id ?? "preflight-permission"),
+            permission: String(pending.capability ?? "capability"),
+            description: String(
+              pending.message ?? "This task needs additional permission.",
+            ),
+            risk: operations.includes("delete")
+              ? "delete"
+              : operations.includes("move")
+                ? "move"
+                : operations.some((operation) =>
+                      ["create", "modify", "write"].includes(operation),
+                    )
+                  ? "write"
+                  : "read",
+            affectedPaths: path ? [path] : [],
+            allowSession: kind === "filesystem",
+            preflight: { kind, path, operations },
+          };
+          blockedTurnRef.current = {
+            text: trimmed,
+            options,
+            userMessageId: userMessage.id!,
+            assistantMessageId: assistant.id!,
+          };
+          setPendingPermission(prompt);
+          setActivities([
+            {
+              id: `permission-${prompt.requestId}`,
+              kind: "permission",
+              label: "Permission required",
+              detail: prompt.description,
+              status: "permission_required",
+              startedAt: new Date().toISOString(),
+            },
+          ]);
+          transition("waiting_for_permission");
+          abortRef.current?.abort();
+          await streamPromise.catch((streamError) => {
+            if ((streamError as Error).name !== "AbortError") throw streamError;
+          });
+          return;
+        }
         if (typeof responseBody.runId !== "string" || !responseBody.runId) {
           throw new Error("The agent did not return an active run id.");
         }
@@ -977,6 +1062,105 @@ export function useAgentSession(
       const prompt = pendingPermission;
       const activeSessionId = sessionRef.current;
       if (!prompt || !activeSessionId) return;
+
+      if (prompt.preflight) {
+        const blocked = blockedTurnRef.current;
+        if (!blocked) return;
+        if (decision === "reject") {
+          blockedTurnRef.current = null;
+          setPendingPermission(null);
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === blocked.assistantMessageId
+                ? {
+                    ...message,
+                    content:
+                      "I didn’t access that resource because permission wasn’t granted.",
+                  }
+                : message,
+            ),
+          );
+          setActivities((current) =>
+            current.map((item) =>
+              item.id === `permission-${prompt.requestId}`
+                ? { ...item, status: "denied", completedAt: new Date().toISOString() }
+                : item,
+            ),
+          );
+          transition("completed");
+          return;
+        }
+
+        let oneTimeGrantId: string | null = null;
+        try {
+          if (prompt.preflight.kind === "filesystem") {
+            if (!prompt.preflight.path) {
+              throw new Error("The permission request did not identify a folder.");
+            }
+            const permissions = Object.fromEntries(
+              prompt.preflight.operations.map((operation) => [operation, true]),
+            );
+            const response = await fetch("/api/openharness/filesystem-grants", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                path: prompt.preflight.path,
+                permissions,
+                scope: decision === "always" ? "remembered" : "one_time",
+              }),
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(
+                typeof body.message === "string"
+                  ? body.message
+                  : "The folder permission could not be saved.",
+              );
+            }
+            if (
+              decision === "once" &&
+              body.grant &&
+              typeof body.grant.id === "string"
+            ) {
+              oneTimeGrantId = body.grant.id;
+            }
+          }
+
+          setPendingPermission(null);
+          setActivities((current) =>
+            current.map((item) =>
+              item.id === `permission-${prompt.requestId}`
+                ? { ...item, status: "completed", completedAt: new Date().toISOString() }
+                : item,
+            ),
+          );
+          transition("idle");
+          await send(blocked.text, {
+            ...blocked.options,
+            confirmedPermissionIds:
+              prompt.preflight.kind === "confirmation"
+                ? [prompt.requestId]
+                : blocked.options?.confirmedPermissionIds,
+          });
+        } catch (permissionError) {
+          setPendingPermission(prompt);
+          transition("error");
+          setError(
+            permissionError instanceof Error
+              ? permissionError.message
+              : "The permission decision failed.",
+          );
+        } finally {
+          if (oneTimeGrantId) {
+            await fetch(
+              `/api/openharness/filesystem-grants?id=${encodeURIComponent(oneTimeGrantId)}`,
+              { method: "DELETE" },
+            ).catch(() => undefined);
+          }
+        }
+        return;
+      }
+
       setPendingPermission(null);
       transition("running");
       try {
@@ -1007,7 +1191,7 @@ export function useAgentSession(
         ),
       );
     },
-    [pendingPermission, transition],
+    [pendingPermission, send, transition],
   );
 
   useEffect(() => {

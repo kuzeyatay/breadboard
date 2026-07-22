@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Schibsted_Grotesk, Source_Sans_3 } from "next/font/google";
 import { Suspense } from "react";
+import DesktopTitleBar from "@/app/components/desktop-title-bar";
 import NavigationProgress from "@/app/components/navigation-progress";
 import "./globals.css";
 import "katex/dist/katex.min.css";
@@ -50,6 +51,7 @@ export default function RootLayout({
       className={`${sourceSans.variable} ${schibsted.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        <DesktopTitleBar />
         <Suspense fallback={null}>
           <NavigationProgress />
         </Suspense>

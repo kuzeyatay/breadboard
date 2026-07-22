@@ -16,6 +16,7 @@ const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
+const MAX_DIRECTORY_SCAN_ENTRIES = 100_000
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
@@ -33,7 +34,17 @@ export const Parameters = Schema.Struct({
   limit: Schema.optional(NonNegativeInt).annotate({
     description: "The maximum number of lines to read (defaults to 2000)",
   }),
+  recursive: Schema.optional(Schema.Boolean).annotate({
+    description: "For a directory, include files in nested folders",
+  }),
+  sort: Schema.optional(Schema.Literals(["name", "size_desc"])).annotate({
+    description: "For a directory, sort entries by name or descending file size",
+  }),
 })
+
+type DirectoryItem =
+  | { path: string; type: "file"; sizeBytes: number }
+  | { path: string; type: "directory"; sizeBytes?: undefined }
 
 type Display =
   | {
@@ -98,20 +109,50 @@ export const ReadTool = Tool.define<
       return yield* Effect.fail(new Error(`File not found: ${filepath}`))
     })
 
-    const list = Effect.fn("ReadTool.list")(function* (filepath: string) {
-      const items = yield* fs.readDirectoryEntries(filepath)
-      return yield* Effect.forEach(
-        items,
+    const list = Effect.fn("ReadTool.list")(function* (
+      filepath: string,
+      options: { recursive: boolean; sort: "name" | "size_desc" },
+    ) {
+      const direct = options.recursive
+        ? undefined
+        : (yield* fs.readDirectoryEntries(filepath)).map((item) => ({
+            absolute: path.join(filepath, item.name),
+            relative: item.name,
+          }))
+      const recursive = options.recursive
+        ? yield* fs.glob("**/*", { cwd: filepath, absolute: true, include: "file", dot: true })
+        : []
+      const scanTruncated = recursive.length > MAX_DIRECTORY_SCAN_ENTRIES
+      const candidates =
+        direct ??
+        recursive.slice(0, MAX_DIRECTORY_SCAN_ENTRIES).map((absolute) => ({
+          absolute,
+          relative: path.relative(filepath, absolute),
+        }))
+      const inspected = yield* Effect.forEach(
+        candidates,
         Effect.fnUntraced(function* (item) {
-          if (item.type === "directory") return item.name + "/"
-          if (item.type !== "symlink") return item.name
-
-          const target = yield* fs.stat(path.join(filepath, item.name)).pipe(Effect.catch(() => Effect.void))
-          if (target?.type === "Directory") return item.name + "/"
-          return item.name
+          const target = yield* fs.realPath(item.absolute).pipe(Effect.catch(() => Effect.void))
+          if (!target || !FSUtil.contains(filepath, target)) return
+          const info = yield* fs.stat(target).pipe(Effect.catch(() => Effect.void))
+          if (!info) return
+          if (info.type === "Directory") {
+            return { path: item.relative, type: "directory" as const }
+          }
+          if (info.type === "File") {
+            return { path: item.relative, type: "file" as const, sizeBytes: Number(info.size) }
+          }
         }),
-        { concurrency: "unbounded" },
-      ).pipe(Effect.map((items: string[]) => items.sort((a, b) => a.localeCompare(b))))
+        { concurrency: 16 },
+      )
+      const items = inspected
+        .filter((item): item is DirectoryItem => item !== undefined)
+        .sort((a, b) =>
+          options.sort === "size_desc"
+            ? (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1) || a.path.localeCompare(b.path)
+            : a.path.localeCompare(b.path),
+        )
+      return { items, scanTruncated }
     })
 
     const warm = Effect.fn("ReadTool.warm")(function* (filepath: string) {
@@ -262,12 +303,28 @@ export const ReadTool = Tool.define<
       if (!stat) return yield* miss(filepath)
 
       if (stat.type === "Directory") {
-        const items = yield* list(filepath)
+        const listing = yield* list(filepath, {
+          recursive: params.recursive === true,
+          sort: params.sort ?? "name",
+        })
+        const items = listing.items
         const limit = params.limit ?? DEFAULT_READ_LIMIT
         const offset = params.offset || 1
         const start = offset - 1
-        const sliced = items.slice(start, start + limit)
-        const truncated = start + sliced.length < items.length
+        const selected = items.slice(start, start + limit)
+        const entries = selected.map((item) => {
+          if (item.type === "directory") return item.path + "/"
+          if (params.recursive || params.sort === "size_desc") return `${item.path}\t${item.sizeBytes ?? 0} bytes`
+          return item.path
+        })
+        const pageTruncated = start + selected.length < items.length
+        const truncated = listing.scanTruncated || pageTruncated
+        const notes = [
+          pageTruncated
+            ? `Showing ${selected.length} of ${items.length} entries. Use 'offset' parameter to read beyond entry ${offset + selected.length}`
+            : `${items.length} entries`,
+          ...(listing.scanTruncated ? [`Directory scan capped at ${MAX_DIRECTORY_SCAN_ENTRIES} entries`] : []),
+        ]
 
         return {
           title,
@@ -275,20 +332,18 @@ export const ReadTool = Tool.define<
             `<path>${filepath}</path>`,
             `<type>directory</type>`,
             `<entries>`,
-            sliced.join("\n"),
-            truncated
-              ? `\n(Showing ${sliced.length} of ${items.length} entries. Use 'offset' parameter to read beyond entry ${offset + sliced.length})`
-              : `\n(${items.length} entries)`,
+            entries.join("\n"),
+            `\n(${notes.join("; ")})`,
             `</entries>`,
           ].join("\n"),
           metadata: {
-            preview: sliced.slice(0, 20).join("\n"),
+            preview: entries.slice(0, 20).join("\n"),
             truncated,
             loaded: [] as string[],
             display: {
               type: "directory" as const,
               path: filepath,
-              entries: sliced,
+              entries,
               offset,
               totalEntries: items.length,
               truncated,

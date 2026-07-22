@@ -18,8 +18,11 @@ locks on freshly written files.
 From the repository root (all steps also exist as `desktop:*` root scripts):
 
 ```bat
-:: 0. one-time
-cd desktop && npm install && cd ..
+:: 0. lockfile validation / dependency install
+npm ci --prefix dashboard
+npm ci --prefix quartz
+npm ci --prefix desktop
+npm audit --prefix quartz --omit=dev
 
 :: 1. dashboard production build (Next standalone into dashboard/.next-desktop)
 npm run desktop:build:dashboard
@@ -36,12 +39,33 @@ npm run desktop:verify
 
 :: 5. build the NSIS installer
 npm run desktop:dist:win
+
+:: 6. verify packaged resources, then install/smoke/restart/uninstall
+npm run desktop:verify
+npm run desktop:smoke:installed -- "%LOCALAPPDATA%\breadboard-desktop-build\release\Breadboard-Setup-0.1.0-x64.exe"
 ```
 
 Output: `%LOCALAPPDATA%/breadboard-desktop-build/release/Breadboard-Setup-<version>-x64.exe`
 (per-user NSIS installer; Start-menu + desktop shortcut; no admin required)
 and `…/release/win-unpacked/` for direct inspection. Installs to
 `%LOCALAPPDATA%/Programs/Breadboard`.
+
+The installed smoke runner uses the real NSIS installer and installed entry
+point. It launches from an evidence directory outside the checkout, passes an
+isolated absolute user-data path, verifies the main window and packaged web
+assets, registers/logs in, creates a garden, ingests Markdown, validates files
+and database persistence across restart, checks fatal logs and child-process
+cleanup, then runs the installed uninstaller. Evidence defaults to
+`%LOCALAPPDATA%/breadboard-desktop-smoke/<timestamp>/`. If Breadboard was
+already installed, the runner closes and removes that installation first,
+preserves its normal `%APPDATA%` data, and reinstalls/relaunches Breadboard in
+a `finally` path after the isolated smoke test.
+
+Keep at least 6 GB free for the installed smoke run itself. Every evidence
+directory intentionally retains its isolated `user-data/Data` after uninstall
+to prove the uninstall policy. After preserving the JSON and log evidence, old
+`user-data` directories may be removed manually when repeated runs consume too
+much disk space.
 
 To re-pack only the installer from an existing `win-unpacked` (useful when
 disk space is tight — the staged `build-resources` tree can be deleted first
@@ -57,7 +81,7 @@ npx electron-builder --win nsis --x64 --prepackaged "<release>\win-unpacked" -c.
 | --- | --- | --- |
 | Node (dashboard, Quartz) | Bundle the official `node.exe` (same version the repo is developed/tested with) under `resources/runtimes/node` | Keeps npm-prebuilt native modules (`better-sqlite3`, `bcrypt`) on the exact ABI they were installed for — no Electron-ABI rebuild, no ASAR-unpack complexity for service code. Services are plain resources, not ASAR members. |
 | Bun (OpenHarness) | Bundle `bun.exe` under `resources/runtimes/bun`; OpenHarness ships as **sources + lockfile + a bundled package cache** (`resources/bun-cache`), and the desktop app runs `bun install` into user data on first launch | Bun's isolated installs use machine-absolute junctions (not shippable) and its hoisted linker is broken on Windows (bun 1.3.14 leaves packages empty), so the only reliable path is Bun's default install performed on the target machine, fed offline-first from the bundled cache. Preserves the upstream-friendly fork; no rewrite into Electron. First launch may consult the npm registry for manifest revalidation — documented in the first-run experience. |
-| Python (ChatMock) | CPython **embeddable distribution** matching the build machine's minor version, with ChatMock's pinned wheels installed into `Lib/site-packages` (`--only-binary=:all:`) | Deterministic; no dependency on the user's Python; controlled `sys.path` via `._pth`. |
+| Python (ChatMock) | CPython **embeddable distribution** matching the build machine's minor version, with ChatMock's pinned wheels installed into `Lib/site-packages` (`--only-binary=:all:`) | Deterministic; no dependency on the user's Python; controlled `sys.path` via `._pth` plus a relocation-safe `.pth` entry for the packaged ChatMock source. |
 | ffmpeg / ffprobe / yt-dlp | Resolved from `desktop/resources/bin` when present and passed as absolute `FFMPEG_PATH`/`FFPROBE_PATH`/`YTDLP_PATH`; not bundled by default | These are only used by the optional video pipeline; when absent the dashboard reports the capability unavailable (existing behavior). Bundling an LGPL ffmpeg build is a drop-in later (place binaries in `desktop/resources/bin`). |
 | Docker (Scriberr) | **Never required.** Optional compatibility mode, off by default | Scriberr is AGPL + has no native Windows binaries in this repo; transcription is an optional capability with an honest unavailable state. |
 
@@ -84,7 +108,30 @@ packaged smoke test exercises them (login + DB writes).
 - `prepare-app-resources.mjs` refuses to stage any `*.db` or non-example
   `.env*` file and dereferences symlinks (Windows-safe).
 - `verify-package.mjs` re-checks both `build-resources/` and
-  `release/win-unpacked/resources/`.
+  `release/win-unpacked/resources/`, including a real ChatMock import with the
+  bundled Python executable.
 - The dashboard build excludes data/secrets from output tracing
   (`next.config.ts` `dataTraceExcludes`); staging filters are the second line
   of defense.
+
+## Signing and versioning
+
+`desktop/package.json` is the package version authority and drives the
+installer filename, Electron app version, and provisioned workspace refresh.
+The current build is intentionally unsigned because no certificate is stored
+in the checkout. Windows resource editing remains enabled so the executable
+still receives the Breadboard icon and product metadata.
+To sign a release, provide a trusted certificate through the selected signing
+provider (`WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD` for certificate-based signing,
+or an Azure Trusted Signing configuration), then verify
+`Get-AuthenticodeSignature` reports `Valid` for both the installer and
+installed executable.
+
+## Known limitations
+
+- Installer generation and installed automation support Windows x64 only.
+- Unsigned builds trigger SmartScreen and must not be called externally production-ready.
+- First-run OpenHarness provisioning prefers the bundled Bun cache but may consult the npm registry for metadata revalidation.
+- Scriberr, ffmpeg, ffprobe, and yt-dlp remain optional capabilities and are not bundled by default.
+- The installed smoke runner temporarily replaces the current per-user installation; it preserves normal user data and restores the generated build afterward.
+- A full upstream OpenHarness workspace install may need access to pinned `pkg.pr.new` snapshot packages. Desktop packaging validates and caches the staged server runtime closure during `npm run desktop:prepare`; development of the entire OpenHarness monorepo still requires that external host to be reachable.

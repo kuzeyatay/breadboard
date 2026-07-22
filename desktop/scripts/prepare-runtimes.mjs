@@ -39,6 +39,18 @@ const CHATMOCK_PINNED_DEPS = [
   "werkzeug==3.1.3",
 ];
 
+function ensureChatMockImportPath(target) {
+  const sitePackages = path.join(target, "Lib", "site-packages");
+  const chatMockRoot = path.join(desktopRoot, "build-resources", "app-services", "chatmock");
+  const relativeChatMockRoot = path.relative(sitePackages, chatMockRoot).split(path.sep).join("/");
+  fs.mkdirSync(sitePackages, { recursive: true });
+  fs.writeFileSync(
+    path.join(sitePackages, "breadboard-chatmock.pth"),
+    `${relativeChatMockRoot}\n`,
+    "utf8",
+  );
+}
+
 function log(message) {
   console.log(`[prepare-runtimes] ${message}`);
 }
@@ -131,6 +143,7 @@ async function preparePython() {
   const target = path.join(runtimesDir, "python");
   const stampFile = path.join(target, ".breadboard-python-version");
   if (fs.existsSync(stampFile) && fs.readFileSync(stampFile, "utf8").trim() === fullVersion) {
+    ensureChatMockImportPath(target);
     log(`python ${fullVersion} runtime already assembled — skipping`);
     return { runtime: "python", version: fullVersion, source: "cached" };
   }
@@ -189,6 +202,7 @@ async function preparePython() {
   if (pip.status !== 0) fail("pip install for the bundled Python runtime failed");
 
   fs.writeFileSync(stampFile, fullVersion, "utf8");
+  ensureChatMockImportPath(target);
   log(`python ${fullVersion} runtime assembled`);
   return { runtime: "python", version: fullVersion, source: url };
 }

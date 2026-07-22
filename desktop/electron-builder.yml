@@ -39,9 +39,10 @@ win:
       arch:
         - x64
   icon: assets/icon.ico
-  # Unsigned for now: no signing credentials exist in this repository. See
-  # docs/DESKTOP_RELEASE_CHECKLIST.md before shipping externally.
-  signAndEditExecutable: false
+  # Keep Windows resource editing enabled so Breadboard.exe receives the
+  # Breadboard icon and product metadata. With no certificate configured the
+  # result remains unsigned; see docs/DESKTOP_RELEASE_CHECKLIST.md.
+  signAndEditExecutable: true
 
 nsis:
   oneClick: false

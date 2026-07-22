@@ -32,6 +32,11 @@ test("dashboard chat surfaces share a borderless neumorphic composer", () => {
   assert.doesNotMatch(garden, /border-t border-gray-800 p-3/);
 });
 
+test("the full-size composer text shares the controls' 44px vertical center", () => {
+  assert.match(composer, /compact \? 'py-2 text-sm leading-5' : 'py-2\.5 text-\[15px\] leading-6'/);
+  assert.doesNotMatch(composer, /compact \? 'py-2 text-sm leading-5' : 'py-3 text-\[15px\] leading-6'/);
+});
+
 test("Quartz uses the same raised pill structure without input borders", () => {
   assert.match(quartzComponent, /breadboard-ai-composer-shell/);
   assert.match(

@@ -106,6 +106,25 @@ test("terminal session hook restores a Breadboard session after refresh and abor
   assert.match(terminal, /session\.send\(text, \{ model, reasoningEffort \}\)/);
 });
 
+test("terminal preflight permissions create a scoped folder grant and resume the paused turn", () => {
+  const hook = read(
+    "dashboard/src/app/components/openharness/use-agent-session.ts",
+  );
+  const route = read(
+    "dashboard/src/app/api/openharness/sessions/[sessionId]/messages/route.ts",
+  );
+  assert.match(hook, /responseBody\.blocked === true/);
+  assert.match(hook, /\/api\/openharness\/filesystem-grants/);
+  assert.match(hook, /scope: decision === "always" \? "remembered" : "one_time"/);
+  assert.match(hook, /await send\(blocked\.text/);
+  assert.match(route, /confirmedPermissionIds:/);
+  assert.ok(
+    route.indexOf("if (prepared.blocked)") <
+      route.indexOf("appendRuntimeMessage({"),
+    "blocked turns must pause before the user message is durably appended",
+  );
+});
+
 test("OpenHarness model provider is environment-driven ChatMock", () => {
   const config = JSON.parse(read("openharness-config/opencode.json"));
   assert.equal(config.model, "chatmock/{env:CHATMOCK_MODEL}");

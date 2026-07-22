@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -27,17 +28,35 @@ function forbidMatches(root, matcher, label) {
 }
 
 function checkResourcesRoot(resources, label) {
-  requireFile(path.join(resources, "runtimes", "node", "node.exe"), `${label} bundled Node`);
+  const node = path.join(resources, "runtimes", "node", "node.exe");
+  const python = path.join(resources, "runtimes", "python", "python.exe");
+  const dashboard = path.join(resources, "app-services", "dashboard-standalone", "dashboard");
+  requireFile(node, `${label} bundled Node`);
   requireFile(path.join(resources, "runtimes", "bun", "bun.exe"), `${label} bundled Bun`);
-  requireFile(path.join(resources, "runtimes", "python", "python.exe"), `${label} bundled Python`);
+  requireFile(python, `${label} bundled Python`);
   requireFile(
     path.join(resources, "runtimes", "python", "Lib", "site-packages", "flask", "__init__.py"),
     `${label} ChatMock Python dependencies`,
   );
   requireFile(
-    path.join(resources, "app-services", "dashboard-standalone", "dashboard", "server.js"),
+    path.join(dashboard, "server.js"),
     `${label} dashboard standalone server`,
   );
+  if (fs.existsSync(node) && fs.existsSync(dashboard)) {
+    const pdfParseImport = spawnSync(
+      node,
+      [
+        "--input-type=module",
+        "-e",
+        "const value = await import('pdf-parse'); if (typeof value.PDFParse !== 'function') process.exit(2)",
+      ],
+      { cwd: dashboard, encoding: "utf8", windowsHide: true },
+    );
+    if (pdfParseImport.status !== 0) {
+      const output = `${pdfParseImport.stderr ?? ""}\n${pdfParseImport.stdout ?? ""}`.trim();
+      problems.push(`${label} dashboard cannot load PDF ingestion runtime: ${output || "unknown error"}`);
+    }
+  }
   requireFile(
     path.join(
       resources,
@@ -70,6 +89,21 @@ function checkResourcesRoot(resources, label) {
     path.join(resources, "app-services", "chatmock", "chatmock.py"),
     `${label} ChatMock entrypoint`,
   );
+  requireFile(
+    path.join(resources, "app-services", "chatmock", "chatmock", "cli.py"),
+    `${label} ChatMock package`,
+  );
+  if (fs.existsSync(python)) {
+    const chatMockImport = spawnSync(python, ["-c", "import chatmock; import chatmock.cli"], {
+      cwd: path.join(resources, "app-services", "chatmock"),
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (chatMockImport.status !== 0) {
+      const output = `${chatMockImport.stderr ?? ""}\n${chatMockImport.stdout ?? ""}`.trim();
+      problems.push(`${label} bundled Python cannot import ChatMock: ${output || "unknown error"}`);
+    }
+  }
   requireFile(
     path.join(resources, "app-services", "openharness", "packages", "opencode", "src", "index.ts"),
     `${label} OpenHarness entrypoint`,
@@ -123,6 +157,16 @@ if (fs.existsSync(winUnpacked)) {
   requireFile(path.join(winUnpacked, "resources", "app.asar"), "packaged app.asar");
 } else {
   console.log("[verify-package] release/win-unpacked not present; checked build-resources only");
+}
+
+if (fs.existsSync(localBase)) {
+  for (const name of fs.readdirSync(localBase)) {
+    if (!/^Breadboard-Setup-.*-x64\.exe$/.test(name)) continue;
+    const installer = path.join(localBase, name);
+    if (fs.statSync(installer).size < 10 * 1024 * 1024) {
+      problems.push(`incomplete NSIS installer (under 10 MB): ${installer}`);
+    }
+  }
 }
 
 if (problems.length > 0) {

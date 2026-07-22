@@ -7,7 +7,7 @@ const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const sourceDir = path.join(desktopRoot, "src", "startup");
 const targetDir = path.join(desktopRoot, "dist", "startup");
 fs.mkdirSync(targetDir, { recursive: true });
-for (const file of ["index.html", "startup.css"]) {
+for (const file of ["index.html", "startup.css", "breadboard-icon.svg"]) {
   fs.copyFileSync(path.join(sourceDir, file), path.join(targetDir, file));
 }
 console.log("[copy-static] startup assets copied");

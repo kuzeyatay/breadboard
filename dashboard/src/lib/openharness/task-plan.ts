@@ -120,7 +120,7 @@ const FILE_OBJECT =
 // Outcome families -------------------------------------------------------
 
 const INSPECT_VERB =
-  /\b(analy[sz]e|assess|audit|compare|describe|diagnose|examine|explain|identify|inspect|interpret|list|outline|read|review|show|summari[sz]e|tell\s+me|trace|understand|walk\s+me\s+through|what(?:'s|\s+is|\s+are)|why)\b/i;
+  /\b(analy[sz]e|assess|audit|compare|describe|diagnose|examine|explain|identify|inspect|interpret|list|outline|read|review|show|summari[sz]e|tell\s+me|trace|understand|walk\s+me\s+through|what(?:'s|s|\s+is|\s+are)|why)\b/i;
 
 const SEARCH_VERB =
   /\b(find|search|locate|look\s+for|look\s+up|grep|which\s+files?|where\s+(?:is|are))\b/i;
@@ -151,6 +151,13 @@ const MEDIA_VERB =
 
 const WEB_VERB =
   /\b(browse|google|research|search\s+(?:the\s+)?(?:web|internet|online)|look\s+up\s+online|check\s+online|latest|current|news|recent\s+developments?|up[- ]to[- ]date)\b/i;
+
+// Live conditions are inherently time-sensitive even when the user does not
+// spell that out with words such as "current" or "latest". Treating a plain
+// "what's the weather" prompt as conversation makes the model answer from its
+// training data instead of activating the web tools needed to verify it.
+const LIVE_WEATHER_QUERY =
+  /\b(weather|forecast|temperature|temperatures|air\s+quality|wind\s+speed|precipitation)\b/i;
 
 const DOWNLOAD_VERB = /\b(download|fetch|pull\s+down|grab)\b/i;
 
@@ -352,7 +359,10 @@ function readSignals(text: string, resources: ResourceReference[]): Signals {
     convert: CONVERT_VERB.test(text),
     documents: DOCUMENT_OBJECT.test(text),
     media: MEDIA_OBJECT.test(text) || MEDIA_VERB.test(text),
-    web: WEB_VERB.test(text) || resources.some((r) => r.kind === "url"),
+    web:
+      WEB_VERB.test(text) ||
+      LIVE_WEATHER_QUERY.test(text) ||
+      resources.some((r) => r.kind === "url"),
     download: DOWNLOAD_VERB.test(text),
     garden,
     gardenWrite: garden && GARDEN_WRITE_VERB.test(text),

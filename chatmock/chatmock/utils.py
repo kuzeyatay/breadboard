@@ -25,34 +25,98 @@ def get_home_dir() -> str:
     return home
 
 
+def _unique_auth_paths(homes: List[str | None]) -> List[str]:
+    paths: List[str] = []
+    seen: set[str] = set()
+    for home in homes:
+        if not home:
+            continue
+        path = os.path.abspath(os.path.join(home, "auth.json"))
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def _read_auth_path(path: str) -> Dict[str, Any] | None:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            auth = json.load(f)
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return None
+    return auth if isinstance(auth, dict) else None
+
+
+def _auth_freshness(auth: Dict[str, Any], path: str) -> float:
+    last_refresh = auth.get("last_refresh")
+    if isinstance(last_refresh, str):
+        refreshed_at = _parse_iso8601(last_refresh)
+        if refreshed_at is not None:
+            return refreshed_at.timestamp()
+
+    tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
+    issued_at: List[float] = []
+    for name in ("access_token", "id_token"):
+        token = tokens.get(name)
+        if not isinstance(token, str):
+            continue
+        claims = parse_jwt_claims(token) or {}
+        iat = claims.get("iat")
+        if isinstance(iat, (int, float)):
+            issued_at.append(float(iat))
+    if issued_at:
+        return max(issued_at)
+
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return float("-inf")
+
+
+def _read_auth_file_with_path() -> Tuple[Dict[str, Any], str] | None:
+    # An explicitly configured home remains authoritative. This preserves the
+    # existing container/profile behavior while allowing a malformed or missing
+    # configured file to fall through to the normal local stores.
+    configured_paths = _unique_auth_paths(
+        [os.getenv("CHATGPT_LOCAL_HOME"), os.getenv("CODEX_HOME")]
+    )
+    for path in configured_paths:
+        auth = _read_auth_path(path)
+        if auth is not None:
+            return auth, path
+
+    # Without an explicit home, ChatMock and Codex can both have signed-in
+    # profiles. Picking the first path made a stale .chatgpt-local token mask a
+    # newer Codex sign-in indefinitely, so select the most recently refreshed
+    # readable profile instead.
+    default_paths = _unique_auth_paths(
+        [os.path.expanduser("~/.chatgpt-local"), os.path.expanduser("~/.codex")]
+    )
+    candidates = [
+        (auth, path)
+        for path in default_paths
+        if (auth := _read_auth_path(path)) is not None
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: _auth_freshness(*candidate))
+
+
 def read_auth_file() -> Dict[str, Any] | None:
-    for base in [
-        os.getenv("CHATGPT_LOCAL_HOME"),
-        os.getenv("CODEX_HOME"),
-        os.path.expanduser("~/.chatgpt-local"),
-        os.path.expanduser("~/.codex"),
-    ]:
-        if not base:
-            continue
-        path = os.path.join(base, "auth.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            continue
-        except Exception:
-            continue
-    return None
+    selected = _read_auth_file_with_path()
+    return selected[0] if selected is not None else None
 
 
-def write_auth_file(auth: Dict[str, Any]) -> bool:
-    home = get_home_dir()
+def write_auth_file(auth: Dict[str, Any], auth_path: str | None = None) -> bool:
+    path = auth_path or os.path.join(get_home_dir(), "auth.json")
+    home = os.path.dirname(path) or "."
     try:
         os.makedirs(home, exist_ok=True)
     except Exception as exc:
         eprint(f"ERROR: unable to create auth home directory {home}: {exc}")
         return False
-    path = os.path.join(home, "auth.json")
     try:
         with open(path, "w", encoding="utf-8") as fp:
             if hasattr(os, "fchmod"):
@@ -220,9 +284,10 @@ def convert_tools_chat_to_responses(tools: Any) -> List[Dict[str, Any]]:
 
 
 def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, str | None, str | None]:
-    auth = read_auth_file()
-    if not isinstance(auth, dict):
+    selected = _read_auth_file_with_path()
+    if selected is None:
         return None, None, None
+    auth, auth_path = selected
 
     tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
     access_token: Optional[str] = tokens.get("access_token")
@@ -251,7 +316,7 @@ def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, str | No
                 if isinstance(account_id, str) and account_id:
                     updated_tokens["account_id"] = account_id
 
-                persisted = _persist_refreshed_auth(auth, updated_tokens)
+                persisted = _persist_refreshed_auth(auth, updated_tokens, auth_path)
                 if persisted is not None:
                     auth, tokens = persisted
                 else:
@@ -329,11 +394,15 @@ def _refresh_chatgpt_tokens(refresh_token: str, client_id: str) -> Optional[Dict
     }
 
 
-def _persist_refreshed_auth(auth: Dict[str, Any], updated_tokens: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+def _persist_refreshed_auth(
+    auth: Dict[str, Any],
+    updated_tokens: Dict[str, Any],
+    auth_path: str | None = None,
+) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
     updated_auth = dict(auth)
     updated_auth["tokens"] = updated_tokens
     updated_auth["last_refresh"] = _now_iso8601()
-    if write_auth_file(updated_auth):
+    if write_auth_file(updated_auth, auth_path=auth_path):
         return updated_auth, updated_tokens
     eprint("ERROR: unable to persist refreshed auth tokens")
     return None
