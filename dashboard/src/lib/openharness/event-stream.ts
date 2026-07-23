@@ -155,7 +155,14 @@ export function buildSessionEventStream(
   // a failure, not a completed answer.
   let finalStatus = "failed";
   let tokenUsage: unknown;
-  const streamRun = getActiveRuntimeRun(session.row.id);
+  // The browser deliberately opens this stream before POSTing the prompt so
+  // the first text delta cannot be missed. That means there may not be an
+  // active run yet, and the upstream session can still deliver a trailing idle
+  // event from its previous turn. Bind lazily to the first durable run created
+  // after the stream opens and do not let a zero-output idle event finalize it.
+  let streamRun = getActiveRuntimeRun(session.row.id);
+  let assistantMessageId: string | undefined;
+  let sawTurnOutput = false;
   let lastArtifactEventId = 0;
 
   const readable = new ReadableStream<Uint8Array>({
@@ -293,11 +300,38 @@ export function buildSessionEventStream(
           abortController.signal,
           () => controller.enqueue(encoder.encode(": connected\n\n")),
         )) {
-          if (event.type === "assistant.delta")
+          if (!streamRun) {
+            streamRun = getActiveRuntimeRun(session.row.id);
+          }
+
+          // Events received before the message POST has created its run belong
+          // to the previous turn. Dropping them prevents an edit/new send from
+          // completing empty while its real generation continues orphaned.
+          if (!streamRun) continue;
+
+          if (event.type === "assistant.delta") {
+            if (
+              assistantMessageId &&
+              event.messageId &&
+              event.messageId !== assistantMessageId
+            ) {
+              continue;
+            }
+            assistantMessageId ??= event.messageId;
             assistantText += event.payload.text;
-          else if (event.type === "assistant.completed")
+            sawTurnOutput = sawTurnOutput || event.payload.text.length > 0;
+          } else if (event.type === "assistant.completed") {
+            if (
+              !sawTurnOutput ||
+              (assistantMessageId &&
+                event.messageId &&
+                event.messageId !== assistantMessageId)
+            ) {
+              continue;
+            }
             tokenUsage = event.payload.usage;
-          else if (event.type === "tool.started") {
+          } else if (event.type === "tool.started") {
+            sawTurnOutput = true;
             recordAuditEvent({
               eventType: "tool.requested",
               runtimeSessionId: session.row.id,
@@ -366,6 +400,10 @@ export function buildSessionEventStream(
 
           if (event.type === "session.status") {
             if (event.payload.status === "idle") {
+              // A just-opened session subscription can receive the previous
+              // turn's terminal idle event. It is not completion for this run
+              // until the run has emitted answer text or tool activity.
+              if (!sawTurnOutput) continue;
               emitArtifactEvents();
               emit({
                 type: "verification.updated",

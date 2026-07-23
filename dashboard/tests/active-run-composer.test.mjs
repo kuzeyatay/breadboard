@@ -166,7 +166,49 @@ test("Stop is idempotent and cancelled output remains distinct from failure", ()
   assert.match(eventStream, /status === "aborted"\s*\? "cancelled"/);
   assert.match(eventStream, /type: event\.payload\.status === "aborted" \? "cancelled" : "done"/);
   assert.match(sessionHook, /interrupted: true/);
+  assert.match(sessionHook, /isExpectedCancellationError/);
+  assert.match(
+    sessionHook,
+    /case "cancelled":\s*failed = false;\s*setError\(null\)/,
+  );
   assert.match(runtimePanel, />\s*Interrupted\s*</);
+});
+
+test("runtime problems render as plain text instead of banners", () => {
+  const errorStart = runtimePanel.indexOf("{error || steerError ?");
+  const errorBlock = runtimePanel.slice(errorStart, errorStart + 500);
+  assert.ok(errorStart >= 0);
+  assert.match(errorBlock, /role="alert"/);
+  assert.match(errorBlock, /text-\[var\(--danger\)\]/);
+  assert.doesNotMatch(
+    errorBlock,
+    /border|rounded|bg-|shadow|red-950/,
+  );
+});
+
+test("a newly opened turn stream ignores stale zero-output completion events", () => {
+  assert.match(eventStream, /let streamRun = getActiveRuntimeRun/);
+  assert.match(eventStream, /if \(!streamRun\) continue/);
+  assert.match(eventStream, /let sawTurnOutput = false/);
+  assert.match(eventStream, /sawTurnOutput = sawTurnOutput \|\| event\.payload\.text\.length > 0/);
+  assert.match(eventStream, /if \(!sawTurnOutput\) continue/);
+  assert.match(eventStream, /event\.messageId !== assistantMessageId/);
+});
+
+test("send and stop use one stable responsive button shell", () => {
+  const sendButton = composer.slice(
+    composer.indexOf('aria-label="Send"') - 1_000,
+    composer.indexOf('aria-label="Send"') + 500,
+  );
+  const stopButton = composer.slice(
+    composer.indexOf("aria-label={runState === 'stopping'") - 1_000,
+    composer.indexOf("aria-label={runState === 'stopping'") + 500,
+  );
+  for (const button of [sendButton, stopButton]) {
+    assert.match(button, /neu-button-accent/);
+    assert.match(button, /compact \? 'h-9 w-9' : 'h-11 w-11'/);
+    assert.match(button, /border-\[var\(--botanical-hover\)\]/);
+  }
 });
 
 test("run and steer identities are durable in the additive database schema", () => {

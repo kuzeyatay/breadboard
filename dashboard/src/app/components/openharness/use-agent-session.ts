@@ -187,6 +187,12 @@ function connectionForRunState(state: AgentRunState): ConnectionState {
   return "idle";
 }
 
+function isExpectedCancellationError(message: string): boolean {
+  return /\b(?:abort(?:ed)?|cancel(?:led|ed)?|cancelled_by_user)\b/i.test(
+    message,
+  );
+}
+
 interface CreateOptions {
   gardenSlug?: string;
   pageSlug?: string;
@@ -602,10 +608,20 @@ export function useAgentSession(
               }
               break;
             case "error":
-              failed = true;
-              setError(
-                String(payload.message ?? "The agent reported an error."),
-              );
+              {
+                const message = String(
+                  payload.message ?? "The agent reported an error.",
+                );
+                if (
+                  stopRequestedRef.current &&
+                  isExpectedCancellationError(message)
+                ) {
+                  setError(null);
+                  break;
+                }
+                failed = true;
+                setError(message);
+              }
               break;
             case "verification.updated":
               assistant = {
@@ -615,6 +631,8 @@ export function useAgentSession(
               commit(assistant);
               break;
             case "cancelled":
+              failed = false;
+              setError(null);
               commitResponseDuration();
               setActivities((current) =>
                 current.map((item) =>
@@ -733,7 +751,10 @@ export function useAgentSession(
         if (activeRunIdRef.current !== runId) return;
         activeRunIdRef.current = null;
         setActiveRunId(null);
-        if (outcome === "cancelled") transition("cancelled");
+        if (outcome === "cancelled") {
+          setError(null);
+          transition("cancelled");
+        }
         else if (outcome === "failed") transition("error");
         else transition("completed");
       } catch (streamError) {
@@ -997,7 +1018,10 @@ export function useAgentSession(
         const outcome = await streamPromise;
         activeRunIdRef.current = null;
         setActiveRunId(null);
-        if (outcome === "cancelled") transition("cancelled");
+        if (outcome === "cancelled") {
+          setError(null);
+          transition("cancelled");
+        }
         else if (outcome === "failed") transition("error");
         else transition("completed");
       } catch (err) {

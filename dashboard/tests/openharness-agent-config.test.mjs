@@ -84,7 +84,7 @@ test("the composed system prompt contains every policy section", () => {
   for (const section of [
     "identity_and_role", "primary_behavior", "garden_and_source_grounding", "capability_modes",
     "coding_necessity", "tools", "web_research", "skills", "mcp_connections", "memory",
-    "files_and_artifacts", "implementation_behavior", "temporal_awareness",
+    "files_and_deliverables", "implementation_behavior", "temporal_awareness",
     "safety_and_high_stakes_topics", "tone_and_formatting", "errors_and_limitations",
     "knowledge_first_boundary",
   ]) assert.match(prompt, new RegExp(`# ${section}`));
