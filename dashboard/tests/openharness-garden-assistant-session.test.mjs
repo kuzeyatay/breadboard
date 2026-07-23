@@ -231,7 +231,7 @@ test("both surfaces short-circuit a blocked turn and preserve it for retry", () 
 
 test("both surfaces apply the brokered tool map through one shared helper", () => {
   for (const source of [adapter, turnService]) {
-    assert.match(source, /mergeSelectedTools\(prepared\.grant\.allowedTools/);
+    assert.match(source, /mergeSelectedTools\(\s*prepared\.grant\.allowedTools/);
     assert.match(source, /from "[^"]*dispatch-core\.ts"/);
   }
   // Exactly one implementation exists, in the shared core.

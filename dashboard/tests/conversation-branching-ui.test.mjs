@@ -37,6 +37,9 @@ test("editing a sent message creates and persists switchable transcript variants
   assert.match(sessionHook, /historyOverride\?: AgentMessage\[\]/);
   assert.match(sessionHook, /options\?\.historyOverride \?\? messages/);
   assert.match(sessionHook, /branchGroupId\?: string/);
+  assert.match(runtimePanel, /Save &amp; send/);
+  assert.match(runtimePanel, /event\.currentTarget\.form\?\.requestSubmit\(\)/);
+  assert.match(runtimePanel, /messageEditText\.trim\(\) === message\.content/);
 });
 
 test("branch navigation sits beside the assistant overflow menu", () => {

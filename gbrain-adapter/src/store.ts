@@ -17,6 +17,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { cosine, resolveProvider, type EmbeddingProvider } from "./embedding.ts";
+import type { RetrievalBackend } from "./backends/types.ts";
 import type {
   GBrainCitation,
   GBrainGraphResponse,

@@ -447,18 +447,18 @@ export default function AssistantComposer({
               type="button"
               onClick={onStop}
               disabled={runState === 'stopping'}
-              className="neu-button flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[#9a4f4f] transition hover:bg-[#f0ded8] hover:text-[#7e3434] disabled:cursor-wait disabled:opacity-55"
+              className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-wait disabled:opacity-55 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
               aria-label={runState === 'stopping' ? 'Stopping active run' : 'Stop active run'}
               title={runState === 'stopping' ? 'Stopping...' : 'Stop'}
             >
-              {runState === 'stopping' ? <Spinner /> : <span className="h-3.5 w-3.5 rounded-[3px] bg-current" aria-hidden />}
+              {runState === 'stopping' ? <Spinner /> : <span className="h-3 w-3 rounded-[3px] bg-current" aria-hidden />}
             </button>
           ) : (
           <button
             type="button"
             onClick={onSubmit}
             disabled={!canSubmit || isSending || disabled}
-            className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full bg-[var(--botanical)] text-[var(--paper-raised)] transition hover:scale-[1.03] hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:hover:scale-100 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
+            className={`neu-button-accent flex shrink-0 items-center justify-center rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] text-[var(--paper-raised)] transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
             aria-label="Send"
             title="Send"
           >

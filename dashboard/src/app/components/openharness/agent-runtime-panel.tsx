@@ -405,10 +405,25 @@ export default function AgentRuntimePanel({
                   <div className={message.role === "user" ? "max-w-[80%]" : "w-full"}>
                     {message.role === "user" ? (
                       editingMessageId === messageBranchId(message, index) ? (
-                        <div className="neu-chat-message neu-chat-message-user min-w-64 rounded-2xl rounded-br-sm p-2">
+                        <form
+                          className="neu-chat-message neu-chat-message-user min-w-64 rounded-2xl rounded-br-sm p-2"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            saveMessageEdit(message, index);
+                          }}
+                        >
                           <textarea
                             value={messageEditText}
                             onChange={(event) => setMessageEditText(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (
+                                event.key === "Enter" &&
+                                (event.ctrlKey || event.metaKey)
+                              ) {
+                                event.preventDefault();
+                                event.currentTarget.form?.requestSubmit();
+                              }
+                            }}
                             rows={Math.min(6, Math.max(2, messageEditText.split("\n").length))}
                             className="max-h-40 w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 text-[var(--ink)] outline-none"
                             aria-label="Edit message"
@@ -423,15 +438,28 @@ export default function AgentRuntimePanel({
                               Cancel
                             </button>
                             <button
-                              type="button"
-                              onClick={() => saveMessageEdit(message, index)}
-                              disabled={!messageEditText.trim()}
-                              className="rounded-full bg-[var(--botanical)] px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
+                              type="submit"
+                              disabled={
+                                activeRun ||
+                                !messageEditText.trim() ||
+                                messageEditText.trim() === message.content
+                              }
+                              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-[var(--botanical-hover)] bg-[var(--botanical)] px-3 text-xs font-medium text-[var(--paper-raised)] shadow-sm transition-colors hover:bg-[var(--botanical-hover)] disabled:cursor-not-allowed disabled:border-[var(--line)] disabled:bg-[var(--line)] disabled:text-[var(--ink-muted)] disabled:shadow-none"
                             >
-                              Send
+                              <span>Save &amp; send</span>
+                              <svg
+                                className="h-3.5 w-3.5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2.2}
+                                aria-hidden
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 19.5v-15m0 0-6 6m6-6 6 6" />
+                              </svg>
                             </button>
                           </div>
-                        </div>
+                        </form>
                       ) : (
                         <>
                           <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
@@ -555,9 +583,12 @@ export default function AgentRuntimePanel({
           )}
 
           {error || steerError ? (
-            <div className="mt-4 rounded-lg border border-red-800/60 bg-red-950/30 px-4 py-3 text-xs text-red-300">
+            <p
+              className="mt-3 px-1 text-xs text-[var(--danger)]"
+              role="alert"
+            >
               {error || steerError}
-            </div>
+            </p>
           ) : null}
         </div>
       </div>
