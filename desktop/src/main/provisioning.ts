@@ -109,6 +109,31 @@ export function provisionQuartzWorkspace(
 
 const OPENHARNESS_VERSION_FILE = ".breadboard-runtime-version";
 
+/**
+ * Bun mutates its install cache while applying patched packages. Installer
+ * resources are read-only on a normal Windows installation, and sharing the
+ * bundled cache directly can also leave half-renamed patch directories after
+ * an interrupted first launch. Give each provisioning attempt a fresh,
+ * user-writable copy instead.
+ */
+export function stageOpenHarnessInstallCache(
+  paths: ResolvedPaths,
+  appVersion: string,
+): string {
+  const source = path.join(paths.resourcesRoot, "bun-cache");
+  if (!fs.existsSync(source)) {
+    throw new Error(
+      `Agent runtime package cache missing at ${source}. The installation is incomplete; reinstall Breadboard.`,
+    );
+  }
+  const safeVersion = appVersion.replace(/[^A-Za-z0-9._-]/g, "_");
+  const target = path.join(paths.tempDir, `agent-runtime-bun-cache-${safeVersion}`);
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.cpSync(source, target, { recursive: true });
+  return target;
+}
+
 export function needsOpenHarnessProvisioning(paths: ResolvedPaths, appVersion: string): boolean {
   if (paths.mode === "dev") return false;
   const versionFile = path.join(paths.openharnessAppDir, OPENHARNESS_VERSION_FILE);
@@ -126,8 +151,9 @@ export function needsOpenHarnessProvisioning(paths: ResolvedPaths, appVersion: s
  * Bun's isolated installer creates machine-absolute junctions, so
  * node_modules cannot ship as installer resources. Instead the sources +
  * lockfile ship read-only, and this step copies them into user data and runs
- * `bun install` there against the bundled package cache (offline-first; the
- * registry is only consulted for manifest revalidation on a cache miss).
+ * `bun install` there against a fresh user-writable copy of the bundled
+ * package cache (offline-first; the registry is only consulted for manifest
+ * revalidation on a cache miss).
  */
 export function provisionOpenHarnessRuntime(
   paths: ResolvedPaths,
@@ -151,7 +177,8 @@ export function provisionOpenHarnessRuntime(
     fs.cpSync(path.join(template, entry), destination, { recursive: true });
   }
 
-  const cacheDir = path.join(paths.resourcesRoot, "bun-cache");
+  onProgress?.("Preparing the agent runtime package cache");
+  const cacheDir = stageOpenHarnessInstallCache(paths, appVersion);
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
     BUN_INSTALL_CACHE_DIR: cacheDir,

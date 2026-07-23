@@ -32,12 +32,20 @@ test("dashboard chat surfaces share a borderless neumorphic composer", () => {
   assert.doesNotMatch(garden, /border-t border-gray-800 p-3/);
 });
 
-test("the composer text uses balanced optical vertical alignment", () => {
+test("the composer centers a single text line with the adjacent controls", () => {
   assert.match(
     composer,
-    /compact \? 'min-h-9 pb-\[7px\] pt-\[9px\] text-sm leading-5' : 'min-h-11 pb-\[9px\] pt-\[11px\] text-\[15px\] leading-6'/,
+    /relative flex min-w-0 flex-1 items-center.*compact \? 'min-h-9' : 'min-h-11'/,
   );
-  assert.doesNotMatch(composer, /compact \? 'py-2 text-sm leading-5' : 'py-2\.5 text-\[15px\] leading-6'/);
+  assert.match(
+    composer,
+    /block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-0/,
+  );
+  assert.match(
+    composer,
+    /compact \? 'min-h-5 text-sm leading-5' : 'min-h-6 text-\[15px\] leading-6'/,
+  );
+  assert.doesNotMatch(composer, /pb-\[9px\] pt-\[11px\]/);
 });
 
 test("Quartz uses the same raised pill structure without input borders", () => {

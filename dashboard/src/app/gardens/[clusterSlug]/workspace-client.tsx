@@ -31,6 +31,10 @@ import ChatMarkdown from "@/app/components/chat-markdown";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import GardenVideoImport from "@/app/components/garden-video-import";
+import ArtifactPanel, {
+  ARTIFACT_BROWSER_EVENT,
+  ARTIFACT_REVISE_EVENT,
+} from "@/app/components/openharness/artifact-panel";
 import LearnConfirmationDialog, {
   type LearnDestructiveAction,
 } from "@/app/components/learn-confirmation-dialog";
@@ -797,6 +801,10 @@ export default function WorkspaceClient({
   const [sourceDocsExpanded, setSourceDocsExpanded] = useState(false);
   const [linksExpanded, setLinksExpanded] = useState(false);
   const [videosExpanded, setVideosExpanded] = useState(false);
+  const [artifactsExpanded, setArtifactsExpanded] = useState(false);
+  const artifactAutoOpenedRuns = useRef(new Set<string>());
+  const artifactDismissedRuns = useRef(new Set<string>());
+  const activeArtifactRunRef = useRef<string | null>(null);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [newLinkTitle, setNewLinkTitle] = useState("");
@@ -804,6 +812,19 @@ export default function WorkspaceClient({
   const [savingLink, setSavingLink] = useState(false);
   const [deletingLinkId, setDeletingLinkId] = useState<string | null>(null);
   const [sourceDocSearch, setSourceDocSearch] = useState("");
+
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const detail = (raw as CustomEvent<{ type?: string; gardenId?: string | null; runId?: string }>).detail;
+      if (detail?.type !== "artifact.created" || detail.gardenId !== clusterSlug || !detail.runId) return;
+      activeArtifactRunRef.current = detail.runId;
+      if (artifactDismissedRuns.current.has(detail.runId) || artifactAutoOpenedRuns.current.has(detail.runId)) return;
+      artifactAutoOpenedRuns.current.add(detail.runId);
+      setArtifactsExpanded(true);
+    };
+    window.addEventListener(ARTIFACT_BROWSER_EVENT, listener);
+    return () => window.removeEventListener(ARTIFACT_BROWSER_EVENT, listener);
+  }, [clusterSlug]);
   // Left chat sidebar: width is the single source of truth so it can be
   // dragged open/closed by its edge (no toggle button). Below the threshold it
   // renders as a thin rail; releasing snaps to a clean rail or open width.
@@ -903,6 +924,27 @@ export default function WorkspaceClient({
   const agentActivity = useLegacyAgentActivity();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const activeSteerContextRef = useRef<{
+    sessionId: number;
+    messages: Message[];
+  } | null>(null);
+
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const artifact = (raw as CustomEvent<{
+        id?: string;
+        title?: string;
+        gardenId?: string | null;
+      }>).detail;
+      if (!artifact?.id || artifact.gardenId !== clusterSlug) return;
+      setInput(
+        `Revise the existing artifact "${artifact.title || "Untitled artifact"}" (artifact ID: ${artifact.id}). `,
+      );
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
+    return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
+  }, [clusterSlug]);
 
   // Upload modal
   const [showUpload, setShowUpload] = useState(false);
@@ -2387,6 +2429,51 @@ export default function WorkspaceClient({
     void handleSubmit(previousUser.content, messages.slice(0, userIndex));
   }
 
+  function handleSteerActiveResponse(text: string) {
+    const correction = text.trim();
+    const context = activeSteerContextRef.current;
+    if (!correction || !context) return;
+
+    void agentActivity
+      .steer(correction)
+      .then((accepted) => {
+        if (!accepted || activeSteerContextRef.current !== context) {
+          setInput((current) => current || correction);
+          addToast("The response finished before it could be steered. Your message was restored.");
+          return;
+        }
+
+        const correctionMessage: Message = {
+          role: "user",
+          content: correction,
+        };
+        context.messages.push(correctionMessage);
+        updateChatMessages(context.sessionId, (current) => {
+          let pendingAssistantIndex = current.length - 1;
+          while (
+            pendingAssistantIndex >= 0 &&
+            current[pendingAssistantIndex]?.role !== "assistant"
+          ) {
+            pendingAssistantIndex -= 1;
+          }
+          if (pendingAssistantIndex < 0) return [...current, correctionMessage];
+          return [
+            ...current.slice(0, pendingAssistantIndex),
+            correctionMessage,
+            ...current.slice(pendingAssistantIndex),
+          ];
+        });
+      })
+      .catch((error) => {
+        setInput((current) => current || correction);
+        addToast(
+          error instanceof Error
+            ? error.message
+            : "Could not steer the active response.",
+        );
+      });
+  }
+
   async function handleSubmit(
     textOverride?: string,
     historyOverride?: Message[],
@@ -2408,6 +2495,8 @@ export default function WorkspaceClient({
     const sessionId = session.id;
     const history = historyOverride ?? session.messages;
     const title = history.length === 0 ? firstMessageTitle : undefined;
+    const steerContext = { sessionId, messages: [] as Message[] };
+    activeSteerContextRef.current = steerContext;
 
     // Snapshot attachments and clear them immediately
     const attachmentNames = pendingAttachments.map((a) => a.name);
@@ -2429,7 +2518,12 @@ export default function WorkspaceClient({
       sources: [],
       thinking: "",
     };
-    let finalMessages = [...nextMessages, assistantMsg];
+    const messagesWithAssistant = () => [
+      ...nextMessages,
+      ...steerContext.messages,
+      { ...assistantMsg },
+    ];
+    let finalMessages = messagesWithAssistant();
 
     setInput("");
     setChatAttachments([]);
@@ -2481,10 +2575,13 @@ export default function WorkspaceClient({
         assistantMsg.responseDurationMs = Math.round(
           performance.now() - responseStartedAt,
         );
-        finalMessages = [...nextMessages, { ...assistantMsg }];
+        finalMessages = messagesWithAssistant();
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
         setIsStreaming(false);
+        if (activeSteerContextRef.current === steerContext) {
+          activeSteerContextRef.current = null;
+        }
         textareaRef.current?.focus();
       }
       return;
@@ -2520,10 +2617,13 @@ export default function WorkspaceClient({
         assistantMsg.responseDurationMs = Math.round(
           performance.now() - responseStartedAt,
         );
-        finalMessages = [...nextMessages, { ...assistantMsg }];
+        finalMessages = messagesWithAssistant();
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
         setIsStreaming(false);
+        if (activeSteerContextRef.current === steerContext) {
+          activeSteerContextRef.current = null;
+        }
         textareaRef.current?.focus();
       }
       return;
@@ -2604,7 +2704,18 @@ export default function WorkspaceClient({
               | { type: "error"; error?: string }
               | { type: "runtime"; backend: string; fallback: boolean }
               | { type: "verification"; verification: VerificationSummary }
-              | { type: "usage"; usage: unknown };
+              | { type: "usage"; usage: unknown }
+              | {
+                  type: `artifact.${string}`;
+                  artifactId: string;
+                  runId: string;
+                  conversationId: string;
+                  gardenId: string | null;
+                  assistantMessageId: string | null;
+                  status: string;
+                  version: number;
+                  metadata?: Record<string, unknown>;
+                };
 
             agentActivity.handleEvent(
               event as unknown as Record<string, unknown>,
@@ -2612,11 +2723,11 @@ export default function WorkspaceClient({
 
             if (event.type === "sources") {
               assistantMsg.sources = event.sources;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
+              finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "delta") {
               assistantMsg.content += event.text;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
+              finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "usage") {
               const usage = normalizeChatTokenUsage(event.usage);
@@ -2627,21 +2738,23 @@ export default function WorkspaceClient({
                     performance.now() - responseStartedAt,
                   ),
                 };
-                finalMessages = [...nextMessages, { ...assistantMsg }];
+                finalMessages = messagesWithAssistant();
                 updateChatMessages(sessionId, finalMessages);
               }
             } else if (event.type === "error") {
               assistantMsg.content += `\n\n${event.error ?? "OpenHarness reported an error."}`;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
+              finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "verification") {
               assistantMsg.verification = event.verification;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
+              finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "runtime" && event.fallback) {
               assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nOpenHarness unavailable — using the visible preferred-mode ChatMock fallback.`;
-              finalMessages = [...nextMessages, { ...assistantMsg }];
+              finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
+            } else if (event.type.startsWith("artifact.")) {
+              window.dispatchEvent(new CustomEvent(ARTIFACT_BROWSER_EVENT, { detail: event }));
             }
           } catch {
             // malformed event — skip
@@ -2656,17 +2769,20 @@ export default function WorkspaceClient({
         : error instanceof Error && error.message.trim()
           ? error.message
           : "Something went wrong. Please try again.";
-      finalMessages = [...nextMessages, { ...assistantMsg }];
+      finalMessages = messagesWithAssistant();
       updateChatMessages(sessionId, finalMessages);
     } finally {
       agentActivity.finish(agentFailed);
       assistantMsg.responseDurationMs = Math.round(
         performance.now() - responseStartedAt,
       );
-      finalMessages = [...nextMessages, { ...assistantMsg }];
+      finalMessages = messagesWithAssistant();
       updateChatMessages(sessionId, finalMessages);
       await persistChatSession(sessionId, finalMessages, title);
       setIsStreaming(false);
+      if (activeSteerContextRef.current === steerContext) {
+        activeSteerContextRef.current = null;
+      }
       textareaRef.current?.focus();
     }
   }
@@ -4624,6 +4740,34 @@ export default function WorkspaceClient({
           />
         )}
       </div>
+
+      <div className="border-t border-gray-800 shrink-0">
+        <button
+          type="button"
+          onClick={() => setArtifactsExpanded((value) => {
+            if (value && activeArtifactRunRef.current) artifactDismissedRuns.current.add(activeArtifactRunRef.current);
+            return !value;
+          })}
+          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          aria-expanded={artifactsExpanded}
+          aria-controls="garden-artifacts-panel"
+        >
+          <div className="flex items-center gap-2">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3.75h7.5l3 3v13.5H6.75V3.75Zm7.5 0v3h3" />
+            </svg>
+            Artifacts
+          </div>
+          <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${artifactsExpanded ? "" : "rotate-180"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+          </svg>
+        </button>
+        {artifactsExpanded ? (
+          <div id="garden-artifacts-panel" className="h-[min(58vh,620px)] border-t border-gray-800">
+            <ArtifactPanel compact gardenSlug={clusterSlug} legacyChatSessionId={activeChatId} />
+          </div>
+        ) : null}
+      </div>
     </>
   );
 
@@ -5431,7 +5575,7 @@ export default function WorkspaceClient({
               textareaRef={textareaRef}
               textareaStyle={{ fieldSizing: "content" } as React.CSSProperties}
               placeholder="Ask about your documents…"
-              disabled={isStreaming || loadingChats}
+              disabled={loadingChats}
               isSending={isStreaming}
               canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
               model={model}
@@ -5445,6 +5589,18 @@ export default function WorkspaceClient({
               isAddingDocuments={extractingAttachments}
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
+              runState={
+                !isStreaming
+                  ? "idle"
+                  : agentActivity.connection === "waiting"
+                    ? "waiting_for_permission"
+                    : agentActivity.connection === "connecting"
+                      ? "connecting"
+                      : "running"
+              }
+              onQueueSteer={handleSteerActiveResponse}
+              onStop={agentActivity.abort}
+              permissionPending={Boolean(agentActivity.pendingPermission)}
             />
           </div>
         </div>

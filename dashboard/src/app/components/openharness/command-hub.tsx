@@ -513,6 +513,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                 {tab === "skill" && !detail ? (
                   <SkillsCatalogPanel
                     runtimeSessionId={sessionId ?? null}
+                    surface={surface}
                     onUse={chooseCatalogSkill}
                     onInstalledChange={loadPalette}
                   />

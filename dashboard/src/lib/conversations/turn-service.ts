@@ -97,6 +97,13 @@ export type StartConversationTurnResult =
 export async function startConversationTurn(
   input: StartConversationTurnInput,
 ): Promise<StartConversationTurnResult> {
+  if (input.surface !== input.conversation.surface) {
+    throw new ApiError(
+      403,
+      "surface_scope_mismatch",
+      "This conversation is bound to a different assistant surface.",
+    );
+  }
   const context = normalizeSurfaceContext(input.surfaceContext);
   let reservation;
   try {
@@ -196,7 +203,7 @@ export async function startConversationTurn(
     { mode: decision.mode, surface: input.surface },
   );
   decision.selectedConditionalSkills = resolved.invocations
-    .filter((invocation) => invocation.kind === "skill" && decision.mode === "scoped_implementation")
+    .filter((invocation) => invocation.kind === "skill")
     .map((invocation) => invocation.slug);
   decision.selectedConnections = resolved.invocations
     .filter((invocation) => invocation.kind === "mcp")

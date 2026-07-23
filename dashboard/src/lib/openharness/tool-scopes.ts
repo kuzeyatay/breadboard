@@ -42,6 +42,17 @@ export const QUARTZ_TOOLS = [
   "garden_propose_visualization",
 ] as const;
 
+export const ARTIFACT_TOOLS = [
+  "artifact_create",
+  "artifact_read",
+  "artifact_update",
+  "artifact_append",
+  "artifact_render",
+  "artifact_finalize",
+  "artifact_list",
+  "artifact_fork",
+] as const;
+
 export type GardenToolName = (typeof GARDEN_TOOLS)[number];
 
 /** Tools whose invocation produces a typed proposal rather than a mutation. */
@@ -52,11 +63,11 @@ export const PROPOSAL_TOOLS: readonly string[] = [
 ];
 
 export function allowedToolsForSurface(surface: OpenHarnessSurface): string[] {
-  if (surface === "garden_chat") return [...GARDEN_TOOLS];
+  if (surface === "garden_chat") return [...GARDEN_TOOLS, ...ARTIFACT_TOOLS];
   if (surface === "quartz_ai") return [...QUARTZ_TOOLS];
   // The dashboard terminal's tools are governed by the OpenHarness agent config
   // and per-action permission prompts, not by a fixed Breadboard allowlist.
-  return [...GARDEN_TOOLS, "capability_gap", "capability_search"];
+  return [...GARDEN_TOOLS, ...ARTIFACT_TOOLS, "terminal_execute_command", "capability_gap", "capability_search"];
 }
 
 export function isProposalTool(tool: string): boolean {

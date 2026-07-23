@@ -30,6 +30,10 @@ import {
   failAssistantMessage,
 } from "../conversations/store.ts";
 import { compactConversationMemoryIfNeeded } from "../conversations/memory.ts";
+import {
+  associateArtifactToolCall,
+  listArtifactEventsAfter,
+} from "./artifact-store.ts";
 
 function persistAssistantOnce(
   session: AuthorizedRuntimeSession,
@@ -151,6 +155,8 @@ export function buildSessionEventStream(
   // a failure, not a completed answer.
   let finalStatus = "failed";
   let tokenUsage: unknown;
+  const streamRun = getActiveRuntimeRun(session.row.id);
+  let lastArtifactEventId = 0;
 
   const readable = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -158,6 +164,31 @@ export function buildSessionEventStream(
         event: NormalizedAgentEvent | { type: string; [k: string]: unknown },
       ) => {
         controller.enqueue(encoder.encode(encodeSseEvent(event)));
+      };
+      const emitArtifactEvents = () => {
+        if (!streamRun) return;
+        for (const artifactEvent of listArtifactEventsAfter({
+          runId: streamRun.id,
+          afterId: lastArtifactEventId,
+        })) {
+          lastArtifactEventId = artifactEvent.id;
+          emit({
+            type: artifactEvent.type,
+            sessionId: session.openHarnessSessionId,
+            timestamp: artifactEvent.timestamp,
+            payload: {
+              eventId: artifactEvent.id,
+              artifactId: artifactEvent.artifactId,
+              runId: artifactEvent.runId,
+              conversationId: artifactEvent.conversationId,
+              gardenId: artifactEvent.gardenId,
+              assistantMessageId: artifactEvent.assistantMessageId,
+              status: artifactEvent.status,
+              version: artifactEvent.version,
+              metadata: artifactEvent.payload,
+            },
+          });
+        }
       };
       const finalize = (status: string) => {
         if (persisted) return;
@@ -250,6 +281,9 @@ export function buildSessionEventStream(
       };
 
       try {
+        // Replays lifecycle events already committed before the browser managed
+        // to attach, making refresh/reconnect deterministic and idempotent.
+        emitArtifactEvents();
         for await (const event of gateway.subscribeToSession(
           {
             openHarnessSessionId: session.openHarnessSessionId,
@@ -275,6 +309,13 @@ export function buildSessionEventStream(
               },
             });
           } else if (event.type === "tool.completed") {
+            if (streamRun) {
+              associateArtifactToolCall(
+                streamRun.id,
+                event.payload.toolName,
+                event.payload.toolCallId,
+              );
+            }
             toolCalls.push({
               toolCallId: event.payload.toolCallId,
               toolName: event.payload.toolName,
@@ -321,9 +362,11 @@ export function buildSessionEventStream(
             });
           }
           emit(event);
+          emitArtifactEvents();
 
           if (event.type === "session.status") {
             if (event.payload.status === "idle") {
+              emitArtifactEvents();
               emit({
                 type: "verification.updated",
                 sessionId: session.openHarnessSessionId,

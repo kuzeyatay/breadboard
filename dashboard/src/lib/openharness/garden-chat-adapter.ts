@@ -35,6 +35,9 @@ import {
   type PreparedTurn,
 } from "./dispatch-core.ts";
 import { listFilesystemGrants } from "./filesystem-grant-store.ts";
+import { beginRuntimeRun, finishRuntimeRun } from "./run-store.ts";
+import { getConversationById } from "../conversations/store.ts";
+import { associateArtifactToolCall, listArtifactEventsAfter } from "./artifact-store.ts";
 
 type GardenChatPayload = {
   clusterSlug?: unknown;
@@ -101,10 +104,9 @@ export async function openGardenAgentChat(
         pageSlug: page?.slug,
         chatSessionId,
       });
-  // Capability now comes from the requested outcome plus the user's real
-  // filesystem grants, not from a surface check. Garden Chat is no longer
-  // capped at knowledge tools: an authenticated user asking for an action they
-  // have authorized gets the same capability here as in the terminal.
+  // The shared planner records the requested outcome, while the broker's
+  // surface ceiling keeps Garden Chat on curated Garden, artifact, and selected
+  // MCP tools. Filesystem grants can never turn this surface into a Terminal.
   const prepared = prepareTurn({
     request: text,
     priorRequests: messages
@@ -123,6 +125,9 @@ export async function openGardenAgentChat(
     session.activeDirectory,
     { mode: decision.mode, surface: "garden_chat" },
   );
+  decision.selectedConditionalSkills = resolved.invocations
+    .filter((item) => item.kind === "skill")
+    .map((item) => item.slug);
   decision.selectedConnections = resolved.invocations
     .filter((item) => item.kind === "mcp")
     .map((item) => item.slug);
@@ -172,7 +177,40 @@ export async function openGardenAgentChat(
       riskLevel: prepared.plan.riskLevel,
     },
   });
-  return legacyGardenEventStream(session, signal, prepared, () =>
+  if (session.row.conversation_id === null) {
+    throw new ApiError(409, "conversation_required", "Garden artifacts require a canonical conversation.");
+  }
+  const conversation = getConversationById(session.row.conversation_id);
+  if (!conversation || conversation.surface !== "garden_chat") {
+    throw new ApiError(409, "conversation_scope_mismatch", "The Garden conversation scope is invalid.");
+  }
+  const runTools = mergeSelectedTools(
+    prepared.grant.allowedTools,
+    resolved.tools,
+  );
+  const runSystem = composeOpenHarnessSystemPrompt({
+    surface: "garden_chat",
+    decision,
+    additional: gardenTurnContext(
+      clusterSlug,
+      chatSessionId,
+      page,
+      payload.selectedDocumentSlugs,
+      prepared,
+    ),
+  });
+  const run = beginRuntimeRun({
+    runtimeSessionId: session.row.id,
+    instruction: text,
+    dispatch: {
+      conversationPublicId: conversation.public_id,
+      model: engine.model,
+      variant: engine.variant,
+      tools: runTools,
+      system: runSystem,
+    },
+  });
+  return legacyGardenEventStream(session, signal, prepared, run.id, () =>
     gateway.sendMessage({
       openHarnessSessionId: session.openHarnessSessionId,
       workspaceKey: session.workspaceKey,
@@ -181,20 +219,10 @@ export async function openGardenAgentChat(
       text: resolved.text,
       // The brokered map is authoritative. A selected MCP/skill tool may only
       // narrow it, never widen it.
-      tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
+      tools: runTools,
       model: engine.model,
       variant: engine.variant,
-      system: composeOpenHarnessSystemPrompt({
-        surface: "garden_chat",
-        decision,
-        additional: gardenTurnContext(
-          clusterSlug,
-          chatSessionId,
-          page,
-          payload.selectedDocumentSlugs,
-          prepared,
-        ),
-      }),
+      system: runSystem,
     }),
   );
 }
@@ -284,6 +312,7 @@ function legacyGardenEventStream(
   session: AuthorizedRuntimeSession,
   requestSignal: AbortSignal,
   prepared: PreparedTurn,
+  runId: string,
   sendMessage: () => Promise<void>,
 ): Response {
   const gateway = getOpenHarnessGateway();
@@ -311,11 +340,29 @@ function legacyGardenEventStream(
       const evidence: EvidenceRecord[] = [];
       const toolCalls: Array<Record<string, unknown>> = [];
       let tokenUsage: unknown;
+      let lastArtifactEventId = 0;
+      const emitArtifactEvents = () => {
+        for (const event of listArtifactEventsAfter({ runId, afterId: lastArtifactEventId })) {
+          lastArtifactEventId = event.id;
+          emit({
+            type: event.type,
+            artifactId: event.artifactId,
+            runId: event.runId,
+            conversationId: event.conversationId,
+            gardenId: event.gardenId,
+            assistantMessageId: event.assistantMessageId,
+            status: event.status,
+            version: event.version,
+            metadata: event.payload,
+          });
+        }
+      };
       emit({
         type: "runtime",
         backend: "openharness",
         fallback: false,
         sessionId: session.row.id,
+        runId,
       });
       // Tell the client what this turn understood and what it may do, so the
       // UI can show active work rather than a bare spinner.
@@ -355,6 +402,7 @@ function legacyGardenEventStream(
           pending: prepared.pendingPermissions.map((item) => item.id),
         });
         markStatus(session, "idle");
+        finishRuntimeRun(runId, "cancelled");
         // Nothing executed under this decision. It is abandoned rather than
         // completed; approving the permission produces a fresh decision on the
         // resumed turn.
@@ -390,6 +438,7 @@ function legacyGardenEventStream(
           }),
         ]);
         await sendMessage();
+        emitArtifactEvents();
         for (
           let next = await firstEvent;
           !next.done;
@@ -421,6 +470,7 @@ function legacyGardenEventStream(
             });
           }
           if (event.type === "tool.completed") {
+            associateArtifactToolCall(runId, event.payload.toolName, event.payload.toolCallId);
             emit({
               type: "tool",
               status: event.payload.success ? "completed" : "failed",
@@ -458,6 +508,7 @@ function legacyGardenEventStream(
               },
             });
           }
+          emitArtifactEvents();
           if (event.type === "permission.requested") {
             emit({ type: "permission", ...event.payload });
             recordAuditEvent({
@@ -475,6 +526,7 @@ function legacyGardenEventStream(
             event.payload.status === "idle"
           ) {
             const verification = assessVerification(assistantText, evidence);
+            emitArtifactEvents();
             emit({ type: "verification", verification });
             if (assistantText.trim() || toolCalls.length) {
               const last = db
@@ -502,6 +554,7 @@ function legacyGardenEventStream(
           }
         }
         markStatus(session, controller.signal.aborted ? "aborted" : "idle");
+        finishRuntimeRun(runId, controller.signal.aborted ? "cancelled" : "completed");
         revokeCapabilityDecision(
           session.row.id,
           controller.signal.aborted ? "cancelled" : "completed",
@@ -517,6 +570,7 @@ function legacyGardenEventStream(
       } catch (error) {
         abortRuntime();
         markStatus(session, "failed");
+        finishRuntimeRun(runId, controller.signal.aborted ? "cancelled" : "error");
         revokeCapabilityDecision(session.row.id, "abandoned");
         emit({
           type: "error",

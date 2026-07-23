@@ -116,6 +116,7 @@ export async function POST(request: Request) {
       conversation ??= createConversation({
         userId,
         title: context.pageTitle ?? pageSlug,
+        surface: "quartz_ai",
         scopeKind: "page",
         defaultGardenId: cluster.id,
       });

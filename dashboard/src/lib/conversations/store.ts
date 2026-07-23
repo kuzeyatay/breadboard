@@ -11,6 +11,7 @@ export interface ConversationRow {
   public_id: string;
   user_id: number;
   title: string;
+  surface: OpenHarnessSurface;
   scope_kind: ConversationScopeKind;
   default_garden_id: number | null;
   legacy_chat_session_id: number | null;
@@ -70,17 +71,19 @@ export class ConversationStoreError extends Error {
 export function createConversation(input: {
   userId: number;
   title?: string;
+  surface?: OpenHarnessSurface;
   scopeKind?: ConversationScopeKind;
   defaultGardenId?: number | null;
 }, database: Database.Database = db): ConversationRow {
   const publicId = `conv_${crypto.randomBytes(18).toString("base64url")}`;
   const result = database.prepare(`
-    INSERT INTO conversations(public_id, user_id, title, scope_kind, default_garden_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO conversations(public_id, user_id, title, surface, scope_kind, default_garden_id)
+    VALUES (?, ?, ?, ?, ?, ?)
   `).run(
     publicId,
     input.userId,
     normalizeTitle(input.title),
+    input.surface ?? "dashboard_terminal",
     input.scopeKind ?? "global",
     input.defaultGardenId ?? null,
   );
@@ -108,6 +111,20 @@ export function getConversationForUser(
     // Intentionally identical for missing and foreign conversations.
     throw new ConversationStoreError(404, "conversation_not_found", "Conversation not found.");
   }
+  return row;
+}
+
+export function getConversationForLegacyChatSession(
+  chatSessionId: number,
+  userId: number,
+  database: Database.Database = db,
+): ConversationRow {
+  const row = database.prepare(`
+    SELECT c.* FROM conversations c
+    JOIN chat_sessions cs ON cs.conversation_id = c.id
+    WHERE cs.id = ? AND cs.user_id = ? AND c.user_id = ? AND c.surface = 'garden_chat'
+  `).get(chatSessionId, userId, userId) as ConversationRow | undefined;
+  if (!row) throw new ConversationStoreError(404, "conversation_not_found", "Conversation not found.");
   return row;
 }
 

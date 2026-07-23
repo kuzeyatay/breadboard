@@ -10,6 +10,29 @@
 
 export type NormalizedAgentEvent =
   | {
+      type:
+        | "artifact.created"
+        | "artifact.updated"
+        | "artifact.rendering"
+        | "artifact.preview_ready"
+        | "artifact.completed"
+        | "artifact.failed"
+        | "artifact.version_created";
+      sessionId: string;
+      timestamp: string;
+      payload: {
+        eventId: number;
+        artifactId: string;
+        runId: string;
+        conversationId: string;
+        gardenId: string | null;
+        assistantMessageId: string | null;
+        status: string;
+        version: number;
+        metadata: Record<string, unknown>;
+      };
+    }
+  | {
       type: "assistant.delta";
       sessionId: string;
       messageId?: string;

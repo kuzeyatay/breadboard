@@ -10,6 +10,7 @@ import {
 import { SkillsShClient } from "@/lib/openharness/skills-sh-client.ts";
 import { getSkillsCatalogStore } from "@/lib/openharness/skills-catalog-store.ts";
 import { capabilityForInternalToolRequest } from "@/lib/openharness/tool-service-auth.ts";
+import { resolveSkillCompatibility } from "@/lib/openharness/skill-compatibility.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -58,22 +59,33 @@ export async function POST(request: Request) {
           url: skill.pageUrl,
         }));
       }
-      const candidates = values.map((skill) => ({
-        id: skill.id,
-        upstreamId: skill.id,
-        name: skill.slug,
-        package: `${skill.source}@${skill.slug}`,
-        publisher: skill.source.split("/")[0],
-        repository: skill.source,
-        source: skill.installUrl ?? skill.source,
-        detailsUrl: skill.url ?? `https://skills.sh/${skill.id}`,
-        installs: String(skill.installs),
-        description: "",
-        installCommand: `npx skills add ${skill.installUrl ?? skill.source} --skill ${skill.slug}`,
-        requestedPermissions: [],
-        provider: stale ? "cache" : "api",
-        classification: classifySkill({ name: skill.name, repository: skill.source }),
-      }));
+      const candidates = values.flatMap((skill) => {
+        const classification = classifySkill({ name: skill.name, repository: skill.source });
+        const compatibility = resolveSkillCompatibility({
+          classification: classification.classification,
+          manifest: "",
+          name: skill.name,
+          surface: "dashboard_terminal",
+        });
+        if (classification.classification !== "eligible_general" || compatibility.availability !== "ready") return [];
+        return [{
+          id: skill.id,
+          upstreamId: skill.id,
+          name: skill.slug,
+          package: `${skill.source}@${skill.slug}`,
+          publisher: skill.source.split("/")[0],
+          repository: skill.source,
+          source: skill.installUrl ?? skill.source,
+          detailsUrl: skill.url ?? `https://skills.sh/${skill.id}`,
+          installs: String(skill.installs),
+          description: "",
+          installCommand: `npx skills add ${skill.installUrl ?? skill.source} --skill ${skill.slug}`,
+          requestedPermissions: [],
+          provider: stale ? "cache" : "api",
+          classification,
+          ...compatibility,
+        }];
+      });
       recordAuditEvent({
         eventType: "skill.search",
         runtimeSessionId: session.id,

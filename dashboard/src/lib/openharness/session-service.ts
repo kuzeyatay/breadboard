@@ -431,6 +431,13 @@ export async function resolveConversationRuntime(input: {
   activePageSlug?: string | null;
   forceRecreate?: boolean;
 }): Promise<AuthorizedRuntimeSession> {
+  if (input.surface !== input.conversation.surface) {
+    throw new ApiError(
+      403,
+      "surface_scope_mismatch",
+      "This conversation is bound to a different assistant surface.",
+    );
+  }
   const gardens = normalizedAuthorizedGardens(input.conversation.user_id);
   let active: { clusterId: number; slug: string } | null = null;
   if (input.activeGardenSlug) {
@@ -453,7 +460,7 @@ export async function resolveConversationRuntime(input: {
   } else {
     row = updateRuntimeActiveContext({
       runtimeSessionId: row.id,
-      surface: input.surface,
+      surface: input.conversation.surface,
       clusterId: active?.clusterId ?? null,
       gardenId: active?.slug ?? null,
       pageSlug: input.activePageSlug ?? null,

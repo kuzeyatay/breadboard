@@ -10,6 +10,9 @@ import {
   revalidateSkillsCatalogInBackground,
   synchronizeSkillsCatalog,
 } from "@/lib/openharness/skills-catalog-sync.ts";
+import { classifySkill } from "@/lib/openharness/skills.ts";
+import { resolveSkillCompatibility } from "@/lib/openharness/skill-compatibility.ts";
+import type { OpenHarnessSurface } from "@/lib/openharness/config.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,6 +44,7 @@ export async function GET(request: Request) {
     revalidateSkillsCatalogInBackground();
   }
   const url = new URL(request.url);
+  const surface = parseSurface(url.searchParams.get("surface"));
   const requestedFilter = url.searchParams.get("filter") as CatalogFilter | null;
   const filter = requestedFilter && FILTERS.has(requestedFilter) ? requestedFilter : "all";
   const result = store.list({
@@ -50,17 +54,53 @@ export async function GET(request: Request) {
     perPage: Number(url.searchParams.get("perPage") ?? 50),
   });
   status = store.status();
+  const visible = result.skills
+    .map((skill) => withCompatibility(skill, surface))
+    .filter((skill) =>
+      skill.classification.classification === "eligible_general" &&
+      skill.availability === "ready"
+    );
   return NextResponse.json({
-    skills: result.skills.map(publicSkill),
+    skills: visible.map(publicSkill),
     pagination: {
       page: result.page,
       perPage: result.perPage,
-      total: result.total,
+      total: visible.length,
       hasMore: result.hasMore,
     },
     status: { ...status, synchronizing: catalogSyncInProgress() },
     filter,
   });
+}
+
+function parseSurface(value: string | null): OpenHarnessSurface {
+  return value === "garden_chat" || value === "quartz_ai" || value === "dashboard_terminal"
+    ? value
+    : "dashboard_terminal";
+}
+
+function withCompatibility<T extends {
+  name: string;
+  slug: string;
+  source: string;
+  description: string | null;
+  files: Array<{ path: string; contents?: string }> | null;
+}>(skill: T, surface: OpenHarnessSurface) {
+  const manifest = skill.files?.find((file) => /^SKILL\.md$/i.test(file.path))?.contents ?? "";
+  const classification = classifySkill({
+    name: skill.name || skill.slug,
+    description: skill.description ?? undefined,
+    repository: skill.source,
+    manifest,
+  });
+  const compatibility = resolveSkillCompatibility({
+    classification: classification.classification,
+    manifest,
+    name: skill.name || skill.slug,
+    description: skill.description ?? undefined,
+    surface,
+  });
+  return { ...skill, classification, ...compatibility };
 }
 
 export async function POST() {

@@ -454,6 +454,12 @@ export function useAgentSession(
             continue;
           }
           const payload = (event.payload ?? {}) as Record<string, unknown>;
+          if (typeof event.type === "string" && event.type.startsWith("artifact.")) {
+            window.dispatchEvent(new CustomEvent("breadboard:artifact-event", {
+              detail: { type: event.type, ...payload },
+            }));
+            continue;
+          }
           switch (event.type) {
             case "assistant.delta":
               assistant = {

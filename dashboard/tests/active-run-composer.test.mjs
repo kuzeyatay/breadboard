@@ -21,6 +21,15 @@ const terminal = source(
 const garden = source(
   "../src/app/components/openharness/garden-agent-chat.tsx",
 );
+const legacyActivity = source(
+  "../src/app/components/openharness/use-legacy-agent-activity.ts",
+);
+const workspace = source(
+  "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
+);
+const gardenAdapter = source(
+  "../src/lib/openharness/garden-chat-adapter.ts",
+);
 const steerRoute = source(
   "../src/app/api/openharness/sessions/[sessionId]/steer/route.ts",
 );
@@ -85,6 +94,23 @@ test("Dashboard terminal and Garden Chat share real steering controls", () => {
   }
 });
 
+test("the garden workspace stays editable and steers its active OpenHarness run", () => {
+  const composerStart = workspace.lastIndexOf("<AssistantComposer");
+  const composerBlock = workspace.slice(composerStart, composerStart + 2_500);
+  assert.ok(composerStart >= 0);
+  assert.match(composerBlock, /disabled=\{loadingChats\}/);
+  assert.doesNotMatch(composerBlock, /disabled=\{isStreaming \|\| loadingChats\}/);
+  assert.match(composerBlock, /runState=\{/);
+  assert.match(composerBlock, /onQueueSteer=\{handleSteerActiveResponse\}/);
+  assert.match(composerBlock, /onStop=\{agentActivity\.abort\}/);
+  assert.match(gardenAdapter, /sessionId: session\.row\.id,\s*runId,/);
+  assert.match(legacyActivity, /const runtimeRunId = useRef<string \| null>\(null\)/);
+  assert.match(legacyActivity, /sessions\/\$\{sessionId\}\/steer/);
+  assert.match(legacyActivity, /clientRequestId: crypto\.randomUUID\(\)/);
+  assert.match(workspace, /\.\.\.steerContext\.messages/);
+  assert.match(workspace, /context\.messages\.push\(correctionMessage\)/);
+});
+
 test("the dashboard assistant header is labeled only as Terminal", () => {
   assert.match(terminal, />\s*Terminal\s*</);
   assert.doesNotMatch(terminal, /Breadboard Assistant|Public knowledge assistant|scopeTagline/);
@@ -129,6 +155,8 @@ test("the steer route enforces auth, ownership, active-run validation, dedupe, a
   assert.match(steerRoute, /eventType: stillActive \? "run\.steered" : "run\.steer_fallback"/);
   assert.match(steerRoute, /getOpenHarnessGateway\(\)\.steerRun/);
   assert.match(steerRoute, /appendConversationSteerMessage/);
+  assert.match(steerRoute, /error instanceof ConversationStoreError/);
+  assert.match(steerRoute, /error\.code !== "turn_not_active"/);
 });
 
 test("Stop is idempotent and cancelled output remains distinct from failure", () => {

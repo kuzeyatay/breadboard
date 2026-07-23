@@ -4,6 +4,7 @@ import fs from "fs";
 import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
 import { databaseDir } from "./runtime-paths.ts";
 import { ensureConversationSchema } from "./conversations/schema.ts";
+import { ensureArtifactSchema } from "./openharness/artifact-schema.ts";
 
 const DB_PATH = path.join(databaseDir(), "brain.db");
 
@@ -535,6 +536,7 @@ ensureColumn("chat_messages", "proposal", "proposal TEXT");
 // after the legacy chat and OpenHarness tables exist so its guarded backfill can
 // preserve every user-visible transcript without a destructive migration.
 ensureConversationSchema(db);
+ensureArtifactSchema(db);
 
 // Persist cluster-group folders even while they contain no clusters yet.
 db.exec(`

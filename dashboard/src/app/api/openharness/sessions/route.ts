@@ -30,14 +30,16 @@ function parseSurface(value: unknown): OpenHarnessSurface {
   throw new ApiError(400, "invalid_surface", "A valid surface is required.");
 }
 
-// All authenticated surfaces list the same canonical conversations. `surface`
-// is retained as UI context only; it is not a persistence partition.
+// Conversations are bound to the server-created surface. This prevents a
+// browser from relabelling a Garden/Quartz conversation as a Terminal session.
 export async function GET(request: Request) {
   try {
     const userId = await requireUserId();
     requireEnabled();
-    parseSurface(new URL(request.url).searchParams.get("surface"));
-    const sessions = listConversationsForUser(userId).map((conversation) => {
+    const surface = parseSurface(new URL(request.url).searchParams.get("surface"));
+    const sessions = listConversationsForUser(userId)
+      .filter((conversation) => conversation.surface === surface)
+      .map((conversation) => {
       const runtime = getRuntimeSessionByConversation(conversation.id);
       const activeRun = runtime ? getActiveRuntimeRun(runtime.id) : null;
       return {
@@ -85,7 +87,7 @@ export async function GET(request: Request) {
           };
         }),
       };
-    });
+      });
     return NextResponse.json({ sessions });
   } catch (error) {
     return apiErrorResponse(error);
@@ -93,7 +95,7 @@ export async function GET(request: Request) {
 }
 
 // New chats are durable before an OpenHarness runtime is needed. The returned
-// id is opaque and remains stable across Terminal, Garden Chat, and Quartz.
+// id is opaque and stable, but deliberately scoped to its creation surface.
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
@@ -108,6 +110,7 @@ export async function POST(request: Request) {
     const conversation = createConversation({
       userId,
       title,
+      surface,
       scopeKind: surface === "quartz_ai" && garden
         ? "page"
         : garden

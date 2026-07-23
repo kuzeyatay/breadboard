@@ -78,13 +78,7 @@ export function skillAvailableForContext(
   if (!skill.compatibleSurfaces.includes(surfaceCompatibility(context.surface) as never)) {
     return false;
   }
-  // Installing guidance and authorizing code changes are separate decisions.
-  // A reviewed coding skill remains selectable; the task capability gate still
-  // controls whether any filesystem or implementation tools can be enabled.
-  return (
-    skill.classification === "eligible_general" ||
-    skill.classification === "eligible_coding_conditional"
-  );
+  return skill.classification === "eligible_general" && skill.availability === "ready";
 }
 
 export function assignCommandTokens<T extends { kind: CommandHubItemKind; slug: string }>(
@@ -105,7 +99,7 @@ export function registryItemsForUser(
   userId: number | null,
   context: CommandResolutionContext,
 ): CommandHubItem[] {
-  const skills: Omit<CommandHubItem, "token">[] = listApprovedSkills()
+  const skills: Omit<CommandHubItem, "token">[] = listApprovedSkills(context.surface)
     .filter((skill) => skillAvailableForContext(skill, context))
     .map((skill) => ({
       id: skill.id,
@@ -278,7 +272,7 @@ export async function resolveCommandMessage(
   const invocations: ResolvedCommandMessage["invocations"] = [];
   const instructions: string[] = [];
   let tools: Record<string, boolean> | undefined;
-  const skills = listApprovedSkills();
+  const skills = listApprovedSkills(context.surface);
   let discovery: OpenHarnessCapabilityDiscovery | null = null;
 
   for (const item of requested) {
@@ -306,7 +300,7 @@ export async function resolveCommandMessage(
         throw new ApiError(
           403,
           "skill_not_available",
-          "That skill is not approved for the current surface and capability mode.",
+          "That skill is unavailable because it is not approved for the current surface and capability mode.",
         );
       }
       invocations.push({

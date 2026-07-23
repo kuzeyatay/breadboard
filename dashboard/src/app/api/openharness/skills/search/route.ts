@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import { requireEnabled } from "@/lib/openharness/route-helpers.ts";
 import { classifySkill } from "@/lib/openharness/skills.ts";
+import { resolveSkillCompatibility } from "@/lib/openharness/skill-compatibility.ts";
+import type { OpenHarnessSurface } from "@/lib/openharness/config.ts";
 import { SkillsShClient } from "@/lib/openharness/skills-sh-client.ts";
 import { getSkillsCatalogStore } from "@/lib/openharness/skills-catalog-store.ts";
 import { revalidateSkillsCatalogInBackground } from "@/lib/openharness/skills-catalog-sync.ts";
@@ -13,7 +15,13 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   const userId = await requireUserId();
   requireEnabled();
-  const query = new URL(request.url).searchParams.get("q")?.trim().slice(0, 200) ?? "";
+  const url = new URL(request.url);
+  const query = url.searchParams.get("q")?.trim().slice(0, 200) ?? "";
+  const surface: OpenHarnessSurface = url.searchParams.get("surface") === "garden_chat"
+    ? "garden_chat"
+    : url.searchParams.get("surface") === "quartz_ai"
+      ? "quartz_ai"
+      : "dashboard_terminal";
   if (!query) return NextResponse.json({ skills: [], candidates: [], stale: false, provider: "skills.sh/api/v1" });
   const store = getSkillsCatalogStore();
   let stale = false;
@@ -70,7 +78,26 @@ export async function GET(request: Request) {
     stale = true;
     message = error instanceof Error ? error.message : "Showing last-known-good catalog results.";
   }
-  const skills = records.map((skill) => {
+  const evaluated = records.map((skill) => {
+    const manifest = skill.files?.find((file) => /^SKILL\.md$/i.test(file.path))?.contents ?? "";
+    const classification = classifySkill({
+      name: skill.slug,
+      description: skill.description ?? undefined,
+      repository: skill.source,
+      manifest,
+    });
+    const compatibility = resolveSkillCompatibility({
+      classification: classification.classification,
+      manifest,
+      name: skill.slug,
+      description: skill.description ?? undefined,
+      surface,
+    });
+    return { skill, classification, compatibility };
+  }).filter(({ classification, compatibility }) =>
+    classification.classification === "eligible_general" && compatibility.availability === "ready"
+  );
+  const skills = evaluated.map(({ skill, classification, compatibility }) => {
     return {
       ...skill,
       installedPath: undefined,
@@ -78,9 +105,11 @@ export async function GET(request: Request) {
       command: `/${skill.slashCommand}`,
       description: skill.description ?? "Open to load skill details",
       descriptionLoaded: Boolean(skill.description),
+      classification,
+      ...compatibility,
     };
   });
-  const candidates = records.map((skill) => ({
+  const candidates = evaluated.map(({ skill, classification, compatibility }) => ({
     id: skill.upstreamId,
     upstreamId: skill.upstreamId,
     name: skill.slug,
@@ -94,7 +123,8 @@ export async function GET(request: Request) {
     installCommand: `npx skills add ${skill.source} --skill ${skill.slug}`,
     requestedPermissions: [],
     provider: stale ? "cache" : "api",
-    classification: classifySkill({ name: skill.slug, description: skill.description ?? undefined, repository: skill.source }),
+    classification,
+    ...compatibility,
     slashCommand: skill.slashCommand,
   }));
   recordAuditEvent({
