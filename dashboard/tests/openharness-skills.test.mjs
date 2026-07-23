@@ -221,7 +221,7 @@ test("approved promotion copies the exact reviewed version and updates registry"
       package: "x/y@promote-me",
       requestedPermissions: ["network"],
     },
-    files: { "SKILL.md": "---\nname: promote-me\ndescription: y\n---\n\nBody" },
+    files: { "SKILL.md": "---\nname: promote-me\ndescription: Writing reusable reports\n---\n\nCreate a substantial Markdown report." },
   });
   const result = promoteSkill("promote-me", {
     approvedAgents: ["breadboard-assistant"],
@@ -268,7 +268,7 @@ test("approved promotion copies the exact reviewed version and updates registry"
   );
 });
 
-test("approved coding skills are retained only in the conditional store", () => {
+test("coding skills cannot be promoted into any user-facing store", () => {
   quarantineSkill({
     candidate: {
       ...candidate,
@@ -281,19 +281,13 @@ test("approved coding skills are retained only in the conditional store", () => 
       "SKILL.md": "---\nname: react-repair\ndescription: Debug and edit React interface code\n---\n\nRepair the reviewed interface only.",
     },
   });
-  const result = promoteSkill("react-repair", {
-    classificationOverride: "eligible_coding_conditional",
+  assert.throws(() => promoteSkill("react-repair", {
+    classificationOverride: "eligible_general",
     reviewer: 1,
-  });
-  assert.equal(
-    path.dirname(result.promotedPath),
-    process.env.OPENHARNESS_SKILLS_CONDITIONAL,
-  );
+  }), /coding|repository-engineering/i);
   assert.ok(!fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_APPROVED, "react-repair")));
-  assert.equal(
-    listApprovedSkills().find((skill) => skill.slug === "react-repair")?.classification,
-    "eligible_coding_conditional",
-  );
+  assert.ok(!fs.existsSync(path.join(process.env.OPENHARNESS_SKILLS_CONDITIONAL, "react-repair")));
+  assert.equal(listApprovedSkills().some((skill) => skill.slug === "react-repair"), false);
 });
 
 test("an upstream manifest-name difference is surfaced for review before promotion", () => {
@@ -328,10 +322,10 @@ test("installed collisions invoke by qualified command with stable upstream iden
       repository: "owner/repo",
       slashCommand: "owner:shared",
       storageKey: "shared-stable-key",
-      description: "Research and analysis guidance",
+      description: "Writing a reusable report",
     },
     files: {
-      "SKILL.md": "---\nname: shared\ndescription: Research and analysis guidance\n---\n\nAsk focused questions.",
+      "SKILL.md": "---\nname: shared\ndescription: Writing a reusable report\n---\n\nCreate a substantial Markdown report and ask focused questions.",
     },
   });
   promoteSkill("shared-stable-key", {
@@ -349,7 +343,7 @@ test("installed collisions invoke by qualified command with stable upstream iden
     id: "owner/repo/shared",
     contentHash: installed.contentHash,
   }]);
-  assert.match(resolved.text, /Ask focused questions/);
+  assert.match(resolved.text, /ask focused questions/i);
 });
 
 test("an upstream revision stays inactive until a fresh update approval replaces it", () => {

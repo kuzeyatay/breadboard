@@ -181,7 +181,7 @@ test("skill classifications distinguish general, coding, unknown, incompatible, 
   assert.equal(classifySkill({ name: "stealer", description: "Credential theft and token exfiltration" }).classification, "blocked_security");
 });
 
-test("coding skill guidance remains visible while implementation authority stays independently gated", async (t) => {
+test("coding skills remain absent even when a legacy registry entry exists", async (t) => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bb-conditional-skill-"));
   const previous = process.env.OPENHARNESS_SKILLS_APPROVED;
   process.env.OPENHARNESS_SKILLS_APPROVED = temporary;
@@ -195,22 +195,14 @@ test("coding skill guidance remains visible while implementation authority stays
   fs.writeFileSync(path.join(skillRoot, "SKILL.md"), "---\nname: react-repair\ndescription: Debug and edit React frontend code\n---\n\nRepair only the relevant interface.");
   const classification = classifySkill({ name: "react-repair", description: "Debug and edit React frontend code" });
   fs.writeFileSync(path.join(temporary, "registry.json"), JSON.stringify({ skills: { "react-repair": { classification } } }));
-  assert.equal(listApprovedSkills()[0].classification, "eligible_coding_conditional");
-
-  const knowledge = await resolveCommandMessage(
-    1,
-    "/skill:react-repair explain what should be checked",
-    root,
-    { mode: "knowledge", surface: "dashboard_terminal" },
+  assert.equal(listApprovedSkills().length, 0);
+  await assert.rejects(
+    resolveCommandMessage(
+      1,
+      "/skill:react-repair explain what should be checked",
+      root,
+      { mode: "knowledge", surface: "dashboard_terminal" },
+    ),
+    /unavailable|not available/i,
   );
-  assert.match(knowledge.text, /Reviewed skill guidance: react-repair/i);
-  assert.match(knowledge.text, /cannot widen the current tool/);
-  const allowed = await resolveCommandMessage(
-    1,
-    "/react-repair Fix the React interface component.",
-    root,
-    { mode: "scoped_implementation", surface: "dashboard_terminal" },
-  );
-  assert.match(allowed.text, /Reviewed skill guidance: react-repair/i);
-  assert.match(allowed.text, /cannot widen the current tool/);
 });

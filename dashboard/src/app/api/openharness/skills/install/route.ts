@@ -36,6 +36,18 @@ export async function POST(request: Request) {
     if (catalogSkill.upstreamStatus !== "available") {
       throw new ApiError(409, "skill_unlisted_upstream", "This skill is no longer listed upstream. Existing approved content is retained, but a new install cannot be prepared.");
     }
+    const catalogClassification = classifySkill({
+      name: catalogSkill.slug,
+      description: catalogSkill.description ?? undefined,
+      repository: catalogSkill.source,
+    });
+    if (catalogClassification.classification === "eligible_coding_conditional") {
+      throw new ApiError(
+        409,
+        "skill_incompatible_coding",
+        "Coding and repository-engineering skills are not available in Breadboard's skills product.",
+      );
+    }
     const client = new SkillsShClient();
     const detail = await client.detail(catalogSkill.source, catalogSkill.slug);
     if (!detail.hash || !detail.files) {
@@ -57,6 +69,13 @@ export async function POST(request: Request) {
       repository: catalogSkill.source,
       manifest: skillMarkdown,
     });
+    if (classification.classification === "eligible_coding_conditional") {
+      throw new ApiError(
+        409,
+        "skill_incompatible_coding",
+        "Coding and repository-engineering skills are not available in Breadboard's skills product.",
+      );
+    }
     const candidate: SkillCandidate = {
       id: upstreamId,
       upstreamId,

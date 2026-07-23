@@ -182,7 +182,12 @@ log("validating openharness install and building the bundled package cache");
   const localInstallDir = path.join(os.tmpdir(), "breadboard-openharness-install");
   const localCacheDir = path.join(os.tmpdir(), "breadboard-bun-cache");
   fs.rmSync(localInstallDir, { recursive: true, force: true });
+  // Bun mutates patched-package cache entries during installation. Reusing a
+  // cache from an interrupted build can ship half-renamed directories that
+  // fail with ENOTEMPTY on the user's first launch.
+  fs.rmSync(localCacheDir, { recursive: true, force: true });
   fs.mkdirSync(localInstallDir, { recursive: true });
+  fs.mkdirSync(localCacheDir, { recursive: true });
   copyTree(openharnessTarget, localInstallDir);
   const install = spawnSync(bunCommand, ["install", "--ignore-scripts"], {
     cwd: localInstallDir,

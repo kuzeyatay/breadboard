@@ -16,6 +16,7 @@ import {
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import AgentRuntimePanel from "./agent-runtime-panel";
+import ArtifactPanel, { ARTIFACT_BROWSER_EVENT, ARTIFACT_REVISE_EVENT } from "./artifact-panel";
 import {
   useAgentSession,
   type AgentMessage,
@@ -148,6 +149,9 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState("");
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const autoOpenedArtifactRuns = useRef(new Set<string>());
+  const dismissedArtifactRuns = useRef(new Set<string>());
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const isOpen = height > COLLAPSED_HEIGHT + 8;
@@ -198,6 +202,29 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     session.connection === "streaming" ||
     session.connection === "waiting";
   const isPublic = scope === "public";
+
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const detail = (raw as CustomEvent<{ type?: string; conversationId?: string; runId?: string }>).detail;
+      if (detail?.type !== "artifact.created" || detail.conversationId !== session.sessionId || !detail.runId) return;
+      if (dismissedArtifactRuns.current.has(detail.runId) || autoOpenedArtifactRuns.current.has(detail.runId)) return;
+      autoOpenedArtifactRuns.current.add(detail.runId);
+      setArtifactsOpen(true);
+    };
+    window.addEventListener(ARTIFACT_BROWSER_EVENT, listener);
+    return () => window.removeEventListener(ARTIFACT_BROWSER_EVENT, listener);
+  }, [session.sessionId]);
+
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const artifact = (raw as CustomEvent<{ id?: string; title?: string; conversationId?: string }>).detail;
+      if (!artifact?.id || artifact.conversationId !== session.sessionId) return;
+      setArtifactsOpen(false);
+      setInput(`Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `);
+    };
+    window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
+    return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
+  }, [session.sessionId]);
 
   useEffect(() => {
     const onResize = () => setHeight((current) => clampHeight(current));
@@ -451,6 +478,19 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 Terminal
               </p>
             </div>
+            <button
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                setArtifactsOpen((current) => {
+                  if (current && session.activeRunId) dismissedArtifactRuns.current.add(session.activeRunId);
+                  return !current;
+                });
+              }}
+              className={`${headerItemAnim} ml-auto rounded-md border border-[rgba(79,128,94,0.35)] px-2.5 py-1 text-xs text-[#315c40] hover:bg-white/40`}
+            >
+              Artifacts
+            </button>
           </>
         ) : null}
       </header>
@@ -582,6 +622,11 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 }
               />
           </div>
+          {artifactsOpen ? (
+            <aside className="w-[min(42vw,520px)] shrink-0 border-l border-[var(--line)]">
+              <ArtifactPanel compact conversationId={session.sessionId} />
+            </aside>
+          ) : null}
         </div>
       ) : null}
     </section>

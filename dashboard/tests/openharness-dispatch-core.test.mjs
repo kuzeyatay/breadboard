@@ -79,13 +79,17 @@ test("a coding turn projects onto the scoped implementation decision", () => {
   });
   assert.equal(prepared.decision.mode, "scoped_implementation");
   assert.equal(prepared.decision.implementationRequired, true);
-  assert.ok(prepared.decision.allowedCommandPatterns.length > 0);
+  assert.deepEqual(prepared.decision.allowedCommandPatterns, []);
+  assert.ok(prepared.decision.allowedTools.includes("terminal_execute_command"));
+  assert.ok(!prepared.decision.allowedTools.includes("bash"));
 });
 
 test("a conversational turn projects onto the knowledge decision", () => {
   const prepared = prepare("What is amplitude modulation?");
   assert.equal(prepared.decision.mode, "knowledge");
-  assert.deepEqual(prepared.decision.allowedTools, []);
+  assert.ok(prepared.decision.allowedTools.includes("terminal_execute_command"));
+  assert.ok(prepared.decision.allowedTools.includes("artifact_create"));
+  assert.ok(!prepared.decision.allowedTools.includes("bash"));
 });
 
 // Found by live validation against the running runtime: an organize task

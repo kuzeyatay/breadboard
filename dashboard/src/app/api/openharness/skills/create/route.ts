@@ -44,6 +44,18 @@ export async function POST(request: Request) {
     }
     const files = buildSkillFiles(draft);
     const manifest = files["SKILL.md"];
+    const classification = classifySkill({
+      name: draft.name,
+      description: draft.description,
+      manifest,
+    });
+    if (classification.classification === "eligible_coding_conditional") {
+      throw new ApiError(
+        409,
+        "skill_incompatible_coding",
+        "Coding and repository-engineering skills are not available in Breadboard's skills product.",
+      );
+    }
     const candidate: SkillCandidate = {
       id: `local:${draft.name}`,
       upstreamId: `local:${draft.name}`,
@@ -57,11 +69,7 @@ export async function POST(request: Request) {
       installCommand: "Authored locally; never downloaded",
       requestedPermissions: [],
       slashCommand: draft.name,
-      classification: classifySkill({
-        name: draft.name,
-        description: draft.description,
-        manifest,
-      }),
+      classification,
     };
     const report = quarantineSkill({ candidate, files });
     recordSkillDecision({

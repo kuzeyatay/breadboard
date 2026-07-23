@@ -62,16 +62,22 @@ const allows = (grant, permission, pattern) =>
 /* Tools start off and are activated by capability                     */
 /* ------------------------------------------------------------------ */
 
-test("a conversational turn enables no tools at all", () => {
+test("a conversational Terminal turn exposes only audited Terminal and optional artifact tools", () => {
   const grant = broker("What is the difference between AM and FM?");
-  assert.deepEqual(enabledTools(grant), []);
+  const tools = enabledTools(grant);
+  assert.ok(tools.includes("terminal_execute_command"));
+  assert.ok(tools.includes("artifact_create"));
+  assert.ok(!tools.includes("bash"));
+  assert.ok(!tools.includes("write"));
   assert.equal(grant.executable, true);
 });
 
-test("every brokered tool is explicitly denied by default", () => {
+test("every broad built-in tool is explicitly denied by default", () => {
   const grant = broker("Hello there.");
   assert.ok(Object.keys(grant.allowedTools).length > 5);
-  assert.ok(Object.values(grant.allowedTools).every((on) => on === false));
+  for (const tool of ["bash", "shell", "read", "write", "edit", "patch", "task", "skill"]) {
+    assert.equal(grant.allowedTools[tool], false, tool);
+  }
 });
 
 test("garden questions activate only garden read tools", () => {
@@ -200,12 +206,13 @@ test("running a command does not enable file writers", () => {
     grants: [grantRoot({ canonicalPath: "/repo", displayName: "repo" })],
   });
   const tools = enabledTools(grant);
-  assert.ok(tools.includes("bash"));
+  assert.ok(tools.includes("terminal_execute_command"));
+  assert.ok(!tools.includes("bash"));
   assert.ok(!tools.includes("write"));
   assert.equal(grant.plan.requiresCoding, false);
 });
 
-test("a genuine coding task enables read, write and command execution", () => {
+test("a genuine coding task enables scoped file tools but never ambient bash", () => {
   const grant = broker("Fix the failing tests.", {
     grants: [
       grantRoot({
@@ -217,9 +224,10 @@ test("a genuine coding task enables read, write and command execution", () => {
   });
   assert.equal(grant.plan.requiresCoding, true);
   const tools = enabledTools(grant);
-  for (const tool of ["read", "write", "edit", "bash"]) {
+  for (const tool of ["read", "write", "edit", "terminal_execute_command"]) {
     assert.ok(tools.includes(tool), `${tool} should be enabled for a coding task`);
   }
+  assert.ok(!tools.includes("bash"));
 });
 
 test("the session workspace is always usable without a grant", () => {

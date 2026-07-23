@@ -9,6 +9,7 @@ import {
   needsQuartzProvisioning,
   needsOpenHarnessProvisioning,
   provisionQuartzWorkspace,
+  stageOpenHarnessInstallCache,
   writeScriberrComposeOverride,
 } from "../src/main/provisioning";
 
@@ -121,6 +122,25 @@ test("openharness runtime provisioning tracks the app version", () => {
   );
   assert.equal(needsOpenHarnessProvisioning(paths, "0.1.0"), false);
   assert.equal(needsOpenHarnessProvisioning(paths, "0.2.0"), true);
+});
+
+test("openharness provisioning uses a fresh writable copy of the bundled Bun cache", () => {
+  const { paths } = packagedFixture();
+  const bundledCache = path.join(paths.resourcesRoot, "bun-cache");
+  fs.mkdirSync(path.join(bundledCache, "effect@fixture"), { recursive: true });
+  const bundledEntry = path.join(bundledCache, "effect@fixture", "package.json");
+  fs.writeFileSync(bundledEntry, "bundled");
+
+  const staged = stageOpenHarnessInstallCache(paths, "0.1.0+desktop");
+  assert.ok(staged.startsWith(paths.tempDir));
+  assert.notEqual(path.resolve(staged), path.resolve(bundledCache));
+  assert.equal(fs.readFileSync(path.join(staged, "effect@fixture", "package.json"), "utf8"), "bundled");
+
+  fs.writeFileSync(path.join(staged, "effect@fixture", "package.json"), "mutated");
+  assert.equal(fs.readFileSync(bundledEntry, "utf8"), "bundled");
+  const restaged = stageOpenHarnessInstallCache(paths, "0.1.0+desktop");
+  assert.equal(restaged, staged);
+  assert.equal(fs.readFileSync(path.join(restaged, "effect@fixture", "package.json"), "utf8"), "bundled");
 });
 
 test("dev mode never provisions (services run from the repo)", () => {

@@ -15,6 +15,8 @@ export function ensureConversationSchema(database: Database.Database): void {
       public_id                 TEXT NOT NULL UNIQUE,
       user_id                   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title                     TEXT NOT NULL,
+      surface                   TEXT NOT NULL DEFAULT 'dashboard_terminal'
+                                CHECK (surface IN ('dashboard_terminal','garden_chat','quartz_ai')),
       scope_kind                TEXT NOT NULL DEFAULT 'global'
                                 CHECK (scope_kind IN ('global','garden','page')),
       default_garden_id         INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
@@ -92,12 +94,35 @@ export function ensureConversationSchema(database: Database.Database): void {
   `);
 
   ensureColumn(database, "chat_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
+  ensureColumn(
+    database,
+    "conversations",
+    "surface",
+    "surface TEXT NOT NULL DEFAULT 'dashboard_terminal' CHECK (surface IN ('dashboard_terminal','garden_chat','quartz_ai'))",
+  );
   ensureColumn(database, "openharness_runtime_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
   ensureColumn(database, "openharness_runtime_sessions", "allowed_garden_ids", "allowed_garden_ids TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(database, "chat_messages", "canonical_message_id", "canonical_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL");
   ensureColumn(database, "openharness_messages", "canonical_message_id", "canonical_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL");
 
   backfillLegacyConversations(database);
+
+  // Older canonical conversations pre-date surface binding. Recover the
+  // server-created surface from their runtime/message history once, then keep
+  // it immutable at the request layer. This closes the former privilege
+  // escalation where a Garden request could relabel its runtime as Terminal.
+  database.exec(`
+    UPDATE conversations
+    SET surface = COALESCE(
+      (SELECT ors.surface FROM openharness_runtime_sessions ors
+       WHERE ors.conversation_id = conversations.id
+       ORDER BY ors.updated_at DESC, ors.id DESC LIMIT 1),
+      (SELECT cm.surface FROM conversation_messages cm
+       WHERE cm.conversation_id = conversations.id
+       ORDER BY cm.order_index ASC LIMIT 1),
+      surface
+    );
+  `);
 
   database.exec(`
     UPDATE openharness_runtime_sessions

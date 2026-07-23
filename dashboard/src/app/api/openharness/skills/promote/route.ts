@@ -74,22 +74,28 @@ export async function POST(request: Request) {
     // Third-party promoted skills are attached only to the permissioned terminal
     // profile. Garden, Quartz, document, and scout profiles explicitly deny
     // dynamic skill execution.
-    const classificationOverride =
-      body.classificationOverride === "eligible_general" ||
-      body.classificationOverride === "eligible_coding_conditional"
-        ? body.classificationOverride
-        : undefined;
-    const effectiveClassification =
-      classificationOverride ?? report.classification.classification;
-    const approvedAgents =
-      effectiveClassification === "eligible_coding_conditional"
-        ? ["breadboard-assistant"]
-        : [
-            "breadboard-assistant",
-            "breadboard-garden",
-            "breadboard-quartz",
-            "breadboard-document",
-          ];
+    if (body.classificationOverride === "eligible_coding_conditional") {
+      throw new ApiError(
+        409,
+        "skill_incompatible_coding",
+        "Coding and repository-engineering skills cannot be promoted into Breadboard's user-facing skills product.",
+      );
+    }
+    if (report.classification.classification === "eligible_coding_conditional") {
+      throw new ApiError(
+        409,
+        "skill_incompatible_coding",
+        "This skill is coding-oriented and cannot be promoted into Breadboard's user-facing skills product.",
+      );
+    }
+    const classificationOverride = body.classificationOverride === "eligible_general"
+      ? "eligible_general" as const
+      : undefined;
+    const approvedAgents = [
+      "breadboard-assistant",
+      "breadboard-garden",
+      "breadboard-document",
+    ];
     const store = getSkillsCatalogStore();
     const catalogSkill = report.upstreamId ? store.get(report.upstreamId) : null;
     const isApprovedUpdate = Boolean(

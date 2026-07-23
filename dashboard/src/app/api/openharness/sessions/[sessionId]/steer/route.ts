@@ -10,7 +10,10 @@ import {
 import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
 import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
 import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
-import { appendConversationSteerMessage } from "@/lib/conversations/store.ts";
+import {
+  appendConversationSteerMessage,
+  ConversationStoreError,
+} from "@/lib/conversations/store.ts";
 import {
   acceptSteerRequest,
   beginRuntimeRun,
@@ -129,12 +132,26 @@ export async function POST(
       resultMode: stillActive ? "steer" : "follow_up",
     });
     if (session.row.conversation_id !== null) {
-      appendConversationSteerMessage({
-        conversationId: session.row.conversation_id,
-        clientMessageId: `steer:${clientRequestId}`,
-        surface: session.row.surface,
-        content: text,
-      });
+      try {
+        appendConversationSteerMessage({
+          conversationId: session.row.conversation_id,
+          clientMessageId: `steer:${clientRequestId}`,
+          surface: session.row.surface,
+          content: text,
+        });
+      } catch (error) {
+        // Compatibility garden streams own their pending assistant row in the
+        // legacy chat transcript. acceptSteerRequest already persisted the
+        // visible correction there, so absence of a canonical pending row is
+        // expected and must not turn an accepted upstream steer into an error.
+        if (
+          !session.row.chat_session_id ||
+          !(error instanceof ConversationStoreError) ||
+          error.code !== "turn_not_active"
+        ) {
+          throw error;
+        }
+      }
     }
     recordAuditEvent({
       eventType: stillActive ? "run.steered" : "run.steer_fallback",

@@ -11,9 +11,10 @@
 // reasoning-effort selection, session history with new-chat, skill review, and
 // the proposals reviewer.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import AgentRuntimePanel from "./agent-runtime-panel";
+import ArtifactPanel, { ARTIFACT_BROWSER_EVENT, ARTIFACT_REVISE_EVENT } from "./artifact-panel";
 import SkillReviewPanel from "./skill-review-panel";
 import { useAgentSession, type AgentMessage } from "./use-agent-session";
 import {
@@ -44,7 +45,7 @@ interface RuntimeHistorySession {
   messages: AgentMessage[];
 }
 
-type PanelView = "chat" | "proposals" | "recents" | "skills";
+type PanelView = "chat" | "proposals" | "artifacts" | "recents" | "skills";
 
 const SUGGESTED_PROMPTS = [
   "Summarize the main ideas of this garden.",
@@ -66,11 +67,24 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
+  const autoOpenedArtifactRuns = useRef(new Set<string>());
+  const dismissedArtifactRuns = useRef(new Set<string>());
   const session = useAgentSession("garden_chat", { gardenSlug, title: `${gardenName ?? gardenSlug} chat` });
   const busy =
     session.connection === "connecting" ||
     session.connection === "streaming" ||
     session.connection === "waiting";
+
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const artifact = (raw as CustomEvent<{ id?: string; title?: string; gardenId?: string | null }>).detail;
+      if (!artifact?.id || artifact.gardenId !== gardenSlug) return;
+      setView("chat");
+      setInput(`Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `);
+    };
+    window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
+    return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
+  }, [gardenSlug]);
 
   useEffect(() => {
     fetch("/api/models")
@@ -232,8 +246,35 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   }
 
   function toggleView(next: PanelView) {
-    setView((current) => (current === next ? "chat" : next));
+    setView((current) => {
+      const target = current === next ? "chat" : next;
+      if (current === "artifacts" && target !== "artifacts" && session.activeRunId) {
+        dismissedArtifactRuns.current.add(session.activeRunId);
+      }
+      return target;
+    });
   }
+
+  const openCreatedArtifact = useCallback((detail: { runId: string }) => {
+    if (dismissedArtifactRuns.current.has(detail.runId) || autoOpenedArtifactRuns.current.has(detail.runId)) return;
+    autoOpenedArtifactRuns.current.add(detail.runId);
+    setView("artifacts");
+  }, []);
+
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const detail = (raw as CustomEvent<{ type?: string; gardenId?: string | null; conversationId?: string; runId?: string }>).detail;
+      if (
+        detail?.type !== "artifact.created" ||
+        detail.gardenId !== gardenSlug ||
+        detail.conversationId !== session.sessionId ||
+        !detail.runId
+      ) return;
+      openCreatedArtifact({ runId: detail.runId });
+    };
+    window.addEventListener(ARTIFACT_BROWSER_EVENT, listener);
+    return () => window.removeEventListener(ARTIFACT_BROWSER_EVENT, listener);
+  }, [gardenSlug, openCreatedArtifact, session.sessionId]);
 
   const headerButton =
     "rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-900";
@@ -288,6 +329,14 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
               <span className="ml-1 rounded-full bg-amber-600 px-1.5 text-[10px] text-white">{proposals.length}</span>
             ) : null}
           </button>
+          <button
+            type="button"
+            onClick={() => toggleView("artifacts")}
+            className={view === "artifacts" ? activeHeaderButton : headerButton}
+            title="Open conversation artifacts"
+          >
+            Artifacts
+          </button>
           {onClose ? (
             <button
               type="button"
@@ -338,6 +387,13 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
         <SkillReviewPanel
           runtimeSessionId={session.sessionId}
           onClose={() => setView("chat")}
+        />
+      ) : view === "artifacts" ? (
+        <ArtifactPanel
+          compact
+          conversationId={session.sessionId}
+          gardenSlug={gardenSlug}
+          onArtifactCreated={openCreatedArtifact}
         />
       ) : view === "proposals" ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">

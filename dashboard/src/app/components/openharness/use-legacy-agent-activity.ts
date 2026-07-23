@@ -21,6 +21,7 @@ export function useLegacyAgentActivity() {
   const [pendingPermission, setPendingPermission] =
     useState<PermissionPrompt | null>(null);
   const runtimeSessionId = useRef<number | null>(null);
+  const runtimeRunId = useRef<string | null>(null);
   const requestController = useRef<AbortController | null>(null);
   const [yoloMode] = useYoloMode();
 
@@ -28,6 +29,7 @@ export function useLegacyAgentActivity() {
     const controller = new AbortController();
     requestController.current = controller;
     runtimeSessionId.current = null;
+    runtimeRunId.current = null;
     setPendingPermission(null);
     setConnection("connecting");
     setActivities([
@@ -46,6 +48,10 @@ export function useLegacyAgentActivity() {
     if (event.type === "runtime") {
       const id = Number(event.sessionId);
       if (Number.isInteger(id) && id > 0) runtimeSessionId.current = id;
+      runtimeRunId.current =
+        typeof event.runId === "string" && event.runId.trim()
+          ? event.runId.trim()
+          : null;
       setConnection("streaming");
       return;
     }
@@ -152,6 +158,7 @@ export function useLegacyAgentActivity() {
 
   const finish = useCallback((failed = false) => {
     requestController.current = null;
+    runtimeRunId.current = null;
     setPendingPermission(null);
     setConnection(failed ? "error" : "idle");
     setActivities((current) =>
@@ -175,6 +182,7 @@ export function useLegacyAgentActivity() {
         method: "POST",
       }).catch(() => undefined);
     setPendingPermission(null);
+    runtimeRunId.current = null;
     setConnection("idle");
     setActivities((current) =>
       current.map((item) =>
@@ -187,6 +195,37 @@ export function useLegacyAgentActivity() {
           : item,
       ),
     );
+  }, []);
+
+  const steer = useCallback(async (text: string): Promise<boolean> => {
+    const sessionId = runtimeSessionId.current;
+    const runId = runtimeRunId.current;
+    const trimmed = text.trim();
+    if (!sessionId || !runId || !trimmed) return false;
+
+    const response = await fetch(`/api/openharness/sessions/${sessionId}/steer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runId,
+        text: trimmed,
+        clientRequestId: crypto.randomUUID(),
+      }),
+    });
+    const body = (await response.json().catch(() => ({}))) as {
+      accepted?: boolean;
+      code?: string;
+      error?: string | { message?: string };
+    };
+    if (response.status === 409 && body.code === "run_not_active") return false;
+    if (!response.ok || body.accepted !== true) {
+      const message =
+        typeof body.error === "string"
+          ? body.error
+          : body.error?.message ?? "Could not steer the active response.";
+      throw new Error(message);
+    }
+    return true;
   }, []);
 
   const respondToPermission = useCallback(
@@ -247,6 +286,7 @@ export function useLegacyAgentActivity() {
     handleEvent,
     finish,
     abort,
+    steer,
     respondToPermission,
   };
 }

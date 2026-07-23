@@ -4,13 +4,16 @@ import { requireEnabled } from "@/lib/openharness/route-helpers.ts";
 import { SkillsShClient } from "@/lib/openharness/skills-sh-client.ts";
 import { getSkillsCatalogStore } from "@/lib/openharness/skills-catalog-store.ts";
 import { synchronizeSkillsCatalog } from "@/lib/openharness/skills-catalog-sync.ts";
+import { classifySkill } from "@/lib/openharness/skills.ts";
+import { ApiError, apiErrorResponse } from "@/lib/openharness/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  await requireUserId();
-  requireEnabled();
+  try {
+    await requireUserId();
+    requireEnabled();
   const upstreamId = new URL(request.url).searchParams.get("id")?.trim();
   if (!upstreamId) {
     return NextResponse.json({ error: "missing_skill_id", message: "A stable skills.sh id is required." }, { status: 400 });
@@ -28,6 +31,7 @@ export async function GET(request: Request) {
   if (!skill) {
     return NextResponse.json({ error: "skill_not_found", message: "That skill is not in the synchronized skills.sh catalog." }, { status: 404 });
   }
+  rejectCodingSkill(skill.slug, skill.description, skill.source);
   const client = new SkillsShClient();
   try {
     const detail = await client.detail(skill.source, skill.slug);
@@ -39,6 +43,8 @@ export async function GET(request: Request) {
       auditError = error instanceof Error ? error.message : "Upstream audits are unavailable.";
     }
     const updated = store.saveDetail(upstreamId, detail, audits);
+    const manifest = detail.files?.find((file) => /^SKILL\.md$/i.test(file.path))?.contents ?? "";
+    rejectCodingSkill(updated.slug, updated.description, updated.source, manifest);
     return NextResponse.json({
       skill: browserSkill(updated),
       detail,
@@ -47,6 +53,7 @@ export async function GET(request: Request) {
       inspectionNotice: "Upstream audits are supplementary. Breadboard review and explicit approval are still required.",
     });
   } catch (error) {
+    if (error instanceof ApiError) throw error;
     const cached = store.get(upstreamId);
     return NextResponse.json({
       error: "skill_detail_unavailable",
@@ -54,6 +61,15 @@ export async function GET(request: Request) {
       skill: cached ? browserSkill(cached) : null,
       cached: Boolean(cached?.files),
     }, { status: cached?.files ? 200 : 502 });
+  }
+  } catch (error) {
+    return apiErrorResponse(error);
+  }
+}
+
+function rejectCodingSkill(name: string, description: string | null, source: string, manifest = ""): void {
+  if (classifySkill({ name, description: description ?? undefined, repository: source, manifest }).classification === "eligible_coding_conditional") {
+    throw new ApiError(404, "skill_incompatible_coding", "That skill is not available in Breadboard's non-coding skills product.");
   }
 }
 

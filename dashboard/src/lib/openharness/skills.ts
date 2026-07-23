@@ -10,6 +10,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { SKILLS_SH_CLI_PACKAGE } from "./skills-sh-client.ts";
 import { repositoryRoot } from "../runtime-paths.ts";
+import type { OpenHarnessSurface } from "./config.ts";
+import {
+  resolveSkillCompatibility,
+  type SkillAvailability,
+  type SkillCapabilityContract,
+} from "./skill-compatibility.ts";
 
 const execFileAsync = promisify(execFile);
 const QUARANTINE_MANIFEST = ".breadboard-quarantine.json";
@@ -390,10 +396,17 @@ export interface ApprovedSkillSummary {
   category: string;
   compatibleModes: SkillClassification["compatibleModes"];
   compatibleSurfaces: SkillClassification["compatibleSurfaces"];
+  availability: SkillAvailability;
+  unavailableReasons: string[];
+  capabilityContract: SkillCapabilityContract | null;
   instructions: string;
 }
 
-function listApprovedSkillsAtRoot(root: string): ApprovedSkillSummary[] {
+function listApprovedSkillsAtRoot(
+  root: string,
+  surface: OpenHarnessSurface,
+  connectedMcpServers: Iterable<string>,
+): ApprovedSkillSummary[] {
   if (!fs.existsSync(root)) return [];
   let registry: { skills?: Record<string, Record<string, unknown>> } = {};
   try {
@@ -469,6 +482,14 @@ function listApprovedSkillsAtRoot(root: string): ApprovedSkillSummary[] {
               description: frontmatterValue("description"),
               manifest: markdown,
             });
+      const compatibility = resolveSkillCompatibility({
+        classification: classified.classification,
+        manifest: markdown,
+        name: frontmatterValue("name") ?? entry.name,
+        description: frontmatterValue("description"),
+        surface,
+        connectedMcpServers,
+      });
       return [
         {
           id:
@@ -498,6 +519,9 @@ function listApprovedSkillsAtRoot(root: string): ApprovedSkillSummary[] {
           category: classified.category,
           compatibleModes: classified.compatibleModes,
           compatibleSurfaces: classified.compatibleSurfaces,
+          availability: compatibility.availability,
+          unavailableReasons: compatibility.reasons,
+          capabilityContract: compatibility.contract,
           instructions: markdown,
         },
       ];
@@ -506,16 +530,17 @@ function listApprovedSkillsAtRoot(root: string): ApprovedSkillSummary[] {
 }
 
 /**
- * Read the general and conditional registries. Returning conditional entries
- * here does not activate them: command resolution and every surface filter the
- * classification against the current server-owned capability mode.
+ * Return only reviewed, integrity-pinned skills with a real execution path on
+ * the requested surface. Coding skills and instruction-only SKILL.md packages
+ * are intentionally absent from every user-facing command registry.
  */
-export function listApprovedSkills(): ApprovedSkillSummary[] {
+export function listApprovedSkills(
+  surface: OpenHarnessSurface = "dashboard_terminal",
+  connectedMcpServers: Iterable<string> = [],
+): ApprovedSkillSummary[] {
   const bySlug = new Map<string, ApprovedSkillSummary>();
-  for (const skill of [
-    ...listApprovedSkillsAtRoot(approvedRoot()),
-    ...listApprovedSkillsAtRoot(conditionalRoot()),
-  ]) {
+  for (const skill of listApprovedSkillsAtRoot(approvedRoot(), surface, connectedMcpServers)) {
+    if (skill.classification !== "eligible_general" || skill.availability !== "ready") continue;
     bySlug.set(skill.slug, skill);
   }
   return [...bySlug.values()].sort((left, right) =>
@@ -694,8 +719,11 @@ export function quarantineSkill(input: {
   files: Record<string, string | Buffer>;
 }): QuarantineReport {
   const name = sanitizeSkillName(input.candidate.storageKey ?? input.candidate.name);
-  if (input.candidate.classification?.classification === "blocked_security") {
-    throw new Error("Breadboard policy blocks this skill from quarantine.");
+  if (
+    input.candidate.classification?.classification === "blocked_security" ||
+    input.candidate.classification?.classification === "eligible_coding_conditional"
+  ) {
+    throw new Error("Breadboard policy blocks this incompatible skill from quarantine.");
   }
   const dir = ensureInside(quarantineRoot(), name);
   const fileEntries = Object.entries(input.files);
@@ -899,7 +927,7 @@ export function promoteSkill(
     overwrite?: boolean;
     approvedAgents?: string[];
     approvedPermissions?: SkillPermission[];
-    classificationOverride?: "eligible_general" | "eligible_coding_conditional";
+    classificationOverride?: "eligible_general";
     reviewer?: number;
   },
 ): { promotedPath: string; report: QuarantineReport } {
@@ -921,35 +949,27 @@ export function promoteSkill(
   }
   const effectiveClassification =
     options?.classificationOverride ?? report.classification.classification;
+  if (report.classification.classification === "eligible_coding_conditional") {
+    throw new Error("Refusing to promote a coding or repository-engineering skill.");
+  }
   if (
-    effectiveClassification !== "eligible_general" &&
-    effectiveClassification !== "eligible_coding_conditional"
+    effectiveClassification !== "eligible_general"
   ) {
     throw new Error(
       "Refusing to promote a skill until Breadboard classifies it as eligible.",
     );
   }
   const source = ensureInside(quarantineRoot(), report.name);
-  const destinationRoot =
-    effectiveClassification === "eligible_coding_conditional"
-      ? conditionalRoot()
-      : approvedRoot();
+  const destinationRoot = approvedRoot();
   const target = ensureInside(destinationRoot, report.name);
-  const otherTarget = ensureInside(
-    effectiveClassification === "eligible_coding_conditional"
-      ? approvedRoot()
-      : conditionalRoot(),
-    report.name,
-  );
+  const otherTarget = ensureInside(conditionalRoot(), report.name);
   if ((fs.existsSync(target) || fs.existsSync(otherTarget)) && !options?.overwrite)
     throw new Error("A skill with this name is already approved");
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const operationId = crypto.randomUUID();
   const stagedTarget = ensureInside(destinationRoot, `${report.name}.promoting-${operationId}`);
   const targetBackup = ensureInside(destinationRoot, `${report.name}.backup-${operationId}`);
-  const otherRoot = effectiveClassification === "eligible_coding_conditional"
-    ? approvedRoot()
-    : conditionalRoot();
+  const otherRoot = conditionalRoot();
   const otherBackup = ensureInside(otherRoot, `${report.name}.backup-${operationId}`);
   fs.cpSync(source, stagedTarget, { recursive: true });
   fs.rmSync(path.join(stagedTarget, QUARANTINE_MANIFEST), { force: true });
@@ -966,23 +986,17 @@ export function promoteSkill(
     classification: {
       ...report.classification,
       classification: effectiveClassification,
-      compatibleModes:
-        effectiveClassification === "eligible_coding_conditional"
-          ? ["scoped_implementation" as const]
-          : [
-              "knowledge" as const,
-              "technical_read" as const,
-              "scoped_implementation" as const,
-            ],
-      compatibleSurfaces:
-        effectiveClassification === "eligible_coding_conditional"
-          ? ["assistant" as const]
-          : [
-              "assistant" as const,
-              "garden" as const,
-              "quartz" as const,
-              "document" as const,
-            ],
+      compatibleModes: [
+        "knowledge" as const,
+        "technical_read" as const,
+        "scoped_implementation" as const,
+      ],
+      compatibleSurfaces: [
+        "assistant" as const,
+        "garden" as const,
+        "quartz" as const,
+        "document" as const,
+      ],
     },
     reviewOverride: options?.classificationOverride,
     reviewer: options?.reviewer,

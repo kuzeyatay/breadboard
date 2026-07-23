@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import SkillCreatorPanel from "./skill-creator-panel";
+import type { OpenHarnessSurface } from "@/lib/openharness/config.ts";
 
 type CatalogFilter = "all" | "trending" | "hot" | "official" | "installed" | "updates";
 
@@ -107,6 +108,7 @@ interface Props {
   runtimeSessionId: string | number | null;
   onUse: (skill: CatalogSkill) => void;
   onInstalledChange?: () => void | Promise<void>;
+  surface?: OpenHarnessSurface;
 }
 
 const FILTERS: Array<{ id: CatalogFilter; label: string }> = [
@@ -122,6 +124,7 @@ export default function SkillsCatalogPanel({
   runtimeSessionId,
   onUse,
   onInstalledChange,
+  surface = "dashboard_terminal",
 }: Props) {
   const [filter, setFilter] = useState<CatalogFilter>("all");
   const [query, setQuery] = useState("");
@@ -137,7 +140,7 @@ export default function SkillsCatalogPanel({
   const [detailLoading, setDetailLoading] = useState(false);
   const [report, setReport] = useState<QuarantineReport | null>(null);
   const [approvedPermissions, setApprovedPermissions] = useState<Set<string>>(new Set());
-  const [reviewClass, setReviewClass] = useState<"eligible_general" | "eligible_coding_conditional">("eligible_general");
+  const reviewClass = "eligible_general" as const;
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -157,10 +160,10 @@ export default function SkillsCatalogPanel({
     setLoading(true);
     setError(null);
     try {
-      const parameters = new URLSearchParams({ filter, page: String(page), perPage: "50" });
+      const parameters = new URLSearchParams({ filter, page: String(page), perPage: "50", surface });
       if (query.trim()) parameters.set("q", query.trim());
       const endpoint = query.trim()
-        ? `/api/openharness/skills/search?q=${encodeURIComponent(query.trim())}`
+        ? `/api/openharness/skills/search?q=${encodeURIComponent(query.trim())}&surface=${encodeURIComponent(surface)}`
         : `/api/openharness/skills?${parameters}`;
       const response = await fetch(endpoint, { cache: "no-store" });
       const payload = (await response.json().catch(() => ({}))) as CatalogResponse & { stale?: boolean };
@@ -241,7 +244,6 @@ export default function SkillsCatalogPanel({
       if (!response.ok || !payload.report) throw new Error(payload.message ?? payload.error ?? "The skill could not enter review.");
       setReport(payload.report);
       setApprovedPermissions(new Set());
-      setReviewClass(payload.report.classification.classification === "eligible_coding_conditional" ? "eligible_coding_conditional" : "eligible_general");
       setActionMessage("Review the files, risk signals, capabilities, and hashes before approval.");
     } catch (cause) {
       setActionMessage(cause instanceof Error ? cause.message : "The skill could not enter review.");
@@ -365,12 +367,10 @@ export default function SkillsCatalogPanel({
                   </label>
                 )) : <p className="mt-1 text-xs text-[var(--ink-muted)]">None declared or derived.</p>}
               </div>
-              <label className="text-xs font-medium text-[var(--ink-heading)]">Runtime category
-                <select value={reviewClass} onChange={(event) => setReviewClass(event.target.value as typeof reviewClass)} className="neu-control mt-1 block w-full rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-2 text-xs">
-                  <option value="eligible_general">General guidance</option>
-                  <option value="eligible_coding_conditional">Coding guidance (permissions still task-scoped)</option>
-                </select>
-              </label>
+              <div className="text-xs text-[var(--ink-heading)]">
+                <p className="font-medium">Runtime category</p>
+                <p className="mt-1 text-[var(--ink-muted)]">Non-coding capability with a verified Breadboard execution path</p>
+              </div>
             </div>
             <details className="mt-3 border-t border-[var(--line)] pt-3">
               <summary className="cursor-pointer text-xs font-medium">Reviewed files and SHA-256 ({report.files.length})</summary>

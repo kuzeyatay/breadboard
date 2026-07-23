@@ -42,7 +42,7 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
   const [showIssues, setShowIssues] = useState(false);
   const [report, setReport] = useState<CreatorReport | null>(null);
   const [approvedPermissions, setApprovedPermissions] = useState<Set<string>>(new Set());
-  const [reviewClass, setReviewClass] = useState<"eligible_general" | "eligible_coding_conditional">("eligible_general");
+  const reviewClass = "eligible_general" as const;
   const [installedToken, setInstalledToken] = useState<string | null>(null);
 
   const validation = useMemo(
@@ -188,12 +188,10 @@ export default function SkillCreatorPanel({ runtimeSessionId, onBack, onInstalle
                 </label>
               )) : <p className="mt-1 text-xs text-[var(--ink-muted)]">None declared or derived.</p>}
             </div>
-            <label className="text-xs font-medium text-[var(--ink-heading)]">Runtime category
-              <select value={reviewClass} onChange={(event) => setReviewClass(event.target.value as typeof reviewClass)} className="mt-1 block w-full rounded-lg border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-2 text-xs">
-                <option value="eligible_general">General guidance</option>
-                <option value="eligible_coding_conditional">Coding guidance (permissions still task-scoped)</option>
-              </select>
-            </label>
+            <div className="text-xs text-[var(--ink-heading)]">
+              <p className="font-medium">Runtime category</p>
+              <p className="mt-1 text-[var(--ink-muted)]">Non-coding capability with a verified Breadboard execution path</p>
+            </div>
           </div>
           <details className="mt-3 border-t border-[var(--line)] pt-3">
             <summary className="cursor-pointer text-xs font-medium">Staged files and SHA-256 ({report.files.length})</summary>

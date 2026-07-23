@@ -271,7 +271,7 @@ export default function AssistantComposer({
 
           {utilityActions ? <div className="flex shrink-0 items-center gap-1">{utilityActions}</div> : null}
 
-          <div className="relative min-w-0 flex-1">
+          <div className={`relative flex min-w-0 flex-1 items-center ${compact ? 'min-h-9' : 'min-h-11'}`}>
             {(() => {
               const commandSplit = splitLeadingCommandTokens(value);
               return (
@@ -285,7 +285,7 @@ export default function AssistantComposer({
                     <div
                       ref={commandBackdropRef}
                       aria-hidden
-                      className={`pointer-events-none absolute inset-0 select-none overflow-hidden whitespace-pre-wrap break-words px-1 ${compact ? 'pb-[7px] pt-[9px] text-sm leading-5' : 'pb-[9px] pt-[11px] text-[15px] leading-6'}`}
+                      className={`pointer-events-none absolute inset-x-0 top-1/2 max-h-40 -translate-y-1/2 select-none overflow-hidden whitespace-pre-wrap break-words px-1 py-0 ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                     >
                       <span className="text-[#1e40af]">{commandSplit.command}</span>
                       <span className="text-[var(--ink)]">{commandSplit.rest}</span>
@@ -328,7 +328,7 @@ export default function AssistantComposer({
                     rows={1}
                     placeholder={placeholder}
                     disabled={composerDisabled}
-                    className={`max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${commandSplit ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'min-h-9 pb-[7px] pt-[9px] text-sm leading-5' : 'min-h-11 pb-[9px] pt-[11px] text-[15px] leading-6'}`}
+                    className={`block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-0 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${commandSplit ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
                 </>

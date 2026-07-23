@@ -19,6 +19,7 @@
 // I/O, so it is directly unit-testable and cannot be steered by model prose.
 
 import type { OpenHarnessSurface } from "./config.ts";
+import { ARTIFACT_TOOLS } from "./tool-scopes.ts";
 import type { TaskCapability, TaskPlan } from "./task-plan.ts";
 import {
   candidatePathsForAlias,
@@ -172,6 +173,8 @@ const CAPABILITY_TOOLS: Record<TaskCapability, readonly string[]> = {
 export const BROKERED_TOOLS: readonly string[] = [
   ...new Set(
     Object.values(CAPABILITY_TOOLS).flat().concat([
+      "terminal_execute_command",
+      ...ARTIFACT_TOOLS,
       "shell",
       "task",
       "skill",
@@ -324,7 +327,7 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
   }
 
   const authorizedRoots = [...usedRoots.values()];
-  const allowedTools = buildToolMap(granted);
+  const allowedTools = buildToolMap(granted, input.surface, input.userId !== null);
   const permissionRules = buildPermissionRules(
     granted,
     authorizedRoots,
@@ -387,7 +390,11 @@ function buildFilesystemRequest(
   };
 }
 
-function buildToolMap(granted: ReadonlySet<TaskCapability>): Record<string, boolean> {
+function buildToolMap(
+  granted: ReadonlySet<TaskCapability>,
+  surface: OpenHarnessSurface,
+  authenticated: boolean,
+): Record<string, boolean> {
   // Start from an explicit deny for every brokered tool: the runtime must never
   // inherit an ambient default.
   const map: Record<string, boolean> = Object.fromEntries(
@@ -401,6 +408,27 @@ function buildToolMap(granted: ReadonlySet<TaskCapability>): Record<string, bool
   // `shell` is never activated: scoped execution goes through `bash` so it is
   // covered by the command pattern rules below.
   map.shell = false;
+  // Built-in bash cannot validate cwd and command semantics strongly enough for
+  // this product boundary. Genuine Terminal access goes through the audited
+  // server callback above; Garden and Quartz never receive either executor.
+  map.bash = false;
+  map.terminal_execute_command = authenticated && surface === "dashboard_terminal";
+  for (const tool of ARTIFACT_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
+  // Garden and Quartz are always grounded in their current authorized Garden,
+  // even when the user's wording does not repeat the word "garden".
+  if (surface === "garden_chat" || surface === "quartz_ai") {
+    for (const tool of GARDEN_READ_TOOLS) map[tool] = true;
+  }
+  if (surface !== "dashboard_terminal") {
+    for (const tool of [...FS_READ_TOOLS, ...FS_WRITE_TOOLS, "bash", "shell", "terminal_execute_command"]) {
+      map[tool] = false;
+    }
+  }
+  if (surface === "quartz_ai") {
+    for (const tool of ARTIFACT_TOOLS) map[tool] = false;
+  }
   return map;
 }
 
@@ -469,15 +497,8 @@ function buildPermissionRules(
 
   // Command execution is scoped to the granted roots rather than opened
   // globally, so a temporary script for an operational task cannot wander.
-  if (
-    granted.has("command_execution") ||
-    granted.has("document_processing") ||
-    granted.has("media_processing") ||
-    granted.has("coding") ||
-    granted.has("destructive_filesystem")
-  ) {
-    allow("bash", "*");
-  }
+  // General built-in bash remains denied. The server-owned terminal tool is
+  // not an OpenCode permission and performs its own command/root validation.
 
   return rules;
 }
