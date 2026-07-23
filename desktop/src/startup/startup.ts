@@ -35,6 +35,7 @@ interface BreadboardDesktopApiLocal {
 const api = (window as unknown as { breadboardDesktop: BreadboardDesktopApiLocal })
   .breadboardDesktop;
 
+const kineticField = document.getElementById("kinetic-field") as HTMLDivElement;
 const phaseMessage = document.getElementById("phase-message") as HTMLParagraphElement;
 const serviceList = document.getElementById("service-list") as HTMLUListElement;
 const failureSection = document.getElementById("failure") as HTMLElement;
@@ -50,6 +51,22 @@ const quitButton = document.getElementById("quit-button") as HTMLButtonElement;
 const versionLabel = document.getElementById("version-label") as HTMLSpanElement;
 
 let failedServiceId: string | null = null;
+
+function createKineticField(): void {
+  const rowSizes = [5, 7, 8, 7, 5];
+  kineticField.replaceChildren(
+    ...rowSizes.map((size) => {
+      const row = document.createElement("div");
+      row.className = "kinetic-row";
+      for (let index = 0; index < size; index += 1) {
+        const scale = document.createElement("span");
+        scale.className = "kinetic-scale";
+        row.append(scale);
+      }
+      return row;
+    }),
+  );
+}
 
 function stateLabel(state: string): string {
   switch (state) {
@@ -69,6 +86,7 @@ function stateLabel(state: string): string {
 }
 
 function renderStartupState(state: StartupStateViewLocal): void {
+  document.body.dataset["phase"] = state.phase;
   phaseMessage.textContent = state.message;
   serviceList.replaceChildren(
     ...state.services.map((service) => {
@@ -99,6 +117,7 @@ function renderStartupState(state: StartupStateViewLocal): void {
   }
 }
 
+createKineticField();
 retryButton.addEventListener("click", () => {
   if (failedServiceId !== null) void api.retryService(failedServiceId);
 });

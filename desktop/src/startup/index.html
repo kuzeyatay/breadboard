@@ -6,37 +6,41 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'"
     />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="light" />
     <title>Breadboard</title>
     <link rel="stylesheet" href="./startup.css" />
   </head>
   <body>
     <header class="desktop-titlebar" aria-label="Window controls"></header>
     <main class="shell">
-      <div class="brand">
-        <img class="brand-mark" src="./breadboard-icon.svg" alt="" />
-        <h1>Breadboard</h1>
-        <p id="phase-message" class="phase">Preparing Breadboard</p>
-      </div>
-
-      <ul id="service-list" class="services" aria-live="polite"></ul>
-
-      <section id="failure" class="failure" hidden>
-        <h2 id="failure-title">A service could not start</h2>
-        <p id="failure-reason"></p>
-        <details class="diagnostics">
-          <summary>Diagnostic details</summary>
-          <pre id="failure-log"></pre>
-        </details>
-        <div class="actions">
-          <button id="retry-button" type="button">Retry</button>
-          <button id="open-logs-button" type="button" class="secondary">Open logs</button>
-          <button id="copy-diagnostics-button" type="button" class="secondary">Copy diagnostics</button>
-          <button id="quit-button" type="button" class="secondary">Quit</button>
+      <section class="loader" aria-label="Loading Breadboard">
+        <div class="kinetic-stage" aria-hidden="true">
+          <div class="stage-halo"></div>
+          <div id="kinetic-field" class="kinetic-field"></div>
         </div>
+
+        <p id="phase-message" class="visually-hidden" aria-live="polite">
+          Preparing Breadboard
+        </p>
+        <ul id="service-list" class="visually-hidden" aria-live="polite"></ul>
+
+        <section id="failure" class="failure" hidden>
+          <h2 id="failure-title">A service could not start</h2>
+          <p id="failure-reason"></p>
+          <details class="diagnostics">
+            <summary>Diagnostic details</summary>
+            <pre id="failure-log"></pre>
+          </details>
+          <div class="actions">
+            <button id="retry-button" type="button">Retry</button>
+            <button id="open-logs-button" type="button" class="secondary">Open logs</button>
+            <button id="copy-diagnostics-button" type="button" class="secondary">Copy diagnostics</button>
+            <button id="quit-button" type="button" class="secondary">Quit</button>
+          </div>
+        </section>
       </section>
 
-      <footer class="footer">
+      <footer class="visually-hidden">
         <span id="version-label"></span>
         <span class="local-note">Runs entirely on this computer</span>
       </footer>
