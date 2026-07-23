@@ -106,6 +106,16 @@ test("terminal session hook restores a Breadboard session after refresh and abor
   assert.match(terminal, /session\.send\(text, \{ model, reasoningEffort \}\)/);
 });
 
+test("Terminal navbar uses only the runtime health dot, without status badges", () => {
+  const terminal = read(
+    "dashboard/src/app/components/openharness/dashboard-agent-terminal.tsx",
+  );
+  assert.match(terminal, /aria-label=\{runtimeOnline \? "OpenHarness is available"/);
+  assert.match(terminal, /runtimeOnline \? "bg-\[#4F805E\]" : "bg-\[#B65B5B\]"/);
+  assert.doesNotMatch(terminal, /Review skills/);
+  assert.doesNotMatch(terminal, /session\.connection === "idle" \? "ready"/);
+});
+
 test("terminal preflight permissions create a scoped folder grant and resume the paused turn", () => {
   const hook = read(
     "dashboard/src/app/components/openharness/use-agent-session.ts",

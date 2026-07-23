@@ -25,6 +25,7 @@ import {
   type VerificationSummary,
 } from "@/lib/openharness/evidence";
 import type { PermissionRisk } from "@/lib/openharness/events";
+import { selectRestorableAgentSession } from "@/lib/openharness/session-selection";
 import { submitPermissionDecision } from "./permission-client";
 
 export type AgentSurface = "dashboard_terminal" | "garden_chat" | "quartz_ai";
@@ -318,16 +319,12 @@ export function useAgentSession(
         if (cancelled || sessionRef.current) return;
         const sessions = Array.isArray(data.sessions) ? data.sessions : [];
         const preferredId = window.localStorage.getItem("breadboard-active-conversation");
-        const restored = sessions.find(
-          (candidate: { id?: unknown }) => candidate.id === preferredId,
-        ) ?? sessions.find(
-          (candidate: { gardenId?: unknown; pageSlug?: unknown }) =>
-            (!createOptions?.gardenSlug ||
-              candidate.gardenId === createOptions.gardenSlug) &&
-            (!createOptions?.pageSlug ||
-              candidate.pageSlug === createOptions.pageSlug),
-        ) ?? sessions[0];
-        if (!restored || typeof restored.id !== "string" || !restored.id.startsWith("conv_")) return;
+        const restored = selectRestorableAgentSession(
+          sessions,
+          preferredId,
+          createOptions,
+        );
+        if (!restored) return;
         sessionRef.current = restored.id;
         setSessionId(restored.id);
         window.localStorage.setItem("breadboard-active-conversation", restored.id);

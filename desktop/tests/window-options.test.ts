@@ -4,6 +4,10 @@ import {
   BREADBOARD_TITLE_BAR,
   mainWindowOptions,
 } from "../src/main/window-options";
+import {
+  DEFAULT_MINIMUM_STARTUP_VISIBLE_MS,
+  remainingStartupVisibleMs,
+} from "../src/main/window-manager";
 
 test("main window options enforce renderer isolation", () => {
   const options = mainWindowOptions(
@@ -33,4 +37,11 @@ test("non-Windows windows retain native title bars", () => {
   const options = mainWindowOptions("/app/preload.js", undefined, "darwin");
   assert.equal(options.titleBarStyle, undefined);
   assert.equal(options.titleBarOverlay, undefined);
+});
+
+test("the startup scene stays visible long enough to perceive its motion", () => {
+  assert.equal(DEFAULT_MINIMUM_STARTUP_VISIBLE_MS, 2_200);
+  assert.equal(remainingStartupVisibleMs(1_000, 1_500), 1_700);
+  assert.equal(remainingStartupVisibleMs(1_000, 3_500), 0);
+  assert.equal(remainingStartupVisibleMs(2_000, 1_500), 2_200);
 });

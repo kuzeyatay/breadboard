@@ -163,6 +163,11 @@ breadboard/
 - OpenAI SDK pointed at a configurable backend
 - ChatMock for local OpenAI-compatible responses
 - Knowledge extraction and note generation flows
+- **GBrain** — optional garden-scoped knowledge retrieval (hybrid search,
+  multi-source synthesis, citations) behind a first-party loopback adapter,
+  enabled only for authenticated Garden Chat and Terminal. It never replaces
+  conversation memory and all writes stay proposal-based. Off by default
+  (`GBRAIN_MODE=disabled`); see [docs/GBRAIN_INTEGRATION.md](docs/GBRAIN_INTEGRATION.md).
 
 ### Garden / Publishing
 - Quartz v4.5.2

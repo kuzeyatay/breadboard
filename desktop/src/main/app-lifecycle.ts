@@ -123,6 +123,8 @@ export class AppLifecycle {
         openharness: await allocatePort(4096, taken),
         quartz: await allocatePort(8081, taken),
         quartzWs: await allocatePort(3001, taken),
+        // GBrain adapter port is only allocated when GBrain is enabled.
+        ...(persistent.gbrainMode !== "disabled" ? { gbrain: await allocatePort(7717, taken) } : {}),
       },
     };
 

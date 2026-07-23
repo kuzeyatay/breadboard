@@ -8,6 +8,17 @@ export interface WindowManagerOptions {
   startupHtmlPath: string;
   preloadPath: string;
   iconPath?: string;
+  minimumStartupVisibleMs?: number;
+}
+
+export const DEFAULT_MINIMUM_STARTUP_VISIBLE_MS = 2_200;
+
+export function remainingStartupVisibleMs(
+  shownAt: number,
+  now: number,
+  minimumMs = DEFAULT_MINIMUM_STARTUP_VISIBLE_MS,
+): number {
+  return Math.max(0, minimumMs - Math.max(0, now - shownAt));
 }
 
 /**
@@ -17,6 +28,7 @@ export interface WindowManagerOptions {
 export class WindowManager {
   private readonly options: WindowManagerOptions;
   private mainWindow: BrowserWindow | null = null;
+  private startupShownAt: number | null = null;
 
   constructor(options: WindowManagerOptions) {
     this.options = options;
@@ -43,11 +55,23 @@ export class WindowManager {
   async showStartupScreen(): Promise<void> {
     const window = this.createMainWindow();
     await window.loadFile(this.options.startupHtmlPath);
+    this.startupShownAt = Date.now();
   }
 
   async showDashboard(dashboardUrl: string): Promise<void> {
     const window = this.createMainWindow();
+    if (this.startupShownAt !== null) {
+      const remaining = remainingStartupVisibleMs(
+        this.startupShownAt,
+        Date.now(),
+        this.options.minimumStartupVisibleMs,
+      );
+      if (remaining > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+      }
+    }
     await window.loadURL(dashboardUrl);
+    this.startupShownAt = null;
   }
 
   /** Reload dashboard content without touching backend services. */

@@ -43,6 +43,7 @@ interface RuntimeHistorySession {
   title: string;
   updatedAt: string;
   messages: AgentMessage[];
+  gardenId: string;
 }
 
 type PanelView = "chat" | "proposals" | "artifacts" | "recents" | "skills";
@@ -138,19 +139,23 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
         const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
         setHistory(
           sessions
-            .filter((item: { id?: unknown }) =>
-              typeof item.id === "string" && item.id.startsWith("conv_"),
+            .filter((item: { id?: unknown; gardenId?: unknown }) =>
+              typeof item.id === "string" &&
+              item.id.startsWith("conv_") &&
+              item.gardenId === gardenSlug,
             )
             .map((item: {
-              id: number;
+              id: string;
               title?: unknown;
               updatedAt?: unknown;
               messages?: unknown;
+              gardenId?: unknown;
             }) => ({
               id: item.id,
               title: typeof item.title === "string" ? item.title : "New chat",
               updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
               messages: Array.isArray(item.messages) ? (item.messages as AgentMessage[]) : [],
+              gardenId: gardenSlug,
             })),
         );
       })
@@ -238,7 +243,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   }
 
   function openHistorySession(item: RuntimeHistorySession) {
-    if (busy) return;
+    if (busy || item.gardenId !== gardenSlug) return;
     session.reset();
     session.setSessionId(item.id);
     session.setMessages(item.messages);

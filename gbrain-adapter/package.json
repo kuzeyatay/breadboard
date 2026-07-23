@@ -1,0 +1,14 @@
+{
+  "name": "@breadboard/gbrain-adapter",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "First-party Breadboard sidecar around the vendored GBrain retrieval engine. Loopback-only, secret-gated, garden-scoped.",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.2.17"
+  }
+}

@@ -29,6 +29,10 @@ export interface PersistentDesktopConfig {
    * the Help menu so the first local account can be created.
    */
   initialInviteCode: string;
+  /** GBrain garden-knowledge retrieval mode. Additive; default disabled. */
+  gbrainMode: "disabled" | "preferred" | "required";
+  /** Per-install secret for the loopback GBrain adapter (never logged). */
+  gbrainAdapterSecret: string;
   /** Optional capabilities. */
   scriberrEnabled: boolean;
   scriberrBaseUrl: string | null;
@@ -46,6 +50,8 @@ export interface LaunchPorts {
    * opened unconditionally by the Quartz CLI, so it must be allocated too or
    * startup fails with EADDRINUSE when anything else holds the default 3001. */
   quartzWs: number;
+  /** GBrain adapter loopback port. Optional: only allocated when GBrain is enabled. */
+  gbrain?: number;
 }
 
 export interface DesktopRuntimeConfig {
@@ -68,6 +74,8 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     openharnessToolSecret: randomSecret(),
     openharnessCapabilitySecret: randomSecret(),
     openharnessMode: "required",
+    gbrainMode: "disabled",
+    gbrainAdapterSecret: randomSecret(24),
     initialInviteCode: `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
     scriberrEnabled: false,
     scriberrBaseUrl: null,
@@ -103,6 +111,15 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
     openharnessToolSecret: requireString("openharnessToolSecret"),
     openharnessCapabilitySecret: requireString("openharnessCapabilitySecret"),
     openharnessMode: mode,
+    // GBrain fields backfilled for configs written before they existed.
+    gbrainMode:
+      record["gbrainMode"] === "preferred" || record["gbrainMode"] === "required"
+        ? (record["gbrainMode"] as "preferred" | "required")
+        : "disabled",
+    gbrainAdapterSecret:
+      typeof record["gbrainAdapterSecret"] === "string" && record["gbrainAdapterSecret"].length > 0
+        ? (record["gbrainAdapterSecret"] as string)
+        : randomSecret(24),
     // Backfilled for configs written before the field existed.
     initialInviteCode:
       typeof record["initialInviteCode"] === "string" && record["initialInviteCode"].length > 0
@@ -152,6 +169,7 @@ export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<stri
     version: config.persistent.version,
     openharnessMode: config.persistent.openharnessMode,
     openharnessUsername: config.persistent.openharnessUsername,
+    gbrainMode: config.persistent.gbrainMode,
     scriberrEnabled: config.persistent.scriberrEnabled,
     migratedFrom: config.persistent.migratedFrom,
     migrationVersion: config.persistent.migrationVersion,
@@ -167,6 +185,7 @@ export function redactSecrets(line: string, config: PersistentDesktopConfig): st
     config.openharnessPassword,
     config.openharnessToolSecret,
     config.openharnessCapabilitySecret,
+    config.gbrainAdapterSecret,
   ]) {
     if (secret.length >= 8) out = out.split(secret).join("[redacted]");
   }
