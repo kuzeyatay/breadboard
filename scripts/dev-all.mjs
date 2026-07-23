@@ -2,6 +2,7 @@
 // Ordered full-stack launcher: provider -> harness -> Quartz -> dashboard.
 
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "./load-root-env.mjs";
@@ -16,6 +17,17 @@ const mode = configuredMode === "preferred" || configuredMode === "legacy" || co
   : explicitlyDisabled ? "legacy" : "required";
 const password = process.env.OPENHARNESS_PASSWORD || "breadboard-local-dev";
 const username = process.env.OPENHARNESS_USERNAME || "breadboard";
+
+// GBrain (garden knowledge retrieval). Additive and off by default: `disabled`
+// starts nothing; `preferred` runs but never blocks the stack; `required` fails
+// startup if the adapter is not reachable. A per-launch adapter secret is shared
+// with the dashboard through the environment so the browser never sees it.
+const gbrainMode = process.env.GBRAIN_MODE?.trim().toLowerCase();
+const gbrainEnabled = gbrainMode === "preferred" || gbrainMode === "required";
+const gbrainPort = /^\d+$/.test(process.env.GBRAIN_ADAPTER_PORT ?? "") ? process.env.GBRAIN_ADAPTER_PORT : "7717";
+const gbrainSecret = process.env.GBRAIN_ADAPTER_SECRET || crypto.randomBytes(24).toString("hex");
+const gbrainAdapterUrl = process.env.GBRAIN_ADAPTER_URL || `http://127.0.0.1:${gbrainPort}`;
+
 const runtimeEnv = {
   ...process.env,
   OPENHARNESS_ENABLED: process.env.OPENHARNESS_ENABLED || "true",
@@ -31,6 +43,13 @@ const runtimeEnv = {
   OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS:
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS || "true",
   BREADBOARD_DASHBOARD_URL: process.env.BREADBOARD_DASHBOARD_URL || "http://localhost:3000",
+  // GBrain: mode + the shared per-launch secret + adapter URL flow to both the
+  // adapter process and the dashboard so they agree without the browser ever
+  // seeing the secret.
+  GBRAIN_MODE: gbrainMode || "disabled",
+  GBRAIN_ADAPTER_PORT: gbrainPort,
+  GBRAIN_ADAPTER_SECRET: gbrainSecret,
+  GBRAIN_ADAPTER_URL: gbrainAdapterUrl,
 };
 const children = [];
 
@@ -71,6 +90,22 @@ async function main() {
   startService("chatmock", process.execPath, [path.join(repoRoot, "scripts", "start-chatmock.mjs")]);
   await waitFor("http://127.0.0.1:8765/health");
   process.stdout.write("[stack] ChatMock healthy\n");
+
+  // GBrain adapter starts before the harness so knowledge tools are ready when a
+  // session opens. In `preferred` a failure is surfaced but non-fatal; in
+  // `required` it aborts the stack.
+  if (gbrainEnabled) {
+    startService("gbrain", process.execPath, [path.join(repoRoot, "scripts", "start-gbrain.mjs")]);
+    try {
+      await waitFor(`${gbrainAdapterUrl}/health`, {}, 30_000);
+      process.stdout.write("[stack] GBrain adapter healthy\n");
+    } catch (error) {
+      if (gbrainMode === "required") throw error;
+      process.stderr.write(
+        `[stack] GBrain adapter unavailable in preferred mode; the dashboard reports a degraded/unavailable knowledge state: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
 
   if (mode !== "legacy") {
     startService("openharness", process.execPath, [path.join(repoRoot, "scripts", "start-openharness.mjs")]);

@@ -30,6 +30,7 @@ startup/               local startup screen (strict CSP, no chrome)
 ```
 ChatMock (Python, required)
    └─► OpenHarness (Bun, required unless mode=legacy)
+GBrain adapter (Bun, optional; only when gbrainMode != disabled, loopback + secret)
 Quartz (Node, required)
    └────────┬───────────────────────────────┐
             ▼                               │
@@ -45,6 +46,9 @@ Readiness is meaningful, not just process-alive:
 - ChatMock: `GET /health` → 200
 - OpenHarness: `GET /config/providers` (Basic auth) body contains `chatmock`
 - Quartz: `GET /` → 200 after the first site build
+- GBrain adapter (when enabled): `GET /health` → 200 (never blocks startup;
+  `required: false`, so the dashboard reports a truthful degraded/unavailable
+  knowledge state instead of failing the app)
 - Dashboard: `GET /api/health` → `{"status":"ok"}` (verifies SQLite)
 
 `OPENHARNESS_MODE` keeps its exact Breadboard semantics: `required` (default;

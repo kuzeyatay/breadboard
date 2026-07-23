@@ -201,9 +201,18 @@ The system prompt is composed server-side from
 capability-decision block, and—only in an approved implementation turn—
 `system/scoped-implementation.md`. It explicitly covers identity, hierarchy,
 truthfulness, knowledge work, tools, connections, skills, memory, evidence,
-proposals, coding gate, permissions, errors, and completion. GBrain is not
-considered integrated merely because its source was cloned; memory is claimed
-only after a configured, healthy adapter returns a durable result.
+proposals, coding gate, permissions, errors, and completion.
+
+GBrain is now integrated as Breadboard's garden-scoped knowledge retrieval layer
+through a first-party loopback adapter (`gbrain-adapter/`) and a scoped internal
+route (`/api/openharness/tools/gbrain`), enabled only for authenticated Garden
+Chat and Terminal. Integration is claimed on the basis of a real durable
+indexing + scoped retrieval + citation-mapping test path (`npm run test:gbrain`
+and the opt-in `tests/gbrain-e2e.test.mjs`), not merely because the source was
+cloned — the vendored GBrain engine in `gbrain/` remains unmodified and is not the
+canonical source of any garden page. GBrain answers "what knowledge exists in the
+authorized garden sources?"; it never replaces the conversation memory described
+in `OPENHARNESS_CONVERSATION_MEMORY.md`. See `docs/GBRAIN_INTEGRATION.md`.
 
 ## Garden tools and proposals
 

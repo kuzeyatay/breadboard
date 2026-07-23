@@ -122,3 +122,32 @@ test("no secret values leak into non-secret env keys or args", () => {
     }
   }
 });
+
+test("GBrain is absent by default and supervised as a loopback sidecar when enabled", () => {
+  // Off by default: no gbrain service, no GBRAIN_* env on the dashboard.
+  const off = fixture("packaged");
+  assert.ok(!off.definitions.some((d) => d.id === "gbrain"));
+  const dashOff = off.definitions.find((d) => d.id === "dashboard");
+  assert.ok(dashOff);
+  assert.equal(dashOff.env["GBRAIN_MODE"], undefined);
+
+  // Enabled: a supervised Bun sidecar with a per-install secret, loopback health,
+  // and mutable data under the desktop data dir (never in packaged resources).
+  const on = fixture("packaged", { gbrainMode: "preferred" });
+  const gbrain = on.definitions.find((d) => d.id === "gbrain");
+  assert.ok(gbrain, "gbrain service should be registered when enabled");
+  assert.equal(gbrain.command, "C:/rt/bun.exe");
+  assert.match(gbrain.healthCheck.url, /^http:\/\/127\.0\.0\.1:\d+\/health$/);
+  assert.equal(gbrain.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
+  assert.ok((gbrain.env["GBRAIN_ADAPTER_SECRET"] ?? "").length >= 8);
+  assert.ok(gbrain.env["GBRAIN_DATA_DIR"].startsWith(on.paths.dataRoot));
+  // Mutable data must not live inside packaged resources.
+  assert.ok(!gbrain.env["GBRAIN_DATA_DIR"].includes("bb-res"));
+
+  // The dashboard learns the adapter URL + shared secret, but the secret never
+  // appears in a non-secret place unexpectedly (it is the per-install secret).
+  const dashOn = on.definitions.find((d) => d.id === "dashboard");
+  assert.ok(dashOn);
+  assert.equal(dashOn.env["GBRAIN_MODE"], "preferred");
+  assert.equal(dashOn.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
+});

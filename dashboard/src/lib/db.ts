@@ -5,6 +5,7 @@ import { ensureVideoTranscriptionSchema } from "./scriberr/job-store.ts";
 import { databaseDir } from "./runtime-paths.ts";
 import { ensureConversationSchema } from "./conversations/schema.ts";
 import { ensureArtifactSchema } from "./openharness/artifact-schema.ts";
+import { ensureGBrainSchema } from "./gbrain/schema.ts";
 
 const DB_PATH = path.join(databaseDir(), "brain.db");
 
@@ -537,6 +538,9 @@ ensureColumn("chat_messages", "proposal", "proposal TEXT");
 // preserve every user-visible transcript without a destructive migration.
 ensureConversationSchema(db);
 ensureArtifactSchema(db);
+// Additive GBrain source-mapping and sync/audit bookkeeping (derived retrieval
+// state only; canonical content stays in markdown). Safe to re-apply.
+ensureGBrainSchema(db);
 
 // Persist cluster-group folders even while they contain no clusters yet.
 db.exec(`

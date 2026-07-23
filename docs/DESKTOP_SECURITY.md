@@ -42,6 +42,9 @@ atomically, mode 0600 where the OS honors it):
 - OpenHarness server password (24 random bytes) — replaces the dev default
   `breadboard-local-dev`
 - `OPENHARNESS_TOOL_SECRET` and `OPENHARNESS_CAPABILITY_SECRET`
+- `gbrainAdapterSecret` (24 random bytes) — bearer secret for the loopback GBrain
+  adapter; only allocated/used when `gbrainMode !== "disabled"`, and redacted from
+  logs like the others.
 
 Secrets flow to services only through process environment at spawn time.
 The log manager redacts every known secret from every captured line, and the

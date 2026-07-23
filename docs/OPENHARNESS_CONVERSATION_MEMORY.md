@@ -4,6 +4,15 @@ Breadboard owns conversation identity, persistence, authorization, and memory
 policy. OpenHarness executes a conversation, but its internal session history is
 not the durable or user-visible source of truth.
 
+> **Conversation memory is not GBrain.** This document describes conversation
+> memory (transcripts, rolling summaries, durable cross-chat memories) — *"what
+> happened in this conversation or project?"*. GBrain (see
+> `docs/GBRAIN_INTEGRATION.md`) is a separate, additive layer answering *"what
+> knowledge exists in the authorized garden sources?"*. Chat messages, summaries,
+> preferences, and capability decisions are **never** written into GBrain. Both
+> may contribute context to a turn, but they remain separate and independently
+> auditable.
+
 ## Architecture
 
 ```text

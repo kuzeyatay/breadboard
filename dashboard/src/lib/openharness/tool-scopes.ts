@@ -8,6 +8,7 @@
 // are simply absent from its allowlist, and its agent config denies them.
 
 import type { OpenHarnessSurface } from "./config.ts";
+import { isGBrainEnabled } from "../gbrain/config.ts";
 
 // Read-only + proposal Breadboard tools for garden chat.
 export const GARDEN_TOOLS = [
@@ -42,6 +43,17 @@ export const QUARTZ_TOOLS = [
   "garden_propose_visualization",
 ] as const;
 
+// Read-only GBrain knowledge-retrieval tools. Available ONLY to authenticated
+// Garden Chat and the authenticated Terminal — never anonymous/public Quartz AI.
+// These never write: capture and edits route through Breadboard proposals.
+export const GBRAIN_TOOLS = [
+  "gbrain_status",
+  "gbrain_search",
+  "gbrain_retrieve",
+  "gbrain_synthesize",
+  "gbrain_graph_neighbors",
+] as const;
+
 export const ARTIFACT_TOOLS = [
   "artifact_create",
   "artifact_read",
@@ -63,11 +75,21 @@ export const PROPOSAL_TOOLS: readonly string[] = [
 ];
 
 export function allowedToolsForSurface(surface: OpenHarnessSurface): string[] {
-  if (surface === "garden_chat") return [...GARDEN_TOOLS, ...ARTIFACT_TOOLS];
+  // GBrain knowledge tools are added ONLY for authenticated Garden Chat and
+  // Terminal, and only when GBrain is enabled. Quartz AI never receives them.
+  const gbrain = isGBrainEnabled() ? [...GBRAIN_TOOLS] : [];
+  if (surface === "garden_chat") return [...GARDEN_TOOLS, ...ARTIFACT_TOOLS, ...gbrain];
   if (surface === "quartz_ai") return [...QUARTZ_TOOLS];
   // The dashboard terminal's tools are governed by the OpenHarness agent config
   // and per-action permission prompts, not by a fixed Breadboard allowlist.
-  return [...GARDEN_TOOLS, ...ARTIFACT_TOOLS, "terminal_execute_command", "capability_gap", "capability_search"];
+  return [
+    ...GARDEN_TOOLS,
+    ...ARTIFACT_TOOLS,
+    ...gbrain,
+    "terminal_execute_command",
+    "capability_gap",
+    "capability_search",
+  ];
 }
 
 export function isProposalTool(tool: string): boolean {

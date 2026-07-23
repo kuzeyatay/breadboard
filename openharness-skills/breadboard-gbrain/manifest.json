@@ -1,0 +1,35 @@
+{
+  "name": "breadboard-gbrain",
+  "description": "Curated Breadboard-native knowledge skills adapted from GBrain concepts. All are general knowledge-work skills: read-only retrieval or proposal-only authoring. None enable coding, GBrain admin, direct writes, or capture. The full upstream GBrain skillpack is deliberately NOT installed.",
+  "classification": "general_knowledge",
+  "writes": false,
+  "activatesCodingMode": false,
+  "compatibleModes": ["knowledge"],
+  "compatibleSurfaces": ["garden_chat", "dashboard_terminal"],
+  "skills": [
+    { "slug": "garden-research", "visible": true },
+    { "slug": "cross-source-synthesis", "visible": true },
+    { "slug": "capture-to-garden", "visible": true },
+    { "slug": "source-ingestion-guidance", "visible": true },
+    { "slug": "meeting-ingestion", "visible": true },
+    { "slug": "citation-audit", "visible": true },
+    { "slug": "frontmatter-guard", "visible": true },
+    { "slug": "knowledge-health", "visible": true }
+  ],
+  "excludedUpstreamSkills": [
+    "cron-scheduler",
+    "daily-task-manager",
+    "daily-task-prep",
+    "dream-cycle",
+    "skill-creator",
+    "skillify",
+    "repo-architecture",
+    "gstack-coding",
+    "ceo-operations",
+    "schema-author",
+    "schema-unify",
+    "enrich",
+    "publish",
+    "capture (direct GBrain write)"
+  ]
+}

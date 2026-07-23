@@ -15,3 +15,6 @@ desktop/release/
 
 # Desktop-mode Next build output
 dashboard/.next-desktop/
+
+# GBrain adapter dependencies
+gbrain-adapter/node_modules/

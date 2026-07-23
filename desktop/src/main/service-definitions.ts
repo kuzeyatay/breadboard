@@ -154,6 +154,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     `${persistent.openharnessUsername}:${persistent.openharnessPassword}`,
   ).toString("base64")}`;
 
+  // GBrain (garden knowledge retrieval). Additive and off by default. When
+  // enabled it runs as a supervised loopback Bun sidecar with a per-install
+  // secret, storing its mutable PGLite/index data under the desktop data dir.
+  const gbrainEnabled = persistent.gbrainMode !== "disabled";
+  const gbrainPort = config.ports.gbrain ?? 7717;
+  const gbrainUrl = `http://127.0.0.1:${gbrainPort}`;
+  const gbrainDataDir = path.join(paths.dataRoot, "gbrain");
+
   const chatmock: DesktopServiceDefinition = {
     id: "chatmock",
     displayName: "Local AI (ChatMock)",
@@ -335,6 +343,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       ...(ffmpeg ? { FFMPEG_PATH: ffmpeg } : {}),
       ...(ffprobe ? { FFPROBE_PATH: ffprobe } : {}),
       ...(ytdlp ? { YTDLP_PATH: ytdlp } : {}),
+      // --- GBrain (garden knowledge retrieval; only when enabled) ---
+      ...(gbrainEnabled
+        ? {
+            GBRAIN_MODE: persistent.gbrainMode,
+            GBRAIN_ADAPTER_URL: gbrainUrl,
+            GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
+          }
+        : {}),
     },
     healthCheck: {
       type: "http",
@@ -347,10 +363,41 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
   };
 
+  const gbrain: DesktopServiceDefinition = {
+    id: "gbrain",
+    displayName: "Knowledge retrieval (GBrain)",
+    // Never blocks startup even in `required` GBRAIN mode: the dashboard reports
+    // a truthful unavailable/degraded state rather than failing the whole app.
+    required: false,
+    command: binaries.bun,
+    args: ["run", path.join(paths.appRoot, "gbrain-adapter", "src", "server.ts")],
+    cwd: path.join(paths.appRoot, "gbrain-adapter"),
+    env: {
+      ...shared,
+      GBRAIN_ADAPTER_HOST: "127.0.0.1",
+      GBRAIN_ADAPTER_PORT: String(gbrainPort),
+      GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
+      // Mutable index data lives under the desktop data dir, never in resources.
+      GBRAIN_DATA_DIR: gbrainDataDir,
+      GBRAIN_EMBEDDING_PROVIDER: process.env["GBRAIN_EMBEDDING_PROVIDER"] ?? "none",
+      GBRAIN_QUERY_TIMEOUT_MS: "15000",
+    },
+    healthCheck: {
+      type: "http",
+      url: `${gbrainUrl}/health`,
+      timeoutMs: 2_500,
+      intervalMs: 750,
+    },
+    startupTimeoutMs: 60_000,
+    gracefulShutdownMs: 5_000,
+    restartPolicy: "on-failure",
+  };
+
   const definitions: DesktopServiceDefinition[] = [chatmock];
   // Legacy mode intentionally runs without OpenHarness (existing Breadboard
   // migration contract) — do not register the service at all.
   if (persistent.openharnessMode !== "legacy") definitions.push(openharness);
+  if (gbrainEnabled) definitions.push(gbrain);
   definitions.push(quartz, dashboard);
 
   // Scriberr: optional Docker compatibility mode only. Never required, never

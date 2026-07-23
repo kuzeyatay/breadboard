@@ -46,6 +46,21 @@ export async function POST(
     }
 
     setProposalStatus(id, decision);
+
+    // Incremental GBrain sync: after a proposal is APPLIED (a canonical write),
+    // enqueue a re-index of the garden's derived retrieval state. Rejecting a
+    // proposal enqueues nothing, so the index is left unchanged. The enqueue is
+    // best-effort and never affects the canonical decision — a failure to index
+    // only marks the source stale.
+    if (decision === "applied") {
+      try {
+        const { enqueueGardenSync } = await import("@/lib/gbrain/sync.ts");
+        enqueueGardenSync(access.clusterId, `proposal_${proposal.kind}_applied`);
+      } catch {
+        // GBrain disabled/misconfigured must never block a proposal decision.
+      }
+    }
+
     return NextResponse.json({
       id,
       status: decision,
