@@ -67,6 +67,10 @@ export interface ServiceUrls {
   chatmockV1: string;
   openharness: string;
   quartz: string;
+  /** Only present when GBrain is enabled (a loopback port was allocated). */
+  gbrain?: string;
+  /** Only present when UI-TARS is enabled (a loopback port was allocated). */
+  uiTars?: string;
 }
 
 export function serviceUrls(config: DesktopRuntimeConfig): ServiceUrls {
@@ -77,6 +81,10 @@ export function serviceUrls(config: DesktopRuntimeConfig): ServiceUrls {
     chatmockV1: `http://127.0.0.1:${ports.chatmock}/v1`,
     openharness: `http://127.0.0.1:${ports.openharness}`,
     quartz: `http://127.0.0.1:${ports.quartz}`,
+    // The adapter secret is NOT published — only the loopback URL, so the smoke
+    // test can probe /health without exposing credentials.
+    ...(ports.gbrain ? { gbrain: `http://127.0.0.1:${ports.gbrain}` } : {}),
+    ...(ports.uiTars ? { uiTars: `http://127.0.0.1:${ports.uiTars}` } : {}),
   };
 }
 
@@ -161,6 +169,16 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const gbrainPort = config.ports.gbrain ?? 7717;
   const gbrainUrl = `http://127.0.0.1:${gbrainPort}`;
   const gbrainDataDir = path.join(paths.dataRoot, "gbrain");
+
+  // UI-TARS browser-operator adapter. Additive, optional by default. A supervised
+  // loopback Node sidecar with a per-install secret; mutable data (screenshots,
+  // isolated browser profiles, session registry) lives under the desktop data dir.
+  // Optional mode NEVER blocks startup — if the runtime/deps are absent the
+  // dashboard reports an unavailable state and the rest of Breadboard is unaffected.
+  const uiTarsEnabled = persistent.uiTarsMode !== "disabled";
+  const uiTarsPort = config.ports.uiTars ?? 7719;
+  const uiTarsUrl = `http://127.0.0.1:${uiTarsPort}`;
+  const uiTarsDataDir = path.join(paths.dataRoot, "ui-tars");
 
   const chatmock: DesktopServiceDefinition = {
     id: "chatmock",
@@ -332,6 +350,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       OPENHARNESS_SKILLS_QUARANTINE: paths.skillsQuarantine,
       OPENHARNESS_SKILLS_APPROVED: paths.skillsApproved,
       OPENHARNESS_SKILLS_CONDITIONAL: paths.skillsConditional,
+      // Optional local persona catalog. Packaged services use a controlled
+      // environment, so this explicit pass-through is required when the
+      // desktop process was launched with AGENCY_AGENTS_PATH configured.
+      ...(process.env["AGENCY_AGENTS_PATH"]?.trim()
+        ? { AGENCY_AGENTS_PATH: path.resolve(process.env["AGENCY_AGENTS_PATH"].trim()) }
+        : {}),
       BREADBOARD_INTERNAL_URL: urls.dashboard,
       // --- Quartz publish pipeline runs `node bootstrap-cli.mjs` itself ---
       BREADBOARD_NODE_BINARY: binaries.node,
@@ -349,6 +373,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
             GBRAIN_MODE: persistent.gbrainMode,
             GBRAIN_ADAPTER_URL: gbrainUrl,
             GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
+          }
+        : {}),
+      // --- UI-TARS browser operator (loopback adapter; only when enabled) ---
+      UI_TARS_MODE: persistent.uiTarsMode,
+      ...(uiTarsEnabled
+        ? {
+            UI_TARS_ADAPTER_URL: uiTarsUrl,
+            UI_TARS_ADAPTER_SECRET: persistent.uiTarsAdapterSecret,
           }
         : {}),
     },
@@ -393,11 +425,51 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
   };
 
+  const uiTars: DesktopServiceDefinition = {
+    id: "ui-tars",
+    displayName: "Browser operator (UI-TARS)",
+    // Never blocks startup: optional/required modes both degrade to a truthful
+    // unavailable state in the dashboard rather than failing the whole app.
+    required: false,
+    command: binaries.node,
+    args: [
+      "--experimental-strip-types",
+      path.join(paths.appRoot, "ui-tars-adapter", "src", "server.ts"),
+    ],
+    cwd: path.join(paths.appRoot, "ui-tars-adapter"),
+    env: {
+      ...shared,
+      UI_TARS_ADAPTER_HOST: "127.0.0.1",
+      UI_TARS_ADAPTER_PORT: String(uiTarsPort),
+      // Secret injected via env (never argv) so it cannot leak in process listings.
+      UI_TARS_ADAPTER_SECRET: persistent.uiTarsAdapterSecret,
+      // Mutable runtime data (screenshots, isolated browser profiles, session
+      // registry) lives under the desktop data dir — never in resources.
+      UI_TARS_DATA_DIR: uiTarsDataDir,
+      // Real Agent TARS runtime by default; the fake runtime is test-only. If the
+      // upstream deps/Chromium are absent this fails to start and the app stays
+      // usable (optional mode).
+      UI_TARS_RUNTIME: process.env["UI_TARS_RUNTIME"] ?? "agent-tars",
+      UI_TARS_MAX_CONCURRENT_RUNS: process.env["UI_TARS_MAX_CONCURRENT_RUNS"] ?? "3",
+      UI_TARS_SCREENSHOT_RETENTION_MS: process.env["UI_TARS_SCREENSHOT_RETENTION_MS"] ?? "86400000",
+    },
+    healthCheck: {
+      type: "http",
+      url: `${uiTarsUrl}/health`,
+      timeoutMs: 2_500,
+      intervalMs: 750,
+    },
+    startupTimeoutMs: 60_000,
+    gracefulShutdownMs: 8_000,
+    restartPolicy: "on-failure",
+  };
+
   const definitions: DesktopServiceDefinition[] = [chatmock];
   // Legacy mode intentionally runs without OpenHarness (existing Breadboard
   // migration contract) — do not register the service at all.
   if (persistent.openharnessMode !== "legacy") definitions.push(openharness);
   if (gbrainEnabled) definitions.push(gbrain);
+  if (uiTarsEnabled) definitions.push(uiTars);
   definitions.push(quartz, dashboard);
 
   // Scriberr: optional Docker compatibility mode only. Never required, never

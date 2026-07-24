@@ -33,6 +33,10 @@ export interface PersistentDesktopConfig {
   gbrainMode: "disabled" | "preferred" | "required";
   /** Per-install secret for the loopback GBrain adapter (never logged). */
   gbrainAdapterSecret: string;
+  /** UI-TARS browser-operator runtime mode. Additive; default optional. */
+  uiTarsMode: "disabled" | "optional" | "required";
+  /** Per-install secret for the loopback UI-TARS adapter (never logged). */
+  uiTarsAdapterSecret: string;
   /** Optional capabilities. */
   scriberrEnabled: boolean;
   scriberrBaseUrl: string | null;
@@ -52,6 +56,8 @@ export interface LaunchPorts {
   quartzWs: number;
   /** GBrain adapter loopback port. Optional: only allocated when GBrain is enabled. */
   gbrain?: number;
+  /** UI-TARS adapter loopback port. Optional: only allocated when UI-TARS is enabled. */
+  uiTars?: number;
 }
 
 export interface DesktopRuntimeConfig {
@@ -76,6 +82,8 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     openharnessMode: "required",
     gbrainMode: "disabled",
     gbrainAdapterSecret: randomSecret(24),
+    uiTarsMode: "optional",
+    uiTarsAdapterSecret: randomSecret(24),
     initialInviteCode: `BREAD${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
     scriberrEnabled: false,
     scriberrBaseUrl: null,
@@ -119,6 +127,15 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
     gbrainAdapterSecret:
       typeof record["gbrainAdapterSecret"] === "string" && record["gbrainAdapterSecret"].length > 0
         ? (record["gbrainAdapterSecret"] as string)
+        : randomSecret(24),
+    // UI-TARS fields backfilled for configs written before they existed.
+    uiTarsMode:
+      record["uiTarsMode"] === "disabled" || record["uiTarsMode"] === "required"
+        ? (record["uiTarsMode"] as "disabled" | "required")
+        : "optional",
+    uiTarsAdapterSecret:
+      typeof record["uiTarsAdapterSecret"] === "string" && record["uiTarsAdapterSecret"].length > 0
+        ? (record["uiTarsAdapterSecret"] as string)
         : randomSecret(24),
     // Backfilled for configs written before the field existed.
     initialInviteCode:
@@ -170,6 +187,7 @@ export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<stri
     openharnessMode: config.persistent.openharnessMode,
     openharnessUsername: config.persistent.openharnessUsername,
     gbrainMode: config.persistent.gbrainMode,
+    uiTarsMode: config.persistent.uiTarsMode,
     scriberrEnabled: config.persistent.scriberrEnabled,
     migratedFrom: config.persistent.migratedFrom,
     migrationVersion: config.persistent.migrationVersion,
@@ -186,6 +204,7 @@ export function redactSecrets(line: string, config: PersistentDesktopConfig): st
     config.openharnessToolSecret,
     config.openharnessCapabilitySecret,
     config.gbrainAdapterSecret,
+    config.uiTarsAdapterSecret,
   ]) {
     if (secret.length >= 8) out = out.split(secret).join("[redacted]");
   }

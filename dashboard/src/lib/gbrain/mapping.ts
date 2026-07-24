@@ -94,7 +94,7 @@ export function setSyncState(input: {
 }): void {
   db.prepare(
     `INSERT INTO gbrain_sync_state (source_id, status, last_revision, last_synced_at, pages_indexed, chunks_indexed, mode, error, updated_at)
-     VALUES (@sourceId, @status, @revision, @lastSynced, @pages, @chunks, @mode, @error, datetime('now'))
+     VALUES (@sourceId, @status, @revision, @lastSynced, COALESCE(@pages, 0), COALESCE(@chunks, 0), @mode, @error, datetime('now'))
      ON CONFLICT(source_id) DO UPDATE SET
        status = @status,
        last_revision = COALESCE(@revision, last_revision),
@@ -129,7 +129,9 @@ export function enqueueSyncJob(sourceId: string, clusterId: number, reason: stri
     .get(sourceId) as { id: number } | undefined;
   if (active) return active.id;
   const result = db
-    .prepare("INSERT INTO gbrain_sync_jobs (source_id, cluster_id, reason) VALUES (?, ?, ?)")
+    .prepare(
+      "INSERT INTO gbrain_sync_jobs (source_id, cluster_id, reason, next_attempt_at) VALUES (?, ?, ?, datetime('now'))",
+    )
     .run(sourceId, clusterId, reason);
   setSyncState({ sourceId, status: "pending" });
   return Number(result.lastInsertRowid);

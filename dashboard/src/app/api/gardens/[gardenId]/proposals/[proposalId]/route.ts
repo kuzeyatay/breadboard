@@ -56,6 +56,10 @@ export async function POST(
       try {
         const { enqueueGardenSync } = await import("@/lib/gbrain/sync.ts");
         enqueueGardenSync(access.clusterId, `proposal_${proposal.kind}_applied`);
+        // Ensure the always-on worker is draining; it processes the job with no
+        // manual drain call. No-op when GBrain is disabled.
+        const { ensureSyncWorkerStarted } = await import("@/lib/gbrain/sync-worker.ts");
+        ensureSyncWorkerStarted();
       } catch {
         // GBrain disabled/misconfigured must never block a proposal decision.
       }

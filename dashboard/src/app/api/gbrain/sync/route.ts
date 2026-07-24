@@ -4,6 +4,7 @@ import { apiErrorResponse, readJsonBody, ApiError } from "@/lib/openharness/rout
 import { authorizeGardenAccess } from "@/lib/openharness/session-service.ts";
 import { syncGarden, drainSyncJobs } from "@/lib/gbrain/sync.ts";
 import { loadClusterBySlug } from "@/lib/gbrain/mapping.ts";
+import { ensureSyncWorkerStarted } from "@/lib/gbrain/sync-worker.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,8 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
+    // Keep the background worker running so incremental jobs drain automatically.
+    ensureSyncWorkerStarted();
     const body = await readJsonBody(request);
 
     if (body.action === "drain") {

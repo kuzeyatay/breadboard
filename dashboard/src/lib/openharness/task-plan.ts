@@ -193,7 +193,36 @@ const PATH_LIKE =
 const URL_LIKE = /https?:\/\/[^\s"'`<>)]+/gi;
 
 const KNOWN_FOLDER =
-  /\b(documents?|desktop|downloads?|pictures?|videos?|music|onedrive|home\s+(?:folder|directory))\b/gi;
+  /\b(documents?|docments?|docuemnts?|desktop|destkop|downloads?|donwloads?|pictures?|pictuers?|videos?|vidoes?|music|muisc|onedrive|onedirve|home\s+(?:folder|directory))\b/gi;
+
+const KNOWN_FOLDER_CANONICAL_NAMES: Readonly<Record<string, string>> = {
+  document: "documents",
+  documents: "documents",
+  docment: "documents",
+  docments: "documents",
+  docuemnt: "documents",
+  docuemnts: "documents",
+  desktop: "desktop",
+  destkop: "desktop",
+  download: "downloads",
+  downloads: "downloads",
+  donwload: "downloads",
+  donwloads: "downloads",
+  picture: "pictures",
+  pictures: "pictures",
+  pictuer: "pictures",
+  pictuers: "pictures",
+  video: "videos",
+  videos: "videos",
+  vidoe: "videos",
+  vidoes: "videos",
+  music: "music",
+  muisc: "music",
+  onedrive: "onedrive",
+  onedirve: "onedrive",
+  "home folder": "home folder",
+  "home directory": "home directory",
+};
 
 const FORMAT_TOKEN =
   /\b(?:to|into|as)\s+(pdfs?|docx?|xlsx?|csv|markdown|md|html|txt|json|png|jpe?g|mp3|mp4|wav)\b/gi;
@@ -224,7 +253,12 @@ function extractResources(text: string): ResourceReference[] {
     push({ kind: "path", value, absolute });
   }
   for (const match of withoutUrls.matchAll(KNOWN_FOLDER)) {
-    push({ kind: "path", value: match[0], absolute: false });
+    const key = match[0].toLowerCase().replace(/\s+/g, " ");
+    push({
+      kind: "path",
+      value: KNOWN_FOLDER_CANONICAL_NAMES[key] ?? key,
+      absolute: false,
+    });
   }
   for (const match of text.matchAll(FORMAT_TOKEN)) {
     push({ kind: "format", value: match[1].toLowerCase() });

@@ -41,15 +41,19 @@ export function ensureGBrainSchema(db: Database.Database): void {
     -- Sync job queue with bounded backoff. Single-writer discipline: at most one
     -- running job per source (enforced in the store layer).
     CREATE TABLE IF NOT EXISTS gbrain_sync_jobs (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_id    TEXT NOT NULL,
-      cluster_id   INTEGER NOT NULL,
-      reason       TEXT NOT NULL,
-      status       TEXT NOT NULL DEFAULT 'queued',
-      attempts     INTEGER NOT NULL DEFAULT 0,
-      last_error   TEXT,
-      created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id       TEXT NOT NULL,
+      cluster_id      INTEGER NOT NULL,
+      reason          TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'queued',
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      last_error      TEXT,
+      -- Worker bookkeeping (bounded backoff + abandoned-job recovery).
+      claimed_at      TEXT,
+      claimed_by      TEXT,
+      next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_gbrain_jobs_source_status
       ON gbrain_sync_jobs(source_id, status);
@@ -72,4 +76,17 @@ export function ensureGBrainSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_gbrain_audit_session
       ON gbrain_query_audit(runtime_session_id, created_at);
   `);
+
+  // Additive columns for DBs created before the sync-worker fields existed
+  // (SQLite has no ADD COLUMN IF NOT EXISTS; guard via PRAGMA).
+  const cols = new Set(
+    (db.prepare("PRAGMA table_info(gbrain_sync_jobs)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  if (!cols.has("claimed_at")) db.exec("ALTER TABLE gbrain_sync_jobs ADD COLUMN claimed_at TEXT");
+  if (!cols.has("claimed_by")) db.exec("ALTER TABLE gbrain_sync_jobs ADD COLUMN claimed_by TEXT");
+  if (!cols.has("next_attempt_at"))
+    db.exec("ALTER TABLE gbrain_sync_jobs ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT (datetime('now'))");
+
+  // Created after the column-adds so it works on both fresh and upgraded DBs.
+  db.exec("CREATE INDEX IF NOT EXISTS idx_gbrain_jobs_claim ON gbrain_sync_jobs(status, next_attempt_at)");
 }

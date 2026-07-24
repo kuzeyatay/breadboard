@@ -20,6 +20,7 @@ export function ensureConversationSchema(database: Database.Database): void {
       scope_kind                TEXT NOT NULL DEFAULT 'global'
                                 CHECK (scope_kind IN ('global','garden','page')),
       default_garden_id         INTEGER REFERENCES clusters(id) ON DELETE SET NULL,
+      active_agency_agent_slug  TEXT,
       legacy_chat_session_id    INTEGER UNIQUE,
       legacy_runtime_session_id INTEGER UNIQUE,
       next_order_index          INTEGER NOT NULL DEFAULT 0,
@@ -99,6 +100,12 @@ export function ensureConversationSchema(database: Database.Database): void {
     "conversations",
     "surface",
     "surface TEXT NOT NULL DEFAULT 'dashboard_terminal' CHECK (surface IN ('dashboard_terminal','garden_chat','quartz_ai'))",
+  );
+  ensureColumn(
+    database,
+    "conversations",
+    "active_agency_agent_slug",
+    "active_agency_agent_slug TEXT",
   );
   ensureColumn(database, "openharness_runtime_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
   ensureColumn(database, "openharness_runtime_sessions", "allowed_garden_ids", "allowed_garden_ids TEXT NOT NULL DEFAULT '[]'");

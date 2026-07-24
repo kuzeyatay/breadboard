@@ -132,6 +132,16 @@ test("a grant for another folder does not authorize Downloads", () => {
   assert.ok(grant.pendingPermissions.some((item) => item.path?.toLowerCase().includes("downloads")));
 });
 
+test("a misspelled Downloads alias still produces a concrete permission target", () => {
+  const grant = broker("whats the largest file in my donwloads folder?");
+  const request = grant.pendingPermissions.find(
+    (item) => item.kind === "filesystem",
+  );
+  assert.ok(request);
+  assert.match(request.path ?? "", /downloads/i);
+  assert.match(request.message, /downloads/i);
+});
+
 test("weather research enables web tools and their runtime permissions", () => {
   const grant = broker("whats the weather in bodrum?");
   assert.ok(enabledTools(grant).includes("webfetch"));

@@ -18,3 +18,4 @@ dashboard/.next-desktop/
 
 # GBrain adapter dependencies
 gbrain-adapter/node_modules/
+gbrain/node_modules/

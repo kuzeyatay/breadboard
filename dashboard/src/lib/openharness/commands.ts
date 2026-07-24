@@ -15,8 +15,12 @@ import {
 } from "./skills.ts";
 import { ApiError } from "./route-core.ts";
 import { listMcpConnections } from "./mcp-connections.ts";
+import {
+  findAgencyAgent,
+  loadAgencyAgentsCatalog,
+} from "./agency-agents.ts";
 
-export type CommandHubItemKind = "skill" | "mcp" | "prompt";
+export type CommandHubItemKind = "skill" | "mcp" | "prompt" | "agent";
 
 export interface CommandHubItem {
   id: string;
@@ -42,6 +46,14 @@ export interface CommandHubItem {
   unavailableReason?: string;
   favorite?: boolean;
   trustLabel?: string;
+  division?: string;
+  divisionLabel?: string;
+  divisionIcon?: string;
+  divisionColor?: string;
+  emoji?: string;
+  vibe?: string;
+  services?: Array<{ name: string; url?: string; tier?: string }>;
+  searchTerms?: string;
 }
 
 export interface CommandResolutionContext {
@@ -52,6 +64,7 @@ export interface CommandResolutionContext {
 
 export interface ResolvedCommandMessage {
   text: string;
+  userText: string;
   invocations: Array<{
     kind: CommandHubItemKind;
     slug: string;
@@ -59,9 +72,12 @@ export interface ResolvedCommandMessage {
     contentHash?: string;
   }>;
   tools?: Record<string, boolean>;
+  agencyAgentSelection?:
+    | { action: "set"; slug: string; id: string }
+    | { action: "clear" };
 }
 
-const LEGACY_TOKEN = /^\/(skill|mcp|prompt):([a-z0-9][a-z0-9_.-]*)(?:\s+|$)/i;
+const LEGACY_TOKEN = /^\/(skill|mcp|prompt|agent):([a-z0-9][a-z0-9_.-]*)(?:\s+|$)/i;
 const CLEAN_TOKEN = /^\/([a-z0-9][a-z0-9_.:-]*)(?:\s+|$)/i;
 
 function surfaceCompatibility(surface: OpenHarnessSurface): string {
@@ -89,7 +105,9 @@ export function assignCommandTokens<T extends { kind: CommandHubItemKind; slug: 
   return items.map((item) => ({
     ...item,
     token:
-      counts.get(item.slug) === 1
+      item.kind === "agent"
+        ? `agent:${item.slug}`
+        : counts.get(item.slug) === 1
         ? item.slug
         : `${item.kind === "mcp" ? "connection" : item.kind}-${item.slug}`,
   }));
@@ -155,7 +173,37 @@ export function registryItemsForUser(
     requiredCapabilityMode: "knowledge",
     favorite: prompt.favorite,
   }));
-  return assignCommandTokens([...skills, ...connections, ...prompts]);
+  const agents: Omit<CommandHubItem, "token">[] =
+    context.surface === "quartz_ai"
+      ? []
+      : loadAgencyAgentsCatalog().agents.map((agent) => ({
+          id: agent.id,
+          kind: "agent",
+          slug: agent.slug,
+          name: agent.name,
+          description: agent.description,
+          category: agent.divisionLabel,
+          source: "Agency Agents",
+          installed: true,
+          enabled: true,
+          healthy: true,
+          requiredCapabilityMode: "knowledge",
+          trustLabel: "Local persona",
+          division: agent.division,
+          divisionLabel: agent.divisionLabel,
+          divisionIcon: agent.divisionIcon,
+          divisionColor: agent.divisionColor,
+          emoji: agent.emoji,
+          vibe: agent.vibe,
+          services: agent.services,
+          searchTerms: [
+            agent.division,
+            agent.divisionLabel,
+            agent.vibe,
+            ...agent.services.map((service) => `${service.name} ${service.tier ?? ""}`),
+          ].filter(Boolean).join(" "),
+        }));
+  return assignCommandTokens([...skills, ...connections, ...prompts, ...agents]);
 }
 
 export function mcpToolSelection(
@@ -196,9 +244,23 @@ function requestedSelectors(
   while (remaining.startsWith("/")) {
     const legacy = remaining.match(LEGACY_TOKEN);
     if (legacy) {
+      const kind = legacy[1].toLowerCase() as CommandHubItemKind;
+      const slug = legacy[2].toLowerCase();
+      if (kind === "agent" && slug !== "none") {
+        const item = registry.find(
+          (candidate) => candidate.kind === "agent" && candidate.slug === slug,
+        );
+        if (!item) {
+          throw new ApiError(
+            404,
+            "agency_agent_not_found",
+            `No Agency Agent named "${slug}" is available. Choose one from the Agents tab or use /agent:none.`,
+          );
+        }
+      }
       requested.push({
-        kind: legacy[1].toLowerCase() as CommandHubItemKind,
-        slug: legacy[2].toLowerCase(),
+        kind,
+        slug,
       });
       remaining = remaining.slice(legacy[0].length).trimStart();
       continue;
@@ -214,6 +276,19 @@ function requestedSelectors(
     const token = clean[1].toLowerCase();
     const item = registry.find((candidate) => candidate.token === token);
     if (!item) {
+      if (token.startsWith("agent:")) {
+        const slug = token.slice("agent:".length);
+        if (slug === "none") {
+          requested.push({ kind: "agent", slug: "none" });
+          remaining = remaining.slice(clean[0].length).trimStart();
+          continue;
+        }
+        throw new ApiError(
+          404,
+          "agency_agent_not_found",
+          `No Agency Agent named "${slug || "that"}" is available. Choose one from the Agents tab or use /agent:none.`,
+        );
+      }
       throw new ApiError(
         404,
         "capability_not_available",
@@ -244,8 +319,9 @@ export async function resolveCommandMessage(
   const parsed = requestedSelectors(rawText, registry);
   const requested = parsed.requested;
   const remaining = parsed.remaining;
-  if (requested.length === 0) return { text: rawText, invocations: [] };
-  if (requested.length > 2) {
+  if (requested.length === 0) return { text: rawText, userText: rawText, invocations: [] };
+  const capabilityRequests = requested.filter((item) => item.kind !== "agent");
+  if (capabilityRequests.length > 2) {
     throw new ApiError(
       400,
       "conflicting_slash_commands",
@@ -253,7 +329,7 @@ export async function resolveCommandMessage(
     );
   }
   for (const kind of ["skill", "mcp", "prompt"] as const) {
-    if (requested.filter((item) => item.kind === kind).length > 1) {
+    if (capabilityRequests.filter((item) => item.kind === kind).length > 1) {
       throw new ApiError(
         400,
         "conflicting_slash_commands",
@@ -261,7 +337,10 @@ export async function resolveCommandMessage(
       );
     }
   }
-  if (requested.some((item) => item.kind === "prompt") && requested.length > 1) {
+  if (
+    capabilityRequests.some((item) => item.kind === "prompt") &&
+    capabilityRequests.length > 1
+  ) {
     throw new ApiError(
       400,
       "conflicting_slash_commands",
@@ -274,8 +353,40 @@ export async function resolveCommandMessage(
   let tools: Record<string, boolean> | undefined;
   const skills = listApprovedSkills(context.surface);
   let discovery: OpenHarnessCapabilityDiscovery | null = null;
+  const lastAgentRequest = requested.filter((item) => item.kind === "agent").at(-1);
+  let agencyAgentSelection: ResolvedCommandMessage["agencyAgentSelection"];
 
   for (const item of requested) {
+    if (item.kind === "agent") {
+      if (item !== lastAgentRequest) continue;
+      if (item.slug === "none") {
+        agencyAgentSelection = { action: "clear" };
+        invocations.push({
+          kind: "agent",
+          slug: "none",
+          id: "agency-agent:none",
+        });
+        continue;
+      }
+      if (context.surface === "quartz_ai") {
+        throw new ApiError(
+          403,
+          "agency_agent_surface_unavailable",
+          "Agency Agents are available in Garden Chat and Terminal, not Quartz.",
+        );
+      }
+      const agent = findAgencyAgent(item.slug);
+      if (!agent) {
+        throw new ApiError(
+          404,
+          "agency_agent_not_found",
+          `No Agency Agent named "${item.slug}" is available. Choose one from the Agents tab or use /agent:none.`,
+        );
+      }
+      agencyAgentSelection = { action: "set", slug: agent.slug, id: agent.id };
+      invocations.push({ kind: "agent", slug: agent.slug, id: agent.id });
+      continue;
+    }
     if (item.kind === "prompt") {
       const prompt = resolvePrompt(userId, item.slug);
       if (!prompt) {
@@ -340,8 +451,12 @@ export async function resolveCommandMessage(
   }
 
   return {
-    text: `${instructions.join("\n\n")}\n\n[User request]\n${remaining}`.trim(),
+    text: instructions.length > 0
+      ? `${instructions.join("\n\n")}\n\n[User request]\n${remaining}`.trim()
+      : remaining,
+    userText: remaining,
     invocations,
     ...(tools ? { tools } : {}),
+    ...(agencyAgentSelection ? { agencyAgentSelection } : {}),
   };
 }

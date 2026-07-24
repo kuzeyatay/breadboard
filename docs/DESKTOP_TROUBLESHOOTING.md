@@ -104,3 +104,19 @@ with `FailedToOpenSocket` on a restricted or transient network. Retry from a
 network that can reach `https://pkg.pr.new/`. The packaged desktop closure is
 validated separately by `npm run desktop:prepare`, which builds the bundled
 Bun cache and must complete successfully before release.
+
+## GBrain (knowledge retrieval)
+
+GBrain is off by default. To enable it in the desktop build, set
+`gbrainMode` to `preferred` (or `required`) in
+`<userData>/Data/config/desktop-config.json` and restart. The supervised
+`gbrain` adapter runs on a loopback port with a per-install secret and stores
+its PGLite/index data under `<userData>/Data/gbrain` (never in packaged
+resources). It never blocks app startup; when unavailable the dashboard reports a
+truthful degraded/unavailable knowledge state.
+
+The installed smoke test (`node desktop/scripts/installed-smoke-test.mjs
+<Setup.exe>`) includes a GBrain lifecycle section (adapter health, real-engine
+backend, data-dir location, fixture index, retrieval-after-restart, secret-absent-
+from-logs, no-orphan-process). Those checks run when GBrain is enabled and record
+an explicit skip otherwise. See docs/GBRAIN_INTEGRATION.md.

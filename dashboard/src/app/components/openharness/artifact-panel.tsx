@@ -31,6 +31,34 @@ interface ArtifactEventDetail {
 export const ARTIFACT_BROWSER_EVENT = "breadboard:artifact-event";
 export const ARTIFACT_REVISE_EVENT = "breadboard:artifact-revise";
 
+export function ArtifactArchiveIcon({
+  className = "h-4 w-4",
+}: {
+  className?: string;
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4.75 7.75h14.5v10.5a1.5 1.5 0 0 1-1.5 1.5H6.25a1.5 1.5 0 0 1-1.5-1.5V7.75Z"
+      />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3.75 4.25h16.5v3.5H3.75v-3.5Zm5.75 7.5h5"
+      />
+    </svg>
+  );
+}
+
 export interface ArtifactPanelProps {
   conversationId?: string | null;
   gardenSlug?: string | null;

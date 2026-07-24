@@ -40,6 +40,23 @@ function conversation(userId = 1, title = "New chat") {
   return store.createConversation({ userId, title });
 }
 
+test("active Agency Agent selection is isolated per conversation and can be cleared", () => {
+  const first = conversation(1, "First");
+  const second = conversation(1, "Second");
+  const selected = store.updateConversation(first, {
+    activeAgencyAgentSlug: "frontend-developer",
+  });
+  assert.equal(selected.active_agency_agent_slug, "frontend-developer");
+  assert.equal(store.getConversationById(second.id).active_agency_agent_slug, null);
+  const presented = store.presentConversation(selected);
+  assert.equal(presented.activeAgencyAgentSlug, "frontend-developer");
+  assert.equal(
+    store.updateConversation(selected, { activeAgencyAgentSlug: null })
+      .active_agency_agent_slug,
+    null,
+  );
+});
+
 function finishTurn(conversationRow, clientMessageId, surface, userText, assistantText = "Done") {
   const reserved = store.reserveConversationTurn({
     conversation: conversationRow,

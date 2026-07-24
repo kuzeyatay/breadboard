@@ -55,6 +55,8 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       state,
+      // Truthful backend identity so the UI never labels the fake store as GBrain.
+      backend: health.backend,
       mode: health.mode,
       embeddingsAvailable: health.embeddingsAvailable,
       indexed: { sources: health.sources, pages: health.pages, chunks: health.chunks },

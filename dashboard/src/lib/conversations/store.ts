@@ -14,6 +14,7 @@ export interface ConversationRow {
   surface: OpenHarnessSurface;
   scope_kind: ConversationScopeKind;
   default_garden_id: number | null;
+  active_agency_agent_slug: string | null;
   legacy_chat_session_id: number | null;
   legacy_runtime_session_id: number | null;
   next_order_index: number;
@@ -142,17 +143,26 @@ export function listConversationsForUser(
 
 export function updateConversation(
   conversation: ConversationRow,
-  input: { title?: string; scopeKind?: ConversationScopeKind; defaultGardenId?: number | null },
+  input: {
+    title?: string;
+    scopeKind?: ConversationScopeKind;
+    defaultGardenId?: number | null;
+    activeAgencyAgentSlug?: string | null;
+  },
   database: Database.Database = db,
 ): ConversationRow {
   database.prepare(`
     UPDATE conversations
-    SET title = ?, scope_kind = ?, default_garden_id = ?, updated_at = datetime('now')
+    SET title = ?, scope_kind = ?, default_garden_id = ?,
+        active_agency_agent_slug = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(
     input.title === undefined ? conversation.title : normalizeTitle(input.title),
     input.scopeKind ?? conversation.scope_kind,
     input.defaultGardenId === undefined ? conversation.default_garden_id : input.defaultGardenId,
+    input.activeAgencyAgentSlug === undefined
+      ? conversation.active_agency_agent_slug
+      : input.activeAgencyAgentSlug,
     conversation.id,
   );
   return getConversationById(conversation.id, database)!;
@@ -500,6 +510,7 @@ export function presentConversation(row: ConversationRow): {
   title: string;
   scopeKind: ConversationScopeKind;
   defaultGardenId: number | null;
+  activeAgencyAgentSlug: string | null;
   createdAt: string;
   updatedAt: string;
 } {
@@ -508,6 +519,7 @@ export function presentConversation(row: ConversationRow): {
     title: row.title,
     scopeKind: row.scope_kind,
     defaultGardenId: row.default_garden_id,
+    activeAgencyAgentSlug: row.active_agency_agent_slug,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

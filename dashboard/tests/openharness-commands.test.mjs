@@ -28,7 +28,40 @@ test("MCP selection changes only real MCP namespaces", () => {
 test("plain messages pass through unchanged", async () => {
   const result = await resolveCommandMessage(1, "inspect the repository");
   assert.equal(result.text, "inspect the repository");
+  assert.equal(result.userText, "inspect the repository");
   assert.deepEqual(result.invocations, []);
+});
+
+test("agent commands are namespaced, keep only the last selection, and preserve the user request", async () => {
+  const selected = await resolveCommandMessage(
+    1,
+    "/agent:ux-researcher /agent:frontend-developer review this interface",
+  );
+  assert.equal(selected.text, "review this interface");
+  assert.equal(selected.userText, "review this interface");
+  assert.deepEqual(selected.agencyAgentSelection, {
+    action: "set",
+    slug: "frontend-developer",
+    id: selected.invocations[0].id,
+  });
+  assert.deepEqual(selected.invocations.map((item) => [item.kind, item.slug]), [
+    ["agent", "frontend-developer"],
+  ]);
+
+  const cleared = await resolveCommandMessage(1, "/agent:none continue normally");
+  assert.deepEqual(cleared.agencyAgentSelection, { action: "clear" });
+  assert.equal(cleared.userText, "continue normally");
+});
+
+test("agent-like text in prose or code is not interpreted and unknown agents are useful errors", async () => {
+  const prose = "Please document `/agent:frontend-developer` without selecting it.";
+  assert.equal((await resolveCommandMessage(1, prose)).text, prose);
+  const code = "```\n/agent:frontend-developer\n```";
+  assert.equal((await resolveCommandMessage(1, code)).text, code);
+  await assert.rejects(
+    () => resolveCommandMessage(1, "/agent:not-a-real-agent help"),
+    /Choose one from the Agents tab or use \/agent:none/,
+  );
 });
 
 test("a prompt token resolves server-side and preserves user text", async () => {
@@ -62,11 +95,13 @@ test("clean tokens resolve and collisions receive deterministic visible namespac
       { kind: "skill", slug: "shared" },
       { kind: "prompt", slug: "shared" },
       { kind: "mcp", slug: "drive" },
+      { kind: "agent", slug: "shared" },
     ]),
     [
       { kind: "skill", slug: "shared", token: "skill-shared" },
       { kind: "prompt", slug: "shared", token: "prompt-shared" },
       { kind: "mcp", slug: "drive", token: "drive" },
+      { kind: "agent", slug: "shared", token: "agent:shared" },
     ],
   );
 });

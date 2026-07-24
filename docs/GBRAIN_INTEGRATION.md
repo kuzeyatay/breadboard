@@ -24,8 +24,28 @@ Breadboard authenticated dashboard backend
           GBrain adapter sidecar (gbrain-adapter/, Bun)
                     |
                     v
-          Durable PGLite retrieval store (chunks, FTS, optional embeddings)
+          VENDORED GBrain engine (gbrain/src, PGLite) via public ops
 ```
+
+## Backends
+
+The adapter selects a retrieval backend by `GBRAIN_BACKEND`:
+
+* **`gbrain` (production default)** — `gbrain-adapter/src/backends/gbrain-backend.ts`
+  wraps the vendored GBrain engine through its public interfaces: `createEngine`
+  (`engine-factory`), `connect`/`initSchema`/`disconnect`, `addSource`
+  (`sources-ops`), `importFromContent` (`import-file`: parse + chunk + embed),
+  `searchKeyword` + `searchVector`, `embedQuery`, `getPage`, `getLinks` /
+  `getBacklinks`, `addLinksBatch`, `deletePages` / `getAllSlugs`. The only
+  non-op access is `engine.executeRaw` for `count(*)` stats — a public engine
+  method used throughout gbrain core.
+* **`fake` (test-only)** — `gbrain-adapter/src/store.ts`, a deterministic
+  first-party PGLite store. It is **never** the default, is **refused** in
+  packaged production (`GBRAIN_PACKAGED=1` / `NODE_ENV=production`) unless
+  `GBRAIN_TEST_MODE=1`, and reports `backend: "fake"` in `/health` — it never
+  masquerades as GBrain.
+
+`/health` and `/api/gbrain/status` surface `backend` truthfully.
 
 The model receives **Breadboard-scoped tools**, never the raw GBrain tool
 surface, MCP server, or admin operations.
@@ -81,8 +101,12 @@ The content root is never supplied by the model.
 | `GBRAIN_ADAPTER_PORT` | `7717` | Adapter port (dev launcher / desktop). |
 | `GBRAIN_ADAPTER_SECRET` | *(generated)* | Per-launch/per-install bearer secret. The dev launcher generates one and shares it with the dashboard; the browser never sees it. |
 | `GBRAIN_DATA_DIR` | `~/.breadboard/gbrain` | Mutable PGLite/index data, **outside** the checkout. Desktop overrides to the userData dir. |
-| `GBRAIN_EMBEDDING_PROVIDER` | `none` | `none` → honest `lexical_degraded`. `hash` → deterministic offline embedder enabling hybrid mode with no paid API. Real providers degrade to lexical when their key is missing. |
-| `GBRAIN_EMBEDDING_MODEL` | *(empty)* | Optional model id for a real provider. |
+| `GBRAIN_BACKEND` | `gbrain` | `gbrain` (real vendored engine) or `fake` (test-only, refused in packaged production). |
+| `GBRAIN_EMBEDDING_PROVIDER` | `none` | `none` → honest `lexical_degraded`. `openai-compatible` → real embeddings via any OpenAI-compatible endpoint. `deterministic-test` → reproducible offline embedder (rejected unless `GBRAIN_TEST_MODE=1`). |
+| `GBRAIN_EMBEDDING_BASE_URL` | *(empty)* | OpenAI-compatible embeddings endpoint (routed through GBrain's native `openai:` provider). |
+| `GBRAIN_EMBEDDING_API_KEY` | *(empty)* | Embeddings API key. Missing → truthful `lexical_degraded`. Never reaches the browser or audit metadata. |
+| `GBRAIN_EMBEDDING_MODEL` | *(empty)* | Embedding model id (without provider prefix). |
+| `GBRAIN_EMBEDDING_DIMENSIONS` | *(empty)* | Embedding dimension. Must match the model; mismatches fail clearly at ingest via GBrain's own dim check. |
 | `GBRAIN_QUERY_TIMEOUT_MS` | `15000` | Bounded query timeout (client + adapter). |
 
 ## Development startup
@@ -123,6 +147,14 @@ The Electron supervisor (`desktop/src/main/service-definitions.ts`) registers a
   `decision: apply`) enqueues a sync job. Rejecting enqueues nothing, so the index
   is unchanged. A failed index marks the source **stale** (`gbrain_sync_state`) and
   never rolls back the canonical write.
+* **Always-on worker:** `dashboard/src/lib/gbrain/sync-worker.ts` drains the queue
+  automatically — no manual `drain` call is required. It atomically claims jobs,
+  runs at most one per garden at a time, recovers jobs abandoned by a crashed
+  worker (stale-claim requeue), applies bounded exponential backoff, records
+  attempt counts + final error codes, and stops cleanly (awaits the in-flight job)
+  on shutdown. It never full-reindexes on startup — it only processes enqueued
+  jobs. Started lazily whenever a GBrain route or a proposal-apply runs (no-op when
+  disabled).
 * **Single-writer:** at most one queued/running job per source
   (`enqueueSyncJob`), respecting PGLite's single-writer model.
 
@@ -137,13 +169,15 @@ labeled hybrid.
 ## Adapted skills
 
 `openharness-skills/breadboard-gbrain/` — eight **general-knowledge** skills, all
-read-only or proposal-only, none activating coding mode or GBrain writes:
-garden-research, cross-source-synthesis, capture-to-garden,
-source-ingestion-guidance, meeting-ingestion, citation-audit, frontmatter-guard,
-knowledge-health. The full upstream GBrain skillpack (cron, daily-task, dream
-cycle, skill-creator, gstack coding, schema mutation, direct capture/enrich/
-publish) is deliberately **not** installed — see the manifest's
-`excludedUpstreamSkills`.
+read-only or proposal-only, none activating coding mode or GBrain writes. Only
+three are **user-visible** in the palette (garden-research, capture-to-garden,
+knowledge-health); the other five are **internal** routing skills
+(cross-source-synthesis, source-ingestion-guidance, meeting-ingestion,
+citation-audit, frontmatter-guard) — still available to the authenticated Garden
+Chat and Terminal agents but hidden from the palette to avoid clutter. The full
+upstream GBrain skillpack (cron, daily-task, dream cycle, skill-creator, gstack
+coding, schema mutation, direct capture/enrich/publish) is deliberately **not**
+installed — see the manifest's `excludedUpstreamSkills`.
 
 ## Tools exposed to OpenHarness
 
@@ -186,37 +220,64 @@ source ids and retrieval internals never appear.
 ## Test commands
 
 ```bash
-npm run test:gbrain          # adapter unit + server + durability (Bun)
-npm run test:dashboard       # dashboard suite incl. GBrain trust-boundary tests
-# End-to-end (spawns Bun adapter):
+# Adapter: fake-backend unit + HTTP boundary + backend selector + embedding config
+# + REAL vendored-engine end-to-end (lexical, vector, graph, synthesis, isolation,
+# durability). Requires `bun install` in gbrain/ first (see note below).
+npm run test:gbrain
+
+# Dashboard: full suite incl. GBrain trust-boundary, citations, tool scopes,
+# skill visibility, sync-worker, and status-badge tests.
+npm run test:dashboard
+
+# Opt-in GBrain e2e over the dashboard boundary (spawns the Bun adapter):
 cd dashboard && BREADBOARD_TEST_GBRAIN_E2E=1 \
   node --test --experimental-strip-types tests/gbrain-e2e.test.mjs
+
+# Opt-in live embedding provider:
+GBRAIN_LIVE_EMBED=1 GBRAIN_EMBEDDING_BASE_URL=... GBRAIN_EMBEDDING_API_KEY=... \
+  GBRAIN_EMBEDDING_MODEL=... GBRAIN_EMBEDDING_DIMENSIONS=... \
+  bun test ./gbrain-adapter/test/embedding-config.test.ts
+
 cd desktop && npm test       # desktop supervisor incl. GBrain service test
 ```
 
+> **Note (Bun + OneDrive):** the vendored engine needs `gbrain/node_modules`.
+> On a OneDrive-synced checkout, Bun's default global cache can produce
+> incompletely-extracted packages; install with an out-of-OneDrive cache:
+> `cd gbrain && BUN_INSTALL_CACHE_DIR=%TEMP%\bun-gbrain-cache bun install --backend copyfile`.
+
 ## Versioning & vendored source
 
-* Vendored GBrain: `gbrain/VERSION` = `0.42.62.0`, committed inside Breadboard at
-  repo commit `9dbd2290…` (no separate upstream `.git`, so an upstream revision
-  cannot be independently proven — see limitations).
-* **No modifications** were made to `gbrain/src/`. The adapter does not import the
-  full vendored engine; it implements a narrow, first-party PGLite retrieval store
-  behind the adapter contract (see limitations for why).
+* Vendored GBrain: `gbrain/VERSION` = `0.42.62.0`. Full machine-readable
+  provenance is in **`gbrain/UPSTREAM.json`** (declared version, tree checksums,
+  local-patch list, and a reproducible comparison procedure).
+* **No modifications** were made to `gbrain/src/` (`git status gbrain/src` is
+  clean; `localPatches: []`). The production backend imports the vendored engine
+  only through its public interfaces.
+* The exact upstream commit SHA cannot be independently proven because the source
+  is committed inside Breadboard (no submodule/pin). `UPSTREAM.json` records this
+  honestly and gives a diff-against-tagged-release verification procedure.
 
 ## Current limitations
 
-1. **The adapter does not yet import GBrain's full vendored engine.** Standing up
-   GBrain's ~90-operation schema/engine was out of scope for the initial durable
-   slice. The adapter implements exactly the retrieval Breadboard needs on PGLite,
-   behind a stable contract, so the vendored engine can be swapped in later without
-   changing the dashboard. `dashboard/.../gbrain-status.ts` (the older MCP-probe
-   view) is superseded by `/api/gbrain/status` for the adapter path.
-2. **Real (paid) embedding providers are not wired.** `none` and the deterministic
-   `hash` provider are implemented; `openai`/`voyage`/etc. degrade to lexical.
-3. **Sync job draining is manual/route-triggered** (`POST /api/gbrain/sync`
-   `action: drain`); there is no always-on background worker yet.
-4. **The product UI is minimal**: the status/sync signals are exposed via
-   `/api/gbrain/status` and `/api/gbrain/sync`; a dedicated chat-panel badge is a
-   follow-up.
-5. **Upstream GBrain revision is unprovable** because the source is committed
-   inside Breadboard rather than pinned as a submodule/package.
+1. **Embeddings:** `none` (lexical) and `openai-compatible` (real) and
+   `deterministic-test` (offline, test-only) are implemented. There is one opt-in
+   live-provider test (`GBRAIN_LIVE_EMBED=1`); the default suite never calls a paid
+   API. A dimension change on an existing brain requires a reindex — GBrain's own
+   dim check fails clearly at ingest, but there is no pre-emptive re-embed sweep.
+2. **Synthesis is extractive**, grounded in real GBrain retrieval. LLM-based
+   synthesis (GBrain's `think`/query provider path) is deferred until a chat
+   provider is configured for the adapter; the adapter never falls back to
+   un-grounded model knowledge.
+3. **Installed desktop smoke test:** GBrain lifecycle coverage is added to
+   `desktop/scripts/smoke-test.mjs` (adapter health, real-engine backend, data
+   dir under userData, fixture index, retrieval after restart, secret-absent-from-
+   logs, no-orphan-process). It has **not been executed** in this environment
+   because building/installing the packaged Windows app is out of scope here; the
+   checks are gated to run when GBrain is enabled and record an explicit skip
+   otherwise. See DESKTOP_TROUBLESHOOTING for how to run it.
+4. **Upstream GBrain revision is unprovable** (committed in-tree, not a
+   submodule/package) — see `gbrain/UPSTREAM.json`.
+5. **`dashboard/.../gbrain-status.ts`** (the older MCP-probe view) is superseded
+   by `/api/gbrain/status` for the adapter path and remains only for the legacy
+   capability panel.

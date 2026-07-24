@@ -2,6 +2,10 @@ import { test, expect, afterAll } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// These tests exercise the HTTP trust boundary and use the deterministic FAKE
+// backend explicitly (the production default is the real vendored GBrain engine).
+process.env.GBRAIN_BACKEND = "fake";
+process.env.GBRAIN_TEST_MODE = "1";
 import { startAdapter } from "../src/server.ts";
 import { GBrainStore } from "../src/store.ts";
 

@@ -24,6 +24,7 @@ export function composeOpenHarnessSystemPrompt(input: {
   surface: OpenHarnessSurface;
   decision: CapabilityDecision;
   additional?: string;
+  persona?: string;
 }): string {
   const decision = input.decision;
   const sections = [readSystemPrompt("assistant"), surfacePrompt(input.surface)];
@@ -44,5 +45,8 @@ export function composeOpenHarnessSystemPrompt(input: {
     ].join("\n"),
   );
   if (input.additional?.trim()) sections.push(input.additional.trim());
+  // Persona overlays are deliberately last and explicitly subordinate. They
+  // can shape voice and approach, but never the server-authored sections above.
+  if (input.persona?.trim()) sections.push(input.persona.trim());
   return sections.join("\n\n");
 }

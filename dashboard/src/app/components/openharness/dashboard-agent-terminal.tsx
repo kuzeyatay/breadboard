@@ -16,7 +16,12 @@ import {
 import KnowledgeTerminal from "@/app/components/knowledge-terminal";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import AgentRuntimePanel from "./agent-runtime-panel";
-import ArtifactPanel, { ARTIFACT_BROWSER_EVENT, ARTIFACT_REVISE_EVENT } from "./artifact-panel";
+import ArtifactPanel, {
+  ARTIFACT_BROWSER_EVENT,
+  ARTIFACT_REVISE_EVENT,
+  ArtifactArchiveIcon,
+} from "./artifact-panel";
+import GBrainStatusBadge from "./gbrain-status-badge";
 import {
   useAgentSession,
   type AgentMessage,
@@ -477,6 +482,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
               >
                 Terminal
               </p>
+              <GBrainStatusBadge />
             </div>
             <button
               type="button"
@@ -487,9 +493,18 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                   return !current;
                 });
               }}
-              className={`${headerItemAnim} ml-auto rounded-md border border-[rgba(79,128,94,0.35)] px-2.5 py-1 text-xs text-[#315c40] hover:bg-white/40`}
+              aria-pressed={artifactsOpen}
+              aria-label={artifactsOpen ? "Close artifacts" : "Open artifacts"}
+              title={artifactsOpen ? "Close artifacts" : "Open conversation artifacts"}
+              style={{ animationDelay: "280ms" }}
+              className={`${headerItemAnim} neu-button ml-auto inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-all duration-150 ${
+                artifactsOpen
+                  ? "border-[#315c40] bg-[#315c40] text-[#FAF7EF] shadow-[0_2px_7px_rgba(49,92,64,0.18)]"
+                  : "border-[rgba(169,193,177,0.8)] bg-[rgba(255,255,255,0.42)] text-[#315c40] shadow-[0_1px_3px_rgba(74,91,70,0.07)] hover:border-[rgba(79,128,94,0.55)] hover:bg-[#F8F5EC]"
+              }`}
             >
-              Artifacts
+              <ArtifactArchiveIcon className="h-4 w-4 shrink-0" />
+              <span>Artifacts</span>
             </button>
           </>
         ) : null}

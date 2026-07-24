@@ -52,6 +52,22 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   assert.notEqual(dashboard.env["NEXTAUTH_SECRET"], "change-me");
 });
 
+test("dashboard explicitly receives a configured Agency Agents checkout", () => {
+  const previous = process.env["AGENCY_AGENTS_PATH"];
+  process.env["AGENCY_AGENTS_PATH"] = path.join("C:\\", "catalogs", "agency-agents");
+  try {
+    const { definitions } = fixture("packaged");
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.equal(
+      dashboard?.env["AGENCY_AGENTS_PATH"],
+      path.resolve(process.env["AGENCY_AGENTS_PATH"]),
+    );
+  } finally {
+    if (previous === undefined) delete process.env["AGENCY_AGENTS_PATH"];
+    else process.env["AGENCY_AGENTS_PATH"] = previous;
+  }
+});
+
 test("required mode registers OpenHarness as required with chatmock dependency", () => {
   const { definitions } = fixture("packaged");
   const openharness = definitions.find((d) => d.id === "openharness");
@@ -135,14 +151,17 @@ test("GBrain is absent by default and supervised as a loopback sidecar when enab
   // and mutable data under the desktop data dir (never in packaged resources).
   const on = fixture("packaged", { gbrainMode: "preferred" });
   const gbrain = on.definitions.find((d) => d.id === "gbrain");
-  assert.ok(gbrain, "gbrain service should be registered when enabled");
+  if (!gbrain) throw new Error("gbrain service should be registered when enabled");
+  if (!gbrain.healthCheck || gbrain.healthCheck.type !== "http") {
+    throw new Error("gbrain should use an HTTP health check");
+  }
   assert.equal(gbrain.command, "C:/rt/bun.exe");
   assert.match(gbrain.healthCheck.url, /^http:\/\/127\.0\.0\.1:\d+\/health$/);
   assert.equal(gbrain.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
   assert.ok((gbrain.env["GBRAIN_ADAPTER_SECRET"] ?? "").length >= 8);
-  assert.ok(gbrain.env["GBRAIN_DATA_DIR"].startsWith(on.paths.dataRoot));
+  assert.ok((gbrain.env["GBRAIN_DATA_DIR"] ?? "").startsWith(on.paths.dataRoot));
   // Mutable data must not live inside packaged resources.
-  assert.ok(!gbrain.env["GBRAIN_DATA_DIR"].includes("bb-res"));
+  assert.ok(!(gbrain.env["GBRAIN_DATA_DIR"] ?? "").includes("bb-res"));
 
   // The dashboard learns the adapter URL + shared secret, but the secret never
   // appears in a non-secret place unexpectedly (it is the per-install secret).
@@ -150,4 +169,43 @@ test("GBrain is absent by default and supervised as a loopback sidecar when enab
   assert.ok(dashOn);
   assert.equal(dashOn.env["GBRAIN_MODE"], "preferred");
   assert.equal(dashOn.env["GBRAIN_ADAPTER_SECRET"], on.config.persistent.gbrainAdapterSecret);
+});
+
+test("ui-tars adapter is registered (optional default), loopback, secret via env not argv", () => {
+  const { config, definitions, paths } = fixture("packaged");
+  const uiTars = definitions.find((d) => d.id === "ui-tars");
+  if (!uiTars) throw new Error("ui-tars service should be registered by default (optional mode)");
+  assert.equal(uiTars.required, false, "ui-tars must never block startup");
+  assert.equal(uiTars.command, "C:/rt/node.exe");
+  if (!uiTars.healthCheck || uiTars.healthCheck.type !== "http") {
+    throw new Error("ui-tars should use an HTTP health check");
+  }
+  assert.match(uiTars.healthCheck.url, /^http:\/\/127\.0\.0\.1:\d+\/health$/);
+  assert.equal(uiTars.env["UI_TARS_ADAPTER_HOST"], "127.0.0.1");
+  assert.equal(uiTars.env["UI_TARS_ADAPTER_SECRET"], config.persistent.uiTarsAdapterSecret);
+  assert.ok((uiTars.env["UI_TARS_ADAPTER_SECRET"] ?? "").length >= 8);
+  // Secret must NOT appear in argv (process listing safety).
+  assert.ok(!uiTars.args.some((a) => a.includes(config.persistent.uiTarsAdapterSecret)));
+  // Mutable data under the data dir, never inside packaged resources.
+  assert.ok((uiTars.env["UI_TARS_DATA_DIR"] ?? "").startsWith(paths.dataRoot));
+  assert.ok(!(uiTars.env["UI_TARS_DATA_DIR"] ?? "").includes("bb-res"));
+  // Real runtime is the default; fake is test-only.
+  assert.equal(uiTars.env["UI_TARS_RUNTIME"], process.env["UI_TARS_RUNTIME"] ?? "agent-tars");
+});
+
+test("dashboard receives UI_TARS_MODE + adapter secret when enabled", () => {
+  const { config, definitions } = fixture("packaged");
+  const dashboard = definitions.find((d) => d.id === "dashboard");
+  assert.ok(dashboard);
+  assert.equal(dashboard.env["UI_TARS_MODE"], "optional");
+  assert.equal(dashboard.env["UI_TARS_ADAPTER_SECRET"], config.persistent.uiTarsAdapterSecret);
+});
+
+test("ui-tars disabled mode removes the service and its adapter secret from dashboard", () => {
+  const { definitions } = fixture("packaged", { uiTarsMode: "disabled" });
+  assert.equal(definitions.find((d) => d.id === "ui-tars"), undefined);
+  const dashboard = definitions.find((d) => d.id === "dashboard");
+  assert.ok(dashboard);
+  assert.equal(dashboard.env["UI_TARS_MODE"], "disabled");
+  assert.equal(dashboard.env["UI_TARS_ADAPTER_SECRET"], undefined);
 });

@@ -257,6 +257,22 @@ if (fs.existsSync(path.join(repoRoot, "shared"))) {
   copyTree(path.join(repoRoot, "shared"), path.join(stagingRoot, "shared"));
 }
 
+// --- ui-tars-adapter (browser-operator sidecar; optional runtime) ---------
+// Staged as SOURCE. Its production dependencies (@agent-tars/core, puppeteer-core,
+// @tarko/*, @agent-infra/browser, react) must be installed into the staged dir at
+// package time — run `npm install --omit=dev` in resources/app-services/ui-tars-adapter
+// as a packaging step. UI-TARS is optional: if those deps or a system Chrome/Edge
+// are absent, the app still runs and the agent shows an unavailable state. Chromium
+// is NOT bundled; a system Chrome/Edge is located at runtime by browser-finder.
+if (fs.existsSync(path.join(repoRoot, "ui-tars-adapter"))) {
+  log("staging ui-tars-adapter (source; prod deps installed at package time)");
+  const uiTarsTarget = path.join(stagingRoot, "ui-tars-adapter");
+  freshDir(uiTarsTarget);
+  copyTree(path.join(repoRoot, "ui-tars-adapter"), uiTarsTarget, (rel) =>
+    /(^|\/)node_modules(\/|$)/.test(rel) || /(^|\/)test(\/|$)/.test(rel),
+  );
+}
+
 // --- licenses -------------------------------------------------------------
 log("staging license notices");
 const licensesTarget = path.join(desktopRoot, "build-resources", "licenses");

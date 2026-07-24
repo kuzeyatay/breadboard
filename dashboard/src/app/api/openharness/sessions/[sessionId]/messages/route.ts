@@ -57,6 +57,13 @@ export async function POST(
 
     if (!result.accepted) {
       if ("blocked" in result) return NextResponse.json(result);
+      if ("clarified" in result) {
+        return NextResponse.json({
+          accepted: false,
+          clarified: true,
+          message: result.message,
+        });
+      }
       return NextResponse.json({
         accepted: result.status === "pending",
         replayed: true,

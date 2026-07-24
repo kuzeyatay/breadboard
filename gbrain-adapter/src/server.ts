@@ -7,7 +7,8 @@
 
 import crypto from "node:crypto";
 import { resolveConfig, assertSecret, type AdapterConfig } from "./config.ts";
-import { GBrainStore } from "./store.ts";
+import { selectBackend } from "./backends/select.ts";
+import type { RetrievalBackend } from "./backends/types.ts";
 import type { GBrainScope } from "./types.ts";
 
 function timingSafeEqual(a: string, b: string): boolean {
@@ -40,7 +41,7 @@ function isScope(value: unknown): value is GBrainScope {
 export interface AdapterServer {
   stop(): Promise<void>;
   port: number;
-  store: GBrainStore;
+  store: RetrievalBackend;
 }
 
 export async function startAdapter(
@@ -49,7 +50,8 @@ export async function startAdapter(
   const config: AdapterConfig = { ...resolveConfig(), ...overrides };
   assertSecret(config);
 
-  const store = new GBrainStore({ pgDir: config.pgDir, embeddingProvider: config.embeddingProvider });
+  // Select the production (vendored GBrain) or the test-only fake backend.
+  const { backend: store } = selectBackend(process.env, config.pgDir, config.embeddingProvider);
   await store.init();
 
   const authorized = (req: Request): boolean => {
@@ -81,6 +83,8 @@ export async function startAdapter(
         return json({
           status: "healthy",
           ready: true,
+          // Truthful backend identity: "gbrain" (real vendored engine) or "fake".
+          backend: store.backendName,
           mode: store.mode,
           embeddingProvider: store.providerName,
           embeddingsAvailable: store.embeddingsAvailable,
