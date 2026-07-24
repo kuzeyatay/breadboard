@@ -68,7 +68,12 @@ function resolveSourceFilter(scope: GBrainScope, requested?: string[]): string[]
   return requested.filter((id) => authorized.has(id));
 }
 
-export class GBrainStore {
+// Deterministic, first-party PGLite store. This is the `fake` backend — a
+// test-only / explicitly-named fallback. It is NEVER the default and is NEVER
+// reported as "gbrain" in status (backendName = "fake"). The production backend
+// is GBrainEngineBackend, which wraps the vendored GBrain engine.
+export class GBrainStore implements RetrievalBackend {
+  readonly backendName = "fake" as const;
   private db: PGlite | null = null;
   private provider: EmbeddingProvider;
   private ready = false;

@@ -6,15 +6,16 @@
   "activatesCodingMode": false,
   "compatibleModes": ["knowledge"],
   "compatibleSurfaces": ["garden_chat", "dashboard_terminal"],
+  "$visibilityPolicy": "Only three skills are user-visible in the Skills palette to avoid clutter: garden-research, capture-to-garden, knowledge-health. The rest are INTERNAL routing skills — still available to the authenticated Garden Chat and Terminal agents (they are general-knowledge, read-only or proposal-only), but hidden from the palette. No internal skill grants coding mode, GBrain admin, or writes.",
   "skills": [
     { "slug": "garden-research", "visible": true },
-    { "slug": "cross-source-synthesis", "visible": true },
     { "slug": "capture-to-garden", "visible": true },
-    { "slug": "source-ingestion-guidance", "visible": true },
-    { "slug": "meeting-ingestion", "visible": true },
-    { "slug": "citation-audit", "visible": true },
-    { "slug": "frontmatter-guard", "visible": true },
-    { "slug": "knowledge-health", "visible": true }
+    { "slug": "knowledge-health", "visible": true },
+    { "slug": "cross-source-synthesis", "visible": false, "internal": true },
+    { "slug": "source-ingestion-guidance", "visible": false, "internal": true },
+    { "slug": "meeting-ingestion", "visible": false, "internal": true },
+    { "slug": "citation-audit", "visible": false, "internal": true },
+    { "slug": "frontmatter-guard", "visible": false, "internal": true }
   ],
   "excludedUpstreamSkills": [
     "cron-scheduler",

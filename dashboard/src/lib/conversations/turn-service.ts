@@ -30,6 +30,7 @@ import {
   reserveConversationTurn,
   retryAssistantMessage,
   annotateConversationTurn,
+  completeAssistantMessage,
   failAssistantMessage,
   updateConversation,
   ConversationStoreError,
@@ -41,6 +42,11 @@ import {
   loadConversationMemoryBundle,
   maintainDurableMemoryFromUserTurn,
 } from "./memory.ts";
+import {
+  findAgencyAgent,
+  renderAgencyAgentPersona,
+  type AgencyAgentDefinition,
+} from "../openharness/agency-agents.ts";
 
 export interface ConversationSurfaceContext {
   activeGardenSlug?: string;
@@ -84,6 +90,12 @@ export type StartConversationTurnResult =
       pendingPermissions: unknown[];
       request: string;
       plan: { intendedOutcome: string; steps: string[]; riskLevel: string };
+    }
+  | {
+      accepted: false;
+      clarified: true;
+      session: AuthorizedRuntimeSession;
+      message: string;
     }
   | {
       accepted: false;
@@ -195,6 +207,27 @@ export async function startConversationTurn(
     workspaceRoot: session.activeDirectory,
     confirmedPermissionIds: input.confirmedPermissionIds,
   });
+  const missingFilesystemTarget = prepared.pendingPermissions.some(
+    (permission) =>
+      permission.kind === "filesystem" && !permission.path?.trim(),
+  );
+  if (prepared.blocked && missingFilesystemTarget) {
+    const message =
+      "Which folder should I inspect? Name a folder such as Downloads or Documents, or paste its full path.";
+    markStatus(session, "idle");
+    completeAssistantMessage({
+      conversationId: input.conversation.id,
+      clientMessageId: input.clientMessageId,
+      content: message,
+      metadata: { clarification: "filesystem_target_required" },
+    });
+    return {
+      accepted: false,
+      clarified: true,
+      session,
+      message,
+    };
+  }
   const decision = prepared.decision;
   const resolved = await resolveCommandMessage(
     input.conversation.user_id,
@@ -202,6 +235,47 @@ export async function startConversationTurn(
     session.activeDirectory,
     { mode: decision.mode, surface: input.surface },
   );
+  let turnConversation = reservation.conversation;
+  let activeAgencyAgent: AgencyAgentDefinition | null = null;
+  if (resolved.agencyAgentSelection?.action === "clear") {
+    turnConversation = updateConversation(turnConversation, {
+      activeAgencyAgentSlug: null,
+    });
+  } else if (resolved.agencyAgentSelection?.action === "set") {
+    turnConversation = updateConversation(turnConversation, {
+      activeAgencyAgentSlug: resolved.agencyAgentSelection.slug,
+    });
+    activeAgencyAgent = findAgencyAgent(resolved.agencyAgentSelection.slug);
+  } else if (turnConversation.active_agency_agent_slug) {
+    activeAgencyAgent = findAgencyAgent(turnConversation.active_agency_agent_slug);
+    if (!activeAgencyAgent) {
+      turnConversation = updateConversation(turnConversation, {
+        activeAgencyAgentSlug: null,
+      });
+    }
+  }
+  annotateConversationTurn({
+    conversationId: input.conversation.id,
+    clientMessageId: input.clientMessageId,
+    metadata: {
+      commands: resolved.invocations,
+      activeAgencyAgentSlug: activeAgencyAgent?.slug ?? null,
+    },
+  });
+  if (resolved.agencyAgentSelection) {
+    recordAuditEvent({
+      eventType: resolved.agencyAgentSelection.action === "set"
+        ? "conversation.agency_agent_selected"
+        : "conversation.agency_agent_cleared",
+      runtimeSessionId: session.row.id,
+      userId: input.conversation.user_id,
+      gardenId: session.row.garden_id,
+      payload: {
+        conversationPublicId: input.conversation.public_id,
+        slug: activeAgencyAgent?.slug ?? null,
+      },
+    });
+  }
   decision.selectedConditionalSkills = resolved.invocations
     .filter((invocation) => invocation.kind === "skill")
     .map((invocation) => invocation.slug);
@@ -270,13 +344,17 @@ export async function startConversationTurn(
     });
   }
 
-  maintainDurableMemoryFromUserTurn({
-    conversation: reservation.conversation,
-    content: input.text,
-    activeGardenId: session.row.cluster_id,
-  });
-  if (reservation.conversation.title === "New chat") {
-    updateConversation(reservation.conversation, { title: titleFromMessage(input.text) });
+  if (resolved.userText.trim()) {
+    maintainDurableMemoryFromUserTurn({
+      conversation: turnConversation,
+      content: resolved.userText,
+      activeGardenId: session.row.cluster_id,
+    });
+  }
+  if (turnConversation.title === "New chat" && resolved.userText.trim()) {
+    turnConversation = updateConversation(turnConversation, {
+      title: titleFromMessage(resolved.userText),
+    });
   }
 
   const tools = mergeSelectedTools(prepared.grant.allowedTools, resolved.tools);
@@ -288,10 +366,13 @@ export async function startConversationTurn(
       authorizedGardenContext(input.conversation.user_id, session.row.garden_id),
       renderSurfaceContext(input.surface, context),
     ].filter(Boolean).join("\n\n"),
+    persona: activeAgencyAgent
+      ? renderAgencyAgentPersona(activeAgencyAgent)
+      : undefined,
   });
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
-    instruction: input.text,
+    instruction: resolved.userText || input.text,
     dispatch: {
       conversationPublicId: input.conversation.public_id,
       clientMessageId: input.clientMessageId,
@@ -309,7 +390,7 @@ export async function startConversationTurn(
       workspaceKey: target.workspaceKey,
       directory: target.activeDirectory,
       agentName: target.agentName,
-      text: resolved.text,
+      text: resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
       attachments: input.attachments,
       tools,
       model: engine.model,

@@ -7,7 +7,7 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
-import { useImperativeHandle, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import UsageLimitsPopover from '@/app/components/usage-limits-popover';
 import { CommandHub, type CommandHubHandle } from '@/app/components/openharness/command-hub';
 import { splitLeadingCommandTokens } from '@/app/components/openharness/command-text';
@@ -88,6 +88,15 @@ function Spinner() {
   );
 }
 
+type ActiveAgencyAgent = {
+  id: string;
+  slug: string;
+  name: string;
+  divisionLabel: string;
+  divisionColor?: string;
+  emoji?: string;
+};
+
 export default function AssistantComposer({
   value,
   onChange,
@@ -125,6 +134,8 @@ export default function AssistantComposer({
 }: Props) {
   const [showIntelligence, setShowIntelligence] = useState(false);
   const [showCommandHub, setShowCommandHub] = useState(false);
+  const [activeAgencyAgent, setActiveAgencyAgent] = useState<ActiveAgencyAgent | null>(null);
+  const [agencyAgentNotice, setAgencyAgentNotice] = useState<string | null>(null);
   const commandBackdropRef = useRef<HTMLDivElement | null>(null);
   const [yoloMode, setYoloMode] = useYoloMode();
   const commandHubRef = useRef<CommandHubHandle>(null);
@@ -147,6 +158,53 @@ export default function AssistantComposer({
     Boolean(onQueueSteer) &&
     runState !== 'steering' &&
     runState !== 'stopping';
+
+  useEffect(() => {
+    if (!capabilitySessionId || capabilitySurface === 'quartz_ai') {
+      setActiveAgencyAgent(null);
+      setAgencyAgentNotice(null);
+      return;
+    }
+    const controller = new AbortController();
+    void fetch(
+      `/api/openharness/sessions/${encodeURIComponent(String(capabilitySessionId))}/agency-agent`,
+      { cache: 'no-store', signal: controller.signal },
+    )
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return await response.json() as {
+          activeAgent?: ActiveAgencyAgent | null;
+          notice?: string | null;
+        };
+      })
+      .then((payload) => {
+        if (!payload) return;
+        setActiveAgencyAgent(payload.activeAgent ?? null);
+        setAgencyAgentNotice(payload.notice ?? null);
+      })
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          setAgencyAgentNotice('The active agent status could not be refreshed.');
+        }
+      });
+    return () => controller.abort();
+  }, [capabilitySessionId, capabilitySurface, runState]);
+
+  async function clearAgencyAgent() {
+    if (!capabilitySessionId) return;
+    try {
+      const response = await fetch(
+        `/api/openharness/sessions/${encodeURIComponent(String(capabilitySessionId))}/agency-agent`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) throw new Error('clear_failed');
+      setActiveAgencyAgent(null);
+      setAgencyAgentNotice(null);
+      window.setTimeout(() => internalTextareaRef.current?.focus(), 0);
+    } catch {
+      setAgencyAgentNotice('The active agent could not be cleared.');
+    }
+  }
 
   function toggleIntelligence() {
     const next = !showIntelligence;
@@ -221,6 +279,33 @@ export default function AssistantComposer({
                 ) : null}
               </div>
             ))}
+          </div>
+        ) : null}
+        {activeAgencyAgent ? (
+          <div className="flex items-center px-2 pb-1.5 pt-0.5">
+            <span
+              className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]"
+              title={`${activeAgencyAgent.name} · ${activeAgencyAgent.divisionLabel}`}
+            >
+              <span aria-hidden style={activeAgencyAgent.divisionColor ? { color: activeAgencyAgent.divisionColor } : undefined}>
+                {activeAgencyAgent.emoji ?? '●'}
+              </span>
+              <span className="truncate">
+                <span className="font-medium text-[var(--ink)]">{activeAgencyAgent.name}</span>
+                <span className="hidden sm:inline"> · {activeAgencyAgent.divisionLabel}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => void clearAgencyAgent()}
+                className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                aria-label={`Clear ${activeAgencyAgent.name} agent`}
+                title="Clear active agent"
+              >
+                <svg aria-hidden className="h-2.5 w-2.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path strokeLinecap="round" d="m3 3 6 6m0-6-6 6" />
+                </svg>
+              </button>
+            </span>
           </div>
         ) : null}
 
@@ -473,14 +558,14 @@ export default function AssistantComposer({
           )}
         </div>
 
-        {statusMessage ? (
+        {statusMessage || agencyAgentNotice ? (
           <div className="flex min-h-7 items-center gap-3 px-3 pb-1 pt-1.5 text-[11px]">
             <p
               className="min-w-0 flex-1 text-[#8a6f00]"
               role="status"
               aria-live="polite"
             >
-              {statusMessage}
+              {statusMessage ?? agencyAgentNotice}
             </p>
           </div>
         ) : null}

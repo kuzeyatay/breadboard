@@ -20,6 +20,7 @@ import {
   runtimeMcpConfig,
 } from "@/lib/openharness/mcp-connections.ts";
 import { decideCapabilityMode } from "@/lib/openharness/capability-policy.ts";
+import { loadAgencyAgentsCatalog } from "@/lib/openharness/agency-agents.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -61,6 +62,7 @@ export async function GET(request: Request) {
       requestedOutcome: outcome || activeDecision?.requestedOutcome,
     };
     const items = registryItemsForUser(userId, context);
+    const agencyCatalog = surface === "quartz_ai" ? null : loadAgencyAgentsCatalog();
     const connections = listMcpConnections(userId);
     const connectionItems = items.filter((item) => item.kind === "mcp");
     let connectionNotice: string | null = null;
@@ -102,6 +104,7 @@ export async function GET(request: Request) {
       skills: items.filter((item): item is CommandHubItem => item.kind === "skill"),
       mcp: connectionItems,
       prompts: items.filter((item): item is CommandHubItem => item.kind === "prompt"),
+      agents: items.filter((item): item is CommandHubItem => item.kind === "agent"),
     };
     return NextResponse.json({
       groups,
@@ -110,7 +113,10 @@ export async function GET(request: Request) {
         expiresAt: activeDecision?.expiresAt ?? null,
         taskScoped: context.mode === "scoped_implementation",
       },
-      notices: { connections: connectionNotice },
+      notices: {
+        connections: connectionNotice,
+        agents: agencyCatalog?.message ?? null,
+      },
     });
   } catch (error) {
     return apiErrorResponse(error);

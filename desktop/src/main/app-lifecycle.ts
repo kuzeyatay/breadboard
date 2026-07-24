@@ -125,6 +125,8 @@ export class AppLifecycle {
         quartzWs: await allocatePort(3001, taken),
         // GBrain adapter port is only allocated when GBrain is enabled.
         ...(persistent.gbrainMode !== "disabled" ? { gbrain: await allocatePort(7717, taken) } : {}),
+        // UI-TARS adapter port is only allocated when UI-TARS is not disabled.
+        ...(persistent.uiTarsMode !== "disabled" ? { uiTars: await allocatePort(7719, taken) } : {}),
       },
     };
 

@@ -36,8 +36,16 @@ const env = {
   GBRAIN_ADAPTER_PORT: port,
   GBRAIN_ADAPTER_SECRET: secret,
   GBRAIN_DATA_DIR: dataDir,
+  // Backend: `gbrain` (production, vendored engine) is the default; `fake` is
+  // test-only and refused in packaged production.
+  GBRAIN_BACKEND: process.env.GBRAIN_BACKEND || "gbrain",
+  // Embedding provider + credentials (openai-compatible). Missing credentials =>
+  // truthful lexical_degraded. Keys never reach the browser.
   GBRAIN_EMBEDDING_PROVIDER: process.env.GBRAIN_EMBEDDING_PROVIDER || "none",
+  GBRAIN_EMBEDDING_BASE_URL: process.env.GBRAIN_EMBEDDING_BASE_URL || "",
+  GBRAIN_EMBEDDING_API_KEY: process.env.GBRAIN_EMBEDDING_API_KEY || "",
   GBRAIN_EMBEDDING_MODEL: process.env.GBRAIN_EMBEDDING_MODEL || "",
+  GBRAIN_EMBEDDING_DIMENSIONS: process.env.GBRAIN_EMBEDDING_DIMENSIONS || "",
   GBRAIN_QUERY_TIMEOUT_MS: process.env.GBRAIN_QUERY_TIMEOUT_MS || "15000",
 };
 

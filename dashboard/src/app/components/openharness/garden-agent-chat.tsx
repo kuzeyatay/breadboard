@@ -14,8 +14,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
 import AgentRuntimePanel from "./agent-runtime-panel";
-import ArtifactPanel, { ARTIFACT_BROWSER_EVENT, ARTIFACT_REVISE_EVENT } from "./artifact-panel";
+import ArtifactPanel, {
+  ARTIFACT_BROWSER_EVENT,
+  ARTIFACT_REVISE_EVENT,
+  ArtifactArchiveIcon,
+} from "./artifact-panel";
 import SkillReviewPanel from "./skill-review-panel";
+import GBrainStatusBadge from "./gbrain-status-badge";
 import { useAgentSession, type AgentMessage } from "./use-agent-session";
 import {
   DEFAULT_ASSISTANT_MODELS,
@@ -294,6 +299,9 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           <p className="truncate text-[11px] text-gray-500">
             Garden agent · grounded, proposal-only · OpenHarness
           </p>
+          <div className="mt-1">
+            <GBrainStatusBadge gardenSlug={gardenSlug} canReindex />
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <span className="rounded-full border border-gray-700 px-2 py-0.5 text-[10px] text-gray-400">
@@ -337,9 +345,12 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           <button
             type="button"
             onClick={() => toggleView("artifacts")}
-            className={view === "artifacts" ? activeHeaderButton : headerButton}
+            className={`inline-flex items-center gap-1.5 ${
+              view === "artifacts" ? activeHeaderButton : headerButton
+            }`}
             title="Open conversation artifacts"
           >
+            <ArtifactArchiveIcon className="h-3.5 w-3.5 shrink-0" />
             Artifacts
           </button>
           {onClose ? (

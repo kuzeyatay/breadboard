@@ -36,8 +36,16 @@ import {
 } from "./dispatch-core.ts";
 import { listFilesystemGrants } from "./filesystem-grant-store.ts";
 import { beginRuntimeRun, finishRuntimeRun } from "./run-store.ts";
-import { getConversationById } from "../conversations/store.ts";
+import {
+  getConversationById,
+  updateConversation,
+} from "../conversations/store.ts";
 import { associateArtifactToolCall, listArtifactEventsAfter } from "./artifact-store.ts";
+import {
+  findAgencyAgent,
+  renderAgencyAgentPersona,
+  type AgencyAgentDefinition,
+} from "./agency-agents.ts";
 
 type GardenChatPayload = {
   clusterSlug?: unknown;
@@ -180,9 +188,23 @@ export async function openGardenAgentChat(
   if (session.row.conversation_id === null) {
     throw new ApiError(409, "conversation_required", "Garden artifacts require a canonical conversation.");
   }
-  const conversation = getConversationById(session.row.conversation_id);
+  let conversation = getConversationById(session.row.conversation_id);
   if (!conversation || conversation.surface !== "garden_chat") {
     throw new ApiError(409, "conversation_scope_mismatch", "The Garden conversation scope is invalid.");
+  }
+  let activeAgencyAgent: AgencyAgentDefinition | null = null;
+  if (resolved.agencyAgentSelection?.action === "clear") {
+    conversation = updateConversation(conversation, { activeAgencyAgentSlug: null });
+  } else if (resolved.agencyAgentSelection?.action === "set") {
+    conversation = updateConversation(conversation, {
+      activeAgencyAgentSlug: resolved.agencyAgentSelection.slug,
+    });
+    activeAgencyAgent = findAgencyAgent(resolved.agencyAgentSelection.slug);
+  } else if (conversation.active_agency_agent_slug) {
+    activeAgencyAgent = findAgencyAgent(conversation.active_agency_agent_slug);
+    if (!activeAgencyAgent) {
+      conversation = updateConversation(conversation, { activeAgencyAgentSlug: null });
+    }
   }
   const runTools = mergeSelectedTools(
     prepared.grant.allowedTools,
@@ -198,6 +220,9 @@ export async function openGardenAgentChat(
       payload.selectedDocumentSlugs,
       prepared,
     ),
+    persona: activeAgencyAgent
+      ? renderAgencyAgentPersona(activeAgencyAgent)
+      : undefined,
   });
   const run = beginRuntimeRun({
     runtimeSessionId: session.row.id,
@@ -216,7 +241,7 @@ export async function openGardenAgentChat(
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
       agentName: session.agentName,
-      text: resolved.text,
+      text: resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
       // The brokered map is authoritative. A selected MCP/skill tool may only
       // narrow it, never widen it.
       tools: runTools,

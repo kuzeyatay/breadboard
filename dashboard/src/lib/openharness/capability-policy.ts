@@ -109,7 +109,7 @@ export const RESTRICTED_RUNTIME_TOOLS = [
 /** Remove slash selectors before classification so a crafted token cannot escalate. */
 export function outcomeWithoutCapabilityTokens(value: string): string {
   let remaining = value.trimStart();
-  const token = /^\/(?:skill:|mcp:|prompt:)?[a-z0-9][a-z0-9_.-]*(?:\s+|$)/i;
+  const token = /^\/(?:skill:|mcp:|prompt:|agent:)?[a-z0-9][a-z0-9_.-]*(?:\s+|$)/i;
   while (remaining.startsWith("/")) {
     const match = remaining.match(token);
     if (!match) break;

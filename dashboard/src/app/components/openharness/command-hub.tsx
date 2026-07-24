@@ -23,7 +23,7 @@ const RECENTS_KEY = "breadboard:command-hub:recents:v1";
 const FAVORITES_KEY = "breadboard:command-hub:favorites:v1";
 const MIGRATION_KEY = "breadboard:prompt-library:server-migrated:v1";
 
-type PaletteTab = "skill" | "mcp" | "prompt";
+type PaletteTab = "skill" | "mcp" | "prompt" | "agent";
 type DetailView = "add-connection" | "manage-connections" | "new-prompt" | "manage-prompts" | null;
 
 type CommandResponse = {
@@ -31,13 +31,14 @@ type CommandResponse = {
     skills: CommandHubItem[];
     mcp: CommandHubItem[];
     prompts: CommandHubItem[];
+    agents: CommandHubItem[];
   };
   capability: {
     mode: "knowledge" | "technical_read" | "scoped_implementation";
     expiresAt: string | null;
     taskScoped: boolean;
   };
-  notices?: { connections?: string | null };
+  notices?: { connections?: string | null; agents?: string | null };
 };
 
 export interface CommandHubHandle {
@@ -66,6 +67,14 @@ function storedList(key: string): string[] {
   }
 }
 
+function itemIdentity(item: Pick<CommandHubItem, "kind" | "id">): string {
+  return `${item.kind}:${item.id}`;
+}
+
+function storedIncludes(values: string[], item: Pick<CommandHubItem, "kind" | "id">): boolean {
+  return values.includes(itemIdentity(item)) || values.includes(item.id);
+}
+
 async function migrateLegacyPrompts(): Promise<void> {
   if (localStorage.getItem(MIGRATION_KEY) === "complete") return;
   const raw = localStorage.getItem(LEGACY_PROMPTS_KEY);
@@ -88,6 +97,14 @@ async function migrateLegacyPrompts(): Promise<void> {
 }
 
 function CapabilityIcon({ kind }: { kind: CommandHubItemKind }) {
+  if (kind === "agent") {
+    return (
+      <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+        <circle cx="12" cy="8" r="3.25" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5.75 19c.7-3.1 3-5 6.25-5s5.55 1.9 6.25 5M18.4 7.1l.8.3.3.8-.3.8-.8.3-.8-.3-.3-.8.3-.8.8-.3Z" />
+      </svg>
+    );
+  }
   if (kind === "mcp") {
     return (
       <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
@@ -143,6 +160,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [activeIndex, setActiveIndex] = useState(0);
+    const [agentDirectoryOpen, setAgentDirectoryOpen] = useState(false);
     const [recents, setRecents] = useState<string[]>([]);
     const [favorites, setFavorites] = useState<string[]>([]);
     const [detailMessage, setDetailMessage] = useState<string | null>(null);
@@ -162,6 +180,7 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     const [promptContent, setPromptContent] = useState("");
     const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
     const searchRef = useRef<HTMLInputElement>(null);
+    const agentSearchRef = useRef<HTMLInputElement>(null);
 
     async function loadPalette() {
       setLoading(true);
@@ -189,6 +208,8 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
     useEffect(() => {
       if (!open) return;
       setDetail(null);
+      setAgentDirectoryOpen(false);
+      setQuery("");
       setActiveIndex(0);
       void loadPalette();
       window.setTimeout(() => searchRef.current?.focus(), 0);
@@ -197,19 +218,66 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, sessionId, surface, requestedOutcome]);
 
+    useEffect(() => {
+      if (!data) return;
+      const allItems = [
+        ...data.groups.skills,
+        ...data.groups.mcp,
+        ...data.groups.prompts,
+        ...(data.groups.agents ?? []),
+      ];
+      const migrate = (values: string[]) => {
+        const migrated = values.map((value) => {
+          if (value.includes(":") && allItems.some((item) => itemIdentity(item) === value)) {
+            return value;
+          }
+          const matches = allItems.filter((item) => item.id === value);
+          return matches.length === 1 ? itemIdentity(matches[0]) : value;
+        });
+        return [...new Set(migrated)].slice(0, 30);
+      };
+      setRecents((current) => {
+        const next = migrate(current);
+        localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+        return next;
+      });
+      setFavorites((current) => {
+        const next = migrate(current);
+        localStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
+        return next;
+      });
+    }, [data]);
+
     const tabItems = useMemo(() => {
       if (!data) return [];
-      const source = tab === "skill" ? data.groups.skills : tab === "mcp" ? data.groups.mcp : data.groups.prompts;
+      const source =
+        tab === "skill"
+          ? data.groups.skills
+          : tab === "mcp"
+            ? data.groups.mcp
+            : tab === "prompt"
+              ? data.groups.prompts
+              : data.groups.agents ?? [];
       const normalized = query.trim().toLowerCase();
       const filtered = normalized
-        ? source.filter((item) => `${item.name} ${item.description} ${item.category ?? ""} ${item.source ?? ""}`.toLowerCase().includes(normalized))
+        ? source.filter((item) =>
+            `${item.name} ${item.description} ${item.category ?? ""} ${item.source ?? ""} ${item.searchTerms ?? ""}`
+              .toLowerCase()
+              .includes(normalized),
+          )
         : source;
-      const recentRank = new Map(recents.map((id, index) => [id, index]));
-      const favoriteSet = new Set(favorites);
       return [...filtered].sort((left, right) => {
-        const favoriteDifference = Number(favoriteSet.has(right.id)) - Number(favoriteSet.has(left.id));
+        const favoriteDifference =
+          Number(storedIncludes(favorites, right)) -
+          Number(storedIncludes(favorites, left));
         if (favoriteDifference) return favoriteDifference;
-        return (recentRank.get(left.id) ?? 999) - (recentRank.get(right.id) ?? 999);
+        const leftRecent = recents.findIndex((value) =>
+          value === itemIdentity(left) || value === left.id,
+        );
+        const rightRecent = recents.findIndex((value) =>
+          value === itemIdentity(right) || value === right.id,
+        );
+        return (leftRecent < 0 ? 999 : leftRecent) - (rightRecent < 0 ? 999 : rightRecent);
       });
     }, [data, favorites, query, recents, tab]);
 
@@ -219,7 +287,11 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
 
     function choose(item: CommandHubItem) {
       if (!item.enabled || !item.healthy) return;
-      const next = [item.id, ...recents.filter((id) => id !== item.id)].slice(0, 20);
+      const identity = itemIdentity(item);
+      const next = [
+        identity,
+        ...recents.filter((value) => value !== identity && value !== item.id),
+      ].slice(0, 20);
       setRecents(next);
       localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
       onSelect(item);
@@ -262,13 +334,23 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       if (!open) return false;
       if (event.key === "Escape") {
         event.preventDefault();
-        if (detail) {
+        if (agentDirectoryOpen) {
+          setAgentDirectoryOpen(false);
+          setQuery("");
+          setActiveIndex(0);
+          window.setTimeout(
+            () => document.getElementById("agency-agents-directory")?.focus(),
+            0,
+          );
+        } else if (detail) {
           setDetail(null);
           window.setTimeout(() => searchRef.current?.focus(), 0);
         } else onOpenChange(false);
         return true;
       }
-      if (detail || tab === "skill") return false;
+      if (detail || tab === "skill" || (tab === "agent" && !agentDirectoryOpen)) {
+        return false;
+      }
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         const direction = event.key === "ArrowDown" ? 1 : -1;
@@ -285,16 +367,17 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
 
     useImperativeHandle(ref, () => ({ handleKeyDown }));
 
-    function toggleFavorite(id: string, taskScoped = false) {
+    function toggleFavorite(item: CommandHubItem, taskScoped = false) {
       const conditional = data?.groups.skills.some(
-        (item) =>
-          item.id === id &&
-          item.requiredCapabilityMode === "scoped_implementation",
+        (candidate) =>
+          candidate.id === item.id &&
+          candidate.requiredCapabilityMode === "scoped_implementation",
       );
       if (taskScoped || conditional) return;
-      const next = favorites.includes(id)
-        ? favorites.filter((item) => item !== id)
-        : [id, ...favorites].slice(0, 30);
+      const identity = itemIdentity(item);
+      const next = storedIncludes(favorites, item)
+        ? favorites.filter((value) => value !== identity && value !== item.id)
+        : [identity, ...favorites].slice(0, 30);
       setFavorites(next);
       localStorage.setItem(FAVORITES_KEY, JSON.stringify(next));
     }
@@ -457,7 +540,32 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
       { id: "skill", label: "Skills" },
       { id: "mcp", label: "Connections" },
       { id: "prompt", label: "Prompts" },
+      { id: "agent", label: "Agents" },
     ];
+
+    function selectTab(nextTab: PaletteTab) {
+      setTab(nextTab);
+      setAgentDirectoryOpen(false);
+      setQuery("");
+      setActiveIndex(0);
+    }
+
+    function openAgentDirectory() {
+      setAgentDirectoryOpen(true);
+      setQuery("");
+      setActiveIndex(0);
+      window.setTimeout(() => agentSearchRef.current?.focus(), 0);
+    }
+
+    function moveTabFocus(current: PaletteTab, direction: -1 | 1) {
+      const index = tabs.findIndex((item) => item.id === current);
+      const next = tabs[(index + direction + tabs.length) % tabs.length];
+      selectTab(next.id);
+      window.setTimeout(
+        () => document.getElementById(`command-hub-tab-${next.id}`)?.focus(),
+        0,
+      );
+    }
 
     return (
       <div className="relative shrink-0">
@@ -491,10 +599,10 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                   </div>
                   <button type="button" onClick={() => onOpenChange(false)} className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]" aria-label="Close capabilities">×</button>
                 </div>
-                {tab !== "skill" && !detail ? (
+                {tab !== "skill" && tab !== "agent" && !detail ? (
                   <div className="relative mt-3">
                     <svg aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="6.5" /><path strokeLinecap="round" d="m16 16 4 4" /></svg>
-                    <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} placeholder="Search skills, connections, and prompts" className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]" aria-label="Search capabilities" />
+                    <input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} placeholder="Search connections and prompts" className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]" aria-label="Search capabilities" />
                   </div>
                 ) : null}
               </header>
@@ -502,10 +610,27 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
               {!detail ? (
                 <nav className="flex items-center gap-1 border-b border-[var(--line)] px-3 pt-2" role="tablist" aria-label="Capability types">
                   {tabs.map((item) => (
-                    <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => { setTab(item.id); setActiveIndex(0); }} className={`relative px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[var(--botanical)] ${tab === item.id ? "font-medium text-[var(--ink-heading)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--botanical)]" : "text-[var(--ink-muted)] hover:text-[var(--ink)]"}`}>{item.label}</button>
+                    <button
+                      id={`command-hub-tab-${item.id}`}
+                      key={item.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={tab === item.id}
+                      tabIndex={tab === item.id ? 0 : -1}
+                      onClick={() => selectTab(item.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                          event.preventDefault();
+                          moveTabFocus(item.id, event.key === "ArrowLeft" ? -1 : 1);
+                        }
+                      }}
+                      className={`relative px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[var(--botanical)] ${tab === item.id ? "font-medium text-[var(--ink-heading)] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--botanical)]" : "text-[var(--ink-muted)] hover:text-[var(--ink)]"}`}
+                    >
+                      {item.label}
+                    </button>
                   ))}
                   <span className="flex-1" />
-                  {tab === "skill" ? null : <button type="button" onClick={() => { const nextDetail = tab === "mcp" ? "add-connection" : "new-prompt"; if (nextDetail === "new-prompt") { setEditingPromptId(null); setPromptTitle(""); setPromptCategory("Custom"); setPromptContent(""); } setDetail(nextDetail); setDetailMessage(null); }} className="mb-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--botanical)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">{tab === "mcp" ? "Add connection" : "New prompt"}</button>}
+                  {tab === "mcp" || tab === "prompt" ? <button type="button" onClick={() => { const nextDetail = tab === "mcp" ? "add-connection" : "new-prompt"; if (nextDetail === "new-prompt") { setEditingPromptId(null); setPromptTitle(""); setPromptCategory("Custom"); setPromptContent(""); } setDetail(nextDetail); setDetailMessage(null); }} className="mb-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--botanical)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]">{tab === "mcp" ? "Add connection" : "New prompt"}</button> : null}
                 </nav>
               ) : null}
 
@@ -519,6 +644,42 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                   />
                 ) : loading ? <LoadingRows /> : error ? (
                   <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center"><p className="text-sm text-[var(--ink)]">{error}</p><button type="button" onClick={() => void loadPalette()} className="mt-3 rounded-lg bg-[var(--botanical)] px-3 py-2 text-xs font-medium text-white">Try again</button></div>
+                ) : tab === "agent" && !detail ? (
+                  <div className="p-2">
+                    <button
+                      id="agency-agents-directory"
+                      type="button"
+                      onClick={openAgentDirectory}
+                      aria-haspopup="dialog"
+                      aria-expanded={agentDirectoryOpen}
+                      className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-3.5 text-left transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)] ${
+                        agentDirectoryOpen
+                          ? "border-[var(--line-strong)] bg-[var(--paper-surface)]"
+                          : "border-transparent hover:border-[var(--line)] hover:bg-[var(--paper-surface)]"
+                      }`}
+                    >
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]">
+                        <svg aria-hidden className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 7.5h6l1.5 2h9v8.75A1.75 1.75 0 0 1 19.5 20h-15a1.75 1.75 0 0 1-1.75-1.75v-9A1.75 1.75 0 0 1 4.5 7.5Z" />
+                          <path strokeLinecap="round" d="M3.75 10h16.5" />
+                        </svg>
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-[var(--ink-heading)]">Agency agents</span>
+                          <span className="rounded-full bg-[var(--paper-strong)] px-2 py-0.5 text-[10px] tabular-nums text-[var(--ink-muted)]">
+                            {data?.groups.agents.length ?? 0}
+                          </span>
+                        </span>
+                        <span className="mt-1 block text-xs leading-5 text-[var(--ink-muted)]">
+                          Browse specialist personas for design, engineering, marketing, strategy, and more.
+                        </span>
+                      </span>
+                      <svg aria-hidden className="h-4 w-4 shrink-0 text-[var(--ink-muted)] transition group-hover:translate-x-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="m9 5 7 7-7 7" />
+                      </svg>
+                    </button>
+                  </div>
                 ) : detail === "manage-connections" ? (
                   <div className="p-3">
                     <div className="flex items-center gap-3"><button type="button" onClick={() => setDetail(null)} className="text-xs text-[var(--botanical)]">← Back</button><h3 className="font-semibold text-[var(--ink-heading)]">Manage connections</h3><button type="button" onClick={() => { setDetail("add-connection"); setDetailMessage(null); }} className="ml-auto text-xs font-medium text-[var(--botanical)]">Add connection</button></div>
@@ -551,13 +712,218 @@ export const CommandHub = forwardRef<CommandHubHandle, Props>(
                     <button type="button" disabled={!promptTitle.trim() || !promptContent.trim()} onClick={() => void savePrompt()} className="neu-button-accent mt-4 rounded-xl bg-[var(--botanical)] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-40">Save prompt</button>
                   </div>
                 ) : tabItems.length ? (
-                  <ul role="listbox" aria-label={tabs.find((item) => item.id === tab)?.label} className="space-y-0.5">{tabItems.map((item, index) => { const enabled = Boolean(item.enabled && item.healthy); const favorite = favorites.includes(item.id) || item.favorite; return <li key={item.id} role="option" aria-selected={index === activeIndex}><div className={`group flex items-center gap-2 rounded-xl ${index === activeIndex ? "bg-[var(--paper-surface)]" : "hover:bg-[var(--paper-surface)]"}`}><button type="button" disabled={!enabled} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(item)} className="flex min-w-0 flex-1 items-start gap-3 px-3 py-3 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-55"><span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]"><CapabilityIcon kind={item.kind} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="truncate text-sm font-medium text-[var(--ink-heading)]">{item.name}</span>{recents.includes(item.id) ? <span className="text-[9px] uppercase tracking-wide text-[var(--ink-muted)]">Recent</span> : null}</span><span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">{item.description}</span><span className="mt-1 block truncate text-[10px] text-[var(--ink-muted)]">{item.category ?? (item.kind === "mcp" ? "Connection" : item.kind === "prompt" ? "Prompt" : "Skill")} · {item.requiredCapabilityMode === "scoped_implementation" ? "Task-scoped" : item.trustLabel ?? item.source ?? "Available"}{!enabled && item.unavailableReason ? ` · ${item.unavailableReason}` : ""}</span></span></button><button type="button" onClick={() => toggleFavorite(item.id)} className="mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] opacity-70 hover:bg-[var(--paper-strong)] hover:opacity-100 focus-visible:outline-2 focus-visible:outline-[var(--botanical)]" aria-label={`${favorite ? "Remove" : "Add"} ${item.name} ${favorite ? "from" : "to"} favorites`}>{favorite ? "★" : "☆"}</button></div></li>; })}</ul>
+                  <ul
+                    role="listbox"
+                    aria-label={tabs.find((item) => item.id === tab)?.label}
+                    className="space-y-0.5"
+                  >
+                    {tabItems.map((item, index) => {
+                      const enabled = Boolean(item.enabled && item.healthy);
+                      const favorite = storedIncludes(favorites, item) || item.favorite;
+                      const recent = storedIncludes(recents, item);
+                      return (
+                        <li key={itemIdentity(item)} role="option" aria-selected={index === activeIndex}>
+                          <div className={`group flex items-center gap-2 rounded-xl ${index === activeIndex ? "bg-[var(--paper-surface)]" : "hover:bg-[var(--paper-surface)]"}`}>
+                            <button
+                              type="button"
+                              disabled={!enabled}
+                              onMouseEnter={() => setActiveIndex(index)}
+                              onClick={() => choose(item)}
+                              className="flex min-w-0 flex-1 items-start gap-3 px-3 py-3 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              <span
+                                className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]"
+                                style={item.kind === "agent" && item.divisionColor ? { color: item.divisionColor } : undefined}
+                              >
+                                {item.kind === "agent" && item.emoji
+                                  ? <span aria-hidden className="text-base">{item.emoji}</span>
+                                  : <CapabilityIcon kind={item.kind} />}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="flex items-center gap-2">
+                                  <span className="truncate text-sm font-medium text-[var(--ink-heading)]">{item.name}</span>
+                                  {recent ? <span className="text-[9px] uppercase tracking-wide text-[var(--ink-muted)]">Recent</span> : null}
+                                </span>
+                                <span className={`mt-0.5 block text-xs text-[var(--ink-muted)] ${item.kind === "agent" ? "line-clamp-2" : "truncate"}`}>{item.description}</span>
+                                {item.kind === "agent" && item.vibe ? (
+                                  <span className="mt-1 block truncate text-[10px] italic text-[var(--ink-muted)]">{item.vibe}</span>
+                                ) : null}
+                                {item.kind === "agent" && item.services?.length ? (
+                                  <span className="mt-1.5 flex flex-wrap gap-1">
+                                    {item.services.slice(0, 3).map((service) => (
+                                      <span key={`${item.id}:${service.name}`} className="rounded-full bg-[var(--paper-strong)] px-1.5 py-0.5 text-[9px] text-[var(--ink-muted)]">
+                                        {service.name}
+                                      </span>
+                                    ))}
+                                    {item.services.length > 3 ? <span className="text-[9px] text-[var(--ink-muted)]">+{item.services.length - 3}</span> : null}
+                                  </span>
+                                ) : null}
+                                <span className="mt-1 block truncate text-[10px] text-[var(--ink-muted)]">
+                                  {item.category ?? (item.kind === "mcp" ? "Connection" : item.kind === "prompt" ? "Prompt" : item.kind === "agent" ? "Agent" : "Skill")}
+                                  {" · "}
+                                  {item.requiredCapabilityMode === "scoped_implementation" ? "Task-scoped" : item.trustLabel ?? item.source ?? "Available"}
+                                  {!enabled && item.unavailableReason ? ` · ${item.unavailableReason}` : ""}
+                                </span>
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => toggleFavorite(item)}
+                              className="mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] opacity-70 hover:bg-[var(--paper-strong)] hover:opacity-100 focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                              aria-label={`${favorite ? "Remove" : "Add"} ${item.name} ${favorite ? "from" : "to"} favorites`}
+                            >
+                              {favorite ? "★" : "☆"}
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 ) : (
-                  <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center"><span className="text-[var(--botanical)]"><CapabilityIcon kind={tab} /></span><p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">{query ? "No matching capabilities" : tab === "mcp" ? "No connections yet" : "No prompts yet"}</p><p className="mt-1 max-w-xs text-xs text-[var(--ink-muted)]">{query ? "Try a different search." : tab === "mcp" ? "Add a service you want to work with." : "Create a reusable instruction for your work."}</p></div>
+                  <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center">
+                    <span className="text-[var(--botanical)]"><CapabilityIcon kind={tab} /></span>
+                    <p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">
+                      {query
+                        ? "No matching capabilities"
+                        : tab === "mcp"
+                          ? "No connections yet"
+                          : tab === "agent"
+                            ? "No agents available"
+                            : "No prompts yet"}
+                    </p>
+                    <p className="mt-1 max-w-xs text-xs text-[var(--ink-muted)]">
+                      {query
+                        ? "Try a different search."
+                        : tab === "mcp"
+                          ? "Add a service you want to work with."
+                          : tab === "agent"
+                            ? data?.notices?.agents ?? "Configure a local Agency Agents catalog to use personas."
+                            : "Create a reusable instruction for your work."}
+                    </p>
+                  </div>
                 )}
               </div>
               {data?.notices?.connections && tab === "mcp" && !detail ? <p className="border-t border-[var(--line)] px-4 py-2 text-[11px] text-[#8a6f00]">{data.notices.connections}</p> : null}
+              {data?.notices?.agents && tab === "agent" && !detail ? <p className="border-t border-[var(--line)] px-4 py-2 text-[11px] text-[#8a6f00]">{data.notices.agents}</p> : null}
             </section>
+            {agentDirectoryOpen && tab === "agent" && !detail ? (
+              <aside
+                role="dialog"
+                aria-modal="false"
+                aria-labelledby="agency-agents-directory-title"
+                onKeyDown={handleKeyDown}
+                className="neu-popover fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] z-50 flex max-h-[min(82dvh,680px)] flex-col overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] sm:absolute sm:inset-x-auto sm:bottom-full sm:left-[calc(min(600px,calc(100vw-2rem))+0.5rem)] sm:mb-3 sm:h-[min(620px,72vh)] sm:w-[min(380px,calc(100vw-2rem))]"
+              >
+                <header className="border-b border-[var(--line)] px-4 pb-3 pt-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 id="agency-agents-directory-title" className="text-sm font-semibold text-[var(--ink-heading)]">
+                        Agency agents
+                      </h3>
+                      <p className="mt-1 text-[11px] leading-4 text-[var(--ink-muted)]">
+                        Choose a specialist persona for this conversation.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAgentDirectoryOpen(false);
+                        setQuery("");
+                        setActiveIndex(0);
+                        window.setTimeout(
+                          () => document.getElementById("agency-agents-directory")?.focus(),
+                          0,
+                        );
+                      }}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                      aria-label="Close Agency agents"
+                    >
+                      Ã—
+                    </button>
+                  </div>
+                  <div className="relative mt-3">
+                    <svg aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <circle cx="11" cy="11" r="6.5" />
+                      <path strokeLinecap="round" d="m16 16 4 4" />
+                    </svg>
+                    <input
+                      ref={agentSearchRef}
+                      value={query}
+                      onChange={(event) => {
+                        setQuery(event.target.value);
+                        setActiveIndex(0);
+                      }}
+                      placeholder="Search Agency agents"
+                      className="neu-control w-full rounded-xl border border-[var(--line)] bg-[var(--paper-surface)] py-2.5 pl-9 pr-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--botanical)]"
+                      aria-label="Search Agency agents"
+                    />
+                  </div>
+                </header>
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
+                  {tabItems.length ? (
+                    <ul role="listbox" aria-label="Agency agents" className="space-y-0.5">
+                      {tabItems.map((item, index) => {
+                        const enabled = Boolean(item.enabled && item.healthy);
+                        const favorite = storedIncludes(favorites, item) || item.favorite;
+                        const recent = storedIncludes(recents, item);
+                        return (
+                          <li key={itemIdentity(item)} role="option" aria-selected={index === activeIndex}>
+                            <div className={`group flex items-center gap-1 rounded-xl ${index === activeIndex ? "bg-[var(--paper-surface)]" : "hover:bg-[var(--paper-surface)]"}`}>
+                              <button
+                                type="button"
+                                disabled={!enabled}
+                                onMouseEnter={() => setActiveIndex(index)}
+                                onClick={() => choose(item)}
+                                className="flex min-w-0 flex-1 items-start gap-3 px-3 py-3 text-left focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--botanical)] disabled:cursor-not-allowed disabled:opacity-55"
+                              >
+                                <span
+                                  className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--paper-strong)] text-[var(--botanical)]"
+                                  style={item.divisionColor ? { color: item.divisionColor } : undefined}
+                                >
+                                  {item.emoji ? <span aria-hidden className="text-base">{item.emoji}</span> : <CapabilityIcon kind="agent" />}
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="flex items-center gap-2">
+                                    <span className="truncate text-sm font-medium text-[var(--ink-heading)]">{item.name}</span>
+                                    {recent ? <span className="text-[9px] uppercase tracking-wide text-[var(--ink-muted)]">Recent</span> : null}
+                                  </span>
+                                  <span className="mt-0.5 line-clamp-2 block text-xs leading-4 text-[var(--ink-muted)]">{item.description}</span>
+                                  <span className="mt-1 flex items-center gap-1.5 text-[10px] text-[var(--ink-muted)]">
+                                    {item.divisionIcon ? <span aria-hidden>{item.divisionIcon}</span> : null}
+                                    <span className="truncate">{item.divisionLabel ?? item.category ?? "Agency agent"}</span>
+                                  </span>
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleFavorite(item)}
+                                className="mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] opacity-70 hover:bg-[var(--paper-strong)] hover:opacity-100 focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                                aria-label={`${favorite ? "Remove" : "Add"} ${item.name} ${favorite ? "from" : "to"} favorites`}
+                              >
+                                {favorite ? "â˜…" : "â˜†"}
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <div className="flex min-h-48 flex-col items-center justify-center px-5 text-center">
+                      <span className="text-[var(--botanical)]"><CapabilityIcon kind="agent" /></span>
+                      <p className="mt-3 text-sm font-medium text-[var(--ink-heading)]">
+                        {query ? "No matching agents" : "No Agency agents available"}
+                      </p>
+                      <p className="mt-1 max-w-xs text-xs leading-5 text-[var(--ink-muted)]">
+                        {query ? "Try a different search." : data?.notices?.agents ?? "Configure the local Agency Agents catalog to browse personas."}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <p className="border-t border-[var(--line)] px-4 py-2.5 text-[10px] leading-4 text-[var(--ink-muted)]">
+                  Selecting an agent applies its persona to this conversation. It does not grant extra tools or permissions.
+                </p>
+              </aside>
+            ) : null}
           </>
         ) : null}
       </div>

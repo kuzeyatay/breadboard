@@ -937,6 +937,31 @@ export function useAgentSession(
         }
         const responseBody = await sendResponse.json().catch(() => ({}));
         if (
+          responseBody.clarified === true &&
+          typeof responseBody.message === "string" &&
+          responseBody.message.trim()
+        ) {
+          const completedAt = new Date().toISOString();
+          commit({
+            ...assistant,
+            content: responseBody.message.trim(),
+            responseDurationMs: Math.max(0, Date.now() - responseStartedAtMs),
+          });
+          setActivities((current) =>
+            current.map((item) =>
+              item.status === "running"
+                ? { ...item, status: "completed", completedAt }
+                : item,
+            ),
+          );
+          transition("completed");
+          abortRef.current?.abort();
+          await streamPromise.catch((streamError) => {
+            if ((streamError as Error).name !== "AbortError") throw streamError;
+          });
+          return;
+        }
+        if (
           responseBody.blocked === true &&
           Array.isArray(responseBody.pendingPermissions)
         ) {

@@ -1,0 +1,23 @@
+{
+  "name": "@breadboard/ui-tars-adapter",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "First-party Breadboard-owned adapter around the official Agent TARS browser runtime. Loopback-only, secret-gated, browser-operator only. Breadboard is the sole control plane; this adapter never becomes a second authorization system.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "test:e2e": "node --test --experimental-strip-types test/e2e/*.test.ts"
+  },
+  "dependencies": {
+    "@agent-infra/browser": "0.2.2",
+    "@agent-tars/core": "0.3.0",
+    "@tarko/agent-interface": "0.3.0",
+    "@tarko/model-provider": "0.3.0",
+    "react": "^18.3.1"
+  },
+  "//dependencies": "@agent-tars/core@0.3.0 corresponds to bytedance/UI-TARS-desktop @ c2ad42e3eb9b27830db41a3e6f51ca7179d9b168. NOTE: the published @agent-infra/browser (0.2.2) diverged from that SHA's source (0.1.1) — its API is Browser.create({launchOrConnect}) with pptrBrowser/wsEndpoint, not LocalBrowser.launch(). The adapter targets the mutually-compatible PUBLISHED set (core 0.3.0 + browser 0.2.2), isolated behind RuntimeClient. `react` is a transitive peer of @agent-infra/browser (via valtio/react). The real runtime is loaded lazily only when UI_TARS_RUNTIME=agent-tars, so fast unit/CI tests need none of these installed."
+}

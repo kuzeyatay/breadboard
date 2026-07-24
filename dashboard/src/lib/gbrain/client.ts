@@ -29,6 +29,8 @@ export interface AdapterScope {
 export interface AdapterHealth {
   status: "healthy" | "degraded" | "unavailable";
   ready: boolean;
+  /** Truthful backend identity: "gbrain" (real vendored engine) or "fake". */
+  backend: "gbrain" | "fake" | null;
   mode: "hybrid" | "lexical_degraded" | null;
   embeddingsAvailable: boolean;
   sources: number;
@@ -88,10 +90,11 @@ export class GBrainClient {
     if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
     try {
       const res = await fetch(new URL("/health", this.config.adapterUrl), { signal: controller.signal });
-      const data = (await res.json()) as Partial<AdapterHealth> & { mode?: string };
+      const data = (await res.json()) as Partial<AdapterHealth> & { mode?: string; backend?: string };
       return {
         status: data.status === "healthy" ? "healthy" : "degraded",
         ready: Boolean(data.ready),
+        backend: data.backend === "gbrain" || data.backend === "fake" ? data.backend : null,
         mode: data.mode === "hybrid" || data.mode === "lexical_degraded" ? data.mode : null,
         embeddingsAvailable: Boolean(data.embeddingsAvailable),
         sources: Number(data.sources) || 0,
@@ -102,6 +105,7 @@ export class GBrainClient {
       return {
         status: "unavailable",
         ready: false,
+        backend: null,
         mode: null,
         embeddingsAvailable: false,
         sources: 0,

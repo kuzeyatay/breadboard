@@ -101,6 +101,27 @@ test("casual whats phrasing still recognizes a Downloads inspection", () => {
   assert.ok(!c.has("filesystem_write"));
 });
 
+test("common folder-name typos are normalized into grantable aliases", () => {
+  const downloads = plan("whats the largest file in my donwloads folder?");
+  assert.ok(downloads.requiredCapabilities.includes("filesystem_read"));
+  assert.ok(
+    downloads.requiredResources.some(
+      (resource) =>
+        resource.kind === "path" &&
+        resource.value === "downloads" &&
+        resource.absolute === false,
+    ),
+  );
+
+  const documents = plan("what is in my docments fodler?");
+  assert.ok(
+    documents.requiredResources.some(
+      (resource) =>
+        resource.kind === "path" && resource.value === "documents",
+    ),
+  );
+});
+
 test("deleting duplicates needs confirmation and a destructive capability", () => {
   const p = plan("Delete duplicate files after showing me the candidates.");
   assert.ok(p.requiredCapabilities.includes("destructive_filesystem"));

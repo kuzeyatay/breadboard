@@ -127,6 +127,7 @@ test("terminal preflight permissions create a scoped folder grant and resume the
   assert.match(hook, /\/api\/openharness\/filesystem-grants/);
   assert.match(hook, /scope: decision === "always" \? "remembered" : "one_time"/);
   assert.match(hook, /await send\(blocked\.text/);
+  assert.match(hook, /responseBody\.clarified === true/);
   assert.match(route, /confirmedPermissionIds:/);
   const turnService = read("dashboard/src/lib/conversations/turn-service.ts");
   assert.ok(
@@ -135,6 +136,7 @@ test("terminal preflight permissions create a scoped folder grant and resume the
     "canonical user and pending-assistant rows must be reserved before preflight",
   );
   assert.match(turnService, /if \(prepared\.blocked\)[\s\S]*failAssistantMessage\([\s\S]*error: "awaiting_permission"/);
+  assert.match(turnService, /clarification: "filesystem_target_required"/);
 });
 
 test("OpenHarness model provider is environment-driven ChatMock", () => {

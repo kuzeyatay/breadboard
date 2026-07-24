@@ -1,0 +1,30 @@
+{
+  "$comment": "Provenance of the vendored GBrain source tree. Machine-readable record required by the Breadboard GBrain integration (docs/GBRAIN_INTEGRATION.md). Do NOT claim immutable upstream provenance from the VERSION file alone; see verification below.",
+  "name": "gbrain",
+  "declaredVersion": "0.42.62.0",
+  "declaredVersionSource": "gbrain/VERSION and gbrain/package.json (self-declared by the vendored tree)",
+  "upstreamRepositoryUrl": "UNKNOWN — the vendored package.json declares no repository field and no upstream remote is present in this checkout.",
+  "upstreamCommitSha": "UNKNOWN — the GBrain source is committed directly inside the Breadboard repository (no nested .git, no submodule pin), so the exact upstream commit SHA cannot be derived from this checkout.",
+  "importedAt": "2026-07-18",
+  "importMethod": "vendored (copied into gbrain/ and committed to the Breadboard repository)",
+  "localPatches": [],
+  "localPatchPolicy": "Zero modifications were made to gbrain/src by the Breadboard GBrain integration. The integration lives entirely in gbrain-adapter/ and dashboard/, importing GBrain only through its public interfaces. `git status gbrain/src` is clean.",
+  "contentChecksums": {
+    "method": "git tree object SHA-1 (canonical, reproducible from `git rev-parse`)",
+    "gbrainSrcTreeSha": "79b05994504cbfe559f65cfff461d25bdef1f826",
+    "gbrainTreeSha": "fa2608e11d625628736e15e929ed4ab399bb99a4",
+    "breadboardCommit": "539a7d24b77ad1ecf7a2e69f2630611784393a29",
+    "trackedSourceFileCount": 804
+  },
+  "reproducibleComparisonProcedure": {
+    "description": "Because the exact upstream SHA is unknown, verify the vendored tree against the tagged upstream release instead.",
+    "steps": [
+      "1. Obtain the upstream GBrain source for the tagged release v0.42.62.0 (from the upstream distribution the tree was vendored from).",
+      "2. Copy the vendored tree to a scratch dir: `cp -r gbrain /tmp/gbrain-vendored` and remove build artifacts (`rm -rf /tmp/gbrain-vendored/node_modules`).",
+      "3. Remove build artifacts from the upstream checkout too, then diff: `diff -ru <upstream>/src /tmp/gbrain-vendored/src`.",
+      "4. An empty diff confirms the vendored tree matches upstream v0.42.62.0. Any diff lines are local drift and MUST be added to localPatches above with justification.",
+      "5. Re-derive the current vendored tree SHA at any time with `git rev-parse HEAD:gbrain/src` and compare against contentChecksums.gbrainSrcTreeSha."
+    ]
+  },
+  "integrationBoundary": "gbrain-adapter/src/backends/gbrain-backend.ts wraps this tree via createEngine, importFromContent, searchKeyword, searchVector, getLinks/getBacklinks, addLinksBatch, getPage, addSource, embedQuery — all public exports. No private field access beyond engine.executeRaw (a public method used throughout gbrain core) for lightweight count(*) stats."
+}

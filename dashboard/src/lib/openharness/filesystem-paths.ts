@@ -188,18 +188,32 @@ export function candidatePathsForAlias(alias: string): string[] {
   const folders: Record<string, string[]> = {
     documents: ["Documents"],
     document: ["Documents"],
+    docments: ["Documents"],
+    docment: ["Documents"],
+    docuemnts: ["Documents"],
+    docuemnt: ["Documents"],
     desktop: ["Desktop"],
+    destkop: ["Desktop"],
     downloads: ["Downloads"],
     download: ["Downloads"],
+    donwloads: ["Downloads"],
+    donwload: ["Downloads"],
     pictures: ["Pictures"],
     picture: ["Pictures"],
+    pictuers: ["Pictures"],
+    pictuer: ["Pictures"],
     videos: ["Videos"],
+    vidoes: ["Videos"],
+    vidoe: ["Videos"],
     music: ["Music"],
+    muisc: ["Music"],
   };
   if (key === "home" || key === "home folder" || key === "home directory") {
     return [home];
   }
-  if (key === "onedrive") return oneDrive ? [oneDrive] : [];
+  if (key === "onedrive" || key === "onedirve") {
+    return oneDrive ? [oneDrive] : [];
+  }
   const names = folders[key];
   if (!names) return [];
   const out: string[] = [];
