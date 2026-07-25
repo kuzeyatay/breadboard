@@ -97,6 +97,12 @@ export default function NavBar({ email, username }: Props) {
           </span>
         </span>
         <div className="relative z-10 flex items-center gap-4">
+          <a
+            href="/agents"
+            className="text-xs text-gray-400 hover:text-white transition-colors"
+          >
+            Agents
+          </a>
           <button
             onClick={openInviteModal}
             className="text-xs text-gray-400 hover:text-white transition-colors"

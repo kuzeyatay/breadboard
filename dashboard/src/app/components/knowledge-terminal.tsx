@@ -34,7 +34,6 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   sources?: string[];
-  thinking?: string;
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
@@ -411,13 +410,6 @@ export default function KnowledgeTerminal({ scope }: Props) {
               };
               updateAssistant();
             }
-            if (event.type === 'thinking' && typeof event.text === 'string') {
-              assistantMessage = {
-                ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}${event.text}`,
-              };
-              updateAssistant();
-            }
             if (event.type === 'delta' && typeof event.text === 'string') {
               assistantMessage = {
                 ...assistantMessage,
@@ -732,21 +724,10 @@ export default function KnowledgeTerminal({ scope }: Props) {
                           </div>
                         ) : (
                           <div className="text-sm leading-7 text-gray-200">
-                            {message.responseDurationMs !== undefined && !message.thinking ? (
+                            {message.responseDurationMs !== undefined ? (
                               <p className="mb-1 text-sm text-[var(--ink-muted)]">
                                 Thinking ({formatResponseDuration(message.responseDurationMs)})
                               </p>
-                            ) : null}
-                            {message.thinking ? (
-                              <details className="neu-inset mb-2 rounded-md border border-gray-800 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
-                                <summary className="cursor-pointer text-gray-300">
-                                  Thinking
-                                  {message.responseDurationMs !== undefined
-                                    ? ` (${formatResponseDuration(message.responseDurationMs)})`
-                                    : ''}
-                                </summary>
-                                <pre className="mt-2 whitespace-pre-wrap font-sans leading-5">{message.thinking}</pre>
-                              </details>
                             ) : null}
                             {message.content ? (
                               <ChatMarkdown content={message.content} compact />

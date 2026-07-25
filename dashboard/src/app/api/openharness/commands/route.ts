@@ -24,10 +24,6 @@ import {
 } from "@/lib/openharness/mcp-connections.ts";
 import { decideCapabilityMode } from "@/lib/openharness/capability-policy.ts";
 import { loadAgencyAgentsCatalog } from "@/lib/openharness/agency-agents.ts";
-import {
-  commandHubAgents as uiTarsAgents,
-  isEnabled as uiTarsEnabled,
-} from "@/lib/ui-tars/service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -116,42 +112,11 @@ export async function GET(request: Request) {
       }
     }
 
-    // UI-TARS runtime agents appear in the SAME Agents list as the Agency agent
-    // personas. They are runtime (executable) agents rather than personas, so they
-    // carry a "Runtime" division label and are selected to open the browser
-    // workspace instead of being set as a conversation persona.
-    const uiTarsItems: CommandHubItem[] = uiTarsEnabled()
-      ? uiTarsAgents(userId).map((agent) => ({
-          id: `ui-tars:${agent.id}`,
-          kind: "agent" as const,
-          slug: "ui-tars",
-          // Selection navigates by item.id (never inserted as a slash token), so
-          // a stable readable token is sufficient here.
-          token: "agent:ui-tars",
-          name: agent.name,
-          description: agent.description,
-          category: "Runtime",
-          divisionLabel: "Runtime",
-          emoji: "🌐",
-          enabled: agent.enabled,
-          // Stays selectable while enabled even when misconfigured/unavailable:
-          // opening the workspace is how you configure it. The state is surfaced
-          // via unavailableReason rather than by blocking the only way to fix it.
-          healthy: agent.enabled,
-          ...(agent.runtimeState !== "available"
-            ? { unavailableReason: agent.runtimeState.replaceAll("_", " ") }
-            : {}),
-        }))
-      : [];
-
     const groups = {
       skills: items.filter((item): item is CommandHubItem => item.kind === "skill"),
       mcp: connectionItems,
       prompts: items.filter((item): item is CommandHubItem => item.kind === "prompt"),
-      agents: [
-        ...items.filter((item): item is CommandHubItem => item.kind === "agent"),
-        ...uiTarsItems,
-      ],
+      agents: items.filter((item): item is CommandHubItem => item.kind === "agent"),
     };
     return NextResponse.json({
       groups,

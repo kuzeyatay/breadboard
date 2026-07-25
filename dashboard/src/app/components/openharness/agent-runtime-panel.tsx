@@ -551,7 +551,6 @@ export default function AgentRuntimePanel({
                     ) : (
                       <div className="text-sm leading-7 text-gray-200">
                         {message.usage ||
-                        message.reasoning ||
                         message.responseDurationMs !== undefined ||
                         (index === lastAssistantIndex &&
                           (streaming || pendingPermission || activities.length > 0)) ? (
@@ -560,7 +559,6 @@ export default function AgentRuntimePanel({
                             connection={index === lastAssistantIndex ? connection : "idle"}
                             pendingPermission={index === lastAssistantIndex ? pendingPermission : null}
                             usage={message.usage}
-                            reasoning={message.reasoning}
                             responseDurationMs={message.responseDurationMs}
                             onAbort={onAbort}
                             showAbort={false}

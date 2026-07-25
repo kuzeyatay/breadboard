@@ -33,11 +33,8 @@ const quartzActivity = source(
 );
 
 test("thinking remains visible with response metadata and shimmers while active", () => {
-  const thinkingStart = activity.indexOf("{expanded && hasReasoningSummary");
-  const thinkingEnd = activity.indexOf("{pendingPermission ?", thinkingStart);
-  const thinkingBlock = activity.slice(thinkingStart, thinkingEnd);
   assert.match(activity, /thinking-shimmer/);
-  assert.match(activity, /text-left text-sm leading-6/);
+  assert.match(activity, /text-sm leading-6/);
   assert.match(activity, /statusMetadata/);
   assert.match(activity, /formatResponseDuration/);
   assert.match(activity, /assistantResponseElapsedMs/);
@@ -54,13 +51,9 @@ test("thinking remains visible with response metadata and shimmers while active"
   );
   assert.match(activity, /formatTokenCount/);
   assert.match(activity, /↓ counting tokens/);
-  assert.match(activity, /!activities\.length && !usage && !reasoning/);
-  assert.match(activity, /\{reasoning\}/);
-  assert.match(activity, /hasReasoningSummary/);
-  assert.doesNotMatch(activity, /if \(!expanded && !active/);
-  assert.doesNotMatch(activity, /setTimeout\(\(\) => setExpanded\(false\)/);
-  assert.ok(thinkingStart >= 0 && thinkingEnd > thinkingStart);
-  assert.doesNotMatch(thinkingBlock, /rounded-2xl border/);
+  assert.match(activity, /!activities\.length && !usage && responseDurationMs === undefined/);
+  assert.doesNotMatch(activity, /\{reasoning\}/);
+  assert.doesNotMatch(activity, /hasReasoningSummary/);
   assert.match(globalStyles, /@keyframes thinking-shimmer/);
   assert.match(
     globalStyles,
@@ -97,9 +90,10 @@ test("completed response duration remains attached to restored assistant message
   assert.match(chatSessionsRoute, /parseResponseDuration/);
 });
 
-test("expanded dashboard thinking shows only ChatMock reasoning text", () => {
-  assert.match(activity, /expanded && hasReasoningSummary/);
-  assert.match(activity, /\{reasoning\}/);
+test("dashboard thinking metadata never exposes model reasoning text", () => {
+  assert.doesNotMatch(activity, /expanded && hasReasoningSummary/);
+  assert.doesNotMatch(activity, /\{reasoning\}/);
+  assert.doesNotMatch(activity, /reasoning\?: string/);
   assert.doesNotMatch(activity, /Done thinking\./);
   assert.doesNotMatch(activity, /activityStatusSentence/);
   assert.doesNotMatch(activity, /visibleActivities/);
@@ -173,22 +167,20 @@ test("activity and actions render with assistant messages, not above composers",
     /<ActivityPanel/,
   );
   assert.doesNotMatch(workspace, /bg-gray-400 ml-0\.5 animate-pulse/);
-  assert.match(
-    activity,
-    /setReasoningDisclosure\(expanded \? "collapsed" : "expanded"\)/,
-  );
+  assert.doesNotMatch(activity, /reasoningDisclosure/);
+  assert.doesNotMatch(activity, /\{reasoning\}/);
   assert.doesNotMatch(activity, /View activity/);
   assert.doesNotMatch(activity, /Hide activity/);
   assert.doesNotMatch(composer, /LiveTokenUsageStatus/);
   assert.doesNotMatch(composer, /tokenUsagePending/);
   assert.match(workspace, /usage=\{msg\.usage\}/);
-  assert.match(workspace, /reasoning=\{msg\.thinking\}/);
+  assert.doesNotMatch(workspace, /reasoning=\{msg\.thinking\}/);
   assert.match(workspace, /msg\.usage \|\|/);
   assert.match(gardenAssistant, /usage=\{message\.usage\}/);
-  assert.match(gardenAssistant, /reasoning=\{message\.thinking\}/);
+  assert.doesNotMatch(gardenAssistant, /reasoning=\{message\.thinking\}/);
   assert.match(gardenAssistant, /message\.usage \|\|/);
   assert.match(runtime, /usage=\{message\.usage\}/);
-  assert.match(runtime, /reasoning=\{message\.reasoning\}/);
+  assert.doesNotMatch(runtime, /reasoning=\{message\.reasoning\}/);
   assert.equal(workspace.match(/<ActivityPanel/g)?.length, 1);
   assert.equal(runtime.match(/<ActivityPanel/g)?.length, 1);
   assert.equal(gardenAssistant.match(/<ActivityPanel/g)?.length, 1);

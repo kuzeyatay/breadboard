@@ -736,6 +736,23 @@ export function listRuntimeSessionsForUser(
     .all(surface, userId) as RuntimeSessionRow[];
 }
 
+/**
+ * Every runtime session a conversation has ever owned. A conversation can
+ * accumulate more than one row (a replacement live session after a restart is a
+ * new row), so deleting a chat has to clear all of them, not just the newest.
+ */
+export function listRuntimeSessionsForConversation(
+  conversationId: number,
+): RuntimeSessionRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM openharness_runtime_sessions
+       WHERE conversation_id = ?
+       ORDER BY id DESC`,
+    )
+    .all(conversationId) as RuntimeSessionRow[];
+}
+
 export function deleteRuntimeSession(id: number): void {
   db.prepare("DELETE FROM openharness_runtime_sessions WHERE id = ?").run(id);
 }

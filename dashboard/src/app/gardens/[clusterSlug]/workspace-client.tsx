@@ -610,9 +610,8 @@ const ChatTranscript = memo(function ChatTranscript({
             </div>
           ) : (
             <div className="flex w-full flex-col gap-2">
-              {msg.responseDurationMs !== undefined ||
+            {msg.responseDurationMs !== undefined ||
               msg.usage ||
-              msg.thinking ||
               (i === lastAssistantIndex &&
                 (isStreaming || pendingPermission || activities.length > 0)) ? (
                 <ActivityPanel
@@ -620,7 +619,6 @@ const ChatTranscript = memo(function ChatTranscript({
                   connection={i === lastAssistantIndex ? connection : "idle"}
                   pendingPermission={i === lastAssistantIndex ? pendingPermission : null}
                   usage={msg.usage}
-                  reasoning={msg.thinking}
                   responseDurationMs={msg.responseDurationMs}
                   onAbort={onAbort}
                   onPermissionDecision={onPermissionDecision}

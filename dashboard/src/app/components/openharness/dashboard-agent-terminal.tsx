@@ -22,6 +22,7 @@ import ArtifactPanel, {
   ArtifactArchiveIcon,
 } from "./artifact-panel";
 import GBrainStatusBadge from "./gbrain-status-badge";
+import { deleteChatSession, TrashIcon } from "./history-client";
 import {
   useAgentSession,
   type AgentMessage,
@@ -94,6 +95,13 @@ type HealthState = {
   mode: "required" | "preferred" | "legacy";
 };
 
+// The selected runtime is server configuration and can be Hermes or OpenHarness,
+// so this stays runtime-neutral: naming OpenHarness here reported the wrong
+// component when a Hermes runtime was the one that was down. No legacy request
+// was sent — required mode never silently falls back.
+const RUNTIME_UNAVAILABLE_MESSAGE =
+  "The agent runtime is required but unavailable. No legacy request was sent.";
+
 export default function DashboardAgentTerminal({ scope }: Props) {
   const [health, setHealth] = useState<HealthState>({ status: "checking", mode: "required" });
 
@@ -151,6 +159,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState("");
@@ -387,6 +396,26 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
     setAttachmentStatus("");
   }
 
+  async function deleteHistorySession(item: RuntimeHistorySession) {
+    if (busy) return;
+    if (
+      !window.confirm(
+        `Delete "${item.title}"? Its messages and any artifacts it produced are removed for good.`,
+      )
+    ) {
+      return;
+    }
+    setHistoryError(null);
+    const result = await deleteChatSession(item.id);
+    if (!result.deleted) {
+      setHistoryError(result.error ?? "This chat could not be deleted.");
+      return;
+    }
+    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    // The open chat no longer exists; fall back to an empty one.
+    if (item.id === session.sessionId) startNewChat();
+  }
+
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
     event.preventDefault();
     resizeStartRef.current = { startY: event.clientY, startHeight: height };
@@ -531,21 +560,27 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 Recents
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+                {historyError ? (
+                  <p className="px-2 pb-1 text-[11px] text-red-300">{historyError}</p>
+                ) : null}
                 {history.length === 0 ? (
                   <p className="px-2 py-6 text-center text-xs text-gray-600">No chats yet</p>
                 ) : (
                   <ul className="space-y-0.5">
                     {history.map((item) => (
-                      <li key={item.id}>
+                      <li
+                        key={item.id}
+                        className={`group flex items-center gap-1 rounded-md transition ${
+                          item.id === session.sessionId
+                            ? "bg-gray-800 text-white"
+                            : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
+                        }`}
+                      >
                         <button
                           type="button"
                           onClick={() => openHistorySession(item)}
                           disabled={busy}
-                          className={`w-full rounded-md px-2.5 py-2 text-left transition ${
-                            item.id === session.sessionId
-                              ? "bg-gray-800 text-white"
-                              : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
-                          }`}
+                          className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="truncate text-xs font-medium">{item.title}</span>
@@ -553,6 +588,16 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                               {formatChatTime(item.updatedAt)}
                             </span>
                           </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteHistorySession(item)}
+                          disabled={busy}
+                          title="Delete this chat"
+                          aria-label={`Delete chat ${item.title}`}
+                          className="mr-1 shrink-0 rounded p-1 text-gray-600 opacity-0 transition-colors hover:bg-red-950/40 hover:text-red-300 focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed"
+                        >
+                          <TrashIcon className="h-3.5 w-3.5" />
                         </button>
                       </li>
                     ))}
@@ -579,7 +624,7 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
                 connection={session.connection}
                 runState={session.runState}
                 steerError={session.steerError}
-                error={runtimeUnavailable ? "OpenHarness is required but unavailable. No legacy request was sent." : session.error}
+                error={runtimeUnavailable ? RUNTIME_UNAVAILABLE_MESSAGE : session.error}
                 pendingPermission={session.pendingPermission}
                 activities={session.activities}
                 input={input}
