@@ -21,6 +21,11 @@ test("defaults generate strong distinct secrets", () => {
   assert.notEqual(a.nextAuthSecret, b.nextAuthSecret);
   assert.notEqual(a.nextAuthSecret, a.openharnessPassword);
   assert.equal(a.openharnessMode, "required");
+  assert.equal(a.agentRuntime, "hermes");
+  assert.equal(a.agentRuntimeFallback, null);
+  assert.ok(a.hermesSessionToken.length >= 32);
+  assert.ok(a.hermesToolSecret.length >= 32);
+  assert.notEqual(a.hermesSessionToken, b.hermesSessionToken);
   assert.equal(a.scriberrEnabled, false);
 });
 
@@ -37,6 +42,16 @@ test("validation rejects missing secrets and bad modes", () => {
   const valid = defaultPersistentConfig();
   assert.throws(() =>
     validatePersistentConfig({ ...valid, openharnessMode: "sometimes" }),
+  );
+  assert.throws(() =>
+    validatePersistentConfig({ ...valid, agentRuntime: "something-else" }),
+  );
+  assert.throws(() =>
+    validatePersistentConfig({
+      ...valid,
+      agentRuntime: "hermes",
+      agentRuntimeFallback: "hermes",
+    }),
   );
   assert.throws(() => validatePersistentConfig({ ...valid, version: 2 }));
   assert.deepEqual(validatePersistentConfig({ ...valid }), valid);
@@ -64,12 +79,14 @@ test("atomicWriteFile replaces content wholly", () => {
 
 test("log redaction removes every secret", () => {
   const config = defaultPersistentConfig();
-  const line = `auth=${config.openharnessPassword} token=${config.openharnessToolSecret} n=${config.nextAuthSecret} c=${config.openharnessCapabilitySecret}`;
+  const line = `auth=${config.openharnessPassword} token=${config.openharnessToolSecret} n=${config.nextAuthSecret} c=${config.openharnessCapabilitySecret} hs=${config.hermesSessionToken} ht=${config.hermesToolSecret}`;
   const clean = redactSecrets(line, config);
   assert.ok(!clean.includes(config.openharnessPassword));
   assert.ok(!clean.includes(config.openharnessToolSecret));
   assert.ok(!clean.includes(config.nextAuthSecret));
   assert.ok(!clean.includes(config.openharnessCapabilitySecret));
+  assert.ok(!clean.includes(config.hermesSessionToken));
+  assert.ok(!clean.includes(config.hermesToolSecret));
   assert.ok(clean.includes("[redacted]"));
 });
 
@@ -78,11 +95,21 @@ test("diagnostics summary exposes no secret values", () => {
   const summary = JSON.stringify(
     redactedConfigSummary({
       persistent,
-      ports: { dashboard: 3000, chatmock: 8765, openharness: 4096, quartz: 8081, quartzWs: 3001 },
+      ports: {
+        dashboard: 3000,
+        chatmock: 8765,
+        openharness: 4096,
+        hermes: 9119,
+        quartz: 8081,
+        quartzWs: 3001,
+      },
     }),
   );
   assert.ok(!summary.includes(persistent.nextAuthSecret));
   assert.ok(!summary.includes(persistent.openharnessPassword));
   assert.ok(!summary.includes(persistent.openharnessToolSecret));
   assert.ok(!summary.includes(persistent.openharnessCapabilitySecret));
+  assert.ok(!summary.includes(persistent.hermesSessionToken));
+  assert.ok(!summary.includes(persistent.hermesToolSecret));
+  assert.ok(!summary.includes('"hermes":9119'));
 });

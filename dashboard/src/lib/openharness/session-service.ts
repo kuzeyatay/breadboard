@@ -13,7 +13,16 @@
 // the client — they are derived here from the authorized DB record.
 
 import db from "@/lib/db";
-import { getOpenHarnessGateway } from "./gateway.ts";
+import {
+  getAgentRuntime,
+  getAgentRuntimeByKind,
+  getFallbackAgentRuntime,
+} from "../agent-runtime/runtime.ts";
+import type {
+  AgentRuntime,
+  RuntimeKind,
+  RuntimeSession,
+} from "../agent-runtime/contracts.ts";
 import {
   agentForSurface,
   readOpenHarnessConfig,
@@ -31,7 +40,8 @@ import {
   setOpenHarnessSessionId,
   setRuntimeStatus,
   updateRuntimeActiveContext,
-  replaceRuntimeIdentity,
+  replaceAgentRuntimeIdentity,
+  runtimeExternalSessionId,
   recordAuditEvent,
   migrateRuntimeSessionPolicy,
   type RuntimeSessionRow,
@@ -41,11 +51,16 @@ import { ApiError } from "./route-helpers.ts";
 import { listMcpConnections, runtimeMcpConfig } from "./mcp-connections.ts";
 import {
   getConversationForUser,
+  listConversationMessages,
   type ConversationRow,
 } from "../conversations/store.ts";
 
 export interface AuthorizedRuntimeSession {
   row: RuntimeSessionRow;
+  runtimeKind: RuntimeKind;
+  externalSessionId: string;
+  liveSessionId?: string;
+  /** @deprecated Compatibility alias for existing API payloads and tokens. */
   openHarnessSessionId: string;
   workspaceKey: string;
   activeDirectory: string;
@@ -61,6 +76,45 @@ interface ClusterRow {
   chat_accessible: number;
 }
 
+async function createWithConfiguredRuntimeFallback(
+  input: Parameters<AgentRuntime["createSession"]>[0],
+): Promise<{
+  runtime: AgentRuntime;
+  created: RuntimeSession;
+  fallbackFrom: RuntimeKind | null;
+}> {
+  const primary = getAgentRuntime();
+  try {
+    return {
+      runtime: primary,
+      created: await primary.createSession(input),
+      fallbackFrom: null,
+    };
+  } catch {
+    const fallback = getFallbackAgentRuntime();
+    if (!fallback || fallback.kind === primary.kind) {
+      throw new ApiError(
+        503,
+        "runtime_unavailable",
+        "The agent runtime is unavailable. Try again shortly.",
+      );
+    }
+    try {
+      return {
+        runtime: fallback,
+        created: await fallback.createSession(input),
+        fallbackFrom: primary.kind,
+      };
+    } catch {
+      throw new ApiError(
+        503,
+        "runtime_unavailable",
+        "The agent runtime is unavailable. Try again shortly.",
+      );
+    }
+  }
+}
+
 function loadClusterBySlug(slug: string): ClusterRow | null {
   const row = db
     .prepare("SELECT id, slug, user_id, visibility, chat_accessible FROM clusters WHERE slug = ?")
@@ -72,9 +126,12 @@ function canonicalizeRuntimePolicy(row: RuntimeSessionRow): RuntimeSessionRow {
   const config = readOpenHarnessConfig();
   // Authenticated sessions on every surface converge on the canonical
   // assistant; only anonymous sessions keep a restricted per-surface manifest.
-  const expectedAgent = agentForSurface(config, row.surface, {
-    authenticated: row.user_id !== null,
-  });
+  const expectedAgent =
+    row.runtime_kind === "hermes"
+      ? "breadboard"
+      : agentForSurface(config, row.surface, {
+          authenticated: row.user_id !== null,
+        });
   if (
     row.agent_name === expectedAgent &&
     (row.capability_mode === "knowledge" || Boolean(row.capability_decision_id))
@@ -161,7 +218,6 @@ export async function createSessionForSurface(
     }
   }
 
-  const gateway = getOpenHarnessGateway();
   const settings = options.userId === null
     ? { filesystemMode: "restricted" as const, lastActiveDirectory: null }
     : getOpenHarnessUserSettings(options.userId);
@@ -178,7 +234,7 @@ export async function createSessionForSurface(
   // deny; a historical "full" setting is retained only as inactive metadata.
   const directorySelectionMode =
     options.surface === "dashboard_terminal" ? "full" : "restricted";
-  const created = await gateway.createSession({
+  const selected = await createWithConfiguredRuntimeFallback({
     surface: options.surface,
     sessionKey,
     gardenKey: gardenId ?? undefined,
@@ -192,6 +248,7 @@ export async function createSessionForSurface(
     // server-selected root; a persisted path is never restored as authority.
     previousDirectory: null,
   });
+  const { runtime, created } = selected;
 
   const row = createRuntimeSession({
     surface: options.surface,
@@ -204,8 +261,12 @@ export async function createSessionForSurface(
     allowedGardenIds: clusterId === null ? [] : [clusterId],
     workspaceKey: created.workspaceKey,
     activeDirectory: created.directory,
-    filesystemMode: "restricted",
-    openHarnessSessionId: created.openHarnessSessionId,
+    filesystemMode: "restricted" as const,
+    openHarnessSessionId:
+      runtime.kind === "openharness" ? created.externalSessionId : null,
+    runtimeKind: runtime.kind,
+    externalSessionId: created.externalSessionId,
+    liveSessionId: created.liveSessionId,
     runtimeMetadata: {
       title: options.title,
       inactiveLegacyFilesystemMode: settings.filesystemMode,
@@ -216,7 +277,10 @@ export async function createSessionForSurface(
 
   const authorized: AuthorizedRuntimeSession = {
     row,
-    openHarnessSessionId: created.openHarnessSessionId,
+    runtimeKind: runtime.kind,
+    externalSessionId: created.externalSessionId,
+    liveSessionId: created.liveSessionId,
+    openHarnessSessionId: created.externalSessionId,
     workspaceKey: created.workspaceKey,
     activeDirectory: created.directory,
     filesystemMode: "restricted",
@@ -227,7 +291,12 @@ export async function createSessionForSurface(
     runtimeSessionId: row.id,
     userId: options.userId,
     gardenId,
-    payload: { surface: options.surface, agent: created.agentName, pageSlug: options.pageSlug ?? null },
+    payload: {
+      surface: options.surface,
+      agent: created.agentName,
+      pageSlug: options.pageSlug ?? null,
+      fallbackFrom: selected.fallbackFrom,
+    },
   });
   if (migratedBroadSetting) {
     recordAuditEvent({
@@ -257,17 +326,28 @@ export async function createSessionForSurface(
   if (options.userId !== null) {
     for (const connection of listMcpConnections(options.userId, true)) {
       try {
-        const status = await gateway.addMcpConnection(
+        const status = await runtime.addMcpConnection(
           created.directory,
           connection.slug,
           runtimeMcpConfig(connection),
+          options.userId,
         );
         recordAuditEvent({
           eventType: "mcp.loaded",
           runtimeSessionId: row.id,
           userId: options.userId,
           gardenId,
-          payload: { slug: connection.slug, status: status[connection.slug]?.status ?? "unknown" },
+          payload: {
+            slug: connection.slug,
+            status:
+              typeof status === "object" &&
+              status !== null &&
+              connection.slug in status
+                ? (
+                    status as Record<string, { status?: string }>
+                  )[connection.slug]?.status ?? "unknown"
+                : "unknown",
+          },
         });
       } catch {
         recordAuditEvent({
@@ -285,13 +365,15 @@ export async function createSessionForSurface(
   // Garden/Quartz receive content tools; terminal/scout receive only structured
   // capability-gap and official skill-search callbacks.
   const config = readOpenHarnessConfig();
-  writeWorkspaceCapability(created.runtimeDirectory, {
-    token: mintCapabilityToken(authorized, options.userId ?? 0),
-    dashboardUrl: config.dashboardInternalUrl,
-    surface: options.surface,
-    gardenId: gardenId ?? undefined,
-    pageSlug: options.pageSlug ?? undefined,
-  });
+  if (runtime.kind === "openharness") {
+    writeWorkspaceCapability(created.runtimeDirectory, {
+      token: mintCapabilityToken(authorized, options.userId ?? 0),
+      dashboardUrl: config.dashboardInternalUrl,
+      surface: options.surface,
+      gardenId: gardenId ?? undefined,
+      pageSlug: options.pageSlug ?? undefined,
+    });
+  }
 
   return authorized;
 }
@@ -317,19 +399,14 @@ export function authorizeRuntimeSession(
     // Re-verify garden access on every request (visibility can change).
     authorizeGardenAccess(userId, row.garden_id);
   }
-  if (!row.openharness_session_id) {
+  if (!runtimeExternalSessionId(row)) {
     throw new ApiError(409, "session_not_ready", "Runtime session is not initialized.");
   }
   row = canonicalizeRuntimePolicy(row);
   const config = readOpenHarnessConfig();
   return {
     row,
-    openHarnessSessionId: row.openharness_session_id!,
-    workspaceKey: row.workspace_key,
-    activeDirectory:
-      row.active_directory ?? directoryForWorkspaceKey(config, row.workspace_key),
-    filesystemMode: "restricted",
-    agentName: row.agent_name,
+    ...runtimeReference(row, config),
   };
 }
 
@@ -360,18 +437,13 @@ export function authorizeQuartzRuntimeSession(
       throw new ApiError(404, "session_not_found", "Session not found.");
     }
   }
-  if (!row.openharness_session_id) {
+  if (!runtimeExternalSessionId(row)) {
     throw new ApiError(409, "session_not_ready", "Runtime session is not initialized.");
   }
   row = canonicalizeRuntimePolicy(row);
   return {
     row,
-    openHarnessSessionId: row.openharness_session_id!,
-    workspaceKey: row.workspace_key,
-    activeDirectory:
-      row.active_directory ?? directoryForWorkspaceKey(readOpenHarnessConfig(), row.workspace_key),
-    filesystemMode: "restricted",
-    agentName: row.agent_name,
+    ...runtimeReference(row, readOpenHarnessConfig()),
   };
 }
 
@@ -466,11 +538,11 @@ export async function resolveConversationRuntime(input: {
       pageSlug: input.activePageSlug ?? null,
       allowedGardenIds: gardens.map((garden) => garden.id),
     });
-    if (input.forceRecreate || !row.openharness_session_id) {
+    if (input.forceRecreate || !runtimeExternalSessionId(row)) {
       row = await recreateConversationRuntime(row, input.conversation, input.surface);
     }
   }
-  if (!row.openharness_session_id) {
+  if (!runtimeExternalSessionId(row)) {
     throw new ApiError(409, "session_not_ready", "Runtime session is not initialized.");
   }
   row = canonicalizeRuntimePolicy(row);
@@ -483,7 +555,11 @@ export function authorizeConversationRuntime(
   conversation: ConversationRow,
 ): AuthorizedRuntimeSession {
   let row = getRuntimeSessionByConversation(conversation.id);
-  if (!row || row.user_id !== conversation.user_id || !row.openharness_session_id) {
+  if (
+    !row ||
+    row.user_id !== conversation.user_id ||
+    !runtimeExternalSessionId(row)
+  ) {
     throw new ApiError(404, "session_not_found", "Session not found.");
   }
   if (row.garden_id) authorizeGardenAccess(conversation.user_id, row.garden_id);
@@ -513,8 +589,8 @@ async function createConversationRuntime(
   pageSlug: string | null,
   gardens: AuthorizedGardenSummary[],
 ): Promise<RuntimeSessionRow> {
-  const gateway = getOpenHarnessGateway();
-  const created = await gateway.createSession({
+  const settings = getOpenHarnessUserSettings(conversation.user_id);
+  const selected = await createWithConfiguredRuntimeFallback({
     surface,
     sessionKey: conversation.public_id,
     conversationKey: conversation.public_id,
@@ -522,7 +598,10 @@ async function createConversationRuntime(
     metadata: { conversationPublicId: conversation.public_id },
     filesystemMode: "restricted",
     authenticated: true,
+    model: settings.defaultModel,
+    reasoningEffort: settings.reasoningEffort,
   });
+  const { runtime, created } = selected;
   const row = createRuntimeSession({
     conversationId: conversation.id,
     surface,
@@ -536,16 +615,24 @@ async function createConversationRuntime(
     workspaceKey: created.workspaceKey,
     activeDirectory: created.directory,
     filesystemMode: "restricted",
-    openHarnessSessionId: created.openHarnessSessionId,
+    openHarnessSessionId:
+      runtime.kind === "openharness" ? created.externalSessionId : null,
+    runtimeKind: runtime.kind,
+    externalSessionId: created.externalSessionId,
+    liveSessionId: created.liveSessionId,
     runtimeMetadata: { title: conversation.title, conversationPublicId: conversation.public_id },
   });
-  await loadMcpConnectionsForRuntime(row, created.directory);
+  await loadMcpConnectionsForRuntime(row, created.directory, runtime);
   recordAuditEvent({
     eventType: "conversation.runtime_created",
     runtimeSessionId: row.id,
     userId: conversation.user_id,
     gardenId: active?.slug ?? null,
-    payload: { conversationPublicId: conversation.public_id, allowedGardenCount: gardens.length },
+    payload: {
+      conversationPublicId: conversation.public_id,
+      allowedGardenCount: gardens.length,
+      fallbackFrom: selected.fallbackFrom,
+    },
   });
   return row;
 }
@@ -555,25 +642,37 @@ async function recreateConversationRuntime(
   conversation: ConversationRow,
   surface: OpenHarnessSurface,
 ): Promise<RuntimeSessionRow> {
-  const gateway = getOpenHarnessGateway();
-  const created = await gateway.createSession({
+  const runtime = getAgentRuntimeByKind(row.runtime_kind);
+  const settings = getOpenHarnessUserSettings(conversation.user_id);
+  const previousExternalSessionId = runtimeExternalSessionId(row);
+  const restoreInput = {
     surface,
     sessionKey: `${conversation.public_id}-${Date.now().toString(36)}`,
     conversationKey: conversation.public_id,
     title: conversation.title,
     metadata: { conversationPublicId: conversation.public_id, rehydrated: true },
-    filesystemMode: "restricted",
+    filesystemMode: "restricted" as const,
     authenticated: true,
-  });
-  const replaced = replaceRuntimeIdentity({
+    externalSessionId: previousExternalSessionId ?? "",
+    messages: canonicalRuntimeMessages(conversation.id),
+    model: settings.defaultModel,
+    reasoningEffort: settings.reasoningEffort,
+  };
+  const created =
+    runtime.kind === "hermes"
+      ? await runtime.restoreSession(restoreInput)
+      : await runtime.createSession(restoreInput);
+  const replaced = replaceAgentRuntimeIdentity({
     runtimeSessionId: row.id,
-    openHarnessSessionId: created.openHarnessSessionId,
+    runtimeKind: runtime.kind,
+    externalSessionId: created.externalSessionId,
+    liveSessionId: created.liveSessionId,
     workspaceKey: created.workspaceKey,
     activeDirectory: created.directory,
     agentName: created.agentName,
     runtimeMetadata: { title: conversation.title, conversationPublicId: conversation.public_id, rehydrated: true },
   });
-  await loadMcpConnectionsForRuntime(replaced, created.directory);
+  await loadMcpConnectionsForRuntime(replaced, created.directory, runtime);
   recordAuditEvent({
     eventType: "conversation.runtime_recreated",
     runtimeSessionId: row.id,
@@ -584,12 +683,20 @@ async function recreateConversationRuntime(
   return replaced;
 }
 
-async function loadMcpConnectionsForRuntime(row: RuntimeSessionRow, directory: string): Promise<void> {
+async function loadMcpConnectionsForRuntime(
+  row: RuntimeSessionRow,
+  directory: string,
+  runtime: AgentRuntime,
+): Promise<void> {
   if (row.user_id === null) return;
-  const gateway = getOpenHarnessGateway();
   for (const connection of listMcpConnections(row.user_id, true)) {
     try {
-      await gateway.addMcpConnection(directory, connection.slug, runtimeMcpConfig(connection));
+      await runtime.addMcpConnection(
+        directory,
+        connection.slug,
+        runtimeMcpConfig(connection),
+        row.user_id,
+      );
     } catch {
       recordAuditEvent({
         eventType: "mcp.load_failed",
@@ -605,15 +712,12 @@ async function loadMcpConnectionsForRuntime(row: RuntimeSessionRow, directory: s
 function authorizedRuntime(row: RuntimeSessionRow): AuthorizedRuntimeSession {
   return {
     row,
-    openHarnessSessionId: row.openharness_session_id!,
-    workspaceKey: row.workspace_key,
-    activeDirectory: row.active_directory ?? directoryForWorkspaceKey(readOpenHarnessConfig(), row.workspace_key),
-    filesystemMode: "restricted",
-    agentName: row.agent_name,
+    ...runtimeReference(row, readOpenHarnessConfig()),
   };
 }
 
 function refreshWorkspaceCapability(session: AuthorizedRuntimeSession): void {
+  if (session.runtimeKind !== "openharness") return;
   const config = readOpenHarnessConfig();
   const runtimeDirectory = directoryForWorkspaceKey(config, session.workspaceKey);
   writeWorkspaceCapability(runtimeDirectory, {
@@ -623,6 +727,52 @@ function refreshWorkspaceCapability(session: AuthorizedRuntimeSession): void {
     gardenId: session.row.garden_id ?? undefined,
     pageSlug: session.row.page_slug ?? undefined,
   });
+}
+
+function runtimeReference(
+  row: RuntimeSessionRow,
+  config: ReturnType<typeof readOpenHarnessConfig>,
+): Omit<AuthorizedRuntimeSession, "row"> {
+  const externalSessionId = runtimeExternalSessionId(row);
+  if (!externalSessionId) {
+    throw new ApiError(
+      409,
+      "session_not_ready",
+      "Runtime session is not initialized.",
+    );
+  }
+  return {
+    runtimeKind: row.runtime_kind,
+    externalSessionId,
+    liveSessionId: row.live_session_id ?? undefined,
+    openHarnessSessionId: externalSessionId,
+    workspaceKey: row.workspace_key,
+    activeDirectory:
+      row.active_directory ??
+      directoryForWorkspaceKey(config, row.workspace_key),
+    filesystemMode: "restricted",
+    agentName: row.agent_name,
+  };
+}
+
+function canonicalRuntimeMessages(
+  conversationId: number,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  return listConversationMessages(
+    conversationId,
+    { limit: 500, includePending: false },
+  )
+    .filter(
+      (
+        message,
+      ): message is typeof message & { role: "user" | "assistant" } =>
+        message.role === "user" || message.role === "assistant",
+    )
+    .filter((message) => message.content.trim().length > 0)
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
 }
 
 function normalizedAuthorizedGardens(userId: number): AuthorizedGardenSummary[] {

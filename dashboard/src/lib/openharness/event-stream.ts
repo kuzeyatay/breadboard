@@ -6,7 +6,7 @@
 
 import { leastPrivilegeDecision } from "./dispatch-core.ts";
 import db from "../db.ts";
-import { getOpenHarnessGateway } from "./gateway.ts";
+import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { encodeSseEvent, type NormalizedAgentEvent } from "./events.ts";
 import {
   appendRuntimeMessage,
@@ -128,23 +128,15 @@ export function buildSessionEventStream(
   signal: AbortSignal,
   extraHeaders: Record<string, string> = {},
 ): Response {
-  const gateway = getOpenHarnessGateway();
+  const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const encoder = new TextEncoder();
   const abortController = new AbortController();
-  let runtimeAbortSent = false;
-  const abortRuntime = () => {
+  let clientDisconnected = false;
+  const disconnectSubscription = () => {
+    clientDisconnected = true;
     abortController.abort();
-    if (runtimeAbortSent) return;
-    runtimeAbortSent = true;
-    void gateway
-      .abortSession({
-        openHarnessSessionId: session.openHarnessSessionId,
-        workspaceKey: session.workspaceKey,
-        directory: session.activeDirectory,
-      })
-      .catch(() => undefined);
   };
-  signal.addEventListener("abort", abortRuntime, { once: true });
+  signal.addEventListener("abort", disconnectSubscription, { once: true });
 
   let assistantText = "";
   const sources: string[] = [];
@@ -269,9 +261,10 @@ export function buildSessionEventStream(
             payload: { reason: revocationReason, restoredMode: "knowledge" },
           });
           const restoredDecision = leastPrivilegeDecision(session.activeDirectory);
-          void gateway
+          void runtime
             .applyCapabilityDecision({
-              openHarnessSessionId: session.openHarnessSessionId,
+              externalSessionId: session.externalSessionId,
+              liveSessionId: session.liveSessionId,
               workspaceKey: session.workspaceKey,
               directory: session.activeDirectory,
               decision: restoredDecision,
@@ -291,9 +284,10 @@ export function buildSessionEventStream(
         // Replays lifecycle events already committed before the browser managed
         // to attach, making refresh/reconnect deterministic and idempotent.
         emitArtifactEvents();
-        for await (const event of gateway.subscribeToSession(
+        for await (const event of runtime.streamSession(
           {
-            openHarnessSessionId: session.openHarnessSessionId,
+            externalSessionId: session.externalSessionId,
+            liveSessionId: session.liveSessionId,
             workspaceKey: session.workspaceKey,
             directory: session.activeDirectory,
           },
@@ -426,12 +420,10 @@ export function buildSessionEventStream(
           }
         }
       } catch (error) {
-        finalStatus = abortController.signal.aborted ? "aborted" : "failed";
-        if (abortController.signal.aborted) {
-          finalize("aborted");
-          emit({ type: "cancelled" });
+        if (clientDisconnected) {
           return;
         }
+        finalStatus = "failed";
         emit({
           type: "error",
           sessionId: session.openHarnessSessionId,
@@ -450,6 +442,7 @@ export function buildSessionEventStream(
           payload: { stage: "event_stream" },
         });
       } finally {
+        if (clientDisconnected) return;
         recordAuditEvent({
           eventType:
             finalStatus === "aborted"
@@ -466,11 +459,15 @@ export function buildSessionEventStream(
           },
         });
         finalize(finalStatus);
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // The browser may close immediately after the terminal event.
+        }
       }
     },
     cancel() {
-      abortRuntime();
+      disconnectSubscription();
     },
   });
 

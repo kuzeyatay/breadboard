@@ -16,7 +16,14 @@ function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof 
   });
   const config: DesktopRuntimeConfig = {
     persistent: { ...defaultPersistentConfig(), ...overrides },
-    ports: { dashboard: 4300, chatmock: 4301, openharness: 4302, quartz: 4303, quartzWs: 4304 },
+    ports: {
+      dashboard: 4300,
+      chatmock: 4301,
+      openharness: 4302,
+      hermes: 4305,
+      quartz: 4303,
+      quartzWs: 4304,
+    },
   };
   const binaries = {
     node: "C:/rt/node.exe",
@@ -43,6 +50,12 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   assert.equal(dashboard.env["NEXTAUTH_SECRET"], config.persistent.nextAuthSecret);
   assert.equal(dashboard.env["CHATMOCK_BASE_URL"], "http://127.0.0.1:4301/v1");
   assert.equal(dashboard.env["OPENHARNESS_BASE_URL"], "http://127.0.0.1:4302");
+  assert.equal(dashboard.env["AGENT_RUNTIME"], "hermes");
+  assert.equal(dashboard.env["HERMES_BASE_URL"], "http://127.0.0.1:4305");
+  assert.equal(
+    dashboard.env["HERMES_DASHBOARD_SESSION_TOKEN"],
+    config.persistent.hermesSessionToken,
+  );
   assert.equal(dashboard.env["NEXT_PUBLIC_QUARTZ_URL"], "http://127.0.0.1:4303");
   assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], paths.dataRoot);
   assert.equal(dashboard.env["QUARTZ_CONTENT_PATH"], paths.quartzContent);
@@ -68,8 +81,8 @@ test("dashboard explicitly receives a configured Agency Agents checkout", () => 
   }
 });
 
-test("required mode registers OpenHarness as required with chatmock dependency", () => {
-  const { definitions } = fixture("packaged");
+test("OpenHarness rollback mode registers it with the preserved readiness contract", () => {
+  const { definitions } = fixture("packaged", { agentRuntime: "openharness" });
   const openharness = definitions.find((d) => d.id === "openharness");
   assert.ok(openharness);
   assert.equal(openharness.required, true);
@@ -82,12 +95,48 @@ test("required mode registers OpenHarness as required with chatmock dependency",
 });
 
 test("legacy mode omits OpenHarness entirely and dashboard adapts", () => {
-  const { definitions } = fixture("packaged", { openharnessMode: "legacy" });
+  const { definitions } = fixture("packaged", {
+    agentRuntime: "openharness",
+    openharnessMode: "legacy",
+  });
   assert.ok(!definitions.some((d) => d.id === "openharness"));
   const dashboard = definitions.find((d) => d.id === "dashboard");
   assert.ok(dashboard);
   assert.equal(dashboard.env["OPENHARNESS_ENABLED"], "false");
   assert.deepEqual(dashboard.dependsOn, ["chatmock", "quartz"]);
+});
+
+test("Hermes is a hidden-loopback supervised runtime and its endpoint is not published", () => {
+  const { config, definitions, paths } = fixture("packaged");
+  const hermes = definitions.find((definition) => definition.id === "hermes");
+  if (!hermes) throw new Error("Hermes service should be registered");
+  assert.equal(hermes.command, "C:/rt/python.exe");
+  assert.equal(hermes.required, false);
+  assert.deepEqual(hermes.dependsOn, ["chatmock"]);
+  assert.deepEqual(
+    hermes.args.slice(0, 3),
+    ["-m", "hermes_cli.main", "serve"],
+  );
+  assert.ok(hermes.args.includes("127.0.0.1"));
+  assert.ok(!hermes.args.includes(config.persistent.hermesSessionToken));
+  assert.ok(!hermes.args.includes(config.persistent.hermesToolSecret));
+  assert.equal(
+    hermes.env["HERMES_DASHBOARD_SESSION_TOKEN"],
+    config.persistent.hermesSessionToken,
+  );
+  assert.equal(
+    hermes.env["BREADBOARD_HERMES_TOOL_SECRET"],
+    config.persistent.hermesToolSecret,
+  );
+  assert.equal(hermes.env["HERMES_HOME"], paths.hermesHome);
+  if (!hermes.healthCheck || hermes.healthCheck.type !== "http") {
+    throw new Error("Hermes should use an HTTP readiness check");
+  }
+  assert.equal(hermes.healthCheck.url, "http://127.0.0.1:4305/api/status");
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(serviceUrls(config), "hermes"),
+    false,
+  );
 });
 
 test("scriberr stays optional and only appears when enabled without external URL", () => {
@@ -129,7 +178,12 @@ test("packaged services never rely on PATH lookups for runtimes", () => {
 
 test("no secret values leak into non-secret env keys or args", () => {
   const { config, definitions } = fixture("packaged");
-  const secrets = [config.persistent.nextAuthSecret, config.persistent.openharnessCapabilitySecret];
+  const secrets = [
+    config.persistent.nextAuthSecret,
+    config.persistent.openharnessCapabilitySecret,
+    config.persistent.hermesSessionToken,
+    config.persistent.hermesToolSecret,
+  ];
   for (const definition of definitions) {
     for (const arg of definition.args) {
       for (const secret of secrets) {

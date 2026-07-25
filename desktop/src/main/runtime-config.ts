@@ -23,6 +23,14 @@ export interface PersistentDesktopConfig {
   openharnessCapabilitySecret: string;
   /** OpenHarness routing mode; preserved Breadboard contract. */
   openharnessMode: "required" | "preferred" | "legacy";
+  /** Server-side agent runtime selection. The renderer cannot override this. */
+  agentRuntime: "hermes" | "openharness";
+  /** Optional pre-run-only fallback. Never used after a run has started. */
+  agentRuntimeFallback: "hermes" | "openharness" | null;
+  /** Loopback Hermes dashboard/WebSocket credential (per-install random). */
+  hermesSessionToken: string;
+  /** Shared secret between Hermes's Breadboard plugin and the dashboard. */
+  hermesToolSecret: string;
   /**
    * Seed invite code for the invite-only registration flow (the dashboard
    * consumes it via SECOND_BRAIN_INITIAL_INVITE_CODE). Shown to the user from
@@ -49,6 +57,8 @@ export interface LaunchPorts {
   dashboard: number;
   chatmock: number;
   openharness: number;
+  /** Internal Hermes loopback port. Never published to the renderer. */
+  hermes: number;
   quartz: number;
   /** Quartz's hot-reload websocket listener (`build --serve --wsPort`). It is
    * opened unconditionally by the Quartz CLI, so it must be allocated too or
@@ -80,6 +90,10 @@ export function defaultPersistentConfig(): PersistentDesktopConfig {
     openharnessToolSecret: randomSecret(),
     openharnessCapabilitySecret: randomSecret(),
     openharnessMode: "required",
+    agentRuntime: "hermes",
+    agentRuntimeFallback: null,
+    hermesSessionToken: randomSecret(),
+    hermesToolSecret: randomSecret(),
     gbrainMode: "disabled",
     gbrainAdapterSecret: randomSecret(24),
     uiTarsMode: "optional",
@@ -111,6 +125,36 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
   if (record["version"] !== 1) {
     throw new Error(`desktop-config.json: unsupported version ${String(record["version"])}`);
   }
+  const configuredRuntime = record["agentRuntime"];
+  if (
+    configuredRuntime !== undefined &&
+    configuredRuntime !== "openharness" &&
+    configuredRuntime !== "hermes"
+  ) {
+    throw new Error(`desktop-config.json: invalid agentRuntime ${String(configuredRuntime)}`);
+  }
+  const agentRuntime =
+    configuredRuntime === "openharness" || configuredRuntime === "hermes"
+      ? configuredRuntime
+      : "hermes";
+  const configuredFallback = record["agentRuntimeFallback"];
+  if (
+    configuredFallback !== undefined &&
+    configuredFallback !== null &&
+    configuredFallback !== "openharness" &&
+    configuredFallback !== "hermes"
+  ) {
+    throw new Error(
+      `desktop-config.json: invalid agentRuntimeFallback ${String(configuredFallback)}`,
+    );
+  }
+  const agentRuntimeFallback =
+    configuredFallback === "openharness" || configuredFallback === "hermes"
+      ? configuredFallback
+      : null;
+  if (agentRuntimeFallback === agentRuntime) {
+    throw new Error("desktop-config.json: agentRuntimeFallback must differ from agentRuntime");
+  }
   return {
     version: 1,
     nextAuthSecret: requireString("nextAuthSecret"),
@@ -119,6 +163,21 @@ export function validatePersistentConfig(value: unknown): PersistentDesktopConfi
     openharnessToolSecret: requireString("openharnessToolSecret"),
     openharnessCapabilitySecret: requireString("openharnessCapabilitySecret"),
     openharnessMode: mode,
+    agentRuntime,
+    agentRuntimeFallback,
+    // Backfill high-entropy secrets for installations created before Hermes
+    // became a managed runtime. loadOrCreatePersistentConfig persists the
+    // normalized object below.
+    hermesSessionToken:
+      typeof record["hermesSessionToken"] === "string" &&
+      record["hermesSessionToken"].length >= 32
+        ? (record["hermesSessionToken"] as string)
+        : randomSecret(),
+    hermesToolSecret:
+      typeof record["hermesToolSecret"] === "string" &&
+      record["hermesToolSecret"].length >= 32
+        ? (record["hermesToolSecret"] as string)
+        : randomSecret(),
     // GBrain fields backfilled for configs written before they existed.
     gbrainMode:
       record["gbrainMode"] === "preferred" || record["gbrainMode"] === "required"
@@ -169,7 +228,13 @@ export function loadOrCreatePersistentConfig(configDir: string): PersistentDeskt
   const file = path.join(configDir, CONFIG_FILE);
   if (fs.existsSync(file)) {
     const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return validatePersistentConfig(parsed);
+    const normalized = validatePersistentConfig(parsed);
+    // Persist additive defaults (including newly generated Hermes secrets) so
+    // they remain stable across launches.
+    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+      atomicWriteFile(file, JSON.stringify(normalized, null, 2));
+    }
+    return normalized;
   }
   const created = defaultPersistentConfig();
   atomicWriteFile(file, JSON.stringify(created, null, 2));
@@ -184,6 +249,8 @@ export function savePersistentConfig(configDir: string, config: PersistentDeskto
 export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<string, unknown> {
   return {
     version: config.persistent.version,
+    agentRuntime: config.persistent.agentRuntime,
+    agentRuntimeFallback: config.persistent.agentRuntimeFallback,
     openharnessMode: config.persistent.openharnessMode,
     openharnessUsername: config.persistent.openharnessUsername,
     gbrainMode: config.persistent.gbrainMode,
@@ -191,7 +258,16 @@ export function redactedConfigSummary(config: DesktopRuntimeConfig): Record<stri
     scriberrEnabled: config.persistent.scriberrEnabled,
     migratedFrom: config.persistent.migratedFrom,
     migrationVersion: config.persistent.migrationVersion,
-    ports: config.ports,
+    // Hermes's port is deliberately omitted: diagnostics are renderer-visible.
+    ports: {
+      dashboard: config.ports.dashboard,
+      chatmock: config.ports.chatmock,
+      openharness: config.ports.openharness,
+      quartz: config.ports.quartz,
+      quartzWs: config.ports.quartzWs,
+      ...(config.ports.gbrain ? { gbrain: config.ports.gbrain } : {}),
+      ...(config.ports.uiTars ? { uiTars: config.ports.uiTars } : {}),
+    },
   };
 }
 
@@ -203,6 +279,8 @@ export function redactSecrets(line: string, config: PersistentDesktopConfig): st
     config.openharnessPassword,
     config.openharnessToolSecret,
     config.openharnessCapabilitySecret,
+    config.hermesSessionToken,
+    config.hermesToolSecret,
     config.gbrainAdapterSecret,
     config.uiTarsAdapterSecret,
   ]) {

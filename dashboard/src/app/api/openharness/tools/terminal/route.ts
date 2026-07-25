@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
 import { capabilityForInternalToolRequest } from "@/lib/openharness/tool-service-auth.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/openharness/capability-token.ts";
-import { getRuntimeSessionById, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
+import {
+  getRuntimeSessionById,
+  recordAuditEvent,
+  runtimeExternalSessionId,
+} from "@/lib/openharness/runtime-store.ts";
 import { getActiveRuntimeRun } from "@/lib/openharness/run-store.ts";
 import { authorizeTerminalCommand, runAuthorizedTerminalCommand } from "@/lib/openharness/terminal-execution.ts";
 import { createHash } from "node:crypto";
@@ -24,7 +28,8 @@ export async function POST(request: Request) {
       !session ||
       session.user_id === null ||
       session.surface !== "dashboard_terminal" ||
-      session.openharness_session_id !== verified.token.openHarnessSessionId ||
+      runtimeExternalSessionId(session) !==
+        verified.token.openHarnessSessionId ||
       verified.token.conversationId !== session.conversation_id
     ) {
       throw new ApiError(403, "terminal_surface_denied", "Only an authenticated dedicated Terminal session may execute commands.");
@@ -49,7 +54,10 @@ export async function POST(request: Request) {
     if (!authorization.allowed) {
       throw new ApiError(403, "terminal_command_denied", authorization.reason);
     }
-    const result = await runAuthorizedTerminalCommand(command);
+    const result = await runAuthorizedTerminalCommand(command, {
+      runtimeSessionId: session.id,
+      signal: request.signal,
+    });
     recordAuditEvent({
       eventType: "terminal.command_completed",
       runtimeSessionId: session.id,

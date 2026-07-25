@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntime } from "@/lib/agent-runtime/runtime.ts";
 import {
   deleteMcpConnection,
   getMcpConnection,
@@ -38,12 +38,16 @@ export async function PATCH(
     const connection = getMcpConnection(userId, id);
     if (!connection)
       throw new ApiError(404, "mcp_not_found", "MCP connection not found.");
-    const gateway = getOpenHarnessGateway();
-    const directory = gateway.managementDirectory(userId);
+    const runtime = getAgentRuntime();
+    const directory = runtime.managementDirectory(userId);
     if (body.action === "authenticate") {
       let auth: { authorizationUrl: string };
       try {
-        auth = await gateway.startMcpAuthentication(directory, connection.slug);
+        auth = await runtime.startMcpAuthentication(
+          directory,
+          connection.slug,
+          userId,
+        ) as { authorizationUrl: string };
       } catch {
         throw new ApiError(
           409,
@@ -62,12 +66,13 @@ export async function PATCH(
       let statuses;
       let discovery;
       try {
-        statuses = await gateway.addMcpConnection(
+        statuses = await runtime.addMcpConnection(
           directory,
           connection.slug,
           runtimeMcpConfig(connection),
-        );
-        discovery = await gateway.capabilityDiscovery(directory);
+          userId,
+        ) as Record<string, unknown>;
+        discovery = await runtime.listCapabilities(directory, userId);
       } catch {
         throw new ApiError(
           409,
@@ -89,20 +94,26 @@ export async function PATCH(
         "enabled or a supported action is required.",
       );
     setMcpConnectionEnabled(userId, id, body.enabled);
+    const updated = getMcpConnection(userId, id)!;
     if (body.enabled) {
-      await gateway
+      await runtime
         .addMcpConnection(
           directory,
           connection.slug,
-          runtimeMcpConfig(connection),
+          runtimeMcpConfig(updated),
+          userId,
         )
         .catch(() => null);
     } else {
-      await gateway
-        .setMcpConnectionConnected(directory, connection.slug, false)
+      await runtime
+        .setMcpConnectionConnected(
+          directory,
+          connection.slug,
+          false,
+          userId,
+        )
         .catch(() => false);
     }
-    const updated = getMcpConnection(userId, id)!;
     recordAuditEvent({
       eventType: body.enabled ? "mcp.enabled" : "mcp.disabled",
       userId,
@@ -126,12 +137,13 @@ export async function DELETE(
     const connection = deleteMcpConnection(userId, id);
     if (!connection)
       throw new ApiError(404, "mcp_not_found", "MCP connection not found.");
-    const gateway = getOpenHarnessGateway();
-    await gateway
+    const runtime = getAgentRuntime();
+    await runtime
       .setMcpConnectionConnected(
-        gateway.managementDirectory(userId),
+        runtime.managementDirectory(userId),
         connection.slug,
         false,
+        userId,
       )
       .catch(() => false);
     recordAuditEvent({

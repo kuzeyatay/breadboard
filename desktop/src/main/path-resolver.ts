@@ -30,6 +30,8 @@ export interface ResolvedPaths {
   readonly quartzContent: string;
   /** OpenHarness session workspace root. */
   readonly openharnessRoot: string;
+  /** Disposable Hermes home (config, logs, and non-canonical session cache). */
+  readonly hermesHome: string;
   /** Skill stores. */
   readonly skillsQuarantine: string;
   readonly skillsApproved: string;
@@ -47,6 +49,8 @@ export interface ResolvedPaths {
    * machine-absolute junctions, so node_modules must be created on the target
    * machine). */
   readonly openharnessAppDir: string;
+  /** Pinned Hermes source marker/resources directory. */
+  readonly hermesAppDir: string;
   /** Bundled runtimes (bun, python) in packaged mode; empty string in dev. */
   readonly runtimesDir: string;
   /** Bundled auxiliary binaries (ffmpeg, yt-dlp) when present. */
@@ -87,6 +91,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
       quartzWorkspace,
       quartzContent: path.join(quartzWorkspace, "content"),
       openharnessRoot: path.join(repoRoot, ".runtime", "openharness"),
+      hermesHome: path.join(repoRoot, ".runtime", "hermes"),
       skillsQuarantine: path.join(repoRoot, ".agents", "skills-quarantine"),
       skillsApproved: path.join(repoRoot, ".agents", "skills"),
       skillsConditional: path.join(repoRoot, ".agents", "skills-conditional"),
@@ -97,6 +102,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
       tempDir: path.join(repoRoot, ".runtime", "desktop-temp"),
       dashboardServerDir: path.join(repoRoot, "dashboard"),
       openharnessAppDir: path.join(repoRoot, "openharness"),
+      hermesAppDir: path.join(repoRoot, "hermes-agent"),
       runtimesDir: "",
       binDir: path.join(repoRoot, "desktop", "resources", "bin"),
     };
@@ -117,6 +123,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
     quartzWorkspace,
     quartzContent: path.join(quartzWorkspace, "content"),
     openharnessRoot: path.join(dataRoot, "runtime", "openharness"),
+    hermesHome: path.join(dataRoot, "runtime", "hermes"),
     skillsQuarantine: path.join(dataRoot, "skills", "quarantine"),
     skillsApproved: path.join(dataRoot, "skills", "approved"),
     skillsConditional: path.join(dataRoot, "skills", "conditional"),
@@ -127,6 +134,7 @@ export function resolvePaths(input: PathResolverInput): ResolvedPaths {
     tempDir: path.join(dataRoot, "temp"),
     dashboardServerDir: path.join(appRoot, "dashboard-standalone", "dashboard"),
     openharnessAppDir: path.join(dataRoot, "agent-runtime"),
+    hermesAppDir: path.join(appRoot, "hermes-agent"),
     runtimesDir: path.join(resources, "runtimes"),
     binDir: path.join(resources, "bin"),
   };
@@ -138,6 +146,7 @@ export function mutableDirectories(paths: ResolvedPaths): string[] {
     paths.databaseDir,
     paths.quartzContent,
     paths.openharnessRoot,
+    paths.hermesHome,
     paths.skillsQuarantine,
     paths.skillsApproved,
     paths.skillsConditional,

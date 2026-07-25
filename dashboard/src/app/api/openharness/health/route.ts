@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntime } from "@/lib/agent-runtime/runtime.ts";
 import { readOpenHarnessConfig } from "@/lib/openharness/config.ts";
 import { apiErrorResponse } from "@/lib/openharness/route-helpers.ts";
 
@@ -12,16 +12,16 @@ export async function GET() {
     await requireUserId();
     const config = readOpenHarnessConfig();
     const chatmock = await chatmockStatus();
-    if (!config.enabled) {
+    const runtime = getAgentRuntime();
+    if (!runtime.enabled) {
       return NextResponse.json(statusPayload(config.mode, chatmock, "disabled"));
     }
 
     try {
-      const gateway = getOpenHarnessGateway();
       const [health, agents, models] = await Promise.all([
-        gateway.health(),
-        gateway.listAgents(),
-        gateway.listModels(),
+        runtime.health(),
+        runtime.listAgents(),
+        runtime.listModels(),
       ]);
       const available = new Set(agents.map((agent) => agent.name));
       const providerHealthy = models.some((model) => model.providerId === "chatmock");
@@ -31,12 +31,26 @@ export async function GET() {
         version: health.version,
         chatmock,
         openharness: health.healthy ? "healthy" : "unhealthy",
+        runtime: runtime.kind,
         provider: providerHealthy ? "chatmock" : "unavailable",
         dashboardMode: config.mode,
-        terminalAgent: available.has(config.agents.terminal) ? "available" : "unavailable",
-        gardenAgent: available.has(config.agents.garden) ? "available" : "unavailable",
-        quartzAgent: available.has(config.agents.quartz) ? "available" : "unavailable",
-        capabilityScout: available.has(config.agents.capabilityScout) ? "available" : "unavailable",
+        terminalAgent:
+          runtime.kind === "hermes" || available.has(config.agents.terminal)
+            ? "available"
+            : "unavailable",
+        gardenAgent:
+          runtime.kind === "hermes" || available.has(config.agents.garden)
+            ? "available"
+            : "unavailable",
+        quartzAgent:
+          runtime.kind === "hermes" || available.has(config.agents.quartz)
+            ? "available"
+            : "unavailable",
+        capabilityScout:
+          runtime.kind === "hermes" ||
+          available.has(config.agents.capabilityScout)
+            ? "available"
+            : "unavailable",
       });
     } catch {
       return NextResponse.json(statusPayload(config.mode, chatmock, "unhealthy"));

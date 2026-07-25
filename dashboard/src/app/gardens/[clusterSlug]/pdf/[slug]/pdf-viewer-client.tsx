@@ -968,7 +968,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         }
       `}</style>
 
-      <header className="relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 bg-gray-950 px-4 py-3">
+      <header className="breadboard-flower-navbar relative flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
         <NavbarFlowerWind />
         <div className="relative z-10 flex min-w-0 items-center gap-3">
           <button

@@ -42,7 +42,38 @@ function checkResourcesRoot(resources, label) {
     path.join(dashboard, "server.js"),
     `${label} dashboard standalone server`,
   );
+  requireFile(
+    path.join(
+      dashboard,
+      "node_modules",
+      "@modelcontextprotocol",
+      "sdk",
+      "dist",
+      "esm",
+      "client",
+      "index.js",
+    ),
+    `${label} dashboard MCP proxy SDK`,
+  );
   if (fs.existsSync(node) && fs.existsSync(dashboard)) {
+    const mcpSdkImport = spawnSync(
+      node,
+      [
+        "--input-type=module",
+        "-e",
+        [
+          "await import('@modelcontextprotocol/sdk/client/index.js')",
+          "await import('@modelcontextprotocol/sdk/client/stdio.js')",
+          "await import('@modelcontextprotocol/sdk/client/streamableHttp.js')",
+        ].join(";"),
+      ],
+      { cwd: dashboard, encoding: "utf8", windowsHide: true },
+    );
+    if (mcpSdkImport.status !== 0) {
+      const output = `${mcpSdkImport.stderr ?? ""}\n${mcpSdkImport.stdout ?? ""}`.trim();
+      problems.push(`${label} dashboard cannot load MCP proxy runtime: ${output || "unknown error"}`);
+    }
+
     const pdfParseImport = spawnSync(
       node,
       [
@@ -121,6 +152,37 @@ function checkResourcesRoot(resources, label) {
     path.join(resources, "app-services", "openharness-config", "opencode.json"),
     `${label} OpenHarness config`,
   );
+  requireFile(
+    path.join(resources, "runtimes", "python", "hermes-upstream-commit.txt"),
+    `${label} Hermes runtime pin`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "hermes-agent", "hermes_cli", "main.py"),
+    `${label} Hermes entrypoint`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "hermes-agent", "plugins", "breadboard", "plugin.yaml"),
+    `${label} Breadboard Hermes plugin manifest`,
+  );
+  requireFile(
+    path.join(resources, "app-services", "hermes-agent", "BREADBOARD_UPSTREAM_COMMIT"),
+    `${label} staged Hermes commit pin`,
+  );
+  if (fs.existsSync(python)) {
+    const hermesImport = spawnSync(
+      python,
+      ["-c", "import hermes_cli.main; import plugins.breadboard; import tui_gateway.server"],
+      {
+        cwd: path.join(resources, "app-services", "hermes-agent"),
+        encoding: "utf8",
+        windowsHide: true,
+      },
+    );
+    if (hermesImport.status !== 0) {
+      const output = `${hermesImport.stderr ?? ""}\n${hermesImport.stdout ?? ""}`.trim();
+      problems.push(`${label} bundled Python cannot import Hermes: ${output || "unknown error"}`);
+    }
+  }
   requireFile(
     path.join(resources, "app-services", "quartz-template", "quartz", "bootstrap-cli.mjs"),
     `${label} Quartz CLI`,

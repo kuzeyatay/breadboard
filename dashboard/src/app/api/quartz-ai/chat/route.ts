@@ -12,7 +12,7 @@ import {
   authorizeQuartzRuntimeSession,
   markStatus,
 } from "@/lib/openharness/session-service.ts";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import {
   appendRuntimeMessage,
   persistCapabilityDecision,
@@ -203,16 +203,21 @@ export async function POST(request: Request) {
         userId,
         text,
         session.activeDirectory,
-        { mode: decision.mode, surface: "quartz_ai" },
+        {
+          mode: decision.mode,
+          surface: "quartz_ai",
+          runtimeKind: session.runtimeKind,
+        },
       );
       appendRuntimeMessage({
         runtimeSessionId: session.row.id,
         role: "user",
         content: text,
       });
-      const gateway = getOpenHarnessGateway();
-      await gateway.applyCapabilityDecision({
-        openHarnessSessionId: session.openHarnessSessionId,
+      const runtime = getAgentRuntimeByKind(session.runtimeKind);
+      await runtime.applyCapabilityDecision({
+        externalSessionId: session.externalSessionId,
+        liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         decision,
@@ -249,8 +254,9 @@ export async function POST(request: Request) {
           capabilityMode: decision.mode,
         },
       });
-      await gateway.sendMessage({
-        openHarnessSessionId: session.openHarnessSessionId,
+      await runtime.startRun({
+        externalSessionId: session.externalSessionId,
+        liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         agentName: session.agentName,
@@ -308,16 +314,21 @@ export async function POST(request: Request) {
       userId,
       text,
       created.activeDirectory,
-      { mode: decision.mode, surface: "quartz_ai" },
+      {
+        mode: decision.mode,
+        surface: "quartz_ai",
+        runtimeKind: created.runtimeKind,
+      },
     );
     appendRuntimeMessage({
       runtimeSessionId: created.row.id,
       role: "user",
       content: text,
     });
-    const gateway = getOpenHarnessGateway();
-    await gateway.applyCapabilityDecision({
-      openHarnessSessionId: created.openHarnessSessionId,
+    const runtime = getAgentRuntimeByKind(created.runtimeKind);
+    await runtime.applyCapabilityDecision({
+      externalSessionId: created.externalSessionId,
+      liveSessionId: created.liveSessionId,
       workspaceKey: created.workspaceKey,
       directory: created.activeDirectory,
       decision,
@@ -354,8 +365,9 @@ export async function POST(request: Request) {
         capabilityMode: decision.mode,
       },
     });
-    await gateway.sendMessage({
-      openHarnessSessionId: created.openHarnessSessionId,
+    await runtime.startRun({
+      externalSessionId: created.externalSessionId,
+      liveSessionId: created.liveSessionId,
       workspaceKey: created.workspaceKey,
       directory: created.activeDirectory,
       agentName: created.agentName,

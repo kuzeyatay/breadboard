@@ -23,6 +23,8 @@ import { fileURLToPath } from "node:url";
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
 const stagingRoot = path.join(desktopRoot, "build-resources", "app-services");
+const hermesRoot = path.join(repoRoot, "hermes-agent");
+const HERMES_UPSTREAM_COMMIT = "55ef425d0c3967022cb54093112e638c5c3f9e01";
 
 function log(message) {
   console.log(`[prepare-app] ${message}`);
@@ -81,6 +83,56 @@ copyTree(
   path.join(repoRoot, "dashboard", "public"),
   path.join(dashboardTarget, "dashboard", "public"),
 );
+
+// Next's standalone tracer currently misses the MCP SDK's conditional ESM
+// exports when reached through the server-only runtime adapter. Copy the
+// lockfile-installed production closure explicitly so the installed dashboard
+// can import the Hermes adapter. This stages code only, never data or secrets.
+log("staging dashboard MCP proxy dependency closure");
+{
+  const sourceModules = path.join(repoRoot, "dashboard", "node_modules");
+  const targetModules = path.join(
+    dashboardTarget,
+    "dashboard",
+    "node_modules",
+  );
+  const copied = new Set();
+  const resolveDependency = (parentSource, name) => {
+    const nested = path.join(parentSource, "node_modules", ...name.split("/"));
+    return fs.existsSync(path.join(nested, "package.json"))
+      ? nested
+      : path.join(sourceModules, ...name.split("/"));
+  };
+  const copyDependency = (name, parentSource, parentTarget) => {
+    const source = resolveDependency(parentSource, name);
+    const target = source.startsWith(path.join(parentSource, "node_modules"))
+      ? path.join(parentTarget, "node_modules", ...name.split("/"))
+      : path.join(targetModules, ...name.split("/"));
+    const identity = `${source}\u0000${target}`;
+    if (copied.has(identity)) return;
+    const manifestPath = path.join(source, "package.json");
+    if (!fs.existsSync(manifestPath)) {
+      fail(`Dashboard MCP dependency is missing from node_modules: ${name}`);
+    }
+    copied.add(identity);
+    copyTree(
+      source,
+      target,
+      (rel) => /(^|\/)(test|tests|docs|examples|coverage)(\/|$)/i.test(rel),
+    );
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    for (const dependency of Object.keys({
+      ...(manifest.dependencies ?? {}),
+      ...(manifest.optionalDependencies ?? {}),
+    })) {
+      const resolved = resolveDependency(source, dependency);
+      if (fs.existsSync(path.join(resolved, "package.json"))) {
+        copyDependency(dependency, source, target);
+      }
+    }
+  };
+  copyDependency("@modelcontextprotocol/sdk", sourceModules, targetModules);
+}
 
 // Repo-root marker so services that look for `<root>/dashboard` next to
 // `<root>/openharness-config` recognize the staged layout.
@@ -157,6 +209,10 @@ for (const workspace of OPENHARNESS_RUNTIME_WORKSPACES) {
     catalog: manifest.workspaces.catalog,
   };
   delete manifest.scripts.prepare; // husky is dev-only
+  // Root-only lint/release tooling is not part of the server runtime and pulls
+  // large native packages (notably oxlint-tsgolint) that are neither imported
+  // nor needed during first-launch provisioning.
+  delete manifest.devDependencies;
   // We install with --ignore-scripts, so the trusted-scripts list only
   // triggers a bun hoisted-linker bug (packages left unextracted with
   // "failed to enqueue lifecycle scripts: ENOENT"). Drop it.
@@ -222,6 +278,75 @@ log("staging openharness-config");
 freshDir(path.join(stagingRoot, "openharness-config"));
 copyTree(path.join(repoRoot, "openharness-config"), path.join(stagingRoot, "openharness-config"));
 
+// --- hermes-agent ---------------------------------------------------------
+// Stage the pinned, minimal Python source closure. Dependencies are installed
+// from Hermes's frozen uv.lock into the bundled CPython 3.13 runtime by
+// prepare-runtimes.mjs. Keeping source outside the runtime makes the maintained
+// Breadboard gateway patch and Breadboard plugin explicit and inspectable.
+{
+  const revision = spawnSync("git", ["-C", hermesRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    shell: false,
+  });
+  const actual = revision.status === 0 ? revision.stdout.trim() : "";
+  if (actual !== HERMES_UPSTREAM_COMMIT) {
+    fail(
+      `Hermes checkout must be pinned to ${HERMES_UPSTREAM_COMMIT}; found ${actual || "unknown"}.`,
+    );
+  }
+  log(`staging Hermes Agent ${actual.slice(0, 12)} source closure`);
+  const hermesTarget = path.join(stagingRoot, "hermes-agent");
+  freshDir(hermesTarget);
+  const packageDirs = [
+    "agent",
+    "tools",
+    "hermes_cli",
+    "gateway",
+    "tui_gateway",
+    "cron",
+    "acp_adapter",
+    "plugins",
+    "providers",
+  ];
+  for (const entry of packageDirs) {
+    const source = path.join(hermesRoot, entry);
+    if (!fs.existsSync(source)) fail(`Hermes package missing: ${source}`);
+    copyTree(source, path.join(hermesTarget, entry), (rel) =>
+      /(^|\/)(__pycache__|tests?)(\/|$)/.test(rel) ||
+      /\.(pyc|pyo)$/.test(rel),
+    );
+  }
+  const rootModules = [
+    "run_agent.py",
+    "model_tools.py",
+    "toolsets.py",
+    "batch_runner.py",
+    "trajectory_compressor.py",
+    "toolset_distributions.py",
+    "cli.py",
+    "hermes_bootstrap.py",
+    "hermes_constants.py",
+    "hermes_state.py",
+    "hermes_time.py",
+    "hermes_logging.py",
+    "utils.py",
+    "mcp_serve.py",
+    "pyproject.toml",
+    "uv.lock",
+    "LICENSE",
+  ];
+  for (const entry of rootModules) {
+    const source = path.join(hermesRoot, entry);
+    if (!fs.existsSync(source)) fail(`Hermes runtime file missing: ${source}`);
+    fs.copyFileSync(source, path.join(hermesTarget, entry));
+  }
+  fs.writeFileSync(
+    path.join(hermesTarget, "BREADBOARD_UPSTREAM_COMMIT"),
+    `${actual}\n`,
+    "utf8",
+  );
+}
+
 // --- quartz template (program files only; content/public are user data) ---
 log("staging quartz template");
 const quartzTarget = path.join(stagingRoot, "quartz-template");
@@ -280,6 +405,7 @@ fs.mkdirSync(licensesTarget, { recursive: true });
 const licenseSources = [
   ["chatmock", path.join(repoRoot, "chatmock", "LICENSE")],
   ["openharness", path.join(repoRoot, "openharness", "LICENSE")],
+  ["hermes-agent", path.join(hermesRoot, "LICENSE")],
   ["quartz", path.join(repoRoot, "quartz", "LICENSE.txt")],
 ];
 for (const [name, source] of licenseSources) {

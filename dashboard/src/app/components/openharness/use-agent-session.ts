@@ -482,7 +482,10 @@ export function useAgentSession(
               if (typeof payload.detail === "string" && payload.detail) {
                 assistant = {
                   ...assistant,
-                  reasoning: `${assistant.reasoning ?? ""}${payload.detail}`,
+                  reasoning:
+                    payload.detailMode === "replace"
+                      ? payload.detail
+                      : `${assistant.reasoning ?? ""}${payload.detail}`,
                 };
                 commit(assistant);
               }

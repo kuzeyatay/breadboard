@@ -30,7 +30,21 @@ if (isMain) {
   const result = spawnSync(
     process.platform === "win32" ? "npx.cmd" : "npx",
     ["electron-builder", "--win", "--x64", `-c.directories.output=${output}`],
-    { cwd: desktopRoot, stdio: "inherit", shell: process.platform === "win32" },
+    {
+      cwd: desktopRoot,
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      env: {
+        ...process.env,
+        // electron-builder treats "normal" and "maximum" identically for the
+        // NSIS 7z payload (-mx=9). The bundled runtime is large enough that
+        // this can exceed CI/tool timeouts and leave an invalid installer
+        // stub. Level 1 keeps the installer compressed while making the
+        // release build bounded and reproducible.
+        ELECTRON_BUILDER_COMPRESSION_LEVEL:
+          process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL?.trim() || "1",
+      },
+    },
   );
   process.exit(result.status ?? 1);
 }

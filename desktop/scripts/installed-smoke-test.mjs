@@ -22,7 +22,15 @@ const runId = new Date().toISOString().replace(/[:.]/g, "-");
 const evidenceDir = process.argv[3]
   ? path.resolve(process.argv[3])
   : path.join(process.env.LOCALAPPDATA ?? os.tmpdir(), "breadboard-desktop-smoke", runId);
-const installDir = path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Breadboard");
+const localAppData = process.env.LOCALAPPDATA
+  ? path.resolve(process.env.LOCALAPPDATA)
+  : "";
+if (!localAppData) {
+  console.error("LOCALAPPDATA is required for the installed smoke test.");
+  process.exit(2);
+}
+const programsDir = path.join(localAppData, "Programs");
+const installDir = path.join(programsDir, "Breadboard");
 const installedExe = path.join(installDir, "Breadboard.exe");
 const uninstaller = path.join(installDir, "Uninstall Breadboard.exe");
 const isolatedUserData = path.join(evidenceDir, "user-data");
@@ -99,13 +107,29 @@ async function closeInstalledProcesses() {
 function runInstaller(targetDir) {
   return spawnSync(installer, ["/S", `/D=${targetDir}`], {
     encoding: "utf8",
-    timeout: 20 * 60_000,
+    // The self-contained app expands to several gigabytes and contains many
+    // small Python/Node files. Defender scanning can make a clean install take
+    // longer than twenty minutes even though the installer is still healthy.
+    timeout: 60 * 60_000,
     maxBuffer: 20 * 1024 * 1024,
   });
 }
 
 function installDirectoryIsCleared() {
   return !fs.existsSync(installDir) || fs.readdirSync(installDir).length === 0;
+}
+
+function clearIncompleteInstallation() {
+  const resolved = path.resolve(installDir);
+  if (
+    resolved !== path.join(programsDir, "Breadboard") ||
+    path.dirname(resolved) !== programsDir ||
+    installProcesses().length > 0
+  ) {
+    return false;
+  }
+  fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 10, retryDelay: 1_000 });
+  return !fs.existsSync(resolved);
 }
 
 async function runUninstaller() {
@@ -121,7 +145,7 @@ async function runUninstaller() {
       !fs.existsSync(uninstaller) &&
       installDirectoryIsCleared() &&
       installProcesses().length === 0,
-    300_000,
+    30 * 60_000,
     2_000,
   );
   if (removed) await delay(3_000);
@@ -188,13 +212,23 @@ try {
   if (previouslyInstalled) {
     const graceful = await closeInstalledProcesses();
     record("existing installation stops before isolation setup", installProcesses().length === 0, graceful ? "graceful" : "forced fallback");
-    const removedPrevious = await runUninstaller();
-    record(
-      "previous installation is removed before the clean install",
-      removedPrevious.status === 0 && removedPrevious.removed,
-      `exit ${removedPrevious.status}; ${removedPrevious.stderr}`,
-    );
-    if (!removedPrevious.removed) throw new Error("could not remove the previous installation");
+    if (!fs.existsSync(uninstaller)) {
+      const removedPartial = clearIncompleteInstallation();
+      record(
+        "incomplete previous installation is removed before the clean install",
+        removedPartial,
+        installDir,
+      );
+      if (!removedPartial) throw new Error("could not remove the incomplete previous installation");
+    } else {
+      const removedPrevious = await runUninstaller();
+      record(
+        "previous installation is removed before the clean install",
+        removedPrevious.status === 0 && removedPrevious.removed,
+        `exit ${removedPrevious.status}; ${removedPrevious.stderr}`,
+      );
+      if (!removedPrevious.removed) throw new Error("could not remove the previous installation");
+    }
   }
 
   const install = runInstaller(installDir);

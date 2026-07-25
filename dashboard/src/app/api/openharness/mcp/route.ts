@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntime } from "@/lib/agent-runtime/runtime.ts";
 import {
   listMcpConnections,
   parseMcpConfig,
@@ -24,18 +24,19 @@ export async function GET() {
     let statuses: Record<string, unknown> = {};
     let tools: string[] = [];
     try {
-      const gateway = getOpenHarnessGateway();
-      const directory = gateway.managementDirectory(userId);
+      const runtime = getAgentRuntime();
+      const directory = runtime.managementDirectory(userId);
       for (const connection of listMcpConnections(userId, true)) {
-        await gateway
+        await runtime
           .addMcpConnection(
             directory,
             connection.slug,
             runtimeMcpConfig(connection),
+            userId,
           )
           .catch(() => null);
       }
-      const discovery = await gateway.capabilityDiscovery(directory);
+      const discovery = await runtime.listCapabilities(directory, userId);
       statuses = discovery.mcp;
       tools = discovery.tools;
     } catch {
@@ -62,18 +63,19 @@ export async function POST(request: Request) {
     const body = await readJsonBody(request);
     const parsed = parseMcpConfig(body);
     const connection = saveMcpConnection(userId, parsed);
-    const gateway = getOpenHarnessGateway();
+    const runtime = getAgentRuntime();
     let connectionStatus: unknown = {
       status: "failed",
       error:
         "Connection saved, but the runtime test failed. Secret-bearing error details were not exposed.",
     };
     try {
-      const statuses = await gateway.addMcpConnection(
-        gateway.managementDirectory(userId),
+      const statuses = await runtime.addMcpConnection(
+        runtime.managementDirectory(userId),
         connection.slug,
         runtimeMcpConfig(connection),
-      );
+        userId,
+      ) as Record<string, unknown>;
       connectionStatus = statuses[connection.slug];
     } catch {
       recordAuditEvent({

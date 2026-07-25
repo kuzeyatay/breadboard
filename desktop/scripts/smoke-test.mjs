@@ -324,17 +324,17 @@ async function main() {
   const chatmock = await fetchOk(`${urls.chatmock}/health`);
   record("ChatMock healthy", chatmock !== null && chatmock.ok);
 
-  // OpenHarness answers (401 without credentials is a valid liveness signal).
-  const openharness = await fetchOk(`${urls.openharness}/global/health`);
+  // The selected agent runtime is intentionally server-only. Its loopback
+  // endpoint and credential must never be published in endpoints.json.
   record(
-    "OpenHarness reachable (auth enforced)",
-    openharness !== null && (openharness.status === 401 || openharness.ok),
-    `status ${openharness?.status}`,
+    "agent runtime endpoint is not published to the renderer",
+    urls.hermes === undefined,
+    `published keys ${Object.keys(urls).sort().join(",")}`,
   );
 
   // GBrain adapter lifecycle (index a fixture; retrieval after restart is checked
   // below). Gated on GBrain being enabled — records an explicit skip otherwise.
-  await gbrainInitialChecks(urls);
+  const gbrainEnabled = await gbrainInitialChecks(urls);
 
   // Auth: registration is invite-only; the desktop seeds an initial invite
   // code recorded in its config file.
@@ -396,6 +396,21 @@ async function main() {
     }
   }
   record("credentials login yields a session", sessionUser !== null, `user ${sessionUser}`);
+  const runtimeHealth = sessionUser
+    ? await fetchOk(`${base}/api/openharness/health`, {
+        headers: { Cookie: cookieHeader() },
+      }, 20_000)
+    : null;
+  const runtimeHealthBody = runtimeHealth?.ok
+    ? await runtimeHealth.json().catch(() => null)
+    : null;
+  record(
+    "Hermes is healthy through the existing authenticated runtime API",
+    runtimeHealthBody?.healthy === true && runtimeHealthBody?.runtime === "hermes",
+    runtimeHealthBody
+      ? `runtime ${runtimeHealthBody.runtime}; version ${runtimeHealthBody.version}`
+      : `status ${runtimeHealth?.status}`,
+  );
 
   // Cluster creation + ingestion (authenticated API).
   let clusterOk = false;
@@ -514,7 +529,7 @@ async function main() {
   }
   record("final quit leaves no managed processes", finalLeftovers.length === 0);
   // GBrain adapter must terminate with the app; no orphan process remains.
-  gbrainNoOrphanProcess();
+  if (gbrainEnabled) gbrainNoOrphanProcess();
 
   let fatalLogLines = [];
   if (fs.existsSync(desktopLog)) {

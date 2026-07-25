@@ -35,6 +35,7 @@ test("maps reasoning deltas to reasoning.status", () => {
   );
   assert.equal(event?.type, "reasoning.status");
   assert.equal(event?.payload.detail, "thinking...");
+  assert.equal(event?.payload.detailMode, "append");
 });
 
 test("keeps structured reasoning-part deltas out of assistant answer text", () => {
@@ -74,6 +75,31 @@ test("keeps structured reasoning-part deltas out of assistant answer text", () =
   );
   assert.equal(summary?.type, "reasoning.status");
   assert.equal(summary?.payload.detail, "Checking the relevant sources.");
+});
+
+test("maps a full reasoning-part snapshot as replacement text", () => {
+  const event = normalizeOpenHarnessEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        sessionID: "s1",
+        part: {
+          id: "reasoning-1",
+          sessionID: "s1",
+          type: "reasoning",
+          text: "I checked the relevant sources and compared the results.",
+          time: { start: 1, end: 2 },
+        },
+      },
+    },
+    "s1",
+  );
+  assert.equal(event?.type, "reasoning.status");
+  assert.equal(
+    event?.payload.detail,
+    "I checked the relevant sources and compared the results.",
+  );
+  assert.equal(event?.payload.detailMode, "replace");
 });
 
 test("drops events belonging to a different session", () => {

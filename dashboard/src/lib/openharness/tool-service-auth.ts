@@ -1,10 +1,22 @@
 import crypto from "node:crypto";
 import { issueCapabilityToken } from "./capability-token.ts";
-import { getRuntimeSessionByOpenHarnessId } from "./runtime-store.ts";
+import {
+  getRuntimeSessionByExternalId,
+  getRuntimeSessionByOpenHarnessId,
+  runtimeExternalSessionId,
+} from "./runtime-store.ts";
 import { allowedToolsForSurface } from "./tool-scopes.ts";
 import { ApiError } from "./route-helpers.ts";
+import type { RuntimeKind } from "../agent-runtime/contracts.ts";
 
-function serviceSecret(): string {
+function serviceSecret(runtime: RuntimeKind): string {
+  if (runtime === "hermes") {
+    return (
+      process.env.BREADBOARD_HERMES_TOOL_SECRET ||
+      process.env.OPENHARNESS_TOOL_SECRET ||
+      "breadboard-local-dev"
+    );
+  }
   return (
     process.env.OPENHARNESS_TOOL_SECRET ||
     process.env.OPENHARNESS_PASSWORD ||
@@ -24,25 +36,53 @@ function equalSecret(left: string, right: string): boolean {
  * files out of a full-filesystem agent's active working directory.
  */
 export function capabilityForInternalToolRequest(request: Request): string | null {
-  const sessionId = request.headers.get("x-openharness-session-id")?.trim();
+  const runtimeHeader = request.headers
+    .get("x-agent-runtime")
+    ?.trim()
+    .toLowerCase();
+  const runtime: RuntimeKind =
+    runtimeHeader === "hermes" ||
+    Boolean(request.headers.get("x-hermes-session-id"))
+      ? "hermes"
+      : "openharness";
+  const sessionId = (
+    request.headers.get("x-agent-session-id") ??
+    request.headers.get("x-hermes-session-id") ??
+    request.headers.get("x-openharness-session-id")
+  )?.trim();
   if (!sessionId) return null;
   const authorization = request.headers.get("authorization") ?? "";
   const bearer = authorization.toLowerCase().startsWith("bearer ")
     ? authorization.slice(7).trim()
     : "";
-  if (!bearer || !equalSecret(bearer, serviceSecret())) {
-    throw new ApiError(401, "invalid_service_auth", "Invalid OpenHarness tool service credentials.");
+  if (!bearer || !equalSecret(bearer, serviceSecret(runtime))) {
+    throw new ApiError(
+      401,
+      "invalid_service_auth",
+      "Invalid agent tool service credentials.",
+    );
   }
-  const row = getRuntimeSessionByOpenHarnessId(sessionId);
-  if (!row || !row.openharness_session_id) {
-    throw new ApiError(404, "runtime_session_not_found", "The OpenHarness runtime session was not found.");
+  const row =
+    getRuntimeSessionByExternalId(runtime, sessionId) ??
+    (runtime === "openharness"
+      ? getRuntimeSessionByOpenHarnessId(sessionId)
+      : null);
+  const externalSessionId = row ? runtimeExternalSessionId(row) : null;
+  if (!row || !externalSessionId) {
+    throw new ApiError(
+      404,
+      "runtime_session_not_found",
+      "The agent runtime session was not found.",
+    );
   }
   return issueCapabilityToken({
     userId: row.user_id ?? 0,
     conversationId: row.conversation_id ?? undefined,
     surface: row.surface,
     breadboardSessionId: String(row.id),
-    openHarnessSessionId: row.openharness_session_id,
+    // Legacy token field name retained for the stable internal tool contract.
+    // Its value is the selected runtime's opaque external session id.
+    openHarnessSessionId: externalSessionId,
     gardenId: row.garden_id ?? undefined,
     allowedGardenIds: parseAllowedGardenIds(row.allowed_garden_ids),
     activeGardenId: row.cluster_id ?? undefined,

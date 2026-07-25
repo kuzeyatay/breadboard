@@ -4774,7 +4774,7 @@ export default function WorkspaceClient({
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
+      <header className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
         <NavbarFlowerWind />
         <div className="relative z-10 flex items-center gap-3">
           <Link

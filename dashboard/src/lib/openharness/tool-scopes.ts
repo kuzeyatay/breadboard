@@ -78,7 +78,9 @@ export function allowedToolsForSurface(surface: OpenHarnessSurface): string[] {
   // GBrain knowledge tools are added ONLY for authenticated Garden Chat and
   // Terminal, and only when GBrain is enabled. Quartz AI never receives them.
   const gbrain = isGBrainEnabled() ? [...GBRAIN_TOOLS] : [];
-  if (surface === "garden_chat") return [...GARDEN_TOOLS, ...ARTIFACT_TOOLS, ...gbrain];
+  if (surface === "garden_chat") {
+    return [...GARDEN_TOOLS, ...ARTIFACT_TOOLS, ...gbrain, "mcp_call"];
+  }
   if (surface === "quartz_ai") return [...QUARTZ_TOOLS];
   // The dashboard terminal's tools are governed by the OpenHarness agent config
   // and per-action permission prompts, not by a fixed Breadboard allowlist.
@@ -89,6 +91,7 @@ export function allowedToolsForSurface(surface: OpenHarnessSurface): string[] {
     "terminal_execute_command",
     "capability_gap",
     "capability_search",
+    "mcp_call",
   ];
 }
 

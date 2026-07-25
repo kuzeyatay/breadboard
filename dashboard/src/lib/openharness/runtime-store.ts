@@ -15,6 +15,7 @@ import {
   type AssistantReasoningEffort,
 } from "../assistant-reasoning.ts";
 import type { OpenHarnessSurface } from "./config.ts";
+import type { RuntimeKind } from "../agent-runtime/contracts.ts";
 import type {
   CapabilityDecision,
   CapabilityMode,
@@ -30,6 +31,10 @@ export interface RuntimeSessionRow {
   user_id: number | null;
   chat_session_id: number | null;
   openharness_session_id: string | null;
+  runtime_kind: RuntimeKind;
+  external_session_id: string | null;
+  live_session_id: string | null;
+  last_event_sequence: number;
   agent_name: string;
   cluster_id: number | null;
   garden_id: string | null;
@@ -60,6 +65,9 @@ export interface CreateRuntimeSessionInput {
   activeDirectory: string;
   filesystemMode: FilesystemAccessMode;
   openHarnessSessionId?: string | null;
+  runtimeKind?: RuntimeKind;
+  externalSessionId?: string | null;
+  liveSessionId?: string | null;
   runtimeMetadata?: Record<string, unknown> | null;
 }
 
@@ -69,10 +77,11 @@ export function createRuntimeSession(
   const result = db
     .prepare(
       `INSERT INTO openharness_runtime_sessions
-         (conversation_id, surface, user_id, chat_session_id, openharness_session_id, agent_name,
+         (conversation_id, surface, user_id, chat_session_id, openharness_session_id,
+          runtime_kind, external_session_id, live_session_id, agent_name,
           cluster_id, garden_id, page_slug, workspace_key, active_directory,
           filesystem_mode, runtime_metadata, allowed_garden_ids)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.conversationId ?? null,
@@ -80,6 +89,9 @@ export function createRuntimeSession(
       input.userId,
       input.chatSessionId,
       input.openHarnessSessionId ?? null,
+      input.runtimeKind ?? "openharness",
+      input.externalSessionId ?? input.openHarnessSessionId ?? null,
+      input.liveSessionId ?? null,
       input.agentName,
       input.clusterId,
       input.gardenId,
@@ -156,6 +168,24 @@ export function getRuntimeSessionByOpenHarnessId(
     )
     .get(openHarnessSessionId) as RuntimeSessionRow | undefined;
   return row ?? null;
+}
+
+export function getRuntimeSessionByExternalId(
+  runtimeKind: RuntimeKind,
+  externalSessionId: string,
+): RuntimeSessionRow | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM openharness_runtime_sessions
+       WHERE runtime_kind = ? AND external_session_id = ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(runtimeKind, externalSessionId) as RuntimeSessionRow | undefined;
+  return row ?? null;
+}
+
+export function runtimeExternalSessionId(row: RuntimeSessionRow): string | null {
+  return row.external_session_id ?? row.openharness_session_id;
 }
 
 export interface OpenHarnessUserSettings {
@@ -243,9 +273,10 @@ export function setOpenHarnessSessionId(
 ): void {
   db.prepare(
     `UPDATE openharness_runtime_sessions
-     SET openharness_session_id = ?, updated_at = datetime('now')
+     SET openharness_session_id = ?, runtime_kind = 'openharness',
+         external_session_id = ?, updated_at = datetime('now')
      WHERE id = ?`,
-  ).run(openHarnessSessionId, id);
+  ).run(openHarnessSessionId, openHarnessSessionId, id);
 }
 
 export function replaceRuntimeIdentity(input: {
@@ -258,12 +289,47 @@ export function replaceRuntimeIdentity(input: {
 }): RuntimeSessionRow {
   db.prepare(`
     UPDATE openharness_runtime_sessions
-    SET openharness_session_id = ?, workspace_key = ?, active_directory = ?,
+    SET openharness_session_id = ?, runtime_kind = 'openharness',
+        external_session_id = ?, workspace_key = ?, active_directory = ?,
         agent_name = ?, runtime_metadata = COALESCE(?, runtime_metadata),
         last_runtime_status = 'rehydrated', updated_at = datetime('now')
     WHERE id = ?
   `).run(
     input.openHarnessSessionId,
+    input.openHarnessSessionId,
+    input.workspaceKey,
+    input.activeDirectory,
+    input.agentName,
+    input.runtimeMetadata ? JSON.stringify(input.runtimeMetadata) : null,
+    input.runtimeSessionId,
+  );
+  return getRuntimeSessionById(input.runtimeSessionId)!;
+}
+
+export function replaceAgentRuntimeIdentity(input: {
+  runtimeSessionId: number;
+  runtimeKind: RuntimeKind;
+  externalSessionId: string;
+  liveSessionId?: string | null;
+  workspaceKey: string;
+  activeDirectory: string;
+  agentName: string;
+  runtimeMetadata?: Record<string, unknown>;
+}): RuntimeSessionRow {
+  db.prepare(`
+    UPDATE openharness_runtime_sessions
+    SET runtime_kind = ?, external_session_id = ?, live_session_id = ?,
+        openharness_session_id = CASE WHEN ? = 'openharness' THEN ? ELSE NULL END,
+        workspace_key = ?, active_directory = ?, agent_name = ?,
+        runtime_metadata = COALESCE(?, runtime_metadata),
+        last_runtime_status = 'rehydrated', updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    input.runtimeKind,
+    input.externalSessionId,
+    input.liveSessionId ?? null,
+    input.runtimeKind,
+    input.externalSessionId,
     input.workspaceKey,
     input.activeDirectory,
     input.agentName,

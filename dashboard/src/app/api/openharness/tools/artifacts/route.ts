@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
 import { capabilityForInternalToolRequest } from "@/lib/openharness/tool-service-auth.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/openharness/capability-token.ts";
-import { getActiveCapabilityDecision, getRuntimeSessionById, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
+import {
+  getActiveCapabilityDecision,
+  getRuntimeSessionById,
+  recordAuditEvent,
+  runtimeExternalSessionId,
+} from "@/lib/openharness/runtime-store.ts";
 import { getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/openharness/run-store.ts";
 import { listMcpConnections } from "@/lib/openharness/mcp-connections.ts";
 import db from "@/lib/db";
@@ -42,7 +47,8 @@ export async function POST(request: Request) {
     if (
       !session || session.user_id === null || session.conversation_id === null ||
       !["dashboard_terminal", "garden_chat"].includes(session.surface) ||
-      session.openharness_session_id !== verified.token.openHarnessSessionId ||
+      runtimeExternalSessionId(session) !==
+        verified.token.openHarnessSessionId ||
       verified.token.conversationId !== session.conversation_id
     ) {
       throw new ApiError(403, "artifact_session_scope_mismatch", "Artifact session scope is invalid.");
@@ -85,7 +91,7 @@ export async function POST(request: Request) {
       let artifact = createArtifact({
         userId: session.user_id,
         runtimeSessionId: session.id,
-        openHarnessSessionId: session.openharness_session_id!,
+        openHarnessSessionId: runtimeExternalSessionId(session)!,
         conversationId: session.conversation_id,
         clusterId: session.cluster_id,
         runId: run.id,

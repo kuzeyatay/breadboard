@@ -1,6 +1,6 @@
 import { decideCapabilityMode, type CapabilityDecision } from "./capability-policy.ts";
 import { leastPrivilegeDecision } from "./dispatch-core.ts";
-import { getOpenHarnessGateway } from "./gateway.ts";
+import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import {
   getActiveCapabilityDecision,
   recordAuditEvent,
@@ -27,18 +27,20 @@ export function scheduleCapabilityExpiry(
       new Date(expiresAt - 1),
     );
     if (!active || active.id !== decisionId) return;
-    const gateway = getOpenHarnessGateway();
+    const runtime = getAgentRuntimeByKind(session.runtimeKind);
     void (async () => {
-      await gateway
-        .abortSession({
-          openHarnessSessionId: session.openHarnessSessionId,
+      await runtime
+        .stopRun({
+          externalSessionId: session.externalSessionId,
+          liveSessionId: session.liveSessionId,
           workspaceKey: session.workspaceKey,
           directory: session.activeDirectory,
         })
         .catch(() => undefined);
       revokeCapabilityDecision(session.row.id, "expired", new Date(expiresAt));
-      await gateway.applyCapabilityDecision({
-        openHarnessSessionId: session.openHarnessSessionId,
+      await runtime.applyCapabilityDecision({
+        externalSessionId: session.externalSessionId,
+        liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         decision: leastPrivilegeDecision(session.activeDirectory),
