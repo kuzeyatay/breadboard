@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import NavBar from "@/app/components/navbar";
 
 // ---- Types mirrored from the API (redacted; never contains secrets) ----
 type RuntimeState = "available" | "starting" | "unavailable" | "misconfigured" | "disabled";
@@ -60,12 +61,18 @@ interface PendingApproval {
   expiresAt: string;
 }
 
-const STATE_COLOR: Record<RuntimeState, string> = {
-  available: "#1f9d55",
-  starting: "#b7791f",
-  unavailable: "#a0616a",
-  misconfigured: "#b7791f",
-  disabled: "#6b7280",
+const STATE_STYLE: Record<RuntimeState, { label: string; dot: string; text: string }> = {
+  available: { label: "Available", dot: "bg-emerald-400", text: "text-emerald-300" },
+  starting: { label: "Starting", dot: "bg-amber-400", text: "text-amber-300" },
+  unavailable: { label: "Unavailable", dot: "bg-rose-400", text: "text-rose-300" },
+  misconfigured: { label: "Misconfigured", dot: "bg-amber-400", text: "text-amber-300" },
+  disabled: { label: "Disabled", dot: "bg-gray-500", text: "text-gray-400" },
+};
+
+const RISK_STYLE: Record<string, string> = {
+  high: "text-rose-300",
+  medium: "text-amber-300",
+  low: "text-emerald-300",
 };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -75,7 +82,25 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return data as unknown as T;
 }
 
-export default function AgentsClient({ username }: { username: string }) {
+// Small building blocks matching the dashboard's neu-* system.
+const BTN_PRIMARY =
+  "neu-button-primary px-4 py-2 bg-white text-gray-950 text-sm font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 inline-flex items-center justify-center gap-2";
+const BTN_SECONDARY =
+  "neu-button px-4 py-2 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors disabled:opacity-40";
+const BTN_DESTRUCTIVE =
+  "neu-button-destructive px-4 py-2 text-sm rounded-lg inline-flex items-center justify-center gap-2";
+const INPUT =
+  "neu-control w-full rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none transition-colors focus:border-gray-600";
+
+function BackIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+export default function AgentsClient({ email, username }: { email: string; username: string }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [adapter, setAdapter] = useState<AdapterHealth | null>(null);
   const [mode, setMode] = useState<string>("optional");
@@ -102,32 +127,47 @@ export default function AgentsClient({ username }: { username: string }) {
     void load();
   }, [load]);
 
-  return (
-    <div style={S.page}>
-      <style>{GLOBAL_CSS}</style>
-      <header style={S.header}>
-        <div>
-          <h1 style={S.h1}>Agents</h1>
-          <p style={S.sub}>Runtime and prompt agents for {username}</p>
-        </div>
-        <div style={S.adapterBadge}>
-          Runtime adapter:{" "}
-          <strong style={{ color: adapter?.status === "healthy" ? STATE_COLOR.available : STATE_COLOR.unavailable }}>
-            {mode === "disabled" ? "disabled" : adapter?.status === "healthy" ? `available (${adapter.runtime}${adapter.realBrowser ? "" : ", simulated"})` : "unavailable"}
-          </strong>
-        </div>
-      </header>
+  const adapterOk = adapter?.status === "healthy";
 
-      {error && <div style={S.errorBar}>Could not load agents: {error}</div>}
-      {loading ? (
-        <p style={S.sub}>Loading…</p>
-      ) : (
-        <div style={S.grid}>
-          {agents.map((a) => (
-            <AgentCard key={a.id} agent={a} onConfigure={() => setConfiguring(a)} onRun={() => setRunning(a)} />
-          ))}
+  return (
+    <div className="min-h-screen bg-gray-950 text-white flex flex-col pb-16">
+      <NavBar email={email} username={username} />
+
+      <div className="max-w-5xl mx-auto w-full px-6 py-8 flex-1">
+        <a href="/dashboard" className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-white transition-colors">
+          <BackIcon /> Back to gardens
+        </a>
+
+        <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
+            <p className="mt-1 text-sm text-gray-500">Runtime agents that act on your behalf in an isolated browser.</p>
+          </div>
+          <div className="flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-1.5 text-xs text-gray-400">
+            <span className={`h-2 w-2 rounded-full ${adapterOk ? "bg-emerald-400" : "bg-rose-400"}`} />
+            Runtime adapter:&nbsp;
+            <span className={adapterOk ? "text-emerald-300" : "text-rose-300"}>
+              {mode === "disabled" ? "disabled" : adapterOk ? `available${adapter?.realBrowser ? "" : " · simulated"}` : "unavailable"}
+            </span>
+          </div>
         </div>
-      )}
+
+        {error && (
+          <div className="mt-6 rounded-lg border border-rose-900/60 bg-rose-950/40 px-4 py-3 text-sm text-rose-300">
+            Could not load agents: {error}
+          </div>
+        )}
+
+        {loading ? (
+          <p className="mt-10 text-sm text-gray-500">Loading…</p>
+        ) : (
+          <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            {agents.map((a) => (
+              <AgentCard key={a.id} agent={a} onConfigure={() => setConfiguring(a)} onRun={() => setRunning(a)} />
+            ))}
+          </div>
+        )}
+      </div>
 
       {configuring && (
         <ConfigureModal
@@ -139,40 +179,56 @@ export default function AgentsClient({ username }: { username: string }) {
           }}
         />
       )}
-      {running && <RunWorkspace agent={running} onClose={() => { setRunning(null); void load(); }} />}
+      {running && (
+        <RunWorkspace
+          agent={running}
+          onClose={() => {
+            setRunning(null);
+            void load();
+          }}
+        />
+      )}
     </div>
   );
 }
 
 function AgentCard({ agent, onConfigure, onRun }: { agent: Agent; onConfigure: () => void; onRun: () => void }) {
+  const state = STATE_STYLE[agent.runtimeState];
   const canRun = agent.enabled && agent.runtimeState === "available";
   return (
-    <div style={S.card}>
-      <div style={S.cardTop}>
-        <div>
-          <div style={S.cardName}>{agent.name}</div>
-          <div style={S.badges}>
-            <span style={S.badge}>{agent.runtime ?? agent.kind}</span>
+    <div className="neu-surface relative flex flex-col gap-4 rounded-xl border-2 border-gray-800 bg-gray-900 p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xl leading-none">🌐</span>
+            <h2 className="truncate text-base font-semibold text-white">{agent.name}</h2>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <span className="rounded-md bg-white/10 px-2 py-0.5 text-[11px] text-gray-200">{agent.runtime ?? agent.kind}</span>
             {agent.capabilities.map((c) => (
-              <span key={c} style={S.badgeMuted}>{c}</span>
+              <span key={c} className="rounded-md border border-gray-700 px-2 py-0.5 text-[11px] text-gray-400">{c}</span>
             ))}
           </div>
         </div>
-        <span style={{ ...S.stateDot, background: STATE_COLOR[agent.runtimeState] }} title={agent.runtimeState} />
+        <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border border-gray-700 px-2 py-1 text-[11px] ${state.text}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${state.dot}`} /> {state.label}
+        </span>
       </div>
-      <p style={S.cardDesc}>{agent.description}</p>
-      <dl style={S.meta}>
-        <Meta k="Runtime" v={agent.runtimeState} color={STATE_COLOR[agent.runtimeState]} />
+
+      <p className="text-[13px] leading-5 text-gray-400">{agent.description}</p>
+
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[13px]">
         <Meta k="Model" v={agent.configuration.model || "not set"} />
         <Meta k="Provider" v={agent.configuration.provider} />
         <Meta k="Strategy" v={agent.configuration.browserStrategy} />
-        <Meta k="Approval" v={agent.configuration.approvalMode === "every_action" ? "every action" : "sensitive actions"} />
+        <Meta k="Approval" v={agent.configuration.approvalMode === "every_action" ? "every action" : "sensitive"} />
         <Meta k="Credential" v={agent.secretConfigured ? "configured" : "not configured"} />
         <Meta k="Last run" v={agent.lastRun ? agent.lastRun.status : "—"} />
       </dl>
-      <div style={S.cardActions}>
-        <button style={S.btnSecondary} onClick={onConfigure}>Configure</button>
-        <button style={canRun ? S.btnPrimary : S.btnDisabled} disabled={!canRun} onClick={onRun} title={canRun ? "" : "Runtime unavailable or misconfigured"}>
+
+      <div className="mt-1 flex gap-2">
+        <button className={BTN_SECONDARY} onClick={onConfigure}>Configure</button>
+        <button className={canRun ? BTN_PRIMARY : `${BTN_SECONDARY} cursor-not-allowed`} disabled={!canRun} onClick={onRun} title={canRun ? "" : "Configure a model to run"}>
           Run task
         </button>
       </div>
@@ -180,13 +236,72 @@ function AgentCard({ agent, onConfigure, onRun }: { agent: Agent; onConfigure: (
   );
 }
 
-function Meta({ k, v, color }: { k: string; v: string; color?: string }) {
+function Meta({ k, v }: { k: string; v: string }) {
   return (
-    <div style={S.metaRow}>
-      <dt style={S.metaKey}>{k}</dt>
-      <dd style={{ ...S.metaVal, ...(color ? { color } : {}) }}>{v}</dd>
+    <div className="flex items-center justify-between gap-2">
+      <dt className="text-gray-500">{k}</dt>
+      <dd className="truncate font-medium text-gray-200" title={v}>{v}</dd>
     </div>
   );
+}
+
+// ---- Modal shell with a Back/close affordance --------------------------------
+function Modal({ title, subtitle, onClose, children, footer, wide }: {
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-auto bg-black/70 px-4 py-8 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className={`neu-dialog w-full ${wide ? "max-w-4xl" : "max-w-lg"} rounded-2xl border border-gray-800 bg-gray-900`}>
+        <header className="flex items-start justify-between gap-4 border-b border-gray-800 px-6 py-4">
+          <div className="min-w-0">
+            <button onClick={onClose} className="mb-1 inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-white transition-colors">
+              <BackIcon /> Back
+            </button>
+            <h2 className="truncate text-lg font-semibold text-white">{title}</h2>
+            {subtitle && <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>}
+          </div>
+          <button onClick={onClose} aria-label="Close" className="neu-button-icon rounded-full p-1.5 text-gray-500 hover:bg-gray-800 hover:text-gray-200">
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </header>
+        <div className="max-h-[70vh] overflow-auto px-6 py-5">{children}</div>
+        {footer && <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-gray-800 px-6 py-4">{footer}</footer>}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="mb-4 block">
+      <span className="mb-1.5 block text-[13px] text-gray-400">{label}</span>
+      {children}
+      {hint && <span className="mt-1 block text-[11px] text-gray-600">{hint}</span>}
+    </label>
+  );
+}
+
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button type="button" onClick={() => onChange(!checked)} className="flex w-full items-center justify-between rounded-lg border border-gray-800 bg-gray-950/40 px-3 py-2 text-sm text-gray-300 transition-colors hover:border-gray-700">
+      <span>{label}</span>
+      <span className={`relative h-5 w-9 rounded-full transition-colors ${checked ? "bg-emerald-500/80" : "border border-gray-700 bg-gray-900"}`}>
+        <span className={`absolute top-0.5 h-4 w-4 rounded-full transition-transform ${checked ? "translate-x-[18px] bg-gray-950" : "translate-x-0.5 bg-gray-500"}`} />
+      </span>
+    </button>
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <h3 className="mb-2 mt-6 text-[11px] font-semibold uppercase tracking-wide text-gray-500 first:mt-0">{children}</h3>;
 }
 
 function ConfigureModal({ agent, onClose, onSaved }: { agent: Agent; onClose: () => void; onSaved: () => void }) {
@@ -226,89 +341,81 @@ function ConfigureModal({ agent, onClose, onSaved }: { agent: Agent; onClose: ()
   };
 
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div style={S.modal} onClick={(e) => e.stopPropagation()}>
-        <h2 style={S.h2}>Configure {agent.name}</h2>
-
-        <Section title="Runtime">
-          <button style={S.btnSecondary} onClick={testConnection}>Test connection</button>
-          {testMsg && <span style={S.hint}> {testMsg}</span>}
-        </Section>
-
-        <Section title="Model">
-          <Field label="Provider">
-            <input style={S.input} value={cfg.provider} onChange={(e) => set("provider", e.target.value)} />
-          </Field>
-          <Field label="Model">
-            <input style={S.input} value={cfg.model} onChange={(e) => set("model", e.target.value)} placeholder="e.g. UI-TARS-1.5-7B" />
-          </Field>
-          <Field label="Endpoint (optional)">
-            <input style={S.input} value={cfg.endpoint ?? ""} onChange={(e) => set("endpoint", e.target.value)} placeholder="https://…/v1" />
-          </Field>
-          <Field label={`API key ${agent.secretConfigured ? "(configured)" : "(not configured)"}`}>
-            <input
-              style={S.input}
-              type="password"
-              value={credential}
-              disabled={removeCredential}
-              placeholder={agent.secretConfigured ? "•••••••• (leave blank to keep)" : "Enter provider API key"}
-              onChange={(e) => setCredential(e.target.value)}
-            />
-            {agent.secretConfigured && (
-              <label style={S.check}>
-                <input type="checkbox" checked={removeCredential} onChange={(e) => setRemoveCredential(e.target.checked)} /> Remove stored key
-              </label>
-            )}
-            <div style={S.hint}>The key is write-only — it is stored server-side and never returned to the browser.</div>
-          </Field>
-        </Section>
-
-        <Section title="Browser operator">
-          <div style={S.hint}>Browser-only operator (fixed for MVP). Runs in an isolated browser profile — no access to your normal browser, cookies, or password manager.</div>
-          <Field label="Strategy">
-            <select style={S.input} value={cfg.browserStrategy} onChange={(e) => set("browserStrategy", e.target.value as Configuration["browserStrategy"])}>
-              <option value="dom">DOM (safe bring-up; no vision model)</option>
-              <option value="hybrid">Hybrid</option>
-              <option value="gui">GUI / visual grounding (needs vision model)</option>
-            </select>
-          </Field>
-        </Section>
-
-        <Section title="Permissions">
-          <Field label="Allowed domains (comma-separated; empty = unrestricted)">
-            <input
-              style={S.input}
-              value={cfg.allowedDomains.join(", ")}
-              onChange={(e) => set("allowedDomains", e.target.value.split(",").map((d) => d.trim()).filter(Boolean))}
-            />
-          </Field>
-          <Field label="Approval policy">
-            <select style={S.input} value={cfg.approvalMode} onChange={(e) => set("approvalMode", e.target.value as Configuration["approvalMode"])}>
-              <option value="sensitive_actions">Sensitive actions (recommended)</option>
-              <option value="every_action">Every action</option>
-            </select>
-          </Field>
-          <Toggle label="Allow downloads" checked={cfg.allowDownloads} onChange={(v) => set("allowDownloads", v)} />
-          <Toggle label="Allow clipboard" checked={cfg.allowClipboard} onChange={(v) => set("allowClipboard", v)} />
-          <Toggle label="Allow file upload" checked={cfg.allowFileUpload} onChange={(v) => set("allowFileUpload", v)} />
-        </Section>
-
-        <Section title="Limits">
-          <Field label="Maximum steps">
-            <input style={S.input} type="number" min={1} max={200} value={cfg.maxSteps} onChange={(e) => set("maxSteps", Number(e.target.value))} />
-          </Field>
-          <Field label="Maximum runtime (seconds)">
-            <input style={S.input} type="number" min={5} max={1800} value={Math.round(cfg.timeoutMs / 1000)} onChange={(e) => set("timeoutMs", Number(e.target.value) * 1000)} />
-          </Field>
-        </Section>
-
-        {err && <div style={S.errorBar}>{err}</div>}
-        <div style={S.modalActions}>
-          <button style={S.btnSecondary} onClick={onClose}>Cancel</button>
-          <button style={S.btnPrimary} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
-        </div>
+    <Modal
+      title={`Configure ${agent.name}`}
+      subtitle="Browser-only operator · runs in an isolated profile"
+      onClose={onClose}
+      footer={
+        <>
+          {err && <span className="mr-auto text-xs text-rose-300">{err}</span>}
+          <button className={BTN_SECONDARY} onClick={onClose}>Cancel</button>
+          <button className={BTN_PRIMARY} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+        </>
+      }
+    >
+      <SectionTitle>Runtime</SectionTitle>
+      <div className="flex items-center gap-3">
+        <button className={BTN_SECONDARY} onClick={testConnection}>Test connection</button>
+        {testMsg && <span className="text-xs text-gray-400">{testMsg}</span>}
       </div>
-    </div>
+
+      <SectionTitle>Model</SectionTitle>
+      <Field label="Provider"><input className={INPUT} value={cfg.provider} onChange={(e) => set("provider", e.target.value)} /></Field>
+      <Field label="Model"><input className={INPUT} value={cfg.model} onChange={(e) => set("model", e.target.value)} placeholder="e.g. UI-TARS-1.5-7B" /></Field>
+      <Field label="Endpoint (optional)"><input className={INPUT} value={cfg.endpoint ?? ""} onChange={(e) => set("endpoint", e.target.value)} placeholder="https://…/v1" /></Field>
+      <Field
+        label={`API key ${agent.secretConfigured ? "· configured" : "· not configured"}`}
+        hint="Write-only — stored server-side and never returned to the browser."
+      >
+        <input
+          className={INPUT}
+          type="password"
+          value={credential}
+          disabled={removeCredential}
+          placeholder={agent.secretConfigured ? "•••••••• (leave blank to keep)" : "Enter provider API key"}
+          onChange={(e) => setCredential(e.target.value)}
+        />
+        {agent.secretConfigured && (
+          <label className="mt-2 flex items-center gap-2 text-xs text-gray-400">
+            <input type="checkbox" checked={removeCredential} onChange={(e) => setRemoveCredential(e.target.checked)} /> Remove stored key
+          </label>
+        )}
+      </Field>
+
+      <SectionTitle>Browser operator</SectionTitle>
+      <p className="mb-3 text-[12px] leading-5 text-gray-500">
+        Runs in a dedicated, isolated browser profile — no access to your normal browser, cookies, or password manager.
+      </p>
+      <Field label="Strategy">
+        <select className={INPUT} value={cfg.browserStrategy} onChange={(e) => set("browserStrategy", e.target.value as Configuration["browserStrategy"])}>
+          <option value="dom">DOM — safe bring-up (no vision model)</option>
+          <option value="hybrid">Hybrid</option>
+          <option value="gui">GUI — visual grounding (needs vision model)</option>
+        </select>
+      </Field>
+
+      <SectionTitle>Permissions</SectionTitle>
+      <Field label="Allowed domains" hint="Comma-separated. Empty = unrestricted; off-list navigation needs approval.">
+        <input className={INPUT} value={cfg.allowedDomains.join(", ")} onChange={(e) => set("allowedDomains", e.target.value.split(",").map((d) => d.trim()).filter(Boolean))} />
+      </Field>
+      <Field label="Approval policy">
+        <select className={INPUT} value={cfg.approvalMode} onChange={(e) => set("approvalMode", e.target.value as Configuration["approvalMode"])}>
+          <option value="sensitive_actions">Sensitive actions (recommended)</option>
+          <option value="every_action">Every action</option>
+        </select>
+      </Field>
+      <div className="space-y-2">
+        <Toggle label="Allow downloads" checked={cfg.allowDownloads} onChange={(v) => set("allowDownloads", v)} />
+        <Toggle label="Allow clipboard" checked={cfg.allowClipboard} onChange={(v) => set("allowClipboard", v)} />
+        <Toggle label="Allow file upload" checked={cfg.allowFileUpload} onChange={(v) => set("allowFileUpload", v)} />
+      </div>
+
+      <SectionTitle>Limits</SectionTitle>
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="Max steps"><input className={INPUT} type="number" min={1} max={200} value={cfg.maxSteps} onChange={(e) => set("maxSteps", Number(e.target.value))} /></Field>
+        <Field label="Max runtime (seconds)"><input className={INPUT} type="number" min={5} max={1800} value={Math.round(cfg.timeoutMs / 1000)} onChange={(e) => set("timeoutMs", Number(e.target.value) * 1000)} /></Field>
+      </div>
+    </Modal>
   );
 }
 
@@ -319,6 +426,7 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [pending, setPending] = useState<PendingApproval | null>(null);
   const [shot, setShot] = useState<string | null>(null);
+  const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const seqRef = useRef(0);
@@ -328,7 +436,11 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
     setEvents((prev) => (prev.some((p) => p.sequenceNumber === e.sequenceNumber) ? prev : [...prev, e].sort((a, b) => a.sequenceNumber - b.sequenceNumber)));
     if (e.type === "observation.screenshot") {
       const sid = String((e.payload as { screenshotId?: string }).screenshotId ?? "");
-      if (sid) setShot(sid); // store just the id; URL is built in render with runId
+      if (sid) setShot(sid);
+    }
+    if (e.type === "observation.page") {
+      const url = (e.payload as { url?: string }).url;
+      if (url) setPageUrl(url);
     }
     if (e.type === "approval.requested") setPending(e.payload as unknown as PendingApproval);
     if (e.type === "approval.approved" || e.type === "approval.rejected") setPending(null);
@@ -340,14 +452,14 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
   const connect = useCallback((rid: string, since: number) => {
     esRef.current?.close();
     const es = new EventSource(`/api/ui-tars/agents/${agent.id}/runs/${rid}/events?since=${since}`);
-    es.onmessage = (m) => {
-      try { applyEvent(JSON.parse(m.data) as RunEvent); } catch { /* ignore */ }
-    };
-    // Named events also arrive; listen generically via addEventListener on known types.
-    ["run.started", "run.status", "observation.page", "observation.screenshot", "action.proposed", "approval.requested", "approval.approved", "approval.rejected", "action.started", "action.completed", "action.failed", "run.completed", "run.failed", "run.aborted", "runtime.disconnected"].forEach((t) => {
+    es.onmessage = (m) => { try { applyEvent(JSON.parse(m.data) as RunEvent); } catch { /* ignore */ } };
+    [
+      "run.started", "run.status", "observation.page", "observation.screenshot", "action.proposed", "approval.requested",
+      "approval.approved", "approval.rejected", "action.started", "action.completed", "action.failed", "run.completed",
+      "run.failed", "run.aborted", "runtime.disconnected",
+    ].forEach((t) => {
       es.addEventListener(t, (m) => { try { applyEvent(JSON.parse((m as MessageEvent).data) as RunEvent); } catch { /* ignore */ } });
     });
-    es.onerror = () => { /* EventSource auto-reconnects; terminal runs close server-side */ };
     esRef.current = es;
   }, [agent.id, applyEvent]);
 
@@ -363,6 +475,8 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
       setRunId(res.run.id);
       setStatus(res.run.status);
       setEvents([]);
+      setShot(null);
+      setPageUrl(null);
       seqRef.current = 0;
       connect(res.run.id, 0);
     } catch (e) {
@@ -388,70 +502,78 @@ function RunWorkspace({ agent, onClose }: { agent: Agent; onClose: () => void })
   const terminal = ["completed", "failed", "aborted", "runtime_lost"].includes(status);
 
   return (
-    <div style={S.overlay} onClick={onClose}>
-      <div style={{ ...S.modal, maxWidth: 900 }} onClick={(e) => e.stopPropagation()}>
-        <div style={S.wsHeader}>
-          <div>
-            <h2 style={S.h2}>{agent.name}</h2>
-            <div style={S.hint}>Status: <strong>{status}</strong></div>
-          </div>
-          <button style={S.btnSecondary} onClick={onClose}>Close</button>
-        </div>
-
-        {!runId ? (
-          <div>
-            <Field label="Task">
-              <textarea style={{ ...S.input, minHeight: 90 }} value={task} onChange={(e) => setTask(e.target.value)} placeholder="Describe the browser task…" />
-            </Field>
-            {err && <div style={S.errorBar}>{err}</div>}
-            <div style={S.modalActions}>
-              <button style={task.trim() ? S.btnPrimary : S.btnDisabled} disabled={!task.trim()} onClick={launch}>Launch</button>
-            </div>
-          </div>
+    <Modal
+      title={agent.name}
+      subtitle={runId ? `Status: ${status}` : "Launch a browser task"}
+      onClose={onClose}
+      wide={Boolean(runId)}
+      footer={
+        runId ? (
+          <>
+            {err && <span className="mr-auto text-xs text-rose-300">{err}</span>}
+            {!terminal && <button className={BTN_DESTRUCTIVE} onClick={stop}>Stop</button>}
+            {terminal && (
+              <button className={BTN_PRIMARY} onClick={() => { setRunId(null); setStatus("idle"); setShot(null); setEvents([]); setPageUrl(null); }}>
+                New task
+              </button>
+            )}
+            <button className={BTN_SECONDARY} onClick={onClose}>Close</button>
+          </>
         ) : (
-          <div style={S.wsBody}>
-            <div style={S.wsScreenshot}>
-              {shot ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={`/api/ui-tars/agents/${agent.id}/runs/${runId}/screenshots/${shot}`} alt="Browser screenshot" style={S.shotImg} />
-              ) : (
-                <div style={S.shotPlaceholder}>Waiting for first screenshot…</div>
-              )}
-              {pending && (
-                <div style={S.approvalCard}>
-                  <div style={S.approvalTitle}>Approval required · <span style={{ color: STATE_COLOR.misconfigured }}>{pending.risk} risk</span></div>
-                  <div style={S.approvalBody}>{pending.explanation}</div>
-                  <div style={S.approvalTarget}>{pending.action}: {pending.target}</div>
-                  <div style={S.modalActions}>
-                    <button style={S.btnDanger} onClick={() => decide("reject")}>Reject</button>
-                    <button style={S.btnPrimary} onClick={() => decide("approve")}>Approve</button>
-                  </div>
+          <>
+            {err && <span className="mr-auto text-xs text-rose-300">{err}</span>}
+            <button className={BTN_SECONDARY} onClick={onClose}>Cancel</button>
+            <button className={task.trim() ? BTN_PRIMARY : `${BTN_SECONDARY} cursor-not-allowed`} disabled={!task.trim()} onClick={launch}>Launch</button>
+          </>
+        )
+      }
+    >
+      {!runId ? (
+        <Field label="Task" hint="Describe what the operator should do in the browser.">
+          <textarea className={`${INPUT} min-h-[120px] resize-y`} value={task} onChange={(e) => setTask(e.target.value)} placeholder="e.g. Open example.com, fill the contact form and submit it." />
+        </Field>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* Screenshot + approval */}
+          <div className="relative overflow-hidden rounded-xl border border-gray-800 bg-gray-950">
+            {pageUrl && <div className="truncate border-b border-gray-800 px-3 py-1.5 text-[11px] text-gray-500">{pageUrl}</div>}
+            {shot ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={`/api/ui-tars/agents/${agent.id}/runs/${runId}/screenshots/${shot}`} alt="Browser screenshot" className="block w-full" />
+            ) : (
+              <div className="flex h-56 items-center justify-center text-xs text-gray-600">Waiting for first screenshot…</div>
+            )}
+            {pending && (
+              <div className="absolute inset-x-3 bottom-3 rounded-xl border border-gray-700 bg-gray-900/95 p-3 shadow-xl backdrop-blur">
+                <div className="text-[13px] font-semibold text-white">
+                  Approval required · <span className={RISK_STYLE[pending.risk] ?? "text-gray-300"}>{pending.risk} risk</span>
                 </div>
-              )}
-            </div>
-            <div style={S.timeline}>
-              <div style={S.timelineHead}>Timeline</div>
-              <ul style={S.timelineList}>
-                {events.map((e) => (
-                  <li key={e.sequenceNumber} style={S.timelineItem}>
-                    <span style={S.tlType}>{e.type}</span>
-                    <span style={S.tlText}>{summarize(e)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+                <div className="mt-1 text-[13px] text-gray-300">{pending.explanation}</div>
+                <div className="mt-1 break-all text-[11px] text-gray-500">{pending.action}: {pending.target}</div>
+                <div className="mt-3 flex justify-end gap-2">
+                  <button className={BTN_DESTRUCTIVE} onClick={() => decide("reject")}>Reject</button>
+                  <button className={BTN_PRIMARY} onClick={() => decide("approve")}>Approve</button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
 
-        {runId && (
-          <div style={S.modalActions}>
-            {err && <div style={S.errorBar}>{err}</div>}
-            {!terminal && <button style={S.btnDanger} onClick={stop}>Stop</button>}
-            {terminal && <button style={S.btnPrimary} onClick={() => { setRunId(null); setStatus("idle"); setShot(null); setEvents([]); }}>Retry</button>}
+          {/* Timeline */}
+          <div className="flex max-h-[420px] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950">
+            <div className="sticky top-0 border-b border-gray-800 bg-gray-950 px-3 py-2 text-[13px] font-semibold text-gray-300">Timeline</div>
+            <ul className="flex-1 overflow-auto p-2">
+              {events.length === 0 && <li className="px-2 py-3 text-xs text-gray-600">No events yet…</li>}
+              {events.map((e) => (
+                <li key={e.sequenceNumber} className="border-b border-gray-900 px-2 py-1.5 text-[12px] last:border-0">
+                  <span className="mr-2 font-mono text-[11px] text-sky-300">{e.type}</span>
+                  <span className="break-words text-gray-400">{summarize(e)}</span>
+                </li>
+              ))}
+            </ul>
           </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -463,88 +585,6 @@ function summarize(e: RunEvent): string {
   if (e.type === "action.completed") return String(p.summary ?? "done");
   if (e.type === "action.failed" || e.type === "run.failed") return String(p.error ?? p.message ?? "error");
   if (e.type === "run.completed") return String(p.summary ?? "completed");
+  if (e.type === "observation.screenshot") return "screenshot captured";
   return "";
 }
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section style={S.section}>
-      <h3 style={S.h3}>{title}</h3>
-      {children}
-    </section>
-  );
-}
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={S.field}>
-      <span style={S.fieldLabel}>{label}</span>
-      {children}
-    </label>
-  );
-}
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <label style={S.check}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} /> {label}
-    </label>
-  );
-}
-
-// ---- Styles (theme-aware via CSS variables in GLOBAL_CSS) ----
-const GLOBAL_CSS = `
-:root { --uta-bg:#ffffff; --uta-fg:#1a1a1a; --uta-muted:#6b7280; --uta-border:#e5e7eb; --uta-card:#fafafa; --uta-accent:#2563eb; }
-@media (prefers-color-scheme: dark) { :root { --uta-bg:#0f1115; --uta-fg:#e6e6e6; --uta-muted:#9aa0aa; --uta-border:#272b33; --uta-card:#171a20; --uta-accent:#3b82f6; } }
-.uta * { box-sizing: border-box; }
-`;
-const S: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 1100, margin: "0 auto", padding: 24, color: "var(--uta-fg)", background: "var(--uta-bg)", minHeight: "100vh", fontFamily: "system-ui, sans-serif" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 },
-  h1: { fontSize: 26, margin: 0 },
-  h2: { fontSize: 20, margin: "0 0 8px" },
-  h3: { fontSize: 14, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--uta-muted)", margin: "16px 0 8px" },
-  sub: { color: "var(--uta-muted)", margin: "4px 0 0" },
-  adapterBadge: { fontSize: 13, color: "var(--uta-muted)", background: "var(--uta-card)", border: "1px solid var(--uta-border)", borderRadius: 8, padding: "8px 12px" },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 },
-  card: { border: "1px solid var(--uta-border)", background: "var(--uta-card)", borderRadius: 12, padding: 16, display: "flex", flexDirection: "column" },
-  cardTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
-  cardName: { fontSize: 17, fontWeight: 600 },
-  badges: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 },
-  badge: { fontSize: 11, background: "var(--uta-accent)", color: "#fff", borderRadius: 6, padding: "2px 8px" },
-  badgeMuted: { fontSize: 11, background: "transparent", color: "var(--uta-muted)", border: "1px solid var(--uta-border)", borderRadius: 6, padding: "2px 8px" },
-  stateDot: { width: 12, height: 12, borderRadius: "50%", flexShrink: 0, marginTop: 4 },
-  cardDesc: { color: "var(--uta-muted)", fontSize: 13, margin: "12px 0" },
-  meta: { margin: 0, display: "grid", gap: 4 },
-  metaRow: { display: "flex", justifyContent: "space-between", fontSize: 13 },
-  metaKey: { color: "var(--uta-muted)", margin: 0 },
-  metaVal: { margin: 0, fontWeight: 500 },
-  cardActions: { display: "flex", gap: 8, marginTop: 16 },
-  btnPrimary: { background: "var(--uta-accent)", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 14 },
-  btnSecondary: { background: "transparent", color: "var(--uta-fg)", border: "1px solid var(--uta-border)", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 14 },
-  btnDanger: { background: "#b91c1c", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 14 },
-  btnDisabled: { background: "var(--uta-border)", color: "var(--uta-muted)", border: "none", borderRadius: 8, padding: "8px 14px", cursor: "not-allowed", fontSize: 14 },
-  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 24, overflow: "auto", zIndex: 50 },
-  modal: { background: "var(--uta-bg)", color: "var(--uta-fg)", border: "1px solid var(--uta-border)", borderRadius: 12, padding: 24, width: "100%", maxWidth: 560 },
-  modalActions: { display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center", marginTop: 16, flexWrap: "wrap" },
-  section: { borderTop: "1px solid var(--uta-border)", paddingTop: 4 },
-  field: { display: "block", marginBottom: 12 },
-  fieldLabel: { display: "block", fontSize: 13, color: "var(--uta-muted)", marginBottom: 4 },
-  input: { width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--uta-border)", background: "var(--uta-bg)", color: "var(--uta-fg)", fontSize: 14 },
-  check: { display: "flex", alignItems: "center", gap: 8, fontSize: 14, marginTop: 6 },
-  hint: { fontSize: 12, color: "var(--uta-muted)", marginTop: 4 },
-  errorBar: { background: "#7f1d1d", color: "#fff", borderRadius: 8, padding: "8px 12px", fontSize: 13, margin: "8px 0" },
-  wsHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
-  wsBody: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 },
-  wsScreenshot: { position: "relative", border: "1px solid var(--uta-border)", borderRadius: 8, overflow: "hidden", minHeight: 240, background: "var(--uta-card)" },
-  shotImg: { width: "100%", display: "block" },
-  shotPlaceholder: { display: "flex", alignItems: "center", justifyContent: "center", height: 240, color: "var(--uta-muted)", fontSize: 13 },
-  approvalCard: { position: "absolute", left: 8, right: 8, bottom: 8, background: "var(--uta-bg)", border: "1px solid var(--uta-border)", borderRadius: 8, padding: 12 },
-  approvalTitle: { fontWeight: 600, fontSize: 13 },
-  approvalBody: { fontSize: 13, margin: "6px 0" },
-  approvalTarget: { fontSize: 12, color: "var(--uta-muted)", wordBreak: "break-all" },
-  timeline: { border: "1px solid var(--uta-border)", borderRadius: 8, background: "var(--uta-card)", maxHeight: 360, overflow: "auto" },
-  timelineHead: { padding: "8px 12px", borderBottom: "1px solid var(--uta-border)", fontSize: 13, fontWeight: 600, position: "sticky", top: 0, background: "var(--uta-card)" },
-  timelineList: { listStyle: "none", margin: 0, padding: 8 },
-  timelineItem: { padding: "6px 8px", borderBottom: "1px solid var(--uta-border)", fontSize: 12 },
-  tlType: { color: "var(--uta-accent)", fontFamily: "monospace", marginRight: 8 },
-  tlText: { color: "var(--uta-fg)", wordBreak: "break-word" },
-};

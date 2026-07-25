@@ -3,8 +3,7 @@ import path from "node:path";
 
 // Small dependency-free .env reader for the root service launchers. Existing
 // process variables always win, matching conventional dotenv behavior.
-export function loadRootEnv(repoRoot) {
-  const file = path.join(repoRoot, ".env");
+export function loadEnvFile(file) {
   if (!fs.existsSync(file)) return;
   for (const rawLine of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -17,4 +16,18 @@ export function loadRootEnv(repoRoot) {
     }
     process.env[match[1]] = value;
   }
+}
+
+export function loadRootEnv(repoRoot) {
+  loadEnvFile(path.join(repoRoot, ".env"));
+}
+
+/**
+ * Dev-only secret sharing: the dashboard's own `.env.local` is the single place
+ * a developer keeps loopback credentials (it is git-ignored, unlike the root
+ * `.env`). Launchers read it after the root `.env` so a runtime child process
+ * and the dashboard cannot drift onto different tokens.
+ */
+export function loadDashboardEnv(repoRoot) {
+  loadEnvFile(path.join(repoRoot, "dashboard", ".env.local"));
 }

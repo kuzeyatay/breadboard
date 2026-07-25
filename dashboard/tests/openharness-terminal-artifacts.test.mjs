@@ -6,7 +6,11 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import AdmZip from "adm-zip";
 
-import { authorizeTerminalCommand, runAuthorizedTerminalCommand } from "../src/lib/openharness/terminal-execution.ts";
+import {
+  authorizeTerminalCommand,
+  resolveCommandShell,
+  runAuthorizedTerminalCommand,
+} from "../src/lib/openharness/terminal-execution.ts";
 import { planTask } from "../src/lib/openharness/task-plan.ts";
 import { brokerCapabilities } from "../src/lib/openharness/capability-broker.ts";
 import { ensureArtifactSchema } from "../src/lib/openharness/artifact-schema.ts";
@@ -47,6 +51,52 @@ test("dedicated Terminal authorizes ordinary inspection and focused verification
   assert.equal(git.exitCode, 0);
   const focused = await runAuthorizedTerminalCommand("node --test --experimental-strip-types dashboard/tests/ai-models.test.mjs");
   assert.equal(focused.exitCode, 0, focused.stderr || focused.stdout);
+});
+
+test("Terminal can inspect an explicitly authorized external folder with a read-only pipeline", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-terminal-scope-"));
+  try {
+    fs.writeFileSync(path.join(root, "small.txt"), "small");
+    fs.writeFileSync(path.join(root, "largest.txt"), "x".repeat(64));
+    const quotedRoot = `"${root.replaceAll('"', '""')}"`;
+    const command = `Get-ChildItem ${quotedRoot} -File | Sort-Object Length -Descending | Select-Object -First 1 -ExpandProperty Name`;
+    const options = { authorizedRoots: [root] };
+    assert.equal(authorizeTerminalCommand(command, options).allowed, true);
+    if (process.platform === "win32") {
+      const result = await runAuthorizedTerminalCommand(command, options);
+      assert.equal(result.exitCode, 0, result.stderr);
+      assert.equal(result.stdout.trim(), "largest.txt");
+    }
+    assert.equal(
+      authorizeTerminalCommand(command, {
+        authorizedRoots: [path.join(root, "different")],
+      }).allowed,
+      false,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the command shell is pinned to an absolute path, not resolved through PATH", (t) => {
+  // The installed app has failed an authorized command with
+  // `spawn powershell.exe ENOENT`. libuv resolves a bare name through PATH only,
+  // and this process runs with a curated environment, so the shell is addressed
+  // directly under %SystemRoot%.
+  const shell = resolveCommandShell();
+  if (process.platform !== "win32") {
+    assert.equal(shell, "/bin/sh");
+    return;
+  }
+  const systemRoot = process.env.SystemRoot ?? process.env.windir;
+  if (!systemRoot) return t.skip("no SystemRoot on this host");
+  assert.ok(path.isAbsolute(shell), `expected an absolute shell path, got ${shell}`);
+  assert.match(shell, /powershell\.exe$/i);
+  assert.ok(fs.existsSync(shell), `${shell} should exist`);
+  assert.ok(
+    shell.toLowerCase().startsWith(systemRoot.toLowerCase()),
+    `${shell} should live under ${systemRoot}`,
+  );
 });
 
 test("Terminal policy rejects escapes, destructive operations, and executable rg flags", () => {

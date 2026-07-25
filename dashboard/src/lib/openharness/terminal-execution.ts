@@ -1,11 +1,48 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
+import {
+  canonicalizePath,
+  isWithinRoot,
+  realPathAllowingMissing,
+} from "./filesystem-paths.ts";
 
 const MAX_COMMAND_LENGTH = 2_000;
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const activeCommands = new Map<number, ChildProcess>();
+
+/**
+ * Resolve PowerShell by absolute path instead of trusting PATH lookup.
+ *
+ * The installed desktop app has been observed failing an already-authorized
+ * command with `spawn powershell.exe ENOENT`: the policy said yes and execution
+ * died anyway. libuv resolves a bare executable name through PATH only (unlike
+ * CreateProcess, it does not implicitly search System32), and this process runs
+ * with a curated environment — the packaged supervisor's `baseEnv` plus the
+ * filter below. Pinning the shell to %SystemRoot% removes PATH from the picture
+ * for a fixed, security-sensitive executable.
+ */
+export function resolveCommandShell(): string {
+  return process.platform === "win32" ? windowsShell() : "/bin/sh";
+}
+
+function windowsShell(): string {
+  const systemRoot =
+    process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
+  if (systemRoot) {
+    const absolute = path.join(
+      systemRoot,
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    if (existsSync(absolute)) return absolute;
+  }
+  return "powershell.exe";
+}
 
 function filteredEnvironment(): NodeJS.ProcessEnv {
   const allowed = new Set([
@@ -77,6 +114,19 @@ export interface TerminalAuthorization {
   workspaceRoot: string;
 }
 
+export interface TerminalAuthorizationOptions {
+  /**
+   * Server-owned working directory for this runtime session. The model cannot
+   * choose it.
+   */
+  workspaceRoot?: string;
+  /**
+   * Canonical roots from the active per-turn capability decision. Absolute
+   * paths are accepted only when they resolve inside one of these roots.
+   */
+  authorizedRoots?: readonly string[];
+}
+
 const SAFE_COMMANDS: Array<{
   category: Exclude<TerminalAuthorization["category"], "denied">;
   pattern: RegExp;
@@ -97,13 +147,77 @@ const SAFE_COMMANDS: Array<{
   { category: "verification", pattern: /^npx\s+tsc\s+--noEmit(?:\s+[^\r\n]*)?$/i },
 ];
 
+const SAFE_READ_PIPELINE_STAGES = [
+  /^(?:Get-ChildItem|dir|ls)(?:\s+[^\r\n]*)?$/i,
+  /^(?:Sort-Object|Select-Object|Measure-Object|Format-Table)(?:\s+[^\r\n]*)?$/i,
+];
+
+function resolvedRoot(value: string): string | null {
+  const canonical = canonicalizePath(value);
+  return canonical ? realPathAllowingMissing(canonical) : null;
+}
+
+function authorizationRoots(
+  workspaceRoot: string,
+  roots: readonly string[] | undefined,
+): string[] {
+  const candidates = [workspaceRoot, ...(roots ?? [])];
+  return [
+    ...new Set(
+      candidates
+        .map(resolvedRoot)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+}
+
+/**
+ * Return quoted and unquoted command tokens without evaluating PowerShell.
+ * This is intentionally smaller than a shell parser: command composition,
+ * substitutions, script blocks, and expressions are rejected before this runs.
+ */
+function commandTokens(command: string): string[] {
+  const tokens: string[] = [];
+  for (const match of command.matchAll(/"([^"]*)"|'([^']*)'|([^\s|]+)/g)) {
+    const value = match[1] ?? match[2] ?? match[3] ?? "";
+    if (value) tokens.push(value.replace(/[,\s]+$/, ""));
+  }
+  return tokens;
+}
+
+function absoluteCommandPaths(command: string): string[] {
+  return commandTokens(command).filter((token) =>
+    /^[A-Za-z]:[\\/]/.test(token) ||
+    /^\\\\[^\\]/.test(token) ||
+    (process.platform !== "win32" && token.startsWith("/")),
+  );
+}
+
+function safeReadPipeline(command: string): boolean {
+  if (!command.includes("|")) return false;
+  const stages = command.split("|").map((stage) => stage.trim());
+  if (stages.length < 2 || stages.length > 5 || stages.some((stage) => !stage)) {
+    return false;
+  }
+  if (!SAFE_READ_PIPELINE_STAGES[0].test(stages[0])) return false;
+  return stages
+    .slice(1)
+    .every((stage) => SAFE_READ_PIPELINE_STAGES[1].test(stage));
+}
+
 /**
  * Server-side command policy for the dedicated Terminal. It deliberately
- * rejects shell composition, absolute paths, parent traversal and all write /
- * install command families. The model receives no way to choose a cwd.
+ * rejects shell composition, paths outside the active grant, parent traversal,
+ * and all write / install command families. The model receives no way to
+ * choose a cwd. A narrowly parsed read-only PowerShell pipeline is supported so
+ * inspection tasks such as sorting files by size can actually be completed.
  */
-export function authorizeTerminalCommand(command: unknown): TerminalAuthorization {
-  const workspaceRoot = path.resolve(repositoryRoot());
+export function authorizeTerminalCommand(
+  command: unknown,
+  options: TerminalAuthorizationOptions = {},
+): TerminalAuthorization {
+  const workspaceRoot = path.resolve(options.workspaceRoot ?? repositoryRoot());
+  const roots = authorizationRoots(workspaceRoot, options.authorizedRoots);
   if (typeof command !== "string" || !command.trim()) {
     return { allowed: false, category: "denied", reason: "A command is required.", workspaceRoot };
   }
@@ -111,7 +225,7 @@ export function authorizeTerminalCommand(command: unknown): TerminalAuthorizatio
   if (value.length > MAX_COMMAND_LENGTH) {
     return { allowed: false, category: "denied", reason: "The command is too long.", workspaceRoot };
   }
-  if (/[\r\n;&|<>`$%]/.test(value) || /@\(/.test(value)) {
+  if (/[\r\n;&<>`$%{}[\]()]/.test(value) || /@\(/.test(value)) {
     return {
       allowed: false,
       category: "denied",
@@ -120,15 +234,26 @@ export function authorizeTerminalCommand(command: unknown): TerminalAuthorizatio
     };
   }
   if (
-    /(?:^|\s)(?:\.\.(?:[\\/]|$)|~(?:[\\/]|$)|[A-Za-z]:[\\/]|\\\\|\/(?:[^\s]|$))/i.test(value) ||
+    /(?:^|\s)(?:\.\.(?:[\\/]|$)|~(?:[\\/]|$))/i.test(value) ||
     /(?:^|\s)(?:--cwd|--prefix|--dir|--directory|-C)(?:\s|=)/i.test(value)
   ) {
     return {
       allowed: false,
       category: "denied",
-      reason: "Commands may only address relative paths inside the approved Breadboard workspace.",
+      reason: "Commands may not use parent traversal or choose a different working directory.",
       workspaceRoot,
     };
+  }
+  for (const requestedPath of absoluteCommandPaths(value)) {
+    const target = resolvedRoot(requestedPath);
+    if (!target || !roots.some((root) => isWithinRoot(root, target))) {
+      return {
+        allowed: false,
+        category: "denied",
+        reason: "The command addresses a path outside the folders authorized for this turn.",
+        workspaceRoot,
+      };
+    }
   }
   if (
     /^(?:(?:npm|pnpm|yarn|bun)\s+(?:install|uninstall|add|remove|publish)|git\s+(?:push|commit|checkout|switch|merge|rebase|reset|clean)|(?:rm|rmdir|del|erase|Remove-Item|Set-Content|Add-Content|Move-Item|Copy-Item|New-Item|chmod|chown|curl|wget|Invoke-WebRequest|Start-Process)\b)/i.test(value) ||
@@ -139,6 +264,22 @@ export function authorizeTerminalCommand(command: unknown): TerminalAuthorizatio
       allowed: false,
       category: "denied",
       reason: "This command can modify the workspace, install software, or affect an external system.",
+      workspaceRoot,
+    };
+  }
+  if (safeReadPipeline(value)) {
+    return {
+      allowed: true,
+      category: "inspect",
+      reason: "Authorized as a read-only inspection pipeline within the active folder grant.",
+      workspaceRoot,
+    };
+  }
+  if (value.includes("|")) {
+    return {
+      allowed: false,
+      category: "denied",
+      reason: "Only Get-ChildItem read pipelines with sorting, selection, measurement, or table formatting are allowed.",
       workspaceRoot,
     };
   }
@@ -161,7 +302,12 @@ export function authorizeTerminalCommand(command: unknown): TerminalAuthorizatio
 
 export async function runAuthorizedTerminalCommand(
   command: string,
-  options: { runtimeSessionId?: number; signal?: AbortSignal } = {},
+  options: {
+    runtimeSessionId?: number;
+    signal?: AbortSignal;
+    workspaceRoot?: string;
+    authorizedRoots?: readonly string[];
+  } = {},
 ): Promise<{
   command: string;
   cwd: string;
@@ -171,10 +317,10 @@ export async function runAuthorizedTerminalCommand(
   timedOut: boolean;
   truncated: boolean;
 }> {
-  const authorization = authorizeTerminalCommand(command);
+  const authorization = authorizeTerminalCommand(command, options);
   if (!authorization.allowed) throw new Error(authorization.reason);
 
-  const executable = process.platform === "win32" ? "powershell.exe" : "/bin/sh";
+  const executable = resolveCommandShell();
   const args = process.platform === "win32"
     ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
     : ["-lc", command];

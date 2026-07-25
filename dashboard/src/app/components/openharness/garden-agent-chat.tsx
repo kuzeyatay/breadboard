@@ -21,6 +21,7 @@ import ArtifactPanel, {
 } from "./artifact-panel";
 import SkillReviewPanel from "./skill-review-panel";
 import GBrainStatusBadge from "./gbrain-status-badge";
+import { deleteChatSession, TrashIcon } from "./history-client";
 import { useAgentSession, type AgentMessage } from "./use-agent-session";
 import {
   DEFAULT_ASSISTANT_MODELS,
@@ -73,6 +74,7 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
   const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
   const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
   const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const autoOpenedArtifactRuns = useRef(new Set<string>());
   const dismissedArtifactRuns = useRef(new Set<string>());
   const session = useAgentSession("garden_chat", { gardenSlug, title: `${gardenName ?? gardenSlug} chat` });
@@ -255,6 +257,26 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
     setView("chat");
   }
 
+  async function deleteHistorySession(item: RuntimeHistorySession) {
+    if (busy) return;
+    if (
+      !window.confirm(
+        `Delete "${item.title}"? Its messages and any artifacts it produced are removed for good.`,
+      )
+    ) {
+      return;
+    }
+    setHistoryError(null);
+    const result = await deleteChatSession(item.id);
+    if (!result.deleted) {
+      setHistoryError(result.error ?? "This chat could not be deleted.");
+      return;
+    }
+    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    // The open chat no longer exists; fall back to an empty one.
+    if (item.id === session.sessionId) startNewChat();
+  }
+
   function toggleView(next: PanelView) {
     setView((current) => {
       const target = current === next ? "chat" : next;
@@ -371,21 +393,27 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
           <div className="px-1 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">
             Recents
           </div>
+          {historyError ? (
+            <p className="mb-2 px-1 text-[11px] text-[#a45f56]">{historyError}</p>
+          ) : null}
           {history.length === 0 ? (
             <p className="py-8 text-center text-xs text-gray-500">No chats in this garden yet.</p>
           ) : (
             <ul className="space-y-0.5">
               {history.map((item) => (
-                <li key={item.id}>
+                <li
+                  key={item.id}
+                  className={`group flex items-center gap-1 rounded-md transition ${
+                    item.id === session.sessionId
+                      ? "bg-gray-800 text-white"
+                      : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
+                  }`}
+                >
                   <button
                     type="button"
                     onClick={() => openHistorySession(item)}
                     disabled={busy}
-                    className={`w-full rounded-md px-2.5 py-2 text-left transition ${
-                      item.id === session.sessionId
-                        ? "bg-gray-800 text-white"
-                        : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
-                    }`}
+                    className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate text-xs font-medium">{item.title}</span>
@@ -393,6 +421,16 @@ export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Pro
                         {formatChatTime(item.updatedAt)}
                       </span>
                     </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteHistorySession(item)}
+                    disabled={busy}
+                    title="Delete this chat"
+                    aria-label={`Delete chat ${item.title}`}
+                    className="mr-1 shrink-0 rounded p-1 text-gray-600 opacity-0 transition-colors hover:bg-red-950/40 hover:text-red-300 focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed"
+                  >
+                    <TrashIcon className="h-3.5 w-3.5" />
                   </button>
                 </li>
               ))}

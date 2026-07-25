@@ -3,6 +3,7 @@ import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/
 import { capabilityForInternalToolRequest } from "@/lib/openharness/tool-service-auth.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/openharness/capability-token.ts";
 import {
+  getActiveCapabilityDecision,
   getRuntimeSessionById,
   recordAuditEvent,
   runtimeExternalSessionId,
@@ -36,9 +37,24 @@ export async function POST(request: Request) {
     }
     const run = getActiveRuntimeRun(session.id);
     if (!run) throw new ApiError(409, "terminal_run_required", "A current Terminal run is required.");
+    const decision = getActiveCapabilityDecision(session.id);
+    if (
+      !decision ||
+      !decision.allowedTools.includes("terminal_execute_command")
+    ) {
+      throw new ApiError(
+        403,
+        "terminal_turn_capability_denied",
+        "Terminal execution is not authorized for the current turn.",
+      );
+    }
     const body = await readJsonBody(request, 16 * 1024);
     const command = typeof body.command === "string" ? body.command.trim() : "";
-    const authorization = authorizeTerminalCommand(command);
+    const terminalScope = {
+      workspaceRoot: session.active_directory ?? undefined,
+      authorizedRoots: decision.authorizedRoots,
+    };
+    const authorization = authorizeTerminalCommand(command, terminalScope);
     recordAuditEvent({
       eventType: authorization.allowed ? "terminal.command_authorized" : "terminal.command_denied",
       runtimeSessionId: session.id,
@@ -57,6 +73,7 @@ export async function POST(request: Request) {
     const result = await runAuthorizedTerminalCommand(command, {
       runtimeSessionId: session.id,
       signal: request.signal,
+      ...terminalScope,
     });
     recordAuditEvent({
       eventType: "terminal.command_completed",

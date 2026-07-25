@@ -18,7 +18,6 @@ interface Props {
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
   usage?: ChatTokenUsage;
-  reasoning?: string;
   responseDurationMs?: number;
   onAbort: () => void;
   showAbort?: boolean;
@@ -30,15 +29,11 @@ export default function ActivityPanel({
   connection,
   pendingPermission,
   usage,
-  reasoning,
   responseDurationMs,
   onAbort,
   showAbort = true,
   onPermissionDecision,
 }: Props) {
-  const [reasoningDisclosure, setReasoningDisclosure] = useState<
-    "automatic" | "expanded" | "collapsed"
-  >("automatic");
   const [now, setNow] = useState(() => Date.now());
   const active =
     connection === "connecting" ||
@@ -66,7 +61,7 @@ export default function ActivityPanel({
     };
   }, [active]);
 
-  if (!activities.length && !usage && !reasoning && responseDurationMs === undefined) return null;
+  if (!activities.length && !usage && responseDurationMs === undefined) return null;
   const durationLabel =
     elapsedMs === null ? null : formatResponseDuration(elapsedMs);
   const tokenLabel = usage
@@ -77,21 +72,11 @@ export default function ActivityPanel({
   const statusMetadata = [durationLabel, tokenLabel]
     .filter(Boolean)
     .join(" · ");
-  const hasReasoningSummary = Boolean(reasoning?.trim());
-  const expanded =
-    reasoningDisclosure === "expanded" ||
-    (reasoningDisclosure === "automatic" && hasReasoningSummary);
-
   return (
     <section className="my-1 text-[var(--ink)]">
       <div className="flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={() =>
-            setReasoningDisclosure(expanded ? "collapsed" : "expanded")
-          }
-          className="flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-1 py-1 text-left text-sm leading-6 text-[var(--ink-muted)] transition hover:text-[var(--ink)]"
-          aria-expanded={expanded}
+        <div
+          className="flex min-w-0 flex-wrap items-baseline gap-x-1 py-1 text-sm leading-6 text-[var(--ink-muted)]"
         >
           <span
             className={active && !pendingPermission ? "thinking-shimmer" : ""}
@@ -99,7 +84,7 @@ export default function ActivityPanel({
             Thinking
           </span>
           <span>({statusMetadata})</span>
-        </button>
+        </div>
         {active && showAbort ? (
           <button
             type="button"
@@ -110,14 +95,6 @@ export default function ActivityPanel({
           </button>
         ) : null}
       </div>
-
-      {expanded && hasReasoningSummary ? (
-        <div className="mt-1 space-y-2">
-          <pre className="whitespace-pre-wrap font-sans text-xs leading-5 text-[var(--ink-muted)]">
-            {reasoning}
-          </pre>
-        </div>
-      ) : null}
 
       {pendingPermission ? (
         <div className="neu-surface-subtle mt-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3.5">

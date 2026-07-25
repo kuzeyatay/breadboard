@@ -67,6 +67,46 @@ test("maps tool lifecycle events and failed structured results", () => {
   assert.equal(completed.payload.success, false);
 });
 
+test("a plugin tool_error JSON string is a failure, not a success", () => {
+  // hermes-agent/plugins/breadboard returns tool_error() -> a JSON *string*.
+  // Reading that as success told the model a denied command had worked.
+  for (const field of ["result", "output", "content"]) {
+    const [completed] = normalize({
+      type: "tool.complete",
+      session_id: "live-1",
+      payload: {
+        tool_id: "call-1",
+        name: "breadboard_terminal",
+        [field]: JSON.stringify({
+          error:
+            "Only read-only inspection, read-only Git, and focused existing verification commands are allowed automatically.",
+        }),
+      },
+    });
+    assert.equal(completed.type, "tool.completed", field);
+    assert.equal(completed.payload.success, false, field);
+  }
+
+  const [ok] = normalize({
+    type: "tool.complete",
+    session_id: "live-1",
+    payload: {
+      tool_id: "call-2",
+      name: "breadboard_terminal",
+      result: JSON.stringify({ success: true, exitCode: 0 }),
+    },
+  });
+  assert.equal(ok.payload.success, true);
+
+  // Non-JSON output stays a success: only an explicit error demotes it.
+  const [plain] = normalize({
+    type: "tool.complete",
+    session_id: "live-1",
+    payload: { tool_id: "call-3", name: "breadboard_terminal", result: "total 4\nfile.txt" },
+  });
+  assert.equal(plain.payload.success, true);
+});
+
 test("maps approval requests to Breadboard permission UI without permanent grants", () => {
   const [event] = normalize({
     type: "approval.request",

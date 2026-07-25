@@ -49,15 +49,34 @@ function approvalRisk(command: string, description: string): PermissionRisk {
   return "execute";
 }
 
+/**
+ * Breadboard's Hermes plugin reports failures with `tool_error()`, which returns
+ * a JSON *string* (`{"error": "..."}`) rather than an object. Without parsing it
+ * the default below reported a failed tool call as a success, so the model saw
+ * "the tool worked" and the transcript disagreed with the audit trail.
+ */
+function resultRecord(value: unknown): Record<string, unknown> | null {
+  if (isRecord(value)) return value;
+  const text = asString(value)?.trim();
+  if (!text || !text.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function toolSucceeded(payload: Record<string, unknown>): boolean {
   if (typeof payload.success === "boolean") return payload.success;
   if (typeof payload.is_error === "boolean") return !payload.is_error;
   if (asString(payload.error)?.trim()) return false;
-  if (isRecord(payload.result)) {
-    if (typeof payload.result.success === "boolean") {
-      return payload.result.success;
-    }
-    if (asString(payload.result.error)?.trim()) return false;
+  for (const candidate of [payload.result, payload.output, payload.content]) {
+    const record = resultRecord(candidate);
+    if (!record) continue;
+    if (typeof record.success === "boolean") return record.success;
+    if (typeof record.ok === "boolean") return record.ok;
+    if (asString(record.error)?.trim()) return false;
   }
   return true;
 }

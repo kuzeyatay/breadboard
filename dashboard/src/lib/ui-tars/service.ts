@@ -90,44 +90,6 @@ export async function agentsPage(userId: number): Promise<{
   return { mode: m, adapter, agents };
 }
 
-/**
- * Synchronous, adapter-free listing for the command hub so UI-TARS agents appear
- * in the same Agents list as the Agency personas without adding adapter latency
- * (or a failure mode) to every command-hub request. Live adapter health is
- * resolved when the workspace is opened / a run is launched.
- */
-export function commandHubAgents(userId: number): Array<{
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  runtimeState: RuntimeState;
-}> {
-  if (uiTarsMode() === "disabled") return [];
-  return store.listAgents(userId).map((row) => {
-    const agent = store.presentAgent(row);
-    const configured =
-      validateAgentConfiguration(agent.configuration).ok && agent.configuration.model.trim().length > 0;
-    const runtimeState: RuntimeState = !agent.enabled
-      ? "disabled"
-      : !configured
-        ? "misconfigured"
-        : "available";
-    return {
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-      enabled: agent.enabled,
-      runtimeState,
-    };
-  });
-}
-
-/** True unless UI_TARS_MODE=disabled. */
-export function isEnabled(): boolean {
-  return uiTarsMode() !== "disabled";
-}
-
 export function requireAgent(userId: number, agentId: string): store.AgentRow {
   const agent = store.getAgent(userId, agentId);
   if (!agent) throw new UITarsServiceError(404, "agent_not_found");

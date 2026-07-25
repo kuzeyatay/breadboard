@@ -5,11 +5,14 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRootEnv } from "./load-root-env.mjs";
+import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+// The dashboard's git-ignored .env.local holds the dev loopback credentials, so
+// the runtime children and the dashboard cannot drift onto different tokens.
+loadDashboardEnv(repoRoot);
+const dashboardDir = (...segments) => path.join(repoRoot, "dashboard", ...segments);
 const configuredMode = process.env.OPENHARNESS_MODE?.trim().toLowerCase();
 const explicitlyDisabled = /^(0|false|no|off)$/i.test(process.env.OPENHARNESS_ENABLED?.trim() ?? "");
 const mode = configuredMode === "preferred" || configuredMode === "legacy" || configuredMode === "required"
@@ -17,6 +20,16 @@ const mode = configuredMode === "preferred" || configuredMode === "legacy" || co
   : explicitlyDisabled ? "legacy" : "required";
 const password = process.env.OPENHARNESS_PASSWORD || "breadboard-local-dev";
 const username = process.env.OPENHARNESS_USERNAME || "breadboard";
+
+// Agent runtime selection is server-side only (see docs/HERMES_RUNTIME_MIGRATION.md).
+// OpenHarness keeps starting while it is selectable so existing sessions — whose
+// runtime is pinned per session row — and the documented rollback keep working.
+const agentRuntime = process.env.AGENT_RUNTIME?.trim().toLowerCase() || "openharness";
+const agentRuntimeFallback = process.env.AGENT_RUNTIME_FALLBACK?.trim().toLowerCase() || "none";
+const hermesSelected = agentRuntime === "hermes" || agentRuntimeFallback === "hermes";
+const hermesPort = /^\d+$/.test(process.env.HERMES_PORT ?? "") ? process.env.HERMES_PORT : "9129";
+const hermesBaseUrl = (process.env.HERMES_BASE_URL || `http://127.0.0.1:${hermesPort}`).replace(/\/+$/, "");
+const hermesToken = process.env.HERMES_DASHBOARD_SESSION_TOKEN?.trim() ?? "";
 
 // GBrain (garden knowledge retrieval). Additive and off by default: `disabled`
 // starts nothing; `preferred` runs but never blocks the stack; `required` fails
@@ -43,6 +56,12 @@ const runtimeEnv = {
   OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS:
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS || "true",
   BREADBOARD_DASHBOARD_URL: process.env.BREADBOARD_DASHBOARD_URL || "http://localhost:3000",
+  // Runtime-neutral selection + Hermes loopback wiring. The browser never sees
+  // any of this; only the dashboard server and the Hermes child use it.
+  AGENT_RUNTIME: agentRuntime,
+  AGENT_RUNTIME_FALLBACK: agentRuntimeFallback,
+  HERMES_PORT: hermesPort,
+  HERMES_BASE_URL: hermesBaseUrl,
   // GBrain: mode + the shared per-launch secret + adapter URL flow to both the
   // adapter process and the dashboard so they agree without the browser ever
   // seeing the secret.
@@ -59,8 +78,8 @@ function prefix(name, chunk) {
   }
 }
 
-function startService(name, command, args) {
-  const child = spawn(command, args, { cwd: repoRoot, env: runtimeEnv });
+function startService(name, command, args, options = {}) {
+  const child = spawn(command, args, { cwd: repoRoot, env: runtimeEnv, ...options });
   child.stdout.on("data", (chunk) => prefix(name, chunk));
   child.stderr.on("data", (chunk) => prefix(name, chunk));
   child.on("error", (error) => prefix(name, `failed to start: ${error.message}`));
@@ -124,6 +143,29 @@ async function main() {
     }
   }
 
+  // Hermes is never a hard dependency of the stack: an unhealthy runtime makes
+  // agent routes return the sanitized unavailable error while Gardens and every
+  // unrelated feature stay usable (mirrors the desktop supervisor).
+  if (hermesSelected) {
+    if (!hermesToken) {
+      process.stderr.write(
+        "[stack] AGENT_RUNTIME/AGENT_RUNTIME_FALLBACK selects Hermes but HERMES_DASHBOARD_SESSION_TOKEN is unset; set it in dashboard/.env.local. Agent routes will report the runtime as unavailable.\n",
+      );
+    } else {
+      startService("hermes", process.execPath, [path.join(repoRoot, "scripts", "start-hermes.mjs")]);
+      try {
+        await waitFor(`${hermesBaseUrl}/api/status`, {
+          headers: { Authorization: `Bearer ${hermesToken}` },
+        }, 120_000);
+        process.stdout.write(`[stack] Hermes healthy on ${hermesBaseUrl}\n`);
+      } catch (error) {
+        process.stderr.write(
+          `[stack] Hermes unavailable; agent routes report the sanitized runtime-unavailable error until it is up: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
+    }
+  }
+
   // Scriberr (video transcription) is optional: start it when enabled, but
   // never block the rest of the stack on it — the dashboard reports a specific
   // "Scriberr unavailable" state until it becomes healthy.
@@ -143,8 +185,17 @@ async function main() {
   }
 
   startService("quartz", process.execPath, [path.join(repoRoot, "scripts", "start-quartz.mjs")]);
-  startService("dashboard", npm, ["--prefix", path.join(repoRoot, "dashboard"), "run", "dev"]);
+  // Next is launched through Node directly rather than `npm.cmd`: Windows Node
+  // (>=20.12) refuses to spawn a .cmd shim without a shell, which threw a
+  // synchronous EINVAL and tore the whole stack down. This mirrors how the
+  // desktop supervisor starts the same dev server.
+  startService("dashboard", process.execPath, [dashboardDir("node_modules", "next", "dist", "bin", "next"), "dev", "--webpack"], {
+    cwd: dashboardDir(),
+  });
   process.stdout.write(`[stack] Runtime mode: ${mode}; dashboard OpenHarness feature: ${mode === "legacy" ? "disabled" : "enabled"}\n`);
+  process.stdout.write(
+    `[stack] Agent runtime: ${agentRuntime}${agentRuntimeFallback === "none" ? "" : ` (fallback: ${agentRuntimeFallback})`}\n`,
+  );
 }
 
 function shutdown() {

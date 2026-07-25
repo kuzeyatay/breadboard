@@ -1320,7 +1320,6 @@ export default function GardenAssistant({
                     <>
                       {message.responseDurationMs !== undefined ||
                       message.usage ||
-                      message.thinking ||
                       (index === messages.length - 1 &&
                         (isStreaming ||
                           agentActivity.pendingPermission ||
@@ -1330,7 +1329,6 @@ export default function GardenAssistant({
                           connection={index === messages.length - 1 ? agentActivity.connection : 'idle'}
                           pendingPermission={index === messages.length - 1 ? agentActivity.pendingPermission : null}
                           usage={message.usage}
-                          reasoning={message.thinking}
                           responseDurationMs={message.responseDurationMs}
                           onAbort={agentActivity.abort}
                           onPermissionDecision={(decision) =>
