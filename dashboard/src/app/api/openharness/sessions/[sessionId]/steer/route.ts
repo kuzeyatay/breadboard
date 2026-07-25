@@ -8,7 +8,7 @@ import {
   requireString,
 } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 import {
   appendConversationSteerMessage,
@@ -98,8 +98,9 @@ export async function POST(
 
     const dispatch = parseRuntimeRunDispatch(requestedRun);
     try {
-      await getOpenHarnessGateway().steerRun({
-        openHarnessSessionId: session.openHarnessSessionId,
+      await getAgentRuntimeByKind(session.runtimeKind).steerRun({
+        externalSessionId: session.externalSessionId,
+        liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         agentName: session.agentName,

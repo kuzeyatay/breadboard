@@ -1,10 +1,74 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { repositoryRoot } from "../runtime-paths.ts";
 
 const MAX_COMMAND_LENGTH = 2_000;
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
+const activeCommands = new Map<number, ChildProcess>();
+
+function filteredEnvironment(): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    "APPDATA",
+    "COMSPEC",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LOCALAPPDATA",
+    "NODE",
+    "NODE_ENV",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+  ]);
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name, value]) => allowed.has(name.toUpperCase()) && value !== undefined,
+    ),
+  ) as NodeJS.ProcessEnv;
+}
+
+async function terminateProcessTree(child: ChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (!pid || child.exitCode !== null) return;
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      killer.once("error", () => resolve());
+      killer.once("close", () => resolve());
+    });
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    child.kill("SIGTERM");
+  }
+}
+
+export async function cancelAuthorizedTerminalCommand(
+  runtimeSessionId: number,
+): Promise<boolean> {
+  const child = activeCommands.get(runtimeSessionId);
+  if (!child) return false;
+  activeCommands.delete(runtimeSessionId);
+  await terminateProcessTree(child);
+  return true;
+}
 
 export interface TerminalAuthorization {
   allowed: boolean;
@@ -95,7 +159,10 @@ export function authorizeTerminalCommand(command: unknown): TerminalAuthorizatio
   };
 }
 
-export async function runAuthorizedTerminalCommand(command: string): Promise<{
+export async function runAuthorizedTerminalCommand(
+  command: string,
+  options: { runtimeSessionId?: number; signal?: AbortSignal } = {},
+): Promise<{
   command: string;
   cwd: string;
   exitCode: number | null;
@@ -116,9 +183,17 @@ export async function runAuthorizedTerminalCommand(command: string): Promise<{
     const child = spawn(executable, args, {
       cwd: authorization.workspaceRoot,
       windowsHide: true,
-      env: process.env,
+      detached: process.platform !== "win32",
+      env: filteredEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (options.runtimeSessionId !== undefined) {
+      const previous = activeCommands.get(options.runtimeSessionId);
+      if (previous && previous.exitCode === null) {
+        void terminateProcessTree(previous);
+      }
+      activeCommands.set(options.runtimeSessionId, child);
+    }
     let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let truncated = false;
@@ -138,12 +213,23 @@ export async function runAuthorizedTerminalCommand(command: string): Promise<{
     child.stdout.on("data", (chunk: Buffer<ArrayBufferLike>) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk: Buffer<ArrayBufferLike>) => { stderr = append(stderr, chunk); });
     child.once("error", reject);
+    const onAbort = () => {
+      void terminateProcessTree(child);
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      void terminateProcessTree(child);
     }, DEFAULT_TIMEOUT_MS);
     child.once("close", (exitCode) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      if (
+        options.runtimeSessionId !== undefined &&
+        activeCommands.get(options.runtimeSessionId) === child
+      ) {
+        activeCommands.delete(options.runtimeSessionId);
+      }
       resolve({
         command,
         cwd: ".",

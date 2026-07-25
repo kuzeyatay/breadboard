@@ -4,6 +4,7 @@
 
 import { OpenHarnessError } from "./client.ts";
 import { readOpenHarnessConfig } from "./config.ts";
+import { readAgentRuntimeConfig } from "../agent-runtime/config.ts";
 
 export const MAX_REQUEST_BYTES = 256 * 1024; // 256 KB per request body
 
@@ -20,6 +21,17 @@ export class ApiError extends Error {
 
 /** Throws a 503 ApiError when OpenHarness is disabled — never crash or hang. */
 export function requireEnabled(): void {
+  const runtime = readAgentRuntimeConfig();
+  if (runtime.runtime === "hermes") {
+    if (!runtime.hermes.baseUrl || !runtime.hermes.sessionToken) {
+      throw new ApiError(
+        503,
+        "agent_runtime_disabled",
+        "The agent runtime is not enabled on this server.",
+      );
+    }
+    return;
+  }
   if (!readOpenHarnessConfig().enabled) {
     throw new ApiError(503, "openharness_disabled", "OpenHarness is not enabled on this server.");
   }

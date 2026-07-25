@@ -59,7 +59,11 @@ test("catalog endpoints are authenticated and never serialize persona instructio
   assert.match(catalogRoute, /presentAgencyAgent/);
   assert.doesNotMatch(catalogRoute, /\.instructions/);
   assert.match(catalogRoute, /status: catalog\.status === "ready" \? 200 : 503/);
-  assert.match(commandsRoute, /agents: items\.filter/);
+  assert.match(
+    commandsRoute,
+    /agents:\s*\[[\s\S]*items\.filter\([\s\S]*item\.kind === "agent"/,
+  );
+  assert.match(commandsRoute, /\.\.\.uiTarsItems/);
   assert.match(commandsRoute, /agents: agencyCatalog\?\.message/);
 
   const quartzRoute = source("src/app/api/quartz-ai/commands/route.ts");

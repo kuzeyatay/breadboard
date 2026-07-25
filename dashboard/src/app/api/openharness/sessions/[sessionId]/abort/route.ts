@@ -3,7 +3,7 @@ import { leastPrivilegeDecision } from "@/lib/openharness/dispatch-core.ts";
 import { requireUserId } from "@/lib/server-auth";
 import { apiErrorResponse, requireEnabled } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeReference, markStatus } from "@/lib/openharness/session-service.ts";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import {
   recordAuditEvent,
   revokeCapabilityDecision,
@@ -15,6 +15,7 @@ import {
   parseRuntimeRunDispatch,
 } from "@/lib/openharness/run-store.ts";
 import { failAssistantMessage } from "@/lib/conversations/store.ts";
+import { cancelAuthorizedTerminalCommand } from "@/lib/openharness/terminal-execution.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -39,25 +40,17 @@ export async function POST(
         status: latest?.status ?? "completed",
       });
     }
-    const gateway = getOpenHarnessGateway();
-    try {
-      await gateway.abortSession({
-        openHarnessSessionId: session.openHarnessSessionId,
+    const runtime = getAgentRuntimeByKind(session.runtimeKind);
+    markStatus(session, "stopping");
+    const [runtimeStop, terminalStop] = await Promise.allSettled([
+      runtime.stopRun({
+        externalSessionId: session.externalSessionId,
+        liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
-      });
-    } catch (error) {
-      if (!getActiveRuntimeRun(session.row.id)) {
-        const latest = getLatestRuntimeRun(session.row.id);
-        return NextResponse.json({
-          aborted: false,
-          alreadyFinished: true,
-          runId: latest?.id ?? activeRun.id,
-          status: latest?.status ?? "completed",
-        });
-      }
-      throw error;
-    }
+      }),
+      cancelAuthorizedTerminalCommand(session.row.id),
+    ]);
     if (session.row.conversation_id !== null) {
       const clientMessageId = parseRuntimeRunDispatch(activeRun).clientMessageId;
       if (clientMessageId) {
@@ -81,8 +74,9 @@ export async function POST(
     }
     markStatus(session, "aborted");
     revokeCapabilityDecision(session.row.id, "cancelled");
-    await gateway.applyCapabilityDecision({
-      openHarnessSessionId: session.openHarnessSessionId,
+    await runtime.applyCapabilityDecision({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
       decision: leastPrivilegeDecision(session.activeDirectory),
@@ -92,6 +86,11 @@ export async function POST(
       runtimeSessionId: session.row.id,
       userId,
       gardenId: session.row.garden_id,
+      payload: {
+        runtimeStopAcknowledged: runtimeStop.status === "fulfilled",
+        activeTerminalStopped:
+          terminalStop.status === "fulfilled" && terminalStop.value,
+      },
     });
     return NextResponse.json({
       aborted: true,

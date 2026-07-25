@@ -14,6 +14,7 @@ files:
   - "!node_modules/**/*"
 
 asar: true
+compression: normal
 
 # All services, runtimes and read-only assets ship as plain resources (not
 # inside the ASAR): they are executed / read by external runtimes.

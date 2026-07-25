@@ -43,7 +43,7 @@ test("garden API dispatches OpenHarness before the explicitly retained ChatMock 
   assert.match(route, /fallback\.used/);
 });
 
-test("garden adapter opens the event stream before prompting and aborts the server runtime", () => {
+test("garden adapter opens the event stream before prompting without aborting a run on disconnect", () => {
   const adapter = read("dashboard/src/lib/openharness/garden-chat-adapter.ts");
   assert.match(
     adapter,
@@ -51,9 +51,17 @@ test("garden adapter opens the event stream before prompting and aborts the serv
   );
   assert.match(
     adapter,
-    /requestSignal\.addEventListener\("abort", abortRuntime/,
+    /requestSignal\.addEventListener\("abort", disconnectSubscription/,
   );
-  assert.match(adapter, /gateway\s*\.abortSession/);
+  assert.match(adapter, /getAgentRuntimeByKind\(session\.runtimeKind\)/);
+  assert.match(adapter, /runtime\s*\.streamSession/);
+  assert.doesNotMatch(
+    adapter.slice(
+      adapter.indexOf("const disconnectSubscription"),
+      adapter.indexOf("requestSignal.addEventListener"),
+    ),
+    /stopRun/,
+  );
   assert.match(
     adapter,
     /resolveOpenHarnessEngine\(\s*payload\.model,\s*payload\.reasoningEffort/,

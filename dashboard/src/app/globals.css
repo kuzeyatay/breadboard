@@ -160,6 +160,13 @@ body {
   font-family: var(--font-source-sans), "Source Sans Pro", Arial, Helvetica, sans-serif;
 }
 
+/* Every navbar that carries the animated flower bed uses the same warm paper
+   surface. Keep this separate from the page background so Quartz routes never
+   inherit the pale green canvas behind them. */
+.breadboard-flower-navbar {
+  background-color: var(--paper-surface);
+}
+
 /* Electron's native Windows controls sit over this compact drag strip. It is
    absent in browser sessions because only the preload bridge sets the attribute. */
 .desktop-title-bar {

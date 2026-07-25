@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
 import { tokenAllows, verifyCapabilityToken } from "@/lib/openharness/capability-token.ts";
-import { getRuntimeSessionById, recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
+import {
+  getRuntimeSessionById,
+  recordAuditEvent,
+  runtimeExternalSessionId,
+} from "@/lib/openharness/runtime-store.ts";
 import {
   classifySkill,
   type CapabilityGap,
@@ -33,7 +37,12 @@ export async function POST(request: Request) {
     }
     const sessionId = Number(verified.token.breadboardSessionId);
     const session = getRuntimeSessionById(sessionId);
-    if (!session || session.surface !== "dashboard_terminal" || session.openharness_session_id !== verified.token.openHarnessSessionId) {
+    if (
+      !session ||
+      session.surface !== "dashboard_terminal" ||
+      runtimeExternalSessionId(session) !==
+        verified.token.openHarnessSessionId
+    ) {
       throw new ApiError(403, "session_scope_mismatch", "Capability session scope is invalid.");
     }
     const args = body.args && typeof body.args === "object" ? body.args as Record<string, unknown> : {};

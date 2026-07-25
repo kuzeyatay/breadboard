@@ -6,7 +6,10 @@ import {
   type CommandResolutionContext,
 } from "@/lib/openharness/commands.ts";
 import { OPENHARNESS_SURFACES, type OpenHarnessSurface } from "@/lib/openharness/config.ts";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import {
+  getAgentRuntime,
+  getAgentRuntimeByKind,
+} from "@/lib/agent-runtime/runtime.ts";
 import {
   apiErrorResponse,
   requireEnabled,
@@ -21,6 +24,10 @@ import {
 } from "@/lib/openharness/mcp-connections.ts";
 import { decideCapabilityMode } from "@/lib/openharness/capability-policy.ts";
 import { loadAgencyAgentsCatalog } from "@/lib/openharness/agency-agents.ts";
+import {
+  commandHubAgents as uiTarsAgents,
+  isEnabled as uiTarsEnabled,
+} from "@/lib/ui-tars/service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -60,6 +67,7 @@ export async function GET(request: Request) {
           ? "scoped_implementation"
           : activeDecision?.mode ?? previewDecision?.mode ?? "knowledge",
       requestedOutcome: outcome || activeDecision?.requestedOutcome,
+      runtimeKind: session?.runtimeKind,
     };
     const items = registryItemsForUser(userId, context);
     const agencyCatalog = surface === "quartz_ai" ? null : loadAgencyAgentsCatalog();
@@ -69,14 +77,22 @@ export async function GET(request: Request) {
 
     if (connections.some((connection) => connection.enabled)) {
       try {
-        const gateway = getOpenHarnessGateway();
-        const directory = session?.activeDirectory ?? gateway.managementDirectory(userId);
+        const runtime = session
+          ? getAgentRuntimeByKind(session.runtimeKind)
+          : getAgentRuntime();
+        const directory =
+          session?.activeDirectory ?? runtime.managementDirectory(userId);
         for (const connection of connections.filter((candidate) => candidate.enabled)) {
-          await gateway
-            .addMcpConnection(directory, connection.slug, runtimeMcpConfig(connection))
+          await runtime
+            .addMcpConnection(
+              directory,
+              connection.slug,
+              runtimeMcpConfig(connection),
+              userId,
+            )
             .catch(() => null);
         }
-        const discovery = await gateway.capabilityDiscovery(directory);
+        const discovery = await runtime.listCapabilities(directory, userId);
         for (const item of connectionItems) {
           const status = discovery.mcp[item.slug];
           item.connected = status?.status === "connected";
@@ -100,11 +116,42 @@ export async function GET(request: Request) {
       }
     }
 
+    // UI-TARS runtime agents appear in the SAME Agents list as the Agency agent
+    // personas. They are runtime (executable) agents rather than personas, so they
+    // carry a "Runtime" division label and are selected to open the browser
+    // workspace instead of being set as a conversation persona.
+    const uiTarsItems: CommandHubItem[] = uiTarsEnabled()
+      ? uiTarsAgents(userId).map((agent) => ({
+          id: `ui-tars:${agent.id}`,
+          kind: "agent" as const,
+          slug: "ui-tars",
+          // Selection navigates by item.id (never inserted as a slash token), so
+          // a stable readable token is sufficient here.
+          token: "agent:ui-tars",
+          name: agent.name,
+          description: agent.description,
+          category: "Runtime",
+          divisionLabel: "Runtime",
+          emoji: "🌐",
+          enabled: agent.enabled,
+          // Stays selectable while enabled even when misconfigured/unavailable:
+          // opening the workspace is how you configure it. The state is surfaced
+          // via unavailableReason rather than by blocking the only way to fix it.
+          healthy: agent.enabled,
+          ...(agent.runtimeState !== "available"
+            ? { unavailableReason: agent.runtimeState.replaceAll("_", " ") }
+            : {}),
+        }))
+      : [];
+
     const groups = {
       skills: items.filter((item): item is CommandHubItem => item.kind === "skill"),
       mcp: connectionItems,
       prompts: items.filter((item): item is CommandHubItem => item.kind === "prompt"),
-      agents: items.filter((item): item is CommandHubItem => item.kind === "agent"),
+      agents: [
+        ...items.filter((item): item is CommandHubItem => item.kind === "agent"),
+        ...uiTarsItems,
+      ],
     };
     return NextResponse.json({
       groups,

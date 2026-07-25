@@ -1,20 +1,27 @@
-import type { OpenHarnessMcpStatus } from "./client.ts";
 import {
   outcomeWithoutCapabilityTokens,
   type CapabilityMode,
 } from "./capability-policy.ts";
 import type { OpenHarnessSurface } from "./config.ts";
 import {
-  getOpenHarnessGateway,
-  type OpenHarnessCapabilityDiscovery,
-} from "./gateway.ts";
+  getAgentRuntime,
+  getAgentRuntimeByKind,
+} from "../agent-runtime/runtime.ts";
+import type {
+  RuntimeCapabilities,
+  RuntimeKind,
+  RuntimeMcpStatus,
+} from "../agent-runtime/contracts.ts";
 import { resolvePrompt, listPrompts } from "./prompts.ts";
 import {
   listApprovedSkills,
   type SkillEligibility,
 } from "./skills.ts";
 import { ApiError } from "./route-core.ts";
-import { listMcpConnections } from "./mcp-connections.ts";
+import {
+  listMcpConnections,
+  runtimeMcpConfig,
+} from "./mcp-connections.ts";
 import {
   findAgencyAgent,
   loadAgencyAgentsCatalog,
@@ -60,6 +67,7 @@ export interface CommandResolutionContext {
   mode: CapabilityMode;
   surface: OpenHarnessSurface;
   requestedOutcome?: string;
+  runtimeKind?: RuntimeKind;
 }
 
 export interface ResolvedCommandMessage {
@@ -207,7 +215,7 @@ export function registryItemsForUser(
 }
 
 export function mcpToolSelection(
-  discovery: OpenHarnessCapabilityDiscovery,
+  discovery: RuntimeCapabilities,
   slug: string,
 ): { selected: string[]; tools: Record<string, boolean> } {
   const prefix = `${slug.replace(/[^a-z0-9_-]+/g, "_")}_`.toLowerCase();
@@ -352,7 +360,7 @@ export async function resolveCommandMessage(
   const instructions: string[] = [];
   let tools: Record<string, boolean> | undefined;
   const skills = listApprovedSkills(context.surface);
-  let discovery: OpenHarnessCapabilityDiscovery | null = null;
+  let discovery: RuntimeCapabilities | null = null;
   const lastAgentRequest = requested.filter((item) => item.kind === "agent").at(-1);
   let agencyAgentSelection: ResolvedCommandMessage["agencyAgentSelection"];
 
@@ -434,8 +442,20 @@ export async function resolveCommandMessage(
     if (!connection) {
       throw new ApiError(404, "mcp_not_available", "That connection is unavailable.");
     }
-    discovery ??= await getOpenHarnessGateway().capabilityDiscovery(directory);
-    const status: OpenHarnessMcpStatus | undefined = discovery.mcp[item.slug];
+    const runtime = effectiveContext.runtimeKind
+      ? getAgentRuntimeByKind(effectiveContext.runtimeKind)
+      : getAgentRuntime();
+    if (!directory) {
+      throw new ApiError(409, "mcp_workspace_required", "A runtime workspace is required.");
+    }
+    await runtime.addMcpConnection(
+      directory,
+      connection.slug,
+      runtimeMcpConfig(connection),
+      userId,
+    );
+    discovery ??= await runtime.listCapabilities(directory, userId);
+    const status: RuntimeMcpStatus | undefined = discovery.mcp[item.slug];
     if (!status || status.status !== "connected") {
       throw new ApiError(409, "mcp_not_available", `The ${item.slug} connection is not connected.`);
     }
@@ -446,7 +466,10 @@ export async function resolveCommandMessage(
     tools = selection.tools;
     invocations.push({ kind: "mcp", slug: item.slug, id: `mcp:${connection.id}` });
     instructions.push(
-      `Use only the selected "${item.slug}" connection namespace when an external connection is needed for this turn.`,
+      `Use only the selected "${item.slug}" connection when external data is needed for this turn. ` +
+        `Its authorized tools are: ${selection.selected
+          .map((tool) => tool.slice(`${item.slug}_`.length))
+          .join(", ")}. Invoke them through mcp_call with connection=${JSON.stringify(item.slug)}.`,
     );
   }
 

@@ -21,6 +21,9 @@ import { fileURLToPath } from "node:url";
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(desktopRoot, "..");
 const runtimesDir = path.join(desktopRoot, "build-resources", "runtimes");
+const hermesRoot = path.join(repoRoot, "hermes-agent");
+const HERMES_UPSTREAM_COMMIT = "55ef425d0c3967022cb54093112e638c5c3f9e01";
+const PYTHON_VERSION = "3.13.9";
 
 const CHATMOCK_PINNED_DEPS = [
   "blinker==1.9.0",
@@ -47,6 +50,26 @@ function ensureChatMockImportPath(target) {
   fs.writeFileSync(
     path.join(sitePackages, "breadboard-chatmock.pth"),
     `${relativeChatMockRoot}\n`,
+    "utf8",
+  );
+}
+
+function ensureHermesImportPath(target) {
+  const sitePackages = path.join(target, "Lib", "site-packages");
+  const hermesSourceRoot = path.join(
+    desktopRoot,
+    "build-resources",
+    "app-services",
+    "hermes-agent",
+  );
+  const relativeHermesRoot = path
+    .relative(sitePackages, hermesSourceRoot)
+    .split(path.sep)
+    .join("/");
+  fs.mkdirSync(sitePackages, { recursive: true });
+  fs.writeFileSync(
+    path.join(sitePackages, "breadboard-hermes.pth"),
+    `${relativeHermesRoot}\n`,
     "utf8",
   );
 }
@@ -110,40 +133,37 @@ async function prepareBun() {
   return { runtime: "bun", version, source: bunPath };
 }
 
-function findPipCapablePython() {
-  const candidates = [];
-  const pyList = spawnSync("py", ["-0p"], { encoding: "utf8" });
-  if (pyList.status === 0) {
-    for (const line of pyList.stdout.split(/\r?\n/)) {
-      const match = line.trim().match(/(\S+python\.exe)\s*\*?$/i);
-      if (match) candidates.push(match[1]);
-    }
+function requireHermesPin() {
+  if (!fs.existsSync(path.join(hermesRoot, "pyproject.toml"))) {
+    fail(`Hermes checkout is missing: ${hermesRoot}`);
   }
-  const onPath = which("python.exe") ?? which("python");
-  if (onPath) candidates.push(onPath);
-  for (const candidate of candidates) {
-    const pipProbe = spawnSync(candidate, ["-m", "pip", "--version"], { encoding: "utf8" });
-    if (pipProbe.status === 0) return candidate;
+  const actual = execFileSync("git", ["-C", hermesRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  if (actual !== HERMES_UPSTREAM_COMMIT) {
+    fail(
+      `Hermes checkout is ${actual}; packaging is pinned to ${HERMES_UPSTREAM_COMMIT}.`,
+    );
   }
-  return null;
+  return actual;
 }
 
 async function preparePython() {
   if (process.platform !== "win32") fail("Python runtime assembly currently targets Windows x64 only.");
-  const systemPython = findPipCapablePython();
-  if (!systemPython) fail("A system Python (>=3.11) with pip is required to assemble the bundled runtime.");
-  log(`using ${systemPython} to assemble the bundled Python`);
-  const versionOut = execFileSync(systemPython, ["--version"], { encoding: "utf8" }).trim();
-  const match = versionOut.match(/Python (\d+)\.(\d+)\.(\d+)/);
-  if (!match) fail(`Could not parse Python version from "${versionOut}"`);
-  const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  if (major !== 3 || minor < 11) fail(`Bundled Python must be >=3.11; found ${versionOut}`);
-  const fullVersion = `${major}.${minor}.${patch}`;
+  const uv = which("uv.exe") ?? which("uv");
+  if (!uv) fail("uv is required to assemble Hermes's locked Python environment.");
+  const hermesCommit = requireHermesPin();
+  const fullVersion = PYTHON_VERSION;
 
   const target = path.join(runtimesDir, "python");
   const stampFile = path.join(target, ".breadboard-python-version");
-  if (fs.existsSync(stampFile) && fs.readFileSync(stampFile, "utf8").trim() === fullVersion) {
+  const expectedStamp = `${fullVersion}\nhermes=${hermesCommit}`;
+  if (
+    fs.existsSync(stampFile) &&
+    fs.readFileSync(stampFile, "utf8").trim() === expectedStamp
+  ) {
     ensureChatMockImportPath(target);
+    ensureHermesImportPath(target);
     log(`python ${fullVersion} runtime already assembled — skipping`);
     return { runtime: "python", version: fullVersion, source: "cached" };
   }
@@ -176,33 +196,69 @@ async function preparePython() {
     "utf8",
   );
 
-  // Install ChatMock's pinned dependencies with the system pip targeting the
-  // bundled runtime (same interpreter minor version => matching ABI wheels).
   const sitePackages = path.join(target, "Lib", "site-packages");
   fs.mkdirSync(sitePackages, { recursive: true });
   log("installing ChatMock dependencies into the bundled runtime");
-  const pip = spawnSync(
-    systemPython,
+  const chatmockInstall = spawnSync(
+    uv,
     [
-      "-m",
       "pip",
       "install",
-      "--no-warn-script-location",
-      "--target",
-      sitePackages,
-      `--python-version`,
-      `${major}.${minor}`,
-      "--only-binary=:all:",
-      "--implementation",
-      "cp",
+      "--python",
+      path.join(target, "python.exe"),
       ...CHATMOCK_PINNED_DEPS,
     ],
     { encoding: "utf8", stdio: "inherit" },
   );
-  if (pip.status !== 0) fail("pip install for the bundled Python runtime failed");
+  if (chatmockInstall.status !== 0) {
+    fail("ChatMock dependency install for the bundled Python runtime failed");
+  }
 
-  fs.writeFileSync(stampFile, fullVersion, "utf8");
+  const requirements = path.join(os.tmpdir(), `breadboard-hermes-${process.pid}.txt`);
+  const exportResult = spawnSync(
+    uv,
+    [
+      "export",
+      "--project",
+      hermesRoot,
+      "--frozen",
+      "--no-dev",
+      "--no-emit-project",
+      "--no-hashes",
+      "--format",
+      "requirements-txt",
+      "--output-file",
+      requirements,
+    ],
+    { encoding: "utf8", stdio: "inherit" },
+  );
+  if (exportResult.status !== 0) fail("Could not export Hermes's locked dependencies");
+  log(`installing Hermes ${hermesCommit.slice(0, 12)} locked dependencies`);
+  const hermesInstall = spawnSync(
+    uv,
+    [
+      "pip",
+      "install",
+      "--python",
+      path.join(target, "python.exe"),
+      "--requirements",
+      requirements,
+    ],
+    { encoding: "utf8", stdio: "inherit" },
+  );
+  fs.rmSync(requirements, { force: true });
+  if (hermesInstall.status !== 0) {
+    fail("Hermes dependency install for the bundled Python runtime failed");
+  }
+
+  fs.writeFileSync(stampFile, expectedStamp, "utf8");
+  fs.writeFileSync(
+    path.join(target, "hermes-upstream-commit.txt"),
+    `${hermesCommit}\n`,
+    "utf8",
+  );
   ensureChatMockImportPath(target);
+  ensureHermesImportPath(target);
   log(`python ${fullVersion} runtime assembled`);
   return { runtime: "python", version: fullVersion, source: url };
 }

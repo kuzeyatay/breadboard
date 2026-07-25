@@ -7,7 +7,7 @@ import {
   ApiError,
 } from "@/lib/openharness/route-helpers.ts";
 import { authorizeRuntimeReference } from "@/lib/openharness/session-service.ts";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
@@ -36,8 +36,9 @@ export async function POST(
     }
 
     const session = authorizeRuntimeReference(userId, body.sessionId);
-    await getOpenHarnessGateway().respondToPermission({
-      openHarnessSessionId: session.openHarnessSessionId,
+    await getAgentRuntimeByKind(session.runtimeKind).resolveApproval({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
       requestId,

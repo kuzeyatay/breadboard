@@ -2,7 +2,7 @@ import type { ChatAttachment } from "../chat-attachments.ts";
 import { resolveCommandMessage } from "../openharness/commands.ts";
 import { prepareTurn, mergeSelectedTools } from "../openharness/dispatch-core.ts";
 import { listFilesystemGrants } from "../openharness/filesystem-grant-store.ts";
-import { getOpenHarnessGateway } from "../openharness/gateway.ts";
+import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { openHarnessMessageId } from "../openharness/message-id.ts";
 import { resolveOpenHarnessEngine } from "../openharness/model-selection.ts";
 import {
@@ -233,7 +233,11 @@ export async function startConversationTurn(
     input.conversation.user_id,
     input.text,
     session.activeDirectory,
-    { mode: decision.mode, surface: input.surface },
+    {
+      mode: decision.mode,
+      surface: input.surface,
+      runtimeKind: session.runtimeKind,
+    },
   );
   let turnConversation = reservation.conversation;
   let activeAgencyAgent: AgencyAgentDefinition | null = null;
@@ -284,8 +288,9 @@ export async function startConversationTurn(
     .map((invocation) => invocation.slug);
   const engine = resolveOpenHarnessEngine(input.model, input.reasoningEffort);
 
-  await getOpenHarnessGateway().applyCapabilityDecision({
-    openHarnessSessionId: session.openHarnessSessionId,
+  await getAgentRuntimeByKind(session.runtimeKind).applyCapabilityDecision({
+    externalSessionId: session.externalSessionId,
+    liveSessionId: session.liveSessionId,
     workspaceKey: session.workspaceKey,
     directory: session.activeDirectory,
     decision,
@@ -385,8 +390,9 @@ export async function startConversationTurn(
   markStatus(session, "busy");
 
   const dispatch = async (target: AuthorizedRuntimeSession) => {
-    await getOpenHarnessGateway().sendMessage({
-      openHarnessSessionId: target.openHarnessSessionId,
+    await getAgentRuntimeByKind(target.runtimeKind).startRun({
+      externalSessionId: target.externalSessionId,
+      liveSessionId: target.liveSessionId,
       workspaceKey: target.workspaceKey,
       directory: target.activeDirectory,
       agentName: target.agentName,
@@ -411,8 +417,9 @@ export async function startConversationTurn(
         activePageSlug: context.activePageSlug ?? null,
         forceRecreate: true,
       });
-      await getOpenHarnessGateway().applyCapabilityDecision({
-        openHarnessSessionId: session.openHarnessSessionId,
+      await getAgentRuntimeByKind(session.runtimeKind).applyCapabilityDecision({
+        externalSessionId: session.externalSessionId,
+        liveSessionId: session.liveSessionId,
         workspaceKey: session.workspaceKey,
         directory: session.activeDirectory,
         decision,

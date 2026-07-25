@@ -175,7 +175,7 @@ test("activity and actions render with assistant messages, not above composers",
   assert.doesNotMatch(workspace, /bg-gray-400 ml-0\.5 animate-pulse/);
   assert.match(
     activity,
-    /onClick=\{\(\) => setExpanded\(\(current\) => !current\)\}/,
+    /setReasoningDisclosure\(expanded \? "collapsed" : "expanded"\)/,
   );
   assert.doesNotMatch(activity, /View activity/);
   assert.doesNotMatch(activity, /Hide activity/);

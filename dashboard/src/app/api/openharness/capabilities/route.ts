@@ -2,7 +2,10 @@ import os from "node:os";
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
 import type { OpenHarnessMcpStatus } from "@/lib/openharness/client.ts";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import {
+  getAgentRuntime,
+  getAgentRuntimeByKind,
+} from "@/lib/agent-runtime/runtime.ts";
 import { inspectGBrainState } from "@/lib/openharness/gbrain-status.ts";
 import {
   getOpenHarnessUserSettings,
@@ -68,29 +71,36 @@ export async function GET(request: Request) {
     let runtimeReason: string | undefined;
     const ownedConnections = listMcpConnections(userId);
     try {
-      const gateway = getOpenHarnessGateway();
+      const runtime = session
+        ? getAgentRuntimeByKind(session.runtimeKind)
+        : getAgentRuntime();
       const directory =
-        session?.activeDirectory ?? gateway.managementDirectory(userId);
+        session?.activeDirectory ?? runtime.managementDirectory(userId);
       if (!session) {
         for (const connection of ownedConnections.filter(
           (connection) => connection.enabled,
         )) {
-          await gateway
+          await runtime
             .addMcpConnection(
               directory,
               connection.slug,
               runtimeMcpConfig(connection),
+              userId,
             )
             .catch(() => null);
         }
       }
-      const discovered = await gateway.capabilityDiscovery(directory);
+      const discovered = await runtime.listCapabilities(directory, userId);
       toolIds = discovered.tools;
       const ownedSlugs = new Set(
         ownedConnections.map((connection) => connection.slug),
       );
+      const discoveredMcp =
+        typeof discovered.mcp === "object" && discovered.mcp !== null
+          ? discovered.mcp as Record<string, OpenHarnessMcpStatus>
+          : {};
       mcp = Object.fromEntries(
-        Object.entries(discovered.mcp).filter(
+        Object.entries(discoveredMcp).filter(
           ([slug]) => ownedSlugs.has(slug) || slug === "gbrain",
         ),
       );

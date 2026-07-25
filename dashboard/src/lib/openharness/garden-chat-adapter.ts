@@ -5,13 +5,13 @@
 import db from "../db.ts";
 import { normalizeChatTokenUsage } from "../chat-token-usage.ts";
 import { requireUserId } from "../server-auth.ts";
-import { getOpenHarnessGateway } from "./gateway.ts";
+import { getAgentRuntimeByKind } from "../agent-runtime/runtime.ts";
 import { resolveOpenHarnessEngine } from "./model-selection.ts";
 import {
   authorizeGardenAccess,
   authorizeRuntimeSession,
-  createSessionForSurface,
   markStatus,
+  resolveConversationRuntime,
   type AuthorizedRuntimeSession,
 } from "./session-service.ts";
 import {
@@ -38,6 +38,7 @@ import { listFilesystemGrants } from "./filesystem-grant-store.ts";
 import { beginRuntimeRun, finishRuntimeRun } from "./run-store.ts";
 import {
   getConversationById,
+  getConversationForLegacyChatSession,
   updateConversation,
 } from "../conversations/store.ts";
 import { associateArtifactToolCall, listArtifactEventsAfter } from "./artifact-store.ts";
@@ -102,15 +103,17 @@ export async function openGardenAgentChat(
     payload.reasoningEffort,
   );
   const existing = getRuntimeSessionByChatSession(chatSessionId);
+  let conversation = getConversationForLegacyChatSession(
+    chatSessionId,
+    userId,
+  );
   const session = existing
     ? authorizeRuntimeSession(userId, existing.id)
-    : await createSessionForSurface({
-        userId,
+    : await resolveConversationRuntime({
+        conversation,
         surface: "garden_chat",
-        title: `Garden chat ${chatSessionId}`,
-        gardenSlug: clusterSlug,
-        pageSlug: page?.slug,
-        chatSessionId,
+        activeGardenSlug: clusterSlug,
+        activePageSlug: page?.slug ?? null,
       });
   // The shared planner records the requested outcome, while the broker's
   // surface ceiling keeps Garden Chat on curated Garden, artifact, and selected
@@ -131,7 +134,11 @@ export async function openGardenAgentChat(
     userId,
     text,
     session.activeDirectory,
-    { mode: decision.mode, surface: "garden_chat" },
+    {
+      mode: decision.mode,
+      surface: "garden_chat",
+      runtimeKind: session.runtimeKind,
+    },
   );
   decision.selectedConditionalSkills = resolved.invocations
     .filter((item) => item.kind === "skill")
@@ -140,10 +147,11 @@ export async function openGardenAgentChat(
     .filter((item) => item.kind === "mcp")
     .map((item) => item.slug);
 
-  const gateway = getOpenHarnessGateway();
-  await gateway.health();
-  await gateway.applyCapabilityDecision({
-    openHarnessSessionId: session.openHarnessSessionId,
+  const runtime = getAgentRuntimeByKind(session.runtimeKind);
+  await runtime.health();
+  await runtime.applyCapabilityDecision({
+    externalSessionId: session.externalSessionId,
+    liveSessionId: session.liveSessionId,
     workspaceKey: session.workspaceKey,
     directory: session.activeDirectory,
     decision,
@@ -188,8 +196,8 @@ export async function openGardenAgentChat(
   if (session.row.conversation_id === null) {
     throw new ApiError(409, "conversation_required", "Garden artifacts require a canonical conversation.");
   }
-  let conversation = getConversationById(session.row.conversation_id);
-  if (!conversation || conversation.surface !== "garden_chat") {
+  conversation = getConversationById(session.row.conversation_id) ?? conversation;
+  if (conversation.surface !== "garden_chat") {
     throw new ApiError(409, "conversation_scope_mismatch", "The Garden conversation scope is invalid.");
   }
   let activeAgencyAgent: AgencyAgentDefinition | null = null;
@@ -236,8 +244,9 @@ export async function openGardenAgentChat(
     },
   });
   return legacyGardenEventStream(session, signal, prepared, run.id, () =>
-    gateway.sendMessage({
-      openHarnessSessionId: session.openHarnessSessionId,
+    runtime.startRun({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
       agentName: session.agentName,
@@ -340,23 +349,17 @@ function legacyGardenEventStream(
   runId: string,
   sendMessage: () => Promise<void>,
 ): Response {
-  const gateway = getOpenHarnessGateway();
+  const runtime = getAgentRuntimeByKind(session.runtimeKind);
   const encoder = new TextEncoder();
   const controller = new AbortController();
-  let abortSent = false;
-  const abortRuntime = () => {
+  let clientDisconnected = false;
+  const disconnectSubscription = () => {
+    clientDisconnected = true;
     controller.abort();
-    if (abortSent) return;
-    abortSent = true;
-    void gateway
-      .abortSession({
-        openHarnessSessionId: session.openHarnessSessionId,
-        workspaceKey: session.workspaceKey,
-        directory: session.activeDirectory,
-      })
-      .catch(() => undefined);
   };
-  requestSignal.addEventListener("abort", abortRuntime, { once: true });
+  requestSignal.addEventListener("abort", disconnectSubscription, {
+    once: true,
+  });
   const stream = new ReadableStream<Uint8Array>({
     async start(output) {
       const emit = (value: unknown) =>
@@ -441,10 +444,11 @@ function legacyGardenEventStream(
         const ready = new Promise<void>((resolve) => {
           connected = resolve;
         });
-        const events = gateway
-          .subscribeToSession(
+        const events = runtime
+          .streamSession(
             {
-              openHarnessSessionId: session.openHarnessSessionId,
+              externalSessionId: session.externalSessionId,
+              liveSessionId: session.liveSessionId,
               workspaceKey: session.workspaceKey,
               directory: session.activeDirectory,
             },
@@ -458,7 +462,7 @@ function legacyGardenEventStream(
           firstEvent.then((result) => {
             if (result.done)
               throw new Error(
-                "OpenHarness event stream closed before the prompt was sent.",
+                "Agent event stream closed before the prompt was sent.",
               );
           }),
         ]);
@@ -593,7 +597,15 @@ function legacyGardenEventStream(
           gardenId: session.row.garden_id,
         });
       } catch (error) {
-        abortRuntime();
+        if (clientDisconnected) return;
+        await runtime
+          .stopRun({
+            externalSessionId: session.externalSessionId,
+            liveSessionId: session.liveSessionId,
+            workspaceKey: session.workspaceKey,
+            directory: session.activeDirectory,
+          })
+          .catch(() => undefined);
         markStatus(session, "failed");
         finishRuntimeRun(runId, controller.signal.aborted ? "cancelled" : "error");
         revokeCapabilityDecision(session.row.id, "abandoned");
@@ -602,7 +614,7 @@ function legacyGardenEventStream(
           error:
             error instanceof Error
               ? error.message
-              : "OpenHarness stream failed.",
+              : "Agent stream failed.",
         });
         recordAuditEvent({
           eventType: "error",
@@ -612,12 +624,17 @@ function legacyGardenEventStream(
           payload: { stage: "garden_event_stream" },
         });
       } finally {
-        output.enqueue(encoder.encode("data: [DONE]\n\n"));
-        output.close();
+        if (clientDisconnected) return;
+        try {
+          output.enqueue(encoder.encode("data: [DONE]\n\n"));
+          output.close();
+        } catch {
+          // The client may close immediately after receiving the last event.
+        }
       }
     },
     cancel() {
-      abortRuntime();
+      disconnectSubscription();
     },
   });
   return new Response(stream, {

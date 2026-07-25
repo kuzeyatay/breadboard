@@ -73,6 +73,22 @@ interface QueuedFollowUp {
   text: string;
 }
 
+function reorderQueuedFollowUps(
+  items: QueuedFollowUp[],
+  sourceId: string,
+  targetId: string,
+): QueuedFollowUp[] {
+  if (sourceId === targetId) return items;
+  const sourceIndex = items.findIndex((item) => item.id === sourceId);
+  const targetIndex = items.findIndex((item) => item.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0) return items;
+
+  const next = [...items];
+  const [moved] = next.splice(sourceIndex, 1);
+  next.splice(targetIndex, 0, moved);
+  return next;
+}
+
 interface ConversationBranchGroup {
   id: string;
   activeIndex: number;
@@ -161,6 +177,8 @@ export default function AgentRuntimePanel({
   const [sendingQueuedId, setSendingQueuedId] = useState<string | null>(null);
   const [editingQueuedId, setEditingQueuedId] = useState<string | null>(null);
   const [queuedEditText, setQueuedEditText] = useState("");
+  const [draggedQueuedId, setDraggedQueuedId] = useState<string | null>(null);
+  const [dragOverQueuedId, setDragOverQueuedId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageEditText, setMessageEditText] = useState("");
   const [copiedUserId, setCopiedUserId] = useState<string | null>(null);
@@ -294,6 +312,25 @@ export default function AgentRuntimePanel({
     );
     setEditingQueuedId(null);
     setQueuedEditText("");
+  }
+
+  function moveQueuedFollowUp(itemId: string, offset: -1 | 1) {
+    setQueuedFollowUps((current) => {
+      const currentIndex = current.findIndex((item) => item.id === itemId);
+      const target = current[currentIndex + offset];
+      if (currentIndex < 0 || !target) return current;
+      return reorderQueuedFollowUps(current, itemId, target.id);
+    });
+  }
+
+  function finishQueuedDrop(targetId: string) {
+    if (draggedQueuedId) {
+      setQueuedFollowUps((current) =>
+        reorderQueuedFollowUps(current, draggedQueuedId, targetId),
+      );
+    }
+    setDraggedQueuedId(null);
+    setDragOverQueuedId(null);
   }
 
   async function copyUserMessage(message: AgentMessage, messageId: string) {
@@ -617,14 +654,62 @@ export default function AgentRuntimePanel({
           headerContent={
             queuedFollowUps.length > 0 ? (
               <div className="space-y-0.5 py-0.5">
-                {queuedFollowUps.map((item) => (
+                {queuedFollowUps.map((item, index) => (
                   <div
                     key={item.id}
-                    className="flex min-h-9 items-center gap-2 rounded-xl px-2 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)]"
+                    onDragOver={(event) => {
+                      if (!draggedQueuedId || draggedQueuedId === item.id) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                      setDragOverQueuedId(item.id);
+                    }}
+                    onDragLeave={() =>
+                      setDragOverQueuedId((current) =>
+                        current === item.id ? null : current,
+                      )
+                    }
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      finishQueuedDrop(item.id);
+                    }}
+                    className={`flex min-h-9 items-center gap-2 rounded-xl px-2 text-sm text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] ${
+                      dragOverQueuedId === item.id
+                        ? "bg-[var(--paper-strong)] ring-1 ring-inset ring-[var(--line-strong)]"
+                        : ""
+                    }`}
                   >
-                    <svg className="h-4 w-4 shrink-0 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
-                    </svg>
+                    <button
+                      type="button"
+                      draggable={editingQueuedId !== item.id}
+                      onDragStart={(event) => {
+                        setDraggedQueuedId(item.id);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", item.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedQueuedId(null);
+                        setDragOverQueuedId(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "ArrowUp" && index > 0) {
+                          event.preventDefault();
+                          moveQueuedFollowUp(item.id, -1);
+                        } else if (
+                          event.key === "ArrowDown" &&
+                          index < queuedFollowUps.length - 1
+                        ) {
+                          event.preventDefault();
+                          moveQueuedFollowUp(item.id, 1);
+                        }
+                      }}
+                      className="grid h-7 w-7 shrink-0 cursor-grab place-items-center rounded-lg opacity-70 transition hover:bg-[var(--paper-surface)] hover:opacity-100 active:cursor-grabbing"
+                      aria-label={`Reorder queued message ${index + 1} of ${queuedFollowUps.length}: ${item.text}. Drag, or use the Up and Down arrow keys.`}
+                      title="Drag to change steering order"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h8.5a2 2 0 0 1 2 2v.75m0 0-2.25-2.25m2.25 2.25L15 12.5" />
+                      </svg>
+                    </button>
                     {editingQueuedId === item.id ? (
                       <form
                         className="flex min-w-0 flex-1 items-center gap-1.5"

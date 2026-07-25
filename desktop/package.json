@@ -13,11 +13,13 @@
     "test": "npm run build && node --test dist-tests/tests/*.test.js",
     "test:build": "tsc -p tsconfig.tests.json",
     "pretest": "npm run test:build",
+    "build:dashboard": "node scripts/build-dashboard.mjs",
     "prepare:runtimes": "node scripts/prepare-runtimes.mjs",
     "prepare:app": "node scripts/prepare-app-resources.mjs",
     "rebuild:native": "electron-rebuild -m ../dashboard -o better-sqlite3,bcrypt",
-    "dist:win": "npm run build && node scripts/dist-win.mjs",
+    "dist:win": "npm run build:dashboard && npm run prepare:runtimes && npm run prepare:app && npm run build && node scripts/dist-win.mjs",
     "verify:package": "node scripts/verify-package.mjs",
+    "smoke:hermes": "node scripts/hermes-runtime-smoke.mjs",
     "smoke:installed": "node scripts/installed-smoke-test.mjs"
   },
   "devDependencies": {

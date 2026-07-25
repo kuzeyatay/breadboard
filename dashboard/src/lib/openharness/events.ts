@@ -50,7 +50,11 @@ export type NormalizedAgentEvent =
       type: "reasoning.status";
       sessionId: string;
       timestamp: string;
-      payload: { label: string; detail?: string };
+      payload: {
+        label: string;
+        detail?: string;
+        detailMode?: "append" | "replace";
+      };
     }
   | {
       type: "tool.started";
@@ -218,7 +222,7 @@ export function normalizeOpenHarnessEvent(
           type: "reasoning.status",
           sessionId,
           timestamp: timestamp(),
-          payload: { label: "Thinking", detail: delta },
+          payload: { label: "Thinking", detail: delta, detailMode: "append" },
         };
       }
       // Any text-ish field (text, content) is streamed assistant output.
@@ -240,6 +244,10 @@ export function normalizeOpenHarnessEvent(
       const partType = asString(part.type);
       if (partType === "reasoning") {
         const partId = asString(part.id);
+        const detail =
+          asString(part.text) ??
+          asString(part.reasoning) ??
+          asString(part.summary);
         if (partId && normalizationState) {
           const time = isRecord(part.time) ? part.time : undefined;
           if (time?.end !== undefined) {
@@ -252,7 +260,10 @@ export function normalizeOpenHarnessEvent(
           type: "reasoning.status",
           sessionId,
           timestamp: timestamp(),
-          payload: { label: "Thinking" },
+          payload: {
+            label: "Thinking",
+            ...(detail ? { detail, detailMode: "replace" as const } : {}),
+          },
         };
       }
       // Tool activity arrives as an updated `tool` part with a nested state.

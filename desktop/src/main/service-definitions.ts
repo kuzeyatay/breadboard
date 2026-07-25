@@ -14,7 +14,8 @@ import type { DesktopRuntimeConfig } from "./runtime-config";
  *    installed for — no Electron-ABI rebuild needed.
  *  - OpenHarness stays a Bun application (upstream-friendly) and runs on a
  *    bundled `runtimes/bun/bun.exe`.
- *  - ChatMock runs on a bundled self-contained Python under `runtimes/python`.
+ *  - ChatMock and the pinned Hermes wheel run on bundled CPython 3.13 under
+ *    `runtimes/python`.
  *  - Scriberr remains optional and is only ever a Docker compatibility mode.
  *
  * In dev mode the system `node`, `bun`, and `python` are used, matching the
@@ -71,6 +72,11 @@ export interface ServiceUrls {
   gbrain?: string;
   /** Only present when UI-TARS is enabled (a loopback port was allocated). */
   uiTars?: string;
+}
+
+/** Server-only Hermes endpoint. Never include this in serviceUrls/endpoints.json. */
+export function hermesServiceUrl(config: DesktopRuntimeConfig): string {
+  return `http://127.0.0.1:${config.ports.hermes}`;
 }
 
 export function serviceUrls(config: DesktopRuntimeConfig): ServiceUrls {
@@ -152,6 +158,7 @@ export interface BuildDefinitionsInput {
 export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopServiceDefinition[] {
   const { paths, config, binaries } = input;
   const urls = serviceUrls(config);
+  const hermesUrl = hermesServiceUrl(config);
   const persistent = config.persistent;
   const shared = baseEnv(paths);
   const ffmpeg = optionalBinary(paths, "ffmpeg");
@@ -259,6 +266,54 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
   };
 
+  const hermes: DesktopServiceDefinition = {
+    id: "hermes",
+    displayName: "Agent runtime (Hermes)",
+    // Runtime unavailability must not make gardens and other unrelated
+    // Breadboard features unusable. Agent API routes report the existing
+    // sanitized runtime-unavailable error while the bounded supervisor retries.
+    required: false,
+    command: binaries.python,
+    args: [
+      "-m",
+      "hermes_cli.main",
+      "serve",
+      "--isolated",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(config.ports.hermes),
+      "--no-open",
+    ],
+    cwd: paths.hermesAppDir,
+    dependsOn: ["chatmock"],
+    env: {
+      ...shared,
+      PYTHONUNBUFFERED: "1",
+      PYTHONDONTWRITEBYTECODE: "1",
+      HERMES_HOME: paths.hermesHome,
+      HERMES_DESKTOP: "1",
+      HERMES_SERVE_HEADLESS: "1",
+      HERMES_DASHBOARD_SESSION_TOKEN: persistent.hermesSessionToken,
+      BREADBOARD_INTERNAL_URL: urls.dashboard,
+      BREADBOARD_HERMES_TOOL_SECRET: persistent.hermesToolSecret,
+      OPENAI_BASE_URL: urls.chatmockV1,
+      OPENAI_API_KEY: "local",
+      CHATMOCK_BASE_URL: urls.chatmockV1,
+      CHATMOCK_MODEL: process.env["CHATMOCK_MODEL"] ?? "gpt-5.6-sol",
+    },
+    healthCheck: {
+      type: "http",
+      url: `${hermesUrl}/api/status`,
+      expectBodyIncludes: '"version"',
+      timeoutMs: 3_000,
+      intervalMs: 750,
+    },
+    startupTimeoutMs: 120_000,
+    gracefulShutdownMs: 8_000,
+    restartPolicy: "on-failure",
+  };
+
   const quartzArgs = [
     path.join(paths.quartzWorkspace, "quartz", "bootstrap-cli.mjs"),
     "build",
@@ -315,8 +370,10 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     command: binaries.node,
     args: dashboardEntry,
     cwd: paths.dashboardServerDir,
-    dependsOn:
-      persistent.openharnessMode === "legacy" ? ["chatmock", "quartz"] : ["chatmock", "openharness", "quartz"],
+    // The selected runtime starts in the preceding supervisor wave because it
+    // depends on ChatMock. It is intentionally not a hard dashboard dependency:
+    // unrelated Breadboard features remain usable if the runtime is degraded.
+    dependsOn: ["chatmock", "quartz"],
     env: {
       ...shared,
       NODE_ENV: paths.mode === "packaged" ? "production" : "development",
@@ -338,6 +395,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       OPENAI_API_KEY: "local",
       CHATMOCK_BASE_URL: urls.chatmockV1,
       CHATMOCK_MODEL: process.env["CHATMOCK_MODEL"] ?? "gpt-5.6-sol",
+      // --- Runtime-neutral selection (server only) ---
+      AGENT_RUNTIME: persistent.agentRuntime,
+      AGENT_RUNTIME_FALLBACK: persistent.agentRuntimeFallback ?? "none",
+      HERMES_BASE_URL: hermesUrl,
+      HERMES_DASHBOARD_SESSION_TOKEN: persistent.hermesSessionToken,
+      BREADBOARD_HERMES_TOOL_SECRET: persistent.hermesToolSecret,
       // --- OpenHarness ---
       OPENHARNESS_ENABLED: persistent.openharnessMode === "legacy" ? "false" : "true",
       OPENHARNESS_MODE: persistent.openharnessMode,
@@ -467,7 +530,16 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const definitions: DesktopServiceDefinition[] = [chatmock];
   // Legacy mode intentionally runs without OpenHarness (existing Breadboard
   // migration contract) — do not register the service at all.
-  if (persistent.openharnessMode !== "legacy") definitions.push(openharness);
+  const selectedRuntimes = new Set(
+    [persistent.agentRuntime, persistent.agentRuntimeFallback].filter(Boolean),
+  );
+  if (selectedRuntimes.has("hermes")) definitions.push(hermes);
+  if (
+    selectedRuntimes.has("openharness") &&
+    persistent.openharnessMode !== "legacy"
+  ) {
+    definitions.push(openharness);
+  }
   if (gbrainEnabled) definitions.push(gbrain);
   if (uiTarsEnabled) definitions.push(uiTars);
   definitions.push(quartz, dashboard);

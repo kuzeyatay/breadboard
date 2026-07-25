@@ -82,7 +82,7 @@ export default function NavBar({ email, username }: Props) {
 
   return (
     <>
-      <nav className="neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 bg-gray-950 shrink-0">
+      <nav className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 shrink-0">
         <NavbarFlowerWind />
         <span className="relative z-10 flex items-center gap-2.5">
           {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}

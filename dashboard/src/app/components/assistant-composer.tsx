@@ -225,6 +225,14 @@ export default function AssistantComposer({
   }
 
   function insertCommand(item: CommandHubItem) {
+    // UI-TARS runtime agents live in the same Agents list as the Agency personas,
+    // but they are executable runtimes rather than conversation personas: opening
+    // one takes you to its browser workspace instead of inserting a persona token.
+    if (item.id.startsWith('ui-tars:')) {
+      const agentId = item.id.slice('ui-tars:'.length);
+      window.location.assign(`/agents?agent=${encodeURIComponent(agentId)}`);
+      return;
+    }
     const node = internalTextareaRef.current;
     let start = 0;
     let end = 0;

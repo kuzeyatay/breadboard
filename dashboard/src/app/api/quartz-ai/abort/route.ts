@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth-options";
 import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
 import { authorizeQuartzRuntimeSession, authorizeRuntimeReference, markStatus } from "@/lib/openharness/session-service.ts";
-import { getOpenHarnessGateway } from "@/lib/openharness/gateway.ts";
+import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import { corsHeaders } from "@/lib/openharness/quartz-support.ts";
 import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
 import { finishRuntimeRun, getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/openharness/run-store.ts";
@@ -32,8 +32,9 @@ export async function POST(request: Request) {
       ? authorizeRuntimeReference(userId, body.sessionId)
       : authorizeQuartzRuntimeSession(requireNumericSessionId(body.sessionId), { userId, clientToken });
     const activeRun = getActiveRuntimeRun(session.row.id);
-    await getOpenHarnessGateway().abortSession({
-      openHarnessSessionId: session.openHarnessSessionId,
+    await getAgentRuntimeByKind(session.runtimeKind).stopRun({
+      externalSessionId: session.externalSessionId,
+      liveSessionId: session.liveSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
     });

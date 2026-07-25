@@ -36,7 +36,9 @@ export default function ActivityPanel({
   showAbort = true,
   onPermissionDecision,
 }: Props) {
-  const [expanded, setExpanded] = useState(false);
+  const [reasoningDisclosure, setReasoningDisclosure] = useState<
+    "automatic" | "expanded" | "collapsed"
+  >("automatic");
   const [now, setNow] = useState(() => Date.now());
   const active =
     connection === "connecting" ||
@@ -76,13 +78,18 @@ export default function ActivityPanel({
     .filter(Boolean)
     .join(" · ");
   const hasReasoningSummary = Boolean(reasoning?.trim());
+  const expanded =
+    reasoningDisclosure === "expanded" ||
+    (reasoningDisclosure === "automatic" && hasReasoningSummary);
 
   return (
     <section className="my-1 text-[var(--ink)]">
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"
-          onClick={() => setExpanded((current) => !current)}
+          onClick={() =>
+            setReasoningDisclosure(expanded ? "collapsed" : "expanded")
+          }
           className="flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-1 py-1 text-left text-sm leading-6 text-[var(--ink-muted)] transition hover:text-[var(--ink)]"
           aria-expanded={expanded}
         >

@@ -72,6 +72,11 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(runtimePanel, /Steer the active response with:/);
   assert.match(runtimePanel, /Delete queued message:/);
   assert.match(runtimePanel, /Edit queued message:/);
+  assert.match(runtimePanel, /draggable=\{editingQueuedId !== item\.id\}/);
+  assert.match(runtimePanel, /Drag to change steering order/);
+  assert.match(runtimePanel, /event\.key === "ArrowUp"/);
+  assert.match(runtimePanel, /event\.key === "ArrowDown"/);
+  assert.match(runtimePanel, /reorderQueuedFollowUps\(current, draggedQueuedId, targetId\)/);
   assert.match(runtimePanel, /onSendQueued\(next\.text\)/);
   assert.doesNotMatch(composer, /Run status:/);
   assert.doesNotMatch(sessionHook, /Course correction applied/);
@@ -153,7 +158,10 @@ test("the steer route enforces auth, ownership, active-run validation, dedupe, a
   assert.match(steerRoute, /client_request_conflict/);
   assert.match(steerRoute, /acceptSteerRequest/);
   assert.match(steerRoute, /eventType: stillActive \? "run\.steered" : "run\.steer_fallback"/);
-  assert.match(steerRoute, /getOpenHarnessGateway\(\)\.steerRun/);
+  assert.match(
+    steerRoute,
+    /getAgentRuntimeByKind\(session\.runtimeKind\)\.steerRun/,
+  );
   assert.match(steerRoute, /appendConversationSteerMessage/);
   assert.match(steerRoute, /error instanceof ConversationStoreError/);
   assert.match(steerRoute, /error\.code !== "turn_not_active"/);

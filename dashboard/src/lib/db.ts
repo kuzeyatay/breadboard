@@ -476,6 +476,26 @@ db.exec(`
 ensureColumn("openharness_runtime_sessions", "active_directory", "active_directory TEXT");
 ensureColumn(
   "openharness_runtime_sessions",
+  "runtime_kind",
+  "runtime_kind TEXT NOT NULL DEFAULT 'openharness' CHECK (runtime_kind IN ('openharness','hermes'))",
+);
+ensureColumn(
+  "openharness_runtime_sessions",
+  "external_session_id",
+  "external_session_id TEXT",
+);
+ensureColumn(
+  "openharness_runtime_sessions",
+  "live_session_id",
+  "live_session_id TEXT",
+);
+ensureColumn(
+  "openharness_runtime_sessions",
+  "last_event_sequence",
+  "last_event_sequence INTEGER NOT NULL DEFAULT 0",
+);
+ensureColumn(
+  "openharness_runtime_sessions",
   "filesystem_mode",
   "filesystem_mode TEXT NOT NULL DEFAULT 'restricted' CHECK (filesystem_mode IN ('restricted','full'))",
 );
@@ -514,6 +534,14 @@ ensureColumn(
   "default_model",
   "default_model TEXT NOT NULL DEFAULT 'gpt-5.6-sol'",
 );
+db.exec(`
+  UPDATE openharness_runtime_sessions
+  SET external_session_id = openharness_session_id
+  WHERE external_session_id IS NULL AND openharness_session_id IS NOT NULL;
+
+  CREATE INDEX IF NOT EXISTS idx_agent_runtime_sessions_external
+    ON openharness_runtime_sessions(runtime_kind, external_session_id);
+`);
 ensureColumn(
   "openharness_user_settings",
   "reasoning_effort",
