@@ -29,6 +29,7 @@ import {
   completeAssistantMessage,
   failAssistantMessage,
 } from "../conversations/store.ts";
+import { openHarnessMessageId } from "./message-id.ts";
 import { compactConversationMemoryIfNeeded } from "../conversations/memory.ts";
 import {
   associateArtifactToolCall,
@@ -153,7 +154,21 @@ export function buildSessionEventStream(
   // event from its previous turn. Bind lazily to the first durable run created
   // after the stream opens and do not let a zero-output idle event finalize it.
   let streamRun = getActiveRuntimeRun(session.row.id);
-  let assistantMessageId: string | undefined;
+  const activeRunReference = () => {
+    // The SSE connection is established before the prompt POST. Re-read the
+    // durable run lazily so Hermes recovery receives the turn identity even
+    // when the GET and POST execute in separate Next.js module contexts.
+    streamRun ??= getActiveRuntimeRun(session.row.id);
+    if (!streamRun) return {};
+    const dispatch = parseRuntimeRunDispatch(streamRun);
+    return {
+      messageId: dispatch.clientMessageId
+        ? openHarnessMessageId(dispatch.clientMessageId)
+        : undefined,
+      instruction: dispatch.runtimeText ?? streamRun.instruction,
+    };
+  };
+  let assistantMessageId = activeRunReference().messageId;
   let sawTurnOutput = false;
   let lastArtifactEventId = 0;
 
@@ -290,12 +305,15 @@ export function buildSessionEventStream(
             liveSessionId: session.liveSessionId,
             workspaceKey: session.workspaceKey,
             directory: session.activeDirectory,
+            ...activeRunReference(),
+            resolveActiveTurn: activeRunReference,
           },
           abortController.signal,
           () => controller.enqueue(encoder.encode(": connected\n\n")),
         )) {
           if (!streamRun) {
             streamRun = getActiveRuntimeRun(session.row.id);
+            assistantMessageId ??= activeRunReference().messageId;
           }
 
           // Events received before the message POST has created its run belong

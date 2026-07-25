@@ -357,6 +357,7 @@ type CapabilityDecisionRow = {
   decision_source: CapabilityDecision["decisionSource"];
   authorized_roots: string;
   authorized_path_patterns: string;
+  authorized_delete_targets: string;
   allowed_tools: string;
   allowed_operations: string;
   allowed_command_patterns: string;
@@ -396,6 +397,7 @@ function presentCapabilityDecision(
     decisionSource: row.decision_source,
     authorizedRoots: stringList(row.authorized_roots),
     authorizedPathPatterns: stringList(row.authorized_path_patterns),
+    authorizedDeleteTargets: stringList(row.authorized_delete_targets),
     allowedTools: stringList(row.allowed_tools),
     allowedOperations: stringList(
       row.allowed_operations,
@@ -425,10 +427,10 @@ export function persistCapabilityDecision(
         `INSERT INTO openharness_capability_decisions
          (runtime_session_id, mode, requested_outcome, implementation_required,
           decision_reason, decision_source, authorized_roots,
-          authorized_path_patterns, allowed_tools, allowed_operations,
+          authorized_path_patterns, authorized_delete_targets, allowed_tools, allowed_operations,
           allowed_command_patterns, selected_conditional_skills,
           selected_connections, created_at, expires_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         runtimeSessionId,
@@ -439,6 +441,7 @@ export function persistCapabilityDecision(
         decision.decisionSource,
         JSON.stringify(decision.authorizedRoots),
         JSON.stringify(decision.authorizedPathPatterns),
+        JSON.stringify(decision.authorizedDeleteTargets ?? []),
         JSON.stringify(decision.allowedTools),
         JSON.stringify(decision.allowedOperations),
         JSON.stringify(decision.allowedCommandPatterns),

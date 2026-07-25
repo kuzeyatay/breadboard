@@ -109,7 +109,7 @@ export async function cancelAuthorizedTerminalCommand(
 
 export interface TerminalAuthorization {
   allowed: boolean;
-  category: "inspect" | "git_read" | "verification" | "denied";
+  category: "inspect" | "git_read" | "verification" | "delete" | "denied";
   reason: string;
   workspaceRoot: string;
 }
@@ -125,6 +125,8 @@ export interface TerminalAuthorizationOptions {
    * paths are accepted only when they resolve inside one of these roots.
    */
   authorizedRoots?: readonly string[];
+  /** Exact server-resolved files this turn may delete. */
+  authorizedDeleteTargets?: readonly string[];
 }
 
 const SAFE_COMMANDS: Array<{
@@ -205,6 +207,23 @@ function safeReadPipeline(command: string): boolean {
     .every((stage) => SAFE_READ_PIPELINE_STAGES[1].test(stage));
 }
 
+function parsedExactDeleteTarget(command: string): string | null {
+  const powershell = command.match(
+    /^Remove-Item\s+(?:-Force\s+)?-LiteralPath\s+(?:'([^']+)'|"([^"$`]+)"|([^\s'"`;&|<>]+))(?:\s+-Force)?$/i,
+  );
+  if (powershell) return powershell[1] ?? powershell[2] ?? powershell[3] ?? null;
+  const posix = command.match(
+    /^rm\s+--\s+(?:'([^']+)'|"([^"$`]+)"|([^\s'"`;&|<>]+))$/,
+  );
+  return posix ? posix[1] ?? posix[2] ?? posix[3] ?? null : null;
+}
+
+function sameResolvedPath(left: string, right: string): boolean {
+  const a = resolvedRoot(left);
+  const b = resolvedRoot(right);
+  return Boolean(a && b && isWithinRoot(a, b) && isWithinRoot(b, a));
+}
+
 /**
  * Server-side command policy for the dedicated Terminal. It deliberately
  * rejects shell composition, paths outside the active grant, parent traversal,
@@ -224,6 +243,30 @@ export function authorizeTerminalCommand(
   const value = command.trim();
   if (value.length > MAX_COMMAND_LENGTH) {
     return { allowed: false, category: "denied", reason: "The command is too long.", workspaceRoot };
+  }
+  const deleteTarget = parsedExactDeleteTarget(value);
+  if (deleteTarget) {
+    const target = resolvedRoot(deleteTarget);
+    const exactTargets = options.authorizedDeleteTargets ?? [];
+    if (
+      !target ||
+      !path.isAbsolute(deleteTarget) ||
+      !roots.some((root) => isWithinRoot(root, target)) ||
+      !exactTargets.some((allowed) => sameResolvedPath(allowed, deleteTarget))
+    ) {
+      return {
+        allowed: false,
+        category: "denied",
+        reason: "Deletion is limited to the exact files confirmed for this turn.",
+        workspaceRoot,
+      };
+    }
+    return {
+      allowed: true,
+      category: "delete",
+      reason: "Authorized as an exact-file deletion confirmed for this turn.",
+      workspaceRoot,
+    };
   }
   if (/[\r\n;&<>`$%{}[\]()]/.test(value) || /@\(/.test(value)) {
     return {
@@ -307,6 +350,7 @@ export async function runAuthorizedTerminalCommand(
     signal?: AbortSignal;
     workspaceRoot?: string;
     authorizedRoots?: readonly string[];
+    authorizedDeleteTargets?: readonly string[];
   } = {},
 ): Promise<{
   command: string;

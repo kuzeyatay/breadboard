@@ -6,65 +6,65 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>Learning Map</title>
-    <link>https://localhost:8081/test2/learning/Learning-Map</link>
-    <guid>https://localhost:8081/test2/learning/Learning-Map</guid>
-    <description><![CDATA[ Learning Map Section Order Core Ideas and How They Work 1.1 Why Spiking Neural Networks Exist 1.2 Action Potentials and Spike Trains 1.3 Where SNN Efficiency Can Come From Describing Capacitive Membrane Current Formally 2.1 The Hodgkin-Huxley Membrane Model 2.2 The Leaky Integrate-and-Fire Neuron 2.... ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:59 GMT</pubDate>
+    <title>Communication 1</title>
+    <link>https://localhost:8081/communication-1/</link>
+    <guid>https://localhost:8081/communication-1/</guid>
+    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 1398 graph links. ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>Topic Overview</title>
-    <link>https://localhost:8081/test2/learning/Topic-Overview</link>
-    <guid>https://localhost:8081/test2/learning/Topic-Overview</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking neural networks, or SNNs, process information through discrete events called spikes. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:59 GMT</pubDate>
+    <title>Sources</title>
+    <link>https://localhost:8081/communication-1/sources/</link>
+    <guid>https://localhost:8081/communication-1/sources/</guid>
+    <description><![CDATA[ Sources Week 1 Lecture 1 Transcript Week 1 Lecture 1 Transcript - part2 Week 1 Lecture 2 Communications 1 Course Reader - Sampling, PAM, PCM, and Noise Digital and analog communication systems Communications 1 (5ETC0) Topic Map . ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>Spiking Neural Networks</title>
-    <link>https://localhost:8081/test2/learning/</link>
-    <guid>https://localhost:8081/test2/learning/</guid>
-    <description><![CDATA[ Spiking Neural Networks Spiking Neural Networks connects Topic Overview with 1. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:59 GMT</pubDate>
+    <title>Computer Architecture</title>
+    <link>https://localhost:8081/computer-architecture-2/</link>
+    <guid>https://localhost:8081/computer-architecture-2/</guid>
+    <description><![CDATA[ Learning garden with 2 source documents, 0 lesson pages, and 989 graph links. ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>1.1 Why Spiking Neural Networks Exist</title>
-    <link>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/1.1-Why-Spiking-Neural-Networks-Exist</link>
-    <guid>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/1.1-Why-Spiking-Neural-Networks-Exist</guid>
-    <description><![CDATA[ Why Spiking Neural Networks Exist Imagine a sensor watching a mostly still scene. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:06 GMT</pubDate>
+    <title>Sources</title>
+    <link>https://localhost:8081/computer-architecture-2/sources/</link>
+    <guid>https://localhost:8081/computer-architecture-2/sources/</guid>
+    <description><![CDATA[ Sources Computer Architecture-2 Memory Hierarchies and Cache Organization . ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>1.2 Action Potentials and Spike Trains</title>
-    <link>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/1.2-Action-Potentials-and-Spike-Trains</link>
-    <guid>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/1.2-Action-Potentials-and-Spike-Trains</guid>
-    <description><![CDATA[ Action Potentials and Spike Trains Discrete spike-based computation begins with a physical process that changes continuously. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:06 GMT</pubDate>
+    <title>Math 2</title>
+    <link>https://localhost:8081/math-2/</link>
+    <guid>https://localhost:8081/math-2/</guid>
+    <description><![CDATA[ Learning garden with 24 source documents, 0 lesson pages, and 0 graph links. ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>1.3 Where SNN Efficiency Can Come From</title>
-    <link>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/1.3-Where-SNN-Efficiency-Can-Come-From</link>
-    <guid>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/1.3-Where-SNN-Efficiency-Can-Come-From</guid>
-    <description><![CDATA[ Where SNN Efficiency Can Come From Once spikes are understood as timed events, sparse activity changes the way a network can perform its work. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:06 GMT</pubDate>
+    <title>Sources</title>
+    <link>https://localhost:8081/math-2/sources/</link>
+    <guid>https://localhost:8081/math-2/sources/</guid>
+    <description><![CDATA[ Sources 5EZB0_SC_week2-1 5EZB0_SC_week6 calculus-a-complete-course-10_compress Final_exam_2024 final_exam_2025 final-exam-for-5ezb0-math-2-exam-details-and-instructions lecture transcripts Math2 Midterm2026 Mathematics 2 - Lec 1-1 Mathematics 2 - Lec 10 Mathematics 2 - Lec 11 Mathematics 2 - Lec 12 ... ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>1. Core Ideas and How They Work</title>
-    <link>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/</link>
-    <guid>https://localhost:8081/test2/learning/1.-Core-Ideas-and-How-They-Work/</guid>
-    <description><![CDATA[ 1. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:06 GMT</pubDate>
+    <title>Physics for EE</title>
+    <link>https://localhost:8081/physics-for-ee/</link>
+    <guid>https://localhost:8081/physics-for-ee/</guid>
+    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 550 graph links. ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2.1 The Hodgkin-Huxley Membrane Model</title>
-    <link>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Membrane-Current-Formally/2.1-The-Hodgkin-Huxley-Membrane-Model</link>
-    <guid>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Membrane-Current-Formally/2.1-The-Hodgkin-Huxley-Membrane-Model</guid>
-    <description><![CDATA[ The Hodgkin-Huxley Membrane Model The phases of an action potential describe how membrane potential changes over time. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:06 GMT</pubDate>
+    <title>Sources</title>
+    <link>https://localhost:8081/physics-for-ee/sources/</link>
+    <guid>https://localhost:8081/physics-for-ee/sources/</guid>
+    <description><![CDATA[ Sources Standing Waves, Reflection, and Resonance on Strings Refraction, Fermat’s Principle, Apparent Images, and Total Internal Reflection Diffraction, Interference, and Course Feedback 981623_English Schrodinger Equation, Wave Functions, and Probability Interpretation Quantum Entanglement, Bell In... ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2.2 The Leaky Integrate-and-Fire Neuron</title>
-    <link>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Membrane-Current-Formally/2.2-The-Leaky-Integrate-and-Fire-Neuron</link>
-    <guid>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Membrane-Current-Formally/2.2-The-Leaky-Integrate-and-Fire-Neuron</guid>
-    <description><![CDATA[ The Leaky Integrate-and-Fire Neuron With membrane potential established as the neuron’s internal state and spikes established as discrete output events, imagine several incoming spikes arriving close together. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:06 GMT</pubDate>
+    <title>My garden</title>
+    <link>https://localhost:8081/private-library/user-1/</link>
+    <guid>https://localhost:8081/private-library/user-1/</guid>
+    <description><![CDATA[ All the gardens attached to your account. ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item><item>
-    <title>2.3 Optimization Objectives and Spiking Voltage Dynamics</title>
-    <link>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Membrane-Current-Formally/2.3-Optimization-Objectives-and-Spiking-Voltage-Dynamics</link>
-    <guid>https://localhost:8081/test2/learning/2.-Describing-Capacitive-Membrane-Current-Formally/2.3-Optimization-Objectives-and-Spiking-Voltage-Dynamics</guid>
-    <description><![CDATA[ Optimization Objectives and Spiking Voltage Dynamics A leaky integrate-and-fire neuron already gives us a voltage-like state that accumulates input, leaks over time, and can trigger a spike. ]]></description>
-    <pubDate>Sun, 19 Jul 2026 08:54:06 GMT</pubDate>
+    <title>Public garden</title>
+    <link>https://localhost:8081/public-library/</link>
+    <guid>https://localhost:8081/public-library/</guid>
+    <description><![CDATA[ Shared gardens ranked by popularity. ]]></description>
+    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item>
     </channel>
   </rss>

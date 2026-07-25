@@ -142,6 +142,7 @@ test("emits an unstreamed completion suffix before the terminal status", () => {
       payload: {
         text: "Hello world",
         status: "complete",
+        turn_id: "msg_turn-1",
         usage: { input: 3, output: 2 },
       },
     },
@@ -154,6 +155,8 @@ test("emits an unstreamed completion suffix before the terminal status", () => {
     ["assistant.delta", "assistant.completed", "session.status"],
   );
   assert.equal(events[0].payload.text, " world");
+  assert.equal(events[0].messageId, "msg_turn-1");
+  assert.equal(events[1].messageId, "msg_turn-1");
   assert.equal(events[2].payload.status, "idle");
 });
 

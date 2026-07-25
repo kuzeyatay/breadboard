@@ -61,6 +61,8 @@ export interface ResourceReference {
   value: string;
   /** True when a path reference is absolute (and therefore needs a grant). */
   absolute?: boolean;
+  /** Server-resolved resource shape used to scope a file to its parent grant. */
+  resourceType?: "file" | "directory";
 }
 
 export interface TaskPlan {
@@ -83,6 +85,11 @@ export interface TaskPlanInput {
   request: string;
   /** Prior user requests in the same task, oldest first, for continuation. */
   priorRequests?: string[];
+  /**
+   * Narrow resources resolved server-side from verified conversation evidence.
+   * These affect resource scoping only; they never add an intent/capability.
+   */
+  resolvedResources?: ResourceReference[];
   /** Whether an authenticated user owns this turn. */
   authenticated: boolean;
   /** Whether the surface may reach private user resources at all. */
@@ -250,7 +257,12 @@ function extractResources(text: string): ResourceReference[] {
     const absolute = /^(?:[A-Za-z]:[\\/]|\\\\|~[\\/])/.test(value);
     const hasExtension = /\.[A-Za-z0-9]{1,8}$/.test(value);
     if (!absolute && !hasExtension) continue;
-    push({ kind: "path", value, absolute });
+    push({
+      kind: "path",
+      value,
+      absolute,
+      ...(hasExtension ? { resourceType: "file" as const } : {}),
+    });
   }
   for (const match of withoutUrls.matchAll(KNOWN_FOLDER)) {
     const key = match[0].toLowerCase().replace(/\s+/g, " ");
@@ -258,11 +270,48 @@ function extractResources(text: string): ResourceReference[] {
       kind: "path",
       value: KNOWN_FOLDER_CANONICAL_NAMES[key] ?? key,
       absolute: false,
+      resourceType: "directory",
     });
   }
   for (const match of text.matchAll(FORMAT_TOKEN)) {
     push({ kind: "format", value: match[1].toLowerCase() });
   }
+  return out.slice(0, 40);
+}
+
+function mergeResources(
+  extracted: ResourceReference[],
+  resolved: readonly ResourceReference[],
+): ResourceReference[] {
+  const out: ResourceReference[] = [];
+  const seen = new Set<string>();
+  const push = (resource: ResourceReference) => {
+    const key = `${resource.kind}:${resource.value.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(resource);
+  };
+  // Server-verified references take the bounded slots before heuristic tokens
+  // extracted from the current sentence. A plural list must never lose its
+  // ninth target because an unrelated format/path token appeared first.
+  for (const resource of resolved.slice(0, 32)) {
+    if (
+      resource.kind !== "path" ||
+      resource.absolute !== true ||
+      !resource.value.trim() ||
+      resource.value.length > 2_048 ||
+      /[\u0000-\u001f\u007f]/.test(resource.value)
+    ) {
+      continue;
+    }
+    push({
+      kind: "path",
+      value: resource.value,
+      absolute: true,
+      resourceType: resource.resourceType,
+    });
+  }
+  for (const resource of extracted) push(resource);
   return out.slice(0, 40);
 }
 
@@ -383,16 +432,32 @@ function readSignals(text: string, resources: ResourceReference[]): Signals {
   const pathReference = resources.some((r) => r.kind === "path");
   const fileScope = FILE_OBJECT.test(text) || pathReference;
   const garden = GARDEN_OBJECT.test(text);
+  const fsMutate = FS_MUTATION_VERB.test(text);
+  const fsCreate = FS_CREATE_VERB.test(text);
+  const destructiveFs = DESTRUCTIVE_FS_VERB.test(text);
+  const convert = CONVERT_VERB.test(text);
+  const explicitContentProcessing =
+    convert ||
+    MEDIA_VERB.test(text) ||
+    /\b(?:summari[sz]e|transcribe|caption|subtitle|extract\s+(?:audio|text)|read|review|analy[sz]e)\b/i.test(text);
+  // An extension such as .mp4 or .pdf describes the file being moved/deleted;
+  // it does not by itself ask Breadboard to process the media/document. The
+  // previous broad object match turned a deletion into media processing plus
+  // an artifact write, producing alternating permission prompts.
+  const filesystemOnlyMutation =
+    (fsMutate || fsCreate || destructiveFs) && !explicitContentProcessing;
   return {
     inspect: INSPECT_VERB.test(text),
     search: SEARCH_VERB.test(text),
-    fsMutate: FS_MUTATION_VERB.test(text),
-    fsCreate: FS_CREATE_VERB.test(text),
-    destructiveFs: DESTRUCTIVE_FS_VERB.test(text),
+    fsMutate,
+    fsCreate,
+    destructiveFs,
     run: RUN_VERB.test(text),
-    convert: CONVERT_VERB.test(text),
-    documents: DOCUMENT_OBJECT.test(text),
-    media: MEDIA_OBJECT.test(text) || MEDIA_VERB.test(text),
+    convert,
+    documents: DOCUMENT_OBJECT.test(text) && !filesystemOnlyMutation,
+    media:
+      MEDIA_VERB.test(text) ||
+      (MEDIA_OBJECT.test(text) && !filesystemOnlyMutation),
     web:
       WEB_VERB.test(text) ||
       LIVE_WEATHER_QUERY.test(text) ||
@@ -434,7 +499,10 @@ export function planTask(input: TaskPlanInput): TaskPlan {
   // Continuation context is used for *goal* wording only, never to widen
   // capability: a prior turn cannot silently escalate the current one.
   const goal = raw || (input.priorRequests?.at(-1) ?? "").slice(0, 8_000);
-  const resources = extractResources(raw);
+  const resources = mergeResources(
+    extractResources(raw),
+    input.resolvedResources ?? [],
+  );
   const signals = readSignals(raw, resources);
 
   const capabilities = new Set<TaskCapability>(["conversation"]);

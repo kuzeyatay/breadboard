@@ -47,6 +47,11 @@ import {
   renderAgencyAgentPersona,
   type AgencyAgentDefinition,
 } from "../openharness/agency-agents.ts";
+import {
+  hasFilesystemReferenceIntent,
+  resolveVerifiedCrossChatFilesystemReferences,
+  resolveVerifiedFilesystemReferences,
+} from "./reference-resolution.ts";
 
 export interface ConversationSurfaceContext {
   activeGardenSlug?: string;
@@ -195,12 +200,46 @@ export async function startConversationTurn(
     activeGardenId: session.row.cluster_id,
     projectScopeId: "breadboard",
   });
+  const currentConversationMessages = memory.recentMessages.filter(
+    (message) => message.client_message_id !== input.clientMessageId,
+  );
+  let resolvedResources = resolveVerifiedFilesystemReferences(
+    input.text,
+    currentConversationMessages,
+  );
+  let referenceSource: "current_chat" | "cross_chat" | null =
+    resolvedResources.length > 0 ? "current_chat" : null;
+  if (resolvedResources.length === 0 && memory.crossConversation) {
+    resolvedResources = resolveVerifiedCrossChatFilesystemReferences(
+      input.text,
+      memory.crossConversation.messages,
+    );
+    if (resolvedResources.length > 0) referenceSource = "cross_chat";
+  }
+  if (resolvedResources.length > 0) {
+    annotateConversationTurn({
+      conversationId: input.conversation.id,
+      clientMessageId: input.clientMessageId,
+      metadata: {
+        resolvedFilesystemReferences: resolvedResources.map((resource) =>
+          resource.value),
+        resolvedFilesystemReferenceSource: referenceSource,
+        ...(referenceSource === "cross_chat" && memory.crossConversation
+          ? {
+              resolvedFilesystemSourceConversationId:
+                memory.crossConversation.publicId,
+            }
+          : {}),
+      },
+    });
+  }
   const prepared = prepareTurn({
     request: input.text,
     priorRequests: memory.recentMessages
       .filter((message) => message.role === "user" && message.client_message_id !== input.clientMessageId)
       .slice(-8)
       .map((message) => message.content),
+    resolvedResources,
     surface: input.surface,
     userId: input.conversation.user_id,
     grants: listFilesystemGrants(input.conversation.user_id),
@@ -212,8 +251,9 @@ export async function startConversationTurn(
       permission.kind === "filesystem" && !permission.path?.trim(),
   );
   if (prepared.blocked && missingFilesystemTarget) {
-    const message =
-      "Which folder should I inspect? Name a folder such as Downloads or Documents, or paste its full path.";
+    const message = hasFilesystemReferenceIntent(input.text)
+      ? "I couldn't identify exactly which verified file or files you mean. Name the file, its list number, or paste the full path; if it was in another chat, identify that chat explicitly."
+      : "Which folder should I inspect? Name a folder such as Downloads or Documents, or paste its full path.";
     markStatus(session, "idle");
     completeAssistantMessage({
       conversationId: input.conversation.id,
@@ -368,6 +408,7 @@ export async function startConversationTurn(
     decision,
     additional: [
       composeMemoryContext(memory),
+      renderResolvedFilesystemContext(resolvedResources, referenceSource),
       authorizedGardenContext(input.conversation.user_id, session.row.garden_id),
       renderSurfaceContext(input.surface, context),
     ].filter(Boolean).join("\n\n"),
@@ -381,6 +422,9 @@ export async function startConversationTurn(
     dispatch: {
       conversationPublicId: input.conversation.public_id,
       clientMessageId: input.clientMessageId,
+      runtimeText:
+        resolved.text ||
+        "Acknowledge the persona selection briefly and ask how you can help.",
       model: engine.model,
       variant: engine.variant,
       tools,
@@ -396,7 +440,9 @@ export async function startConversationTurn(
       workspaceKey: target.workspaceKey,
       directory: target.activeDirectory,
       agentName: target.agentName,
-      text: resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
+      text:
+        resolved.text ||
+        "Acknowledge the persona selection briefly and ask how you can help.",
       attachments: input.attachments,
       tools,
       model: engine.model,
@@ -459,6 +505,31 @@ export async function startConversationTurn(
     replayed: !reservation.isNew,
     capability: { mode: decision.mode, expiresAt: decision.expiresAt, decisionId: storedDecision.id },
   };
+}
+
+function renderResolvedFilesystemContext(
+  resources: readonly { value: string; resourceType?: "file" | "directory" }[],
+  source: "current_chat" | "cross_chat" | null,
+): string {
+  if (resources.length === 0) return "";
+  const targets = resources.map((resource) => resource.value);
+  const destructiveInstructions = targets.every((target) =>
+    resources.find((resource) => resource.value === target)?.resourceType === "file")
+    ? [
+        "For a deletion request, these are the complete candidate files after applying the user's selections and exclusions.",
+        "Never delete, move, rename, or overwrite a path outside this exact list.",
+        process.platform === "win32"
+          ? "Delete one approved file per terminal call with Remove-Item -LiteralPath '<exact path>'."
+          : "Delete one approved file per terminal call with rm -- '<exact path>'.",
+      ]
+    : [];
+  return [
+    "# server_resolved_filesystem_scope",
+    `Reference source: ${source ?? "server"}`,
+    ...targets.map((target) => `- ${target}`),
+    "These paths are server-resolved context, not authority; the active capability grant remains mandatory.",
+    ...destructiveInstructions,
+  ].join("\n");
 }
 
 function normalizeSurfaceContext(value: ConversationSurfaceContext | undefined): ConversationSurfaceContext {

@@ -1,21 +1,21 @@
 ---
 title: "Computer Architecture"
-date: "2026-07-17"
-description: "Learning garden with 0 source documents, 0 lesson pages, and 672 graph links."
+date: "2026-07-25"
+description: "Learning garden with 2 source documents, 0 lesson pages, and 989 graph links."
 knowledge_type: "cluster-index"
 ---
 
 ## Garden overview
 
-This learning garden is organized from 0 source documents into a sequence of linked lessons. It currently contains 0 lesson pages, 672 graph links, and 70369 indexed words.
+This learning garden is organized from 2 source documents into a sequence of linked lessons. It currently contains 0 lesson pages, 989 graph links, and 113615 indexed words.
 
-Start with the Topic Overview, then follow the numbered sections in order.
+No lessons yet.
 
-Last updated: 2026-07-17.
+Last updated: 2026-07-25.
 
 ## Learning
 
-- [[learning/Topic Overview|Topic Overview]]
+- No lessons yet.
 
 ## Sources
 

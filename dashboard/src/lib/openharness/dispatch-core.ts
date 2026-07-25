@@ -23,6 +23,7 @@ import type { CapabilityDecision } from "./capability-policy.ts";
 export interface PrepareTurnInput {
   request: string;
   priorRequests?: string[];
+  resolvedResources?: TaskPlan["requiredResources"];
   surface: OpenHarnessSurface;
   userId: number | null;
   grants: readonly ApprovedFilesystemRoot[];
@@ -50,6 +51,7 @@ export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
   const plan = planTask({
     request: input.request,
     priorRequests: input.priorRequests,
+    resolvedResources: input.resolvedResources,
     authenticated: input.userId !== null,
     isolated,
   });
@@ -66,7 +68,14 @@ export function prepareTurn(input: PrepareTurnInput): PreparedTurn {
     plan,
     grant,
     decision: decisionForGrant(grant, input.workspaceRoot),
-    blocked: !grant.executable,
+    // A verified reference means the relevant file was already identified in
+    // the preceding turn. Pause for every missing filesystem grant instead of
+    // dispatching an under-authorized runtime merely to inspect it again.
+    blocked:
+      !grant.executable ||
+      (Boolean(input.resolvedResources?.length) &&
+        grant.pendingPermissions.some((permission) =>
+          permission.kind === "filesystem")),
     pendingPermissions: grant.pendingPermissions,
   };
 }
@@ -111,6 +120,14 @@ export function decisionForGrant(
     authorizedPathPatterns: grant.permissionRules
       .filter((rule) => rule.action === "allow" && rule.permission === "read")
       .map((rule) => rule.pattern),
+    authorizedDeleteTargets: capabilities.has("destructive_filesystem")
+      ? grant.plan.requiredResources
+          .filter((resource) =>
+            resource.kind === "path" &&
+            resource.absolute === true &&
+            resource.resourceType === "file")
+          .map((resource) => resource.value)
+      : [],
     allowedTools: Object.entries(grant.allowedTools)
       .filter(([, enabled]) => enabled)
       .map(([tool]) => tool),
@@ -169,6 +186,7 @@ export function leastPrivilegeDecision(
     decisionSource: "breadboard_server_policy_v1",
     authorizedRoots: [workspaceRoot],
     authorizedPathPatterns: [],
+    authorizedDeleteTargets: [],
     allowedTools: [],
     allowedOperations: [],
     allowedCommandPatterns: [],

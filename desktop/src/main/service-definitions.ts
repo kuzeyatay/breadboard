@@ -44,6 +44,32 @@ export function resolveRuntimeBinaries(paths: ResolvedPaths): RuntimeBinaries {
   };
 }
 
+/**
+ * Hermes needs its own interpreter in dev.
+ *
+ * Packaged builds ship a CPython that already has the pinned Hermes wheel
+ * installed. In dev the system `python.exe` has ChatMock's dependencies but not
+ * Hermes's, so `-m hermes_cli.main` died on import (`No module named 'yaml'`)
+ * and the supervisor reported the runtime as unavailable while everything else
+ * looked healthy. Prefer the checkout's virtualenv, which is what
+ * scripts/start-hermes.mjs uses; HERMES_PYTHON overrides both.
+ */
+export function resolveHermesPython(
+  paths: ResolvedPaths,
+  binaries: RuntimeBinaries,
+): string {
+  if (paths.mode !== "dev") return binaries.python;
+  const override = process.env["HERMES_PYTHON"]?.trim();
+  if (override) return override;
+  const venv = path.join(
+    paths.hermesAppDir,
+    ".venv",
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
+  return fs.existsSync(venv) ? venv : binaries.python;
+}
+
 export interface MissingRuntime {
   runtime: keyof RuntimeBinaries;
   path: string;
@@ -273,7 +299,8 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     // Breadboard features unusable. Agent API routes report the existing
     // sanitized runtime-unavailable error while the bounded supervisor retries.
     required: false,
-    command: binaries.python,
+    // Dev uses the hermes-agent virtualenv; packaged uses the bundled CPython.
+    command: resolveHermesPython(paths, binaries),
     args: [
       "-m",
       "hermes_cli.main",
@@ -380,7 +407,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       PORT: String(config.ports.dashboard),
       HOSTNAME: "127.0.0.1",
       // --- Data + content locations (single source of truth: path-resolver) ---
-      BREADBOARD_DATA_DIR: paths.dataRoot === paths.appRoot ? path.join(paths.appRoot, "dashboard") : paths.dataRoot,
+      // An empty override in dev preserves the dashboard's historical
+      // `<repo>/dashboard/db` layout. A configured BREADBOARD_DATA_DIR opts the
+      // dashboard into the packaged `<data>/database` layout, so pointing it at
+      // `<repo>/dashboard` would silently create `<repo>/dashboard/database`.
+      // Explicitly clear it to prevent an inherited shell value doing the same.
+      BREADBOARD_DATA_DIR: paths.mode === "packaged" ? paths.dataRoot : "",
       BREADBOARD_REPO_ROOT: paths.appRoot,
       QUARTZ_CONTENT_PATH: paths.quartzContent,
       NEXT_PUBLIC_QUARTZ_URL: urls.quartz,

@@ -58,6 +58,13 @@ interface Props {
   onQueueSteer?: (text: string) => void;
   onStop?: () => void;
   permissionPending?: boolean;
+  /**
+   * Active Agent TARS (browser operator). When set, a chip shows in the composer
+   * and the host routes sends to a browser run instead of the chat model.
+   */
+  browserAgent?: { id: string; name: string } | null;
+  onClearBrowserAgent?: () => void;
+  onSelectBrowserAgent?: () => void;
 }
 
 const EFFORT_OPTIONS: Array<{
@@ -132,9 +139,12 @@ export default function AssistantComposer({
   onQueueSteer,
   onStop,
   permissionPending = false,
+  browserAgent,
+  onClearBrowserAgent,
+  onSelectBrowserAgent,
 }: Props) {
   const [showIntelligence, setShowIntelligence] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [intelligencePanel, setIntelligencePanel] = useState<'usage' | 'settings' | null>(null);
   const [showCommandHub, setShowCommandHub] = useState(false);
   const [activeAgencyAgent, setActiveAgencyAgent] = useState<ActiveAgencyAgent | null>(null);
   const [agencyAgentNotice, setAgencyAgentNotice] = useState<string | null>(null);
@@ -153,9 +163,13 @@ export default function AssistantComposer({
     runState === 'waiting_for_permission' ||
     runState === 'steering' ||
     runState === 'stopping';
-  const composerDisabled = disabled || runState === 'stopping';
+  // Runtime availability controls actions, not drafting. Keeping the textarea
+  // editable means a transient runtime health check never eats or blocks the
+  // user's next message.
+  const sessionActionsDisabled = disabled || runState === 'stopping';
   const canQueueSteer =
     activeRun &&
+    !disabled &&
     canSubmit &&
     Boolean(onQueueSteer) &&
     runState !== 'steering' &&
@@ -211,7 +225,13 @@ export default function AssistantComposer({
   function toggleIntelligence() {
     const next = !showIntelligence;
     setShowIntelligence(next);
+    if (!next) setIntelligencePanel(null);
     if (next) onLoadModels?.();
+  }
+
+  function closeIntelligence() {
+    setShowIntelligence(false);
+    setIntelligencePanel(null);
   }
 
   function assignTextareaRef(node: HTMLTextAreaElement | null) {
@@ -283,6 +303,33 @@ export default function AssistantComposer({
             ))}
           </div>
         ) : null}
+        {browserAgent ? (
+          <div className="flex items-center px-2 pb-1.5 pt-0.5">
+            <span
+              className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--paper-surface)] px-2 py-1 text-[10px] text-[var(--ink-muted)]"
+              title={`${browserAgent.name} · browser operator`}
+            >
+              <span aria-hidden>🌐</span>
+              <span className="truncate">
+                <span className="font-medium text-[var(--ink)]">{browserAgent.name}</span>
+                <span className="hidden sm:inline"> · browser operator</span>
+              </span>
+              {onClearBrowserAgent ? (
+                <button
+                  type="button"
+                  onClick={() => onClearBrowserAgent()}
+                  className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-strong)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--botanical)]"
+                  aria-label={`Clear ${browserAgent.name}`}
+                  title="Clear Agent TARS"
+                >
+                  <svg aria-hidden className="h-2.5 w-2.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path strokeLinecap="round" d="m3 3 6 6m0-6-6 6" />
+                  </svg>
+                </button>
+              ) : null}
+            </span>
+          </div>
+        ) : null}
         {activeAgencyAgent ? (
           <div className="flex items-center px-2 pb-1.5 pt-0.5">
             <span
@@ -317,7 +364,8 @@ export default function AssistantComposer({
             open={showCommandHub}
             onOpenChange={setShowCommandHub}
             onSelect={insertCommand}
-            disabled={composerDisabled}
+            onSelectBrowserAgent={onSelectBrowserAgent}
+            disabled={sessionActionsDisabled}
             compact={compact}
             sessionId={capabilitySessionId}
             surface={capabilitySurface}
@@ -328,7 +376,7 @@ export default function AssistantComposer({
             <button
               type="button"
               onClick={onAddDocuments}
-              disabled={composerDisabled || isAddingDocuments}
+              disabled={sessionActionsDisabled || isAddingDocuments}
               className={`neu-button-icon flex shrink-0 items-center justify-center rounded-full text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:opacity-40 ${compact ? 'h-9 w-9' : 'h-11 w-11'}`}
               title="Add documents"
               aria-label="Add documents"
@@ -414,7 +462,6 @@ export default function AssistantComposer({
                     }}
                     rows={1}
                     placeholder={placeholder}
-                    disabled={composerDisabled}
                     className={`block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-0 outline-none placeholder:text-[var(--ink-muted)] disabled:opacity-50 ${commandSplit ? 'text-transparent caret-[var(--ink)]' : 'text-[var(--ink)]'} ${compact ? 'min-h-5 text-sm leading-5' : 'min-h-6 text-[15px] leading-6'}`}
                     style={textareaStyle}
                   />
@@ -426,15 +473,10 @@ export default function AssistantComposer({
           <div className="relative shrink-0 self-end">
             <button
               type="button"
-              onClick={() => {
-                if (!activeRun) toggleIntelligence();
-              }}
+              onClick={toggleIntelligence}
               className={`neu-button flex items-center gap-1.5 rounded-full bg-[var(--paper-strong)] text-[var(--ink)] transition hover:bg-[var(--paper-bg)] ${compact ? 'h-9 px-2.5 text-xs' : 'h-11 px-3.5 text-sm'}`}
-              title={activeRun
-                ? `${selectedEffort.label} reasoning (available when this response finishes)`
-                : `${selectedEffort.label} reasoning · ${formatAssistantModelName(model)}`}
-              aria-expanded={!activeRun && showIntelligence}
-              aria-disabled={activeRun}
+              title={`${selectedEffort.label} reasoning · ${formatAssistantModelName(model)}${activeRun ? ' (changes apply to the next message)' : ''}`}
+              aria-expanded={showIntelligence}
             >
               <span>{selectedEffort.label}</span>
               <svg className="h-3.5 w-3.5 text-[var(--ink-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -442,12 +484,12 @@ export default function AssistantComposer({
               </svg>
             </button>
 
-            {showIntelligence && !activeRun ? (
+            {showIntelligence ? (
               <>
                 <button
                   type="button"
                   className="fixed inset-0 z-30 cursor-default"
-                  onClick={() => setShowIntelligence(false)}
+                  onClick={closeIntelligence}
                   aria-label="Close intelligence menu"
                 />
                 <div className="neu-popover absolute bottom-full right-0 z-40 mb-2 w-64 rounded-2xl border border-[var(--line)] bg-[var(--paper-raised)] p-2 text-sm">
@@ -458,7 +500,6 @@ export default function AssistantComposer({
                       type="button"
                       onClick={() => {
                         onReasoningEffortChange(option.value);
-                        setShowIntelligence(false);
                       }}
                         className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${option.value === reasoningEffort ? 'neu-selected bg-[var(--paper-surface)] text-[var(--ink-heading)]' : 'text-[var(--ink)]'}`}
                     >
@@ -482,7 +523,6 @@ export default function AssistantComposer({
                         type="button"
                         onClick={() => {
                           onModelChange(item);
-                          setShowIntelligence(false);
                         }}
                         className={`flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-[var(--paper-strong)] ${item === model ? 'neu-selected bg-[var(--paper-surface)] text-[var(--ink-heading)]' : 'text-[var(--ink)]'}`}
                       >
@@ -518,6 +558,9 @@ export default function AssistantComposer({
 
                   <div className="my-1.5 border-t border-[var(--line)]" />
                   <UsageLimitsPopover
+                    open={intelligencePanel === 'usage'}
+                    onOpenChange={(open) => setIntelligencePanel(open ? 'usage' : null)}
+                    showBackdrop={false}
                     buttonClassName="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition"
                     activeButtonClassName="bg-[var(--paper-surface)] text-[var(--botanical)]"
                     inactiveButtonClassName="text-[var(--ink)] hover:bg-[var(--paper-strong)]"
@@ -527,11 +570,9 @@ export default function AssistantComposer({
 
                   <button
                     type="button"
-                    onClick={() => {
-                      setShowIntelligence(false);
-                      setShowSettings(true);
-                    }}
-                    className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
+                    onClick={() => setIntelligencePanel((current) => current === 'settings' ? null : 'settings')}
+                    aria-expanded={intelligencePanel === 'settings'}
+                    className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition ${intelligencePanel === 'settings' ? 'bg-[var(--paper-surface)] text-[var(--botanical)]' : 'text-[var(--ink)] hover:bg-[var(--paper-strong)]'}`}
                   >
                     <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                       <path
@@ -543,6 +584,12 @@ export default function AssistantComposer({
                     </svg>
                     Settings
                   </button>
+                  {intelligencePanel === 'settings' ? (
+                    <SettingsDialog
+                      presentation="popover"
+                      onClose={() => setIntelligencePanel(null)}
+                    />
+                  ) : null}
                 </div>
               </>
             ) : null}
@@ -591,7 +638,6 @@ export default function AssistantComposer({
           </div>
         ) : null}
       </div>
-      {showSettings ? <SettingsDialog onClose={() => setShowSettings(false)} /> : null}
     </div>
   );
 }

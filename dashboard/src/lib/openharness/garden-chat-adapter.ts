@@ -36,6 +36,7 @@ import {
 } from "./dispatch-core.ts";
 import { listFilesystemGrants } from "./filesystem-grant-store.ts";
 import { beginRuntimeRun, finishRuntimeRun } from "./run-store.ts";
+import { openHarnessMessageId } from "./message-id.ts";
 import {
   getConversationById,
   getConversationForLegacyChatSession,
@@ -243,20 +244,31 @@ export async function openGardenAgentChat(
       system: runSystem,
     },
   });
-  return legacyGardenEventStream(session, signal, prepared, run.id, () =>
+  const runtimeText =
+    resolved.text ||
+    "Acknowledge the persona selection briefly and ask how you can help.";
+  const runtimeMessageId = openHarnessMessageId(run.id);
+  return legacyGardenEventStream(
+    session,
+    signal,
+    prepared,
+    run.id,
+    { messageId: runtimeMessageId, instruction: runtimeText },
+    () =>
     runtime.startRun({
       externalSessionId: session.externalSessionId,
       liveSessionId: session.liveSessionId,
       workspaceKey: session.workspaceKey,
       directory: session.activeDirectory,
       agentName: session.agentName,
-      text: resolved.text || "Acknowledge the persona selection briefly and ask how you can help.",
+      text: runtimeText,
       // The brokered map is authoritative. A selected MCP/skill tool may only
       // narrow it, never widen it.
       tools: runTools,
       model: engine.model,
       variant: engine.variant,
       system: runSystem,
+      messageId: runtimeMessageId,
     }),
   );
 }
@@ -347,6 +359,7 @@ function legacyGardenEventStream(
   requestSignal: AbortSignal,
   prepared: PreparedTurn,
   runId: string,
+  turnReference: { messageId: string; instruction: string },
   sendMessage: () => Promise<void>,
 ): Response {
   const runtime = getAgentRuntimeByKind(session.runtimeKind);
@@ -451,6 +464,7 @@ function legacyGardenEventStream(
               liveSessionId: session.liveSessionId,
               workspaceKey: session.workspaceKey,
               directory: session.activeDirectory,
+              ...turnReference,
             },
             controller.signal,
             connected,

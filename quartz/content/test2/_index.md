@@ -1,17 +1,17 @@
 ---
 title: "test2"
-date: "2026-07-19"
+date: "2026-07-25"
 description: "Learning garden with 1 source document, 21 lesson pages, and 42 graph links."
 knowledge_type: "cluster-index"
 ---
 
 ## Garden overview
 
-This learning garden is organized from 1 source document into a sequence of linked lessons. It currently contains 21 lesson pages, 42 graph links, and 36983 indexed words.
+This learning garden is organized from 1 source document into a sequence of linked lessons. It currently contains 21 lesson pages, 42 graph links, and 37084 indexed words.
 
 Start with the Topic Overview, then follow the numbered sections in order.
 
-Last updated: 2026-07-19.
+Last updated: 2026-07-25.
 
 ## Learning
 

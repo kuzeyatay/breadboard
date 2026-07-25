@@ -104,6 +104,55 @@ test("different conversations never receive each other's transcript", () => {
     projectScopeId: "breadboard",
   });
   assert.doesNotMatch(bundle.recentMessages.map((message) => message.content).join("\n"), /Aurora/);
+  assert.equal(bundle.crossConversation, null);
+});
+
+test("an explicit previous-chat reference loads one bounded same-user transcript", () => {
+  const source = conversation(1, "Downloads inventory");
+  finishTurn(
+    source,
+    "source-downloads-01",
+    "dashboard_terminal",
+    "List my largest downloads.",
+    "Demo_Team14.mp4 was in the verified list.",
+  );
+  const unrelated = conversation(1, "Unrelated recipes");
+  finishTurn(unrelated, "source-recipe-001", "dashboard_terminal", "Discuss soup.", "Use carrots.");
+  const current = conversation(1, "Current");
+
+  const bundle = memory.loadConversationMemoryBundle({
+    conversation: current,
+    query: "In another chat, what did we say about Demo_Team14.mp4?",
+    projectScopeId: "breadboard",
+  });
+  assert.equal(bundle.crossConversation?.conversationId, source.id);
+  assert.match(
+    bundle.crossConversation.messages.map((message) => message.content).join("\n"),
+    /Demo_Team14/,
+  );
+  assert.match(memory.composeMemoryContext(bundle), /explicitly_requested_cross_chat_context/);
+});
+
+test("ambiguous or foreign-user cross-chat history is not loaded", () => {
+  const first = conversation(1, "First matching chat");
+  finishTurn(first, "same-subject-0001", "dashboard_terminal", "Discuss Falcon.", "Falcon notes.");
+  const second = conversation(1, "Second matching chat");
+  finishTurn(second, "same-subject-0002", "dashboard_terminal", "Discuss Falcon.", "More Falcon notes.");
+  const foreign = conversation(2, "Private foreign chat");
+  finishTurn(foreign, "foreign-secret-01", "dashboard_terminal", "Discuss SecretFalcon.", "Foreign only.");
+  const current = conversation(1, "Current");
+  const bundle = memory.loadConversationMemoryBundle({
+    conversation: current,
+    query: "Use the Falcon details from another chat.",
+    projectScopeId: "breadboard",
+  });
+  assert.equal(bundle.crossConversation, null);
+  const previous = memory.loadConversationMemoryBundle({
+    conversation: current,
+    query: "Summarize the previous chat.",
+    projectScopeId: "breadboard",
+  });
+  assert.notEqual(previous.crossConversation?.conversationId, foreign.id);
 });
 
 test("durable memory is weak, selective, and current-chat text wins", () => {
@@ -283,6 +332,49 @@ test("one runtime is bound per conversation and active context is replaced", () 
   });
   assert.equal(terminal.garden_id, null);
   assert.equal(terminal.page_slug, null);
+});
+
+test("exact delete targets survive capability-decision persistence", () => {
+  const chat = conversation(1, "Delete scope");
+  const session = runtime.createRuntimeSession({
+    conversationId: chat.id,
+    surface: "dashboard_terminal",
+    userId: 1,
+    chatSessionId: null,
+    agentName: "breadboard-assistant",
+    clusterId: null,
+    gardenId: null,
+    pageSlug: null,
+    allowedGardenIds: [],
+    workspaceKey: "conversations/delete-scope",
+    activeDirectory: dataRoot,
+    filesystemMode: "restricted",
+    openHarnessSessionId: "oh-delete-scope",
+  });
+  const target = path.join(dataRoot, "target.txt");
+  const stored = runtime.persistCapabilityDecision(session.id, {
+    mode: "scoped_implementation",
+    requestedOutcome: "Delete the confirmed file.",
+    implementationRequired: false,
+    decisionReason: "Exact target was verified.",
+    decisionSource: "breadboard_server_policy_v1",
+    authorizedRoots: [dataRoot],
+    authorizedPathPatterns: [`${dataRoot}/**`],
+    authorizedDeleteTargets: [target],
+    allowedTools: ["terminal_execute_command"],
+    allowedOperations: [],
+    allowedCommandPatterns: [],
+    selectedConditionalSkills: [],
+    selectedConnections: [],
+    createdAt: new Date().toISOString(),
+    expiresAt: null,
+    revokedAt: null,
+  });
+  assert.deepEqual(stored.authorizedDeleteTargets, [target]);
+  assert.deepEqual(
+    runtime.getActiveCapabilityDecision(session.id)?.authorizedDeleteTargets,
+    [target],
+  );
 });
 
 test("ownership is indistinguishable from a missing opaque id", () => {

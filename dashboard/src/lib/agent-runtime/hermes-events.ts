@@ -113,6 +113,7 @@ export function normalizeHermesEvent(
   if (raw.session_id && raw.session_id !== liveSessionId) return [];
   const payload = isRecord(raw.payload) ? raw.payload : {};
   const timestamp = now();
+  const messageId = asString(payload.turn_id);
 
   switch (raw.type) {
     case "message.start":
@@ -131,6 +132,7 @@ export function normalizeHermesEvent(
       return [{
         type: "assistant.delta",
         sessionId: publicSessionId,
+        ...(messageId ? { messageId } : {}),
         timestamp,
         payload: { text },
       }];
@@ -253,6 +255,7 @@ export function normalizeHermesEvent(
           events.push({
             type: "assistant.delta",
             sessionId: publicSessionId,
+            ...(messageId ? { messageId } : {}),
             timestamp,
             payload: { text: residual },
           });
@@ -261,6 +264,7 @@ export function normalizeHermesEvent(
       events.push({
         type: "assistant.completed",
         sessionId: publicSessionId,
+        ...(messageId ? { messageId } : {}),
         timestamp,
         payload: {
           usage: payload.usage,

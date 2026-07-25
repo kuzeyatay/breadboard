@@ -38,6 +38,7 @@ export function composeOpenHarnessSystemPrompt(input: {
       `Implementation required: ${decision.implementationRequired ? "yes" : "no"}`,
       `Authorized roots: ${decision.authorizedRoots.join(", ") || "none"}`,
       `Authorized path patterns: ${decision.authorizedPathPatterns.join(", ") || "none"}`,
+      `Exact delete targets: ${decision.authorizedDeleteTargets?.join(", ") || "none"}`,
       `Allowed operations: ${decision.allowedOperations.join(", ") || "knowledge_work"}`,
       `Allowed command patterns: ${decision.allowedCommandPatterns.join(", ") || "none"}`,
       `Expires at: ${decision.expiresAt ?? "end of knowledge turn"}`,

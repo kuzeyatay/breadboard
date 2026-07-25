@@ -105,6 +105,19 @@ export interface RuntimeSessionReference {
   liveSessionId?: string;
   workspaceKey: string;
   directory?: string;
+  /** Durable Breadboard identity for the active turn, when one exists. */
+  messageId?: string;
+  /** Exact runtime prompt used to correlate a recovered durable result. */
+  instruction?: string;
+  /**
+   * Resolve a turn that may be created after the event stream connects.
+   * Dashboard and Garden streams deliberately connect before submitting the
+   * prompt, so a captured messageId would otherwise remain empty forever.
+   */
+  resolveActiveTurn?: () => {
+    messageId?: string;
+    instruction?: string;
+  };
 }
 
 /**

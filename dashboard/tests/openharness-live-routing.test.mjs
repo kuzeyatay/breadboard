@@ -112,6 +112,9 @@ test("terminal session hook restores a Breadboard session after refresh and abor
     "dashboard/src/app/components/openharness/dashboard-agent-terminal.tsx",
   );
   assert.match(terminal, /session\.send\(text, \{ model, reasoningEffort \}\)/);
+  const eventStream = read("dashboard/src/lib/openharness/event-stream.ts");
+  assert.match(eventStream, /streamRun \?\?= getActiveRuntimeRun\(session\.row\.id\)/);
+  assert.match(eventStream, /resolveActiveTurn: activeRunReference/);
 });
 
 test("Terminal navbar uses only the runtime health dot, without status badges", () => {

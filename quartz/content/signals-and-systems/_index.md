@@ -1,6 +1,6 @@
 ---
 title: "Signals and systems"
-date: "2026-07-17"
+date: "2026-07-25"
 description: "Learning garden with 2 source documents, 0 lesson pages, and 680 graph links."
 knowledge_type: "cluster-index"
 ---
@@ -9,13 +9,13 @@ knowledge_type: "cluster-index"
 
 This learning garden is organized from 2 source documents into a sequence of linked lessons. It currently contains 0 lesson pages, 680 graph links, and 296320 indexed words.
 
-Start with the Topic Overview, then follow the numbered sections in order.
+No lessons yet.
 
-Last updated: 2026-07-17.
+Last updated: 2026-07-25.
 
 ## Learning
 
-- [[learning/Topic Overview|Topic Overview]]
+- No lessons yet.
 
 ## Sources
 

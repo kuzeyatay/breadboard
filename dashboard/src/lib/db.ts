@@ -280,6 +280,7 @@ db.exec(`
     decision_source             TEXT NOT NULL,
     authorized_roots            TEXT NOT NULL DEFAULT '[]',
     authorized_path_patterns    TEXT NOT NULL DEFAULT '[]',
+    authorized_delete_targets   TEXT NOT NULL DEFAULT '[]',
     allowed_tools               TEXT NOT NULL DEFAULT '[]',
     allowed_operations          TEXT NOT NULL DEFAULT '[]',
     allowed_command_patterns    TEXT NOT NULL DEFAULT '[]',
@@ -523,6 +524,11 @@ ensureColumn(
   "openharness_capability_decisions",
   "authorized_path_patterns",
   "authorized_path_patterns TEXT NOT NULL DEFAULT '[]'",
+);
+ensureColumn(
+  "openharness_capability_decisions",
+  "authorized_delete_targets",
+  "authorized_delete_targets TEXT NOT NULL DEFAULT '[]'",
 );
 ensureColumn(
   "openharness_capability_decisions",
