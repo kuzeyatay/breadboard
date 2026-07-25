@@ -28,6 +28,8 @@ export interface CapabilityDecision {
   decisionSource: "breadboard_server_policy_v1";
   authorizedRoots: string[];
   authorizedPathPatterns: string[];
+  /** Exact files this turn may delete; folder grants alone never populate it. */
+  authorizedDeleteTargets?: string[];
   allowedTools: string[];
   allowedOperations: CapabilityOperation[];
   allowedCommandPatterns: string[];

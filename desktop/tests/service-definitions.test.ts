@@ -1,9 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildServiceDefinitions, serviceUrls } from "../src/main/service-definitions";
-import { resolvePaths } from "../src/main/path-resolver";
+import {
+  buildServiceDefinitions,
+  resolveHermesPython,
+  serviceUrls,
+} from "../src/main/service-definitions";
+import { resolvePaths, type ResolvedPaths } from "../src/main/path-resolver";
 import { defaultPersistentConfig, type DesktopRuntimeConfig } from "../src/main/runtime-config";
 
 function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof defaultPersistentConfig>> = {}) {
@@ -30,7 +35,7 @@ function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof 
     bun: "C:/rt/bun.exe",
     python: "C:/rt/python.exe",
   };
-  return { paths, config, definitions: buildServiceDefinitions({ paths, config, binaries }) };
+  return { paths, config, binaries, definitions: buildServiceDefinitions({ paths, config, binaries }) };
 }
 
 test("all service URLs bind loopback only", () => {
@@ -63,6 +68,24 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   // No default/dev secrets.
   assert.notEqual(dashboard.env["OPENHARNESS_PASSWORD"], "breadboard-local-dev");
   assert.notEqual(dashboard.env["NEXTAUTH_SECRET"], "change-me");
+});
+
+test("dev dashboard retains the historical dashboard/db data layout", () => {
+  const packaged = fixture("packaged");
+  const devPaths = {
+    ...packaged.paths,
+    mode: "dev" as const,
+    dataRoot: packaged.paths.appRoot,
+  };
+  const definitions = buildServiceDefinitions({
+    paths: devPaths,
+    config: packaged.config,
+    binaries: packaged.binaries,
+  });
+  const dashboard = definitions.find((definition) => definition.id === "dashboard");
+  assert.ok(dashboard);
+  assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], "");
+  assert.equal(dashboard.env["NODE_ENV"], "development");
 });
 
 test("dashboard explicitly receives a configured Agency Agents checkout", () => {
@@ -104,6 +127,42 @@ test("legacy mode omits OpenHarness entirely and dashboard adapts", () => {
   assert.ok(dashboard);
   assert.equal(dashboard.env["OPENHARNESS_ENABLED"], "false");
   assert.deepEqual(dashboard.dependsOn, ["chatmock", "quartz"]);
+});
+
+test("dev Hermes runs on the checkout virtualenv, packaged on the bundled runtime", () => {
+  // The system python has ChatMock's dependencies but not Hermes's, so dev
+  // startup died with `No module named 'yaml'` and the runtime looked
+  // unavailable while every other service was healthy.
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-hermes-python-"));
+  const savedOverride = process.env["HERMES_PYTHON"];
+  delete process.env["HERMES_PYTHON"];
+  try {
+    const hermesAppDir = path.join(repoRoot, "hermes-agent");
+    const binaries = { node: "node.exe", bun: "bun.exe", python: "python.exe" };
+    const devPaths = { mode: "dev", hermesAppDir } as ResolvedPaths;
+
+    // No virtualenv yet: fall back rather than pointing at a missing file.
+    assert.equal(resolveHermesPython(devPaths, binaries), "python.exe");
+
+    const scripts = path.join(hermesAppDir, ".venv", process.platform === "win32" ? "Scripts" : "bin");
+    fs.mkdirSync(scripts, { recursive: true });
+    const venvPython = path.join(scripts, process.platform === "win32" ? "python.exe" : "python");
+    fs.writeFileSync(venvPython, "");
+    assert.equal(resolveHermesPython(devPaths, binaries), venvPython);
+
+    process.env["HERMES_PYTHON"] = "C:/custom/python.exe";
+    assert.equal(resolveHermesPython(devPaths, binaries), "C:/custom/python.exe");
+
+    // Packaged always uses the bundled CPython that carries the pinned wheel.
+    assert.equal(
+      resolveHermesPython({ mode: "packaged", hermesAppDir } as ResolvedPaths, binaries),
+      "python.exe",
+    );
+  } finally {
+    if (savedOverride === undefined) delete process.env["HERMES_PYTHON"];
+    else process.env["HERMES_PYTHON"] = savedOverride;
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("Hermes is a hidden-loopback supervised runtime and its endpoint is not published", () => {

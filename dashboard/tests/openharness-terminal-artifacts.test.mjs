@@ -78,6 +78,42 @@ test("Terminal can inspect an explicitly authorized external folder with a read-
   }
 });
 
+test("Terminal deletes only an exact server-authorized file target", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-terminal-delete-"));
+  try {
+    const target = path.join(root, "delete me (1).txt");
+    const preserved = path.join(root, "keep.txt");
+    fs.writeFileSync(target, "delete");
+    fs.writeFileSync(preserved, "keep");
+    const command = process.platform === "win32"
+      ? `Remove-Item -LiteralPath '${target}'`
+      : `rm -- '${target}'`;
+    const options = {
+      workspaceRoot: root,
+      authorizedRoots: [root],
+      authorizedDeleteTargets: [target],
+    };
+    const authorization = authorizeTerminalCommand(command, options);
+    assert.equal(authorization.allowed, true, authorization.reason);
+    assert.equal(authorization.category, "delete");
+    assert.equal(
+      authorizeTerminalCommand(
+        process.platform === "win32"
+          ? `Remove-Item -LiteralPath '${preserved}'`
+          : `rm -- '${preserved}'`,
+        options,
+      ).allowed,
+      false,
+    );
+    const result = await runAuthorizedTerminalCommand(command, options);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(fs.existsSync(target), false);
+    assert.equal(fs.existsSync(preserved), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the command shell is pinned to an absolute path, not resolved through PATH", (t) => {
   // The installed app has failed an authorized command with
   // `spawn powershell.exe ENOENT`. libuv resolves a bare name through PATH only,

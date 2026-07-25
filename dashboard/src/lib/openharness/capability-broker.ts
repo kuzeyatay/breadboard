@@ -18,6 +18,7 @@
 // Everything here is a pure function of (plan, grants, surface). It performs no
 // I/O, so it is directly unit-testable and cannot be steered by model prose.
 
+import path from "node:path";
 import type { OpenHarnessSurface } from "./config.ts";
 import { ARTIFACT_TOOLS } from "./tool-scopes.ts";
 import type { TaskCapability, TaskPlan } from "./task-plan.ts";
@@ -91,6 +92,10 @@ export interface PendingPermission {
   message: string;
   /** For filesystem requests: the folder the agent wants to reach. */
   path?: string;
+  /** Exact referenced item, when the grant itself targets its parent folder. */
+  targetPath?: string;
+  /** Exact referenced items for a bounded multi-file operation. */
+  targetPaths?: string[];
   /** For filesystem requests: the operations needed there. */
   operations?: FilesystemOperation[];
   capability: TaskCapability;
@@ -300,7 +305,17 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
       );
       if (satisfying.length === 0 || !everyPathCovered) {
         withheld.add(capability);
-        pending.push(buildFilesystemRequest(capability, operations, input.plan));
+        const uncovered = pathResources.filter((resource) =>
+          !operationGrants.some((grant) => grantCoversResource(grant, resource)),
+        );
+        pending.push(
+          ...buildFilesystemRequests(
+            capability,
+            operations,
+            input.plan,
+            uncovered,
+          ),
+        );
         continue;
       }
       satisfying.forEach((grant) => usedRoots.set(grant.id, grant));
@@ -333,6 +348,7 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
     authorizedRoots,
     input.workspaceRoot,
   );
+  const pendingPermissions = coalesceFilesystemRequests(pending, input.plan);
 
   return {
     plan: input.plan,
@@ -341,11 +357,13 @@ export function brokerCapabilities(input: BrokerInput): CapabilityGrant {
     authorizedRoots,
     grantedCapabilities: [...granted],
     withheldCapabilities: [...withheld],
-    pendingPermissions: pending,
+    pendingPermissions,
     // A turn is executable when nothing it needs is still pending. A plan whose
     // only pending item is a later confirmation step still executes its earlier
     // steps, so we only block when the *first* step is blocked.
-    executable: pending.length === 0 || firstStepIsSatisfied(input.plan, granted),
+    executable:
+      pendingPermissions.length === 0 ||
+      firstStepIsSatisfied(input.plan, granted),
     brokerSource: "breadboard_capability_broker_v1",
   };
 }
@@ -360,34 +378,154 @@ function firstStepIsSatisfied(plan: TaskPlan, granted: ReadonlySet<TaskCapabilit
   return first.capabilities.every((capability) => granted.has(capability));
 }
 
-function buildFilesystemRequest(
+function buildFilesystemRequests(
   capability: TaskCapability,
   operations: FilesystemOperation[],
   plan: TaskPlan,
-): PendingPermission {
-  // Prefer a concrete path the user actually named, so the prompt can offer to
-  // approve that folder rather than asking an abstract question.
-  const namedPath = plan.requiredResources.find((resource) => resource.kind === "path");
+  resources: TaskPlan["requiredResources"],
+): PendingPermission[] {
   const permissions: FilesystemPermissions = permissionsForCapabilities([capability]);
+  const pathResources = resources.filter((resource) => resource.kind === "path");
+  if (pathResources.length === 0) {
+    return [{
+      kind: "filesystem",
+      id: `fs-${capability}`,
+      message: `To ${plan.intendedOutcome.replace(/\.$/, "").toLowerCase()}, ${describePermissions(permissions)}`,
+      operations,
+      capability,
+    }];
+  }
 
   // A spoken alias ("Documents") is not a path the grant API can canonicalize,
   // so resolve it to a concrete candidate location here. This only *proposes* a
   // folder for the user to approve — it confers nothing on its own, and the
   // server re-validates the path when the grant is actually created.
-  const resolvedPath = namedPath
-    ? namedPath.absolute
-      ? namedPath.value
-      : (candidatePathsForAlias(namedPath.value)[0] ?? namedPath.value)
-    : undefined;
-  const scope = resolvedPath ? ` for ${resolvedPath}` : "";
+  const groups = new Map<string, { path: string; targets: string[] }>();
+  for (const resource of pathResources) {
+    const resolvedTarget = resource.absolute
+      ? resource.value
+      : (candidatePathsForAlias(resource.value)[0] ?? resource.value);
+    const grantPath = resource.resourceType === "file"
+      ? portableDirname(resolvedTarget)
+      : resolvedTarget;
+    const key = portable(grantPath).toLowerCase();
+    const group = groups.get(key) ?? { path: grantPath, targets: [] };
+    if (resource.resourceType === "file") group.targets.push(resolvedTarget);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()].map((group) => {
+    const targets = [...new Map(group.targets.map((target) => [
+      portable(target).toLowerCase(),
+      target,
+    ])).values()];
+    const scope = targets.length === 1
+      ? ` for ${targets[0]}`
+      : targets.length > 1
+        ? ` for ${targets.length} identified files in ${group.path}`
+        : ` for ${group.path}`;
+    return {
+      kind: "filesystem" as const,
+      id: `fs-${capability}-${portable(group.path)}`,
+      message: `To ${plan.intendedOutcome.replace(/\.$/, "").toLowerCase()}${scope}, ${describePermissions(permissions)}`,
+      path: group.path,
+      ...(targets.length === 1 ? { targetPath: targets[0] } : {}),
+      ...(targets.length > 0 ? { targetPaths: targets } : {}),
+      operations,
+      capability,
+    };
+  });
+}
+
+function portableDirname(value: string): string {
+  if (/^[A-Za-z]:[\\/]|^\\/.test(value)) return path.win32.dirname(value);
+  if (value.startsWith("/")) return path.posix.dirname(value);
+  return path.dirname(value);
+}
+
+function coalesceFilesystemRequests(
+  pending: readonly PendingPermission[],
+  plan: TaskPlan,
+): PendingPermission[] {
+  const result: PendingPermission[] = [];
+  const groups = new Map<string, PendingPermission[]>();
+  for (const permission of pending) {
+    if (permission.kind !== "filesystem") continue;
+    const key = permission.path
+      ? portable(permission.path).toLowerCase()
+      : `missing:${permission.id}`;
+    const group = groups.get(key) ?? [];
+    group.push(permission);
+    groups.set(key, group);
+  }
+
+  const emitted = new Set<string>();
+  for (const permission of pending) {
+    if (permission.kind !== "filesystem") {
+      result.push(permission);
+      continue;
+    }
+    const key = permission.path
+      ? portable(permission.path).toLowerCase()
+      : `missing:${permission.id}`;
+    if (emitted.has(key)) continue;
+    emitted.add(key);
+    const group = groups.get(key)!;
+    if (group.length === 1) {
+      result.push(group[0]);
+      continue;
+    }
+    const pathValue = group[0].path;
+    const operations = ["read", "create", "modify", "move", "delete", "execute"]
+      .filter((operation) => group.some((permission) =>
+        permission.operations?.includes(operation as FilesystemOperation))) as FilesystemOperation[];
+    const targets = [...new Map(group.flatMap((permission) =>
+      permission.targetPaths ?? (permission.targetPath ? [permission.targetPath] : []))
+      .map((target) => [portable(target).toLowerCase(), target])).values()];
+    const capability = [...group]
+      .sort((left, right) => capabilityRisk(right.capability) - capabilityRisk(left.capability))[0]
+      .capability;
+    const permissions = permissionsFromOperations(operations);
+    const scope = targets.length === 1
+      ? ` for ${targets[0]}`
+      : targets.length > 1
+        ? ` for ${targets.length} identified files in ${pathValue}`
+        : pathValue
+          ? ` for ${pathValue}`
+          : "";
+    result.push({
+      kind: "filesystem",
+      id: `fs-${capability}${pathValue ? `-${portable(pathValue)}` : ""}`,
+      message: `To ${plan.intendedOutcome.replace(/\.$/, "").toLowerCase()}${scope}, ${describePermissions(permissions)}`,
+      path: pathValue,
+      ...(targets.length === 1 ? { targetPath: targets[0] } : {}),
+      ...(targets.length > 0 ? { targetPaths: targets } : {}),
+      operations,
+      capability,
+    });
+  }
+  return result;
+}
+
+function permissionsFromOperations(
+  operations: readonly FilesystemOperation[],
+): FilesystemPermissions {
+  const has = (operation: FilesystemOperation) => operations.includes(operation);
   return {
-    kind: "filesystem",
-    id: `fs-${capability}${resolvedPath ? `-${portable(resolvedPath)}` : ""}`,
-    message: `To ${plan.intendedOutcome.replace(/\.$/, "").toLowerCase()}${scope}, ${describePermissions(permissions)}`,
-    path: resolvedPath,
-    operations,
-    capability,
+    read: has("read"),
+    create: has("create"),
+    modify: has("modify"),
+    move: has("move"),
+    delete: has("delete"),
+    execute: has("execute"),
   };
+}
+
+function capabilityRisk(capability: TaskCapability): number {
+  if (capability === "destructive_filesystem") return 4;
+  if (capability === "filesystem_write" || capability === "coding") return 3;
+  if (capability === "media_processing" || capability === "document_processing") return 2;
+  return 1;
 }
 
 function buildToolMap(

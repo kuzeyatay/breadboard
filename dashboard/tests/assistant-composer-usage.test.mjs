@@ -16,6 +16,27 @@ test("Usage lives in the shared Intelligence menu", () => {
   assert.ok(usageIndex > modelIndex, "Usage should be shown after the model choices");
 });
 
+test("Intelligence remains editable during a run and its panels do not block the menu", () => {
+  const composerSource = source("../src/app/components/assistant-composer.tsx");
+  const usageSource = source("../src/app/components/usage-limits-popover.tsx");
+
+  assert.match(composerSource, /onClick=\{toggleIntelligence\}/);
+  assert.match(composerSource, /\{showIntelligence \? \(/);
+  assert.doesNotMatch(composerSource, /showIntelligence && !activeRun/);
+  assert.doesNotMatch(
+    composerSource,
+    /onReasoningEffortChange\(option\.value\);\s*setShowIntelligence/,
+  );
+  assert.doesNotMatch(
+    composerSource,
+    /onModelChange\(item\);\s*setShowIntelligence/,
+  );
+  assert.match(composerSource, /changes apply to the next message/);
+  assert.match(composerSource, /showBackdrop=\{false\}/);
+  assert.match(usageSource, /open\?: boolean/);
+  assert.match(usageSource, /onOpenChange\?: \(open: boolean\) => void/);
+});
+
 test("every ChatMock interface gets Usage through AssistantComposer only", () => {
   const composerSource = source("../src/app/components/assistant-composer.tsx");
   const interfaces = [

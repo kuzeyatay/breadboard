@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 
 import {
   prepareTurn,
@@ -42,6 +43,7 @@ function prepare(request, options = {}) {
     workspaceRoot: WORKSPACE,
     isolated: options.isolated,
     confirmedPermissionIds: options.confirmed,
+    resolvedResources: options.resolvedResources,
   });
 }
 
@@ -65,6 +67,132 @@ test("a turn with no usable grant is blocked and reports what it needs", () => {
   assert.equal(prepared.blocked, true);
   assert.equal(prepared.pendingPermissions.length >= 1, true);
   assert.equal(prepared.pendingPermissions[0].kind, "filesystem");
+});
+
+test("a verified file follow-up pauses on an actionable parent-folder grant", () => {
+  const downloads = path.join(path.parse(WORKSPACE).root, "Users", "me", "Downloads");
+  const target = path.join(downloads, "archive.iso");
+  const prepared = prepare("please delete that file", {
+    grants: [
+      root({
+        canonicalPath: downloads,
+        displayName: "Downloads",
+        permissions: { read: true },
+      }),
+    ],
+    resolvedResources: [
+      { kind: "path", value: target, absolute: true, resourceType: "file" },
+    ],
+  });
+
+  assert.equal(prepared.blocked, true);
+  const permission = prepared.pendingPermissions.find(
+    (item) => item.capability === "destructive_filesystem",
+  );
+  assert.ok(permission);
+  assert.equal(permission.path, downloads);
+  assert.equal(permission.targetPath, target);
+  assert.deepEqual(permission.targetPaths, [target]);
+  assert.deepEqual(permission.operations, ["read", "delete"]);
+});
+
+test("a verified file follow-up runs after its delete grant is approved", () => {
+  const downloads = path.join(path.parse(WORKSPACE).root, "Users", "me", "Downloads");
+  const target = path.join(downloads, "archive.iso");
+  const prepared = prepare("please delete that file", {
+    grants: [
+      root({
+        canonicalPath: downloads,
+        displayName: "Downloads",
+        permissions: { read: true, delete: true },
+      }),
+    ],
+    resolvedResources: [
+      { kind: "path", value: target, absolute: true, resourceType: "file" },
+    ],
+  });
+
+  assert.equal(prepared.blocked, false);
+  assert.ok(
+    prepared.grant.grantedCapabilities.includes("destructive_filesystem"),
+  );
+  assert.deepEqual(prepared.decision.authorizedDeleteTargets, [target]);
+  assert.equal(prepared.pendingPermissions.length, 0);
+});
+
+test("a verified file list produces one parent grant with every exact affected path", () => {
+  const downloads = path.join(path.parse(WORKSPACE).root, "Users", "me", "Downloads");
+  const targets = ["one.iso", "two.mp4", "three.exe"].map((name) =>
+    path.join(downloads, name));
+  const prepared = prepare("delete them", {
+    grants: [
+      root({
+        canonicalPath: downloads,
+        displayName: "Downloads",
+        permissions: { read: true },
+      }),
+    ],
+    resolvedResources: targets.map((value) => ({
+      kind: "path",
+      value,
+      absolute: true,
+      resourceType: "file",
+    })),
+  });
+
+  const permission = prepared.pendingPermissions.find(
+    (item) => item.capability === "destructive_filesystem",
+  );
+  assert.ok(permission);
+  assert.equal(permission.path, downloads);
+  assert.equal(permission.targetPath, undefined);
+  assert.deepEqual(permission.targetPaths, targets);
+  assert.match(permission.message, /3 identified files/i);
+});
+
+test("a file-list deletion without grants produces one combined approval, not an approval loop", () => {
+  const downloads = path.join(path.parse(WORKSPACE).root, "Users", "me", "Downloads");
+  const targets = ["one.iso", "two.mp4", "three.pdf"].map((name) =>
+    path.join(downloads, name));
+  const prepared = prepare("delete the listed files except Demo_Team14.mp4", {
+    grants: [],
+    resolvedResources: targets.map((value) => ({
+      kind: "path",
+      value,
+      absolute: true,
+      resourceType: "file",
+    })),
+  });
+
+  assert.deepEqual(
+    prepared.plan.requiredCapabilities.filter((capability) =>
+      capability !== "conversation"),
+    ["filesystem_read", "destructive_filesystem"],
+  );
+  assert.equal(prepared.pendingPermissions.length, 1);
+  assert.equal(prepared.pendingPermissions[0].path, downloads);
+  assert.deepEqual(prepared.pendingPermissions[0].operations, ["read", "delete"]);
+  assert.deepEqual(prepared.pendingPermissions[0].targetPaths, targets);
+
+  const resumed = prepare("delete the listed files except Demo_Team14.mp4", {
+    grants: [
+      root({
+        canonicalPath: downloads,
+        displayName: "Downloads",
+        permissions: { read: true, delete: true },
+        scope: "one_time",
+      }),
+    ],
+    resolvedResources: targets.map((value) => ({
+      kind: "path",
+      value,
+      absolute: true,
+      resourceType: "file",
+    })),
+  });
+  assert.equal(resumed.blocked, false);
+  assert.equal(resumed.pendingPermissions.length, 0);
+  assert.deepEqual(resumed.decision.authorizedDeleteTargets, targets);
 });
 
 test("a coding turn projects onto the scoped implementation decision", () => {

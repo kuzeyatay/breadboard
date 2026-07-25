@@ -89,6 +89,12 @@ export interface AgentMessage {
   courseCorrection?: boolean;
   clientRequestId?: string;
   branchGroupId?: string;
+  /**
+   * Present when this assistant turn is a browser-operator (Agent TARS) run
+   * rather than a normal model reply. The transcript renders the live run
+   * workspace (screenshot + timeline + approvals) for it instead of markdown.
+   */
+  browserRun?: { agentId: string; runId: string; task: string };
 }
 
 export interface SkillContinuation {
@@ -980,6 +986,17 @@ export function useAgentSession(
               )
             : [];
           const path = typeof pending.path === "string" ? pending.path : undefined;
+          const targetPath =
+            typeof pending.targetPath === "string"
+              ? pending.targetPath
+              : path;
+          const targetPaths = Array.isArray(pending.targetPaths)
+            ? pending.targetPaths.filter(
+                (item): item is string => typeof item === "string",
+              )
+            : targetPath
+              ? [targetPath]
+              : [];
           const kind =
             pending.kind === "filesystem" ||
             pending.kind === "connection" ||
@@ -1001,7 +1018,7 @@ export function useAgentSession(
                     )
                   ? "write"
                   : "read",
-            affectedPaths: path ? [path] : [],
+            affectedPaths: targetPaths,
             allowSession: kind === "filesystem",
             preflight: { kind, path, operations },
           };
@@ -1219,6 +1236,11 @@ export function useAgentSession(
           return;
         }
 
+        // Remove the actionable card before the network round trip so a slow
+        // grant POST cannot be submitted repeatedly by double-clicking. The
+        // catch path restores the same prompt if approval fails.
+        setPendingPermission(null);
+        transition("submitting");
         let oneTimeGrantId: string | null = null;
         try {
           if (prompt.preflight.kind === "filesystem") {
@@ -1253,8 +1275,6 @@ export function useAgentSession(
               oneTimeGrantId = body.grant.id;
             }
           }
-
-          setPendingPermission(null);
           setActivities((current) =>
             current.map((item) =>
               item.id === `permission-${prompt.requestId}`

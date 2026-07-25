@@ -53,6 +53,7 @@ export async function POST(request: Request) {
     const terminalScope = {
       workspaceRoot: session.active_directory ?? undefined,
       authorizedRoots: decision.authorizedRoots,
+      authorizedDeleteTargets: decision.authorizedDeleteTargets ?? [],
     };
     const authorization = authorizeTerminalCommand(command, terminalScope);
     recordAuditEvent({

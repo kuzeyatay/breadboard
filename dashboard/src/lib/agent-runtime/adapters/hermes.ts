@@ -4,6 +4,7 @@ import {
 } from "../../ai-models.ts";
 import type { ChatAttachment } from "../../chat-attachments.ts";
 import { readOpenHarnessConfig } from "../../openharness/config.ts";
+import type { NormalizedAgentEvent } from "../../openharness/events.ts";
 import { resolveWorkspace } from "../../openharness/workspace.ts";
 import type {
   AgentRuntime,
@@ -18,8 +19,12 @@ import type { AgentRuntimeConfig } from "../config.ts";
 import {
   createHermesEventNormalizationState,
   normalizeHermesEvent,
+  type RawHermesEvent,
 } from "../hermes-events.ts";
-import { HermesRpcClient } from "../hermes-wire.ts";
+import {
+  HermesRpcClient,
+  HermesRpcErrorResponse,
+} from "../hermes-wire.ts";
 import {
   addProxyMcpConnection,
   proxyMcpDiscovery,
@@ -29,6 +34,7 @@ import {
 const BREADBOARD_TOOLSET = "breadboard";
 const BREADBOARD_AGENT = "breadboard";
 const CHATMOCK_PROVIDER = "chatmock";
+const TURN_RESULT_POLL_MS = 1_000;
 
 const BASE_SYSTEM_PROMPT = [
   "You are running inside Breadboard.",
@@ -47,6 +53,18 @@ interface HermesSessionState extends RuntimeSession {
   liveSessionId: string;
   model?: string;
   reasoningEffort?: string;
+  activeTurnId?: string;
+  activeTurnText?: string;
+}
+
+interface HermesTurnResult {
+  state?: "running" | "completed" | "failed" | "aborted" | "unknown";
+  turn_id?: string;
+  payload?: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function withTextAttachments(
@@ -275,13 +293,26 @@ export class HermesRuntimeAdapter implements AgentRuntime {
         filename: attachment.name,
       });
     }
-    await this.client.request("prompt.submit", {
-      session_id: session.liveSessionId,
-      text: withTextAttachments(input.text, input.attachments),
-      system_prompt: [BASE_SYSTEM_PROMPT, input.system?.trim()]
-        .filter(Boolean)
-        .join("\n\n"),
-    });
+    const runtimeText = withTextAttachments(input.text, input.attachments);
+    const turnId = input.messageId?.trim();
+    session.activeTurnId = turnId;
+    session.activeTurnText = runtimeText;
+    try {
+      await this.client.request("prompt.submit", {
+        session_id: session.liveSessionId,
+        text: runtimeText,
+        system_prompt: [BASE_SYSTEM_PROMPT, input.system?.trim()]
+          .filter(Boolean)
+          .join("\n\n"),
+        ...(turnId ? { client_turn_id: turnId } : {}),
+      });
+    } catch (error) {
+      if (session.activeTurnId === turnId) {
+        session.activeTurnId = undefined;
+        session.activeTurnText = undefined;
+      }
+      throw error;
+    }
   }
 
   async steerRun(
@@ -304,22 +335,176 @@ export class HermesRuntimeAdapter implements AgentRuntime {
     input: RuntimeSessionReference,
     signal?: AbortSignal,
     onConnected?: () => void,
-  ) {
+  ): AsyncGenerator<NormalizedAgentEvent, void, unknown> {
     const session = this.requireSession(input);
+    session.activeTurnId ??= input.messageId;
+    session.activeTurnText ??= input.instruction;
     const state = createHermesEventNormalizationState();
-    for await (const raw of this.client.events(
+    const streamAbort = new AbortController();
+    const abortStream = () => streamAbort.abort();
+    signal?.addEventListener("abort", abortStream, { once: true });
+    const rawIterator = this.client.events(
       session.liveSessionId,
-      signal,
+      streamAbort.signal,
       onConnected,
-    )) {
-      for (const event of normalizeHermesEvent(
-        raw,
-        session.liveSessionId,
-        input.externalSessionId,
-        state,
-      )) {
-        yield event;
+    )[Symbol.asyncIterator]();
+    let nextRaw: Promise<IteratorResult<RawHermesEvent>> = rawIterator.next();
+    let recoverySupported = true;
+    let streamError: unknown;
+    const activeTurnReference = () => {
+      let resolved:
+        | { messageId?: string; instruction?: string }
+        | undefined;
+      try {
+        resolved = input.resolveActiveTurn?.();
+      } catch {
+        // A transient database read failure must not tear down the live event
+        // stream. The next recovery poll gets another chance.
       }
+      return {
+        turnId:
+          session.activeTurnId ?? resolved?.messageId ?? input.messageId,
+        text:
+          session.activeTurnText ??
+          resolved?.instruction ??
+          input.instruction ??
+          "",
+      };
+    };
+
+    try {
+      while (!streamAbort.signal.aborted) {
+        let pollTimer: ReturnType<typeof setTimeout> | undefined;
+        const next = await Promise.race([
+          nextRaw.then(
+            (result) => ({ kind: "event" as const, result }),
+            (error) => ({ kind: "stream_error" as const, error }),
+          ),
+          new Promise<{ kind: "poll" }>((resolve) => {
+            pollTimer = setTimeout(
+              () => resolve({ kind: "poll" }),
+              TURN_RESULT_POLL_MS,
+            );
+          }),
+        ]);
+        if (pollTimer) clearTimeout(pollTimer);
+
+        if (next.kind === "stream_error") {
+          if (streamAbort.signal.aborted) return;
+          const { turnId } = activeTurnReference();
+          if (!turnId) throw next.error;
+          const firstDisconnect = streamError === undefined;
+          streamError = next.error;
+          // The event transport is gone, but JSON-RPC can reconnect. Stop
+          // replaying a partial journal and use the correlated result query as
+          // the sole authority for the remainder of this turn.
+          nextRaw = new Promise<IteratorResult<RawHermesEvent>>(() => {});
+          if (firstDisconnect) {
+            yield {
+              type: "reasoning.status",
+              sessionId: input.externalSessionId,
+              timestamp: new Date().toISOString(),
+              payload: {
+                label: "Reconnecting to Hermes",
+                detail: "Waiting for Hermes to confirm this turn's final result.",
+                detailMode: "replace",
+              },
+            };
+          }
+          continue;
+        }
+
+        if (next.kind === "event") {
+          if (next.result.done) return;
+          const raw = next.result.value;
+          nextRaw = rawIterator.next();
+          const normalized = normalizeHermesEvent(
+            raw,
+            session.liveSessionId,
+            input.externalSessionId,
+            state,
+          );
+          if (raw.type === "message.complete") {
+            const payload = isRecord(raw.payload) ? raw.payload : {};
+            const completedTurnId =
+              typeof payload.turn_id === "string"
+                ? payload.turn_id
+                : undefined;
+            if (
+              completedTurnId &&
+              completedTurnId === activeTurnReference().turnId
+            ) {
+              session.activeTurnId = undefined;
+              session.activeTurnText = undefined;
+            }
+          }
+          for (const event of normalized) yield event;
+          continue;
+        }
+
+        const { turnId, text } = activeTurnReference();
+        if (!recoverySupported || !turnId) continue;
+        let recovered: HermesTurnResult;
+        try {
+          recovered = await this.client.request<HermesTurnResult>(
+            "session.turn_result",
+            {
+              session_id: session.liveSessionId,
+              stored_session_id: session.externalSessionId,
+              turn_id: turnId,
+              expected_user_text: text,
+            },
+            streamAbort.signal,
+          );
+        } catch (error) {
+          // Older Hermes gateways do not expose durable turn recovery. Keep
+          // their live stream working and stop probing until the next attach.
+          if (error instanceof HermesRpcErrorResponse && error.code === -32601) {
+            recoverySupported = false;
+            if (streamError) throw streamError;
+          }
+          continue;
+        }
+        if (
+          recovered.state !== "completed" &&
+          recovered.state !== "failed" &&
+          recovered.state !== "aborted"
+        ) {
+          continue;
+        }
+        const recoveredPayload = isRecord(recovered.payload)
+          ? recovered.payload
+          : {};
+        const status =
+          recovered.state === "aborted"
+            ? "interrupted"
+            : recovered.state === "failed"
+              ? "error"
+              : recoveredPayload.status ?? "complete";
+        const raw: RawHermesEvent = {
+          type: "message.complete",
+          session_id: session.liveSessionId,
+          payload: {
+            ...recoveredPayload,
+            status,
+            turn_id: turnId,
+          },
+        };
+        const normalized = normalizeHermesEvent(
+          raw,
+          session.liveSessionId,
+          input.externalSessionId,
+          state,
+        );
+        session.activeTurnId = undefined;
+        session.activeTurnText = undefined;
+        for (const event of normalized) yield event;
+        return;
+      }
+    } finally {
+      streamAbort.abort();
+      signal?.removeEventListener("abort", abortStream);
+      void rawIterator.return?.();
     }
   }
 

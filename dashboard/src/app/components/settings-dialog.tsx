@@ -9,6 +9,7 @@ export type SettingsTab = "account" | "memory";
 interface SettingsDialogProps {
   onClose: () => void;
   initialTab?: SettingsTab;
+  presentation?: "modal" | "popover";
 }
 
 const TABS: Array<{ value: SettingsTab; label: string; description: string }> = [
@@ -24,7 +25,11 @@ const TABS: Array<{ value: SettingsTab; label: string; description: string }> = 
   },
 ];
 
-export default function SettingsDialog({ onClose, initialTab = "account" }: SettingsDialogProps) {
+export default function SettingsDialog({
+  onClose,
+  initialTab = "account",
+  presentation = "modal",
+}: SettingsDialogProps) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -37,8 +42,11 @@ export default function SettingsDialog({ onClose, initialTab = "account" }: Sett
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    closeRef.current?.focus();
+    const modal = presentation === "modal";
+    if (modal) {
+      document.body.style.overflow = "hidden";
+      closeRef.current?.focus();
+    }
 
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -46,7 +54,7 @@ export default function SettingsDialog({ onClose, initialTab = "account" }: Sett
         onCloseRef.current();
         return;
       }
-      if (event.key !== "Tab") return;
+      if (!modal || event.key !== "Tab") return;
       const controls = dialogRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), a[href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])',
       );
@@ -65,26 +73,24 @@ export default function SettingsDialog({ onClose, initialTab = "account" }: Sett
 
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      document.body.style.overflow = previousOverflow;
-      previouslyFocused?.focus();
+      if (modal) {
+        document.body.style.overflow = previousOverflow;
+        previouslyFocused?.focus();
+      }
     };
-  }, []);
+  }, [presentation]);
 
   const activeTab = TABS.find((item) => item.value === tab) ?? TABS[0];
 
-  return (
-    <div
-      className="fixed inset-0 z-[130] flex items-center justify-center bg-[rgba(15,26,22,0.72)] px-4 py-6 backdrop-blur-[2px]"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
+  const panel = (
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={presentation === "modal" ? "true" : undefined}
         aria-labelledby="settings-dialog-title"
-        className="neu-dialog flex max-h-[min(46rem,92vh)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)]"
+        className={presentation === "modal"
+          ? "neu-dialog flex max-h-[min(46rem,92vh)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)]"
+          : "neu-popover absolute bottom-0 right-full z-50 mr-2 flex max-h-[min(42rem,calc(100vh-2rem))] w-[min(42rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)] shadow-2xl"}
       >
         <div className="flex items-start justify-between gap-3 px-6 pb-4 pt-5">
           <div className="min-w-0">
@@ -141,6 +147,18 @@ export default function SettingsDialog({ onClose, initialTab = "account" }: Sett
           {tab === "account" ? <SettingsChatgptAccount /> : <SettingsAgentMemory />}
         </div>
       </div>
+  );
+
+  if (presentation === "popover") return panel;
+
+  return (
+    <div
+      className="fixed inset-0 z-[130] flex items-center justify-center bg-[rgba(15,26,22,0.72)] px-4 py-6 backdrop-blur-[2px]"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      {panel}
     </div>
   );
 }

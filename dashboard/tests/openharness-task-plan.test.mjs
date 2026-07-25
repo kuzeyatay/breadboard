@@ -129,6 +129,22 @@ test("deleting duplicates needs confirmation and a destructive capability", () =
   assert.equal(p.riskLevel, "high");
 });
 
+test("deleting a named media file does not plan media processing or artifact writes", () => {
+  const p = plan("Delete the listed files except Demo_Team14.mp4", {
+    resolvedResources: [{
+      kind: "path",
+      value: "C:\\Users\\me\\Downloads\\old-video.mp4",
+      absolute: true,
+      resourceType: "file",
+    }],
+  });
+  assert.ok(p.requiredCapabilities.includes("filesystem_read"));
+  assert.ok(p.requiredCapabilities.includes("destructive_filesystem"));
+  assert.ok(!p.requiredCapabilities.includes("media_processing"));
+  assert.ok(!p.requiredCapabilities.includes("filesystem_write"));
+  assert.ok(!p.requiredCapabilities.includes("subagent"));
+});
+
 test("creating a folder is not coding", () => {
   const p = plan("Create a folder called Invoices in my Documents folder.");
   assert.equal(p.requiresCoding, false);

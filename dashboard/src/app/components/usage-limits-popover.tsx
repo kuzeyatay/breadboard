@@ -28,6 +28,9 @@ interface UsageLimitsPopoverProps {
   popoverClassName?: string;
   showIcon?: boolean;
   light?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  showBackdrop?: boolean;
 }
 
 function clampPercent(value: unknown): number {
@@ -75,12 +78,21 @@ export default function UsageLimitsPopover({
   popoverClassName = "neu-popover absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-xl border border-gray-700 bg-gray-900 p-4 text-xs",
   showIcon = true,
   light = false,
+  open: controlledOpen,
+  onOpenChange,
+  showBackdrop = true,
 }: UsageLimitsPopoverProps) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
   const [usageData, setUsageData] = useState<UsageLimitsPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+
+  const setOpen = useCallback((next: boolean) => {
+    setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  }, [onOpenChange]);
 
   const refreshUsage = useCallback(async (quiet = false, probe = false) => {
     if (!quiet) setLoading(true);
@@ -124,8 +136,9 @@ export default function UsageLimitsPopover({
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
         title="View usage limits"
+        aria-expanded={open}
         className={[
           buttonClassName,
           open ? activeButtonClassName : inactiveButtonClassName,
@@ -150,7 +163,9 @@ export default function UsageLimitsPopover({
       </button>
       {open ? (
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          {showBackdrop ? (
+            <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          ) : null}
           <div className={popoverClassName}>
             <div className="mb-3 flex items-center justify-between gap-3">
               <p className={`font-medium ${light ? "text-[var(--ink-heading)]" : "text-gray-300"}`}>Usage Limits</p>

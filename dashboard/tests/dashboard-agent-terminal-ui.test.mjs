@@ -60,6 +60,18 @@ test("the terminal header uses only a restrained runtime health dot", () => {
   assert.doesNotMatch(terminal, /session\.connection === "idle" \? "ready"/);
 });
 
+test("runtime startup never disables drafting and retries a transient failed health check", () => {
+  assert.match(
+    terminal,
+    /health\.status === "runtime" \|\| health\.status === "checking"/,
+  );
+  assert.match(
+    terminal,
+    /window\.setTimeout\(\(\) => void checkHealth\(\), HEALTH_RETRY_DELAY_MS\)/,
+  );
+  assert.match(terminal, /if \(retryTimer !== null\) window\.clearTimeout\(retryTimer\)/);
+});
+
 test("the OpenHarness composer adds documents immediately after the slash control", () => {
   assert.match(terminal, /accept=\{CHAT_ATTACHMENT_ACCEPT\}/);
   assert.match(terminal, /extractChatAttachments\(files\)/);

@@ -53,6 +53,7 @@ interface RuntimeHistorySession {
 const HEIGHT_KEY = "breadboard:knowledge-terminal-height";
 const COLLAPSED_HEIGHT = 48;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
+const HEALTH_RETRY_DELAY_MS = 3_000;
 
 const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
   mine: [
@@ -107,26 +108,45 @@ export default function DashboardAgentTerminal({ scope }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/openharness/health")
-      .then((response) => response.json())
-      .then((data) => {
+    let retryTimer: number | null = null;
+
+    async function checkHealth() {
+      let shouldRetry = false;
+      try {
+        const response = await fetch("/api/openharness/health");
+        if (!response.ok) throw new Error(`Runtime health returned ${response.status}`);
+        const data = await response.json();
         if (cancelled) return;
         const mode = data?.dashboardMode === "preferred" || data?.dashboardMode === "legacy"
           ? data.dashboardMode
           : "required";
         if (data?.enabled && data?.healthy) setHealth({ status: "runtime", mode });
-        else if (data?.enabled) setHealth({ status: "unavailable", mode });
+        else if (data?.enabled) {
+          setHealth({ status: "unavailable", mode });
+          shouldRetry = true;
+        }
         else setHealth({ status: "disabled", mode });
-      })
-      .catch(() => {
-        if (!cancelled) setHealth({ status: "unavailable", mode: "required" });
-      });
+      } catch {
+        if (cancelled) return;
+        setHealth((current) => ({ status: "unavailable", mode: current.mode }));
+        shouldRetry = true;
+      }
+
+      if (!cancelled && shouldRetry) {
+        retryTimer = window.setTimeout(() => void checkHealth(), HEALTH_RETRY_DELAY_MS);
+      }
+    }
+
+    void checkHealth();
     return () => {
       cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
     };
   }, []);
 
-  if (health.status === "runtime") {
+  // A health check in progress is not a failure. The runtime session can begin
+  // connecting immediately while the explicit health probe finishes.
+  if (health.status === "runtime" || health.status === "checking") {
     return <RuntimeTerminal scope={scope} />;
   }
   if (health.mode === "required") {
@@ -148,11 +168,14 @@ export default function DashboardAgentTerminal({ scope }: Props) {
 
 function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtimeUnavailable?: boolean }) {
   const resizeStartRef = useRef<{ startY: number; startHeight: number } | null>(null);
-  const [height, setHeight] = useState(() => {
-    if (typeof window === "undefined") return COLLAPSED_HEIGHT;
+  const [height, setHeight] = useState(COLLAPSED_HEIGHT);
+  const [heightRestored, setHeightRestored] = useState(false);
+
+  useEffect(() => {
     const saved = Number(window.localStorage.getItem(HEIGHT_KEY));
-    return Number.isFinite(saved) && saved > 0 ? clampHeight(saved) : COLLAPSED_HEIGHT;
-  });
+    if (Number.isFinite(saved) && saved > 0) setHeight(clampHeight(saved));
+    setHeightRestored(true);
+  }, []);
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [input, setInput] = useState("");
@@ -164,6 +187,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState("");
   const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [browserAgent, setBrowserAgent] = useState<{ id: string; name: string } | null>(null);
+  const [launchingBrowserRun, setLaunchingBrowserRun] = useState(false);
   const autoOpenedArtifactRuns = useRef(new Set<string>());
   const dismissedArtifactRuns = useRef(new Set<string>());
   const attachmentInputRef = useRef<HTMLInputElement>(null);
@@ -247,8 +272,8 @@ function RuntimeTerminal({ scope, runtimeUnavailable = false }: Props & { runtim
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(HEIGHT_KEY, String(height));
-  }, [height]);
+    if (heightRestored) window.localStorage.setItem(HEIGHT_KEY, String(height));
+  }, [height, heightRestored]);
 
   useEffect(() => {
     fetch("/api/models")

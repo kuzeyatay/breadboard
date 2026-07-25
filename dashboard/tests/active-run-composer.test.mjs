@@ -60,7 +60,19 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.doesNotMatch(composer, /activeInstruction/);
   assert.doesNotMatch(composer, /Run permissions are enforced/);
   assert.doesNotMatch(composer, /locked during run/);
-  assert.match(composer, /aria-disabled=\{activeRun\}/);
+  assert.doesNotMatch(composer, /aria-disabled=\{activeRun\}/);
+  assert.match(
+    composer,
+    /const sessionActionsDisabled = disabled \|\| runState === 'stopping'/,
+  );
+  assert.match(composer, /activeRun &&\s*!disabled &&\s*canSubmit/);
+  const textarea = composer.slice(
+    composer.indexOf("<textarea"),
+    composer.indexOf("<textarea") + 2_000,
+  );
+  assert.ok(composer.indexOf("<textarea") >= 0);
+  assert.doesNotMatch(textarea, /disabled=\{/);
+  assert.match(composer, /disabled=\{!canSubmit \|\| isSending \|\| disabled\}/);
   assert.match(composer, /activeRun && permissionPending/);
   assert.match(composer, /onQueueSteer\?\.\(text\)/);
   assert.doesNotMatch(composer, /pendingSteer|applyingSteer|steerError/);

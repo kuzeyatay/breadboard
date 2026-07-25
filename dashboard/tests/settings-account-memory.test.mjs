@@ -397,19 +397,23 @@ test("malformed working state degrades to an empty structure", () => {
 
 // --- wiring ------------------------------------------------------------------
 
-test("Settings sits below Usage in the intelligence menu and opens the dialog", () => {
+test("Settings sits below Usage and opens as a sibling Intelligence popover", () => {
   const usageIndex = composer.indexOf("<UsageLimitsPopover");
-  const settingsIndex = composer.indexOf("setShowSettings(true)");
+  const settingsIndex = composer.indexOf("current === 'settings'");
   assert.ok(usageIndex > 0, "the Usage entry must still be present");
   assert.ok(settingsIndex > usageIndex, "Settings must render after Usage");
-  assert.match(composer, /showSettings \? <SettingsDialog onClose=\{\(\) => setShowSettings\(false\)\}/);
-  // Opening Settings closes the popover so the two overlays never stack.
-  assert.match(composer, /setShowIntelligence\(false\);\s*\n\s*setShowSettings\(true\);/);
+  assert.match(composer, /presentation="popover"/);
+  assert.match(composer, /intelligencePanel === 'settings'/);
+  assert.match(composer, /open=\{intelligencePanel === 'usage'\}/);
+  assert.match(composer, /showBackdrop=\{false\}/);
+  assert.doesNotMatch(composer, /setShowSettings/);
 });
 
-test("the settings dialog is a focus-trapped modal with Account and Memory sections", () => {
+test("settings supports both a focus-trapped modal and an inline popover", () => {
   assert.match(dialog, /role="dialog"/);
-  assert.match(dialog, /aria-modal="true"/);
+  assert.match(dialog, /presentation\?: "modal" \| "popover"/);
+  assert.match(dialog, /aria-modal=\{presentation === "modal" \? "true" : undefined\}/);
+  assert.match(dialog, /if \(presentation === "popover"\) return panel/);
   assert.match(dialog, /event\.key === "Escape"/);
   assert.match(dialog, /document\.body\.style\.overflow = "hidden"/);
   assert.match(dialog, /previouslyFocused\?\.focus\(\)/);
