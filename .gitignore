@@ -19,3 +19,14 @@ dashboard/.next-desktop/
 # GBrain adapter dependencies
 gbrain-adapter/node_modules/
 gbrain/node_modules/
+
+# Dependencies — never commit, reinstall via npm/bun install
+node_modules/
+
+# Databases — generated at runtime / by sync-skills-catalog.ts
+*.db
+*.db-wal
+*.db-shm
+
+# Quartz build cache
+.quartz-cache/
