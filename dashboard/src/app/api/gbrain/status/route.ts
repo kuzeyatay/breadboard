@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import { apiErrorResponse } from "@/lib/openharness/route-helpers.ts";
+import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
 import { resolveGBrainConfig } from "@/lib/gbrain/config.ts";
 import { GBrainClient } from "@/lib/gbrain/client.ts";
-import { authorizeGardenAccess } from "@/lib/openharness/session-service.ts";
+import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { loadClusterBySlug, getSyncState, getOrCreateSourceMapping } from "@/lib/gbrain/mapping.ts";
 
 export const dynamic = "force-dynamic";

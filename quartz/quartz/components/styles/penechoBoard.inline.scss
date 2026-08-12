@@ -1,0 +1,156 @@
+pre:has(> code.penecho-board-block) {
+  margin: 0;
+}
+
+.penecho-board,
+.penecho-board-fallback {
+  margin: 1.4rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--light) 92%, white);
+  color: var(--dark);
+  overflow: hidden;
+}
+
+.penecho-board {
+  display: flex;
+  flex-direction: column;
+
+  .penecho-board-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.7rem 0.9rem;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .penecho-board-heading {
+    min-width: 0;
+  }
+
+  .penecho-board-kicker {
+    margin: 0 0 0.12rem;
+    color: var(--secondary);
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .penecho-board-title {
+    margin: 0;
+    overflow: hidden;
+    font-size: 1.05rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .penecho-board-action {
+    flex: none;
+    border: 1px solid var(--lightgray);
+    border-radius: 8px;
+    padding: 0.4rem 0.7rem;
+    background: color-mix(in srgb, var(--light) 88%, transparent);
+    color: var(--secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  .penecho-board-action:hover {
+    border-color: var(--secondary);
+    color: var(--tertiary);
+  }
+
+  // The surface reads as a board before anything is mounted on it: a pale
+  // ruled sheet inside the frame, which is also what the canvas itself looks
+  // like once it loads.
+  .penecho-board-surface {
+    position: relative;
+    height: var(--penecho-board-height, 520px);
+    border-top: 1px solid var(--lightgray);
+    background-color: #fbfbf9;
+    background-image:
+      linear-gradient(color-mix(in srgb, var(--lightgray) 45%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--lightgray) 45%, transparent) 1px, transparent 1px);
+    background-size: 26px 26px;
+    box-shadow: inset 0 1px 6px rgb(0 0 0 / 6%);
+  }
+
+  .penecho-board-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.7rem;
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .penecho-board-placeholder-text {
+    margin: 0;
+    max-width: 32rem;
+    color: var(--gray);
+    font-size: 0.88rem;
+  }
+
+  .penecho-board-frame {
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: transparent;
+  }
+
+  &.penecho-board--mounted .penecho-board-placeholder {
+    display: none;
+  }
+}
+
+// Enlarged: the same card, taken out of the flow of the note. The frame is
+// never moved in the document, so the board keeps drawing without reloading.
+.penecho-board.penecho-board--expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+
+  .penecho-board-surface {
+    flex: 1;
+    height: auto;
+    min-height: 0;
+  }
+}
+
+// Holds the note's layout open while the card is out of the flow.
+.penecho-board-spacer {
+  margin: 1.4rem 0;
+}
+
+html.penecho-board-open {
+  overflow: hidden;
+}
+
+.penecho-board-fallback {
+  padding: 0.9rem 1.1rem;
+
+  strong {
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+
+  p {
+    margin: 0;
+    color: var(--gray);
+    font-size: 0.88rem;
+  }
+}

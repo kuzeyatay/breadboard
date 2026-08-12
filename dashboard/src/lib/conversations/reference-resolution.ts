@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
-import type { ResourceReference } from "../openharness/task-plan.ts";
+import type { ResourceReference } from "../hermes/task-plan.ts";
 import type { ConversationMessageRow } from "./store.ts";
 
 const SINGULAR_FILE_REFERENCE =
@@ -12,6 +13,7 @@ const FILE_NAME_REFERENCE = /(?:^|[\s'"`(])[^\r\n'"`<>]+\.[A-Za-z0-9]{1,12}(?=$|
 const EXCLUSION_MARKER =
   /\b(?:except(?:\s+for)?|excluding|other\s+than|but\s+keep|keep|do\s+not\s+delete|don'?t\s+delete)\b/i;
 const MAX_RESOLVED_FILES = 32;
+const MAX_STATTED_CANDIDATES = 64;
 
 /**
  * Whether the wording relies on prior filesystem context rather than naming a
@@ -33,6 +35,12 @@ export function hasFilesystemReferenceIntent(request: string): boolean {
  *  - singular, plural, named, ordinal, and exclusion references are resolved
  *    only against the structured paths/list entries in that message;
  *  - unknown exclusions, ambiguous selections, and oversized lists fail shut.
+ *
+ * Folders are referents in their own right: a verified answer whose findings
+ * are folders ("5.55 GB in `C:\\Users\\Public\\wpilib`") is exactly what "delete
+ * them all" refers to. They are only read that way when the message listed
+ * nothing but folders, because a message that lists files also names the folder
+ * those files live in, and that folder is the container, not a target.
  */
 export function resolveVerifiedFilesystemReferences(
   request: string,
@@ -82,21 +90,25 @@ function resolveFilesystemReferencesFromAssistant(
     return [];
   }
 
+  const inventory = extractFilesystemInventory(message.content);
   if (resourceType === "directory") {
-    const directories = extractFilesystemInventory(message.content).directories;
-    return directories.length === 1
-      ? [asResource(directories[0], "directory")]
+    return inventory.directories.length === 1
+      ? [asResource(inventory.directories[0], "directory")]
       : [];
   }
 
-  const inventory = extractFilesystemInventory(message.content);
-  const candidates = inventory.files;
+  // Folders answer a plural reference only when the verified message found
+  // nothing else; alongside files they are the location of those files.
+  const candidates: ResourceReference[] = inventory.files.length
+    ? inventory.files.map((value) => asResource(value, "file"))
+    : PLURAL_FILE_REFERENCE.test(request)
+      ? inventory.directories.map((value) => asResource(value, "directory"))
+      : [];
   if (candidates.length === 0 || candidates.length > MAX_RESOLVED_FILES) {
     return [];
   }
 
-  const selected = selectReferencedFiles(request, candidates);
-  return selected.map((value) => asResource(value, "file"));
+  return selectReferencedEntries(request, candidates);
 }
 
 function referencedResourceType(request: string): "file" | "directory" | null {
@@ -118,7 +130,10 @@ function asResource(
   return { kind: "path", value, absolute: true, resourceType };
 }
 
-function selectReferencedFiles(request: string, files: readonly string[]): string[] {
+function selectReferencedEntries(
+  request: string,
+  entries: readonly ResourceReference[],
+): ResourceReference[] {
   const exclusionMatch = request.match(EXCLUSION_MARKER);
   const selectionText = exclusionMatch
     ? request.slice(0, exclusionMatch.index)
@@ -128,7 +143,7 @@ function selectReferencedFiles(request: string, files: readonly string[]): strin
     : "";
 
   const exclusions = exclusionMatch
-    ? matchNamedOrOrdinalFiles(exclusionText, files)
+    ? matchNamedOrOrdinalEntries(exclusionText, entries)
     : [];
   // An exclusion that cannot be matched exactly is unsafe: proceeding could
   // delete the item the user explicitly asked to preserve.
@@ -136,38 +151,39 @@ function selectReferencedFiles(request: string, files: readonly string[]): strin
 
   const plural = PLURAL_FILE_REFERENCE.test(selectionText) ||
     /\b(?:delete|remove|trash|erase|move)\s+all\b/i.test(selectionText);
-  let selected: string[];
+  let selected: ResourceReference[];
   if (plural) {
-    selected = [...files];
+    selected = [...entries];
   } else {
-    selected = matchNamedOrOrdinalFiles(selectionText, files);
-    if (selected.length === 0 && files.length === 1 && SINGULAR_FILE_REFERENCE.test(selectionText)) {
-      selected = [files[0]];
+    selected = matchNamedOrOrdinalEntries(selectionText, entries);
+    if (selected.length === 0 && entries.length === 1 && SINGULAR_FILE_REFERENCE.test(selectionText)) {
+      selected = [entries[0]];
     }
   }
 
-  const excluded = new Set(exclusions.map(pathKey));
-  const result = deduplicatePaths(selected.filter((file) => !excluded.has(pathKey(file))));
-  return result.length > 0 ? result : [];
+  const excluded = new Set(exclusions.map((entry) => pathKey(entry.value)));
+  return deduplicateEntries(
+    selected.filter((entry) => !excluded.has(pathKey(entry.value))),
+  );
 }
 
-function matchNamedOrOrdinalFiles(
+function matchNamedOrOrdinalEntries(
   text: string,
-  files: readonly string[],
-): string[] {
-  const matches: string[] = [];
+  entries: readonly ResourceReference[],
+): ResourceReference[] {
+  const matches: ResourceReference[] = [];
   const normalizedText = text.toLocaleLowerCase();
-  for (const file of files) {
-    const basename = portableBasename(file).toLocaleLowerCase();
-    if (basename && normalizedText.includes(basename)) matches.push(file);
+  for (const entry of entries) {
+    const basename = portableBasename(entry.value).toLocaleLowerCase();
+    if (basename && normalizedText.includes(basename)) matches.push(entry);
   }
 
-  const ordinals = ordinalIndexes(text, files.length);
+  const ordinals = ordinalIndexes(text, entries.length);
   for (const index of ordinals) {
-    const file = files[index];
-    if (file) matches.push(file);
+    const entry = entries[index];
+    if (entry) matches.push(entry);
   }
-  return deduplicatePaths(matches);
+  return deduplicateEntries(matches);
 }
 
 function ordinalIndexes(text: string, length: number): number[] {
@@ -242,6 +258,7 @@ function extractFilesystemInventory(content: string): {
   const directories: string[] = [];
   const absoluteFiles: string[] = [];
   const listedNames: string[] = [];
+  const budget = { remaining: MAX_STATTED_CANDIDATES };
 
   for (const line of content.split(/\r?\n/)) {
     const field = line.match(
@@ -250,7 +267,7 @@ function extractFilesystemInventory(content: string): {
     if (field) {
       const candidate = cleanCandidate(field[2]);
       if (isPortableAbsolute(candidate)) {
-        if (/^(?:folder|directory)$/i.test(field[1]) || !looksLikeFilePath(candidate)) {
+        if (/^(?:folder|directory)$/i.test(field[1]) || !looksLikeFilePath(candidate, budget)) {
           directories.push(candidate);
         } else {
           absoluteFiles.push(candidate);
@@ -263,14 +280,18 @@ function extractFilesystemInventory(content: string): {
     const listItem = line.match(/^\s*(?:\d+[.)]|[-*])\s+`([^`\r\n]+)`/);
     if (listItem) {
       const candidate = cleanCandidate(listItem[1]);
-      if (isPortableAbsolute(candidate)) absoluteFiles.push(candidate);
-      else if (isSafeBasename(candidate)) listedNames.push(candidate);
+      // A listed absolute path is classified like any other: a bulleted list of
+      // folders is a list of folders, not of files without extensions.
+      if (isPortableAbsolute(candidate)) {
+        if (looksLikeFilePath(candidate, budget)) absoluteFiles.push(candidate);
+        else directories.push(candidate);
+      } else if (isSafeBasename(candidate)) listedNames.push(candidate);
     }
 
     for (const match of line.matchAll(/`([^`\r\n]+)`/g)) {
       const candidate = cleanCandidate(match[1]);
       if (!isPortableAbsolute(candidate)) continue;
-      if (looksLikeFilePath(candidate)) absoluteFiles.push(candidate);
+      if (looksLikeFilePath(candidate, budget)) absoluteFiles.push(candidate);
       else directories.push(candidate);
     }
   }
@@ -304,9 +325,34 @@ function isPortableAbsolute(value: string): boolean {
   return path.win32.isAbsolute(value) || path.posix.isAbsolute(value);
 }
 
-function looksLikeFilePath(value: string): boolean {
+/**
+ * Whether this path names a file rather than a folder.
+ *
+ * The filesystem answers this whenever the path exists, because the name alone
+ * gets it wrong in the case that matters: `C:\Users\me\.gradle` reads as a
+ * 7-character extension, so a cache *folder* was classified as a file and its
+ * permission request pointed at the whole parent profile directory. The name
+ * heuristic remains the fallback for paths that no longer exist.
+ */
+function looksLikeFilePath(value: string, budget: { remaining: number }): boolean {
+  const observed = observedIsFile(value, budget);
+  if (observed !== null) return observed;
   const basename = portableBasename(value);
   return /\.[A-Za-z0-9]{1,12}$/.test(basename);
+}
+
+/** Null when the path does not exist, or when the stat budget is spent. */
+function observedIsFile(
+  value: string,
+  budget: { remaining: number },
+): boolean | null {
+  if (budget.remaining <= 0) return null;
+  budget.remaining -= 1;
+  try {
+    return !fs.statSync(value).isDirectory();
+  } catch {
+    return null;
+  }
 }
 
 function portableBasename(value: string): string {
@@ -332,6 +378,17 @@ function pathKey(value: string): string {
   return /^[A-Za-z]:[\\/]|^\\\\/.test(value)
     ? value.replace(/\//g, "\\").toLowerCase()
     : value;
+}
+
+function deduplicateEntries(
+  entries: readonly ResourceReference[],
+): ResourceReference[] {
+  const unique = new Map<string, ResourceReference>();
+  for (const entry of entries) {
+    const key = pathKey(entry.value);
+    if (!unique.has(key)) unique.set(key, entry);
+  }
+  return [...unique.values()];
 }
 
 function deduplicatePaths(values: readonly string[]): string[] {

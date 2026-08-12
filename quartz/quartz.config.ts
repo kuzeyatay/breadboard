@@ -60,8 +60,8 @@ const config: QuartzConfig = {
       },
       colors: {
         // Reading-first light theme: pale green / warm paper, dark
-        // charcoal-green text, muted botanical accents. Both modes share the
-        // same palette so the published garden stays consistently light.
+        // charcoal-green text and muted botanical accents. Dark mode is kept
+        // separate so the established light reading surface stays unchanged.
         lightMode: {
           light: "#e6f0e6",
           lightgray: "#a6bdad",
@@ -74,15 +74,15 @@ const config: QuartzConfig = {
           textHighlight: "#ffe27859",
         },
         darkMode: {
-          light: "#e6f0e6",
-          lightgray: "#a6bdad",
-          gray: "#50615a",
-          darkgray: "#13201b",
-          dark: "#0f1a16",
-          secondary: "#4f6f68",
-          tertiary: "#84a59d",
-          highlight: "rgba(132, 165, 157, 0.20)",
-          textHighlight: "#ffe27859",
+          light: "#18181a",
+          lightgray: "#353d37",
+          gray: "#a5aea5",
+          darkgray: "#e6ebe5",
+          dark: "#f4f1e8",
+          secondary: "#91b7a1",
+          tertiary: "#9fb5c4",
+          highlight: "rgba(145, 183, 161, 0.18)",
+          textHighlight: "#d3bc7e40",
         },
       },
     },
@@ -96,13 +96,21 @@ const config: QuartzConfig = {
       Plugin.SyntaxHighlighting({
         theme: {
           light: "github-light",
-          dark: "github-light",
+          dark: "github-dark",
         },
         keepBackground: false,
       }),
-      Plugin.ObsidianFlavoredMarkdown({ enableInHtmlEmbed: false }),
+      // Video and YouTube embeds are handled by BreadboardVideos below, which
+      // renders one widget for both instead of a bare <video> / <iframe>.
+      Plugin.ObsidianFlavoredMarkdown({
+        enableInHtmlEmbed: false,
+        enableVideoEmbed: false,
+        enableYouTubeEmbed: false,
+      }),
+      Plugin.BreadboardVideos(),
       Plugin.BreadboardVisuals(),
       Plugin.BreadboardGeneratedVisuals(),
+      Plugin.PenechoBoards(),
       Plugin.GitHubFlavoredMarkdown(),
       Plugin.TableOfContents(),
       Plugin.CrawlLinks({ markdownLinkResolution: "shortest" }),

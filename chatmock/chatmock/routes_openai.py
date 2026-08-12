@@ -3,15 +3,23 @@ from __future__ import annotations
 import json
 import time
 from typing import Any, Dict, List
+from uuid import uuid4
 
 from flask import Blueprint, Response, current_app, jsonify, make_response, request
 
 from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .council.gateway import maybe_handle_responses_with_council, maybe_handle_with_council
+from .council.unslop import maybe_unslop_instructions, maybe_unslop_messages
 from .fast_mode import resolve_service_tier
+from .external_responses import external_responses_response
 from .limits import record_rate_limits_from_response
 from .http import build_cors_headers
+from .model_identity import with_resolved_model_identity
 from .model_registry import list_public_models, uses_codex_instructions
+from .model_telemetry import record_model_attempt
+from .providers import dispatch as provider_dispatch
+from .providers.registry import ResolvedModel, model_entries, resolve_model
+from .providers.store import is_default_sentinel
 from .responses_api import (
     ResponsesRequestError,
     aggregate_response_from_sse,
@@ -24,7 +32,7 @@ from .reasoning import (
     allowed_efforts_for_model,
     apply_reasoning_to_message,
     build_reasoning_param,
-    extract_reasoning_from_model_name,
+    request_reasoning_overrides,
 )
 from .session import (
     clear_responses_reuse_state,
@@ -35,9 +43,11 @@ from .session import (
 from .upstream import normalize_model_name, start_upstream_raw_request, start_upstream_request
 from .utils import (
     convert_chat_messages_to_responses_input,
+    convert_tool_choice_chat_to_responses,
     convert_tools_chat_to_responses,
     sse_translate_chat,
     sse_translate_text,
+    upstream_error_message,
 )
 
 
@@ -76,6 +86,46 @@ def _wrap_stream_logging(label: str, iterator, enabled: bool):
 
 def _instructions_for_model(model: str) -> str:
     return instructions_for_model(current_app.config, model)
+
+
+def _resolve_requested_model(requested_model: Any) -> tuple[ResolvedModel, Any, str]:
+    """Map the client's model id onto a provider.
+
+    Returns the resolution, the id to echo back to the client (a `default`
+    sentinel is replaced by the model it expanded to, so responses never report
+    a model nobody can look up), and the ChatGPT-normalized id for the legacy
+    path. Resolution happens before `normalize_model_name` because that helper
+    lowercases, which would corrupt case-sensitive third-party ids.
+    """
+    resolved = resolve_model(requested_model)
+    echo_model = resolved.public_model if is_default_sentinel(requested_model) else requested_model
+    chatgpt_model = normalize_model_name(
+        resolved.upstream_model if resolved.is_chatgpt else requested_model,
+        current_app.config.get("DEBUG_MODEL"),
+    )
+    return resolved, echo_model, chatgpt_model
+
+
+def _record_chatgpt_dispatch(
+    *,
+    endpoint: str,
+    requested_model: str | None,
+    resolved: ResolvedModel,
+    upstream_model: str,
+) -> str:
+    """Persist the exact ChatGPT model before the upstream request starts."""
+    request_id = f"mreq_{uuid4().hex}"
+    record_model_attempt(
+        request_id=request_id,
+        endpoint=endpoint,
+        requested_model=requested_model,
+        resolved_model=resolved.public_model,
+        upstream_model=upstream_model,
+        provider=resolved.provider.id,
+        outcome="dispatched",
+        fallback=False,
+    )
+    return request_id
 
 
 def _service_tier_from_payload(
@@ -128,8 +178,10 @@ def chat_completions() -> Response:
                 _log_json("OUT POST /v1/chat/completions", err)
             return jsonify(err), 400
 
-    requested_model = payload.get("model")
-    model = normalize_model_name(requested_model, current_app.config.get("DEBUG_MODEL"))
+    requested_model_alias = (
+        payload.get("model") if isinstance(payload.get("model"), str) else None
+    )
+    resolved_model, requested_model, model = _resolve_requested_model(requested_model_alias)
     messages = payload.get("messages")
     if messages is None and isinstance(payload.get("prompt"), str):
         messages = [{"role": "user", "content": payload.get("prompt") or ""}]
@@ -146,15 +198,49 @@ def chat_completions() -> Response:
     # Breadboard Council kernel: every normal chat request is council-mediated
     # (chatmock_ask -> CouncilRuntime). Tool-calling requests and explicit
     # opt-outs fall through to the legacy passthrough below.
+    resolved_messages = with_resolved_model_identity(
+        messages,
+        model=resolved_model.public_model,
+        provider=resolved_model.provider.id,
+    )
     council_response = maybe_handle_with_council(
         payload,
-        messages,
+        resolved_messages,
         requested_model=requested_model,
         model=model,
+        requested_model_alias=requested_model_alias,
         verbose=verbose,
     )
     if council_response is not None:
         return council_response
+
+    # The council attaches the unslop writing skill to the answers it produces,
+    # but it declines every tool-carrying request — which is every Hermes turn,
+    # and therefore every Terminal/Garden/Quartz answer. Attach it here so the
+    # product's most-read prose is written under the same rules.
+    unslopped = maybe_unslop_messages(messages, payload)
+    if unslopped is not messages:
+        messages = unslopped
+        resolved_messages = with_resolved_model_identity(
+            messages,
+            model=resolved_model.public_model,
+            provider=resolved_model.provider.id,
+        )
+
+    # Council-bypassed requests (tool calls, explicit opt-outs) still have to
+    # reach the provider that owns the model. Everything below this point is
+    # ChatGPT Responses API translation, which only the ChatGPT upstream speaks.
+    if not resolved_model.is_chatgpt:
+        payload["messages"] = messages
+        return provider_dispatch.chat_completion_response(
+            resolved_model,
+            payload,
+            verbose=verbose,
+            requested_model=requested_model_alias,
+            endpoint="chat.completions",
+        )
+
+    messages = resolved_messages
 
     if isinstance(messages, list):
         sys_idx = next((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "system"), None)
@@ -167,7 +253,7 @@ def chat_completions() -> Response:
     include_usage = bool(stream_options.get("include_usage", False))
 
     tools_responses = convert_tools_chat_to_responses(payload.get("tools"))
-    tool_choice = payload.get("tool_choice", "auto")
+    tool_choice = convert_tool_choice_chat_to_responses(payload.get("tool_choice", "auto"))
     parallel_tool_calls = bool(payload.get("parallel_tool_calls", False))
     responses_tools_payload = payload.get("responses_tools") if isinstance(payload.get("responses_tools"), list) else []
     extra_tools: List[Dict[str, Any]] = []
@@ -218,17 +304,22 @@ def chat_completions() -> Response:
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": payload.get("prompt")}]}
         ]
 
-    model_reasoning = extract_reasoning_from_model_name(requested_model)
-    reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
     reasoning_param = build_reasoning_param(
         reasoning_effort,
         reasoning_summary,
-        reasoning_overrides,
+        request_reasoning_overrides(payload, requested_model),
         allowed_efforts=allowed_efforts_for_model(model),
     )
     service_tier, tier_error = _service_tier_from_payload(model, payload, verbose=verbose)
     if tier_error is not None:
         return tier_error
+
+    _record_chatgpt_dispatch(
+        endpoint="chat.completions",
+        requested_model=requested_model_alias,
+        resolved=resolved_model,
+        upstream_model=model,
+    )
 
     upstream, error_resp = start_upstream_request(
         model,
@@ -267,7 +358,7 @@ def chat_completions() -> Response:
             if verbose:
                 print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
             base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
-            safe_choice = payload.get("tool_choice", "auto")
+            safe_choice = convert_tool_choice_chat_to_responses(payload.get("tool_choice", "auto"))
             upstream2, err2 = start_upstream_request(
                 model,
                 input_items,
@@ -284,7 +375,7 @@ def chat_completions() -> Response:
             else:
                 err = {
                     "error": {
-                        "message": (err_body.get("error", {}) or {}).get("message", "Upstream error"),
+                        "message": upstream_error_message(err_body),
                         "code": "RESPONSES_TOOLS_REJECTED",
                     }
                 }
@@ -294,7 +385,7 @@ def chat_completions() -> Response:
         else:
             if verbose:
                 print("Upstream error status=", upstream.status_code)
-            err = {"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}}
+            err = {"error": {"message": upstream_error_message(err_body)}}
             if verbose:
                 _log_json("OUT POST /v1/chat/completions", err)
             return jsonify(err), upstream.status_code
@@ -443,8 +534,10 @@ def completions() -> Response:
             _log_json("OUT POST /v1/completions", err)
         return jsonify(err), 400
 
-    requested_model = payload.get("model")
-    model = normalize_model_name(requested_model, current_app.config.get("DEBUG_MODEL"))
+    requested_model_alias = (
+        payload.get("model") if isinstance(payload.get("model"), str) else None
+    )
+    resolved_model, requested_model, model = _resolve_requested_model(requested_model_alias)
     prompt = payload.get("prompt")
     if isinstance(prompt, list):
         prompt = "".join([p if isinstance(p, str) else "" for p in prompt])
@@ -455,19 +548,40 @@ def completions() -> Response:
     include_usage = bool(stream_options.get("include_usage", False))
 
     messages = [{"role": "user", "content": prompt or ""}]
+
+    # External providers serve the legacy text endpoint through their chat API;
+    # the response is chat-shaped, which every current caller of this route
+    # (OpenAI SDK compatibility shims) accepts.
+    if not resolved_model.is_chatgpt:
+        chat_payload = dict(payload)
+        chat_payload["messages"] = messages
+        chat_payload.pop("prompt", None)
+        chat_payload.pop("suffix", None)
+        return provider_dispatch.chat_completion_response(
+            resolved_model,
+            chat_payload,
+            verbose=verbose,
+            requested_model=requested_model_alias,
+            endpoint="completions",
+        )
+
     input_items = convert_chat_messages_to_responses_input(messages)
 
-    model_reasoning = extract_reasoning_from_model_name(requested_model)
-    reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
     reasoning_param = build_reasoning_param(
         reasoning_effort,
         reasoning_summary,
-        reasoning_overrides,
+        request_reasoning_overrides(payload, requested_model),
         allowed_efforts=allowed_efforts_for_model(model),
     )
     service_tier, tier_error = _service_tier_from_payload(model, payload, verbose=verbose)
     if tier_error is not None:
         return tier_error
+    _record_chatgpt_dispatch(
+        endpoint="completions",
+        requested_model=requested_model_alias,
+        resolved=resolved_model,
+        upstream_model=model,
+    )
     upstream, error_resp = start_upstream_request(
         model,
         input_items,
@@ -497,7 +611,7 @@ def completions() -> Response:
             err_body = json.loads(upstream.content.decode("utf-8", errors="ignore")) if upstream.content else {"raw": upstream.text}
         except Exception:
             err_body = {"raw": upstream.text}
-        err = {"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}}
+        err = {"error": {"message": upstream_error_message(err_body)}}
         if verbose:
             _log_json("OUT POST /v1/completions", err)
         return jsonify(err), upstream.status_code
@@ -609,6 +723,16 @@ def responses_create() -> Response:
             _log_json("OUT POST /v1/responses", err)
         return jsonify(err), 400
 
+    responses_model = resolve_model(payload.get("model"))
+    if not responses_model.is_chatgpt:
+        return external_responses_response(responses_model, payload, verbose=verbose)
+
+    payload = with_resolved_model_identity(
+        payload,
+        model=responses_model.public_model,
+        provider=responses_model.provider.id,
+    )
+
     # Breadboard Council kernel: text-only requests are council-mediated.
     # Tool/image/multimodal/session-bound requests keep the raw passthrough.
     # This call also strips council routing fields (taskType, gardenId, ...)
@@ -617,9 +741,32 @@ def responses_create() -> Response:
     if council_response is not None:
         return council_response
 
+    # Same reason as the chat-completions path: a bypassed Breadboard UI turn
+    # (tools, a server-default web search, a continued session) still writes
+    # prose a person reads, so it keeps the writing skill.
+    unslopped_instructions = maybe_unslop_instructions(
+        payload.get("instructions"), payload
+    )
+    if unslopped_instructions is not payload.get("instructions"):
+        payload["instructions"] = unslopped_instructions
+
     try:
-        normalized = normalize_responses_payload(
+        normalization_payload = dict(payload)
+        # Preserve the client's reasoning suffix, but never forward the
+        # `default` sentinel to ChatGPT. The upstream must receive the model
+        # ChatMock resolved at request time so telemetry and execution agree.
+        # Resolved here rather than downstream because a `gpt-5.6-sol:high`
+        # style suffix is only readable while the client's own model id is
+        # still in place.
+        reasoning_overrides = request_reasoning_overrides(
             payload,
+            payload.get("model") if isinstance(payload.get("model"), str) else None,
+        )
+        normalization_payload["model"] = responses_model.upstream_model
+        if reasoning_overrides is not None:
+            normalization_payload["reasoning"] = reasoning_overrides
+        normalized = normalize_responses_payload(
+            normalization_payload,
             config=current_app.config,
             client_session_id=extract_client_session_id(request.headers),
         )
@@ -642,6 +789,17 @@ def responses_create() -> Response:
     stream_req = bool(prepared.payload.get("stream", False))
     upstream_payload = dict(prepared.payload)
     upstream_payload["stream"] = True
+    actual_upstream_model = upstream_payload.get("model")
+    if not isinstance(actual_upstream_model, str) or not actual_upstream_model.strip():
+        actual_upstream_model = responses_model.upstream_model
+    _record_chatgpt_dispatch(
+        endpoint="responses",
+        requested_model=(
+            payload.get("model") if isinstance(payload.get("model"), str) else None
+        ),
+        resolved=responses_model,
+        upstream_model=actual_upstream_model,
+    )
     upstream, error_resp = start_upstream_raw_request(
         upstream_payload,
         session_id=normalized.session_id,
@@ -752,8 +910,9 @@ def responses_create() -> Response:
 def list_models() -> Response:
     expose_variants = bool(current_app.config.get("EXPOSE_REASONING_MODELS"))
     model_ids = list_public_models(expose_reasoning_models=expose_variants)
-    data = [{"id": mid, "object": "model", "owned_by": "owner"} for mid in model_ids]
-    models = {"object": "list", "data": data}
+    # ChatGPT ids first (unchanged for existing clients), then one prefixed id
+    # per model of every configured external provider.
+    models = {"object": "list", "data": model_entries(model_ids)}
     resp = make_response(jsonify(models), 200)
     for k, v in build_cors_headers().items():
         resp.headers.setdefault(k, v)

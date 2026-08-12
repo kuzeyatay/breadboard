@@ -1,0 +1,55 @@
+import { NextResponse } from "next/server";
+import { requireUserId, routeErrorResponse } from "@/lib/server-auth";
+import { getSpeechSettings } from "@/lib/speech/settings";
+import { voiceboxJson, voiceboxStartupStatus } from "@/lib/speech/voicebox-client";
+
+export const dynamic = "force-dynamic";
+
+type VoiceboxHealth = {
+  status: string;
+  model_loaded: boolean;
+  model_downloaded?: boolean | null;
+  model_size?: string | null;
+  gpu_available: boolean;
+  gpu_type?: string | null;
+  backend_type?: string | null;
+  backend_variant?: string | null;
+};
+
+export async function GET() {
+  try {
+    const userId = await requireUserId();
+    const settings = getSpeechSettings(userId);
+    try {
+      const health = await voiceboxJson<VoiceboxHealth>("/health");
+      const [profiles, models, kokoro, qwen] = await Promise.all([
+        voiceboxJson<unknown[]>("/profiles"),
+        voiceboxJson<{ models: unknown[] }>("/models/status").catch(() => ({ models: [] })),
+        voiceboxJson<{ voices: unknown[] }>("/profiles/presets/kokoro").catch(() => ({ voices: [] })),
+        voiceboxJson<{ voices: unknown[] }>("/profiles/presets/qwen_custom_voice").catch(() => ({ voices: [] })),
+      ]);
+      return NextResponse.json({
+        available: true,
+        health,
+        profiles,
+        models: models.models,
+        presets: { kokoro: kokoro.voices, qwen_custom_voice: qwen.voices },
+        settings,
+        startup: voiceboxStartupStatus(),
+      });
+    } catch (error) {
+      return NextResponse.json({
+        available: false,
+        error: error instanceof Error ? error.message : "Voicebox is unavailable.",
+        health: null,
+        profiles: [],
+        models: [],
+        presets: { kokoro: [], qwen_custom_voice: [] },
+        settings,
+        startup: voiceboxStartupStatus(),
+      });
+    }
+  } catch (error) {
+    return routeErrorResponse(error);
+  }
+}

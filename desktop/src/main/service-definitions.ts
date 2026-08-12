@@ -3,6 +3,17 @@ import * as path from "node:path";
 import type { DesktopServiceDefinition } from "./service-manager";
 import type { ResolvedPaths } from "./path-resolver";
 import type { DesktopRuntimeConfig } from "./runtime-config";
+import { DEFAULT_BREADBOARD_SKILLS_CATALOG_URL } from "./skills-catalog-config";
+import { recallDataDir, recallHome } from "./recall";
+import {
+  CLIPROXY_DEFAULT_PORT,
+  cliproxyApiKey,
+  cliproxyBinaryPath,
+  cliproxyConfigPath,
+  cliproxyHome,
+  cliproxyManagementKey,
+  isCliproxyInstalled,
+} from "./cliproxy";
 
 /**
  * Central construction of every supervised service definition.
@@ -12,11 +23,11 @@ import type { DesktopRuntimeConfig } from "./runtime-config";
  *    Node runtime (`resources/runtimes/node/node.exe`). This keeps npm-prebuilt
  *    native modules (better-sqlite3, bcrypt) on the exact ABI they were
  *    installed for — no Electron-ABI rebuild needed.
- *  - OpenHarness stays a Bun application (upstream-friendly) and runs on a
- *    bundled `runtimes/bun/bun.exe`.
+ *  - Optional GBrain tooling runs on the bundled Bun runtime.
  *  - ChatMock and the pinned Hermes wheel run on bundled CPython 3.13 under
  *    `runtimes/python`.
- *  - Scriberr remains optional and is only ever a Docker compatibility mode.
+ *  - Scriberr runs as a bundled native Windows sidecar. Its speech-model
+ *    environment is prepared lazily under the user's data directory.
  *
  * In dev mode the system `node`, `bun`, and `python` are used, matching the
  * repository's existing scripts.
@@ -70,6 +81,172 @@ export function resolveHermesPython(
   return fs.existsSync(venv) ? venv : binaries.python;
 }
 
+/**
+ * Resolve the persona catalog shipped with Breadboard.
+ *
+ * A valid developer override still wins, but a stale absolute path must not
+ * hide the managed catalog. This commonly happens after moving a checkout or
+ * leaving a OneDrive-synchronized directory.
+ */
+export function resolveAgencyAgentsPath(paths: ResolvedPaths): string {
+  const override = process.env["AGENCY_AGENTS_PATH"]?.trim();
+  if (override) {
+    const resolved = path.resolve(override);
+    if (fs.existsSync(path.join(resolved, "divisions.json"))) return resolved;
+  }
+  return path.join(paths.appRoot, "agency-agents");
+}
+
+export interface VoiceboxRuntime {
+  command: string;
+  argsPrefix: string[];
+  cwd: string;
+  selfManaged?: boolean;
+}
+
+/**
+ * Resolve the cloned Voicebox environment in development or its native server
+ * sidecar in an installed app. Returning null is intentional: Voicebox is an
+ * optional leaf capability, and Settings gives the user a specific setup state
+ * while the rest of Breadboard remains usable.
+ */
+export function resolveVoiceboxRuntime(
+  paths: ResolvedPaths,
+  binaries?: RuntimeBinaries,
+): VoiceboxRuntime | null {
+  const executable = process.platform === "win32" ? "voicebox-server.exe" : "voicebox-server";
+  const binaryOverride = process.env["VOICEBOX_SERVER_BIN"]?.trim();
+  if (binaryOverride && fs.existsSync(binaryOverride)) {
+    return { command: binaryOverride, argsPrefix: [], cwd: path.dirname(binaryOverride) };
+  }
+  if (paths.mode === "packaged") {
+    const binary = path.join(paths.binDir, executable);
+    return fs.existsSync(binary)
+      ? { command: binary, argsPrefix: [], cwd: paths.runtimeDir }
+      : null;
+  }
+
+  const root = path.join(paths.appRoot, "voicebox");
+  const launcher = path.join(paths.appRoot, "scripts", "start-voicebox.mjs");
+  if (binaries && fs.existsSync(launcher) && fs.existsSync(path.join(root, "backend", "main.py"))) {
+    return {
+      command: binaries.node,
+      argsPrefix: [launcher],
+      cwd: paths.appRoot,
+      selfManaged: true,
+    };
+  }
+  const pythonOverride = process.env["VOICEBOX_PYTHON"]?.trim();
+  const candidates = [
+    pythonOverride,
+    path.join(paths.appRoot, ".runtime", "voicebox-venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+    path.join(root, "backend", "venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+    path.join(root, "backend", ".venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+    path.join(root, ".venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const python = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!python || !fs.existsSync(path.join(root, "backend", "main.py"))) return null;
+  return { command: python, argsPrefix: ["-m", "backend.main"], cwd: root };
+}
+
+/** Server-only Voicebox endpoint. Never publish it to the renderer. */
+export function voiceboxServiceUrl(config: DesktopRuntimeConfig): string {
+  return `http://127.0.0.1:${config.ports.voicebox ?? 17493}`;
+}
+
+export interface N8nRuntime {
+  command: string;
+  args: string[];
+  cwd: string;
+  sourceDir?: string;
+  runtimeEntry?: string;
+}
+
+/** Resolve n8n's self-managed launcher against source in dev or its deployed package when installed. */
+export function resolveN8nRuntime(
+  paths: ResolvedPaths,
+  binaries: RuntimeBinaries,
+): N8nRuntime | null {
+  const launcher = path.join(paths.appRoot, "scripts", "start-n8n.mjs");
+  if (!fs.existsSync(launcher)) return null;
+  if (paths.mode === "dev") {
+    const source = path.join(paths.appRoot, "n8n");
+    if (!fs.existsSync(path.join(source, "package.json"))) return null;
+    return {
+      command: binaries.node,
+      args: [launcher],
+      cwd: paths.appRoot,
+      sourceDir: source,
+    };
+  }
+  const runtimeEntry = path.join(paths.appRoot, "n8n-runtime", "bin", "n8n");
+  if (!fs.existsSync(runtimeEntry)) return null;
+  return {
+    command: binaries.node,
+    args: [launcher],
+    cwd: paths.appRoot,
+    runtimeEntry,
+  };
+}
+
+/** Server-only local n8n endpoint. It is deliberately absent from serviceUrls(). */
+export function n8nServiceUrl(config: DesktopRuntimeConfig): string {
+  return `http://127.0.0.1:${config.ports.n8n ?? 5678}`;
+}
+
+/** Server-only CAD service endpoint. Never published to the renderer. */
+export function cadServiceUrl(config: DesktopRuntimeConfig): string {
+  return `http://127.0.0.1:${config.ports.cad ?? 7731}`;
+}
+
+/**
+ * Resolve the CAD service's interpreter.
+ *
+ * CadQuery's kernel binding publishes wheels for CPython 3.10–3.12 only, so the
+ * service never runs on the bundled runtime that serves ChatMock and Hermes: it
+ * gets its own environment, provisioned by `npm run setup:cad` in development
+ * and staged under the install resources in a packaged build. Returning null is
+ * intentional — parametric CAD is an optional leaf capability, and its absence
+ * must leave the rest of Breadboard untouched.
+ */
+export function resolveCadPython(paths: ResolvedPaths): string | null {
+  const executable = process.platform === "win32" ? "python.exe" : "python";
+  const scripts = process.platform === "win32" ? "Scripts" : "bin";
+  const override = process.env["CAD_PYTHON"]?.trim();
+  const candidates = [
+    override,
+    path.join(paths.runtimesDir, "cad-python", scripts, executable),
+    path.join(paths.runtimesDir, "cad-python", executable),
+    path.join(paths.appRoot, ".runtime", "cad-venv", scripts, executable),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const python = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!python) return null;
+  return fs.existsSync(path.join(paths.appRoot, "cad-service", "breadboard_cad", "__main__.py"))
+    ? python
+    : null;
+}
+
+/** Prefer a Codex binary built from the cloned source in dev; packaged builds
+ * use the binary staged under resources/bin by prepare-app-resources.mjs. */
+export function resolveCodexBinary(paths: ResolvedPaths): string {
+  const executable = process.platform === "win32" ? "codex.exe" : "codex";
+  if (paths.mode === "packaged") return path.join(paths.binDir, executable);
+  const override = process.env["CODEX_BIN"]?.trim();
+  if (override && fs.existsSync(override)) return override;
+  for (const profile of ["release", "debug"]) {
+    const candidate = path.join(
+      paths.appRoot,
+      "codex",
+      "codex-rs",
+      "target",
+      profile,
+      executable,
+    );
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return executable;
+}
+
 export interface MissingRuntime {
   runtime: keyof RuntimeBinaries;
   path: string;
@@ -83,16 +260,11 @@ export function missingRuntimes(paths: ResolvedPaths, binaries: RuntimeBinaries)
     .map(([runtime, binaryPath]) => ({ runtime, path: binaryPath }));
 }
 
-function optionalBinary(paths: ResolvedPaths, name: string): string | null {
-  const candidate = path.join(paths.binDir, process.platform === "win32" ? `${name}.exe` : name);
-  return fs.existsSync(candidate) ? candidate : null;
-}
-
 export interface ServiceUrls {
   dashboard: string;
   chatmock: string;
   chatmockV1: string;
-  openharness: string;
+  postiz: string;
   quartz: string;
   /** Only present when GBrain is enabled (a loopback port was allocated). */
   gbrain?: string;
@@ -111,7 +283,7 @@ export function serviceUrls(config: DesktopRuntimeConfig): ServiceUrls {
     dashboard: `http://127.0.0.1:${ports.dashboard}`,
     chatmock: `http://127.0.0.1:${ports.chatmock}`,
     chatmockV1: `http://127.0.0.1:${ports.chatmock}/v1`,
-    openharness: `http://127.0.0.1:${ports.openharness}`,
+    postiz: `http://127.0.0.1:${ports.postiz}`,
     quartz: `http://127.0.0.1:${ports.quartz}`,
     // The adapter secret is NOT published — only the loopback URL, so the smoke
     // test can probe /health without exposing credentials.
@@ -147,8 +319,20 @@ function baseEnv(paths: ResolvedPaths): Record<string, string> {
           "USERNAME",
           "HOMEDRIVE",
           "HOMEPATH",
+          "DOCKER_CLI_PATH",
+          "PODMAN_CLI_PATH",
+          "DOCKER_DESKTOP_PATH",
         ]
-      : ["HOME", "USER", "TMPDIR", "LANG", "SHELL"];
+      : [
+          "HOME",
+          "USER",
+          "TMPDIR",
+          "LANG",
+          "SHELL",
+          "DOCKER_CLI_PATH",
+          "PODMAN_CLI_PATH",
+          "DOCKER_DESKTOP_PATH",
+        ];
   const env: Record<string, string> = {};
   for (const key of passthroughKeys) {
     const value = process.env[key];
@@ -185,15 +369,23 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const { paths, config, binaries } = input;
   const urls = serviceUrls(config);
   const hermesUrl = hermesServiceUrl(config);
+  const voiceboxUrl = voiceboxServiceUrl(config);
+  const voiceboxRuntime = resolveVoiceboxRuntime(paths, binaries);
+  const n8nUrl = n8nServiceUrl(config);
+  const n8nRuntime = resolveN8nRuntime(paths, binaries);
   const persistent = config.persistent;
   const shared = baseEnv(paths);
-  const ffmpeg = optionalBinary(paths, "ffmpeg");
-  const ffprobe = optionalBinary(paths, "ffprobe");
-  const ytdlp = optionalBinary(paths, "yt-dlp");
-
-  const openharnessAuthHeader = `Basic ${Buffer.from(
-    `${persistent.openharnessUsername}:${persistent.openharnessPassword}`,
-  ).toString("base64")}`;
+  const bundledBinary = (name: string): string =>
+    path.join(paths.binDir, process.platform === "win32" ? `${name}.exe` : name);
+  const ffmpeg = bundledBinary("ffmpeg");
+  const ffprobe = bundledBinary("ffprobe");
+  const ytdlp = bundledBinary("yt-dlp");
+  const scriberrBinary = bundledBinary("scriberr");
+  const scriberrDataDir = path.join(paths.runtimeDir, "scriberr");
+  const voiceboxDataDir = path.join(paths.runtimeDir, "voicebox");
+  const n8nDataDir = path.join(paths.runtimeDir, "n8n");
+  const n8nStatusPath = path.join(n8nDataDir, "startup-status.json");
+  const n8nCredentialsPath = path.join(n8nDataDir, "breadboard-auth.json");
 
   // GBrain (garden knowledge retrieval). Additive and off by default. When
   // enabled it runs as a supervised loopback Bun sidecar with a per-install
@@ -213,6 +405,50 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
   const uiTarsUrl = `http://127.0.0.1:${uiTarsPort}`;
   const uiTarsDataDir = path.join(paths.dataRoot, "ui-tars");
 
+  // Subscription proxy (CLIProxyAPI). Serves the models behind Claude/Gemini/
+  // Kimi/Grok subscriptions over OAuth, so they cost nothing per token and need
+  // no API key. Registered only when the binary is actually present: it is
+  // downloaded on demand rather than bundled, and a service whose command does
+  // not exist would fail on every launch for the majority who never connect one.
+  const cliproxyHomeDir = cliproxyHome(paths);
+  const cliproxyEnabled =
+    persistent.cliproxyMode !== "disabled" && isCliproxyInstalled(cliproxyHomeDir);
+  const cliproxyPort = config.ports.cliproxy ?? CLIPROXY_DEFAULT_PORT;
+  const cliproxyUrl = `http://127.0.0.1:${cliproxyPort}`;
+  // Reading these mints the secret files on first use. Both the proxy's own
+  // config and the dashboard need the same values.
+  const cliproxyKey = cliproxyEnabled ? cliproxyApiKey(cliproxyHomeDir) : "";
+  const cliproxyMgmtKey = cliproxyEnabled ? cliproxyManagementKey(cliproxyHomeDir) : "";
+
+  /**
+   * What the dashboard and ChatMock need to reach the proxy.
+   *
+   * Passed explicitly rather than left to each side's own defaults so a
+   * non-preferred port (8317 taken) or a packaged data root cannot make them
+   * disagree about which proxy is running.
+   */
+  const cliproxyClientEnv: Record<string, string> = cliproxyEnabled
+    ? {
+        CLIPROXY_HOME: cliproxyHomeDir,
+        CLIPROXY_PORT: String(cliproxyPort),
+        CLIPROXY_BASE_URL: `${cliproxyUrl}/v1`,
+        CLIPROXY_API_KEY: cliproxyKey,
+        CLIPROXY_MANAGEMENT_KEY: cliproxyMgmtKey,
+      }
+    : {};
+
+  // Recall (local screen + audio capture). Not a supervised service on purpose
+  // — see main/recall.ts for why the dashboard owns the recorder process. These
+  // are the locations both sides must agree on.
+  const recallHomeDir = recallHome(paths);
+  const recallDataDirectory = recallDataDir(paths);
+  const recallUrl = `http://127.0.0.1:${config.ports.recall ?? 3030}`;
+
+  const cadPython = resolveCadPython(paths);
+  const cadEnabled = persistent.cadMode !== "disabled" && cadPython !== null;
+  const cadUrl = cadServiceUrl(config);
+  const cadWorkspace = path.join(paths.runtimeDir, "cad-workspaces");
+
   const chatmock: DesktopServiceDefinition = {
     id: "chatmock",
     displayName: "Local AI (ChatMock)",
@@ -229,12 +465,23 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       "detailed",
       "--reasoning-compat",
       "legacy",
+      // Use ChatMock's native Responses web search. This rides the existing
+      // ChatGPT login and introduces no separate search-provider API key.
+      "--enable-web-search",
     ],
     cwd: path.join(paths.appRoot, "chatmock"),
     env: {
       ...shared,
       PYTHONUNBUFFERED: "1",
       PYTHONDONTWRITEBYTECODE: "1",
+      // The dashboard starts ChatMock's OAuth flow and inherits this same home.
+      // Keep the serving process on it too, or Settings can show the newly
+      // selected account while GPT requests continue using ~/.codex instead.
+      CODEX_HOME: paths.codexHome,
+      // ChatMock's `cliproxy` provider falls back to these when no base URL or
+      // key is stored in providers.json, so a first-run install reaches the
+      // proxy before any catalog sync has happened.
+      ...cliproxyClientEnv,
     },
     healthCheck: {
       type: "http",
@@ -245,50 +492,56 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     startupTimeoutMs: 90_000,
     gracefulShutdownMs: 5_000,
     restartPolicy: "on-failure",
+    // The dashboard hot-reloads in development, but the Python model gateway
+    // does not. Provider catalog edits otherwise leave Settings talking to the
+    // pre-edit process until the entire desktop app is restarted.
+    restartOnChange:
+      paths.mode === "dev"
+        ? [
+            path.join(paths.appRoot, "chatmock", "chatmock", "providers", "catalog.py"),
+            path.join(paths.appRoot, "chatmock", "chatmock", "providers", "dispatch.py"),
+            path.join(paths.appRoot, "chatmock", "chatmock", "providers", "registry.py"),
+            path.join(paths.appRoot, "chatmock", "chatmock", "providers", "store.py"),
+          ]
+        : undefined,
   };
 
-  const openharness: DesktopServiceDefinition = {
-    id: "openharness",
-    displayName: "Agent runtime (OpenHarness)",
-    required: persistent.openharnessMode === "required",
-    command: binaries.bun,
+  const postiz: DesktopServiceDefinition = {
+    id: "postiz",
+    displayName: "Social publishing (Postiz)",
+    // Social publishing degrades to local drafts. Docker is external software,
+    // so its absence or a slow first container pull must never block Breadboard.
+    required: false,
+    startInBackground: true,
+    command: binaries.node,
     args: [
-      "run",
-      "packages/opencode/src/index.ts",
-      "serve",
-      "--port",
-      String(config.ports.openharness),
-      "--hostname",
-      "127.0.0.1",
+      "--experimental-strip-types",
+      path.join(paths.appRoot, "scripts", "start-postiz-supervisor.mjs"),
     ],
-    cwd: paths.openharnessAppDir,
-    dependsOn: ["chatmock"],
+    cwd: paths.appRoot,
     env: {
       ...shared,
-      OPENCODE_SERVER_PASSWORD: persistent.openharnessPassword,
-      OPENCODE_SERVER_USERNAME: persistent.openharnessUsername,
-      OPENCODE_CONFIG_DIR: path.join(paths.appRoot, "openharness-config"),
-      BREADBOARD_INTERNAL_URL: urls.dashboard,
-      OPENHARNESS_TOOL_SECRET: persistent.openharnessToolSecret,
-      CHATMOCK_BASE_URL: urls.chatmockV1,
-      CHATMOCK_API_KEY: "local",
-      CHATMOCK_MODEL: process.env["CHATMOCK_MODEL"] ?? "gpt-5.6-sol",
-      OPENCODE_ENABLE_EXA: "1",
-      OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true",
+      BREADBOARD_DATA_DIR: paths.mode === "packaged" ? paths.dataRoot : "",
+      BREADBOARD_REPO_ROOT: paths.appRoot,
+      SOCIALS_MANAGER_MODE: "stack",
+      SOCIALS_MANAGER_URL: urls.postiz,
+      SOCIALS_MANAGER_ROOT: path.join(paths.appRoot, "postiz-app"),
+      SOCIALS_MANAGER_SUPPRESS_DOCKER_UI: "true",
+      POSTIZ_SUPERVISOR_HOST: "127.0.0.1",
+      POSTIZ_SUPERVISOR_PORT: String(config.ports.postizSupervisor),
+      POSTIZ_SUPERVISOR_STARTUP_TIMEOUT_MS: String(18 * 60_000),
     },
     healthCheck: {
-      // Meaningful readiness: the server is up AND the ChatMock provider
-      // loaded (mirrors scripts/dev-all.mjs which checks /global/health then
-      // /config/providers for "chatmock").
+      // The coordinator opens this endpoint only after Docker Compose, the web
+      // app, account bootstrap, and an authenticated integrations request pass.
       type: "http",
-      url: `${urls.openharness}/config/providers`,
-      headers: { Authorization: openharnessAuthHeader },
-      expectBodyIncludes: "chatmock",
-      timeoutMs: 2_500,
-      intervalMs: 750,
+      url: `http://127.0.0.1:${config.ports.postizSupervisor}/health`,
+      expectBodyIncludes: '"ready":true',
+      timeoutMs: 3_000,
+      intervalMs: 1_500,
     },
-    startupTimeoutMs: 120_000,
-    gracefulShutdownMs: 5_000,
+    startupTimeoutMs: 20 * 60_000,
+    gracefulShutdownMs: 8_000,
     restartPolicy: "on-failure",
   };
 
@@ -327,7 +580,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       OPENAI_BASE_URL: urls.chatmockV1,
       OPENAI_API_KEY: "local",
       CHATMOCK_BASE_URL: urls.chatmockV1,
-      CHATMOCK_MODEL: process.env["CHATMOCK_MODEL"] ?? "gpt-5.6-sol",
+      CHATMOCK_MODEL: process.env["CHATMOCK_MODEL"] ?? "default",
     },
     healthCheck: {
       type: "http",
@@ -339,7 +592,83 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     startupTimeoutMs: 120_000,
     gracefulShutdownMs: 8_000,
     restartPolicy: "on-failure",
+    restartOnChange:
+      paths.mode === "dev"
+        ? [path.join(paths.hermesAppDir, "plugins", "breadboard", "__init__.py")]
+        : undefined,
   };
+
+  const voicebox: DesktopServiceDefinition | null = voiceboxRuntime
+    ? {
+        id: "voicebox",
+        displayName: "Local speech (Voicebox)",
+        required: false,
+        startInBackground: true,
+        command: voiceboxRuntime.command,
+        args: voiceboxRuntime.selfManaged
+          ? voiceboxRuntime.argsPrefix
+          : [
+              ...voiceboxRuntime.argsPrefix,
+              "--host",
+              "127.0.0.1",
+              "--port",
+              String(config.ports.voicebox ?? 17493),
+              "--data-dir",
+              voiceboxDataDir,
+            ],
+        cwd: voiceboxRuntime.cwd,
+        env: {
+          ...shared,
+          PYTHONUNBUFFERED: "1",
+          PYTHONDONTWRITEBYTECODE: "1",
+          VOICEBOX_AUTOINSTALL: "true",
+          VOICEBOX_PORT: String(config.ports.voicebox ?? 17493),
+          VOICEBOX_DATA_DIR: voiceboxDataDir,
+          VOICEBOX_MODELS_DIR: path.join(voiceboxDataDir, "models"),
+          VOICEBOX_STATUS_PATH: path.join(voiceboxDataDir, "startup-status.json"),
+        },
+        // Deliberately no readiness wait, for the same reason as Scriberr
+        // below: Voicebox's first launch downloads multi-gigabyte CUDA wheels
+        // and speech models, and a readiness deadline here would terminate
+        // that install mid-download and leave it to start over on every
+        // launch. Settings polls /health itself and reports the install from
+        // the status file, so supervising liveness alone stays truthful.
+        startupTimeoutMs: 5_000,
+        gracefulShutdownMs: 10_000,
+        restartPolicy: "on-failure",
+      }
+    : null;
+
+  const n8n: DesktopServiceDefinition | null = n8nRuntime
+    ? {
+        id: "n8n",
+        displayName: "Workflow automation (n8n)",
+        required: false,
+        startInBackground: true,
+        command: n8nRuntime.command,
+        args: n8nRuntime.args,
+        cwd: n8nRuntime.cwd,
+        env: {
+          ...shared,
+          N8N_AUTOINSTALL: "true",
+          N8N_PORT: String(config.ports.n8n ?? 5678),
+          N8N_BASE_URL: n8nUrl,
+          N8N_DASHBOARD_URL: urls.dashboard,
+          ...(n8nRuntime.sourceDir ? { N8N_SOURCE_DIR: n8nRuntime.sourceDir } : {}),
+          ...(n8nRuntime.runtimeEntry ? { N8N_RUNTIME_ENTRY: n8nRuntime.runtimeEntry } : {}),
+          N8N_DATA_DIR: n8nDataDir,
+          N8N_STATUS_PATH: n8nStatusPath,
+          N8N_CREDENTIALS_PATH: n8nCredentialsPath,
+          BREADBOARD_DESKTOP_PID: String(process.pid),
+        },
+        // First use installs and builds a sizeable upstream monorepo. Treat the
+        // launcher as healthy after its liveness grace period while the
+        // Workflows page reports exact setup progress from the status file.
+        startupTimeoutMs: 5_000,
+        gracefulShutdownMs: 15_000,
+        restartPolicy: "on-failure",
+      }
+    : null;
 
   const quartzArgs = [
     path.join(paths.quartzWorkspace, "quartz", "bootstrap-cli.mjs"),
@@ -364,11 +693,12 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       BREADBOARD_DASHBOARD_URL: urls.dashboard,
     },
     healthCheck: {
-      // Quartz is ready once its server answers. A brand-new install has an
-      // empty garden, so `/` legitimately 404s until the first page exists.
+      // Quartz binds this supervisor-only endpoint before its initial build.
+      // Large gardens can take several minutes to rebuild; app startup should
+      // wait for the server process, not for every note to finish rendering.
       type: "http",
-      url: `${urls.quartz}/`,
-      acceptAnyStatus: true,
+      url: `${urls.quartz}/__health`,
+      expectBodyIncludes: '"ready":true',
       timeoutMs: 3_000,
       intervalMs: 1_000,
     },
@@ -377,9 +707,25 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
   };
 
-  const dashboardEntry =
-    paths.mode === "packaged"
-      ? [path.join(paths.dashboardServerDir, "server.js")]
+  const requestedDashboardMode =
+    process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"]?.trim().toLowerCase();
+  const devStandaloneServer = path.join(
+    paths.dashboardServerDir,
+    ".next-desktop",
+    "standalone",
+    "dashboard",
+    "server.js",
+  );
+  const useDevStandalone = paths.mode === "dev" && requestedDashboardMode === "standalone";
+  if (useDevStandalone && !fs.existsSync(devStandaloneServer)) {
+    throw new Error(
+      "Fast desktop dashboard build is missing. Run `npm run desktop:dev:fast` from the repository root.",
+    );
+  }
+  const dashboardEntry = paths.mode === "packaged"
+    ? [path.join(paths.dashboardServerDir, "server.js")]
+    : useDevStandalone
+      ? [devStandaloneServer]
       : [
           path.join(paths.dashboardServerDir, "node_modules", "next", "dist", "bin", "next"),
           "dev",
@@ -389,6 +735,10 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
           "--hostname",
           "127.0.0.1",
         ];
+  const dashboardCwd = useDevStandalone
+    ? path.dirname(devStandaloneServer)
+    : paths.dashboardServerDir;
+  const dashboardProduction = paths.mode === "packaged" || useDevStandalone;
 
   const dashboard: DesktopServiceDefinition = {
     id: "dashboard",
@@ -396,14 +746,14 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     required: true,
     command: binaries.node,
     args: dashboardEntry,
-    cwd: paths.dashboardServerDir,
+    cwd: dashboardCwd,
     // The selected runtime starts in the preceding supervisor wave because it
     // depends on ChatMock. It is intentionally not a hard dashboard dependency:
     // unrelated Breadboard features remain usable if the runtime is degraded.
     dependsOn: ["chatmock", "quartz"],
     env: {
       ...shared,
-      NODE_ENV: paths.mode === "packaged" ? "production" : "development",
+      NODE_ENV: dashboardProduction ? "production" : "development",
       PORT: String(config.ports.dashboard),
       HOSTNAME: "127.0.0.1",
       // --- Data + content locations (single source of truth: path-resolver) ---
@@ -413,7 +763,19 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // `<repo>/dashboard` would silently create `<repo>/dashboard/database`.
       // Explicitly clear it to prevent an inherited shell value doing the same.
       BREADBOARD_DATA_DIR: paths.mode === "packaged" ? paths.dataRoot : "",
+      // A dev standalone server changes cwd to its traced build directory.
+      // Keep its mutable data in the same dashboard/db location as hot reload.
+      BREADBOARD_DEVELOPMENT_DASHBOARD_DIR:
+        paths.mode === "dev" ? path.join(paths.appRoot, "dashboard") : "",
       BREADBOARD_REPO_ROOT: paths.appRoot,
+      // The desktop supervisor owns Postiz startup. The dashboard is a client,
+      // and always receives the exact dynamically allocated container port.
+      SOCIALS_MANAGER_MODE: "stack",
+      SOCIALS_MANAGER_URL: urls.postiz,
+      SOCIALS_MANAGER_SUPPRESS_DOCKER_UI: "true",
+      BREADBOARD_SKILLS_CATALOG_URL:
+        process.env["BREADBOARD_SKILLS_CATALOG_URL"]?.trim() ||
+        DEFAULT_BREADBOARD_SKILLS_CATALOG_URL,
       QUARTZ_CONTENT_PATH: paths.quartzContent,
       NEXT_PUBLIC_QUARTZ_URL: urls.quartz,
       // --- Auth ---
@@ -426,42 +788,100 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       OPENAI_BASE_URL: urls.chatmockV1,
       OPENAI_API_KEY: "local",
       CHATMOCK_BASE_URL: urls.chatmockV1,
-      CHATMOCK_MODEL: process.env["CHATMOCK_MODEL"] ?? "gpt-5.6-sol",
-      // --- Runtime-neutral selection (server only) ---
-      AGENT_RUNTIME: persistent.agentRuntime,
-      AGENT_RUNTIME_FALLBACK: persistent.agentRuntimeFallback ?? "none",
+      CHATMOCK_MODEL: process.env["CHATMOCK_MODEL"] ?? "default",
+      // --- Local speech (Voicebox; server-only loopback proxy) ---
+      VOICEBOX_BASE_URL: voiceboxUrl,
+      VOICEBOX_STATUS_PATH: path.join(voiceboxDataDir, "startup-status.json"),
+      // --- Workflow automation (private local n8n) ---
+      N8N_BASE_URL: n8nUrl,
+      N8N_STATUS_PATH: n8nStatusPath,
+      N8N_CREDENTIALS_PATH: n8nCredentialsPath,
+      // --- Recall (local screen + audio history) ---
+      // The dashboard owns this engine's lifecycle rather than the supervisor,
+      // because capture is a per-user opt-in it alone can read; see
+      // main/recall.ts. What it needs from here is where to install it, where
+      // its recordings live, and which loopback port to expect it on.
+      RECALL_HOME: recallHomeDir,
+      RECALL_DATA_DIR: recallDataDirectory,
+      RECALL_BASE_URL: recallUrl,
+      // --- Hermes runtime (server only) ---
+      CODEX_BIN: resolveCodexBinary(paths),
+      CODEX_HOME: paths.codexHome,
+      // ARIS is a read-only research methodology/skill checkout consumed by
+      // the dashboard per turn; it is not a separate network service.
+      ARIS_ROOT: process.env["ARIS_ROOT"]?.trim()
+        ? path.resolve(process.env["ARIS_ROOT"].trim())
+        : path.join(paths.appRoot, "auto-claude-code-research-in-sleep"),
       HERMES_BASE_URL: hermesUrl,
       HERMES_DASHBOARD_SESSION_TOKEN: persistent.hermesSessionToken,
       BREADBOARD_HERMES_TOOL_SECRET: persistent.hermesToolSecret,
-      // --- OpenHarness ---
-      OPENHARNESS_ENABLED: persistent.openharnessMode === "legacy" ? "false" : "true",
-      OPENHARNESS_MODE: persistent.openharnessMode,
-      OPENHARNESS_BASE_URL: urls.openharness,
-      OPENHARNESS_USERNAME: persistent.openharnessUsername,
-      OPENHARNESS_PASSWORD: persistent.openharnessPassword,
-      OPENHARNESS_TOOL_SECRET: persistent.openharnessToolSecret,
-      OPENHARNESS_CAPABILITY_SECRET: persistent.openharnessCapabilitySecret,
-      OPENHARNESS_ROOT: paths.openharnessRoot,
-      OPENHARNESS_SKILLS_QUARANTINE: paths.skillsQuarantine,
-      OPENHARNESS_SKILLS_APPROVED: paths.skillsApproved,
-      OPENHARNESS_SKILLS_CONDITIONAL: paths.skillsConditional,
-      // Optional local persona catalog. Packaged services use a controlled
-      // environment, so this explicit pass-through is required when the
-      // desktop process was launched with AGENCY_AGENTS_PATH configured.
-      ...(process.env["AGENCY_AGENTS_PATH"]?.trim()
-        ? { AGENCY_AGENTS_PATH: path.resolve(process.env["AGENCY_AGENTS_PATH"].trim()) }
-        : {}),
+      HERMES_ENABLED: "true",
+      HERMES_MODE: "required",
+      HERMES_CAPABILITY_SECRET: persistent.hermesCapabilitySecret,
+      HERMES_ROOT: paths.hermesWorkspaceRoot,
+      HERMES_SKILLS_QUARANTINE: paths.skillsQuarantine,
+      HERMES_SKILLS_APPROVED: paths.skillsApproved,
+      HERMES_SKILLS_CONDITIONAL: paths.skillsConditional,
+      HERMES_FIRST_PARTY_SKILLS_ROOT: path.join(
+        paths.appRoot,
+        "hermes-skills",
+        "prebuilt",
+      ),
+      BREADBOARD_WATCH_PYTHON: binaries.python,
+      // The evaluator is internal-only. Mode defaults to empty/off and is
+      // deliberately absent from renderer settings and IPC contracts.
+      BREADBOARD_IFIXAI_PYTHON: binaries.python,
+      BREADBOARD_IFIXAI_ENDPOINT: urls.chatmockV1,
+      BREADBOARD_IFIXAI_MODE: process.env["BREADBOARD_IFIXAI_MODE"] ?? "",
+      BREADBOARD_IFIXAI_SUT_MODEL:
+        process.env["BREADBOARD_IFIXAI_SUT_MODEL"] ??
+        process.env["CHATMOCK_MODEL"] ??
+        "default",
+      BREADBOARD_IFIXAI_JUDGE_MODEL:
+        process.env["BREADBOARD_IFIXAI_JUDGE_MODEL"] ?? "",
+      BREADBOARD_IFIXAI_REPAIR_MODEL:
+        process.env["BREADBOARD_IFIXAI_REPAIR_MODEL"] ?? "",
+      BREADBOARD_IFIXAI_SUITE:
+        process.env["BREADBOARD_IFIXAI_SUITE"] ?? "strategic",
+      BREADBOARD_IFIXAI_SEED:
+        process.env["BREADBOARD_IFIXAI_SEED"] ?? "1701",
+      BREADBOARD_IFIXAI_INTERVAL_HOURS:
+        process.env["BREADBOARD_IFIXAI_INTERVAL_HOURS"] ?? "24",
+      BREADBOARD_IFIXAI_STARTUP_DELAY_SECONDS:
+        process.env["BREADBOARD_IFIXAI_STARTUP_DELAY_SECONDS"] ?? "120",
+      BREADBOARD_IFIXAI_TIMEOUT_MINUTES:
+        process.env["BREADBOARD_IFIXAI_TIMEOUT_MINUTES"] ?? "20",
+      BREADBOARD_IFIXAI_JUDGE_MAX_CALLS:
+        process.env["BREADBOARD_IFIXAI_JUDGE_MAX_CALLS"] ?? "200",
+      BREADBOARD_IFIXAI_MAX_ATTEMPTS:
+        process.env["BREADBOARD_IFIXAI_MAX_ATTEMPTS"] ?? "1",
+      BREADBOARD_IFIXAI_MINIMUM_IMPROVEMENT:
+        process.env["BREADBOARD_IFIXAI_MINIMUM_IMPROVEMENT"] ?? "0.15",
+      BREADBOARD_IFIXAI_MAXIMUM_CATEGORY_REGRESSION:
+        process.env["BREADBOARD_IFIXAI_MAXIMUM_CATEGORY_REGRESSION"] ?? "0.02",
+      // LoopX is stdlib-only Python, so the bundled runtime runs it directly.
+      // Without these the packaged app finds no interpreter beside the staged
+      // source and every conversation silently loses its loop state.
+      BREADBOARD_LOOPX_PYTHON: binaries.python,
+      BREADBOARD_LOOPX_ROOT: path.join(paths.appRoot, "loopx"),
+      // Product-owned persona catalog. A valid source override is supported
+      // for development, while installed builds use the staged copy.
+      AGENCY_AGENTS_PATH: resolveAgencyAgentsPath(paths),
       BREADBOARD_INTERNAL_URL: urls.dashboard,
       // --- Quartz publish pipeline runs `node bootstrap-cli.mjs` itself ---
       BREADBOARD_NODE_BINARY: binaries.node,
       // --- Video transcription (optional capability) ---
       VIDEO_TRANSCRIPTION_ENABLED: persistent.scriberrEnabled ? "true" : "false",
       ...(persistent.scriberrEnabled
-        ? { SCRIBERR_BASE_URL: persistent.scriberrBaseUrl ?? "http://127.0.0.1:8091" }
+        ? {
+            SCRIBERR_BASE_URL: persistent.scriberrBaseUrl ?? "http://127.0.0.1:8091",
+            SCRIBERR_USERNAME: persistent.scriberrUsername,
+            SCRIBERR_PASSWORD: persistent.scriberrPassword,
+          }
         : {}),
-      ...(ffmpeg ? { FFMPEG_PATH: ffmpeg } : {}),
-      ...(ffprobe ? { FFPROBE_PATH: ffprobe } : {}),
-      ...(ytdlp ? { YTDLP_PATH: ytdlp } : {}),
+      FFMPEG_PATH: ffmpeg,
+      FFPROBE_PATH: ffprobe,
+      YTDLP_PATH: ytdlp,
       // --- GBrain (garden knowledge retrieval; only when enabled) ---
       ...(gbrainEnabled
         ? {
@@ -470,12 +890,27 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
             GBRAIN_ADAPTER_SECRET: persistent.gbrainAdapterSecret,
           }
         : {}),
-      // --- UI-TARS browser operator (loopback adapter; only when enabled) ---
+      // --- Subscription proxy (OAuth sign-in + model sync live here) ---
+      CLIPROXY_MODE: persistent.cliproxyMode,
+      ...cliproxyClientEnv,
+      // --- Agent TARS operator (loopback adapter; only when enabled) ---
       UI_TARS_MODE: persistent.uiTarsMode,
       ...(uiTarsEnabled
         ? {
             UI_TARS_ADAPTER_URL: uiTarsUrl,
             UI_TARS_ADAPTER_SECRET: persistent.uiTarsAdapterSecret,
+          }
+        : {}),
+      // --- Parametric CAD (loopback service; only when it is actually present) ---
+      // The port is dynamically allocated, so it must be passed; the secret is
+      // the per-install one, which both the dashboard and the service read from
+      // here rather than from the shared file.
+      CAD_MODE: persistent.cadMode,
+      ...(cadEnabled
+        ? {
+            CAD_SERVICE_URL: cadUrl,
+            CAD_SERVICE_SECRET: persistent.cadServiceSecret,
+            BREADBOARD_CAD_PORT: String(config.ports.cad ?? 7731),
           }
         : {}),
     },
@@ -522,7 +957,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
 
   const uiTars: DesktopServiceDefinition = {
     id: "ui-tars",
-    displayName: "Browser operator (UI-TARS)",
+    displayName: "Agent TARS operator",
     // Never blocks startup: optional/required modes both degrade to a truthful
     // unavailable state in the dashboard rather than failing the whole app.
     required: false,
@@ -546,7 +981,7 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
       // usable (optional mode).
       UI_TARS_RUNTIME: process.env["UI_TARS_RUNTIME"] ?? "agent-tars",
       UI_TARS_MAX_CONCURRENT_RUNS: process.env["UI_TARS_MAX_CONCURRENT_RUNS"] ?? "3",
-      UI_TARS_SCREENSHOT_RETENTION_MS: process.env["UI_TARS_SCREENSHOT_RETENTION_MS"] ?? "86400000",
+      UI_TARS_SCREENSHOT_RETENTION_MS: process.env["UI_TARS_SCREENSHOT_RETENTION_MS"] ?? "0",
     },
     healthCheck: {
       type: "http",
@@ -559,51 +994,133 @@ export function buildServiceDefinitions(input: BuildDefinitionsInput): DesktopSe
     restartPolicy: "on-failure",
   };
 
-  const definitions: DesktopServiceDefinition[] = [chatmock];
-  // Legacy mode intentionally runs without OpenHarness (existing Breadboard
-  // migration contract) — do not register the service at all.
-  const selectedRuntimes = new Set(
-    [persistent.agentRuntime, persistent.agentRuntimeFallback].filter(Boolean),
-  );
-  if (selectedRuntimes.has("hermes")) definitions.push(hermes);
-  if (
-    selectedRuntimes.has("openharness") &&
-    persistent.openharnessMode !== "legacy"
-  ) {
-    definitions.push(openharness);
-  }
+  const cad: DesktopServiceDefinition | null = cadEnabled
+    ? {
+        id: "cad",
+        displayName: "Parametric CAD (CadQuery)",
+        // Never blocks startup: without it the CAD agent reports the service as
+        // unavailable and every other capability is unaffected.
+        required: false,
+        startInBackground: true,
+        command: cadPython!,
+        args: [
+          "-m",
+          "breadboard_cad",
+          "serve",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          String(config.ports.cad ?? 7731),
+        ],
+        cwd: path.join(paths.appRoot, "cad-service"),
+        env: {
+          ...shared,
+          PYTHONUNBUFFERED: "1",
+          PYTHONDONTWRITEBYTECODE: "1",
+          // Secret injected via env (never argv) so it cannot leak in process listings.
+          BREADBOARD_CAD_SECRET: persistent.cadServiceSecret,
+          BREADBOARD_CAD_HOST: "127.0.0.1",
+          BREADBOARD_CAD_PORT: String(config.ports.cad ?? 7731),
+          // Per-execution workspaces are transient and live under the desktop
+          // data dir — never in resources, and never in the user's documents.
+          BREADBOARD_CAD_WORKSPACE: cadWorkspace,
+        },
+        // Deliberately no readiness wait: the health endpoint imports
+        // OpenCascade in a child process, which takes several seconds on a cold
+        // cache. Supervising liveness keeps startup honest while the dashboard's
+        // /api/cad/health reports the real state.
+        startupTimeoutMs: 5_000,
+        gracefulShutdownMs: 8_000,
+        restartPolicy: "on-failure",
+      }
+    : null;
+
+  const cliproxy: DesktopServiceDefinition = {
+    id: "cliproxy",
+    displayName: "Subscriptions (model proxy)",
+    // Never blocks startup, in any mode: subscriptions are an optional way to
+    // reach models, and the rest of Breadboard works without them.
+    required: false,
+    command: cliproxyBinaryPath(cliproxyHomeDir),
+    // Written by prepareDataLayer, not here: building definitions must stay
+    // free of side effects. Port, auth-dir and the loopback secrets are
+    // Breadboard's to own, so that file is regenerated every launch.
+    args: ["--config", cliproxyConfigPath(cliproxyHomeDir)],
+    cwd: cliproxyHomeDir,
+    env: {
+      ...shared,
+      // Keeps the Go binary's own logs inside the proxy home rather than cwd.
+      WRITABLE_PATH: cliproxyHomeDir,
+    },
+    healthCheck: {
+      type: "http",
+      // /v1/models is the readiness signal that matters: it answers only once
+      // the credential files have been loaded, which is what makes the
+      // subscription models actually addressable. It is authenticated, so the
+      // bearer goes with it — an unauthenticated probe 401s forever.
+      url: `${cliproxyUrl}/v1/models`,
+      headers: { Authorization: `Bearer ${cliproxyKey}` },
+      timeoutMs: 2_500,
+      intervalMs: 750,
+    },
+    startupTimeoutMs: 45_000,
+    gracefulShutdownMs: 5_000,
+    restartPolicy: "on-failure",
+  };
+
+  const definitions: DesktopServiceDefinition[] = [chatmock, postiz];
+  // Before ChatMock's wave completes: ChatMock resolves `cliproxy/<model>` per
+  // request, so ordering only affects how quickly the first such call succeeds,
+  // not correctness.
+  if (cliproxyEnabled) definitions.push(cliproxy);
+  definitions.push(hermes);
   if (gbrainEnabled) definitions.push(gbrain);
   if (uiTarsEnabled) definitions.push(uiTars);
+  if (cad) definitions.push(cad);
+  if (voicebox) definitions.push(voicebox);
+  if (n8n) definitions.push(n8n);
   definitions.push(quartz, dashboard);
 
-  // Scriberr: optional Docker compatibility mode only. Never required, never
-  // blocks startup; when disabled the dashboard reports the capability as
-  // unavailable (existing behavior).
+  // Scriberr: bundled native loopback sidecar. It has no readiness wait here
+  // because its first launch may prepare sizeable speech-model dependencies.
+  // Dashboard health checks remain truthful while setup continues, and the
+  // optional process never delays or blocks the Breadboard window.
   if (persistent.scriberrEnabled && persistent.scriberrBaseUrl === null) {
     definitions.push({
       id: "scriberr",
-      displayName: "Video transcription (Scriberr, Docker)",
+      displayName: "Video transcription (Scriberr)",
       required: false,
-      command: "docker",
-      args: [
-        "compose",
-        "-f",
-        path.join(paths.appRoot, "scriberr", "docker-compose.yml"),
-        "-f",
-        path.join(paths.runtimeDir, "scriberr-compose.override.yml"),
-        "up",
-      ],
-      cwd: path.join(paths.appRoot, "scriberr"),
-      env: shared,
-      healthCheck: {
-        type: "http",
-        url: "http://127.0.0.1:8091/health",
-        timeoutMs: 2_500,
-        intervalMs: 1_000,
+      command: scriberrBinary,
+      args: [],
+      cwd: paths.runtimeDir,
+      env: {
+        ...shared,
+        HOST: "127.0.0.1",
+        PORT: "8091",
+        APP_ENV: "production",
+        SCRIBERR_LAZY_MODEL_INIT: "true",
+        SECURE_COOKIES: "false",
+        ALLOWED_ORIGINS: urls.dashboard,
+        DATABASE_PATH: path.join(scriberrDataDir, "scriberr.db"),
+        JWT_SECRET_FILE: path.join(scriberrDataDir, "jwt_secret"),
+        UPLOAD_DIR: path.join(scriberrDataDir, "uploads"),
+        TRANSCRIPTS_DIR: path.join(scriberrDataDir, "transcripts"),
+        TEMP_DIR: path.join(scriberrDataDir, "temp"),
+        WHISPERX_ENV: path.join(scriberrDataDir, "models"),
+        // Speaker separation only. WhisperX diarizes with pyannote, whose model
+        // is gated on Hugging Face: without a token the job fails with a 401 and
+        // the transcript comes back unattributed. `baseEnv` is an allowlist, so
+        // this has to be forwarded explicitly or setting it would silently do
+        // nothing. Absent is the normal case and costs only the speaker labels.
+        ...(process.env.HF_TOKEN?.trim() ? { HF_TOKEN: process.env.HF_TOKEN.trim() } : {}),
+        FFMPEG_PATH: ffmpeg,
+        FFPROBE_PATH: ffprobe,
+        YTDLP_PATH: ytdlp,
+        PATH: [paths.binDir, shared["PATH"]].filter(Boolean).join(path.delimiter),
       },
-      startupTimeoutMs: 60_000,
+      startupTimeoutMs: 5_000,
       gracefulShutdownMs: 10_000,
-      restartPolicy: "never",
+      restartPolicy: "on-failure",
     });
   }
   return definitions;

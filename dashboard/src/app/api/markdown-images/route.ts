@@ -3,6 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import { requireOwnedClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 import { walkClusterMarkdown } from '@/lib/knowledge';
+import {
+  normalizeDocumentSlug,
+  safeClusterDir,
+  slugifyAssetName,
+  uniqueAssetPath,
+} from '@/lib/garden-markdown-assets';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,88 +32,6 @@ interface PreparedImage {
   buffer: Buffer;
   baseName: string;
   altText: string;
-}
-
-function safeClusterDir(contentPath: string, clusterSlug: string): string | null {
-  const root = path.resolve(/* turbopackIgnore: true */ contentPath);
-  const clusterDir = path.resolve(/* turbopackIgnore: true */ root, clusterSlug.trim());
-  if (!clusterDir.startsWith(root + path.sep)) return null;
-  return clusterDir;
-}
-
-function decodeSlug(value: string): string {
-  let current = value;
-  for (let index = 0; index < 4; index += 1) {
-    try {
-      const decoded = decodeURIComponent(current);
-      if (decoded === current) return current;
-      current = decoded;
-    } catch {
-      return current;
-    }
-  }
-  return current;
-}
-
-function slugifyAssetName(value: string): string {
-  const slug = value
-    .toLowerCase()
-    .trim()
-    .replace(/['"]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  return slug || 'image';
-}
-
-function candidateSlugInputs(slug: string): string[] {
-  const decoded = decodeSlug(slug);
-  const candidates = [decoded];
-
-  try {
-    const url = new URL(decoded, 'http://second-brain.local');
-    const note = url.searchParams.get('note');
-    if (note) candidates.unshift(decodeSlug(note));
-    candidates.push(url.pathname);
-  } catch {
-    // Plain slugs are handled by the decoded candidate.
-  }
-
-  return [...new Set(candidates)];
-}
-
-function normalizeDocumentSlug(clusterSlug: string, slug: string): string | null {
-  const cluster = clusterSlug.trim();
-
-  for (const candidate of candidateSlugInputs(slug)) {
-    const cleaned = candidate
-      .replace(/\\/g, '/')
-      .replace(/[?#].*$/, '')
-      .replace(/\.md$/i, '')
-      .trim();
-    let segments = cleaned.split('/').map((segment) => segment.trim()).filter(Boolean);
-    const clusterIndex = segments.findIndex((segment) => segment === cluster);
-    if (clusterIndex >= 0) segments = segments.slice(clusterIndex + 1);
-    if (segments[0] === 'garden' && segments[1] === cluster) segments = segments.slice(2);
-    if (segments.length === 0) continue;
-
-    const noteSlug = segments.at(-1);
-    if (!noteSlug) continue;
-    if (noteSlug.toLowerCase() === 'index' || noteSlug.toLowerCase() === '_index') return null;
-    return noteSlug;
-  }
-
-  return null;
-}
-
-function uniqueAssetPath(assetDir: string, baseName: string, ext: string): string {
-  let candidate = path.join(/* turbopackIgnore: true */ assetDir, `${baseName}.${ext}`);
-  let counter = 2;
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(/* turbopackIgnore: true */ assetDir, `${baseName}-${counter}.${ext}`);
-    counter++;
-  }
-  return candidate;
 }
 
 function prepareImage(raw: RawImage): { image?: PreparedImage; error?: string } {
@@ -139,7 +63,7 @@ function prepareImage(raw: RawImage): { image?: PreparedImage; error?: string } 
 
   const originalName = path.basename(fileName, path.extname(fileName)).replace(/[_-]+/g, ' ').trim();
   const altText = originalName || 'image';
-  const baseName = slugifyAssetName(originalName || 'image');
+  const baseName = slugifyAssetName(originalName || 'image', 'image');
 
   return {
     image: {

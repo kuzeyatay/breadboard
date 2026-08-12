@@ -11,6 +11,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 loadRootEnv(repoRoot);
 const chatmockDir = path.join(repoRoot, "chatmock");
 const python = process.platform === "win32" ? "python" : "python3";
+const port = /^\d+$/.test(process.env.CHATMOCK_PORT ?? "")
+  ? process.env.CHATMOCK_PORT
+  : "8765";
 
 const child = spawn(
   python,
@@ -18,13 +21,17 @@ const child = spawn(
     "chatmock.py",
     "serve",
     "--port",
-    "8765",
+    port,
     "--reasoning-effort",
     "low",
     "--reasoning-summary",
     "detailed",
     "--reasoning-compat",
     "legacy",
+    // Native Responses web search uses the existing ChatGPT login handled by
+    // ChatMock. It does not require a Serper, Firecrawl, or OpenAI API key and
+    // keeps current-fact questions on a grounded path by default.
+    "--enable-web-search",
   ],
   { cwd: chatmockDir, env: process.env, stdio: "inherit" },
 );

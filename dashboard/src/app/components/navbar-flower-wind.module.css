@@ -1,3 +1,19 @@
+.plantAnimation {
+  display: contents;
+}
+
+.skyAnimation {
+  display: none;
+}
+
+:global(html[data-theme="dark"]) .plantAnimation {
+  display: none;
+}
+
+:global(html[data-theme="dark"]) .skyAnimation {
+  display: contents;
+}
+
 .wind {
   --grass-dark: #4f7a5a;
   --grass-mid: #6faf73;
@@ -18,6 +34,50 @@
     #000 97%,
     transparent 100%
   );
+}
+
+.starField {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    #000 3%,
+    #000 97%,
+    transparent 100%
+  );
+}
+
+.star {
+  position: absolute;
+  left: var(--star-left);
+  top: var(--star-top);
+  width: var(--star-size);
+  height: var(--star-size);
+  border-radius: 999px;
+  background: var(--star-color);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--star-color) 42%, transparent);
+  opacity: 0.22;
+  animation: starTwinkle var(--star-duration) ease-in-out var(--star-delay) infinite;
+  will-change: transform, opacity;
+}
+
+.comet {
+  position: absolute;
+  left: var(--comet-left);
+  top: var(--comet-top);
+  width: var(--comet-length);
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #9fb5c4 68%, #e6ebe5);
+  opacity: 0;
+  transform: rotate(var(--comet-angle));
+  transform-origin: 100% 50%;
+  animation: cometPass var(--comet-duration) linear var(--comet-delay) infinite;
+  will-change: transform, opacity;
 }
 
 .grassBed {
@@ -155,9 +215,54 @@
   }
 }
 
+@keyframes starTwinkle {
+  0%,
+  100% {
+    opacity: 0.18;
+    transform: translateX(0) scale(0.88);
+  }
+
+  50% {
+    opacity: 0.72;
+    transform: translateX(var(--star-drift)) scale(1.12);
+  }
+}
+
+@keyframes cometPass {
+  0%,
+  72% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(var(--comet-angle));
+  }
+
+  75% {
+    opacity: 0.68;
+  }
+
+  88%,
+  100% {
+    opacity: 0;
+    transform: translate3d(120vw, var(--comet-travel-y), 0) rotate(var(--comet-angle));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .plant {
     animation: none;
     transform: translateX(0) rotate(0);
   }
+
+  .star,
+  .comet {
+    animation: none;
+  }
+
+  .star {
+    opacity: 0.5;
+  }
+
+  .comet {
+    display: none;
+  }
+
 }

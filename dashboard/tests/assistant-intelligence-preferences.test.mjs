@@ -9,9 +9,9 @@ process.env.BREADBOARD_DATA_DIR = dataRoot;
 
 const { default: db } = await import("../src/lib/db.ts");
 const {
-  getOpenHarnessUserSettings,
-  setOpenHarnessUserSettings,
-} = await import("../src/lib/openharness/runtime-store.ts");
+  getHermesUserSettings,
+  setHermesUserSettings,
+} = await import("../src/lib/hermes/runtime-store.ts");
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -26,37 +26,76 @@ test("a selected intelligence mode becomes the durable user default", () => {
     "INSERT INTO users(id, username, email, password_hash) VALUES (1, 'alice', 'alice@example.test', 'x')",
   ).run();
 
-  assert.deepEqual(getOpenHarnessUserSettings(1), {
+  assert.deepEqual(getHermesUserSettings(1), {
     filesystemMode: "restricted",
     lastActiveDirectory: null,
     defaultModel: "gpt-5.6-sol",
     reasoningEffort: "high",
+    reasoningEffortByModel: {},
     intelligencePreferenceSet: false,
   });
 
-  setOpenHarnessUserSettings(1, {
+  setHermesUserSettings(1, {
     defaultModel: "gpt-5.6-terra",
     reasoningEffort: "xhigh",
   });
-  assert.deepEqual(getOpenHarnessUserSettings(1), {
+  assert.deepEqual(getHermesUserSettings(1), {
     filesystemMode: "restricted",
     lastActiveDirectory: null,
     defaultModel: "gpt-5.6-terra",
     reasoningEffort: "xhigh",
+    reasoningEffortByModel: { "gpt-5.6-terra": "xhigh" },
     intelligencePreferenceSet: true,
   });
 
-  setOpenHarnessUserSettings(1, { filesystemMode: "full" });
-  const restored = getOpenHarnessUserSettings(1);
+  setHermesUserSettings(1, { filesystemMode: "full" });
+  const restored = getHermesUserSettings(1);
   assert.equal(restored.defaultModel, "gpt-5.6-terra");
   assert.equal(restored.reasoningEffort, "xhigh");
   assert.equal(restored.intelligencePreferenceSet, true);
 });
 
+test("the effort is remembered per model, so a shallower model cannot erase it", () => {
+  // A model whose ladder stops lower clamps the selection down. Without a
+  // per-model record that clamp would silently become the choice for the model
+  // it was never made on.
+  setHermesUserSettings(1, { defaultModel: "gpt-5.6-sol", reasoningEffort: "max" });
+  setHermesUserSettings(1, { defaultModel: "cliproxy/claude-opus-5" });
+  setHermesUserSettings(1, { reasoningEffort: "high" });
+
+  const onClaude = getHermesUserSettings(1);
+  assert.equal(onClaude.defaultModel, "cliproxy/claude-opus-5");
+  assert.equal(onClaude.reasoningEffort, "high");
+  assert.equal(onClaude.reasoningEffortByModel["gpt-5.6-sol"], "max");
+
+  // Coming back restores the depth chosen there, not the clamped one.
+  const back = setHermesUserSettings(1, { defaultModel: "gpt-5.6-sol" });
+  assert.equal(back.reasoningEffort, "max");
+  assert.equal(getHermesUserSettings(1).reasoningEffort, "max");
+
+  // A model never chosen before keeps whatever is active rather than resetting.
+  const fresh = setHermesUserSettings(1, { defaultModel: "gpt-5.6-luna" });
+  assert.equal(fresh.reasoningEffort, "max");
+});
+
+test("the picker is handed the whole per-model record, not just the active pair", () => {
+  const hook = source("../src/app/components/use-assistant-intelligence.ts");
+  const route = source("../src/app/api/assistant-preferences/route.ts");
+  assert.match(route, /reasoningEffortByModel: settings\.reasoningEffortByModel/);
+  // Selecting a model applies its remembered depth in the same request, so the
+  // model and the effort can never land out of order.
+  assert.match(hook, /const restored = rememberedEfforts\.current\[normalized\]/);
+  assert.match(
+    hook,
+    /persist\(restored \? \{ model: normalized, reasoningEffort: restored \} : \{ model: normalized \}\)/,
+  );
+  assert.match(hook, /remember\(model, value\)/);
+});
+
 test("every dashboard chat surface consumes the shared intelligence preference", () => {
   for (const file of [
-    "../src/app/components/openharness/dashboard-agent-terminal.tsx",
-    "../src/app/components/openharness/garden-agent-chat.tsx",
+    "../src/app/components/hermes/dashboard-agent-terminal.tsx",
+    "../src/app/components/hermes/garden-agent-chat.tsx",
     "../src/app/components/knowledge-terminal.tsx",
     "../src/app/garden/garden-assistant.tsx",
     "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -78,7 +117,7 @@ test("preferences survive reloads locally, sync to the account, and reach Quartz
   assert.match(hook, /localStorage\.setItem/);
   assert.match(hook, /method: "PATCH"/);
   assert.match(route, /intelligencePreferenceSet/);
-  assert.match(route, /setOpenHarnessUserSettings/);
+  assert.match(route, /setHermesUserSettings/);
   assert.match(quartz, /api\/assistant-preferences/);
   assert.match(quartz, /saveIntelligencePreference/);
   assert.match(quartz, /localStorage\.setItem\(ASSISTANT_EFFORT_STORAGE_KEY/);

@@ -11,7 +11,7 @@ test("live thinking uses the full wall-clock turn instead of early provider dura
   }), 9_000);
 });
 
-test("completed thinking ends at the latest terminal activity timestamp", () => {
+test("completed branch uses its own persisted duration instead of newer shared activity", () => {
   assert.equal(assistantResponseElapsedMs({
     activities: [
       {
@@ -26,7 +26,7 @@ test("completed thinking ends at the latest terminal activity timestamp", () => 
     active: false,
     now: Date.parse("2026-01-01T00:00:12.000Z"),
     reportedDurationMs: 2_000,
-  }), 8_000);
+  }), 2_000);
 });
 
 test("restored responses without activity timestamps use reported duration", () => {

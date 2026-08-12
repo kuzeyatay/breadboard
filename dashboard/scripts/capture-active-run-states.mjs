@@ -233,7 +233,7 @@ async function capture() {
   await send("Fetch.enable", {
     patterns: [
       {
-        urlPattern: "*/api/openharness/sessions/*/steer",
+        urlPattern: "*/api/hermes/sessions/*/steer",
         requestStage: "Request",
       },
     ],
@@ -255,7 +255,7 @@ async function capture() {
   await send("Fetch.enable", {
     patterns: [
       {
-        urlPattern: "*/api/openharness/sessions/*/abort",
+        urlPattern: "*/api/hermes/sessions/*/abort",
         requestStage: "Request",
       },
     ],

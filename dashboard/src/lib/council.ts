@@ -7,6 +7,8 @@
 // ChatMock strips the fields before anything is forwarded upstream, and
 // requests without them keep working exactly as before.
 
+import { breadSystemPrompt } from './assistant-identity.ts';
+
 export type CouncilTaskType =
   | 'topic_map'
   | 'learning_spine'
@@ -58,5 +60,37 @@ export function withCouncil<T extends object>(params: T, council: CouncilFields)
   for (const [key, value] of Object.entries(council)) {
     if (value !== undefined && value !== null) extras[key] = value;
   }
-  return { ...params, ...extras } as T;
+
+  const identified = { ...params } as Record<string, unknown>;
+  if (typeof identified.instructions === 'string') {
+    identified.instructions = breadSystemPrompt(identified.instructions);
+  }
+
+  if (Array.isArray(identified.messages)) {
+    const messages = identified.messages.map((message) =>
+      message && typeof message === 'object'
+        ? { ...(message as Record<string, unknown>) }
+        : message,
+    );
+    const systemIndex = messages.findIndex(
+      (message) =>
+        message &&
+        typeof message === 'object' &&
+        (message as Record<string, unknown>).role === 'system',
+    );
+    if (systemIndex >= 0) {
+      const systemMessage = messages[systemIndex] as Record<string, unknown>;
+      if (typeof systemMessage.content === 'string') {
+        messages[systemIndex] = {
+          ...systemMessage,
+          content: breadSystemPrompt(systemMessage.content),
+        };
+      }
+    } else {
+      messages.unshift({ role: 'system', content: breadSystemPrompt('') });
+    }
+    identified.messages = messages;
+  }
+
+  return { ...identified, ...extras } as T;
 }

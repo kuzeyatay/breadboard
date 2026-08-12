@@ -139,15 +139,13 @@ export default function NavigationProgress() {
       aria-hidden={!visible}
     >
       <div
-        className="relative h-full bg-[#0969da] shadow-[0_0_8px_rgba(9,105,218,0.5)] will-change-[width,opacity]"
+        className="h-full bg-[#0969da] will-change-[width,opacity]"
         style={{
           width: `${progress}%`,
           opacity: visible ? 1 : 0,
           transition: 'width 220ms ease-out, opacity 160ms ease-out',
         }}
-      >
-        <span className="absolute right-0 top-0 h-full w-24 bg-gradient-to-r from-transparent to-white/70" />
-      </div>
+      />
     </div>
   );
 }

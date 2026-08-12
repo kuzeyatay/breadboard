@@ -80,9 +80,25 @@ export interface ScriberrTranscriptSegment {
   speaker: string | null;
 }
 
+/**
+ * One word from Scriberr's `word_segments`.
+ *
+ * WhisperX aligns every word, so these are sub-second accurate — which is what
+ * the video editor cuts on. Not every backend produces them (Voxtral, for one,
+ * has no word timings at all), so callers that need them must check.
+ */
+export interface ScriberrTranscriptWord {
+  start: number;
+  end: number;
+  word: string;
+  speaker: string | null;
+}
+
 /** Normalized view of Scriberr's `GET /transcription/:id/transcript` payload. */
 export interface ScriberrTranscript {
   segments: ScriberrTranscriptSegment[];
+  /** Word-level timings when the backend produced them; empty when it did not. */
+  words: ScriberrTranscriptWord[];
   /** Full plain text when Scriberr provides it alongside segments. */
   text: string | null;
   language: string | null;

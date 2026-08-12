@@ -1,6 +1,6 @@
 // Breadboard-owned GBrain retrieval types.
 //
-// These are the shapes Breadboard hands to OpenHarness. They are deliberately
+// These are the shapes Breadboard hands to Hermes. They are deliberately
 // distinct from the raw adapter types: a Breadboard citation is keyed on the
 // GARDEN (slug + page), never on an internal GBrain source id or a filesystem
 // path. Internal ids and paths never cross this boundary.

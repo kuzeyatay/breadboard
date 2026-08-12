@@ -1,217 +1,150 @@
 "use client";
 
-import { useState } from "react";
-import { signOut } from "next-auth/react";
+import Link from "next/link";
 import NavbarFlowerWind from "./navbar-flower-wind";
+import WorkTimerShortcut from "./work-timer-shortcut";
+import {
+  DEFAULT_NAVBAR_SHORTCUTS,
+  type NavbarShortcuts,
+} from "@/lib/profile/navbar-shortcuts.ts";
 
 interface Props {
   email: string;
   username?: string | null;
+  /**
+   * Which optional shortcuts this account has asked for. Read on the server so
+   * the navbar is right on first paint rather than rearranging after hydration.
+   */
+  shortcuts?: NavbarShortcuts;
 }
 
-function Spinner() {
+export default function NavBar({
+  email,
+  username,
+  shortcuts = DEFAULT_NAVBAR_SHORTCUTS,
+}: Props) {
   return (
-    <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
-    </svg>
-  );
-}
-
-export default function NavBar({ email, username }: Props) {
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteCode, setInviteCode] = useState("");
-  const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteLoading, setInviteLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  function openInviteModal() {
-    setInviteOpen(true);
-    setInviteCode("");
-    setInviteError(null);
-    setCopied(false);
-  }
-
-  async function createInvite() {
-    setInviteLoading(true);
-    setInviteError(null);
-    setInviteCode("");
-    setCopied(false);
-
-    try {
-      const res = await fetch("/api/invites", { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || typeof data.code !== "string") {
-        throw new Error(
-          typeof data.error === "string"
-            ? data.error
-            : "Could not create invite",
-        );
-      }
-      setInviteCode(data.code);
-    } catch (err) {
-      setInviteError(
-        err instanceof Error ? err.message : "Could not create invite",
-      );
-    } finally {
-      setInviteLoading(false);
-    }
-  }
-
-  async function copyInvite() {
-    if (!inviteCode) return;
-    try {
-      await navigator.clipboard.writeText(inviteCode);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setInviteError("Could not copy invite");
-    }
-  }
-
-  return (
-    <>
-      <nav className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 shrink-0">
-        <NavbarFlowerWind />
-        <span className="relative z-10 flex items-center gap-2.5">
-          {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/logo.png"
-            alt="breadboard"
-            className="h-12 w-12 object-contain [filter:brightness(0)_saturate(100%)] opacity-90"
-          />
-          <span className="text-lg font-medium text-white tracking-tight">
-            breadboard
-          </span>
+    <nav className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-2.5 border-b border-gray-800 shrink-0">
+      <NavbarFlowerWind />
+      <Link
+        href="/dashboard"
+        className="relative z-10 flex items-center gap-2.5 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
+        aria-label="Go to Breadboard main page"
+      >
+        {/* logo.png is white line-art; darken it to the ink tone so it reads on the light theme. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo.png"
+          alt="breadboard"
+          className="breadboard-logo h-12 w-12 object-contain [filter:brightness(0)_saturate(100%)] opacity-90"
+        />
+        <span className="text-lg font-medium text-white tracking-tight">
+          breadboard
         </span>
-        <div className="relative z-10 flex items-center gap-4">
+      </Link>
+      {/* Agents live in the capability palette's Agents tab (the slash button),
+          not in this navbar. */}
+      <div className="relative z-10 flex items-center gap-4">
+        {/* Work timer and Plan ship on by default; World monitor stays opt-in.
+            Every seat can be changed from the profile page. */}
+        {shortcuts.workTimer && <WorkTimerShortcut />}
+        {shortcuts.worldMonitor && (
           <a
-            href="/agents"
-            className="text-xs text-gray-400 hover:text-white transition-colors"
+            href="/worldmonitor"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+            title="Open World monitor in a new tab"
           >
-            Agents
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="8.5" />
+              <path
+                strokeLinecap="round"
+                d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.3 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.3-3.6-8.5S9.6 5.9 12 3.5Z"
+              />
+            </svg>
+            World monitor
           </a>
-          <button
-            onClick={openInviteModal}
-            className="text-xs text-gray-400 hover:text-white transition-colors"
+        )}
+        {shortcuts.plan && (
+          <a
+            href="/plan"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+            title="Open Plan — your board and calendar — in a new tab"
           >
-            Invite
-          </button>
-          <span
-            className="text-xs text-gray-500 truncate max-w-[240px]"
-            title={email}
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            >
+              <rect x="3.5" y="4.5" width="5.5" height="15" rx="1.6" />
+              <rect x="11.5" y="4.5" width="5.5" height="9.5" rx="1.6" />
+              <path strokeLinecap="round" d="M19.5 6.5v11" />
+            </svg>
+            Plan
+          </a>
+        )}
+        {shortcuts.map && (
+          <a
+            href="/map"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors"
+            title="Open the map — the places, routes and results the assistant is working from — in a new tab"
           >
-            {username || email}
-          </span>
-          <button
-            onClick={() => signOut({ callbackUrl: "/auth/login" })}
-            className="text-xs text-gray-500 hover:text-white transition-colors"
-          >
-            Sign out
-          </button>
-        </div>
-      </nav>
-
-      {inviteOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setInviteOpen(false);
-          }}
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            >
+              <path
+                strokeLinejoin="round"
+                d="M9 4.5 3.5 6.8v12.7L9 17.2l6 2.3 5.5-2.3V4.5L15 6.8 9 4.5Z"
+              />
+              <path strokeLinecap="round" d="M9 4.5v12.7M15 6.8v12.7" />
+            </svg>
+            Map
+          </a>
+        )}
+        {/* The profile chip is the way to the profile page, which is where
+            inviting and signing out now live — both are account business, and
+            neither was worth a permanent seat in the navbar. */}
+        <Link
+          href="/profile"
+          title="Your profile"
+          className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-gray-400 transition-colors hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--botanical)]"
         >
-          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
-            <div className="mb-5">
-              <h2 className="text-lg font-semibold text-white">
-                Invite someone
-              </h2>
-              <p className="text-sm text-gray-500 mt-1">
-                Create a one-time code for a new account.
-              </p>
-            </div>
-
-            {inviteCode ? (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1.5">
-                    Invite code
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      value={inviteCode}
-                      readOnly
-                      className="neu-control min-w-0 flex-1 bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={copyInvite}
-                      className="neu-button px-4 py-2.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
-                    >
-                      {copied ? "Copied" : "Copy"}
-                    </button>
-                  </div>
-                </div>
-                {inviteError && (
-                  <p className="text-sm text-red-400">{inviteError}</p>
-                )}
-                <div className="flex gap-3 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setInviteOpen(false)}
-                    className="neu-button flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
-                  >
-                    Done
-                  </button>
-                  <button
-                    type="button"
-                    onClick={createInvite}
-                    disabled={inviteLoading}
-                    className="neu-button-primary flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {inviteLoading && <Spinner />}
-                    {inviteLoading ? "Creating..." : "Create another"}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {inviteError && (
-                  <p className="text-sm text-red-400">{inviteError}</p>
-                )}
-                <div className="flex gap-3 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setInviteOpen(false)}
-                    className="neu-button flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={createInvite}
-                    disabled={inviteLoading}
-                    className="neu-button-primary flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {inviteLoading && <Spinner />}
-                    {inviteLoading ? "Creating..." : "Create invite"}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </>
+          <svg
+            className="h-3.5 w-3.5 shrink-0"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="8" r="3.5" />
+            <path d="M5 20a7 7 0 0 1 14 0" />
+          </svg>
+          <span className="truncate font-medium">{username || email}</span>
+        </Link>
+      </div>
+    </nav>
   );
 }

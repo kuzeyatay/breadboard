@@ -1,35 +1,31 @@
 #!/usr/bin/env node
-// Ordered full-stack launcher: provider -> harness -> Quartz -> dashboard.
+// Ordered full-stack launcher: providers + local services -> Hermes -> Quartz -> dashboard.
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDashboardEnv, loadRootEnv } from "./load-root-env.mjs";
+import { loadOrCreateScriberrCredentials } from "./prepare-scriberr-runtime.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
-// The dashboard's git-ignored .env.local holds the dev loopback credentials, so
-// the runtime children and the dashboard cannot drift onto different tokens.
+// The dashboard's git-ignored .env.local holds server-side service credentials,
+// so every runtime child receives the same deployment configuration.
 loadDashboardEnv(repoRoot);
 const dashboardDir = (...segments) => path.join(repoRoot, "dashboard", ...segments);
-const configuredMode = process.env.OPENHARNESS_MODE?.trim().toLowerCase();
-const explicitlyDisabled = /^(0|false|no|off)$/i.test(process.env.OPENHARNESS_ENABLED?.trim() ?? "");
-const mode = configuredMode === "preferred" || configuredMode === "legacy" || configuredMode === "required"
-  ? configuredMode
-  : explicitlyDisabled ? "legacy" : "required";
-const password = process.env.OPENHARNESS_PASSWORD || "breadboard-local-dev";
-const username = process.env.OPENHARNESS_USERNAME || "breadboard";
 
-// Agent runtime selection is server-side only (see docs/HERMES_RUNTIME_MIGRATION.md).
-// OpenHarness keeps starting while it is selectable so existing sessions — whose
-// runtime is pinned per session row — and the documented rollback keep working.
-const agentRuntime = process.env.AGENT_RUNTIME?.trim().toLowerCase() || "openharness";
-const agentRuntimeFallback = process.env.AGENT_RUNTIME_FALLBACK?.trim().toLowerCase() || "none";
-const hermesSelected = agentRuntime === "hermes" || agentRuntimeFallback === "hermes";
 const hermesPort = /^\d+$/.test(process.env.HERMES_PORT ?? "") ? process.env.HERMES_PORT : "9129";
 const hermesBaseUrl = (process.env.HERMES_BASE_URL || `http://127.0.0.1:${hermesPort}`).replace(/\/+$/, "");
-const hermesToken = process.env.HERMES_DASHBOARD_SESSION_TOKEN?.trim() ?? "";
+const hermesToken =
+  process.env.HERMES_DASHBOARD_SESSION_TOKEN?.trim() ||
+  crypto.randomBytes(32).toString("hex");
+const hermesToolSecret =
+  process.env.BREADBOARD_HERMES_TOOL_SECRET?.trim() || hermesToken;
+const hermesCapabilitySecret =
+  process.env.HERMES_CAPABILITY_SECRET?.trim() ||
+  crypto.randomBytes(32).toString("hex");
 
 // GBrain (garden knowledge retrieval). Additive and off by default: `disabled`
 // starts nothing; `preferred` runs but never blocks the stack; `required` fails
@@ -41,27 +37,116 @@ const gbrainPort = /^\d+$/.test(process.env.GBRAIN_ADAPTER_PORT ?? "") ? process
 const gbrainSecret = process.env.GBRAIN_ADAPTER_SECRET || crypto.randomBytes(24).toString("hex");
 const gbrainAdapterUrl = process.env.GBRAIN_ADAPTER_URL || `http://127.0.0.1:${gbrainPort}`;
 
+// Deep Research (iterative web research agent). Optional and never blocking: the
+// dashboard reports a specific unavailable/misconfigured state until the service
+// is healthy. Its LLM is ChatMock; its search backend is Firecrawl.
+const deepResearchMode = process.env.DEEP_RESEARCH_MODE?.trim().toLowerCase() || "optional";
+const deepResearchEnabled = deepResearchMode !== "disabled";
+const deepResearchPort = /^\d+$/.test(process.env.DEEP_RESEARCH_PORT ?? "")
+  ? process.env.DEEP_RESEARCH_PORT
+  : "7722";
+const deepResearchSecret = process.env.DEEP_RESEARCH_SECRET || crypto.randomBytes(24).toString("hex");
+const deepResearchUrl = process.env.DEEP_RESEARCH_URL || `http://127.0.0.1:${deepResearchPort}`;
+
+// Parametric CAD (local CadQuery/OpenCascade service). Optional and never
+// blocking: without it the CAD agent reports that the service is not running
+// and the rest of Breadboard is unaffected. Its Python environment is
+// provisioned separately by `npm run setup:cad`, so a checkout that has not run
+// that step simply does not start it.
+const cadMode = process.env.CAD_MODE?.trim().toLowerCase() || "optional";
+const cadPort = /^\d+$/.test(process.env.BREADBOARD_CAD_PORT ?? "")
+  ? process.env.BREADBOARD_CAD_PORT
+  : "7731";
+const cadServiceUrl = process.env.CAD_SERVICE_URL || `http://127.0.0.1:${cadPort}`;
+const cadPythonBinary = path.join(
+  repoRoot,
+  ".runtime",
+  "cad-venv",
+  process.platform === "win32" ? "Scripts" : "bin",
+  process.platform === "win32" ? "python.exe" : "python",
+);
+const cadEnabled = cadMode !== "disabled" && existsSync(cadPythonBinary);
+if (cadMode !== "disabled" && !cadEnabled) {
+  process.stdout.write(
+    "[stack] CAD service not provisioned (run `npm run setup:cad`); the Parametric CAD agent will report it as unavailable.\n",
+  );
+}
+
+// CLIProxyAPI (subscription OAuth: Claude, Gemini, Kimi, Grok). Required by
+// default — it is how Breadboard reaches subscription models, so starting the
+// stack without it would silently drop every model the user actually pays for.
+// `optional` starts it without blocking; `disabled` skips it. Its loopback
+// bearer is shared with ChatMock through the environment so the `cliproxy`
+// provider works the moment both are up; the key itself is generated per
+// install and lives under CLIPROXY_HOME.
+const cliproxyMode = process.env.CLIPROXY_MODE?.trim().toLowerCase() || "required";
+const cliproxyEnabled = cliproxyMode !== "disabled";
+const cliproxyPortValue = /^\d+$/.test(process.env.CLIPROXY_PORT ?? "")
+  ? process.env.CLIPROXY_PORT
+  : "8317";
+const cliproxyBaseUrlValue =
+  process.env.CLIPROXY_BASE_URL || `http://127.0.0.1:${cliproxyPortValue}/v1`;
+let cliproxyApiKeyValue = process.env.CLIPROXY_API_KEY || "";
+if (cliproxyEnabled && !cliproxyApiKeyValue) {
+  try {
+    const { cliproxyApiKey } = await import(
+      pathToFileURL(
+        path.join(repoRoot, "dashboard", "src", "lib", "cliproxy", "config.ts"),
+      ).href
+    );
+    cliproxyApiKeyValue = cliproxyApiKey();
+  } catch {
+    // The service will mint one on first launch; ChatMock picks it up after a
+    // restart, and the settings panel can sync it in the meantime.
+  }
+}
+
+// Video transcription is native and enabled by default. Credentials are
+// stable across dev restarts so the private Scriberr account can be registered
+// automatically once and reused without exposing a setup UI.
+const storedScriberrCredentials = loadOrCreateScriberrCredentials();
+const scriberrPort = /^\d+$/.test(process.env.SCRIBERR_PORT ?? "")
+  ? process.env.SCRIBERR_PORT
+  : "8091";
+const scriberrBaseUrl = (process.env.SCRIBERR_BASE_URL || `http://127.0.0.1:${scriberrPort}`).replace(/\/+$/, "");
+const scriberrUsername = process.env.SCRIBERR_USERNAME || storedScriberrCredentials.username;
+const scriberrPassword = process.env.SCRIBERR_PASSWORD || storedScriberrCredentials.password;
+const transcriptionBinDir = path.join(repoRoot, "desktop", "resources", "bin");
+const voiceboxPort = /^\d+$/.test(process.env.VOICEBOX_PORT ?? "")
+  ? process.env.VOICEBOX_PORT
+  : "17493";
+const voiceboxBaseUrl = (process.env.VOICEBOX_BASE_URL || `http://127.0.0.1:${voiceboxPort}`).replace(/\/+$/, "");
+const n8nPort = /^\d+$/.test(process.env.N8N_PORT ?? "") ? process.env.N8N_PORT : "5678";
+const n8nBaseUrl = (process.env.N8N_BASE_URL || `http://127.0.0.1:${n8nPort}`).replace(/\/+$/, "");
+const n8nDataDir = process.env.N8N_DATA_DIR || path.join(repoRoot, ".runtime", "n8n");
+
 const runtimeEnv = {
   ...process.env,
-  OPENHARNESS_ENABLED: process.env.OPENHARNESS_ENABLED || "true",
-  OPENHARNESS_MODE: mode,
-  OPENHARNESS_BASE_URL: process.env.OPENHARNESS_BASE_URL || "http://127.0.0.1:4096",
-  OPENHARNESS_PASSWORD: password,
-  OPENHARNESS_USERNAME: username,
-  OPENHARNESS_TOOL_SECRET: process.env.OPENHARNESS_TOOL_SECRET || password,
   CHATMOCK_BASE_URL: process.env.CHATMOCK_BASE_URL || "http://127.0.0.1:8765/v1",
   CHATMOCK_API_KEY: process.env.CHATMOCK_API_KEY || process.env.OPENAI_API_KEY || "local",
-  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5.6-sol",
+  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "default",
   OPENCODE_ENABLE_EXA: process.env.OPENCODE_ENABLE_EXA || "1",
   OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS:
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS || "true",
   BREADBOARD_DASHBOARD_URL: process.env.BREADBOARD_DASHBOARD_URL || "http://localhost:3000",
-  // Runtime-neutral selection + Hermes loopback wiring. The browser never sees
+  // Hermes loopback wiring. The browser never sees
   // any of this; only the dashboard server and the Hermes child use it.
-  AGENT_RUNTIME: agentRuntime,
-  AGENT_RUNTIME_FALLBACK: agentRuntimeFallback,
+  HERMES_ENABLED: "true",
+  HERMES_MODE: "required",
   HERMES_PORT: hermesPort,
   HERMES_BASE_URL: hermesBaseUrl,
+  HERMES_DASHBOARD_SESSION_TOKEN: hermesToken,
+  BREADBOARD_HERMES_TOOL_SECRET: hermesToolSecret,
+  HERMES_CAPABILITY_SECRET: hermesCapabilitySecret,
+  HERMES_ROOT: process.env.HERMES_ROOT || path.join(repoRoot, ".runtime", "hermes-workspaces"),
+  HERMES_SKILLS_QUARANTINE:
+    process.env.HERMES_SKILLS_QUARANTINE || path.join(repoRoot, ".agents", "skills-quarantine"),
+  HERMES_SKILLS_APPROVED:
+    process.env.HERMES_SKILLS_APPROVED || path.join(repoRoot, ".agents", "skills"),
+  HERMES_SKILLS_CONDITIONAL:
+    process.env.HERMES_SKILLS_CONDITIONAL || path.join(repoRoot, ".agents", "skills-conditional"),
+  HERMES_FIRST_PARTY_SKILLS_ROOT:
+    process.env.HERMES_FIRST_PARTY_SKILLS_ROOT || path.join(repoRoot, "hermes-skills", "prebuilt"),
   // GBrain: mode + the shared per-launch secret + adapter URL flow to both the
   // adapter process and the dashboard so they agree without the browser ever
   // seeing the secret.
@@ -69,6 +154,57 @@ const runtimeEnv = {
   GBRAIN_ADAPTER_PORT: gbrainPort,
   GBRAIN_ADAPTER_SECRET: gbrainSecret,
   GBRAIN_ADAPTER_URL: gbrainAdapterUrl,
+  // Deep Research: the same per-launch secret reaches the service and the
+  // dashboard so they agree without the browser ever seeing it.
+  DEEP_RESEARCH_MODE: deepResearchMode,
+  DEEP_RESEARCH_PORT: deepResearchPort,
+  DEEP_RESEARCH_SECRET: deepResearchSecret,
+  DEEP_RESEARCH_URL: deepResearchUrl,
+  // Parametric CAD: the loopback address and the per-launch secret reach the
+  // service and the dashboard together, so they agree without the browser ever
+  // seeing either.
+  // No secret here: dashboard/src/lib/cad/config.ts resolves a file-backed one
+  // that the service launcher reads too, so a hand-started dashboard finds the
+  // service just as this one does.
+  BREADBOARD_CAD_PORT: cadPort,
+  CAD_SERVICE_URL: cadServiceUrl,
+  // Subscription proxy. ChatMock reads CLIPROXY_* as the `cliproxy` provider's
+  // endpoint and bearer, so subscription models are reachable as cliproxy/<model>.
+  CLIPROXY_MODE: cliproxyMode,
+  CLIPROXY_PORT: cliproxyPortValue,
+  CLIPROXY_BASE_URL: cliproxyBaseUrlValue,
+  ...(cliproxyApiKeyValue ? { CLIPROXY_API_KEY: cliproxyApiKeyValue } : {}),
+  // Native video transcription. Binary dependencies are staged locally by
+  // start-scriberr.mjs; the dashboard uses these exact paths for probing and
+  // YouTube ingestion as well.
+  VIDEO_TRANSCRIPTION_ENABLED: process.env.VIDEO_TRANSCRIPTION_ENABLED || "true",
+  SCRIBERR_BASE_URL: scriberrBaseUrl,
+  SCRIBERR_PORT: scriberrPort,
+  SCRIBERR_USERNAME: scriberrUsername,
+  SCRIBERR_PASSWORD: scriberrPassword,
+  FFMPEG_PATH: process.env.FFMPEG_PATH || path.join(transcriptionBinDir, "ffmpeg.exe"),
+  FFPROBE_PATH: process.env.FFPROBE_PATH || path.join(transcriptionBinDir, "ffprobe.exe"),
+  YTDLP_PATH: process.env.YTDLP_PATH || path.join(transcriptionBinDir, "yt-dlp.exe"),
+  // Voicebox owns local TTS profiles and Whisper dictation. Only the dashboard
+  // server receives this URL; browsers use authenticated /api/speech routes.
+  VOICEBOX_PORT: voiceboxPort,
+  VOICEBOX_BASE_URL: voiceboxBaseUrl,
+  VOICEBOX_AUTOINSTALL: process.env.VOICEBOX_AUTOINSTALL || "true",
+  VOICEBOX_DATA_DIR:
+    process.env.VOICEBOX_DATA_DIR || path.join(repoRoot, ".runtime", "voicebox"),
+  VOICEBOX_STATUS_PATH:
+    process.env.VOICEBOX_STATUS_PATH ||
+    path.join(repoRoot, ".runtime", "voicebox", "startup-status.json"),
+  // n8n is local and private. The dashboard proxies catalog/import work and
+  // receives only these loopback and private-file paths.
+  N8N_PORT: n8nPort,
+  N8N_BASE_URL: n8nBaseUrl,
+  N8N_DASHBOARD_URL: process.env.N8N_DASHBOARD_URL || "http://localhost:3000",
+  N8N_SOURCE_DIR: process.env.N8N_SOURCE_DIR || path.join(repoRoot, "n8n"),
+  N8N_DATA_DIR: n8nDataDir,
+  N8N_STATUS_PATH: process.env.N8N_STATUS_PATH || path.join(n8nDataDir, "startup-status.json"),
+  N8N_CREDENTIALS_PATH:
+    process.env.N8N_CREDENTIALS_PATH || path.join(n8nDataDir, "breadboard-auth.json"),
 };
 const children = [];
 
@@ -100,17 +236,57 @@ async function waitFor(url, options = {}, timeoutMs = 60_000) {
   }
   throw new Error(`Timed out waiting for ${url}`);
 }
-
-function authHeaders() {
-  return { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}` };
-}
-
 async function main() {
+  // Semantic memory. The vendored mem0 engine is a build, not a service: the
+  // clone gitignores its own dist/, so a checkout that has never run the setup
+  // step recalls memories by wording alone and only the Settings panel ever
+  // says so. Provisioning it here makes it part of starting Breadboard.
+  // `--if-needed` returns immediately once it is built, so this costs nothing
+  // on every launch after the first, and it is never waited on — the layer
+  // degrades truthfully while it builds and picks itself up when it lands.
+  const mem0Autosetup = !/^(0|false|no|off)$/i.test(process.env.MEM0_AUTOSETUP?.trim() ?? "");
+  if (mem0Autosetup && existsSync(path.join(repoRoot, "mem0", "mem0-ts"))) {
+    startService("mem0", process.execPath, [
+      path.join(repoRoot, "scripts", "setup-mem0.mjs"),
+      "--if-needed",
+    ]);
+  }
+
+  // n8n has no dependency on the model gateway. Spawn it first so workflow
+  // discovery warms in parallel with ChatMock instead of waiting behind it.
+  const n8nAutostart = !/^(0|false|no|off)$/i.test(
+    process.env.N8N_AUTOSTART?.trim() ?? "",
+  );
+  if (n8nAutostart) {
+    startService("n8n", process.execPath, [path.join(repoRoot, "scripts", "start-n8n.mjs")]);
+    process.stdout.write(
+      `[stack] n8n warming on ${n8nBaseUrl}; automations will appear as soon as it is ready.\n`,
+    );
+  }
+
   startService("chatmock", process.execPath, [path.join(repoRoot, "scripts", "start-chatmock.mjs")]);
   await waitFor("http://127.0.0.1:8765/health");
   process.stdout.write("[stack] ChatMock healthy\n");
 
-  // GBrain adapter starts before the harness so knowledge tools are ready when a
+  const voiceboxAutostart = !/^(0|false|no|off)$/i.test(
+    process.env.VOICEBOX_AUTOSTART?.trim() ?? "",
+  );
+  if (voiceboxAutostart) {
+    startService("voicebox", process.execPath, [path.join(repoRoot, "scripts", "start-voicebox.mjs")]);
+    process.stdout.write(
+      `[stack] Voicebox starting on ${voiceboxBaseUrl}; Speech settings reports model readiness.\n`,
+    );
+  }
+
+  // The CAD service starts alongside the other sidecars. It is never waited on:
+  // its first request imports OpenCascade, which takes several seconds, and a
+  // readiness gate here would delay the whole stack for a capability most turns
+  // never use. The dashboard's /api/cad/health reports the real state.
+  if (cadEnabled) {
+    startService("cad", process.execPath, [path.join(repoRoot, "scripts", "start-cad.mjs")]);
+  }
+
+  // GBrain adapter starts before Hermes so knowledge tools are ready when a
   // session opens. In `preferred` a failure is surfaced but non-fatal; in
   // `required` it aborts the stack.
   if (gbrainEnabled) {
@@ -125,53 +301,25 @@ async function main() {
       );
     }
   }
-
-  if (mode !== "legacy") {
-    startService("openharness", process.execPath, [path.join(repoRoot, "scripts", "start-openharness.mjs")]);
-    try {
-      await waitFor("http://127.0.0.1:4096/global/health", { headers: authHeaders() });
-      const providers = await waitFor("http://127.0.0.1:4096/config/providers", { headers: authHeaders() });
-      if (!(await providers.text()).includes("chatmock")) {
-        throw new Error("OpenHarness did not load the ChatMock provider");
-      }
-      process.stdout.write("[stack] OpenHarness healthy; ChatMock provider available\n");
-    } catch (error) {
-      if (mode === "required") throw error;
-      process.stderr.write(
-        `[stack] OpenHarness unavailable in preferred mode; dashboard will expose audited fallback state: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-    }
-  }
-
   // Hermes is never a hard dependency of the stack: an unhealthy runtime makes
   // agent routes return the sanitized unavailable error while Gardens and every
   // unrelated feature stay usable (mirrors the desktop supervisor).
-  if (hermesSelected) {
-    if (!hermesToken) {
-      process.stderr.write(
-        "[stack] AGENT_RUNTIME/AGENT_RUNTIME_FALLBACK selects Hermes but HERMES_DASHBOARD_SESSION_TOKEN is unset; set it in dashboard/.env.local. Agent routes will report the runtime as unavailable.\n",
-      );
-    } else {
-      startService("hermes", process.execPath, [path.join(repoRoot, "scripts", "start-hermes.mjs")]);
-      try {
-        await waitFor(`${hermesBaseUrl}/api/status`, {
-          headers: { Authorization: `Bearer ${hermesToken}` },
-        }, 120_000);
-        process.stdout.write(`[stack] Hermes healthy on ${hermesBaseUrl}\n`);
-      } catch (error) {
-        process.stderr.write(
-          `[stack] Hermes unavailable; agent routes report the sanitized runtime-unavailable error until it is up: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      }
-    }
+  startService("hermes", process.execPath, [path.join(repoRoot, "scripts", "start-hermes.mjs")]);
+  try {
+    await waitFor(`${hermesBaseUrl}/api/status`, {
+      headers: { Authorization: `Bearer ${hermesToken}` },
+    }, 120_000);
+    process.stdout.write(`[stack] Hermes healthy on ${hermesBaseUrl}\n`);
+  } catch (error) {
+    process.stderr.write(
+      `[stack] Hermes unavailable; agent routes report the sanitized runtime-unavailable error until it is up: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
   }
 
   // Scriberr (video transcription) is optional: start it when enabled, but
   // never block the rest of the stack on it — the dashboard reports a specific
   // "Scriberr unavailable" state until it becomes healthy.
   const scriberrAutostart = !/^(0|false|no|off)$/i.test(process.env.SCRIBERR_AUTOSTART?.trim() ?? "");
-  const scriberrPort = /^\d+$/.test(process.env.SCRIBERR_PORT ?? "") ? process.env.SCRIBERR_PORT : "8091";
-  const scriberrBaseUrl = (process.env.SCRIBERR_BASE_URL || `http://127.0.0.1:${scriberrPort}`).replace(/\/+$/, "");
   if (scriberrAutostart) {
     startService("scriberr", process.execPath, [path.join(repoRoot, "scripts", "start-scriberr.mjs")]);
     try {
@@ -184,6 +332,45 @@ async function main() {
     }
   }
 
+  // Subscription proxy. The first launch downloads the binary, so allow a
+  // generous window before deciding it failed.
+  if (cliproxyEnabled) {
+    startService("cliproxy", process.execPath, [
+      path.join(repoRoot, "scripts", "start-cliproxy.mjs"),
+    ]);
+    try {
+      // The OpenAI surface is bearer-protected, so the probe must authenticate
+      // or it would read a healthy proxy's 401 as "still starting".
+      await waitFor(
+        `${cliproxyBaseUrlValue}/models`,
+        { headers: { Authorization: `Bearer ${cliproxyApiKeyValue}` } },
+        90_000,
+      );
+      process.stdout.write("[stack] subscription proxy healthy\n");
+    } catch (error) {
+      if (cliproxyMode === "required") throw error;
+      process.stderr.write(
+        "[stack] subscription proxy not reachable yet; subscription models stay unavailable until it is up.\n",
+      );
+    }
+  }
+
+  // Deep Research is optional in the same sense as Scriberr: start it, but never
+  // block the stack — the Agents tab reports why it is not usable until it is up.
+  if (deepResearchEnabled) {
+    startService("deep-research", process.execPath, [
+      path.join(repoRoot, "scripts", "start-deep-research.mjs"),
+    ]);
+    try {
+      await waitFor(`${deepResearchUrl}/health`, {}, 30_000);
+      process.stdout.write("[stack] Deep Research service healthy\n");
+    } catch {
+      process.stderr.write(
+        "[stack] Deep Research not reachable yet; the agent stays unavailable until it is up.\n",
+      );
+    }
+  }
+
   startService("quartz", process.execPath, [path.join(repoRoot, "scripts", "start-quartz.mjs")]);
   // Next is launched through Node directly rather than `npm.cmd`: Windows Node
   // (>=20.12) refuses to spawn a .cmd shim without a shell, which threw a
@@ -192,10 +379,7 @@ async function main() {
   startService("dashboard", process.execPath, [dashboardDir("node_modules", "next", "dist", "bin", "next"), "dev", "--webpack"], {
     cwd: dashboardDir(),
   });
-  process.stdout.write(`[stack] Runtime mode: ${mode}; dashboard OpenHarness feature: ${mode === "legacy" ? "disabled" : "enabled"}\n`);
-  process.stdout.write(
-    `[stack] Agent runtime: ${agentRuntime}${agentRuntimeFallback === "none" ? "" : ` (fallback: ${agentRuntimeFallback})`}\n`,
-  );
+  process.stdout.write("[stack] Agent runtime: Hermes\n");
 }
 
 function shutdown() {

@@ -1,0 +1,440 @@
+// Breadboard video widget. One card shape for both sources (an uploaded file
+// and a YouTube facade) so a note reads the same either way. Chrome sits over
+// the media on a dark scrim, which is why the control colours are fixed rather
+// than theme-driven; the frame and caption around it use the garden's tokens.
+
+.bb-video {
+  --bb-video-chrome: #f2f5f1;
+  --bb-video-scrim: rgba(6, 10, 8, 0.62);
+
+  margin: 1.4rem 0;
+  border: 1px solid var(--lightgray);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--light) 90%, transparent);
+  overflow: hidden;
+}
+
+.bb-video-stage {
+  position: relative;
+  display: block;
+  background: #050706;
+  // Kills the inline-element gap under the media element.
+  line-height: 0;
+}
+
+.bb-video-stage--wide {
+  aspect-ratio: 16 / 9;
+}
+
+.bb-video-media {
+  display: block;
+  width: 100%;
+  height: auto;
+  // Portrait clips would otherwise take over the page; `contain` letterboxes
+  // whatever the clamp leaves over instead of stretching it.
+  max-height: min(70vh, 34rem);
+  object-fit: contain;
+  background: #050706;
+}
+
+.bb-video-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  // hqdefault is 4:3; cropping to the 16/9 stage removes its pillar bars.
+  object-fit: cover;
+  cursor: pointer;
+}
+
+.bb-video--no-poster .bb-video-poster {
+  display: none;
+}
+
+.bb-video--no-poster .bb-video-stage {
+  background: linear-gradient(135deg, #10201a, #050706);
+}
+
+.bb-video-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+// ------------------------------------------------------------ play affordance
+
+.bb-video-play,
+.bb-video-overlay {
+  color: var(--bb-video-chrome);
+  cursor: pointer;
+  padding: 0;
+}
+
+.bb-video-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 3.4rem;
+  height: 3.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 50%;
+  background: var(--bb-video-scrim);
+  backdrop-filter: blur(3px);
+  transition:
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.bb-video-play svg {
+  width: 1.3rem;
+  height: 1.3rem;
+  // The glyph reads as centred only when nudged off the triangle's bounding box.
+  margin-left: 0.15rem;
+  fill: currentColor;
+}
+
+.bb-video--youtube:hover .bb-video-play,
+.bb-video-play:focus-visible {
+  transform: translate(-50%, -50%) scale(1.06);
+  background: color-mix(in srgb, var(--secondary) 84%, #050706);
+}
+
+.bb-video-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.bb-video-overlay::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 3.4rem;
+  height: 3.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 50%;
+  background: var(--bb-video-scrim);
+  backdrop-filter: blur(3px);
+}
+
+.bb-video-overlay svg {
+  position: relative;
+  width: 1.3rem;
+  height: 1.3rem;
+  margin-left: 0.15rem;
+  fill: currentColor;
+}
+
+.bb-video[data-state="idle"] .bb-video-overlay,
+.bb-video[data-state="ended"] .bb-video-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+// ---------------------------------------------------------------- control bar
+
+.bb-video-bar {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 1.1rem 0.55rem 0.45rem;
+  background: linear-gradient(to top, rgba(4, 7, 6, 0.88), rgba(4, 7, 6, 0));
+  line-height: 1;
+  opacity: 0;
+  transform: translateY(0.3rem);
+  pointer-events: none;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+// Visible whenever playback is not running, and on hover or keyboard focus.
+.bb-video--file:hover .bb-video-bar,
+.bb-video--file:focus-within .bb-video-bar,
+.bb-video[data-state="idle"] .bb-video-bar,
+.bb-video[data-state="paused"] .bb-video-bar,
+.bb-video[data-state="ended"] .bb-video-bar {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.bb-video-btn {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bb-video-chrome);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  transition: background 120ms ease;
+}
+
+.bb-video-btn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: currentColor;
+}
+
+.bb-video-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.bb-video-speed {
+  width: auto;
+  min-width: 2.1rem;
+  padding: 0 0.3rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.bb-video-time {
+  flex: 0 0 auto;
+  color: rgba(242, 245, 241, 0.88);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.bb-video-bar :focus-visible {
+  outline: 2px solid var(--tertiary);
+  outline-offset: 1px;
+}
+
+// ------------------------------------------------------------------ seek bar
+
+.bb-video-seek {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 3rem;
+  height: 0.9rem;
+  display: flex;
+  align-items: center;
+}
+
+.bb-video-seek::before,
+.bb-video-seek-buffered,
+.bb-video-seek-played {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 3px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.bb-video-seek::before {
+  right: 0;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.bb-video-seek-buffered {
+  width: 0;
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.bb-video-seek-played {
+  width: 0;
+  background: var(--tertiary);
+}
+
+// The range input carries the keyboard and assistive-tech behaviour; only its
+// thumb is drawn, over the three bars above.
+.bb-video-seek-input {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 0.9rem;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bb-video-seek-input::-webkit-slider-runnable-track {
+  height: 0.9rem;
+  background: transparent;
+}
+
+.bb-video-seek-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-top: 0.1rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bb-video-chrome);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.bb-video-seek-input::-moz-range-track {
+  height: 0.9rem;
+  background: transparent;
+}
+
+.bb-video-seek-input::-moz-range-thumb {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bb-video-chrome);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.bb-video-volume {
+  flex: 0 0 auto;
+  width: 3.6rem;
+  height: 0.9rem;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bb-video-volume::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.bb-video-volume::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-top: -0.15rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bb-video-chrome);
+}
+
+.bb-video-volume::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.bb-video-volume::-moz-range-thumb {
+  width: 0.6rem;
+  height: 0.6rem;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bb-video-chrome);
+}
+
+// -------------------------------------------------------------------- caption
+
+.bb-video-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border-top: 1px solid var(--lightgray);
+  color: var(--gray);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.bb-video-title {
+  color: var(--dark);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.bb-video-source {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--secondary);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bb-video-error {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  color: rgba(242, 245, 241, 0.86);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+// An embed sharing a paragraph with other text renders as a plain player.
+.bb-video-media--inline {
+  max-width: 100%;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+}
+
+iframe.bb-video-media--inline {
+  aspect-ratio: 16 / 9;
+  width: min(100%, 34rem);
+  height: auto;
+}
+
+// ----------------------------------------------------------------- fullscreen
+
+.bb-video:fullscreen {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #050706;
+
+  .bb-video-stage {
+    flex: 0 1 auto;
+  }
+
+  .bb-video-media {
+    max-height: 100vh;
+  }
+
+  .bb-video-caption {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .bb-video-volume {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-video-bar,
+  .bb-video-overlay,
+  .bb-video-play {
+    transition: none;
+  }
+}

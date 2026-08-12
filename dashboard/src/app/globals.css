@@ -7,6 +7,7 @@
   --paper-surface: #faf7ef; /* main surface / card (warm paper) */
   --paper-raised: #fffefb; /* raised surface */
   --paper-strong: #ece3d2; /* strong surface */
+  --terminal-bar: #e8d7bd; /* persistent terminal dock (lighter brown) */
   --ink: #13201b; /* primary text */
   --ink-heading: #0f1a16; /* heading text */
   --ink-muted: #50615a; /* muted text */
@@ -16,8 +17,13 @@
   --botanical-hover: #3f5f58; /* accent hover */
   --botanical-2: #7b97aa; /* secondary accent */
   --botanical-3: #84a59d; /* tertiary accent */
+  --selection-yellow: #f4e7ad; /* persistent inline Q&A highlight */
+  --selection-yellow-hover: #edda8f;
+  --selection-yellow-line: #d8c275;
   --danger: #a45c5c; /* destructive / error */
   --danger-hover: #8f4d4d; /* destructive hover */
+  --chat-link: #1d4ed8; /* hyperlinks in chat, in the blue people expect */
+  --chat-link-hover: #1e3a8a; /* hyperlink hover */
 
   /* Restrained neumorphic material system. Every depth color is derived from
      the existing Breadboard palette so these tokens refine hierarchy without
@@ -51,6 +57,36 @@
   --neu-inset-shadow:
     inset 2px 2px 5px color-mix(in srgb, var(--ink) 12%, transparent),
     inset -2px -2px 5px color-mix(in srgb, var(--paper-raised) 74%, transparent);
+  --neu-hover-shadow:
+    4px 4px 10px var(--neu-shadow),
+    -4px -4px 10px var(--neu-highlight);
+  --neu-divider-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--paper-raised) 78%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--line-strong) 34%, transparent);
+  --neu-recessed-shadow:
+    inset 3px 3px 8px color-mix(in srgb, var(--ink) 13%, transparent),
+    inset -3px -3px 8px color-mix(in srgb, var(--paper-raised) 76%, transparent),
+    0 1px 0 color-mix(in srgb, var(--paper-raised) 62%, transparent);
+  --neu-sidebar-left-shadow:
+    6px 0 16px color-mix(in srgb, var(--ink) 9%, transparent),
+    inset -1px 0 0 color-mix(in srgb, var(--paper-raised) 62%, transparent);
+  --neu-sidebar-right-shadow:
+    -6px 0 16px color-mix(in srgb, var(--ink) 9%, transparent),
+    inset 1px 0 0 color-mix(in srgb, var(--paper-raised) 62%, transparent);
+  --neu-tray-shadow:
+    0 -7px 20px color-mix(in srgb, var(--ink) 11%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--paper-raised) 72%, transparent);
+
+  /* One restrained scrollbar material for every scrolling surface. The track
+     is lightly recessed and the thumb is softly raised—no glass gradients,
+     highlights, or component-specific treatments. */
+  --bb-scrollbar-size: 0.625rem;
+  --bb-scrollbar-track: color-mix(in srgb, var(--paper-bg) 68%, var(--paper-surface));
+  --bb-scrollbar-thumb: color-mix(in srgb, var(--botanical) 42%, var(--paper-surface));
+  --bb-scrollbar-thumb-hover: color-mix(in srgb, var(--botanical) 56%, var(--paper-surface));
+  --bb-scrollbar-thumb-active: color-mix(in srgb, var(--botanical-hover) 64%, var(--paper-surface));
+  --bb-scrollbar-shadow: color-mix(in srgb, var(--ink) 14%, transparent);
+  --bb-scrollbar-highlight: color-mix(in srgb, var(--paper-raised) 80%, transparent);
 
   /* Quartz-compatible aliases so existing var() references keep resolving. */
   --quartz-light: var(--paper-bg);
@@ -88,76 +124,137 @@
      and `white` = primary ink (so `text-white` headings read dark while
      `bg-white text-gray-950` buttons become dark charcoal-green with light
      text). */
-  --color-white: #13201b; /* primary ink: text-white headings / dark primary button */
-  --color-black: #0f1a16; /* deepest ink; bg-black/xx scrims dim the page */
+  --color-white: var(--bb-color-white, #13201b); /* primary ink: text-white headings / dark primary button */
+  --color-black: var(--bb-color-black, #0f1a16); /* deepest ink; bg-black/xx scrims dim the page */
 
-  --color-gray-50: #0c1511; /* deepest heading ink */
-  --color-gray-100: #0f1a16; /* strong text / primary-button hover */
-  --color-gray-200: #18271f; /* strong text */
-  --color-gray-300: #283831; /* progress fills / strong text */
-  --color-gray-400: #3b4c44; /* secondary text */
-  --color-gray-500: #4c5a52; /* muted text */
-  --color-gray-600: #5d6c64; /* faint text / placeholders */
-  --color-gray-700: #9cb7a7; /* strong border / disabled fill */
-  --color-gray-800: #bccfc2; /* border / selected + raised fill */
-  --color-gray-900: #faf7ef; /* surface / cards */
-  --color-gray-950: #e6f0e6; /* app background */
+  --color-gray-50: var(--bb-color-gray-50, #0c1511); /* deepest heading ink */
+  --color-gray-100: var(--bb-color-gray-100, #0f1a16); /* strong text / primary-button hover */
+  --color-gray-200: var(--bb-color-gray-200, #18271f); /* strong text */
+  --color-gray-300: var(--bb-color-gray-300, #283831); /* progress fills / strong text */
+  --color-gray-400: var(--bb-color-gray-400, #3b4c44); /* secondary text */
+  --color-gray-500: var(--bb-color-gray-500, #4c5a52); /* muted text */
+  --color-gray-600: var(--bb-color-gray-600, #5d6c64); /* faint text / placeholders */
+  --color-gray-700: var(--bb-color-gray-700, #9cb7a7); /* strong border / disabled fill */
+  --color-gray-800: var(--bb-color-gray-800, #bccfc2); /* border / selected + raised fill */
+  --color-gray-900: var(--bb-color-gray-900, #faf7ef); /* surface / cards */
+  --color-gray-950: var(--bb-color-gray-950, #e6f0e6); /* app background */
 
   /* Secondary accent (slate-blue). cyan-/blue-100..300 hold readable dark
      text used for active states; -950 are faint tint backgrounds. */
-  --color-cyan-100: #3f5566;
-  --color-cyan-400: #7b97aa;
-  --color-cyan-600: #5e7a8c;
-  --color-cyan-800: #5e7a8c;
-  --color-cyan-900: #9fb6c4;
-  --color-cyan-950: #dce6ec;
+  --color-cyan-100: var(--bb-color-cyan-100, #3f5566);
+  --color-cyan-400: var(--bb-color-cyan-400, #7b97aa);
+  --color-cyan-600: var(--bb-color-cyan-600, #5e7a8c);
+  --color-cyan-800: var(--bb-color-cyan-800, #5e7a8c);
+  --color-cyan-900: var(--bb-color-cyan-900, #9fb6c4);
+  --color-cyan-950: var(--bb-color-cyan-950, #dce6ec);
 
-  --color-blue-300: #3f5566;
-  --color-blue-400: #7b97aa;
-  --color-blue-700: #9fb6c4;
-  --color-blue-800: #5e7a8c;
-  --color-blue-950: #dce6ec;
+  --color-blue-300: var(--bb-color-blue-300, #3f5566);
+  --color-blue-400: var(--bb-color-blue-400, #7b97aa);
+  --color-blue-700: var(--bb-color-blue-700, #9fb6c4);
+  --color-blue-800: var(--bb-color-blue-800, #5e7a8c);
+  --color-blue-950: var(--bb-color-blue-950, #dce6ec);
 
   /* Primary/tertiary botanical greens. */
-  --color-green-400: #4f6f68;
-  --color-green-500: #6e8f87;
-  --color-green-600: #4f6f68;
-  --color-green-800: #4f6f68;
-  --color-green-950: #e1ece6;
-  --color-emerald-300: #6e8f87;
+  --color-green-400: var(--bb-color-green-400, #4f6f68);
+  --color-green-500: var(--bb-color-green-500, #6e8f87);
+  --color-green-600: var(--bb-color-green-600, #4f6f68);
+  --color-green-800: var(--bb-color-green-800, #4f6f68);
+  --color-green-950: var(--bb-color-green-950, #e1ece6);
+  --color-emerald-300: var(--bb-color-emerald-300, #6e8f87);
 
   /* "Think" accent: muted violet, distinguishable but calm. */
-  --color-purple-300: #6f6090;
-  --color-purple-400: #7e6f94;
-  --color-purple-700: #b3a6c6;
-  --color-purple-800: #8a7ba0;
-  --color-purple-950: #e8e2f0;
+  --color-purple-300: var(--bb-color-purple-300, #6f6090);
+  --color-purple-400: var(--bb-color-purple-400, #7e6f94);
+  --color-purple-700: var(--bb-color-purple-700, #b3a6c6);
+  --color-purple-800: var(--bb-color-purple-800, #8a7ba0);
+  --color-purple-950: var(--bb-color-purple-950, #e8e2f0);
 
   /* Muted ochre for folder/flag icons and text highlight. */
-  --color-amber-300: #9a7b2e;
-  --color-amber-400: #8a6f00;
-  --color-amber-800: #c9a86a;
-  --color-amber-950: #f0e8d4;
-  --color-yellow-300: #8a6f00;
-  --color-yellow-500: #c9a94a;
-  --color-orange-400: #b5743a;
-  --color-orange-950: #f0e2d4;
+  --color-amber-300: var(--bb-color-amber-300, #9a7b2e);
+  --color-amber-400: var(--bb-color-amber-400, #8a6f00);
+  --color-amber-800: var(--bb-color-amber-800, #c9a86a);
+  --color-amber-950: var(--bb-color-amber-950, #f0e8d4);
+  --color-yellow-300: var(--bb-color-yellow-300, #8a6f00);
+  --color-yellow-500: var(--bb-color-yellow-500, #c9a94a);
+  --color-orange-400: var(--bb-color-orange-400, #b5743a);
+  --color-orange-950: var(--bb-color-orange-950, #f0e2d4);
 
   /* Destructive / error: warm muted red, kept distinct from accents. */
-  --color-red-200: #b96a6a;
-  --color-red-300: #a45c5c;
-  --color-red-400: #a45c5c;
-  --color-red-500: #8f4d4d;
-  --color-red-600: #c49595;
-  --color-red-800: #c9a3a3;
-  --color-red-900: #c49595;
-  --color-red-950: #f2e2e2;
+  --color-red-200: var(--bb-color-red-200, #b96a6a);
+  --color-red-300: var(--bb-color-red-300, #a45c5c);
+  --color-red-400: var(--bb-color-red-400, #a45c5c);
+  --color-red-500: var(--bb-color-red-500, #8f4d4d);
+  --color-red-600: var(--bb-color-red-600, #c49595);
+  --color-red-800: var(--bb-color-red-800, #c9a3a3);
+  --color-red-900: var(--bb-color-red-900, #c49595);
+  --color-red-950: var(--bb-color-red-950, #f2e2e2);
+}
+
+/* Chromium turns a horizontal overscroll into a back/forward gesture and paints
+   its own floating arrow badge over the app. A stray two-finger swipe while
+   reading therefore navigates away from the garden. The shell owns its own
+   back affordance, so opt the gesture out entirely. */
+html,
+body {
+  overscroll-behavior-x: none;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-source-sans), "Source Sans Pro", Arial, Helvetica, sans-serif;
+}
+
+/* Firefox exposes a flat version of the same narrow material. Chromium,
+   Safari, and the Electron webview share the softly raised pill below. */
+@supports (-moz-appearance: none) {
+  * {
+    scrollbar-color: var(--bb-scrollbar-thumb) var(--bb-scrollbar-track);
+    scrollbar-width: thin;
+  }
+}
+
+*::-webkit-scrollbar {
+  width: var(--bb-scrollbar-size);
+  height: var(--bb-scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: var(--bb-scrollbar-track);
+  box-shadow:
+    inset 1px 1px 2px var(--bb-scrollbar-shadow),
+    inset -1px -1px 2px var(--bb-scrollbar-highlight);
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid var(--bb-scrollbar-track);
+  border-radius: 999px;
+  background: var(--bb-scrollbar-thumb);
+  box-shadow:
+    1px 1px 2px var(--bb-scrollbar-shadow),
+    -1px -1px 2px var(--bb-scrollbar-highlight);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--bb-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--bb-scrollbar-thumb-active);
+  box-shadow:
+    inset 1px 1px 2px var(--bb-scrollbar-shadow),
+    inset -1px -1px 2px var(--bb-scrollbar-highlight);
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--bb-scrollbar-track);
 }
 
 /* Every navbar that carries the animated flower bed uses the same warm paper
@@ -183,9 +280,19 @@ html[data-breadboard-desktop="true"] .desktop-title-bar {
   width: 100%;
   height: var(--breadboard-titlebar-height);
   flex: 0 0 var(--breadboard-titlebar-height);
-  background: #faf7ef;
+  background: var(--paper-surface);
   user-select: none;
   -webkit-app-region: drag;
+}
+
+/* A full-screen surface takes the window's chrome with it. Voice mode is drawn
+   over this strip rather than under it, so the strip only has to stop painting
+   its own surface: a cream (or in dark, charcoal) band across the top corners
+   of a terracotta screen reads as a bug rather than as the app frame. The
+   native caption buttons at the right are painted by Electron, and voice mode
+   recolours those through the desktop bridge. */
+html[data-breadboard-desktop="true"][data-voice-stage="open"] .desktop-title-bar {
+  background: transparent;
 }
 
 html[data-breadboard-desktop="true"] body > .h-screen {
@@ -194,6 +301,30 @@ html[data-breadboard-desktop="true"] body > .h-screen {
 
 html[data-breadboard-desktop="true"] body > .min-h-screen {
   min-height: calc(100vh - var(--breadboard-titlebar-height));
+}
+
+/* The calendar is a fixed-height app shell rather than a scrolling page: the
+   toolbar and sidebar stay put while the grid scrolls inside them. It needs a
+   definite height for that, so it gets the same desktop title-bar deduction the
+   scrolling pages get above. */
+.bb-calendar-shell {
+  height: 100vh;
+}
+
+html[data-breadboard-desktop="true"] body > .bb-calendar-shell {
+  height: calc(100vh - var(--breadboard-titlebar-height));
+}
+
+/* Day cells carry their surface as an inline style (it depends on whether the
+   day is today and whether it belongs to the shown month), so the hover cue is
+   an inset wash rather than a background utility that inline style would win
+   against. */
+.bb-calendar-cell {
+  transition: box-shadow var(--neu-duration) var(--neu-easing);
+}
+
+.bb-calendar-cell:hover {
+  box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--ink) 4%, transparent);
 }
 
 /* Semantic depth primitives. They intentionally do not set dimensions or
@@ -227,6 +358,15 @@ html[data-breadboard-desktop="true"] body > .min-h-screen {
   border-color: var(--neu-border);
   background-color: var(--neu-surface-pressed);
   box-shadow: var(--neu-inset-shadow);
+}
+
+/* Switch tracks wear `neu-inset` for their pressed material, and its unlayered
+   background would otherwise beat the layered Tailwind `bg-*` utility that states
+   the on/off fill — so an enabled switch read the same as a disabled one. Only the
+   on state needs help: paint it plain green and leave everything else alone. */
+[role="switch"][aria-checked="true"].neu-inset,
+[role="switch"][aria-checked="true"] .neu-inset {
+  background-color: #34c759;
 }
 
 .neu-button,
@@ -320,12 +460,21 @@ html[data-breadboard-desktop="true"] body > .min-h-screen {
 
 .neu-control:focus,
 .neu-control:focus-within,
-.neu-composer:focus-within,
 .neumorphic-chat-bar:focus-within {
   border-color: var(--neu-focus);
   box-shadow:
     0 0 0 3px color-mix(in srgb, var(--neu-focus) 22%, transparent),
     var(--neu-inset-shadow);
+  outline: none;
+}
+
+.neu-composer:focus-within {
+  border-color: color-mix(in srgb, var(--neu-focus) 52%, var(--neu-border));
+  box-shadow:
+    7px 8px 18px var(--neu-shadow),
+    -6px -6px 16px var(--neu-highlight),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 64%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--neu-focus) 14%, transparent);
   outline: none;
 }
 
@@ -374,13 +523,428 @@ html[data-breadboard-desktop="true"] body > .min-h-screen {
   border-color: color-mix(in srgb, var(--line-strong) 58%, var(--paper-raised));
   background: var(--neu-chat-user-surface);
   box-shadow:
-    4px 5px 12px color-mix(in srgb, var(--ink) 11%, transparent),
-    -3px -3px 9px color-mix(in srgb, var(--paper-raised) 72%, transparent),
-    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 62%, transparent);
+    3px 3px 8px color-mix(in srgb, var(--ink) 9%, transparent),
+    -3px -3px 8px color-mix(in srgb, var(--paper-raised) 64%, transparent),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 56%, transparent);
+}
+
+/* Breadboard workspace materials. These classes are deliberately visual-only:
+   panel motion, sizing, overflow, positioning, and disclosure state stay in
+   their existing component classes. */
+.bb-neu-tray {
+  border-color: var(--neu-border);
+  background-color: var(--neu-surface);
+  box-shadow: var(--neu-tray-shadow);
+}
+
+.bb-neu-toolbar {
+  border-color: var(--neu-border);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--paper-raised) 84%, var(--paper-surface)),
+      var(--paper-surface)
+    );
+  box-shadow: var(--neu-divider-shadow);
+}
+
+/* Electron's native caption strip is the same warm paper as flower navbars.
+   The generic toolbar gradient used to override that surface in Garden Chat,
+   leaving a visible color seam directly below the window controls. */
+.bb-neu-toolbar.breadboard-flower-navbar {
+  background: var(--paper-surface);
+}
+
+.bb-neu-sidebar-left,
+.bb-neu-sidebar-right {
+  border-color: var(--neu-border);
+  background:
+    linear-gradient(
+      155deg,
+      color-mix(in srgb, var(--paper-raised) 28%, var(--paper-bg)),
+      var(--paper-bg)
+    );
+}
+
+.bb-neu-sidebar-left {
+  box-shadow: var(--neu-sidebar-left-shadow);
+}
+
+.bb-neu-sidebar-right {
+  box-shadow: var(--neu-sidebar-right-shadow);
+}
+
+.bb-neu-conversation-row {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px transparent;
+  transition:
+    box-shadow var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing),
+    color var(--neu-duration) var(--neu-easing);
+}
+
+.bb-neu-conversation-row:hover {
+  background-color: color-mix(in srgb, var(--paper-surface) 72%, transparent);
+  box-shadow: var(--neu-soft-shadow);
+}
+
+.bb-neu-conversation-row-selected,
+.bb-neu-conversation-row-selected:hover {
+  background-color: var(--neu-surface-pressed);
+  box-shadow:
+    var(--neu-inset-shadow),
+    inset 0 0 0 1px color-mix(in srgb, var(--line-strong) 44%, transparent);
+  color: var(--ink-heading);
+}
+
+/* A chat name that does not fit the rail sits ellipsised at rest and scrolls to
+   show its tail while the row is hovered or focused, the way a terminal board
+   cycles a long destination. The travel distance and the duration that keeps
+   every name moving at the same speed are measured by the row and handed down
+   as custom properties. */
+.bb-chat-marquee {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.bb-chat-marquee-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Scrolling needs the full name laid out past the edge, so the ellipsis that
+   stands in for it at rest goes away for the duration. */
+.bb-chat-marquee-text[data-marquee="run"] {
+  width: max-content;
+  overflow: visible;
+  text-overflow: clip;
+  animation: bb-chat-marquee-shift var(--bb-marquee-duration, 6s) ease-in-out infinite;
+}
+
+@keyframes bb-chat-marquee-shift {
+  0%,
+  8% {
+    transform: translateX(0);
+  }
+  44%,
+  56% {
+    transform: translateX(calc(-1 * var(--bb-marquee-distance, 0px)));
+  }
+  92%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.bb-neu-conversation-row:focus-visible,
+.bb-neu-accordion:focus-visible {
+  outline: 2px solid var(--neu-focus);
+  outline-offset: -2px;
+}
+
+.bb-neu-learn-tray {
+  border-color: var(--neu-border);
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--paper-raised) 76%, var(--paper-surface)),
+      var(--paper-surface)
+    );
+  box-shadow:
+    0 7px 18px color-mix(in srgb, var(--ink) 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--paper-raised) 78%, transparent);
+}
+
+.bb-neu-accordion {
+  background-color: color-mix(in srgb, var(--paper-surface) 34%, transparent);
+  box-shadow: var(--neu-divider-shadow);
+  transition:
+    box-shadow var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing),
+    color var(--neu-duration) var(--neu-easing);
+}
+
+.bb-neu-accordion:hover {
+  background-color: color-mix(in srgb, var(--paper-surface) 70%, transparent);
+  box-shadow:
+    0 3px 8px color-mix(in srgb, var(--ink) 7%, transparent),
+    var(--neu-divider-shadow);
+}
+
+.bb-neu-accordion-open,
+.bb-neu-accordion-open:hover {
+  background-color: var(--neu-surface-pressed);
+  box-shadow:
+    inset 2px 2px 5px color-mix(in srgb, var(--ink) 9%, transparent),
+    inset -2px -2px 5px color-mix(in srgb, var(--paper-raised) 68%, transparent);
+  color: var(--ink-heading);
+}
+
+.bb-neu-accordion-panel {
+  background-color: color-mix(in srgb, var(--paper-bg) 46%, var(--paper-surface));
+  box-shadow:
+    inset 0 5px 12px color-mix(in srgb, var(--ink) 7%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--paper-raised) 68%, transparent);
+}
+
+.bb-neu-recessed,
+.bb-neu-artifact-preview {
+  background-color: var(--neu-surface-pressed);
+  box-shadow: var(--neu-recessed-shadow);
+}
+
+.bb-neu-artifact-card {
+  border-color: var(--neu-border);
+  background-color: var(--neu-surface);
+  box-shadow: var(--neu-soft-shadow);
+  transition:
+    box-shadow var(--neu-duration) var(--neu-easing),
+    border-color var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing);
+}
+
+.bb-neu-artifact-card:hover {
+  border-color: var(--line-strong);
+  background-color: var(--neu-surface-raised);
+  box-shadow: var(--neu-hover-shadow);
+}
+
+/* External-agent runs share one proportional system, built on the golden ratio
+   so a card holds a lot of detail without feeling crowded.
+
+   Radii step down the Fibonacci run — 21 for the card, 13 for a panel, 8 for a
+   row or chip — and every surface is padded by its own radius, so text is never
+   crowded into a corner it has to curve around. Gaps use the same run
+   (5 / 8 / 13 / 21), body copy is set at φ line height (1.618), and the type
+   scale steps by √φ: 11 → 13 → 16.
+
+   The material is Breadboard's own paper and typeface, with exactly two
+   neumorphic gestures and no more: `--bb-run-raise` lifts a surface (a lit top
+   edge, a soft drop below) and `--bb-run-recess` presses one in. Everything
+   here is one or the other. */
+:root {
+  --bb-run-raise:
+    inset 0 1px 0 color-mix(in srgb, var(--paper-raised) 88%, transparent),
+    0 1px 1px color-mix(in srgb, var(--ink) 5%, transparent),
+    0 13px 21px -13px color-mix(in srgb, var(--ink) 22%, transparent);
+  --bb-run-raise-sm:
+    inset 0 1px 0 color-mix(in srgb, var(--paper-raised) 85%, transparent),
+    0 1px 2px color-mix(in srgb, var(--ink) 8%, transparent);
+  --bb-run-recess:
+    inset 1px 1px 3px color-mix(in srgb, var(--ink) 7%, transparent),
+    inset -1px -1px 0 color-mix(in srgb, var(--paper-raised) 75%, transparent);
+}
+
+.bb-agent-run-card {
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 21px;
+  background: color-mix(in srgb, var(--paper-raised) 62%, var(--paper-surface));
+  box-shadow: var(--bb-run-raise);
+}
+
+/* The header is a golden section: the name gets the major 1.618 share and the
+   state the minor one, sitting against the right edge. The division is what the
+   name truncates at, so a long name can never crowd the state, and a long state
+   borrows width back from the name instead of colliding with it. */
+.bb-agent-run-header {
+  display: grid;
+  /* The name's track floors at 0 so it truncates on the division; the state's
+     track keeps its content minimum so it is never squashed. */
+  grid-template-columns: minmax(0, 1.618fr) 1fr;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 21px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  background: color-mix(in srgb, var(--paper-raised) 45%, transparent);
+}
+
+.bb-agent-run-header > :first-child {
+  min-width: 0;
+}
+
+.bb-agent-run-header > :last-child {
+  justify-self: end;
+}
+
+/* Captions: the words that name a thing rather than being the thing. Set in the
+   page's own sans, one step down, so they recede without going illegible. */
+.bb-agent-run-label {
+  font-size: 11px;
+  line-height: 1.618;
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.bb-agent-run-title {
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 600;
+  color: var(--ink-heading);
+}
+
+/* Body copy inside a card: the golden line height is what makes dense cards
+   readable rather than cramped. */
+.bb-agent-run-text {
+  font-size: 13px;
+  line-height: 1.618;
+  color: var(--ink);
+}
+
+/* Values that are literally machine text — pin names, paths, timings. */
+.bb-agent-run-readout {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.618;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+/* The state lamp. Round, like every other status dot in Breadboard. */
+.bb-agent-run-led {
+  border-radius: 999px;
+}
+
+/* Recessed: what the run put down inside itself — telemetry, logs, previews. */
+.bb-agent-run-inset {
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--paper-strong) 22%, transparent);
+  box-shadow: var(--bb-run-recess);
+}
+
+/* Raised: results and findings, which sit on the card rather than in it. */
+.bb-agent-run-panel,
+.bb-agent-run-output {
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--paper-raised) 72%, transparent);
+  box-shadow: var(--bb-run-raise);
+}
+
+/* Small raised things — list rows and chips. Same gesture, shorter throw, so a
+   24px control is not given a 21px shadow. */
+.bb-agent-run-row,
+.bb-agent-run-pill {
+  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--paper-raised) 55%, transparent);
+  box-shadow: var(--bb-run-raise-sm);
+}
+
+/* One button shape for everything inside a run card, so a card never turns into
+   a row of competing pills. Soft-cornered outline by default, tinted only for
+   the one action the card actually wants you to take. */
+.bb-agent-run-action {
+  border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  line-height: 1.618;
+  font-weight: 500;
+  color: var(--ink-muted);
+  background: color-mix(in srgb, var(--paper-raised) 70%, transparent);
+  box-shadow: var(--bb-run-raise-sm);
+  transition:
+    color var(--neu-duration) var(--neu-easing),
+    border-color var(--neu-duration) var(--neu-easing),
+    box-shadow var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing);
+}
+
+.bb-agent-run-action:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink-heading);
+}
+
+/* Pressing a button pushes it into the paper — the other half of the gesture. */
+.bb-agent-run-action:active:not(:disabled) {
+  box-shadow: var(--bb-run-recess);
+}
+
+.bb-agent-run-action:disabled {
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.bb-agent-run-action-primary {
+  border-color: color-mix(in srgb, var(--botanical) 45%, transparent);
+  color: var(--botanical);
+}
+
+.bb-agent-run-action-primary:hover:not(:disabled) {
+  border-color: var(--botanical);
+  background: color-mix(in srgb, var(--botanical) 10%, transparent);
+  color: var(--botanical);
+}
+
+.bb-agent-run-action-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
 }
 
 .neu-progress-track {
   overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Liquid glass terminal bar (@ybouane/liquidglass)
+   ---------------------------------------------------------------------------
+   The library only samples the *children* of its root, never the root's own
+   background, so the dock carries three sibling layers that exist purely as
+   refraction source. They live at z-index -2 — above the dock's background,
+   below the shader canvas the library injects at z-index -1 — and every one of
+   them keeps a fixed size, because the rasteriser re-runs on each new size.
+
+   All three are inert decoration: hidden from assistive tech and untouchable. */
+.bb-terminal-glass-scene,
+.bb-terminal-glass-wallpaper {
+  position: absolute;
+  inset-inline: 0;
+  z-index: -2;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The live page, plus the floor and sheen painted around it. Kept to the bar's
+   own strip — 48px is COLLAPSED_HEIGHT, the tallest the bar ever gets — so each
+   scroll blits ~48 rows rather than a viewport's worth. Whatever it spills past
+   the bar is covered by the dock body, which paints above negative z-index
+   children.
+
+   `width` is explicit because <canvas> is a replaced element: with `width:auto`
+   between left and right it takes its intrinsic 300px instead of stretching. */
+.bb-terminal-glass-scene {
+  top: 0;
+  width: 100%;
+  height: 48px;
+}
+
+
+/* Boxed to the viewport rather than to the bar, so `cover`/`center` crops the
+   wallpaper exactly where the page's own background-attachment: fixed layer
+   crops it and the refraction lines up with the page around the dock. The dock
+   clips the overflow.
+
+   `width` is explicit because an absolutely positioned replaced element with
+   `width: auto` takes its intrinsic ratio instead of stretching between
+   left/right — that left the right end of the bar refracting the wrong layer. */
+.bb-terminal-glass-wallpaper {
+  bottom: 0;
+  width: 100%;
+  height: 100vh;
+  object-fit: cover;
+  object-position: center;
+}
+
+/* The shader draws its own edge, so the toolbar's divider treatment would read
+   as a second, harder boundary on top of it. */
+.bb-terminal-glass-bar {
+  border-bottom-color: transparent;
+  box-shadow: none;
 }
 
 .neu-button:focus-visible,
@@ -402,6 +966,29 @@ html[data-breadboard-desktop="true"] body > .min-h-screen {
 .neu-disabled {
   box-shadow: none;
   opacity: 0.52;
+}
+
+/* Shared popup material. Modal backdrops deliberately use a light scrim with
+   no backdrop-filter: the page remains recognisable and crisp behind a dialog.
+   The panel and actions carry the depth instead, like a raised sheet of paper
+   with pressable controls. */
+.bb-modal-backdrop {
+  background: color-mix(in srgb, var(--ink) 24%, transparent) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.bb-modal-backdrop .neu-dialog,
+.bb-modal-panel {
+  border-color: color-mix(in srgb, var(--line-strong) 82%, var(--paper-raised)) !important;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--paper-raised) 96%, white), var(--paper-surface)) !important;
+  color: var(--ink) !important;
+  box-shadow:
+    0 22px 52px color-mix(in srgb, var(--ink) 23%, transparent),
+    0 5px 12px color-mix(in srgb, var(--ink) 14%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 88%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--line) 58%, transparent) !important;
 }
 
 h1,
@@ -436,7 +1023,7 @@ b {
 .chat-markdown p,
 .chat-markdown ul,
 .chat-markdown ol,
-.chat-markdown pre,
+.chat-markdown .chat-code-block,
 .chat-markdown blockquote,
 .chat-markdown table {
   margin: 0.65rem 0;
@@ -445,7 +1032,7 @@ b {
 .chat-markdown.compact p,
 .chat-markdown.compact ul,
 .chat-markdown.compact ol,
-.chat-markdown.compact pre,
+.chat-markdown.compact .chat-code-block,
 .chat-markdown.compact blockquote,
 .chat-markdown.compact table {
   margin: 0.3rem 0;
@@ -472,12 +1059,82 @@ b {
   font-size: 0.92em;
 }
 
-.chat-markdown pre {
-  overflow-x: auto;
-  border-radius: 8px;
+.chat-markdown .chat-code-block {
+  overflow: hidden;
+  border-radius: 16px;
   border: 1px solid var(--border);
   background: var(--surface);
-  padding: 0.85rem;
+}
+
+.chat-markdown .chat-code-block-header {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem 0.35rem 0.9rem;
+}
+
+.chat-markdown .chat-code-block-language {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.55rem;
+  color: inherit;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.chat-markdown .chat-code-block-language svg,
+.chat-markdown .chat-code-copy svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chat-markdown .chat-code-copy {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: inherit;
+  opacity: 0.72;
+  transition: background-color 150ms ease, opacity 150ms ease, transform 150ms ease;
+}
+
+.chat-markdown .chat-code-copy:hover {
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  opacity: 1;
+}
+
+.chat-markdown .chat-code-copy:active {
+  transform: scale(0.94);
+}
+
+.chat-markdown .chat-code-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.chat-markdown .chat-code-block pre {
+  overflow-x: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.55rem 0.9rem 1rem;
 }
 
 .chat-markdown pre code {
@@ -485,16 +1142,87 @@ b {
   padding: 0;
 }
 
-.chat-markdown a {
-  color: var(--accent);
+/* Links read blue everywhere in a transcript: `.chat-markdown a` covers
+   assistant answers (react-markdown autolinks bare URLs), `.chat-inline-link`
+   covers the plain-text messages the user typed. */
+.chat-markdown a,
+.chat-inline-link {
+  color: var(--chat-link);
   text-decoration: underline;
   text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown a:hover,
+.chat-inline-link:hover {
+  color: var(--chat-link-hover);
 }
 
 .chat-markdown blockquote {
+  position: relative;
   border-left: 2px solid var(--accent-2);
   color: var(--foreground);
-  padding-left: 0.8rem;
+  padding: 0.05rem 2.8rem 0.05rem 0.8rem;
+}
+
+.chat-markdown .chat-copyable-field-content > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown .chat-copyable-field-content > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown .chat-field-copy {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.15rem;
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  cursor: pointer;
+  user-select: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--paper-surface) 90%, transparent);
+  color: var(--ink-muted);
+  box-shadow: var(--neu-soft-shadow);
+  opacity: 0.78;
+  transition:
+    color var(--neu-duration) var(--neu-easing),
+    background-color var(--neu-duration) var(--neu-easing),
+    box-shadow var(--neu-duration) var(--neu-easing),
+    opacity var(--neu-duration) var(--neu-easing),
+    transform var(--neu-duration) var(--neu-easing);
+}
+
+.chat-markdown .chat-field-copy svg {
+  width: 1rem;
+  height: 1rem;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chat-markdown .chat-field-copy:hover {
+  background: var(--paper-raised);
+  color: var(--ink-heading);
+  box-shadow: var(--neu-hover-shadow);
+  opacity: 1;
+}
+
+.chat-markdown .chat-field-copy:active {
+  box-shadow: var(--neu-inset-shadow);
+  transform: scale(0.95);
+}
+
+.chat-markdown .chat-field-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  opacity: 1;
 }
 
 .chat-markdown table {
@@ -514,6 +1242,57 @@ b {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0.25rem 0;
+}
+
+.bb-chat-text-highlight {
+  cursor: pointer;
+  border-radius: 0.22rem;
+  background: var(--selection-yellow);
+  color: inherit;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0.04em 0.08em;
+  transition:
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.bb-chat-text-highlight:hover,
+.bb-chat-text-highlight:focus-visible {
+  background: var(--selection-yellow-hover);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--selection-yellow-line) 45%, transparent);
+  outline: none;
+}
+
+.bb-inline-answer {
+  border-color: color-mix(
+    in srgb,
+    var(--selection-yellow-line) 58%,
+    var(--neu-border)
+  );
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--paper-raised) 92%, var(--selection-yellow) 8%),
+      var(--neu-surface-raised)
+    );
+  box-shadow:
+    10px 12px 30px var(--neu-shadow-strong),
+    -8px -8px 22px color-mix(in srgb, var(--neu-highlight) 88%, transparent),
+    inset 1px 1px 0 color-mix(in srgb, var(--paper-raised) 76%, transparent);
+}
+
+.bb-inline-answer-question {
+  border-color: color-mix(
+    in srgb,
+    var(--selection-yellow-line) 38%,
+    var(--neu-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--neu-surface-pressed) 86%,
+    var(--selection-yellow) 14%
+  );
 }
 
 /* KaTeX inherits text color so it renders white in dark chat bubbles */
@@ -579,6 +1358,67 @@ b {
   animation: learn-progress-pulse 1.2s ease-in-out infinite;
 }
 
+/* A ViMax animatic shot: the drawn first frame drifts from the composition the
+   shot opens on to the one it ends on, in the direction the shot's own motion
+   description implies. The endpoints are supplied per shot as custom
+   properties, and the film player pauses the animation rather than stopping it,
+   so a paused shot holds the frame it had reached. */
+@keyframes vimax-shot-drift {
+  from {
+    transform: var(--vimax-drift-from, none);
+  }
+  to {
+    transform: var(--vimax-drift-to, none);
+  }
+}
+
+.vimax-shot-drift {
+  animation-name: vimax-shot-drift;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  animation-iteration-count: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The film still plays; only the camera move stops. */
+  .vimax-shot-drift {
+    animation-name: none;
+    transform: var(--vimax-drift-from, none);
+  }
+}
+
+/* Breadboard loading mark: a charge slides along one strip of holes. The
+   translation is in SVG user units (48 of them, first hole to last), and it
+   fades at both ends so the charge does not snap back to the start. */
+@keyframes bb-loader-charge {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  18%,
+  82% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(48px);
+    opacity: 0;
+  }
+}
+
+.bb-loader-charge {
+  opacity: 0;
+  animation: bb-loader-charge 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Nothing moves, so the mark holds a half-travelled charge instead. */
+  .bb-loader-charge {
+    animation: none;
+    opacity: 1;
+    transform: translateX(24px);
+  }
+}
+
 @keyframes thinking-shimmer {
   from {
     background-position: 180% 0;
@@ -614,7 +1454,10 @@ b {
   .neu-control,
   .neu-composer,
   .neumorphic-chat-bar,
-  .neu-chat-message {
+  .neu-chat-message,
+  .bb-neu-conversation-row,
+  .bb-neu-accordion,
+  .bb-neu-artifact-card {
     transition-duration: 0.01ms;
   }
 
@@ -633,6 +1476,15 @@ b {
   }
 
   .learn-progress-pulse {
+    animation: none;
+  }
+
+  /* The name stays put and keeps its ellipsis instead of scrolling. */
+  .bb-chat-marquee-text[data-marquee="run"] {
+    width: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transform: none;
     animation: none;
   }
 
@@ -662,6 +1514,24 @@ b {
   .neu-composer,
   .neumorphic-chat-bar,
   .neu-chat-message,
+  .bb-neu-tray,
+  .bb-neu-toolbar,
+  .bb-neu-sidebar-left,
+  .bb-neu-sidebar-right,
+  .bb-neu-conversation-row,
+  .bb-neu-learn-tray,
+  .bb-neu-accordion,
+  .bb-neu-accordion-panel,
+  .bb-neu-recessed,
+  .bb-neu-artifact-card,
+  .bb-neu-artifact-preview,
+  .bb-agent-run-card,
+  .bb-agent-run-pill,
+  .bb-agent-run-inset,
+  .bb-agent-run-panel,
+  .bb-agent-run-row,
+  .bb-agent-run-output,
+  .bb-agent-run-action,
   .neu-button,
   .neu-button-primary,
   .neu-button-accent,
@@ -690,6 +1560,10 @@ b {
   .neu-control:focus-visible {
     outline: 2px solid Highlight;
   }
+
+  * {
+    scrollbar-color: ButtonText Canvas;
+  }
 }
 
 /* New note modal — copied from quartz MarkdownActions so both editors look
@@ -709,8 +1583,9 @@ b {
   align-items: center;
   justify-content: center;
   padding: 1rem;
-  background: rgba(0, 0, 0, 0.58);
-  backdrop-filter: blur(4px);
+  background: color-mix(in srgb, var(--dark) 24%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .markdown-editor-panel {
@@ -719,9 +1594,12 @@ b {
   width: min(58rem, calc(100vw - 2rem));
   height: min(42rem, calc(100vh - 2rem));
   border: 1px solid var(--lightgray);
-  border-radius: 8px;
-  background: var(--light);
-  box-shadow: var(--neu-strong-shadow);
+  border-radius: 18px;
+  background: linear-gradient(145deg, var(--paper-raised), var(--light));
+  box-shadow:
+    0 22px 52px color-mix(in srgb, var(--dark) 23%, transparent),
+    0 5px 12px color-mix(in srgb, var(--dark) 14%, transparent),
+    inset 0 1px 0 white;
   overflow: hidden;
 }
 
@@ -758,19 +1636,32 @@ b {
 .markdown-editor-save {
   border: 1px solid var(--lightgray);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--light) 88%, transparent);
-  color: var(--secondary);
+  background: linear-gradient(180deg, var(--paper-raised), var(--paper-strong));
+  color: var(--dark);
   cursor: pointer;
   font: inherit;
   font-size: 0.85rem;
   font-weight: 500;
   line-height: 1;
   padding: 0.45rem 0.65rem;
-  box-shadow: var(--neu-soft-shadow);
+  box-shadow:
+    0 3px 0 color-mix(in srgb, var(--lightgray) 75%, var(--dark)),
+    0 7px 13px color-mix(in srgb, var(--dark) 12%, transparent),
+    inset 0 1px 0 white;
   transition:
     box-shadow var(--neu-duration) var(--neu-easing),
     border-color var(--neu-duration) var(--neu-easing),
     background-color var(--neu-duration) var(--neu-easing);
+}
+
+.markdown-editor-save {
+  border-color: color-mix(in srgb, var(--secondary) 82%, var(--dark));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--secondary) 84%, white), var(--secondary));
+  color: var(--paper-raised);
+  box-shadow:
+    0 3px 0 color-mix(in srgb, var(--secondary) 72%, var(--dark)),
+    0 8px 15px color-mix(in srgb, var(--secondary) 24%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent);
 }
 
 .markdown-editor-close:active,
@@ -784,6 +1675,11 @@ b {
 .markdown-editor-cancel:hover {
   color: var(--tertiary);
   border-color: var(--secondary);
+}
+
+.markdown-editor-save:hover {
+  filter: brightness(1.04);
+  transform: translateY(-1px);
 }
 
 .markdown-editor-fields {
@@ -916,16 +1812,6 @@ b {
   opacity: 1;
 }
 
-.markdown-editor-save {
-  background: var(--dark);
-  border-color: var(--dark);
-  color: var(--light);
-}
-
-.markdown-editor-save:hover {
-  opacity: 0.86;
-}
-
 .markdown-editor-save:disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -941,4 +1827,2414 @@ b {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+/* ---------------------------------------------------------------------------
+   FastRead — RSVP reader overlay. A full-surface paper stage that holds one
+   word at a time with its focal letter pinned to the centre line, so the eye
+   never has to move. Playback stops on anything that is looked at rather than
+   read (images, interactive visuals, code, tables, display math).
+   --------------------------------------------------------------------------- */
+
+.fastread-overlay {
+  position: fixed;
+  /* Start below the desktop shell's drag strip. Electron paints the native
+     Windows controls over that strip as a compositor layer above all web
+     content, so a full-viewport overlay loses its top-right corner to them —
+     which is exactly where this header keeps its speed and close buttons.
+     Staying clear also leaves the strip draggable. The variable is only defined
+     on the desktop html element, so browser sessions get 0. */
+  inset: var(--breadboard-titlebar-height, 0px) 0 0 0;
+  /* Above the garden's floating Quartz AI launcher (z-70), below dialogs and
+     toasts (z-100+) so they can still surface over the reader. */
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(
+      120% 90% at 50% 0%,
+      color-mix(in srgb, var(--paper-raised) 92%, white),
+      var(--paper-surface) 62%,
+      var(--paper-strong)
+    );
+  color: var(--ink);
+}
+
+/* Dark reading mode, scoped to the overlay so the dashboard keeps its light
+   paper theme.
+
+   IMPORTANT: every derived token has to be re-declared here, not just the base
+   palette. A custom property resolves its var() references on the element where
+   it is *declared*, so `--neu-surface: var(--paper-surface)` was already
+   computed to the light paper colour at :root and inherits down as that literal
+   value — overriding `--paper-surface` here cannot reach it. Re-declaring with
+   the same expressions makes them resolve against the dark base instead, which
+   is what carries dark into the shared markdown renderer, its code blocks, and
+   KaTeX without any of them needing dark rules of their own. */
+.fastread-overlay[data-theme='dark'] {
+  /* Base palette. */
+  --paper-bg: #18181a;
+  --paper-surface: #20211f;
+  --paper-raised: #292b27;
+  --paper-strong: #32352f;
+  --ink: #e6ebe5;
+  --ink-heading: #f4f1e8;
+  --ink-muted: #a5aea5;
+  --line: #353d37;
+  --line-strong: #4c5a50;
+  --botanical: #91b7a1;
+  --botanical-hover: #a6c8b4;
+  --botanical-2: #9fb5c4;
+  --botanical-3: #a8c4bb;
+  --selection-yellow: #6b6038;
+  --selection-yellow-hover: #7c7042;
+  --selection-yellow-line: #a89555;
+  --danger: #c98282;
+  --danger-hover: #d99a9a;
+  --chat-link: #7fb0ff;
+  --chat-link-hover: #a8c9ff;
+
+  /* Depth. Shadows go to near-black and the highlight is a lifted surface
+     rather than white, so raised material reads as raised on a dark ground. */
+  --neu-bg: var(--paper-bg);
+  --neu-surface: var(--paper-surface);
+  --neu-surface-raised: var(--paper-raised);
+  --neu-surface-pressed: color-mix(in srgb, var(--paper-surface) 78%, var(--paper-bg));
+  --neu-highlight: color-mix(in srgb, #ffffff 6%, transparent);
+  --neu-shadow: color-mix(in srgb, #000000 46%, transparent);
+  --neu-shadow-soft: color-mix(in srgb, #000000 32%, transparent);
+  --neu-shadow-strong: color-mix(in srgb, #000000 58%, transparent);
+  --neu-border: var(--line-strong);
+  --neu-focus: var(--botanical);
+  --neu-raised-shadow:
+    5px 5px 12px var(--neu-shadow),
+    -5px -5px 12px var(--neu-highlight),
+    inset 1px 1px 0 color-mix(in srgb, #ffffff 5%, transparent);
+  --neu-soft-shadow:
+    3px 3px 8px var(--neu-shadow-soft),
+    -3px -3px 8px var(--neu-highlight);
+  --neu-strong-shadow:
+    9px 10px 24px var(--neu-shadow-strong),
+    -7px -7px 18px var(--neu-highlight);
+  --neu-inset-shadow:
+    inset 2px 2px 5px color-mix(in srgb, #000000 40%, transparent),
+    inset -2px -2px 5px color-mix(in srgb, #ffffff 4%, transparent);
+  --neu-hover-shadow:
+    4px 4px 10px var(--neu-shadow),
+    -4px -4px 10px var(--neu-highlight);
+  --neu-divider-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 5%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--line-strong) 34%, transparent);
+  --neu-tray-shadow:
+    0 -7px 20px color-mix(in srgb, #000000 38%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #ffffff 5%, transparent);
+
+  /* Semantic aliases — what `.chat-markdown` and its code blocks read. */
+  --background: var(--paper-bg);
+  --foreground: var(--ink);
+  --surface: var(--paper-surface);
+  --surface-strong: var(--paper-strong);
+  --surface-raised: var(--paper-raised);
+  --border: var(--line);
+  --muted: var(--ink-muted);
+  --accent: var(--botanical);
+  --accent-2: var(--botanical-3);
+
+  /* Scrollbars, for stop bodies that overflow. */
+  --bb-scrollbar-track: color-mix(in srgb, var(--paper-bg) 68%, var(--paper-surface));
+  --bb-scrollbar-thumb: color-mix(in srgb, var(--botanical) 30%, var(--paper-surface));
+  --bb-scrollbar-thumb-hover: color-mix(in srgb, var(--botanical) 44%, var(--paper-surface));
+  --bb-scrollbar-thumb-active: color-mix(in srgb, var(--botanical-hover) 52%, var(--paper-surface));
+  --bb-scrollbar-shadow: color-mix(in srgb, #000000 40%, transparent);
+  --bb-scrollbar-highlight: color-mix(in srgb, #ffffff 5%, transparent);
+
+  /* The inverted Tailwind ramp the markdown renderer borrows for borders. */
+  --color-gray-800: #353d37;
+  --color-gray-700: #4c5a50;
+
+  /* The base rule's gradient and `color` are plain properties, so they already
+     resolve against the tokens above — no need to restate them here. */
+  color-scheme: dark;
+}
+
+/* On dark the accent is a light mint, so filled buttons need dark ink on top
+   instead of the light theme's paper colour. */
+.fastread-overlay[data-theme='dark'] .fastread-continue,
+.fastread-overlay[data-theme='dark'] .fastread-buttons .fastread-play {
+  color: #10161a;
+}
+
+.fastread-overlay[data-theme='dark'] .fastread-continue-hint {
+  background: color-mix(in srgb, #10161a 22%, transparent);
+}
+
+.fastread-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1rem 1.5rem 0.875rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  box-shadow: var(--neu-divider-shadow);
+}
+
+.fastread-header-titles {
+  min-width: 0;
+}
+
+.fastread-eyebrow {
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--botanical);
+}
+
+.fastread-title {
+  margin: 0.15rem 0 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ink-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fastread-section {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fastread-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.fastread-speed {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.55rem;
+  border-radius: var(--neu-radius-md);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-inset-shadow);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+.fastread-speed button {
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: var(--neu-surface-raised);
+  box-shadow: var(--neu-soft-shadow);
+  color: var(--ink);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fastread-speed button:hover:not(:disabled) {
+  color: var(--botanical);
+}
+
+.fastread-speed button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.fastread-close {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--neu-radius-md);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-soft-shadow);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.fastread-close svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.fastread-close:hover {
+  color: var(--danger);
+}
+
+.fastread-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.fastread-empty {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+}
+
+.fastread-word-stage {
+  position: relative;
+  width: 100%;
+  min-height: 16rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fastread-marker {
+  position: absolute;
+  left: 50%;
+  width: 2px;
+  height: 2.75rem;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.fastread-marker-top {
+  top: 0;
+  background: linear-gradient(to bottom, var(--danger), transparent);
+}
+
+.fastread-marker-bottom {
+  bottom: 0;
+  background: linear-gradient(to top, var(--danger), transparent);
+}
+
+/* The focal letter is absolutely centred and the rest of the word grows out
+   from it, so successive words never shift the fixation point. */
+.fastread-word {
+  position: relative;
+  width: 100%;
+  height: 1.3em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: clamp(2.25rem, 7vw, 5rem);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+}
+
+.fastread-word.atomic {
+  font-size: clamp(1.5rem, 4.5vw, 3rem);
+}
+
+.fastread-orp {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.fastread-before {
+  position: absolute;
+  left: 50%;
+  transform: translateX(calc(-100% - 0.5ch));
+  text-align: right;
+  color: var(--ink);
+}
+
+.fastread-after {
+  position: absolute;
+  left: calc(50% + 0.5ch);
+  text-align: left;
+  color: var(--ink);
+}
+
+.fastread-atomic {
+  color: var(--ink);
+}
+
+.fastread-stop,
+.fastread-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  max-width: 52rem;
+}
+
+.fastread-done p {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--ink-muted);
+}
+
+.fastread-stop-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--botanical) 12%, var(--paper-raised));
+  color: var(--botanical);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.fastread-stop-body {
+  width: 100%;
+  max-height: 58vh;
+  overflow: auto;
+  padding: 1.25rem;
+  border-radius: var(--neu-radius-lg);
+  background: var(--neu-surface-raised);
+  box-shadow: var(--neu-raised-shadow);
+}
+
+.fastread-stop-figure {
+  margin: 0;
+  text-align: center;
+}
+
+.fastread-stop-figure img {
+  max-width: 100%;
+  max-height: 48vh;
+  border-radius: var(--neu-radius-md);
+  box-shadow: var(--neu-soft-shadow);
+}
+
+.fastread-stop-figure figcaption {
+  margin-top: 0.6rem;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+
+.fastread-stop-card {
+  text-align: center;
+}
+
+.fastread-stop-note {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--ink-muted);
+}
+
+.fastread-stop-id {
+  margin: 0.6rem 0 0;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--botanical);
+}
+
+.fastread-stop-source {
+  margin: 0.75rem 0 0;
+  max-height: 30vh;
+  overflow: auto;
+  padding: 0.75rem;
+  border-radius: var(--neu-radius-sm);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-inset-shadow);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.78rem;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fastread-stop-markdown {
+  font-size: 1rem;
+}
+
+/* A stop exists to be looked at, so the equation gets the room the word stage
+   would have used. Same specificity as the `.chat-markdown` rule it refines,
+   and it comes later in the file, so it wins. */
+.fastread-stop-markdown .katex-display {
+  margin: 0;
+  padding: 0.5rem 0;
+  font-size: 1.6em;
+}
+
+.fastread-stop-markdown .katex {
+  color: var(--ink);
+}
+
+.fastread-continue {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 1.4rem;
+  border-radius: var(--neu-radius-md);
+  background: var(--botanical);
+  color: var(--paper-raised);
+  font-size: 0.9rem;
+  font-weight: 600;
+  box-shadow: var(--neu-soft-shadow);
+  cursor: pointer;
+  transition: background var(--neu-duration) var(--neu-easing);
+}
+
+.fastread-continue:hover {
+  background: var(--botanical-hover);
+}
+
+.fastread-continue-hint {
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.3rem;
+  background: color-mix(in srgb, var(--paper-raised) 26%, transparent);
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.fastread-footer {
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: var(--neu-surface);
+  box-shadow: var(--neu-tray-shadow);
+}
+
+.fastread-progress {
+  height: 4px;
+  background: color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.fastread-progress span {
+  display: block;
+  height: 100%;
+  background: var(--botanical);
+  transition: width 120ms linear;
+}
+
+.fastread-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.5rem;
+}
+
+.fastread-meta {
+  margin: 0;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+.fastread-buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fastread-buttons button {
+  min-width: 2.4rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: var(--neu-radius-sm);
+  background: var(--neu-surface-raised);
+  box-shadow: var(--neu-soft-shadow);
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.fastread-buttons button:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.fastread-buttons button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.fastread-buttons .fastread-play {
+  min-width: 5.5rem;
+  background: var(--botanical);
+  color: var(--paper-raised);
+  font-weight: 600;
+}
+
+.fastread-buttons .fastread-play:hover:not(:disabled) {
+  background: var(--botanical-hover);
+  color: var(--paper-raised);
+}
+
+@media (max-width: 640px) {
+  .fastread-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.6rem;
+  }
+
+  .fastread-buttons {
+    justify-content: center;
+  }
+
+  .fastread-word-stage {
+    min-height: 11rem;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Application dark theme
+
+   The light palette above is the established Breadboard theme and remains the
+   default. Dark mode is an opt-in override on the root element, so none of the
+   existing light values or component styling paths are changed.
+   --------------------------------------------------------------------------- */
+
+:root[data-theme="dark"] {
+  /* Charcoal paper: the canvas matches the supplied near-black reference,
+     while the accents remain the same muted botanical family as light mode. */
+  --paper-bg: #18181a;
+  --paper-surface: #20211f;
+  --paper-raised: #292b27;
+  --paper-strong: #32352f;
+  --terminal-bar: #22231f;
+  --ink: #e6ebe5;
+  --ink-heading: #f4f1e8;
+  --ink-muted: #a5aea5;
+  --line: #353d37;
+  --line-strong: #4c5a50;
+  --botanical: #91b7a1;
+  --botanical-hover: #a6c8b4;
+  --botanical-2: #9fb5c4;
+  --botanical-3: #a8c4bb;
+  --selection-yellow: #6b6038;
+  --selection-yellow-hover: #7c7042;
+  --selection-yellow-line: #a89555;
+  --danger: #c98282;
+  --danger-hover: #d99a9a;
+  --chat-link: #7fb0ff;
+  --chat-link-hover: #a8c9ff;
+
+  --neu-highlight: rgb(255 255 255 / 6%);
+  --neu-shadow: rgb(0 0 0 / 48%);
+  --neu-shadow-soft: rgb(0 0 0 / 34%);
+  --neu-shadow-strong: rgb(0 0 0 / 62%);
+  --neu-border: var(--line-strong);
+  --neu-focus: var(--botanical);
+  --neu-inset-shadow:
+    inset 2px 2px 5px rgb(0 0 0 / 44%),
+    inset -2px -2px 5px rgb(255 255 255 / 4%);
+  --neu-recessed-shadow:
+    inset 3px 3px 8px rgb(0 0 0 / 48%),
+    inset -3px -3px 8px rgb(255 255 255 / 4%),
+    0 1px 0 rgb(255 255 255 / 3%);
+  --neu-sidebar-left-shadow:
+    6px 0 16px rgb(0 0 0 / 38%),
+    inset -1px 0 0 rgb(255 255 255 / 4%);
+  --neu-sidebar-right-shadow:
+    -6px 0 16px rgb(0 0 0 / 38%),
+    inset 1px 0 0 rgb(255 255 255 / 4%);
+  --neu-tray-shadow:
+    0 -7px 20px rgb(0 0 0 / 42%),
+    inset 0 1px 0 rgb(255 255 255 / 5%);
+  --bb-scrollbar-shadow: rgb(0 0 0 / 42%);
+  --bb-scrollbar-highlight: rgb(255 255 255 / 5%);
+
+  --quartz-light: var(--paper-bg);
+  --quartz-lightgray: var(--line);
+  --quartz-gray: var(--ink-muted);
+  --quartz-darkgray: var(--ink);
+  --quartz-dark: var(--ink-heading);
+  --quartz-secondary: var(--botanical-2);
+  --quartz-tertiary: var(--botanical-3);
+  --quartz-highlight: rgb(145 183 161 / 18%);
+  --quartz-text-highlight: #d3bc7e;
+
+  /* Tailwind's inline theme emits these aliases directly into utility rules.
+     Their fallbacks above are the unchanged light palette. */
+  --bb-color-white: #f4f1e8;
+  --bb-color-black: #121310;
+  --bb-color-gray-50: #f4f1e8;
+  --bb-color-gray-100: #e6ebe5;
+  --bb-color-gray-200: #d6ddd5;
+  --bb-color-gray-300: #c0c9c0;
+  --bb-color-gray-400: #a5aea5;
+  --bb-color-gray-500: #89948c;
+  --bb-color-gray-600: #68746c;
+  --bb-color-gray-700: #4c5a50;
+  --bb-color-gray-800: #353d37;
+  --bb-color-gray-900: #20211f;
+  --bb-color-gray-950: #18181a;
+  --bb-color-cyan-100: #dfeae6;
+  --bb-color-cyan-400: #91b7a1;
+  --bb-color-cyan-600: #648b7f;
+  --bb-color-cyan-800: #3f6057;
+  --bb-color-cyan-900: #304a43;
+  --bb-color-cyan-950: #253832;
+  --bb-color-blue-300: #bdcad4;
+  --bb-color-blue-400: #9fb5c4;
+  --bb-color-blue-700: #587182;
+  --bb-color-blue-800: #425b6c;
+  --bb-color-blue-950: #283944;
+  --bb-color-green-400: #9fbe9f;
+  --bb-color-green-500: #88ad8d;
+  --bb-color-green-600: #709576;
+  --bb-color-green-800: #405f45;
+  --bb-color-green-950: #26372a;
+  --bb-color-emerald-300: #a8c4bb;
+  --bb-color-purple-300: #c7bdd2;
+  --bb-color-purple-400: #b2a6c4;
+  --bb-color-purple-700: #776b88;
+  --bb-color-purple-800: #625773;
+  --bb-color-purple-950: #382f44;
+  --bb-color-amber-300: #d3bc7e;
+  --bb-color-amber-400: #c5a963;
+  --bb-color-amber-800: #5b4628;
+  --bb-color-amber-950: #2f281e;
+  --bb-color-yellow-300: #d8c88a;
+  --bb-color-yellow-500: #baa657;
+  --bb-color-orange-400: #c99572;
+  --bb-color-orange-950: #382a24;
+  --bb-color-red-200: #e4c0bc;
+  --bb-color-red-300: #d9a7a2;
+  --bb-color-red-400: #c98282;
+  --bb-color-red-500: #b36f70;
+  --bb-color-red-600: #965b5d;
+  --bb-color-red-800: #663b3e;
+  --bb-color-red-900: #523033;
+  --bb-color-red-950: #352326;
+
+  --color-white: #f4f1e8;
+  --color-black: #121310;
+  --color-gray-50: #f4f1e8;
+  --color-gray-100: #e6ebe5;
+  --color-gray-200: #d6ddd5;
+  --color-gray-300: #c0c9c0;
+  --color-gray-400: #a5aea5;
+  --color-gray-500: #89948c;
+  --color-gray-600: #68746c;
+  --color-gray-700: #4c5a50;
+  --color-gray-800: #353d37;
+  --color-gray-900: #20211f;
+  --color-gray-950: #18181a;
+
+  --color-cyan-100: #dfeae6;
+  --color-cyan-300: #b8d2ca;
+  --color-cyan-400: #91b7a1;
+  --color-cyan-500: #7aa395;
+  --color-cyan-600: #648b7f;
+  --color-cyan-800: #3f6057;
+  --color-cyan-900: #304a43;
+  --color-cyan-950: #253832;
+  --color-blue-300: #bdcad4;
+  --color-blue-400: #9fb5c4;
+  --color-blue-700: #587182;
+  --color-blue-800: #425b6c;
+  --color-blue-900: #344957;
+  --color-blue-950: #283944;
+  --color-sky-300: #b0c6d3;
+  --color-green-400: #9fbe9f;
+  --color-green-500: #88ad8d;
+  --color-green-600: #709576;
+  --color-green-800: #405f45;
+  --color-green-950: #26372a;
+  --color-emerald-200: #c4d8c8;
+  --color-emerald-300: #a8c4bb;
+  --color-emerald-400: #8cafa5;
+  --color-emerald-500: #749a90;
+  --color-emerald-600: #5e8178;
+  --color-emerald-700: #496a61;
+  --color-emerald-900: #304840;
+  --color-emerald-950: #25362f;
+  --color-purple-300: #c7bdd2;
+  --color-purple-400: #b2a6c4;
+  --color-purple-700: #776b88;
+  --color-purple-800: #625773;
+  --color-purple-950: #382f44;
+  --color-amber-50: #f4efe2;
+  --color-amber-100: #e9dfc4;
+  --color-amber-200: #ddc994;
+  --color-amber-300: #d3bc7e;
+  --color-amber-400: #c5a963;
+  --color-amber-500: #ad8d48;
+  --color-amber-600: #907339;
+  --color-amber-700: #745b30;
+  --color-amber-800: #5b4628;
+  --color-amber-900: #493820;
+  --color-amber-950: #2f281e;
+  --color-yellow-300: #d8c88a;
+  --color-yellow-500: #baa657;
+  --color-orange-400: #c99572;
+  --color-orange-950: #382a24;
+  --color-red-50: #f3e8e6;
+  --color-red-200: #e4c0bc;
+  --color-red-300: #d9a7a2;
+  --color-red-400: #c98282;
+  --color-red-500: #b36f70;
+  --color-red-600: #965b5d;
+  --color-red-700: #7d494c;
+  --color-red-800: #663b3e;
+  --color-red-900: #523033;
+  --color-red-950: #352326;
+  --color-rose-300: #d8a4a8;
+  --color-rose-400: #c98288;
+  --color-rose-900: #5e353e;
+  --color-rose-950: #3b252b;
+
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] .desktop-title-bar {
+  background: var(--paper-surface);
+  box-shadow: none;
+}
+
+/* Keep Electron's strip and application toolbars on one uninterrupted plane.
+   Borders still separate the toolbar from its content below. */
+html[data-theme="dark"] .bb-neu-toolbar {
+  background: var(--paper-surface);
+}
+
+html[data-theme="dark"] .breadboard-logo {
+  filter: none !important;
+}
+
+html[data-theme="dark"] .dashboard-shell {
+  background-image: none;
+}
+
+html[data-theme="dark"] .auth-page-shell {
+  background-color: var(--paper-bg);
+  background-image: none;
+}
+
+html[data-theme="dark"] .dashboard-garden-card,
+html[data-theme="dark"] [aria-label^="Use border color"] {
+  filter: none;
+}
+
+html[data-theme="dark"] :where(img:not(.breadboard-logo), canvas, video, svg) {
+  filter: none;
+}
+
+html[data-theme="dark"] .bb-modal-backdrop .neu-dialog,
+html[data-theme="dark"] .bb-modal-panel {
+  box-shadow:
+    0 22px 52px rgb(0 0 0 / 58%),
+    0 5px 12px rgb(0 0 0 / 42%),
+    inset 0 1px 0 rgb(255 255 255 / 5%),
+    inset 0 -1px 0 rgb(0 0 0 / 28%) !important;
+}
+
+html[data-theme="dark"] .markdown-editor-modal {
+  --light: #20211f;
+  --lightgray: #353d37;
+  --gray: #a5aea5;
+  --dark: #f4f1e8;
+  --secondary: #91b7a1;
+  --tertiary: #9fb5c4;
+}
+
+html[data-theme="dark"] .fastread-overlay {
+  --paper-bg: #18181a;
+  --paper-surface: #20211f;
+  --paper-raised: #292b27;
+  --paper-strong: #32352f;
+  --ink: #e6ebe5;
+  --ink-heading: #f4f1e8;
+  --ink-muted: #a5aea5;
+  --line: #353d37;
+  --line-strong: #4c5a50;
+  --botanical: #91b7a1;
+  --botanical-hover: #a6c8b4;
+  --botanical-2: #9fb5c4;
+  --botanical-3: #a8c4bb;
+  --danger: #c98282;
+  --danger-hover: #d99a9a;
+  --chat-link: #7fb0ff;
+  --chat-link-hover: #a8c9ff;
+  --neu-highlight: rgb(255 255 255 / 6%);
+  --neu-shadow: rgb(0 0 0 / 48%);
+  --neu-shadow-soft: rgb(0 0 0 / 34%);
+  --neu-shadow-strong: rgb(0 0 0 / 62%);
+  --neu-border: var(--line-strong);
+  --neu-focus: var(--botanical);
+  --neu-inset-shadow:
+    inset 2px 2px 5px rgb(0 0 0 / 44%),
+    inset -2px -2px 5px rgb(255 255 255 / 4%);
+  --color-gray-800: #353d37;
+  --color-gray-700: #4c5a50;
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] .fastread-overlay .fastread-continue,
+html[data-theme="dark"] .fastread-overlay .fastread-buttons .fastread-play {
+  color: #18181a;
+}
+
+/* ---------------------------------------------------------------------------
+   Voice mode — the whole screen goes to a terracotta ground with one ring of
+   drawn light at its centre. Everything on it is a stroke being laid down:
+   the ring draws itself on open, marks bloom around it while a turn runs, and
+   each one fades the way pencil is lifted. The stage keeps its own palette in
+   both app themes, because it is a room, not a panel.
+   --------------------------------------------------------------------------- */
+
+.voice-stage {
+  position: fixed;
+  /* Every edge of the window, the desktop shell's caption strip included: the
+     ground has to reach the corners or the frame reads as a band sitting on top
+     of the screen rather than as part of it. The strip is still there, just
+     transparent and underneath — see the drag region on the header below. */
+  inset: 0;
+  /* Above the reader (z-80) and the garden's floating launcher; below toasts.
+     The caption strip carries a z-index of its own but is not positioned, so it
+     never wins against this. */
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  isolation: isolate;
+  background: #c1543c;
+  color: #fdeade;
+  font-family: var(--font-schibsted), var(--font-source-sans), Arial, sans-serif;
+  /* Written every frame from the microphone level; everything reactive reads it. */
+  --voice-level: 0;
+  --voice-ink: #fbe7d8;
+  --voice-glow: rgb(255 220 190 / 55%);
+
+  /* The shared scrollbar material, re-pointed at this screen's palette — the
+     app's paper-and-botanical scrollbar reads as a grey plastic bar against
+     terracotta. Only the tokens change: the global rules that consume them do
+     the drawing, so nothing here needs pseudo-element styling of its own.
+     These are literal colours rather than var() references because a custom
+     property resolves its references where it is *declared*, and the palette
+     they would reach for is the light one on :root. */
+  --bb-scrollbar-track: rgb(122 42 28 / 34%);
+  --bb-scrollbar-thumb: rgb(253 234 222 / 34%);
+  --bb-scrollbar-thumb-hover: rgb(253 234 222 / 52%);
+  --bb-scrollbar-thumb-active: rgb(255 243 232 / 68%);
+  --bb-scrollbar-shadow: rgb(86 26 16 / 30%);
+  --bb-scrollbar-highlight: rgb(255 236 222 / 12%);
+
+  animation: voice-stage-in 420ms ease-out both;
+}
+
+@keyframes voice-stage-in {
+  from {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Soft blooms of warmer and cooler terracotta, drifting slowly enough to read
+   as light rather than motion. */
+.voice-stage-wash {
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(38% 46% at 22% 26%, rgb(226 124 96 / 62%), transparent 70%),
+    radial-gradient(42% 40% at 78% 22%, rgb(210 100 74 / 52%), transparent 72%),
+    radial-gradient(52% 54% at 68% 82%, rgb(160 58 40 / 45%), transparent 74%),
+    radial-gradient(46% 50% at 18% 82%, rgb(200 92 68 / 42%), transparent 72%);
+  filter: blur(6px);
+  animation: voice-wash-drift 46s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes voice-wash-drift {
+  from {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.12) translate3d(-2%, 1.5%, 0);
+  }
+}
+
+.voice-stage-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+  /* The chips clear the desktop shell's caption strip, because Electron paints
+     the native window buttons over the top of the page at exactly that height
+     and on exactly this side. In a browser the token is unset and the row sits
+     where it always did. */
+  padding: calc(1.15rem + var(--breadboard-titlebar-height, 0px)) 1.5rem 1.15rem;
+}
+
+/* The strip that used to make this band draggable is now under the stage, so
+   the header takes the job over: the empty part of the row moves the window and
+   the chips on it stay clickable. */
+html[data-breadboard-desktop="true"] .voice-stage-header {
+  -webkit-app-region: drag;
+}
+
+html[data-breadboard-desktop="true"] .voice-chip {
+  -webkit-app-region: no-drag;
+}
+
+.voice-stage-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.voice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid rgb(253 234 222 / 32%);
+  border-radius: 999px;
+  padding: 0.32rem 0.85rem;
+  font-size: 0.78rem;
+  color: rgb(253 234 222 / 88%);
+  background: rgb(255 236 222 / 8%);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.voice-chip:hover {
+  background: rgb(255 236 222 / 16%);
+  border-color: rgb(253 234 222 / 55%);
+}
+
+.voice-chip-hint {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: rgb(253 234 222 / 55%);
+}
+
+.voice-stage-centre {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.1rem;
+  padding: 0 1.5rem;
+  text-align: center;
+}
+
+.voice-ring-button {
+  display: block;
+  width: min(46vh, 42vw, 22rem);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  /* The ring breathes with the room while listening and holds still otherwise.
+     Barely: the circle is the fixed point of the screen, and a ring that jumps
+     on every syllable is the thing that makes talking to it feel frantic. */
+  transform: scale(calc(1 + var(--voice-level) * 0.05));
+  transition: transform 150ms ease-out;
+  outline: none;
+}
+
+/* The browser's own focus ring lands as a hard circle well outside the drawn
+   one. Keyboard focus gets a mark in the stage's own ink instead. */
+.voice-ring-button:focus-visible .voice-ring-ink {
+  stroke-width: 4;
+}
+
+.voice-ring {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.voice-ring path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.voice-ring-glow {
+  stroke: var(--voice-glow);
+  stroke-width: 7;
+  filter: blur(9px);
+  opacity: calc(0.45 + var(--voice-level) * 0.35);
+}
+
+.voice-ring-ink {
+  stroke: var(--voice-ink);
+  stroke-width: 2.6;
+  /* The glow swells with the voice, so a loud sentence lights the whole ring. */
+  filter: drop-shadow(0 0 calc(8px + var(--voice-level) * 20px) var(--voice-glow));
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: voice-ring-draw 1s cubic-bezier(0.32, 0.72, 0.36, 1) 120ms forwards;
+}
+
+@keyframes voice-ring-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Sketch passes over the same circle: each draws itself, holds, and lifts, so
+   the ring always reads as a line still being gone over. */
+.voice-ring-scribble {
+  stroke: var(--voice-ink);
+  stroke-width: 1.5;
+  opacity: 0;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  filter: drop-shadow(0 0 7px var(--voice-glow));
+  animation: voice-ring-sketch 2820ms ease-in-out var(--scribble-delay, 0ms) infinite;
+}
+
+@keyframes voice-ring-sketch {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.42;
+  }
+  52% {
+    stroke-dashoffset: 0;
+    opacity: 0.42;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+
+/* What the circle does while someone is talking.
+   The ring itself does nothing: it stays whole, at full strength, in the same
+   place. What answers the voice is a halo of the same circle drawn a few more
+   times — lying exactly on the line at rest, carried outwards by how loud the
+   room is, and fading back onto it in the pauses. One property drives all of
+   it, there is no shape to recognise and nothing keeps moving on its own, so
+   speaking makes the screen swell rather than come apart.
+   (It used to unwrap into a nine-strand ribbon. That took the one thing worth
+   looking at off the screen at exactly the moment it was being used.) */
+.voice-halo {
+  opacity: 0;
+  transition: opacity 340ms ease-out;
+}
+
+.voice-stage[data-voicing='true'] .voice-halo {
+  opacity: 1;
+}
+
+.voice-halo-ring {
+  fill: none;
+  stroke: var(--voice-ink);
+  stroke-width: var(--halo-width, 1.2);
+  opacity: var(--halo-opacity, 0.24);
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+  /* Each ring is carried its own distance, so the halo opens as a few soft
+     rings rather than as one thick band moving out. */
+  transform: scale(calc(1 + var(--voice-level) * var(--halo-spread, 0.1)));
+  /* Long enough that the 60 fps level reads as a swell and not as a tremor. */
+  transition: transform 220ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+/* The echo ring only appears while an answer is being read out. */
+.voice-ring-echo {
+  stroke: var(--voice-ink);
+  stroke-width: 1.4;
+  opacity: 0;
+  transform-origin: 50% 50%;
+}
+
+.voice-stage[data-stage='speaking'] .voice-ring-echo {
+  animation: voice-echo-pulse 2.1s ease-out infinite;
+}
+
+@keyframes voice-echo-pulse {
+  0% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.42);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.42);
+  }
+}
+
+.voice-stage[data-stage='paused'] .voice-ring-ink,
+.voice-stage[data-stage='blocked'] .voice-ring-ink {
+  opacity: 0.4;
+}
+
+.voice-stage[data-stage='listening'] .voice-ring-glow {
+  animation: voice-ring-breathe 3.4s ease-in-out infinite;
+}
+
+@keyframes voice-ring-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+
+.voice-stage-state {
+  font-size: 0.8rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgb(253 234 222 / 70%);
+}
+
+.voice-caption {
+  position: relative;
+  max-width: min(46rem, 82vw);
+  padding-bottom: 0.9rem;
+  font-size: clamp(1.05rem, 2.1vw, 1.55rem);
+  line-height: 1.55;
+  color: #fff3e8;
+  animation: voice-caption-in 340ms ease-out both;
+}
+
+/* Only the words scroll. The rule below sits outside this box, so a long answer
+   cannot slide under it. */
+.voice-caption-text {
+  max-height: 34vh;
+  overflow-y: auto;
+  padding-right: 0.35rem;
+}
+
+@keyframes voice-caption-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.voice-caption-heard {
+  color: rgb(255 243 232 / 78%);
+  font-style: italic;
+}
+
+/* An SVG is a replaced element: with `width: auto` it takes its intrinsic size
+   from the viewBox instead of the left/right offsets, so the width is stated. */
+.voice-caption-rule {
+  position: absolute;
+  left: 8%;
+  bottom: 0;
+  width: 84%;
+  height: 0.55rem;
+  overflow: visible;
+}
+
+/* The rule is stretched to the caption's width, and a non-uniform stretch makes
+   a pathLength dash pattern repeat instead of draw. A left-to-right wipe gives
+   the same drawn-on reading without depending on path length at all. */
+.voice-caption-rule path {
+  fill: none;
+  stroke: var(--voice-ink);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.55;
+  animation: voice-rule-wipe 620ms ease-out 160ms both;
+}
+
+@keyframes voice-rule-wipe {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 -4% 0 0);
+  }
+}
+
+.voice-note {
+  max-width: 34rem;
+  font-size: 0.85rem;
+  color: rgb(255 236 222 / 78%);
+}
+
+.voice-blocked {
+  max-width: 32rem;
+  border: 1px solid rgb(253 234 222 / 28%);
+  border-radius: 1.25rem;
+  padding: 1rem 1.2rem;
+  background: rgb(120 40 26 / 32%);
+  text-align: left;
+}
+
+.voice-blocked-headline {
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+}
+
+.voice-blocked-steps {
+  display: grid;
+  gap: 0.3rem;
+  padding-left: 1.1rem;
+  list-style: decimal;
+  font-size: 0.82rem;
+  color: rgb(255 236 222 / 80%);
+}
+
+.voice-action {
+  margin-top: 0.85rem;
+  border-radius: 999px;
+  border: 1px solid rgb(253 234 222 / 45%);
+  padding: 0.4rem 1rem;
+  font-size: 0.82rem;
+  color: #fff3e8;
+}
+
+.voice-action:hover {
+  background: rgb(255 236 222 / 14%);
+}
+
+.voice-transcript {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 0.55rem;
+  max-height: 32vh;
+  overflow-y: auto;
+  margin: 0 auto;
+  width: min(48rem, 90vw);
+  padding: 1rem 1.15rem;
+  border-radius: 1.25rem;
+  border: 1px solid rgb(253 234 222 / 22%);
+  background: rgb(120 40 26 / 30%);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.voice-transcript-empty {
+  color: rgb(255 236 222 / 60%);
+}
+
+.voice-transcript-user {
+  color: rgb(255 236 222 / 72%);
+  font-style: italic;
+}
+
+.voice-transcript-assistant {
+  color: #fff3e8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-stage,
+  .voice-stage-wash,
+  .voice-ring-ink,
+  .voice-ring-echo,
+  .voice-ring-glow,
+  .voice-ring-scribble,
+  .voice-caption,
+  .voice-caption-rule path {
+    animation: none;
+  }
+
+  .voice-ring-ink,
+  .voice-caption-rule path {
+    stroke-dashoffset: 0;
+  }
+
+  /* The sketch passes are motion, not information: without it, one clean ring
+     says the same thing. */
+  .voice-ring-scribble {
+    display: none;
+  }
+
+  .voice-ring-button {
+    transform: none;
+  }
+
+  /* The halo still says a voice is in the room; it just says it by being there
+     rather than by moving out and back. */
+  .voice-halo-ring {
+    transition: none;
+    transform: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   World monitor (/worldmonitor)
+
+   Upstream worldmonitor is a black tactical console whose threat scale is pure
+   alarm signal: #ef4444 / #f97316 / #eab308 / #22c55e / #3b82f6. Those five
+   would be the loudest thing in Breadboard by a wide margin, so the scale is
+   restated in the existing palette — warm muted red through ochre down to
+   botanical — keeping the ORDER (and so the meaning) while losing the neon.
+   The hue steps stay far enough apart to read at dot size, and each level also
+   carries a size and a ring, so severity is never colour alone.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --wm-critical: var(--danger);
+  --wm-high: #b5743a;
+  --wm-medium: #9a7b2e;
+  --wm-low: var(--botanical);
+  --wm-info: var(--botanical-2);
+  /* The map has to read as an instrument rather than more page: the ocean sits
+     a step cooler and darker than the surrounding paper, and the land a step
+     warmer, so the coastline is legible without an outline doing all the work. */
+  --wm-ocean: color-mix(in srgb, var(--paper-bg) 70%, var(--botanical-2));
+  --wm-land: color-mix(in srgb, var(--paper-raised) 82%, var(--selection-yellow));
+  --wm-land-edge: color-mix(in srgb, var(--line-strong) 88%, transparent);
+  --wm-graticule: color-mix(in srgb, var(--line) 62%, transparent);
+}
+
+:root[data-theme="dark"] {
+  --wm-critical: #d08a8a;
+  --wm-high: #c9955f;
+  --wm-medium: #bda45e;
+  --wm-low: var(--botanical);
+  --wm-info: var(--botanical-2);
+  /* Dark mode has less room between surfaces than light does, so the land is
+     pushed further toward the botanical tint to keep the coastline readable. */
+  --wm-ocean: color-mix(in srgb, var(--paper-bg) 94%, var(--botanical-2));
+  --wm-land: color-mix(in srgb, var(--paper-strong) 74%, var(--botanical-3));
+  --wm-land-edge: color-mix(in srgb, var(--line-strong) 92%, transparent);
+  --wm-graticule: color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+/* Fixed-height app shell, same deduction the calendar takes for the desktop
+   title bar: the bars stay put and the panels scroll inside them. The layout is
+   upstream's — command bar, situation strip, map, three columns — so the shell
+   has to be a console rather than a page that scrolls. */
+.bb-wm-shell {
+  height: 100vh;
+  background: var(--neu-bg);
+  color: var(--ink-muted);
+}
+
+/* Ink levels.
+   The port arrived from upstream with a fixed dark scheme written into the
+   markup — a near-black shell, white headings, grey-500 metadata — wrapped
+   around panels painted from the palette. The two disagree in the default light
+   theme, where a white heading lands on paper and is simply not there. These
+   are the same four steps the port meant, said in tokens, so the console reads
+   in either theme. */
+.bb-wm-heading {
+  color: var(--ink-heading);
+}
+
+.bb-wm-ink {
+  color: var(--ink);
+}
+
+.bb-wm-ink-muted {
+  color: var(--ink-muted);
+}
+
+/* The step below muted: counts, timestamps, the things you read only when you
+   go looking for them. Same recipe as the tier-4 sources, for the same reason. */
+.bb-wm-ink-faint {
+  color: color-mix(in srgb, var(--ink-muted) 72%, var(--paper-surface));
+}
+
+.bb-wm-hover-ink:hover {
+  color: var(--ink);
+}
+
+.bb-wm-alert {
+  border-color: color-mix(in srgb, var(--danger) 48%, transparent);
+  color: var(--danger);
+}
+
+/* The console runs denser than the rest of the dashboard: it is a wall of
+   instruments, and upstream's is denser still. */
+.bb-wm-shell .bb-wm-panel {
+  overflow: hidden;
+}
+
+.bb-wm-command {
+  background: var(--neu-surface);
+}
+
+/* Wordmark only — no plate, no border. It is a title, and a boxed title reads
+   as a button that does nothing. */
+.bb-wm-brand {
+  color: var(--ink-heading);
+}
+
+.bb-wm-brand svg {
+  color: var(--botanical);
+}
+
+/* Live pip: the one deliberately animated thing on the page, because "is this
+   still updating?" is the question a monitor has to answer at a glance. */
+.bb-wm-live-dot {
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--botanical);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--botanical) 20%, transparent);
+  animation: bb-wm-pip 2.4s ease-in-out infinite;
+}
+
+.bb-wm-live-dot.is-paused {
+  background: var(--ink-muted);
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes bb-wm-pip {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.bb-wm-live {
+  color: var(--ink-muted);
+}
+
+/* Posture badge — upstream's DEFCON dial. Colour tracks the same severity
+   ramp as the dots so the header and the map agree. */
+.bb-wm-posture {
+  border-color: color-mix(in srgb, var(--wm-posture, var(--botanical)) 42%, transparent);
+  background: color-mix(in srgb, var(--wm-posture, var(--botanical)) 14%, transparent);
+  color: var(--ink);
+}
+
+.bb-wm-posture-5 {
+  --wm-posture: var(--wm-low);
+}
+.bb-wm-posture-4 {
+  --wm-posture: var(--wm-info);
+}
+.bb-wm-posture-3 {
+  --wm-posture: var(--wm-medium);
+}
+.bb-wm-posture-2 {
+  --wm-posture: var(--wm-high);
+}
+.bb-wm-posture-1 {
+  --wm-posture: var(--wm-critical);
+}
+
+.bb-wm-strip {
+  background: var(--neu-surface-pressed);
+  border-color: var(--neu-border);
+}
+
+.bb-wm-row-bottom {
+  border-color: var(--neu-border);
+  background: var(--neu-bg);
+}
+
+.bb-wm-panel-head {
+  background: color-mix(in srgb, var(--paper-strong) 55%, var(--paper-surface));
+  border-color: var(--neu-border);
+}
+
+.bb-wm-badge-live {
+  border-radius: 0.3rem;
+  padding: 0.05rem 0.3rem;
+  background: color-mix(in srgb, var(--botanical) 20%, transparent);
+  color: var(--ink-muted);
+}
+
+/* Source and region tab rails. */
+.bb-wm-tabs {
+  background: color-mix(in srgb, var(--paper-bg) 55%, var(--paper-surface));
+  border-color: var(--neu-border);
+  scrollbar-width: none;
+}
+
+.bb-wm-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.bb-wm-tabs button {
+  color: var(--ink-muted);
+  transition: background var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-tabs button:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.bb-wm-tabs button.is-selected {
+  background: color-mix(in srgb, var(--botanical) 22%, transparent);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.bb-wm-segmented button {
+  color: var(--ink-muted);
+}
+
+.bb-wm-segmented button.is-selected {
+  background: var(--neu-surface-raised);
+  color: var(--ink);
+  box-shadow: var(--neu-raised-shadow);
+}
+
+.bb-wm-popover {
+  background: var(--neu-surface-raised);
+}
+
+/* Hotspot tiles — upstream's webcam grid position, filled with the thing this
+   port actually has: where the window's activity is concentrating. */
+.bb-wm-tile {
+  border-color: var(--neu-border);
+  border-left: 3px solid color-mix(in srgb, var(--wm-level, var(--wm-info)) 62%, transparent);
+  background: var(--neu-surface);
+  transition: box-shadow var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-tile:hover {
+  box-shadow: var(--neu-hover-shadow);
+}
+
+.bb-wm-tile.is-selected {
+  box-shadow: var(--neu-inset-shadow);
+  background: var(--neu-surface-pressed);
+}
+
+/* Video tiles: the player fills the frame and names itself over the picture,
+   and that name is a link out, because a broadcaster who restarts a stream
+   invalidates the id the embed was built from and the panel has to stay one
+   click from live. */
+.bb-wm-tile-video {
+  border-color: var(--neu-border);
+  background: var(--paper-strong);
+}
+
+.bb-wm-tile-video iframe {
+  display: block;
+  border: 0;
+}
+
+/* The name and the corner control stand directly on the picture — no plate.
+   What holds them legible over a bright frame is the shadow they cast, which
+   costs the viewer none of the footage a box would have covered. They are also
+   the only things on this page painted outside the palette: a theme colour that
+   reads over one frame is gone over the next, and white with a dark shadow is
+   the pair that survives anything a camera points at. */
+.bb-wm-video-badge,
+.bb-wm-video-action {
+  z-index: 1;
+  color: #fff;
+  opacity: 0.94;
+  text-decoration: none;
+  text-shadow:
+    0 1px 2px rgb(0 0 0 / 0.9),
+    0 0 6px rgb(0 0 0 / 0.5);
+  transition: opacity var(--neu-duration) var(--neu-easing);
+}
+
+/* Strokes take a drop shadow, not a text shadow. */
+.bb-wm-video-badge svg,
+.bb-wm-video-action svg {
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.9));
+}
+
+.bb-wm-video-badge:hover,
+.bb-wm-video-action:hover {
+  opacity: 1;
+}
+
+/* On air is red here rather than the page's botanical pip: over footage, red is
+   the colour a viewer already reads as a live camera, and the dark halo is what
+   keeps it from dissolving into a bright sky. */
+.bb-wm-video-badge .bb-wm-live-dot {
+  width: 0.35rem;
+  height: 0.35rem;
+  background: #ff3b30;
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 0.32);
+}
+
+/* Off air drops the pip to white — a dead camera should not be showing the
+   colour that means live. */
+.bb-wm-video-badge .bb-wm-live-dot.is-paused {
+  background: rgb(255 255 255 / 0.6);
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 0.32);
+}
+
+html[data-breadboard-desktop="true"] body > .bb-wm-shell {
+  height: calc(100vh - var(--breadboard-titlebar-height));
+}
+
+.bb-wm-level-critical {
+  --wm-level: var(--wm-critical);
+}
+.bb-wm-level-high {
+  --wm-level: var(--wm-high);
+}
+.bb-wm-level-medium {
+  --wm-level: var(--wm-medium);
+}
+.bb-wm-level-low {
+  --wm-level: var(--wm-low);
+}
+.bb-wm-level-info {
+  --wm-level: var(--wm-info);
+}
+
+.bb-wm-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--wm-level, var(--wm-info));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--wm-level, var(--wm-info)) 22%, transparent);
+}
+
+/* Escalation gauge. Reads as a filled trough rather than a progress bar — it is
+   a level, not a task completing. */
+.bb-wm-gauge {
+  position: relative;
+  display: inline-block;
+  width: 3.25rem;
+  height: 0.35rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.bb-wm-gauge > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--botanical), var(--wm-medium));
+  transition: width 400ms var(--neu-easing);
+}
+
+.bb-wm-gauge > span[data-hot="true"] {
+  background: linear-gradient(90deg, var(--wm-medium), var(--wm-critical));
+}
+
+.bb-wm-level-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--ink-muted);
+}
+
+/* ── Map ──────────────────────────────────────────────────────────────────── */
+
+.bb-wm-map {
+  width: 100%;
+  min-height: 0;
+  background: var(--wm-ocean);
+  touch-action: none;
+}
+
+.bb-wm-land path {
+  fill: var(--wm-land);
+  stroke: var(--wm-land-edge);
+  stroke-width: 0.5;
+  stroke-linejoin: round;
+}
+
+.bb-wm-graticule line {
+  stroke: var(--wm-graticule);
+  stroke-width: 0.5;
+}
+
+.bb-wm-hub {
+  color: var(--wm-level, var(--wm-info));
+  cursor: pointer;
+  outline: none;
+}
+
+/* Solid marker with a hairline of the surface behind it — upstream's dots are
+   filled discs, and the thin light edge is what keeps two overlapping ones (the
+   Gulf is crowded) from merging into a single blob. */
+.bb-wm-hub-dot {
+  fill: var(--wm-level, var(--wm-info));
+  fill-opacity: 0.92;
+  stroke: color-mix(in srgb, var(--paper-raised) 70%, transparent);
+  stroke-width: 0.6;
+  transition: fill-opacity var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-hub:hover .bb-wm-hub-dot,
+.bb-wm-hub:focus-visible .bb-wm-hub-dot,
+.bb-wm-hub.is-selected .bb-wm-hub-dot {
+  fill-opacity: 1;
+}
+
+/* Selection is a ring around the dot rather than a change to the dot, so the
+   marker keeps saying the same thing about severity while it is selected. */
+.bb-wm-hub-ring {
+  fill: none;
+  stroke: var(--wm-level, var(--wm-info));
+  stroke-width: 1.4;
+  stroke-dasharray: 3 2.5;
+}
+
+/* ── Globe ────────────────────────────────────────────────────────────────── */
+
+.bb-wm-map.is-globe {
+  background: var(--neu-bg);
+}
+
+.bb-wm-globe-sphere {
+  fill: var(--wm-ocean);
+  stroke: color-mix(in srgb, var(--line-strong) 70%, transparent);
+  stroke-width: 1;
+}
+
+.bb-wm-graticule-path {
+  fill: none;
+  stroke: var(--wm-graticule);
+  stroke-width: 0.5;
+}
+
+/* Everything floating over the map shares one recipe: a translucent paper
+   plate, so the coastlines stay faintly readable underneath rather than being
+   boxed out.
+   No backdrop blur: this app's rule is that nothing frosts what is behind it
+   (see the modal scrim above, and the test that enforces it file-wide), so the
+   plate is carried by opacity and the soft shadow alone. */
+.bb-wm-map-panel .bb-wm-range,
+.bb-wm-map-panel .bb-wm-layers,
+.bb-wm-legend,
+.bb-wm-map-callout,
+.bb-wm-map-button {
+  background: color-mix(in srgb, var(--paper-raised) 90%, transparent);
+  border-color: color-mix(in srgb, var(--line-strong) 60%, transparent);
+  box-shadow: var(--neu-soft-shadow);
+}
+
+.bb-wm-range button {
+  color: var(--ink-muted);
+  transition: background var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-range button:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.bb-wm-range button.is-selected {
+  background: color-mix(in srgb, var(--botanical) 26%, transparent);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.bb-wm-layers > button {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.bb-wm-layers label {
+  color: var(--ink-muted);
+}
+
+.bb-wm-layers label:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--ink);
+}
+
+/* Native checkboxes are the one blue thing the theme cannot reach, so they are
+   restyled rather than accent-coloured. */
+.bb-wm-check {
+  width: 0.7rem;
+  height: 0.7rem;
+  flex-shrink: 0;
+  appearance: none;
+  border-radius: 0.2rem;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-surface);
+  display: grid;
+  place-content: center;
+}
+
+.bb-wm-check:checked {
+  background: var(--botanical);
+  border-color: var(--botanical);
+}
+
+.bb-wm-check:checked::after {
+  content: "";
+  width: 0.32rem;
+  height: 0.16rem;
+  border-left: 1.5px solid var(--paper-raised);
+  border-bottom: 1.5px solid var(--paper-raised);
+  transform: rotate(-45deg) translate(0.02rem, -0.02rem);
+}
+
+.bb-wm-check:focus-visible {
+  outline: 2px solid var(--neu-focus);
+  outline-offset: 1px;
+}
+
+.bb-wm-map-button {
+  width: 1.4rem;
+  height: 1.4rem;
+  display: grid;
+  place-content: center;
+  border-radius: 0.4rem;
+  border: 1px solid;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--ink-muted);
+}
+
+.bb-wm-map-button:hover {
+  color: var(--ink);
+}
+
+.bb-wm-legend {
+  color: var(--ink-muted);
+}
+
+.bb-wm-legend-divider {
+  width: 1px;
+  height: 0.75rem;
+  background: var(--line-strong);
+}
+
+.bb-wm-legend-mark {
+  fill: color-mix(in srgb, var(--ink-muted) 45%, transparent);
+  stroke: var(--ink-muted);
+  stroke-width: 1;
+}
+
+/* ── Stream ───────────────────────────────────────────────────────────────── */
+
+/* The left edge is the severity cue that survives greyscale and colour-blind
+   vision: critical stories carry a full-strength bar, background stories almost
+   none of one. */
+.bb-wm-row {
+  border-left: 3px solid color-mix(in srgb, var(--wm-level, var(--wm-info)) 62%, transparent);
+  transition: box-shadow var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-row:hover {
+  box-shadow: var(--neu-hover-shadow);
+}
+
+.bb-wm-row.bb-wm-level-info,
+.bb-wm-row.bb-wm-level-low {
+  border-left-color: color-mix(in srgb, var(--wm-level) 28%, transparent);
+}
+
+.bb-wm-row a {
+  text-decoration: none;
+}
+
+/* Source authority, shown as weight rather than another colour — tier 1 wires
+   read as solid, tier 4 aggregators recede. */
+.bb-wm-tier {
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.bb-wm-tier-1 {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.bb-wm-tier-2 {
+  color: var(--ink-muted);
+}
+
+.bb-wm-tier-4 {
+  color: color-mix(in srgb, var(--ink-muted) 72%, var(--paper-surface));
+}
+
+.bb-wm-corroboration,
+.bb-wm-refined {
+  border-radius: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  background: color-mix(in srgb, var(--botanical-3) 22%, transparent);
+  color: var(--ink-muted);
+}
+
+.bb-wm-refined {
+  background: color-mix(in srgb, var(--botanical-2) 20%, transparent);
+}
+
+/* ── Climate & weather ────────────────────────────────────────────────────── */
+
+/* Hazard alerts are a second stratum on the map, not more headlines: diamonds
+   rather than dots, and held back at half weight so a fire season does not
+   erase the hubs underneath. */
+.bb-wm-hazard-mark {
+  fill: var(--wm-level, var(--wm-info));
+  fill-opacity: 0.5;
+  stroke: color-mix(in srgb, var(--wm-level, var(--wm-info)) 70%, transparent);
+  stroke-width: 0.8;
+  transition: fill-opacity var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-hazard:hover .bb-wm-hazard-mark {
+  fill-opacity: 0.92;
+}
+
+/* Green alerts are the background rate of the planet — GDACS raises one for
+   every tracked event — so they sit fainter still. */
+.bb-wm-hazard.bb-wm-level-low .bb-wm-hazard-mark,
+.bb-wm-hazard.bb-wm-level-info .bb-wm-hazard-mark {
+  fill-opacity: 0.32;
+}
+
+.bb-wm-metric {
+  text-decoration: none;
+  transition: box-shadow var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-metric:hover {
+  box-shadow: var(--neu-hover-shadow);
+}
+
+.bb-wm-metric-value {
+  color: var(--ink-heading);
+}
+
+/* Direction, not judgement of the reading: a series moving the way it is not
+   supposed to takes the warm end of the scale, one easing takes the botanical. */
+.bb-wm-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  border-radius: 0.35rem;
+  padding: 0.02rem 0.25rem;
+  background: color-mix(in srgb, var(--botanical-3) 20%, transparent);
+  color: var(--ink-muted);
+}
+
+.bb-wm-change.is-worrying {
+  background: color-mix(in srgb, var(--wm-high) 20%, transparent);
+  color: color-mix(in srgb, var(--wm-high) 78%, var(--ink));
+}
+
+.bb-wm-change.is-easing {
+  background: color-mix(in srgb, var(--botanical) 20%, transparent);
+  color: color-mix(in srgb, var(--botanical) 72%, var(--ink));
+}
+
+.bb-wm-clock-row {
+  transition: background var(--neu-duration) var(--neu-easing);
+}
+
+.bb-wm-clock-row:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.bb-wm-clock-row.is-selected {
+  background: color-mix(in srgb, var(--botanical-3) 22%, transparent);
+}
+
+/* The clock face carries the hour of day as a tint, so a column of cities reads
+   as a band of daylight sweeping across it rather than as a list of numbers. */
+.bb-wm-clock-face {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--wm-part, var(--paper-raised)) 55%, transparent);
+}
+
+.bb-wm-part-night {
+  --wm-part: color-mix(in srgb, var(--botanical-2) 42%, var(--paper-strong));
+}
+
+.bb-wm-part-morning {
+  --wm-part: color-mix(in srgb, var(--selection-yellow) 42%, var(--paper-raised));
+}
+
+.bb-wm-part-afternoon {
+  --wm-part: color-mix(in srgb, var(--selection-yellow) 62%, var(--paper-raised));
+}
+
+.bb-wm-part-evening {
+  --wm-part: color-mix(in srgb, var(--wm-high) 26%, var(--paper-raised));
+}
+
+.bb-wm-hazard-kind {
+  border-radius: 0.35rem;
+  padding: 0.02rem 0.3rem;
+  background: color-mix(in srgb, var(--botanical-3) 22%, transparent);
+  color: var(--ink-muted);
+}
+
+/* Local clock in the situation strip: the same plate as the posture chip, so
+   the two readouts at the top of the console belong to each other. */
+.bb-wm-local-clock {
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--paper-raised) 70%, transparent);
+  color: var(--ink);
+}
+
+/* ── Prose (the brief and the analyst) ────────────────────────────────────── */
+
+.bb-wm-prose p + p {
+  margin-top: 0.6rem;
+}
+
+.bb-wm-prose p {
+  line-height: 1.6;
+}
+
+/* Three columns is a desktop console. Below that the row stacks so each panel
+   still gets usable width rather than three unreadable slivers. */
+@media (max-width: 1180px) {
+  .bb-wm-row-bottom {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .bb-wm-row-bottom > section:last-child {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 780px) {
+  .bb-wm-row-bottom {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bb-wm-row-bottom > section:last-child {
+    grid-column: span 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-wm-gauge > span {
+    transition: none;
+  }
+
+  .bb-wm-live-dot {
+    animation: none;
+  }
+}
+
+/* ─── Auth screens: the drawn breadboard ──────────────────────────────────────
+   The sign-in and register cards sit on a board that draws itself once on load:
+   hole field, power rails, traces routing in to solder pads either side of the
+   card, then a few parts, dimensions and sheet labels. Geometry is in
+   `src/app/auth/auth-board.tsx`; every stroke here uses palette tokens, so the
+   board follows the theme without a second set of colours. */
+
+/* No `overflow: hidden` here on purpose — the register card can outgrow a short
+   window, and clipping the shell would make it unreachable. The board layer
+   clips its own paint instead, and nothing it draws leaves that box. */
+.bb-auth-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.bb-auth-board {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  contain: layout paint;
+}
+
+/* Perfboard holes, faded out under the card so the form always wins. */
+.bb-auth-holes {
+  position: absolute;
+  inset: 0;
+  /* The wash is painted over the holes rather than masked out of them: a
+     `mask-image` is silently ignored on some Chromium builds, and a top layer in
+     the page's own background colour clears the middle just as well. */
+  background-image:
+    radial-gradient(
+      ellipse 44% 56% at 50% 50%,
+      var(--paper-bg) 0%,
+      color-mix(in srgb, var(--paper-bg) 72%, transparent) 48%,
+      transparent 78%
+    ),
+    radial-gradient(
+      circle at center,
+      transparent 0 1.7px,
+      color-mix(in srgb, var(--line-strong) 52%, transparent) 1.7px 2.7px,
+      transparent 2.8px
+    );
+  background-size:
+    100% 100%,
+    30px 30px;
+  background-repeat: no-repeat, repeat;
+  opacity: 0;
+  animation: bb-auth-fade 1.4s var(--neu-easing) forwards;
+}
+
+.bb-auth-schematic {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* One rule draws every generated line: normalised `pathLength` means the dash
+   pattern is the same length as the path whatever its real geometry. */
+.bb-auth-rule,
+.bb-auth-trace,
+.bb-auth-rail,
+.bb-auth-corner-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: bb-auth-draw 1.05s var(--neu-easing) forwards;
+  animation-delay: var(--bb-d, 0s);
+}
+
+.bb-auth-rule {
+  stroke: color-mix(in srgb, var(--line-strong) 82%, transparent);
+  stroke-width: 1.25;
+}
+
+.bb-auth-trace {
+  stroke: color-mix(in srgb, var(--botanical) 46%, transparent);
+  stroke-width: 1.75;
+}
+
+.bb-auth-rail {
+  stroke: color-mix(in srgb, var(--line-strong) 62%, transparent);
+  stroke-width: 1.25;
+  animation-duration: 1.6s;
+}
+
+.bb-auth-rail-pos {
+  stroke: color-mix(in srgb, var(--botanical) 40%, transparent);
+}
+
+.bb-auth-rail-neg {
+  stroke: color-mix(in srgb, var(--botanical-2) 40%, transparent);
+}
+
+/* Static linework — parts, dimensions, registration mark — fades rather than
+   draws, so the eye follows the traces and not everything at once. */
+.bb-auth-rule-static {
+  fill: none;
+  stroke: color-mix(in srgb, var(--line-strong) 76%, transparent);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+}
+
+.bb-auth-chip-body {
+  fill: color-mix(in srgb, var(--paper-strong) 38%, transparent);
+  stroke: color-mix(in srgb, var(--line-strong) 76%, transparent);
+  stroke-width: 1.25;
+}
+
+.bb-auth-mark,
+.bb-auth-chip,
+.bb-auth-dim,
+.bb-auth-titles {
+  opacity: 0;
+  animation: bb-auth-fade 0.9s var(--neu-easing) forwards;
+  animation-delay: var(--bb-d, 0s);
+}
+
+.bb-auth-label {
+  fill: color-mix(in srgb, var(--ink-muted) 72%, transparent);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 15px;
+  letter-spacing: 0.18em;
+}
+
+.bb-auth-label-lead {
+  fill: color-mix(in srgb, var(--ink-muted) 88%, transparent);
+  letter-spacing: 0.32em;
+}
+
+.bb-auth-label-dim {
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-anchor: middle;
+}
+
+/* Solder pads pop in behind their trace's arrival. */
+.bb-auth-pad {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bb-auth-pad-set 0.45s var(--neu-easing) forwards;
+  animation-delay: var(--bb-d, 0s);
+}
+
+.bb-auth-pad-ring {
+  fill: none;
+  stroke: color-mix(in srgb, var(--botanical) 62%, transparent);
+  stroke-width: 2;
+}
+
+.bb-auth-pad-hole {
+  fill: var(--paper-bg);
+  stroke: color-mix(in srgb, var(--botanical) 34%, transparent);
+  stroke-width: 1;
+}
+
+/* A dash the length of 6% of the trace, running from the sheet edge inward to
+   the pad: `stroke-dashoffset: 0 -> 1` walks the dash end-to-start. */
+.bb-auth-pulse {
+  fill: none;
+  stroke: var(--botanical);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 0.06 0.94;
+  stroke-dashoffset: 0;
+  opacity: 0;
+  animation: bb-auth-pulse 9s linear infinite;
+  animation-delay: var(--bb-d, 0s);
+}
+
+/* Corner brackets around the card itself. Each is its own square SVG so it can
+   be mirrored with a transform instead of a stretched viewBox. */
+.bb-auth-corner {
+  position: absolute;
+  overflow: visible;
+  opacity: 0;
+  animation: bb-auth-fade 0.5s var(--neu-easing) forwards;
+  animation-delay: var(--bb-d, 0s);
+}
+
+.bb-auth-corner-line {
+  stroke: color-mix(in srgb, var(--botanical) 55%, transparent);
+  stroke-width: 1.5;
+  animation-duration: 0.7s;
+}
+
+.bb-auth-corner-tl {
+  top: -12px;
+  left: -12px;
+}
+
+.bb-auth-corner-tr {
+  top: -12px;
+  right: -12px;
+  transform: scaleX(-1);
+}
+
+.bb-auth-corner-bl {
+  bottom: -12px;
+  left: -12px;
+  transform: scaleY(-1);
+}
+
+.bb-auth-corner-br {
+  right: -12px;
+  bottom: -12px;
+  transform: scale(-1);
+}
+
+.bb-auth-card {
+  opacity: 0;
+  animation: bb-auth-seat 0.7s var(--neu-easing) 0.12s forwards;
+}
+
+@keyframes bb-auth-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes bb-auth-fade {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes bb-auth-pad-set {
+  from {
+    opacity: 0;
+    transform: scale(0.35);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bb-auth-seat {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bb-auth-pulse {
+  0%,
+  6% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+
+  13% {
+    opacity: 0.85;
+  }
+
+  34% {
+    opacity: 0.85;
+  }
+
+  40%,
+  100% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+}
+
+/* Below the small breakpoint the card fills the screen and the routing would
+   only ever be cropped, so the board keeps just its hole field. */
+@media (max-width: 640px) {
+  .bb-auth-schematic {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-auth-holes,
+  .bb-auth-mark,
+  .bb-auth-chip,
+  .bb-auth-dim,
+  .bb-auth-titles,
+  .bb-auth-pad,
+  .bb-auth-corner,
+  .bb-auth-card {
+    opacity: 1;
+    animation: none;
+    transform: none;
+  }
+
+  .bb-auth-rule,
+  .bb-auth-trace,
+  .bb-auth-rail,
+  .bb-auth-corner-line {
+    stroke-dashoffset: 0;
+    animation: none;
+  }
+
+  .bb-auth-pulse {
+    display: none;
+  }
 }

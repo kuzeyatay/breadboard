@@ -53,6 +53,16 @@ test("plain click not sensitive in sensitive_actions mode", () => {
   assert.equal(c.sensitive, false);
 });
 
+test("actual desktop control always requires high-risk approval", () => {
+  const c = classify(
+    { toolName: "desktop_session", action: "desktop_control", target: "Actual desktop" },
+    { approvalMode: "sensitive_actions", allowedDomains: [] },
+  );
+  assert.equal(c.sensitive, true);
+  assert.equal(c.risk, "high");
+  assert.match(c.explanation, /actual desktop/i);
+});
+
 test("every_action mode makes everything sensitive", () => {
   const c = classify(
     { toolName: "browser_click", action: "click", target: "a" },

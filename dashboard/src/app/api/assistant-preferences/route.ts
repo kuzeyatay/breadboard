@@ -8,15 +8,15 @@ import {
   type AssistantReasoningEffort,
 } from "@/lib/assistant-reasoning";
 import {
-  getOpenHarnessUserSettings,
-  setOpenHarnessUserSettings,
-} from "@/lib/openharness/runtime-store";
-import { corsHeaders } from "@/lib/openharness/quartz-support";
+  getHermesUserSettings,
+  setHermesUserSettings,
+} from "@/lib/hermes/runtime-store";
+import { corsHeaders } from "@/lib/hermes/quartz-support";
 import {
   ApiError,
   apiErrorResponse,
   readJsonBody,
-} from "@/lib/openharness/route-helpers";
+} from "@/lib/hermes/route-helpers";
 
 export const dynamic = "force-dynamic";
 
@@ -30,16 +30,20 @@ function defaults() {
   return {
     model: DEFAULT_MODEL,
     reasoningEffort: DEFAULT_ASSISTANT_REASONING_EFFORT,
+    reasoningEffortByModel: {} as Record<string, string>,
     userPreference: false,
   };
 }
 
 function payload(userId: number | null) {
   if (userId === null) return defaults();
-  const settings = getOpenHarnessUserSettings(userId);
+  const settings = getHermesUserSettings(userId);
   return {
     model: settings.defaultModel,
     reasoningEffort: settings.reasoningEffort,
+    // The picker needs the whole map, not just the active pair, so selecting a
+    // model can restore its own effort without a round trip.
+    reasoningEffortByModel: settings.reasoningEffortByModel,
     userPreference: settings.intelligencePreferenceSet,
   };
 }
@@ -84,7 +88,7 @@ export async function PATCH(request: Request) {
     if (model === undefined && reasoningEffort === undefined) {
       throw new ApiError(400, "preference_required", "A model or intelligence level is required.");
     }
-    setOpenHarnessUserSettings(userId, {
+    setHermesUserSettings(userId, {
       ...(model !== undefined ? { defaultModel: model } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     });

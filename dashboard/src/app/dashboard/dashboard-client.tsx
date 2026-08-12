@@ -15,17 +15,46 @@ import {
   setClusterFolder,
   createClusterFolder,
   deleteClusterFolder,
+  moveClusterFolder,
+  setClusterRepository,
 } from "@/app/actions/clusters";
 import type { Cluster, ClusterVisibility } from "@/app/actions/clusters";
+import {
+  FOLDER_SEPARATOR,
+  expandFolderPaths,
+  folderLabel,
+  isInSubtree,
+  visibleFolderRows,
+} from "@/lib/cluster-folders";
 import NavBar from "@/app/components/navbar";
-import DashboardAgentTerminal from "@/app/components/openharness/dashboard-agent-terminal";
+import type { NavbarShortcuts } from "@/lib/profile/navbar-shortcuts.ts";
+import DashboardAgentTerminal from "@/app/components/hermes/dashboard-agent-terminal";
+import type { TerminalPanel } from "@/app/components/hermes/terminal-sidebar";
+import ScheduledChatsDock from "@/app/components/scheduled-chats-dock";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
+import {
+  VLM_PARSE_FILE_RE,
+  VlmParseOption,
+  useVlmOcrAvailability,
+} from "@/app/components/vlm-parse-option";
+import {
+  ANYDOC_PARSE_FILE_RE,
+  AnydocParseOption,
+  useAnydocAvailability,
+} from "@/app/components/anydoc-parse-option";
 import { useToast, Toaster } from "@/app/components/toast";
 import {
   sumIngestTokenUsage,
   type IngestTokenUsage,
 } from "@/lib/ingest-token-usage";
+import {
+  APP_THEME_CHANGE_EVENT,
+  applyAppTheme,
+  getStoredAppTheme,
+  isAppTheme,
+  type AppTheme,
+} from "@/lib/app-theme";
 
 interface Props {
   userEmail: string;
@@ -33,6 +62,10 @@ interface Props {
   initialClusters: Cluster[];
   initialPublicClusters: Cluster[];
   initialClusterFolders: string[];
+  /** Optional navbar entries this account switched on from its profile page. */
+  navbarShortcuts: NavbarShortcuts;
+  /** A top-level terminal route, such as /hooks, can open its panel on arrival. */
+  initialTerminalPanel?: TerminalPanel | null;
 }
 
 const ACCEPTED =
@@ -61,6 +94,9 @@ const CARD_MAX_HEIGHT = 440;
 // backfill gaps instead of leaving the staggered voids a flex-wrap row leaves.
 const CARD_GRID_UNIT = 8;
 const CARD_GRID_GAP = 16;
+
+// Clusters nest like folders; a cluster is addressed by its full path.
+const FOLDER_INDENT_PX = 20;
 
 function cardGridSpan(sizePx: number): number {
   return Math.max(
@@ -145,6 +181,8 @@ export default function DashboardClient({
   initialClusters,
   initialPublicClusters,
   initialClusterFolders,
+  navbarShortcuts,
+  initialTerminalPanel = null,
 }: Props) {
   const router = useRouter();
   const { toasts, addToast, dismissToast } = useToast();
@@ -166,10 +204,16 @@ export default function DashboardClient({
   );
   const [clusterFolderModalOpen, setClusterFolderModalOpen] = useState(false);
   const [clusterFolderName, setClusterFolderName] = useState("");
+  const [clusterFolderParent, setClusterFolderParent] = useState<string | null>(
+    null,
+  );
   const [clusterFolderError, setClusterFolderError] = useState<string | null>(
     null,
   );
   const [draggingClusterId, setDraggingClusterId] = useState<number | null>(
+    null,
+  );
+  const [draggingFolderPath, setDraggingFolderPath] = useState<string | null>(
     null,
   );
   const [dragOverFolderKey, setDragOverFolderKey] = useState<string | null>(
@@ -179,6 +223,7 @@ export default function DashboardClient({
     Set<string>
   >(new Set());
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [linkingRepoId, setLinkingRepoId] = useState<number | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmVisibilityId, setConfirmVisibilityId] = useState<number | null>(
     null,
@@ -211,12 +256,15 @@ export default function DashboardClient({
   const [nowTick, setNowTick] = useState(0);
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
+  const [parseWithVlm, setParseWithVlm] = useState(false);
+  const [parseWithAnydoc, setParseWithAnydoc] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
   const [bgImage, setBgImage] = useState<string | null>(null);
   const [showBgModal, setShowBgModal] = useState(false);
+  const [appTheme, setAppTheme] = useState<AppTheme>("light");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bgFileInputRef = useRef<HTMLInputElement>(null);
@@ -228,7 +276,22 @@ export default function DashboardClient({
   useEffect(() => {
     const stored = localStorage.getItem("dashboard:bg-image");
     if (stored) setBgImage(stored);
+    setAppTheme(getStoredAppTheme(localStorage));
+
+    const handleThemeChange = (event: Event) => {
+      const theme = (event as CustomEvent<unknown>).detail;
+      if (isAppTheme(theme)) setAppTheme(theme);
+    };
+    window.addEventListener(APP_THEME_CHANGE_EVENT, handleThemeChange);
+    return () => {
+      window.removeEventListener(APP_THEME_CHANGE_EVENT, handleThemeChange);
+    };
   }, []);
+
+  function selectAppTheme(theme: AppTheme) {
+    setAppTheme(theme);
+    applyAppTheme(theme);
+  }
 
   // Re-render once a second while uploading so elapsed-time markers tick up.
   useEffect(() => {
@@ -289,22 +352,27 @@ export default function DashboardClient({
   }, [initialClusterFolders]);
 
   type ClusterRenderEntry =
-    | { kind: "header"; folder: string; key: string }
+    | { kind: "header"; folder: string; key: string; depth: number }
     | { kind: "card"; cluster: Cluster };
+
+  // Clusters nest, and a cluster is identified by its full path
+  // ("EE Year 1/Semester 2").
+  const folderPaths = useMemo(
+    () =>
+      expandFolderPaths([
+        ...clusterFolders,
+        ...filteredClusters.map((cluster) => cluster.folder),
+      ]),
+    [clusterFolders, filteredClusters],
+  );
 
   const clusterRenderList = useMemo<ClusterRenderEntry[]>(() => {
     if (clusterView !== "mine") {
       return filteredClusters.map((cluster) => ({ kind: "card", cluster }));
     }
 
-    const names = new Set<string>(clusterFolders.filter(Boolean));
-    for (const cluster of filteredClusters) {
-      if (cluster.folder) names.add(cluster.folder);
-    }
-    const ordered = [...names].sort((a, b) => a.localeCompare(b));
-
-    // With no folders, show every cluster flat (no accordion headers).
-    if (ordered.length === 0) {
+    // With no clusters, show every garden flat (no accordion headers).
+    if (folderPaths.length === 0) {
       return filteredClusters.map((cluster) => ({ kind: "card", cluster }));
     }
 
@@ -315,19 +383,25 @@ export default function DashboardClient({
     for (const cluster of filteredClusters.filter((c) => !c.folder)) {
       entries.push({ kind: "card", cluster });
     }
-    for (const name of ordered) {
-      const key = `folder:${name}`;
-      entries.push({ kind: "header", folder: name, key });
-      if (expandedClusterFolders.has(key)) {
-        for (const cluster of filteredClusters.filter(
-          (c) => c.folder === name,
-        )) {
-          entries.push({ kind: "card", cluster });
-        }
+
+    // Depth-first, so a cluster's own gardens are emitted before its nested
+    // clusters and the section folding below attributes each card to the right
+    // header.
+    const rows = visibleFolderRows(folderPaths, (folder) =>
+      expandedClusterFolders.has(`folder:${folder}`),
+    );
+    for (const { folder, depth } of rows) {
+      const key = `folder:${folder}`;
+      entries.push({ kind: "header", folder, key, depth });
+      if (!expandedClusterFolders.has(key)) continue;
+      for (const cluster of filteredClusters.filter(
+        (c) => c.folder === folder,
+      )) {
+        entries.push({ kind: "card", cluster });
       }
     }
     return entries;
-  }, [clusterView, filteredClusters, clusterFolders, expandedClusterFolders]);
+  }, [clusterView, filteredClusters, folderPaths, expandedClusterFolders]);
 
   // Fold the flat header/card list into per-folder sections so each group packs
   // (masonry) on its own and cards never bleed across a folder boundary.
@@ -335,6 +409,7 @@ export default function DashboardClient({
     const sections: {
       key: string;
       header: { folder: string; key: string } | null;
+      depth: number;
       cards: Cluster[];
     }[] = [];
     let current: (typeof sections)[number] | null = null;
@@ -343,12 +418,13 @@ export default function DashboardClient({
         current = {
           key: entry.key,
           header: { folder: entry.folder, key: entry.key },
+          depth: entry.depth,
           cards: [],
         };
         sections.push(current);
       } else {
         if (!current) {
-          current = { key: "__flat__", header: null, cards: [] };
+          current = { key: "__flat__", header: null, depth: 0, cards: [] };
           sections.push(current);
         }
         current.cards.push(entry.cluster);
@@ -356,6 +432,25 @@ export default function DashboardClient({
     }
     return sections;
   }, [clusterRenderList]);
+
+  // A cluster's badge counts every garden nested anywhere beneath it, so a
+  // collapsed cluster never reads as empty while hiding its subtree.
+  const subtreeGardenCount = (folder: string) =>
+    myClusters.filter((c) => isInSubtree(c.folder, folder)).length;
+
+  const rewriteFolderPrefix = (
+    value: string | null | undefined,
+    from: string,
+    to: string,
+  ): string | null => {
+    const folder = value ?? null;
+    if (!folder) return folder;
+    if (folder === from) return to;
+    if (folder.startsWith(`${from}${FOLDER_SEPARATOR}`)) {
+      return `${to}${folder.slice(from.length)}`;
+    }
+    return folder;
+  };
 
   function toggleClusterFolder(key: string) {
     setExpandedClusterFolders((prev) => {
@@ -367,18 +462,29 @@ export default function DashboardClient({
   }
 
   function handleDeleteClusterFolder(name: string) {
-    const count = myClusters.filter((c) => c.folder === name).length;
+    const count = subtreeGardenCount(name);
+    const nested = folderPaths.filter(
+      (f) => f !== name && isInSubtree(f, name),
+    ).length;
     const ok = window.confirm(
-      count > 0
-        ? `Delete cluster "${name}"? Its ${count} garden${count === 1 ? "" : "s"} will remain on the main Gardens page (the gardens are not deleted).`
-        : `Delete cluster "${name}"?`,
+      [
+        `Delete cluster "${folderLabel(name)}"?`,
+        nested > 0
+          ? `The ${nested} cluster${nested === 1 ? "" : "s"} nested inside it will be deleted too.`
+          : "",
+        count > 0
+          ? `Its ${count} garden${count === 1 ? "" : "s"} will remain on the main Gardens page (the gardens are not deleted).`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
     );
     if (!ok) return;
 
     setMyClusters((prev) =>
-      prev.map((c) => (c.folder === name ? { ...c, folder: null } : c)),
+      prev.map((c) => (isInSubtree(c.folder, name) ? { ...c, folder: null } : c)),
     );
-    setClusterFolders((prev) => prev.filter((f) => f !== name));
+    setClusterFolders((prev) => prev.filter((f) => !isInSubtree(f, name)));
     startTransition(async () => {
       try {
         await deleteClusterFolder(name);
@@ -394,6 +500,7 @@ export default function DashboardClient({
 
   function handleMoveClusterToFolder(clusterId: number, folder: string | null) {
     setDraggingClusterId(null);
+    setDraggingFolderPath(null);
     setDragOverFolderKey(null);
     const target = folder && folder.trim() ? folder.trim() : null;
     const existing = myClusters.find((c) => c.id === clusterId);
@@ -402,6 +509,9 @@ export default function DashboardClient({
     setMyClusters((prev) =>
       prev.map((c) => (c.id === clusterId ? { ...c, folder: target } : c)),
     );
+    if (target) {
+      setExpandedClusterFolders((prev) => new Set(prev).add(`folder:${target}`));
+    }
     startTransition(async () => {
       try {
         await setClusterFolder(clusterId, target);
@@ -417,8 +527,65 @@ export default function DashboardClient({
     });
   }
 
-  function openClusterFolderModal() {
+  /** Re-parent a cluster. A null target moves it back to the top level. */
+  function handleMoveClusterFolder(source: string, targetParent: string | null) {
+    setDraggingClusterId(null);
+    setDraggingFolderPath(null);
+    setDragOverFolderKey(null);
+    const parent = targetParent?.trim() ?? "";
+    const name = folderLabel(source);
+    const target = parent ? `${parent}${FOLDER_SEPARATOR}${name}` : name;
+    if (!name || source === target) return;
+    if (isInSubtree(parent, source)) {
+      addToast("A cluster cannot be moved inside itself.");
+      return;
+    }
+    if (folderPaths.includes(target)) {
+      addToast("A cluster with this name already exists here.");
+      return;
+    }
+
+    const previousFolders = clusterFolders;
+    const previousClusters = myClusters;
+    setClusterFolders((prev) =>
+      [
+        ...new Set(prev.map((f) => rewriteFolderPrefix(f, source, target) ?? f)),
+      ].sort((a, b) => a.localeCompare(b)),
+    );
+    setMyClusters((prev) =>
+      prev.map((c) => ({
+        ...c,
+        folder: rewriteFolderPrefix(c.folder, source, target),
+      })),
+    );
+    // Carry the open/closed state across the move so the tree does not collapse.
+    setExpandedClusterFolders((prev) => {
+      const next = new Set<string>();
+      for (const key of prev) {
+        const folder = key.slice("folder:".length);
+        next.add(
+          `folder:${rewriteFolderPrefix(folder, source, target) ?? folder}`,
+        );
+      }
+      if (parent) next.add(`folder:${parent}`);
+      return next;
+    });
+
+    startTransition(async () => {
+      try {
+        await moveClusterFolder(source, parent || null);
+        router.refresh();
+      } catch (err) {
+        addToast(err instanceof Error ? err.message : "Failed to move cluster");
+        setClusterFolders(previousFolders);
+        setMyClusters(previousClusters);
+      }
+    });
+  }
+
+  function openClusterFolderModal(parent: string | null = null) {
     setClusterFolderName("");
+    setClusterFolderParent(parent);
     setClusterFolderError(null);
     setClusterFolderModalOpen(true);
   }
@@ -427,13 +594,16 @@ export default function DashboardClient({
     if (isPending) return;
     setClusterFolderModalOpen(false);
     setClusterFolderName("");
+    setClusterFolderParent(null);
     setClusterFolderError(null);
   }
 
   function handleCreateClusterFolder(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const folder = clusterFolderName.trim();
-    if (!folder) return;
+    const name = clusterFolderName.trim();
+    if (!name) return;
+    const parent = clusterFolderParent;
+    const folder = parent ? `${parent}${FOLDER_SEPARATOR}${name}` : name;
     if (
       clusterFolders.some(
         (existing) =>
@@ -449,11 +619,15 @@ export default function DashboardClient({
         [...prev, folder].sort((a, b) => a.localeCompare(b)),
       );
     }
+    if (parent) {
+      setExpandedClusterFolders((prev) => new Set(prev).add(`folder:${parent}`));
+    }
     startTransition(async () => {
       try {
-        await createClusterFolder(folder);
+        await createClusterFolder(name, parent);
         setClusterFolderModalOpen(false);
         setClusterFolderName("");
+        setClusterFolderParent(null);
         router.refresh();
       } catch (err) {
         setClusterFolders((prev) => prev.filter((item) => item !== folder));
@@ -464,15 +638,34 @@ export default function DashboardClient({
     });
   }
 
-  function renderFolderHeader(folder: string, key: string) {
+  function renderFolderHeader(folder: string, key: string, depth = 0) {
     const isOver = dragOverFolderKey === key;
     const isExpanded = expandedClusterFolders.has(key);
-    const count = myClusters.filter((c) => c.folder === folder).length;
+    const count = subtreeGardenCount(folder);
+    // A cluster cannot be dropped on itself or on anything it contains.
+    const isSelfDrop =
+      draggingFolderPath != null && isInSubtree(folder, draggingFolderPath);
+    const canDrop =
+      (draggingClusterId != null || draggingFolderPath != null) && !isSelfDrop;
     return (
       <div
         key={key}
         role="button"
         tabIndex={0}
+        draggable={clusterView === "mine"}
+        onDragStart={(e) => {
+          e.stopPropagation();
+          // Firefox will not start a drag without payload. The path is never
+          // read back as a garden id — `draggingFolderPath` decides the branch.
+          e.dataTransfer.setData("text/plain", folder);
+          e.dataTransfer.effectAllowed = "move";
+          setDraggingClusterId(null);
+          setDraggingFolderPath(folder);
+        }}
+        onDragEnd={() => {
+          setDraggingFolderPath(null);
+          setDragOverFolderKey(null);
+        }}
         onClick={() => toggleClusterFolder(key)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -481,11 +674,11 @@ export default function DashboardClient({
           }
         }}
         onDragOver={(e) => {
-          if (draggingClusterId == null) return;
+          if (!canDrop) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
           if (dragOverFolderKey !== key) setDragOverFolderKey(key);
-          // Reveal a collapsed folder so it's clear where the cluster will land.
+          // Reveal a collapsed cluster so it's clear where the drop will land.
           if (!expandedClusterFolders.has(key)) {
             setExpandedClusterFolders((prev) => new Set(prev).add(key));
           }
@@ -497,15 +690,22 @@ export default function DashboardClient({
         }}
         onDrop={(e) => {
           e.preventDefault();
+          if (!canDrop) return;
+          if (draggingFolderPath) {
+            handleMoveClusterFolder(draggingFolderPath, folder);
+            return;
+          }
           const id =
             Number(e.dataTransfer.getData("text/plain")) || draggingClusterId;
           if (id != null) handleMoveClusterToFolder(id, folder);
         }}
+        style={{ marginLeft: depth * FOLDER_INDENT_PX }}
         className={[
-          "basis-full w-full mt-2 flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-left transition-colors",
+          "basis-full mt-2 flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-left transition-colors",
           isOver
             ? "border-cyan-400/60 bg-cyan-950/20"
             : "border-gray-800 hover:border-gray-700 hover:bg-gray-900/50",
+          draggingFolderPath === folder ? "opacity-50" : "",
         ].join(" ")}
       >
         <svg
@@ -535,9 +735,43 @@ export default function DashboardClient({
           />
         </svg>
         <span className="text-sm font-medium text-gray-300">
-          {folder}
+          {folderLabel(folder)}
         </span>
         <span className="text-[11px] text-gray-600">{count}</span>
+        {folder && (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              openClusterFolderModal(folder);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                openClusterFolderModal(folder);
+              }
+            }}
+            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+            aria-label={`New cluster inside ${folderLabel(folder)}`}
+            title="New cluster inside this one"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.7}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
+              />
+            </svg>
+          </span>
+        )}
         {folder && (
           <span
             role="button"
@@ -553,8 +787,8 @@ export default function DashboardClient({
                 handleDeleteClusterFolder(folder);
               }
             }}
-            className="ml-auto rounded p-1 text-gray-600 transition-colors hover:bg-red-950/40 hover:text-red-300"
-            aria-label={`Delete cluster ${folder}`}
+            className="rounded p-1 text-gray-600 transition-colors hover:bg-red-950/40 hover:text-red-300"
+            aria-label={`Delete cluster ${folderLabel(folder)}`}
             title="Delete cluster"
           >
             <svg
@@ -759,6 +993,44 @@ export default function DashboardClient({
       addToast(
         err instanceof Error ? err.message : "Failed to update fork access",
       );
+    }
+  }
+
+  async function handleConnectRepository(cluster: Cluster) {
+    if (!cluster.isOwner || linkingRepoId !== null) return;
+    const desktop = (
+      window as Window & {
+        breadboardDesktop?: { pickFolder: () => Promise<string | null> };
+      }
+    ).breadboardDesktop;
+    if (!desktop) {
+      addToast(
+        "Repository linking uses Breadboard Desktop so the path stays on your computer.",
+      );
+      return;
+    }
+
+    setLinkingRepoId(cluster.id);
+    try {
+      const repositoryPath = await desktop.pickFolder();
+      if (!repositoryPath) return;
+      const result = await setClusterRepository(cluster.id, repositoryPath);
+      updateLocalCluster(cluster.id, (item) => ({
+        ...item,
+        repo_connected: true,
+        repo_name: result.repoName,
+      }));
+      addToast(
+        `${result.repoName} is now available to OpenCode in this Garden.`,
+        "success",
+        "Repository connected",
+      );
+    } catch (err) {
+      addToast(
+        err instanceof Error ? err.message : "Failed to connect repository",
+      );
+    } finally {
+      setLinkingRepoId(null);
     }
   }
 
@@ -1036,14 +1308,31 @@ export default function DashboardClient({
       uploadStartedAtRef.current[key] = Date.now();
       setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
 
+      // One reader per file, most specific first: the VLM reads pixels, anydoc
+      // reads document packages, handwriting OCR is the fallback for the pages
+      // neither of the first two was asked for.
+      const usesVlm =
+        parseWithVlm &&
+        vlmStatus.available &&
+        VLM_PARSE_FILE_RE.test(file.name);
+      const usesAnydoc =
+        !usesVlm &&
+        parseWithAnydoc &&
+        anydocStatus.available &&
+        ANYDOC_PARSE_FILE_RE.test(file.name);
       const usesHandwriting =
-        isHandwriting && HANDWRITING_FILE_RE.test(file.name);
+        !usesVlm &&
+        !usesAnydoc &&
+        isHandwriting &&
+        HANDWRITING_FILE_RE.test(file.name);
       const formData = new FormData();
       formData.append("file", file);
       formData.append("clusterSlug", uploadCluster.slug);
       if (uploadLabel.trim())
         formData.append("sourceLabel", uploadLabel.trim());
       formData.append("isHandwriting", String(usesHandwriting));
+      formData.append("parseWithVlm", String(usesVlm));
+      formData.append("parseWithAnydoc", String(usesAnydoc));
       formData.append("generateMap", String(usesHandwriting || generateMap));
 
       const clearProgress = () =>
@@ -1215,7 +1504,7 @@ export default function DashboardClient({
       if (successCount > 0) {
         const totalDuration = formatDuration(Date.now() - sessionStartedAt);
         addToast(
-          `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${isHandwriting && hasHandwritingCompatibleFile ? " with handwriting OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""} in ${totalDuration}`,
+          `Added ${successCount} file${successCount > 1 ? "s" : ""} to ${uploadCluster.name}${vlmUploadEnabled ? " with VLM parsing" : anydocUploadEnabled ? " with anydoc conversion" : isHandwriting && hasHandwritingCompatibleFile ? " with handwriting OCR" : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""} in ${totalDuration}`,
         );
         for (const warning of screenshotWarnings) addToast(warning);
         router.refresh();
@@ -1232,6 +1521,20 @@ export default function DashboardClient({
   );
   const handwritingUploadEnabled =
     isHandwriting && hasHandwritingCompatibleFile;
+  const hasVlmCompatibleFile = uploadFiles.some((f) =>
+    VLM_PARSE_FILE_RE.test(f.name),
+  );
+  const { status: vlmStatus, loading: vlmStatusLoading } =
+    useVlmOcrAvailability(Boolean(uploadCluster) && hasVlmCompatibleFile);
+  const vlmUploadEnabled =
+    parseWithVlm && hasVlmCompatibleFile && vlmStatus.available;
+  const hasAnydocCompatibleFile = uploadFiles.some((f) =>
+    ANYDOC_PARSE_FILE_RE.test(f.name),
+  );
+  const { status: anydocStatus, loading: anydocStatusLoading } =
+    useAnydocAvailability(Boolean(uploadCluster) && hasAnydocCompatibleFile);
+  const anydocUploadEnabled =
+    parseWithAnydoc && hasAnydocCompatibleFile && anydocStatus.available;
   const ingestionTokenUsage = sumIngestTokenUsage(
     Object.values(uploadTokenUsage),
   );
@@ -1248,7 +1551,9 @@ export default function DashboardClient({
 
   return (
     <div
-      className="min-h-screen bg-gray-950 text-white flex flex-col pb-12"
+      // Marks the pixels the terminal dock's glass bar refracts.
+      data-glass-scene-root
+      className="dashboard-shell min-h-screen bg-gray-950 text-white flex flex-col pb-12"
       style={
         bgImage
           ? {
@@ -1263,14 +1568,19 @@ export default function DashboardClient({
       <NavBar
         email={userEmail}
         username={username}
+        shortcuts={navbarShortcuts}
       />
 
-      {/* Background image pen button */}
+      {/* Persistent, top-left: what is scheduled to run on its own. */}
+      <ScheduledChatsDock />
+
+      {/* Dashboard appearance pencil button */}
       <div className="relative">
         <button
           type="button"
           onClick={() => setShowBgModal(true)}
-          title="Change dashboard background"
+          title="Customize dashboard appearance"
+          aria-label="Customize dashboard appearance"
           className="neu-button-icon absolute right-4 top-2 z-10 rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-800 hover:text-gray-300"
         >
           <svg
@@ -1425,7 +1735,7 @@ export default function DashboardClient({
               <div className="mb-3 flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={openClusterFolderModal}
+                  onClick={() => openClusterFolderModal(null)}
                   className="neu-button inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
                 >
                   <svg
@@ -1445,6 +1755,42 @@ export default function DashboardClient({
                 </button>
               </div>
             )}
+            {clusterView === "mine" &&
+              (draggingClusterId != null || draggingFolderPath != null) && (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    if (dragOverFolderKey !== "root") setDragOverFolderKey("root");
+                  }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                      setDragOverFolderKey((prev) =>
+                        prev === "root" ? null : prev,
+                      );
+                    }
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (draggingFolderPath) {
+                      handleMoveClusterFolder(draggingFolderPath, null);
+                      return;
+                    }
+                    const id =
+                      Number(e.dataTransfer.getData("text/plain")) ||
+                      draggingClusterId;
+                    if (id != null) handleMoveClusterToFolder(id, null);
+                  }}
+                  className={[
+                    "mb-2 rounded-lg border border-dashed px-3 py-2 text-center text-xs transition-colors",
+                    dragOverFolderKey === "root"
+                      ? "border-cyan-400/60 bg-cyan-950/20 text-cyan-200"
+                      : "border-gray-800 text-gray-600",
+                  ].join(" ")}
+                >
+                  Drop here to move to the top level
+                </div>
+              )}
             <div className="flex flex-col gap-2">
               {clusterSections.map((section) => (
                 <div key={section.key} className="flex flex-col">
@@ -1452,6 +1798,7 @@ export default function DashboardClient({
                     renderFolderHeader(
                       section.header.folder,
                       section.header.key,
+                      section.depth,
                     )}
                   {section.cards.length > 0 && (
                     <div
@@ -1461,6 +1808,9 @@ export default function DashboardClient({
                         gridAutoRows: `${CARD_GRID_UNIT}px`,
                         gridAutoFlow: "row dense",
                         gap: `${CARD_GRID_GAP}px`,
+                        marginLeft: section.header
+                          ? (section.depth + 1) * FOLDER_INDENT_PX
+                          : 0,
                       }}
                     >
                       {section.cards.map((cluster) => {
@@ -1482,6 +1832,7 @@ export default function DashboardClient({
                                 String(cluster.id),
                               );
                               e.dataTransfer.effectAllowed = "move";
+                              setDraggingFolderPath(null);
                               setDraggingClusterId(cluster.id);
                             }}
                             onDragEnd={() => {
@@ -1492,7 +1843,7 @@ export default function DashboardClient({
                               handleClusterBorderClick(e, cluster)
                             }
                             className={[
-                              "neu-surface relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
+                              "dashboard-garden-card neu-surface relative flex flex-col overflow-hidden bg-gray-900 border-2 rounded-xl p-5 gap-4 transition-colors",
                               resizingClusterId === cluster.id
                                 ? "select-none ring-1 ring-[#7b97aa]/50"
                                 : "",
@@ -1607,6 +1958,55 @@ export default function DashboardClient({
                               confirmDeleteId !== cluster.id &&
                               confirmVisibilityId !== cluster.id && (
                                 <div className="absolute top-3 right-3 flex items-center gap-2">
+                                  <button
+                                    data-card-action="true"
+                                    type="button"
+                                    onClick={() =>
+                                      void handleConnectRepository(cluster)
+                                    }
+                                    disabled={linkingRepoId !== null}
+                                    style={{
+                                      backgroundColor: "var(--paper-surface)",
+                                    }}
+                                    className={[
+                                      "neu-button grid h-7 w-7 shrink-0 place-items-center rounded-full transition-colors disabled:opacity-40",
+                                      cluster.repo_connected
+                                        ? "text-[var(--botanical)]"
+                                        : "text-gray-500 hover:text-white",
+                                    ].join(" ")}
+                                    title={
+                                      cluster.repo_connected
+                                        ? `Change repository (${cluster.repo_name ?? "connected"})`
+                                        : "Connect a local repository"
+                                    }
+                                    aria-label={
+                                      cluster.repo_connected
+                                        ? `Change connected repository ${cluster.repo_name ?? ""}`.trim()
+                                        : "Connect a local repository"
+                                    }
+                                  >
+                                    {linkingRepoId === cluster.id ? (
+                                      <Spinner className="h-3.5 w-3.5" />
+                                    ) : (
+                                      <svg
+                                        className="h-3.5 w-3.5"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth={1.8}
+                                        aria-hidden
+                                      >
+                                        <circle cx="6" cy="5" r="2" />
+                                        <circle cx="18" cy="6" r="2" />
+                                        <circle cx="6" cy="19" r="2" />
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          d="M6 7v10m2-8h5a5 5 0 0 0 5-5"
+                                        />
+                                      </svg>
+                                    )}
+                                  </button>
                                   <button
                                     data-card-action="true"
                                     type="button"
@@ -1902,7 +2302,7 @@ export default function DashboardClient({
 
       {clusterFolderModalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(event) => {
             if (event.target === event.currentTarget) closeClusterFolderModal();
           }}
@@ -1914,11 +2314,19 @@ export default function DashboardClient({
             role="dialog"
             aria-modal="true"
             aria-labelledby="new-cluster-title"
-            className="neu-dialog w-full max-w-sm rounded-xl border border-gray-800 bg-gray-900 p-5"
+            className="bb-modal-panel neu-dialog w-full max-w-sm rounded-2xl border p-5"
           >
-            <h2 id="new-cluster-title" className="mb-4 text-lg font-semibold">
-              New cluster
+            <h2 id="new-cluster-title" className="mb-1 text-lg font-semibold">
+              {clusterFolderParent ? "New nested cluster" : "New cluster"}
             </h2>
+            {clusterFolderParent ? (
+              <p className="mb-4 text-xs text-gray-500">
+                Inside{" "}
+                <span className="text-gray-300">{clusterFolderParent}</span>
+              </p>
+            ) : (
+              <div className="mb-4" />
+            )}
 
             <form onSubmit={handleCreateClusterFolder} className="space-y-4">
               <div>
@@ -1974,12 +2382,12 @@ export default function DashboardClient({
 
       {modalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) closeModal();
           }}
         >
-          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
+          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
             <h2 className="text-lg font-semibold mb-5">New garden</h2>
             <form onSubmit={handleCreate} className="space-y-4">
               <div>
@@ -2033,12 +2441,12 @@ export default function DashboardClient({
 
       {editingCluster && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) closeEditModal();
           }}
         >
-          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
+          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
             <h2 className="text-lg font-semibold mb-5">Edit garden</h2>
             <form onSubmit={handleUpdateCluster} className="space-y-4">
               <div>
@@ -2091,12 +2499,12 @@ export default function DashboardClient({
 
       {uploadCluster && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) closeUploadModal();
           }}
         >
-          <div className="neu-dialog w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6">
+          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
             <div className="mb-5">
               <h2 className="text-lg font-semibold">Add documents</h2>
               <p className="text-sm text-gray-500 mt-0.5">
@@ -2279,18 +2687,47 @@ export default function DashboardClient({
                 />
               )}
 
+              {hasVlmCompatibleFile && !allDoneOrError(uploadCluster) && (
+                <VlmParseOption
+                  checked={parseWithVlm}
+                  onChange={(next) => {
+                    setParseWithVlm(next);
+                    // The two page readers are alternatives, not a stack.
+                    if (next) setIsHandwriting(false);
+                  }}
+                  disabled={isUploading}
+                  status={vlmStatus}
+                  loading={vlmStatusLoading}
+                />
+              )}
+
+              {hasAnydocCompatibleFile && !allDoneOrError(uploadCluster) && (
+                <AnydocParseOption
+                  checked={parseWithAnydoc}
+                  onChange={setParseWithAnydoc}
+                  disabled={isUploading}
+                  status={anydocStatus}
+                  loading={anydocStatusLoading}
+                  overriddenByVlm={vlmUploadEnabled}
+                />
+              )}
+
               {hasHandwritingCompatibleFile &&
                 !allDoneOrError(uploadCluster) && (
-                  <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                  <label
+                    className={`flex items-start gap-2.5 select-none ${
+                      vlmUploadEnabled ? "cursor-not-allowed" : "cursor-pointer"
+                    }`}
+                  >
                     <input
                       type="checkbox"
-                      checked={isHandwriting}
+                      checked={isHandwriting && !vlmUploadEnabled}
                       onChange={(e) => {
                         const checked = e.target.checked;
                         setIsHandwriting(checked);
                         if (checked) setGenerateMap(true);
                       }}
-                      disabled={isUploading}
+                      disabled={isUploading || vlmUploadEnabled}
                       className="mt-0.5 w-4 h-4 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-50"
                     />
                     <span>
@@ -2298,8 +2735,11 @@ export default function DashboardClient({
                         Handwritten or scanned pages
                       </span>
                       <span className="block text-[11px] text-gray-600 mt-0.5">
-                        Uses vision OCR on each PDF page or image before
-                        generating the Learning Map.
+                        {vlmUploadEnabled
+                          ? "Not used while Parse using VLM is on — the VLM already reads the pages."
+                          : anydocUploadEnabled
+                            ? "Used for images only while Parse with anydoc is on — anydoc reads the PDFs."
+                            : "Uses vision OCR on each PDF page or image before generating the Learning Map."}
                       </span>
                     </span>
                   </label>
@@ -2349,7 +2789,7 @@ export default function DashboardClient({
                   type="button"
                   onClick={closeUploadModal}
                   disabled={isUploading}
-                  className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors disabled:opacity-40"
+                  className="neu-button flex-1 py-2.5 text-sm disabled:opacity-40"
                 >
                   {allDoneOrError(uploadCluster) ? "Close" : "Cancel"}
                 </button>
@@ -2357,7 +2797,7 @@ export default function DashboardClient({
                   <button
                     type="submit"
                     disabled={uploadFiles.length === 0 || isUploading}
-                    className="flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    className="neu-button-primary flex flex-1 items-center justify-center gap-2 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isUploading && <Spinner />}
                     {isUploading
@@ -2373,23 +2813,50 @@ export default function DashboardClient({
 
       {showBgModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) setShowBgModal(false);
           }}
         >
-          <div className="neu-dialog w-full max-w-sm bg-gray-900 border border-gray-800 rounded-2xl p-6">
+          <div className="bb-modal-panel neu-dialog w-full max-w-sm rounded-2xl border p-6">
             <h2 className="text-base font-semibold mb-1">
-              Dashboard background
+              Dashboard appearance
             </h2>
             <p className="text-sm text-gray-500 mb-5">
-              Upload an image to use as the background for this page.
+              Choose a theme and optionally add a background image.
             </p>
             <div className="flex flex-col gap-3">
+              <fieldset>
+                <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Theme
+                </legend>
+                <div className="neu-segmented grid grid-cols-2 gap-1 rounded-xl" role="radiogroup">
+                  {(["light", "dark"] as const).map((theme) => (
+                    <button
+                      key={theme}
+                      type="button"
+                      role="radio"
+                      aria-checked={appTheme === theme}
+                      onClick={() => selectAppTheme(theme)}
+                      className={`rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+                        appTheme === theme
+                          ? "is-selected text-white"
+                          : "text-gray-500 hover:text-white"
+                      }`}
+                    >
+                      {theme === "light" ? "Light" : "Dark"}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <div className="my-1 border-t border-gray-800" />
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Background image
+              </p>
               <button
                 type="button"
                 onClick={() => bgFileInputRef.current?.click()}
-                className="w-full py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors"
+                className="neu-button-primary w-full py-2.5 text-sm"
               >
                 {bgImage ? "Replace image" : "Upload image"}
               </button>
@@ -2397,7 +2864,7 @@ export default function DashboardClient({
                 <button
                   type="button"
                   onClick={removeBgImage}
-                  className="w-full py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
+                  className="neu-button-destructive w-full py-2.5 text-sm"
                 >
                   Remove — restore original
                 </button>
@@ -2405,7 +2872,7 @@ export default function DashboardClient({
               <button
                 type="button"
                 onClick={() => setShowBgModal(false)}
-                className="w-full py-2.5 text-sm text-gray-600 hover:text-white transition-colors"
+                className="neu-button w-full py-2.5 text-sm"
               >
                 Cancel
               </button>
@@ -2416,7 +2883,11 @@ export default function DashboardClient({
 
       <Toaster toasts={toasts} onDismiss={dismissToast} />
 
-      <DashboardAgentTerminal scope={clusterView === "public" ? "public" : "mine"} />
+      <DashboardAgentTerminal
+        scope={clusterView === "public" ? "public" : "mine"}
+        initialPanel={initialTerminalPanel}
+        backdropImage={bgImage}
+      />
     </div>
   );
 }

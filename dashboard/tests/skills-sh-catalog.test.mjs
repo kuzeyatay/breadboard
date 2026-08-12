@@ -6,17 +6,25 @@ import test from "node:test";
 
 import {
   SKILLS_SH_MAX_PAGE_SIZE,
-  SkillsShApiError,
+  SkillsCatalogProxyError,
   SkillsShClient,
-  SkillsShConfigurationError,
-} from "../src/lib/openharness/skills-sh-client.ts";
+  SkillsCatalogConfigurationError,
+  normalizeCatalogProxyUrl,
+} from "../src/lib/hermes/skills-sh-client.ts";
 import {
   collisionCommands,
   SkillsCatalogStore,
-} from "../src/lib/openharness/skills-catalog-store.ts";
-import { synchronizeSkillsCatalog } from "../src/lib/openharness/skills-catalog-sync.ts";
+} from "../src/lib/hermes/skills-catalog-store.ts";
+import { synchronizeSkillsCatalog } from "../src/lib/hermes/skills-catalog-sync.ts";
+import {
+  SCIENTIFIC_SKILLS_SOURCE,
+  getLocalScientificSkill,
+  readLocalScientificSkillFiles,
+  synchronizeLocalScientificSkillsCatalog,
+} from "../src/lib/hermes/scientific-skills-source.ts";
 
 const rateLimit = { limit: 600, remaining: 599, resetAt: null, retryAfterSeconds: null };
+const proxyBaseUrl = "https://catalog.example/api/v1";
 
 function skill(id, slug = id.split("/").at(-1), installs = 1) {
   const source = id.split("/").slice(0, -1).join("/");
@@ -83,11 +91,13 @@ test("shared instrumentation isolates the Node-only catalog scheduler", () => {
 
 test("official client clamps per_page and validates one-page catalog", async () => {
   let requestedUrl = "";
+  let requestedHeaders = new Headers();
   const client = new SkillsShClient({
-    tokenProvider: { async getToken() { return "test-token"; } },
+    baseUrl: proxyBaseUrl,
     retries: 0,
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, init) => {
       requestedUrl = String(url);
+      requestedHeaders = new Headers(init.headers);
       return Response.json({
         data: [{ id: "owner/repo/demo", source: "owner/repo", slug: "demo", name: "Demo", installs: 2, sourceType: "community", installUrl: "https://github.com/owner/repo", url: "https://skills.sh/owner/repo/demo" }],
         pagination: { page: 0, perPage: 500, total: 1, hasMore: false },
@@ -96,21 +106,24 @@ test("official client clamps per_page and validates one-page catalog", async () 
   });
   const result = await client.listSkills({ page: 0, perPage: 50_000 });
   assert.equal(new URL(requestedUrl).searchParams.get("per_page"), String(SKILLS_SH_MAX_PAGE_SIZE));
+  assert.equal(new URL(requestedUrl).origin, "https://catalog.example");
+  assert.equal(requestedHeaders.get("authorization"), null);
   assert.equal(result.data[0].id, "owner/repo/demo");
 });
 
-test("missing OIDC authentication fails clearly and never fabricates a provider token", async () => {
-  const client = new SkillsShClient({
-    tokenProvider: { async getToken() { throw new SkillsShConfigurationError(); } },
-    retries: 0,
-    fetchImpl: async () => assert.fail("fetch must not run without a token"),
-  });
-  await assert.rejects(() => client.listSkills({ page: 0 }), SkillsShConfigurationError);
+test("proxy URL configuration rejects missing, malformed, credentialed, and direct skills.sh URLs", () => {
+  assert.throws(() => normalizeCatalogProxyUrl(undefined), SkillsCatalogConfigurationError);
+  assert.throws(() => normalizeCatalogProxyUrl("not a URL"), SkillsCatalogConfigurationError);
+  assert.throws(() => normalizeCatalogProxyUrl("https://user:pass@catalog.example/api/v1"), SkillsCatalogConfigurationError);
+  assert.throws(() => normalizeCatalogProxyUrl("https://catalog.example/wrong"), SkillsCatalogConfigurationError);
+  assert.throws(() => normalizeCatalogProxyUrl("http://catalog.example/api/v1"), SkillsCatalogConfigurationError);
+  assert.throws(() => normalizeCatalogProxyUrl("https://skills.sh/api/v1"), /cannot connect directly/i);
+  assert.equal(normalizeCatalogProxyUrl("http://127.0.0.1:4555/api/v1/"), "http://127.0.0.1:4555/api/v1");
 });
 
 test("429 exposes Retry-After and rate-limit state", async () => {
   const client = new SkillsShClient({
-    tokenProvider: { async getToken() { return "test-token"; } },
+    baseUrl: proxyBaseUrl,
     retries: 0,
     fetchImpl: async () => Response.json({ message: "slow down" }, {
       status: 429,
@@ -119,22 +132,22 @@ test("429 exposes Retry-After and rate-limit state", async () => {
   });
   await assert.rejects(
     () => client.listSkills({ page: 0 }),
-    (error) => error instanceof SkillsShApiError && error.status === 429 && error.retryAfterSeconds === 7 && error.rateLimit.remaining === 0,
+    (error) => error instanceof SkillsCatalogProxyError && error.status === 429 && error.retryAfterSeconds === 7 && error.rateLimit.remaining === 0,
   );
 });
 
 test("503 and request timeouts fail after bounded retries", async () => {
   const unavailable = new SkillsShClient({
-    tokenProvider: { async getToken() { return "test-token"; } },
+    baseUrl: proxyBaseUrl,
     retries: 0,
     fetchImpl: async () => Response.json({ message: "maintenance" }, { status: 503 }),
   });
   await assert.rejects(
     () => unavailable.listSkills({ page: 0 }),
-    (error) => error instanceof SkillsShApiError && error.status === 503,
+    (error) => error instanceof SkillsCatalogProxyError && error.status === 503,
   );
   const timedOut = new SkillsShClient({
-    tokenProvider: { async getToken() { return "test-token"; } },
+    baseUrl: proxyBaseUrl,
     retries: 0,
     timeoutMs: 5,
     fetchImpl: async (_url, init) => await new Promise((_resolve, reject) => {
@@ -146,7 +159,7 @@ test("503 and request timeouts fail after bounded retries", async () => {
 
 test("malformed upstream records abort synchronization before snapshot replacement", async () => {
   const client = new SkillsShClient({
-    tokenProvider: { async getToken() { return "test-token"; } },
+    baseUrl: proxyBaseUrl,
     retries: 0,
     fetchImpl: async () => Response.json({ data: [{ id: "missing-source" }], pagination: { page: 0, perPage: 500, total: 1, hasMore: false } }),
   });
@@ -294,21 +307,127 @@ test("detail hash changes require a fresh review and do not overwrite approval",
     const changed = fixture.store.get("one/repo/alpha");
     assert.equal(changed.updateStatus, "update_available");
     assert.equal(changed.approvedHash, "hash-one");
-    fixture.store.markQuarantined("one/repo/alpha", "hash-two", "alpha-revision");
+    fixture.store.markQuarantined({
+      upstreamId: "one/repo/alpha",
+      upstreamHash: "hash-two",
+      localHash: "local-two",
+      catalogRevision: "hash-two",
+      revisionKey: "alpha-revision",
+    });
     const reviewing = fixture.store.get("one/repo/alpha");
     assert.equal(reviewing.updateStatus, "reviewing_update");
     assert.equal(reviewing.approvedHash, "hash-one");
+    assert.equal(reviewing.quarantineLocalHash, "local-two");
+    assert.equal(reviewing.catalogRevision, "hash-two");
+    fixture.store.markQuarantineRejected("one/repo/alpha");
+    const rejected = fixture.store.get("one/repo/alpha");
+    assert.equal(rejected.reviewStatus, "approved");
+    assert.equal(rejected.updateStatus, "update_available");
+    assert.equal(rejected.approvedHash, "hash-one");
+    assert.equal(rejected.quarantineLocalHash, null);
+    assert.equal(rejected.catalogRevision, "hash-one");
+    fixture.store.markQuarantined({
+      upstreamId: "one/repo/alpha",
+      upstreamHash: "hash-two",
+      localHash: "local-two",
+      catalogRevision: "hash-two",
+      revisionKey: "alpha-revision",
+    });
+    fixture.store.markInstalled({
+      upstreamId: "one/repo/alpha",
+      approvedHash: "hash-two",
+      localHash: "local-two",
+      installedPath: "C:/approved/alpha",
+    });
+    const approvedUpdate = fixture.store.get("one/repo/alpha");
+    assert.equal(approvedUpdate.catalogRevision, "hash-two");
+    assert.equal(approvedUpdate.localHash, "local-two");
+    assert.equal(approvedUpdate.quarantineLocalHash, null);
   } finally {
     fixture.cleanup();
   }
 });
 
-test("live skills.sh integration exhausts pages, searches, reads detail/audit, and exercises the official CLI", {
+test("description hydration caches manifest metadata without caching an installable snapshot", () => {
+  const fixture = tempStore();
+  try {
+    const startedAt = new Date().toISOString();
+    fixture.store.beginSync({ syncId: "description-seed", startedAt, provider: "test" });
+    fixture.store.replaceSnapshot({
+      syncId: "description-seed",
+      startedAt,
+      records: [{ ...skill("one/repo/summary"), ranks: { "all-time": 1 }, curated: false, slashCommand: "summary" }],
+      pagesFetched: 1,
+      recordsReceived: 1,
+      cacheMaxAgeSeconds: 300,
+      rateLimit,
+    });
+    const hydrated = fixture.store.saveDescription("one/repo/summary", {
+      id: "one/repo/summary",
+      source: "one/repo",
+      slug: "summary",
+      installs: 1,
+      hash: "upstream-hash",
+      files: [{ path: "SKILL.md", contents: "---\nname: summary\ndescription: A useful catalog summary.\n---\n" }],
+    });
+    assert.equal(hydrated.description, "A useful catalog summary.");
+    assert.ok(hydrated.detailCheckedAt);
+    assert.equal(hydrated.files, null);
+    assert.equal(hydrated.upstreamHash, null);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a cloned scientific skills repository overlays complete local metadata and files", () => {
+  const fixture = tempStore();
+  const clone = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-scientific-skills-"));
+  const previousRoot = process.env.SCIENTIFIC_AGENT_SKILLS_ROOT;
+  try {
+    const alpha = path.join(clone, "skills", "alpha");
+    const beta = path.join(clone, "skills", "beta");
+    fs.mkdirSync(path.join(alpha, "references"), { recursive: true });
+    fs.mkdirSync(beta, { recursive: true });
+    fs.writeFileSync(path.join(alpha, "SKILL.md"), "---\nname: Alpha Science\ndescription: >\n  Analyze alpha measurements\n  with provenance.\n---\n\n# Alpha\n", "utf8");
+    fs.writeFileSync(path.join(alpha, "references", "data.bin"), Buffer.from([0, 255, 1, 2]));
+    fs.writeFileSync(path.join(beta, "SKILL.md"), "---\nname: beta\ndescription: Beta analysis\n---\n", "utf8");
+    process.env.SCIENTIFIC_AGENT_SKILLS_ROOT = clone;
+
+    const result = synchronizeLocalScientificSkillsCatalog({ store: fixture.store, force: true });
+    assert.equal(result.total, 2);
+    assert.equal(fixture.store.status().totalAvailable, 2);
+    const stored = fixture.store.get("k-dense-ai/scientific-agent-skills/alpha");
+    assert.equal(stored.name, "Alpha Science");
+    assert.equal(stored.description, "Analyze alpha measurements with provenance.");
+    assert.equal(stored.sourceType, "local-git");
+    assert.ok(stored.files.some((file) => file.path === "references/data.bin"));
+    const scientificView = fixture.store.list({ source: SCIENTIFIC_SKILLS_SOURCE });
+    assert.equal(scientificView.total, 2);
+    assert.deepEqual(scientificView.skills.map((skill) => skill.slug).sort(), ["alpha", "beta"]);
+    assert.equal(fixture.store.list({ source: "vercel-labs/skills" }).total, 0);
+
+    const detail = getLocalScientificSkill(stored.upstreamId);
+    assert.deepEqual(detail.binaryPaths, ["references/data.bin"]);
+    const files = readLocalScientificSkillFiles(stored.upstreamId);
+    assert.deepEqual([...files.files["references/data.bin"]], [0, 255, 1, 2]);
+    assert.equal(files.hash, stored.upstreamHash);
+
+    const second = synchronizeLocalScientificSkillsCatalog({ store: fixture.store });
+    assert.equal(second.skipped, true);
+  } finally {
+    if (previousRoot === undefined) delete process.env.SCIENTIFIC_AGENT_SKILLS_ROOT;
+    else process.env.SCIENTIFIC_AGENT_SKILLS_ROOT = previousRoot;
+    fs.rmSync(clone, { recursive: true, force: true });
+    fixture.cleanup();
+  }
+});
+
+test("live catalog proxy integration exhausts pages, searches, reads detail/audit, and quarantines snapshots", {
   skip: process.env.RUN_SKILLS_SH_INTEGRATION !== "1",
   timeout: 180_000,
 }, async () => {
   const fixture = tempStore();
-  const cliRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-skills-cli-live-"));
+  const liveRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-skills-proxy-live-"));
   try {
     const client = new SkillsShClient({ timeoutMs: 20_000, retries: 3 });
     const stats = await synchronizeSkillsCatalog({ client, store: fixture.store, force: true });
@@ -325,39 +444,25 @@ test("live skills.sh integration exhausts pages, searches, reads detail/audit, a
       const audits = await client.audits(grill.source, grill.slug);
       assert.ok(Array.isArray(audits));
     } catch (error) {
-      assert.ok(error instanceof SkillsShApiError && error.status === 404, "audit endpoint may only fail with documented no-audits 404");
+      assert.ok(error instanceof SkillsCatalogProxyError && error.status === 404, "audit endpoint may only fail with documented no-audits 404");
     }
-    const { runSkillsCli } = await import("../src/lib/openharness/skills.ts");
-    await runSkillsCli([
-      "add",
-      grill.installUrl ?? grill.source,
-      "--skill",
-      grill.slug,
-      "--agent",
-      "universal",
-      "--copy",
-      "--yes",
-    ], { cwd: cliRoot });
-    const hasManifest = fs.existsSync(path.join(cliRoot, ".agents", "skills", grill.slug, "SKILL.md")) ||
-      fs.existsSync(path.join(cliRoot, ".universal", "skills", grill.slug, "SKILL.md"));
-    assert.equal(hasManifest, true);
 
     const previousRoots = {
-      quarantine: process.env.OPENHARNESS_SKILLS_QUARANTINE,
-      approved: process.env.OPENHARNESS_SKILLS_APPROVED,
-      conditional: process.env.OPENHARNESS_SKILLS_CONDITIONAL,
+      quarantine: process.env.HERMES_SKILLS_QUARANTINE,
+      approved: process.env.HERMES_SKILLS_APPROVED,
+      conditional: process.env.HERMES_SKILLS_CONDITIONAL,
     };
-    process.env.OPENHARNESS_SKILLS_QUARANTINE = path.join(cliRoot, "quarantine");
-    process.env.OPENHARNESS_SKILLS_APPROVED = path.join(cliRoot, "approved");
-    process.env.OPENHARNESS_SKILLS_CONDITIONAL = path.join(cliRoot, "conditional");
+    process.env.HERMES_SKILLS_QUARANTINE = path.join(liveRoot, "quarantine");
+    process.env.HERMES_SKILLS_APPROVED = path.join(liveRoot, "approved");
+    process.env.HERMES_SKILLS_CONDITIONAL = path.join(liveRoot, "conditional");
     try {
       const {
         classifySkill,
         promoteSkill,
         quarantineSkill,
         skillStorageKey,
-      } = await import("../src/lib/openharness/skills.ts");
-      const { resolveCommandMessage } = await import("../src/lib/openharness/commands.ts");
+      } = await import("../src/lib/hermes/skills.ts");
+      const { resolveCommandMessage } = await import("../src/lib/hermes/commands.ts");
       for (const example of [
         { query: "grill-me", preferred: grill, classificationOverride: "eligible_general" },
         { query: "pdf document", classificationOverride: "eligible_general" },
@@ -384,7 +489,7 @@ test("live skills.sh integration exhausts pages, searches, reads detail/audit, a
             installs: String(result.installs),
             description: "",
             version: current.hash,
-            installCommand: `npx skills add ${result.installUrl ?? result.source} --skill ${result.slug}`,
+            installCommand: "Catalog snapshot via Breadboard proxy",
             requestedPermissions: [],
             provider: "api",
             classification: classifySkill({ name: result.name, repository: result.source, manifest: markdown }),
@@ -397,7 +502,7 @@ test("live skills.sh integration exhausts pages, searches, reads detail/audit, a
         const resolved = await resolveCommandMessage(
           1,
           `/${command} help with this task`,
-          cliRoot,
+          liveRoot,
           { mode: "knowledge", surface: "dashboard_terminal" },
         );
         assert.equal(resolved.invocations[0].id, result.id);
@@ -405,13 +510,13 @@ test("live skills.sh integration exhausts pages, searches, reads detail/audit, a
         assert.match(resolved.text, /Reviewed skill guidance/);
       }
     } finally {
-      restoreEnvironment("OPENHARNESS_SKILLS_QUARANTINE", previousRoots.quarantine);
-      restoreEnvironment("OPENHARNESS_SKILLS_APPROVED", previousRoots.approved);
-      restoreEnvironment("OPENHARNESS_SKILLS_CONDITIONAL", previousRoots.conditional);
+      restoreEnvironment("HERMES_SKILLS_QUARANTINE", previousRoots.quarantine);
+      restoreEnvironment("HERMES_SKILLS_APPROVED", previousRoots.approved);
+      restoreEnvironment("HERMES_SKILLS_CONDITIONAL", previousRoots.conditional);
     }
   } finally {
     fixture.cleanup();
-    fs.rmSync(cliRoot, { recursive: true, force: true });
+    fs.rmSync(liveRoot, { recursive: true, force: true });
   }
 });
 

@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -10,6 +11,8 @@ import (
 
 	"scriberr/internal/transcription/interfaces"
 	"scriberr/pkg/logger"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // ModelRegistry manages all available model adapters with auto-discovery
@@ -20,6 +23,7 @@ type ModelRegistry struct {
 	compositeAdapters     map[string]interfaces.CompositeAdapter
 	capabilities          map[string]interfaces.ModelCapabilities
 	initialized           bool
+	prepareGroup          singleflight.Group
 }
 
 // Global registry instance
@@ -397,6 +401,16 @@ func (r *ModelRegistry) InitializeModels(ctx context.Context) error {
 		return nil
 	}
 
+	// Breadboard starts Scriberr with lazy model initialization so opening the
+	// desktop app does not immediately install every supported speech stack and
+	// download several unrelated multi-gigabyte models. The selected adapter is
+	// prepared on the first job that actually needs it.
+	if strings.EqualFold(os.Getenv("SCRIBERR_LAZY_MODEL_INIT"), "true") {
+		r.initialized = true
+		logger.Info("Model initialization deferred until first use")
+		return nil
+	}
+
 	logger.Info("Initializing registered models in parallel...")
 
 	var wg sync.WaitGroup
@@ -455,6 +469,43 @@ func (r *ModelRegistry) InitializeModels(ctx context.Context) error {
 	r.initialized = true
 	logger.Info("Model initialization completed")
 	return nil
+}
+
+// PrepareTranscriptionModel initializes only the adapter selected for a job.
+// singleflight prevents the two queue workers from racing the same uv setup.
+func (r *ModelRegistry) PrepareTranscriptionModel(ctx context.Context, modelID string) error {
+	adapter, err := r.GetTranscriptionAdapter(modelID)
+	if err != nil {
+		return err
+	}
+	if adapter.IsReady(ctx) {
+		return nil
+	}
+	_, err, _ = r.prepareGroup.Do("transcription:"+modelID, func() (interface{}, error) {
+		if adapter.IsReady(ctx) {
+			return nil, nil
+		}
+		return nil, adapter.PrepareEnvironment(ctx)
+	})
+	return err
+}
+
+// PrepareDiarizationModel lazily initializes the requested diarization stack.
+func (r *ModelRegistry) PrepareDiarizationModel(ctx context.Context, modelID string) error {
+	adapter, err := r.GetDiarizationAdapter(modelID)
+	if err != nil {
+		return err
+	}
+	if adapter.IsReady(ctx) {
+		return nil
+	}
+	_, err, _ = r.prepareGroup.Do("diarization:"+modelID, func() (interface{}, error) {
+		if adapter.IsReady(ctx) {
+			return nil, nil
+		}
+		return nil, adapter.PrepareEnvironment(ctx)
+	})
+	return err
 }
 
 // GetModelStatus returns the status of all registered models

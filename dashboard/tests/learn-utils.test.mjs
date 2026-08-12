@@ -265,7 +265,7 @@ describe("learn route and council wiring", () => {
     assert.doesNotMatch(learnSource, /What is the main idea to take away from/);
   });
 
-  test("Learn is pinned to ChatMock Council, GPT-5.6 Sol, and high reasoning", () => {
+  test("Learn runs on the selected model through ChatMock Council at high reasoning", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
     const workspaceSource = fs.readFileSync(
       path.join(repoRoot, "src", "app", "gardens", "[clusterSlug]", "workspace-client.tsx"),
@@ -276,11 +276,22 @@ describe("learn route and council wiring", () => {
       "utf8",
     );
 
+    // Learn is no longer pinned to one model: it follows the Intelligence
+    // picker, and LEARN_MODEL is only what that resolution falls back to.
     assert.match(learnSource, /export const LEARN_MODEL = "gpt-5\.6-sol"/);
+    assert.match(
+      learnSource,
+      /falls back to when the user has expressed no preference/,
+    );
     assert.match(learnSource, /export const LEARN_REASONING = \{[\s\S]*?effort: "high"[\s\S]*?summary: "detailed"/);
     assert.match(learnSource, /model,[\s\S]*?reasoning: LEARN_REASONING,[\s\S]*?withCouncil|withCouncil\([\s\S]*?reasoning: LEARN_REASONING/);
     for (const action of ["plan", "generate", "regenerate", "rebuild", "confirm"]) {
-      assert.match(learnRoute(action), /model: LEARN_MODEL|const model = LEARN_MODEL/);
+      assert.match(
+        learnRoute(action),
+        /model: selectedModelForUser\(userId\)|const model = selectedModelForUser\(userId\)/,
+      );
+      // The choice comes from the user's stored preference, never from the
+      // request body — a caller cannot steer a garden onto another model.
       assert.doesNotMatch(learnRoute(action), /body\.model/);
     }
     assert.doesNotMatch(workspaceSource, /JSON\.stringify\(\{\s*model,/);
@@ -330,13 +341,19 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /Replace placeholder\/meta-instruction text with finished learner-facing prose/);
   });
 
-  test("page generation is gated behind an explicit topic-map confirmation", () => {
+  test("page generation is gated behind confirmation, including automatic retained-lease handoff", () => {
     const learnSource = fs.readFileSync(path.join(repoRoot, "src", "lib", "learn.ts"), "utf8");
 
-    // Planning stops at a pending confirmation state and never generates pages.
-    assert.match(learnSource, /status: "awaiting_confirmation"/);
+    // Human review stops at confirmation; the explicitly automatic pipeline
+    // retains its fenced lease while it moves the same job into generation.
+    assert.match(
+      learnSource,
+      /status:\s*retainLeaseOnSuccess\s*\?\s*"building_navigation"\s*:\s*"awaiting_confirmation"/,
+    );
+    assert.match(learnSource, /retainLeaseOnSuccess:\s*autoConfirmTopicMap/);
+    assert.match(learnSource, /gardenLease:\s*retainedLease/);
     // Generation refuses unless the map is confirmed.
-    assert.match(learnSource, /map\.status !== "confirmed"/);
+    assert.match(learnSource, /selectedMap\.status !== "confirmed"/);
     assert.match(learnSource, /Confirm a learning map before generating lessons/);
     // A noninteractive/test escape hatch exists, defaulting OFF.
     assert.match(learnSource, /autoConfirmTopicMap = false/);
@@ -446,6 +463,7 @@ describe("learn route and council wiring", () => {
     assert.match(clearRouteSource, /body\.confirmClearLearnData !== true/);
     assert.match(clearRouteSource, /clearAllLearnData/);
     assert.match(clearRouteSource, /LearnClearConflictError/);
+    assert.match(clearRouteSource, /LearnPipelineConflictError/);
     assert.match(clearRouteSource, /status: 409/);
   });
 
@@ -506,9 +524,15 @@ describe("learn route and council wiring", () => {
     assert.match(learnSource, /learnVersions: db[\s\S]*?SELECT \* FROM learn_versions WHERE garden_id/);
     assert.match(learnSource, /restoreLearnDatabaseSnapshot/);
     assert.match(learnSource, /baselineBackupEntries/);
-    assert.match(learnSource, /"_index\.md",[\s\S]*?"sources\/_index\.md"/);
+    const rollbackPathsStart = learnSource.indexOf("const LEARN_RUN_ROLLBACK_PATHS = [");
+    const rollbackPathsEnd = learnSource.indexOf("] as const;", rollbackPathsStart);
+    assert.ok(rollbackPathsStart >= 0 && rollbackPathsEnd > rollbackPathsStart);
+    const rollbackPaths = learnSource.slice(rollbackPathsStart, rollbackPathsEnd);
+    assert.doesNotMatch(rollbackPaths, /"_index\.md"|"sources\/_index\.md"/);
+    assert.match(learnSource, /const snapshotCandidates = \[\.\.\.LEARN_RUN_ROLLBACK_PATHS\]/);
     assert.doesNotMatch(learnSource, /function deleteLearnDatabaseState/);
-    assert.match(learnSource, /activeLearnAbortControllers\.get\(latest\.id\)\?\.abort/);
+    assert.match(learnSource, /const activeController = activeLearnAbortControllers\.get\(latest\.id\)/);
+    assert.match(learnSource, /activeController\?\.abort\(new LearnCancelledError\(\)\)/);
     assert.match(learnSource, /isLearnCancellation\(job\.id, error\)/);
     assert.match(learnSource, /latest\.id !== expectedJobId/);
     assert.match(learnSource, /void publishQuartzAfterMutation\(`learn cancellation cleanup/);

@@ -13,6 +13,16 @@ import type {
   DurableMemoryScope,
   DurableMemoryState,
 } from "./memory.ts";
+import {
+  normalizeDurableMemoryContent,
+  stableMemoryKey,
+} from "./memory.ts";
+import { semanticMemoryStatus, type SemanticMemoryStatus } from "../mem0/status.ts";
+import {
+  getMemoryProfile,
+  invalidateMemoryProfile,
+  type MemoryProfileView,
+} from "./memory-profile.ts";
 
 export interface DurableMemoryView {
   id: number;
@@ -44,6 +54,7 @@ export interface ConversationMemoryStateView {
 }
 
 export interface AgentMemoryOverview {
+  profile: MemoryProfileView;
   durable: DurableMemoryView[];
   conversations: ConversationMemoryStateView[];
   counts: {
@@ -51,6 +62,8 @@ export interface AgentMemoryOverview {
     candidate: number;
     superseded: number;
   };
+  /** Whether recall-by-meaning is actually working. See lib/mem0/status.ts. */
+  semantic: SemanticMemoryStatus;
 }
 
 const MAX_DURABLE_ROWS = 500;
@@ -163,15 +176,19 @@ export function listConversationMemoryStates(
   }));
 }
 
-export function loadAgentMemoryOverview(
+export async function loadAgentMemoryOverview(
   userId: number,
   options: { includeSuperseded?: boolean } = {},
   database: Database.Database = db,
-): AgentMemoryOverview {
+): Promise<AgentMemoryOverview> {
   return {
+    profile: getMemoryProfile(userId, database),
     durable: listDurableMemories(userId, options, database),
     conversations: listConversationMemoryStates(userId, MAX_CONVERSATION_ROWS, database),
     counts: countDurableMemories(userId, database),
+    // Async because reporting the semantic layer honestly means loading the
+    // engine rather than guessing at its files.
+    semantic: await semanticMemoryStatus(userId, database),
   };
 }
 
@@ -192,6 +209,7 @@ export function forgetDurableMemory(
        WHERE id = ? AND user_id = ? AND state <> 'superseded'`,
     )
     .run(memoryId, userId);
+  if (result.changes === 1) invalidateMemoryProfile(userId, database);
   return result.changes === 1;
 }
 
@@ -213,6 +231,68 @@ export function confirmDurableMemory(
   return result.changes === 1;
 }
 
+export type DurableMemoryContentUpdate =
+  | { status: "updated"; content: string }
+  | { status: "not_found" }
+  | { status: "rejected" }
+  | { status: "conflict" };
+
+/** Edit an active memory without allowing ownership, scope, or state changes. */
+export function updateDurableMemoryContent(
+  userId: number,
+  memoryId: number,
+  value: string,
+  database: Database.Database = db,
+): DurableMemoryContentUpdate {
+  const content = normalizeDurableMemoryContent(value);
+  if (!content) return { status: "rejected" };
+  const update = database.transaction((): DurableMemoryContentUpdate => {
+    const memory = database
+      .prepare(
+        `SELECT * FROM durable_memories
+         WHERE id = ? AND user_id = ? AND state <> 'superseded'`,
+      )
+      .get(memoryId, userId) as DurableMemoryRow | undefined;
+    if (!memory) return { status: "not_found" };
+
+    const memoryKey = stableMemoryKey(memory.kind, content);
+    const conflict = database
+      .prepare(
+        `SELECT id FROM durable_memories
+         WHERE user_id = ?
+           AND scope = ?
+           AND COALESCE(scope_id, '') = COALESCE(?, '')
+           AND memory_key = ?
+           AND state <> 'superseded'
+           AND id <> ?
+         LIMIT 1`,
+      )
+      .get(
+        userId,
+        memory.scope,
+        memory.scope_id,
+        memoryKey,
+        memoryId,
+      ) as { id: number } | undefined;
+    if (conflict) return { status: "conflict" };
+
+    database
+      .prepare(
+        `UPDATE durable_memories
+         SET content = ?, memory_key = ?,
+             last_confirmed_at = CASE
+               WHEN state = 'confirmed' THEN datetime('now')
+               ELSE last_confirmed_at
+             END
+         WHERE id = ?`,
+      )
+      .run(content, memoryKey, memoryId);
+    invalidateMemoryProfile(userId, database);
+    return { status: "updated", content };
+  });
+  return update.immediate();
+}
+
 /**
  * Hard delete, offered only for already-retired rows. The unique active-key
  * index means a delete can never resurrect a conflicting memory.
@@ -228,6 +308,7 @@ export function deleteDurableMemory(
        WHERE id = ? AND user_id = ? AND state = 'superseded'`,
     )
     .run(memoryId, userId);
+  if (result.changes === 1) invalidateMemoryProfile(userId, database);
   return result.changes === 1;
 }
 

@@ -5,14 +5,14 @@ import {
   apiErrorResponse,
   requireEnabled,
   requireString,
-} from "@/lib/openharness/route-helpers.ts";
-import { authorizeQuartzRuntimeSession } from "@/lib/openharness/session-service.ts";
+} from "@/lib/hermes/route-helpers.ts";
+import { authorizeQuartzRuntimeSession } from "@/lib/hermes/session-service.ts";
 import {
   listRuntimeMessages,
   presentRuntimeMessage,
   runtimeSessionTitle,
   type RuntimeSessionRow,
-} from "@/lib/openharness/runtime-store.ts";
+} from "@/lib/hermes/runtime-store.ts";
 import {
   listConversationMessages,
   listConversationsForUser,
@@ -22,7 +22,7 @@ import {
 import {
   authorizeQuartzAccess,
   corsHeaders,
-} from "@/lib/openharness/quartz-support.ts";
+} from "@/lib/hermes/quartz-support.ts";
 
 export const dynamic = "force-dynamic";
 

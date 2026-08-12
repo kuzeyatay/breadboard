@@ -3,6 +3,7 @@ title: "11) Standing waves, modes, harmonics, and resonance on strings"
 date: "2026-06-26T13:36:38.300Z"
 source: "user-note"
 knowledge_type: "user-note"
+semanticHints: ["angular-frequency", "oscillation-mechanism"]
 ---
 
 ## Standing waves, modes, harmonics, and resonance on strings
@@ -277,3 +278,8 @@ f_n=\frac{nv}{2L}
 $$
 
 The conceptual result is that boundaries turn travelling-wave motion into discrete resonant patterns. Standing waves are therefore not separate from travelling waves; they are what travelling waves become when reflection, superposition, and boundary conditions repeatedly act together.
+```penecho
+id: 1786519873203-bef627bb46864bb7
+title: Whiteboard
+height: 520
+```

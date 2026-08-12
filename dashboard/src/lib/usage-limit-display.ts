@@ -4,10 +4,7 @@ export interface DisplayUsageLimitWindow {
   resets_in_seconds?: number;
 }
 
-export type UsageLimitWindowKey =
-  | "primary"
-  | "secondary"
-  | "five-hour-placeholder";
+export type UsageLimitWindowKey = "primary" | "secondary" | "five-hour";
 
 export interface DisplayUsageLimitRow {
   key: UsageLimitWindowKey;
@@ -77,6 +74,10 @@ export function visibleUsageLimitRows(payload: {
     });
 }
 
+/**
+ * Keep the five-hour allowance visible without inventing usage data when the
+ * upstream snapshot reports only a longer window.
+ */
 export function usageLimitRowsWithFiveHour(payload: {
   primary?: DisplayUsageLimitWindow;
   secondary?: DisplayUsageLimitWindow;
@@ -87,7 +88,7 @@ export function usageLimitRowsWithFiveHour(payload: {
   }
   return [
     {
-      key: "five-hour-placeholder",
+      key: "five-hour",
       label: "5-hour limit",
       window: { window_minutes: 5 * 60 },
       reported: false,

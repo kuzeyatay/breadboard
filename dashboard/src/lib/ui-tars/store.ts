@@ -35,7 +35,7 @@ export interface PresentedAgent {
   name: string;
   description: string;
   kind: "prompt" | "runtime";
-  runtime: "ui-tars" | "openharness" | null;
+  runtime: "ui-tars" | "hermes" | null;
   capabilities: string[];
   enabled: boolean;
   isDefault: boolean;
@@ -45,14 +45,70 @@ export interface PresentedAgent {
   updatedAt: string;
 }
 
-const DEFAULT_AGENT_NAME = "UI-TARS Browser Operator";
+const DEFAULT_AGENT_NAME = "Agent TARS";
+const DEFAULT_AGENT_DESCRIPTION =
+  "Clicks, types, and completes visual tasks in an isolated browser or on your desktop when you approve access.";
+const PREVIOUS_DEFAULT_AGENT_DESCRIPTION =
+  "UI-TARS operator for an isolated browser or explicitly approved control of the actual desktop.";
+const LEGACY_DEFAULT_AGENT_NAME = "UI-TARS Browser Operator";
+const LEGACY_DEFAULT_AGENT_DESCRIPTION =
+  "Browser-only UI-TARS operator. Launches an isolated browser task with human approval for sensitive actions.";
+
+function capabilitiesFor(configuration: UITarsAgentConfiguration): string[] {
+  return [configuration.operator === "computer" ? "computer_control" : "browser_control"];
+}
+
+/** Migrate only Breadboard's untouched legacy identity/capability metadata. */
+function adoptDefaultAgentIdentity(agent: AgentRow): AgentRow {
+  const parsed = validateAgentConfiguration(JSON.parse(agent.configuration_json));
+  const configuration = parsed.value ?? defaultAgentConfiguration();
+  const name = agent.name === LEGACY_DEFAULT_AGENT_NAME ? DEFAULT_AGENT_NAME : agent.name;
+  const description =
+    agent.description === LEGACY_DEFAULT_AGENT_DESCRIPTION ||
+    agent.description === PREVIOUS_DEFAULT_AGENT_DESCRIPTION
+      ? DEFAULT_AGENT_DESCRIPTION
+      : agent.description;
+  const capabilities = JSON.stringify(capabilitiesFor(configuration));
+  if (name === agent.name && description === agent.description && capabilities === agent.capabilities_json) {
+    return agent;
+  }
+  db.prepare(
+    "UPDATE ui_tars_agents SET name = ?, description = ?, capabilities_json = ?, updated_at = ? WHERE id = ?",
+  ).run(name, description, capabilities, new Date().toISOString(), agent.id);
+  return db.prepare("SELECT * FROM ui_tars_agents WHERE id = ?").get(agent.id) as AgentRow;
+}
+
+/**
+ * Adopt the current default model wiring for a default agent that has never been
+ * configured (no model chosen, no stored key). Agents the user has touched are
+ * left exactly as they are.
+ */
+function adoptDefaultModelWiring(agent: AgentRow): AgentRow {
+  const parsed = validateAgentConfiguration(JSON.parse(agent.configuration_json));
+  const current = parsed.ok && parsed.value ? parsed.value : null;
+  if (!current || current.model.trim().length > 0 || hasSecret(agent.id)) return agent;
+
+  const defaults = defaultAgentConfiguration();
+  const next: UITarsAgentConfiguration = {
+    ...current,
+    provider: defaults.provider,
+    model: defaults.model,
+    ...(defaults.endpoint ? { endpoint: defaults.endpoint } : {}),
+  };
+  db.prepare("UPDATE ui_tars_agents SET configuration_json = ?, updated_at = ? WHERE id = ?").run(
+    JSON.stringify(next),
+    new Date().toISOString(),
+    agent.id,
+  );
+  return db.prepare("SELECT * FROM ui_tars_agents WHERE id = ?").get(agent.id) as AgentRow;
+}
 
 /** Create the first-party default agent for a user if absent. Idempotent. */
 export function ensureDefaultAgent(userId: number): AgentRow {
   const existing = db
     .prepare("SELECT * FROM ui_tars_agents WHERE owner_user_id = ? AND is_default = 1")
     .get(userId) as AgentRow | undefined;
-  if (existing) return existing;
+  if (existing) return adoptDefaultModelWiring(adoptDefaultAgentIdentity(existing));
 
   const id = publicId("uta");
   const now = new Date().toISOString();
@@ -64,8 +120,8 @@ export function ensureDefaultAgent(userId: number): AgentRow {
     id,
     userId,
     DEFAULT_AGENT_NAME,
-    "Browser-only UI-TARS operator. Launches an isolated browser task with human approval for sensitive actions.",
-    JSON.stringify(["browser_control"]),
+    DEFAULT_AGENT_DESCRIPTION,
+    JSON.stringify(capabilitiesFor(defaultAgentConfiguration())),
     JSON.stringify(defaultAgentConfiguration()),
     now,
     now,
@@ -103,7 +159,7 @@ export function createAgent(
     userId,
     input.name.slice(0, 120),
     (input.description ?? "").slice(0, 500),
-    JSON.stringify(["browser_control"]),
+    JSON.stringify(capabilitiesFor(input.configuration)),
     JSON.stringify(input.configuration),
     now,
     now,
@@ -121,13 +177,16 @@ export function updateAgent(
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE ui_tars_agents
-       SET name = ?, description = ?, enabled = ?, configuration_json = ?, updated_at = ?
+       SET name = ?, description = ?, enabled = ?, configuration_json = ?, capabilities_json = ?, updated_at = ?
      WHERE id = ? AND owner_user_id = ?`,
   ).run(
     (patch.name ?? agent.name).slice(0, 120),
     (patch.description ?? agent.description).slice(0, 500),
     patch.enabled === undefined ? agent.enabled : patch.enabled ? 1 : 0,
     patch.configuration ? JSON.stringify(patch.configuration) : agent.configuration_json,
+    JSON.stringify(capabilitiesFor(patch.configuration ?? (
+      validateAgentConfiguration(JSON.parse(agent.configuration_json)).value ?? defaultAgentConfiguration()
+    ))),
     now,
     agentId,
     userId,
@@ -170,8 +229,8 @@ export function presentAgent(agent: AgentRow): PresentedAgent {
     name: agent.name,
     description: agent.description,
     kind: agent.kind === "prompt" ? "prompt" : "runtime",
-    runtime: agent.runtime === "ui-tars" || agent.runtime === "openharness" ? agent.runtime : null,
-    capabilities: safeArray(agent.capabilities_json),
+    runtime: agent.runtime === "ui-tars" || agent.runtime === "hermes" ? agent.runtime : null,
+    capabilities: capabilitiesFor(configuration),
     enabled: agent.enabled === 1,
     isDefault: agent.is_default === 1,
     configuration,
@@ -179,15 +238,6 @@ export function presentAgent(agent: AgentRow): PresentedAgent {
     createdAt: agent.created_at,
     updatedAt: agent.updated_at,
   };
-}
-
-function safeArray(json: string): string[] {
-  try {
-    const v = JSON.parse(json);
-    return Array.isArray(v) ? v.map(String) : [];
-  } catch {
-    return [];
-  }
 }
 
 // ---------------- runs ----------------
@@ -215,6 +265,7 @@ export function createRunRecord(input: {
   agentId: string;
   userId: number;
   task: string;
+  operatorType?: "browser" | "computer";
   runtimeSessionId?: string;
   conversationId?: string;
 }): RunRow {
@@ -222,13 +273,14 @@ export function createRunRecord(input: {
   db.prepare(
     `INSERT INTO ui_tars_runs
       (id, agent_id, owner_user_id, conversation_id, status, task, operator_type, runtime_session_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, 'browser', ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
   ).run(
     input.id,
     input.agentId,
     input.userId,
     input.conversationId ?? null,
     input.task,
+    input.operatorType ?? "browser",
     input.runtimeSessionId ?? input.id,
     now,
     now,
@@ -336,11 +388,35 @@ function applyEventSideEffects(
       updateRunStatus(runId, "aborted");
       break;
     case "runtime.disconnected":
-      updateRunStatus(runId, "runtime_lost", { code: "runtime_lost", message: "Runtime disconnected" });
+      updateRunStatus(runId, "runtime_lost", {
+        code: String(e.payload.code ?? "runtime_lost"),
+        message: String(e.payload.message ?? "Runtime disconnected"),
+      });
       break;
     default:
       break;
   }
+}
+
+/** Finalize a persisted active run that can no longer exist in the adapter. */
+export function markRunRuntimeLost(
+  runId: string,
+  message = "Agent TARS stopped because its desktop runtime closed. Start a new run to continue.",
+): boolean {
+  const row = db.prepare("SELECT status FROM ui_tars_runs WHERE id = ?").get(runId) as
+    | { status: string }
+    | undefined;
+  if (!row || ["completed", "failed", "aborted", "runtime_lost"].includes(row.status)) return false;
+  const next = lastSequence(runId) + 1;
+  persistEvents(runId, [
+    { sequenceNumber: next, type: "run.status", payload: { message } },
+    {
+      sequenceNumber: next + 1,
+      type: "runtime.disconnected",
+      payload: { code: "runtime_lost", message },
+    },
+  ]);
+  return true;
 }
 
 /** Highest persisted sequence number for a run (0 if none). */

@@ -1,4 +1,7 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url>
+    <loc>https://localhost:8081/breadboard-dev/</loc>
+    <lastmod>2026-07-28T21:00:00.000Z</lastmod>
+  </url><url>
     <loc>https://localhost:8081/communication-1/</loc>
     <lastmod>2026-07-24T21:00:00.000Z</lastmod>
   </url><url>
@@ -1002,7 +1005,7 @@
     <lastmod>2026-05-16T16:31:08.346Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/</loc>
-    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
+    <lastmod>2026-08-11T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/a/</loc>
     <lastmod>2026-07-17T11:10:57.000Z</lastmod>
@@ -1149,10 +1152,10 @@
     <lastmod>2026-06-24T15:51:12.911Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/physics-for-ee/sources/</loc>
-    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
+    <lastmod>2026-08-11T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/private-library/user-1/</loc>
-    <lastmod>2026-07-24T21:00:00.000Z</lastmod>
+    <lastmod>2026-07-28T21:00:00.000Z</lastmod>
   </url><url>
     <loc>https://localhost:8081/private-library/user-2/</loc>
     <lastmod>2026-04-19T21:00:00.000Z</lastmod>

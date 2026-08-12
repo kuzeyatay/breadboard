@@ -42,6 +42,15 @@ async function freePort(): Promise<number> {
   return findFreePort();
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("condition was not met before timeout");
+}
+
 test("startPlan orders dependencies into waves and rejects cycles", () => {
   const { manager } = newManager();
   manager.register(nodeService("a", ""));
@@ -110,6 +119,29 @@ test("required service failure rejects startAll; optional failure does not", asy
   }
 });
 
+test("a background optional service does not hold startup open", async () => {
+  const { manager } = newManager();
+  manager.register(
+    nodeService("slow-optional", "setInterval(()=>{},1000)", {
+      required: false,
+      startInBackground: true,
+      healthCheck: {
+        type: "http",
+        url: "http://127.0.0.1:1/health",
+        timeoutMs: 100,
+        intervalMs: 100,
+      },
+      startupTimeoutMs: 10_000,
+    }),
+  );
+
+  const startedAt = Date.now();
+  await manager.startAll();
+  assert.ok(Date.now() - startedAt < 1_000, "background startup should return immediately");
+  assert.equal(manager.status("slow-optional").state, "starting");
+  await manager.stopAll();
+});
+
 test("health check timeout marks the service failed and kills it", async () => {
   const { manager } = newManager();
   const port = await freePort();
@@ -160,6 +192,40 @@ test("restart-on-failure restarts a crashed healthy service and caps the loop", 
   assert.ok(runs >= 2, `expected at least one restart, saw ${runs} runs`);
   assert.ok(runs <= 4, `restart cap exceeded: ${runs} runs`);
   await manager.stopAll();
+});
+
+test("a supervised development service reloads when its integration source changes", async () => {
+  const { manager } = newManager();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-source-reload-"));
+  const watched = path.join(root, "integration.py");
+  const starts = path.join(root, "starts.txt");
+  fs.writeFileSync(watched, "first");
+
+  manager.register(
+    nodeService(
+      "reloadable",
+      `require("fs").appendFileSync(${JSON.stringify(starts)}, String(process.pid) + "\\n");setInterval(()=>{},1000)`,
+      { required: false, restartOnChange: [watched] },
+    ),
+  );
+
+  try {
+    await manager.startAll();
+    const firstPid = manager.status("reloadable").pid;
+    assert.ok(firstPid);
+
+    fs.writeFileSync(watched, "second");
+    await waitUntil(() => {
+      const status = manager.status("reloadable");
+      return status.state === "healthy" && status.restarts === 1 && status.pid !== firstPid;
+    });
+
+    const recordedStarts = fs.readFileSync(starts, "utf8").trim().split(/\r?\n/);
+    assert.equal(recordedStarts.length, 2);
+  } finally {
+    await manager.stopAll();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("stopAll shuts down in reverse dependency order", async () => {

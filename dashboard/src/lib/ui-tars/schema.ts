@@ -17,7 +17,7 @@ export function ensureUITarsSchema(db: Database.Database): void {
       name               TEXT    NOT NULL,
       description        TEXT    NOT NULL DEFAULT '',
       kind               TEXT    NOT NULL DEFAULT 'runtime',   -- 'prompt' | 'runtime'
-      runtime            TEXT,                                 -- 'ui-tars' | 'openharness' | NULL
+      runtime            TEXT,                                 -- 'ui-tars' | 'hermes' | NULL
       capabilities_json  TEXT    NOT NULL DEFAULT '[]',
       configuration_json TEXT    NOT NULL DEFAULT '{}',        -- NON-secret config only
       enabled            INTEGER NOT NULL DEFAULT 1,

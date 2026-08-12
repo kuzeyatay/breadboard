@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { HERMES_SESSIONS_CHANGED_EVENT } from "@/lib/hermes/session-client";
 
 type MemoryKind = "preference" | "project_fact" | "decision" | "working_pattern";
 type MemoryScope = "global" | "project" | "garden";
@@ -44,10 +45,36 @@ interface ConversationMemory {
   updatedAt: string;
 }
 
+interface SemanticStatus {
+  enabled: boolean;
+  extractionEnabled: boolean;
+  engineAvailable: boolean;
+  fingerprint: string;
+  indexedMemories: number;
+  totalMemories: number;
+  degradedReason: string | null;
+}
+
+interface MemoryProfile {
+  summary: string;
+  generationEnabled: boolean;
+  useInChats: boolean;
+  status: "idle" | "generating" | "ready" | "error";
+  source: "generated" | "edited";
+  sourceMessageId: number;
+  evidenceMessageCount: number;
+  pendingMessageCount: number;
+  lastError: string | null;
+  generatedAt: string | null;
+  updatedAt: string;
+}
+
 interface MemoryOverview {
+  profile: MemoryProfile;
   durable: DurableMemory[];
   conversations: ConversationMemory[];
   counts: { confirmed: number; candidate: number; superseded: number };
+  semantic?: SemanticStatus;
 }
 
 type Filter = "active" | "confirmed" | "candidate" | "forgotten";
@@ -92,6 +119,28 @@ function scopeText(memory: DurableMemory): string {
   return "This workspace";
 }
 
+function profileSections(summary: string): Array<{ heading: string; body: string }> {
+  const sections: Array<{ heading: string; body: string }> = [];
+  let heading = "Overview";
+  let body: string[] = [];
+  const flush = () => {
+    const text = body.join("\n").trim();
+    if (text) sections.push({ heading, body: text });
+    body = [];
+  };
+  for (const line of summary.split(/\r?\n/)) {
+    const match = line.match(/^#{1,3}\s+(.+)$/);
+    if (match) {
+      flush();
+      heading = match[1].trim();
+    } else {
+      body.push(line);
+    }
+  }
+  flush();
+  return sections;
+}
+
 export default function SettingsAgentMemory() {
   const [overview, setOverview] = useState<MemoryOverview | null>(null);
   const [filter, setFilter] = useState<Filter>("active");
@@ -100,6 +149,10 @@ export default function SettingsAgentMemory() {
   // Keyed as "durable:<id>" / "chat:<id>" so both lists can share one in-flight slot.
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingContent, setEditingContent] = useState("");
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileContent, setProfileContent] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -120,10 +173,14 @@ export default function SettingsAgentMemory() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    const timer = window.setTimeout(() => void refresh(), 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
-  async function mutate(key: string, request: () => Promise<Response>) {
+  const mutate = useCallback(async function mutate(
+    key: string,
+    request: () => Promise<Response>,
+  ): Promise<boolean> {
     setPendingKey(key);
     setError(null);
     try {
@@ -133,11 +190,122 @@ export default function SettingsAgentMemory() {
         throw new Error(payload.error ?? "That change could not be applied.");
       }
       await refresh();
+      return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "That change could not be applied.");
+      return false;
     } finally {
-      setPendingKey(null);
+      setPendingKey((current) => current === key ? null : current);
     }
+  }, [refresh]);
+
+  useEffect(() => {
+    let disposed = false;
+    let running = false;
+    let queued = false;
+    const controller = new AbortController();
+
+    const regenerate = async () => {
+      if (running) {
+        queued = true;
+        return;
+      }
+      running = true;
+      setPendingKey("profile:auto");
+      setError(null);
+      try {
+        do {
+          queued = false;
+          const response = await fetch("/api/agent-memory/profile", {
+            method: "POST",
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as {
+              error?: string;
+            };
+            throw new Error(payload.error ?? "The memory could not be regenerated.");
+          }
+          if (!disposed) await refresh();
+        } while (queued && !disposed);
+      } catch (caught) {
+        if (!disposed && !(caught instanceof DOMException && caught.name === "AbortError")) {
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "The memory could not be regenerated.",
+          );
+        }
+      } finally {
+        running = false;
+        if (!disposed) {
+          setPendingKey((current) => current === "profile:auto" ? null : current);
+        }
+      }
+    };
+
+    const handleMessageActivity = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<{ surface?: string }>;
+      if (
+        event.detail?.surface !== "dashboard_terminal" &&
+        event.detail?.surface !== "garden_chat"
+      ) {
+        return;
+      }
+      void regenerate();
+    };
+
+    const timer = window.setTimeout(() => void regenerate(), 0);
+    window.addEventListener(HERMES_SESSIONS_CHANGED_EVENT, handleMessageActivity);
+    return () => {
+      disposed = true;
+      controller.abort();
+      window.clearTimeout(timer);
+      window.removeEventListener(HERMES_SESSIONS_CHANGED_EVENT, handleMessageActivity);
+    };
+  }, [refresh]);
+
+  function beginEditing(memory: DurableMemory) {
+    setEditingId(memory.id);
+    setEditingContent(memory.content);
+    setError(null);
+  }
+
+  function cancelEditing() {
+    setEditingId(null);
+    setEditingContent("");
+  }
+
+  async function saveEdit(memory: DurableMemory) {
+    const content = editingContent.trim();
+    if (!content) {
+      setError("Memory text cannot be empty.");
+      return;
+    }
+    const saved = await mutate(`durable:${memory.id}`, () =>
+      fetch(`/api/agent-memory/durable/${memory.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      }),
+    );
+    if (saved) cancelEditing();
+  }
+
+  async function saveProfile() {
+    const summary = profileContent.trim();
+    if (summary.length < 24) {
+      setError("The memory summary is too short.");
+      return;
+    }
+    const saved = await mutate("profile:edit", () =>
+      fetch("/api/agent-memory/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ summary }),
+      }),
+    );
+    if (saved) setEditingProfile(false);
   }
 
   const durable = (overview?.durable ?? []).filter((memory) => {
@@ -146,29 +314,153 @@ export default function SettingsAgentMemory() {
     return memory.state === filter;
   });
   const counts = overview?.counts;
+  const profile = overview?.profile;
 
   return (
     <div className="space-y-4">
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <section className="neu-surface-subtle space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
+        <div className="flex flex-wrap items-start gap-3">
           <div>
-            <h3 className="text-sm font-medium text-[var(--ink-heading)]">
-              What the agent remembers
-            </h3>
-            <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-              {counts
-                ? `${counts.confirmed} confirmed · ${counts.candidate} candidate · ${counts.superseded} forgotten`
-                : "Facts, preferences, and decisions carried between chats."}
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-medium text-[var(--ink-heading)]">
+                Memory
+              </h3>
+              {pendingKey === "profile:auto" || profile?.status === "generating" ? (
+                <span className="rounded-full bg-[var(--paper-strong)] px-2 py-0.5 text-[10px] text-[var(--botanical)]">
+                  Building from eligible chats…
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-0.5 text-xs leading-5 text-[var(--ink-muted)]">
+              Breadboard automatically keeps useful details from your chats and uses
+              them to make future conversations more helpful.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-2.5 py-1 text-[11px] text-[var(--ink-muted)] transition hover:text-[var(--ink)]"
-          >
-            Refresh
-          </button>
         </div>
+
+        {editingProfile ? (
+          <form
+            className="space-y-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveProfile();
+            }}
+          >
+            <label htmlFor="memory-profile-edit" className="sr-only">
+              Edit memory summary
+            </label>
+            <textarea
+              id="memory-profile-edit"
+              autoFocus
+              rows={12}
+              maxLength={6000}
+              value={profileContent}
+              disabled={pendingKey === "profile:edit"}
+              onChange={(event) => setProfileContent(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setEditingProfile(false);
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+              className="neu-inset w-full resize-y rounded-xl border border-[var(--line-strong)] bg-[var(--paper-strong)] px-3 py-2 font-mono text-xs leading-5 text-[var(--ink)] outline-none transition focus:border-[var(--botanical)] disabled:opacity-60"
+            />
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="submit"
+                disabled={pendingKey === "profile:edit" || profileContent.trim().length < 24}
+                className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-2.5 py-1 text-[11px] text-[var(--ink)] disabled:opacity-50"
+              >
+                {pendingKey === "profile:edit" ? "Saving…" : "Save summary"}
+              </button>
+              <button
+                type="button"
+                disabled={pendingKey === "profile:edit"}
+                onClick={() => setEditingProfile(false)}
+                className="rounded-lg px-2.5 py-1 text-[11px] text-[var(--ink-muted)] hover:text-[var(--ink)]"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : profile?.summary ? (
+          <div className="space-y-4 px-0.5 py-1">
+            {profileSections(profile.summary).map((section) => (
+              <div key={section.heading}>
+                <h4 className="text-sm font-medium text-[var(--ink-heading)]">
+                  {section.heading}
+                </h4>
+                <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-[var(--ink)]">
+                  {section.body}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-xl bg-[var(--paper-strong)] px-4 py-5 text-center">
+            <p className="text-xs text-[var(--ink-muted)]">
+              Memory will appear here automatically as you continue chatting.
+            </p>
+          </div>
+        )}
+
+        {profile?.lastError ? (
+          <p className="text-xs leading-5 text-[var(--danger)]" role="status">
+            {profile.lastError}
+          </p>
+        ) : null}
+
+        {profile ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-[var(--ink-muted)]">
+            <span>
+              {profile.generatedAt
+                ? `${profile.source === "edited" ? "Edited" : "Generated"} ${formatDate(profile.generatedAt) ?? "recently"}`
+                : "Not generated yet"}
+              {profile.pendingMessageCount > 0
+                ? ` · ${profile.pendingMessageCount} newer message${profile.pendingMessageCount === 1 ? "" : "s"}`
+                : ""}
+            </span>
+            {profile.summary ? (
+              <span className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  disabled={pendingKey?.startsWith("profile:")}
+                  onClick={() => {
+                    setProfileContent(profile.summary);
+                    setEditingProfile(true);
+                    setError(null);
+                  }}
+                  className="rounded-lg px-2 py-1 text-[11px] text-[var(--ink-muted)] hover:text-[var(--ink)] disabled:opacity-50"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  disabled={pendingKey?.startsWith("profile:")}
+                  onClick={() =>
+                    void mutate("profile:clear", () =>
+                      fetch("/api/agent-memory/profile", { method: "DELETE" }),
+                    )
+                  }
+                  className="rounded-lg px-2 py-1 text-[11px] text-[var(--ink-muted)] hover:text-[var(--danger)] disabled:opacity-50"
+                >
+                  {pendingKey === "profile:clear" ? "Clearing…" : "Clear summary"}
+                </button>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        <p className="text-[10px] leading-4 text-[var(--ink-muted)]">
+          Private deliberations, secrets, and anything you ask Breadboard not to
+          remember are excluded automatically.
+        </p>
+        <p className="text-xs text-[var(--ink-muted)]">
+          {counts
+            ? `${counts.confirmed} confirmed · ${counts.candidate} candidate · ${counts.superseded} forgotten`
+            : "Specific facts, preferences, and decisions you can manage."}
+        </p>
 
         <div
           className="neu-segmented inline-flex rounded-xl p-1"
@@ -192,7 +484,7 @@ export default function SettingsAgentMemory() {
             </button>
           ))}
         </div>
-      </div>
+
 
       {loading ? (
         <p className="text-sm text-[var(--ink-muted)]">Loading memory…</p>
@@ -203,24 +495,79 @@ export default function SettingsAgentMemory() {
             : "Nothing remembered yet. Tell the agent to remember something and it will appear here."}
         </p>
       ) : (
-        <ul className="space-y-2">
+        <ul className="divide-y divide-[var(--line)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-raised)]">
           {durable.map((memory) => {
             const created = formatDate(memory.createdAt);
             const busy = pendingKey === `durable:${memory.id}`;
+            const editing = editingId === memory.id;
             return (
               <li
                 key={memory.id}
-                className="neu-surface-subtle rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-3.5"
+                className="p-3.5"
               >
-                <p
-                  className={`text-sm leading-6 ${
-                    memory.state === "superseded"
-                      ? "text-[var(--ink-muted)] line-through decoration-[var(--line-strong)]"
-                      : "text-[var(--ink)]"
-                  }`}
-                >
-                  {memory.content}
-                </p>
+                {editing ? (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveEdit(memory);
+                    }}
+                    className="space-y-2"
+                  >
+                    <label
+                      htmlFor={`memory-edit-${memory.id}`}
+                      className="sr-only"
+                    >
+                      Edit memory
+                    </label>
+                    <textarea
+                      id={`memory-edit-${memory.id}`}
+                      autoFocus
+                      maxLength={1000}
+                      rows={3}
+                      value={editingContent}
+                      disabled={busy}
+                      onChange={(event) => setEditingContent(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") cancelEditing();
+                        if (
+                          event.key === "Enter" &&
+                          (event.metaKey || event.ctrlKey)
+                        ) {
+                          event.preventDefault();
+                          event.currentTarget.form?.requestSubmit();
+                        }
+                      }}
+                      className="neu-inset w-full resize-y rounded-xl border border-[var(--line-strong)] bg-[var(--paper-strong)] px-3 py-2 text-sm leading-6 text-[var(--ink)] outline-none transition focus:border-[var(--botanical)] disabled:opacity-60"
+                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="submit"
+                        disabled={busy || !editingContent.trim()}
+                        className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-2.5 py-1 text-[11px] text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
+                      >
+                        {busy ? "Savingâ€¦" : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={cancelEditing}
+                        className="rounded-lg px-2.5 py-1 text-[11px] text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <p
+                    className={`text-sm leading-6 ${
+                      memory.state === "superseded"
+                        ? "text-[var(--ink-muted)] line-through decoration-[var(--line-strong)]"
+                        : "text-[var(--ink)]"
+                    }`}
+                  >
+                    {memory.content}
+                  </p>
+                )}
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--ink-muted)]">
                   <span className="rounded-full bg-[var(--paper-strong)] px-2 py-0.5">
                     {KIND_LABELS[memory.kind]}
@@ -236,7 +583,18 @@ export default function SettingsAgentMemory() {
                     </span>
                   ) : null}
                 </div>
+                {!editing ? (
                 <div className="mt-2.5 flex flex-wrap gap-1.5">
+                  {memory.state !== "superseded" ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => beginEditing(memory)}
+                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-2.5 py-1 text-[11px] text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
+                    >
+                      Edit
+                    </button>
+                  ) : null}
                   {memory.state === "candidate" ? (
                     <button
                       type="button"
@@ -281,11 +639,13 @@ export default function SettingsAgentMemory() {
                     </button>
                   )}
                 </div>
+                ) : null}
               </li>
             );
           })}
         </ul>
       )}
+      </section>
 
       {overview?.conversations.length ? (
         <section className="space-y-2 border-t border-[var(--line)] pt-4">

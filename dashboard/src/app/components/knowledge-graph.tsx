@@ -4,6 +4,7 @@ import {
   memo,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
@@ -54,6 +55,13 @@ interface Props {
   sourceLibrary?: ReactNode;
   showInternalConceptGraph?: boolean;
   savedLinkCount?: number;
+}
+
+type PreviewStatus = 'loading' | 'ready' | 'error';
+
+interface PreviewState {
+  url: string;
+  status: PreviewStatus;
 }
 
 const emptyResponse: GraphResponse = {
@@ -116,10 +124,32 @@ function KnowledgeGraph({
   // by its inner edge (no toggle button); below the threshold it shows a rail.
   const [panelWidth, setPanelWidth] = useState(MAP_PANEL_DEFAULT);
   const [resizing, setResizing] = useState(false);
+  // The panel may never take more than ~45% of the window, otherwise a width
+  // dragged on a wide window keeps squeezing the chat column after the window
+  // shrinks (the desktop shell resizes freely).
+  const [maxPanelWidth, setMaxPanelWidth] = useState(MAP_PANEL_MAX);
   const sidebarOpen = panelWidth >= MAP_PANEL_THRESHOLD;
-  const [previewReady, setPreviewReady] = useState(false);
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const [previewState, setPreviewState] = useState<PreviewState>({
+    url: '',
+    status: 'loading',
+  });
   const graph = data ?? emptyResponse;
   const loading = data === null;
+
+  useEffect(() => {
+    const applyViewportLimit = () => {
+      const limit = Math.max(
+        MAP_PANEL_MIN,
+        Math.min(MAP_PANEL_MAX, Math.round(window.innerWidth * 0.45)),
+      );
+      setMaxPanelWidth(limit);
+      setPanelWidth((width) => (width >= MAP_PANEL_THRESHOLD ? Math.min(width, limit) : width));
+    };
+    applyViewportLimit();
+    window.addEventListener('resize', applyViewportLimit);
+    return () => window.removeEventListener('resize', applyViewportLimit);
+  }, []);
 
   // Window listeners (not pointer capture) so the drag survives the panel
   // swapping between its open and rail render at the collapse threshold.
@@ -134,7 +164,7 @@ function KnowledgeGraph({
     const handleMove = (e: PointerEvent) => {
       // The panel sits on the right, so dragging left widens it.
       const next = startWidth + (startX - e.clientX);
-      setPanelWidth(Math.min(MAP_PANEL_MAX, Math.max(MAP_PANEL_RAIL, Math.round(next))));
+      setPanelWidth(Math.min(maxPanelWidth, Math.max(MAP_PANEL_RAIL, Math.round(next))));
     };
     const handleEnd = () => {
       window.removeEventListener('pointermove', handleMove);
@@ -146,7 +176,7 @@ function KnowledgeGraph({
       setPanelWidth((width) =>
         width < MAP_PANEL_THRESHOLD
           ? MAP_PANEL_RAIL
-          : Math.min(MAP_PANEL_MAX, Math.max(MAP_PANEL_MIN, width)),
+          : Math.min(maxPanelWidth, Math.max(MAP_PANEL_MIN, width)),
       );
     };
     window.addEventListener('pointermove', handleMove);
@@ -184,32 +214,49 @@ function KnowledgeGraph({
     [clusterSlug, refreshKey],
   );
 
+  const previewStatus: PreviewStatus =
+    previewState.url === quartzPreviewUrl ? previewState.status : 'loading';
+
   useEffect(() => {
-    if (!sidebarOpen || loading || graph.nodes.length === 0) {
-      const timer = window.setTimeout(() => {
-        setPreviewReady(false);
-      }, 0);
-      return () => window.clearTimeout(timer);
-    }
+    const handlePreviewMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.source !== previewFrameRef.current?.contentWindow) return;
+      if (!event.data || event.data.type !== 'breadboard:quartz-graph-preview') return;
+
+      if (event.data.status === 'ready' || event.data.status === 'error') {
+        setPreviewState({ url: quartzPreviewUrl, status: event.data.status });
+      }
+    };
+
+    window.addEventListener('message', handlePreviewMessage);
+    return () => window.removeEventListener('message', handlePreviewMessage);
+  }, [quartzPreviewUrl]);
+
+  useEffect(() => {
+    if (!sidebarOpen || loading || graph.nodes.length === 0 || previewStatus === 'ready') return;
 
     const timer = window.setTimeout(() => {
-      setPreviewReady(true);
-    }, 900);
+      setPreviewState((current) =>
+        current.url === quartzPreviewUrl && current.status === 'ready'
+          ? current
+          : { url: quartzPreviewUrl, status: 'error' },
+      );
+    }, 15000);
 
     return () => window.clearTimeout(timer);
-  }, [graph.nodes.length, loading, quartzPreviewUrl, sidebarOpen]);
+  }, [graph.nodes.length, loading, previewStatus, quartzPreviewUrl, sidebarOpen]);
 
   return (
     <>
       {sidebarOpen ? (
       <aside
         style={{ width: panelWidth } as CSSProperties}
-        className="neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col bg-gray-950"
+        className="bb-neu-sidebar-right neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col bg-gray-950"
       >
         {resizeHandle}
         {/* Header */}
         <div className="px-4 py-3 border-b border-gray-800 shrink-0">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
             <div>
               <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wider">
                 Learning map
@@ -217,14 +264,6 @@ function KnowledgeGraph({
               <p className="text-xs text-gray-600 mt-0.5">
                 {formatNumber(graph.stats.words)} words across this cluster
               </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <a
-                href={graphHref(clusterSlug)}
-                className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
-              >
-                Open
-              </a>
             </div>
           </div>
         </div>
@@ -247,7 +286,7 @@ function KnowledgeGraph({
 
           {/* Quartz graph preview */}
           <div
-            className="neu-surface-subtle group relative block h-52 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30 mb-3"
+            className="bb-neu-recessed group relative block h-52 overflow-hidden rounded-lg border border-gray-800 bg-gray-900/30 mb-3"
           >
             {loading ? (
               <div className="h-full flex items-center justify-center text-xs text-gray-700">
@@ -257,30 +296,36 @@ function KnowledgeGraph({
               <div className="h-full flex items-center justify-center text-xs text-gray-700 px-8 text-center">
                 Upload a source to grow the map.
               </div>
-            ) : previewReady ? (
+            ) : (
               <>
                 <iframe
+                  ref={previewFrameRef}
+                  key={quartzPreviewUrl}
                   src={quartzPreviewUrl}
-                  title="Quartz Learning Map preview"
-                  className="pointer-events-none h-full w-full border-0 bg-gray-950"
-                  loading="lazy"
+                  title="Garden learning map preview"
+                  className={`pointer-events-none h-full w-full border-0 bg-gray-950 transition-opacity duration-300 ${
+                    previewStatus === 'ready' ? 'opacity-100' : 'opacity-0'
+                  }`}
+                  loading="eager"
                   tabIndex={-1}
                   aria-hidden="true"
+                  onError={() => setPreviewState({ url: quartzPreviewUrl, status: 'error' })}
                 />
+                {previewStatus !== 'ready' ? (
+                  <div className="absolute inset-0 flex items-center justify-center px-8 text-center text-xs text-gray-600">
+                    {previewStatus === 'error' ? 'Preview unavailable.' : 'Loading garden preview...'}
+                  </div>
+                ) : null}
                 <a
                   href={graphHref(clusterSlug)}
-                  className="absolute inset-0 bg-gray-950/10 transition-colors group-hover:bg-gray-950/0"
-                  aria-label="Open Quartz Learning Map"
+                  className="absolute inset-0"
+                  aria-label="View garden"
                 >
-                  <span className="absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-2 py-1 text-[11px] font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
-                    Open Quartz
+                  <span className="neu-button absolute bottom-2 right-2 rounded-md border border-gray-700 bg-gray-950/85 px-2 py-1 text-[11px] font-medium text-gray-300 shadow-sm transition-colors group-hover:text-white">
+                    View garden
                   </span>
                 </a>
               </>
-            ) : (
-              <div className="h-full flex items-center justify-center text-xs text-gray-700">
-                Preparing preview...
-              </div>
             )}
           </div>
         </div>
@@ -293,7 +338,7 @@ function KnowledgeGraph({
       ) : (
         <aside
           style={{ width: panelWidth } as CSSProperties}
-          className="neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3"
+          className="bb-neu-sidebar-right neu-surface-subtle relative hidden lg:flex shrink-0 border-l border-gray-800 flex-col items-center bg-gray-950 py-3"
         >
           {resizeHandle}
           <svg

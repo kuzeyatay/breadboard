@@ -3,7 +3,11 @@
 // defensively. Provider API keys are NEVER part of this configuration object —
 // they live in a separate server-only table.
 
+import { CHATMOCK_PROVIDER, chatmockEndpoint, chatmockModel } from "./model-provider.ts";
+
 export type BrowserStrategy = "gui" | "dom" | "hybrid";
+export type OperatorType = "browser" | "computer";
+export type DesktopCoordinateSpace = "screen_pixels" | "normalized_1000";
 export type ApprovalMode = "every_action" | "sensitive_actions";
 export type AgentCapability =
   | "chat"
@@ -14,8 +18,9 @@ export type AgentCapability =
   | "mcp";
 
 export interface UITarsAgentConfiguration {
-  operator: "browser";
+  operator: OperatorType;
   browserStrategy: BrowserStrategy;
+  desktopCoordinateSpace: DesktopCoordinateSpace;
   provider: string;
   model: string;
   endpoint?: string;
@@ -36,6 +41,11 @@ export interface ConfigValidation {
 
 const STRATEGIES = new Set<BrowserStrategy>(["gui", "dom", "hybrid"]);
 const APPROVAL_MODES = new Set<ApprovalMode>(["every_action", "sensitive_actions"]);
+const OPERATORS = new Set<OperatorType>(["browser", "computer"]);
+const DESKTOP_COORDINATE_SPACES = new Set<DesktopCoordinateSpace>([
+  "screen_pixels",
+  "normalized_1000",
+]);
 const MAX_STEPS_CEIL = 200;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_TIMEOUT_MS = 5 * 1000;
@@ -49,11 +59,23 @@ export function validateAgentConfiguration(input: unknown): ConfigValidation {
   const errors: string[] = [];
   if (!isPlainObject(input)) return { ok: false, errors: ["configuration_must_be_object"] };
 
-  if (input.operator !== "browser") errors.push("operator_must_be_browser");
+  const operator = input.operator;
+  if (typeof operator !== "string" || !OPERATORS.has(operator as OperatorType)) {
+    errors.push("invalid_operator");
+  }
 
   const browserStrategy = input.browserStrategy;
   if (typeof browserStrategy !== "string" || !STRATEGIES.has(browserStrategy as BrowserStrategy)) {
     errors.push("invalid_browser_strategy");
+  }
+  // Existing stored agents predate this field. Their default/local general
+  // vision model emits screenshot pixels, so migrate them during validation.
+  const desktopCoordinateSpace = input.desktopCoordinateSpace ?? "screen_pixels";
+  if (
+    typeof desktopCoordinateSpace !== "string" ||
+    !DESKTOP_COORDINATE_SPACES.has(desktopCoordinateSpace as DesktopCoordinateSpace)
+  ) {
+    errors.push("invalid_desktop_coordinate_space");
   }
   const provider = input.provider;
   if (typeof provider !== "string" || provider.trim().length === 0 || provider.length > 64) {
@@ -101,8 +123,9 @@ export function validateAgentConfiguration(input: unknown): ConfigValidation {
 
   const hasEndpoint = typeof endpoint === "string" && endpoint.length > 0;
   const value: UITarsAgentConfiguration = {
-    operator: "browser",
+    operator: operator as OperatorType,
     browserStrategy: browserStrategy as BrowserStrategy,
+    desktopCoordinateSpace: desktopCoordinateSpace as DesktopCoordinateSpace,
     provider: (provider as string).trim(),
     model: (model as string).trim(),
     ...(hasEndpoint ? { endpoint: endpoint as string } : {}),
@@ -117,17 +140,27 @@ export function validateAgentConfiguration(input: unknown): ConfigValidation {
   return { ok: true, errors: [], value };
 }
 
-export function defaultAgentConfiguration(): UITarsAgentConfiguration {
+/**
+ * Defaults for a new agent: ChatMock (the local gateway that already serves the
+ * chat surfaces) so a browser task is runnable without the user supplying a
+ * provider key. Strategy stays "dom" — upstream only grounds visually on
+ * volcengine models.
+ */
+export function defaultAgentConfiguration(
+  env: NodeJS.ProcessEnv = process.env,
+): UITarsAgentConfiguration {
   return {
     operator: "browser",
     browserStrategy: "dom",
-    provider: "openai",
-    model: "",
+    desktopCoordinateSpace: "screen_pixels",
+    provider: CHATMOCK_PROVIDER,
+    model: chatmockModel(env),
+    endpoint: chatmockEndpoint(env),
     maxSteps: 25,
     timeoutMs: 5 * 60 * 1000,
     approvalMode: "sensitive_actions",
     allowedDomains: [],
-    allowDownloads: false,
+    allowDownloads: true,
     allowClipboard: false,
     allowFileUpload: false,
   };
@@ -142,7 +175,6 @@ export function applyConfigurationPatch(
   patch: unknown,
 ): ConfigValidation {
   if (!isPlainObject(patch)) return { ok: false, errors: ["patch_must_be_object"] };
-  // operator is fixed to browser for the MVP.
-  const merged = { ...current, ...patch, operator: "browser" };
+  const merged = { ...current, ...patch };
   return validateAgentConfiguration(merged);
 }

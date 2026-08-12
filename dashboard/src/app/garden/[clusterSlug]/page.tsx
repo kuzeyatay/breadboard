@@ -1,10 +1,11 @@
 import { getServerSession } from 'next-auth/next';
 import { redirect, notFound } from 'next/navigation';
-import Link from 'next/link';
 import { authOptions } from '@/lib/auth-options';
+import BackLink from '@/app/components/back-link';
 import { getReadableCluster } from '@/app/actions/clusters';
 import NewNoteButton from '@/app/components/new-note-button';
 import MarkdownToPdfButton from '@/app/components/markdown-to-pdf-button';
+import FastReadButton from '@/app/components/fastread-button';
 import NavbarFlowerWind from '@/app/components/navbar-flower-wind';
 import GardenClient from './garden-client';
 
@@ -30,20 +31,16 @@ export default async function GardenPage({
       <header className="breadboard-flower-navbar relative flex items-center justify-between gap-4 px-6 py-3.5 border-b border-gray-800 shrink-0">
         <NavbarFlowerWind />
         <div className="relative z-10 flex items-center gap-3 min-w-0">
-          <Link
-            href={cluster.isOwner ? `/gardens/${clusterSlug}` : '/dashboard'}
-            className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5 shrink-0"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" />
-            </svg>
-            {cluster.isOwner ? 'Back to garden' : 'Back to gardens'}
-          </Link>
+          <BackLink
+            fallbackHref={cluster.isOwner ? `/gardens/${clusterSlug}` : '/dashboard'}
+            fallbackLabel={cluster.isOwner ? 'Back to garden chat' : 'Back to gardens'}
+          />
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-semibold text-white truncate max-w-xs">{cluster.name}</h1>
         </div>
         <div className="relative z-10 flex items-center gap-2">
           {cluster.isOwner && <NewNoteButton clusterSlug={clusterSlug} />}
+          <FastReadButton clusterSlug={clusterSlug} initialNote={note} />
           <MarkdownToPdfButton clusterSlug={clusterSlug} initialNote={note} />
         </div>
       </header>

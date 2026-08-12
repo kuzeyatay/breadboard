@@ -4,6 +4,11 @@ export interface ChatTokenUsage {
   totalTokens: number;
   cachedInputTokens: number;
   reasoningTokens: number;
+  /** Whether counters describe one response, one agent turn, or a session snapshot. */
+  scope?: 'request' | 'turn' | 'session';
+  apiCalls?: number;
+  contextUsedTokens?: number;
+  contextLimitTokens?: number;
   responseDurationMs?: number;
   estimated?: boolean;
 }
@@ -97,6 +102,12 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
   const inputTokens = firstTokenCount(record, inputKeys);
   const outputTokens = firstTokenCount(record, outputKeys);
   const totalTokens = firstTokenCount(record, totalKeys);
+  const anthropicCacheRead = firstTokenCount(record, [
+    'cache_read_input_tokens',
+  ]);
+  const anthropicCacheCreation = firstTokenCount(record, [
+    'cache_creation_input_tokens',
+  ]);
 
   if (
     inputTokens === undefined &&
@@ -114,13 +125,44 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
     recordFrom(record.completion_tokens_details);
   const cacheDetails = recordFrom(record.cache);
 
-  const normalizedInput = inputTokens ?? 0;
+  // Anthropic's native usage object splits uncached input, cache writes, and
+  // cache reads into separate fields. Its `input_tokens` is therefore not the
+  // complete input count, unlike the Responses API field with the same name.
+  const normalizedInput =
+    (inputTokens ?? 0) +
+    (anthropicCacheRead ?? 0) +
+    (anthropicCacheCreation ?? 0);
   const normalizedOutput = outputTokens ?? 0;
 
   const estimated = record.estimated === true || record.usageEstimated === true;
   const responseDurationMs = firstTokenCount(record, [
     'responseDurationMs',
     'response_duration_ms',
+  ]);
+  const explicitScope =
+    record.scope === 'request' ||
+    record.scope === 'turn' ||
+    record.scope === 'session'
+      ? record.scope
+      : undefined;
+  // Hermes releases before the turn-delta contract attached a cumulative
+  // session snapshot (distinguished by its model + calls fields) to each row.
+  // Keep those rows honest in the UI instead of relabeling them as one answer.
+  const scope =
+    explicitScope ??
+    (typeof record.model === 'string' &&
+    firstTokenCount(record, ['calls']) !== undefined &&
+    Object.prototype.hasOwnProperty.call(record, 'total')
+      ? 'session'
+      : undefined);
+  const apiCalls = firstTokenCount(record, ['apiCalls', 'api_calls', 'calls']);
+  const contextUsedTokens = firstTokenCount(record, [
+    'contextUsedTokens',
+    'context_used',
+  ]);
+  const contextLimitTokens = firstTokenCount(record, [
+    'contextLimitTokens',
+    'context_max',
   ]);
   return {
     inputTokens: normalizedInput,
@@ -130,11 +172,17 @@ export function normalizeChatTokenUsage(value: unknown): ChatTokenUsage | null {
       firstTokenCount(record, ['cachedInputTokens', 'cachedTokens']) ??
       (inputDetails ? firstTokenCount(inputDetails, ['cached_tokens']) : undefined) ??
       (cacheDetails ? firstTokenCount(cacheDetails, ['read']) : undefined) ??
+      firstTokenCount(record, ['cache_read', 'cache_read_tokens']) ??
+      anthropicCacheRead ??
       0,
     reasoningTokens:
       firstTokenCount(record, ['reasoningTokens', 'reasoning']) ??
       (outputDetails ? firstTokenCount(outputDetails, ['reasoning_tokens']) : undefined) ??
       0,
+    ...(scope ? { scope } : {}),
+    ...(apiCalls !== undefined ? { apiCalls } : {}),
+    ...(contextUsedTokens !== undefined ? { contextUsedTokens } : {}),
+    ...(contextLimitTokens !== undefined ? { contextLimitTokens } : {}),
     ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
     ...(estimated ? { estimated: true } : {}),
   };
@@ -163,6 +211,9 @@ export function sumChatTokenUsage(
   const total = { ...EMPTY_USAGE };
   for (const usage of usages) {
     if (!usage) continue;
+    // A legacy session snapshot overlaps earlier rows and cannot be summed
+    // without a migration baseline. Excluding it avoids double-counting.
+    if (usage.scope === 'session') continue;
     total.inputTokens += usage.inputTokens;
     total.outputTokens += usage.outputTokens;
     total.totalTokens += usage.totalTokens;

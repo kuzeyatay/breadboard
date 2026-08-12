@@ -6,35 +6,129 @@ import {
   useRef,
   useEffect,
   useCallback,
-  type RefObject,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
-import AssistantMessageActions from "@/app/components/assistant-message-actions";
+import BackLink from "@/app/components/back-link";
+import AssistantMessageActions, {
+  MessageActionsSlot,
+} from "@/app/components/assistant-message-actions";
+import { isDirectModeEnabled } from "@/app/components/use-direct-mode";
+import {
+  chatAutoScrollContentKey,
+  chatAutoScrollResponseKey,
+  useChatAutoScroll,
+} from "@/app/components/use-chat-auto-scroll";
+import ChatTimeSeparator from "@/app/components/chat-time-separator";
+import ChatMessageAttachments from "@/app/components/chat-message-attachments";
 import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
-import ActivityPanel from "@/app/components/openharness/activity-panel";
+import ActivityPanel from "@/app/components/hermes/activity-panel";
 import {
   splitLeadingCommandTokens,
   UserMessageText,
-} from "@/app/components/openharness/command-text";
-import { useLegacyAgentActivity } from "@/app/components/openharness/use-legacy-agent-activity";
+} from "@/app/components/hermes/command-text";
+import { useLegacyAgentActivity } from "@/app/components/hermes/use-legacy-agent-activity";
 import type {
   ActivityItem,
   ConnectionState,
   PermissionPrompt,
-} from "@/app/components/openharness/use-agent-session";
-import type { VerificationSummary } from "@/lib/openharness/evidence";
+} from "@/app/components/hermes/use-agent-session";
+import type { VerificationSummary } from "@/lib/hermes/evidence";
+import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
 import ChatMarkdown from "@/app/components/chat-markdown";
 import DocumentIngestionTokenUsage from "@/app/components/document-ingestion-token-usage";
 import DocumentIngestionVisionError from "@/app/components/document-ingestion-vision-error";
 import GardenVideoImport from "@/app/components/garden-video-import";
+import {
+  VLM_PARSE_FILE_RE,
+  VlmParseOption,
+  useVlmOcrAvailability,
+} from "@/app/components/vlm-parse-option";
+import {
+  ANYDOC_PARSE_FILE_RE,
+  AnydocParseOption,
+  useAnydocAvailability,
+} from "@/app/components/anydoc-parse-option";
 import ArtifactPanel, {
   ARTIFACT_BROWSER_EVENT,
   ARTIFACT_REVISE_EVENT,
-} from "@/app/components/openharness/artifact-panel";
+  ArtifactArchiveIcon,
+  GARDEN_DOCUMENTS_CHANGED_EVENT,
+} from "@/app/components/hermes/artifact-panel";
+import InlineAgentBrowserRun from "@/app/components/hermes/inline-agent-browser-run";
+import InlineArtifactCards, {
+  InlineArtifactCardsProvider,
+  useInlineArtifactPrefetch,
+} from "@/app/components/hermes/inline-artifact-cards";
+import InlineDeepResearchRun from "@/app/components/hermes/inline-deep-research-run";
+import InlineOpenCodeRun from "@/app/components/hermes/inline-opencode-run";
+import InlineRufloRun from "@/app/components/hermes/inline-ruflo-run";
+import InlineAgentReachRun from "@/app/components/hermes/inline-agent-reach-run";
+import InlineGetDocRun from "@/app/components/hermes/inline-get-doc-run";
+import InlineMeetingNotesRun from "@/app/components/hermes/inline-meeting-notes-run";
+import InlineDeepTutorRun from "@/app/components/hermes/inline-deep-tutor-run";
+import InlineCareerOpsRun from "@/app/components/hermes/inline-career-ops-run";
+import InlineTradingAgentsRun from "@/app/components/hermes/inline-tradingagents-run";
+import InlineVibeTradingRun from "@/app/components/hermes/inline-vibe-trading-run";
+import InlineStockAnalystRun from "@/app/components/hermes/inline-stock-analyst-run";
+import InlinePaperTraderRun from "@/app/components/hermes/inline-paper-trader-run";
+import InlineDeerFlowRun from "@/app/components/hermes/inline-deer-flow-run";
+import InlineOpenPlanterRun from "@/app/components/hermes/inline-openplanter-run";
+import InlineSocialsManagerRun from "@/app/components/hermes/inline-socials-manager-run";
+import InlineHardwareBlueprintRun from "@/app/components/hermes/inline-hardware-blueprint-run";
+import InlineParametricCadRun from "@/app/components/hermes/inline-parametric-cad-run";
+import InlineHyperframesRun from "@/app/components/hermes/inline-hyperframes-run";
+import InlineOpenMontageRun from "@/app/components/hermes/inline-openmontage-run";
+import InlineOpenworkRun from "@/app/components/hermes/inline-openwork-run";
+import InlineOpenscienceRun from "@/app/components/hermes/inline-openscience-run";
+import InlineInboxZeroRun from "@/app/components/hermes/inline-inbox-zero-run";
+import InlineVimaxRun from "@/app/components/hermes/inline-vimax-run";
+import InlineMoneyPrinterRun from "@/app/components/hermes/inline-money-printer-run";
+import InlineLegalRun from "@/app/components/hermes/inline-legal-run";
+import InlineShortsRun from "@/app/components/hermes/inline-shorts-run";
+import InlineFormsmithRun from "@/app/components/hermes/inline-formsmith-run";
+import InlineVideoUseRun from "@/app/components/hermes/inline-video-use-run";
+import {
+  hardwareBlueprintUserMessage,
+  taskFromHardwareBlueprintCommand,
+} from "@/lib/hardware/identity.ts";
+import {
+  parametricCadUserMessage,
+  taskFromParametricCadCommand,
+} from "@/lib/cad/identity.ts";
+import {
+  briefFromHyperframesCommand,
+  hyperframesUserMessage,
+} from "@/lib/hyperframes/identity.ts";
+import {
+  briefFromOpenMontageCommand,
+  openMontageUserMessage,
+} from "@/lib/openmontage/identity.ts";
+import {
+  openworkUserMessage,
+  taskFromOpenworkCommand,
+} from "@/lib/openwork/identity.ts";
+import {
+  openscienceUserMessage,
+  taskFromOpenscienceCommand,
+} from "@/lib/openscience/identity.ts";
+import {
+  inboxZeroUserMessage,
+  taskFromInboxZeroCommand,
+} from "@/lib/inbox-zero/identity.ts";
+import { briefFromVimaxCommand, vimaxUserMessage } from "@/lib/vimax/identity.ts";
+import {
+  briefFromMoneyPrinterCommand,
+  moneyPrinterUserMessage,
+} from "@/lib/money-printer/identity.ts";
+import {
+  legalRunLabel,
+  legalUserMessage,
+  taskFromLegalCommand,
+} from "@/lib/legal/identity.ts";
 import LearnConfirmationDialog, {
   type LearnDestructiveAction,
 } from "@/app/components/learn-confirmation-dialog";
@@ -42,17 +136,30 @@ import KnowledgeGraph from "@/app/components/knowledge-graph";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
-import {
-  DEFAULT_ASSISTANT_MODELS,
-  mergeAssistantModels,
-} from "@/lib/ai-models";
+import { useAssistantModels } from "@/app/components/use-assistant-models";
 import {
   formatExactTokenCount,
   formatTokenCount,
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
-import { chatTitleFromFirstMessage } from "@/lib/chat-session-title";
+import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
+import type { LocalWorkflowSummary, WorkflowRunResponse } from "@/lib/workflows/types";
+import {
+  attachAudioFile,
+  attachModelFile,
+  CHAT_ATTACHMENT_ACCEPT,
+  chatMessageAttachments,
+  reusableChatAttachments,
+  type ChatAttachment,
+  type ChatMessageAttachment,
+} from "@/lib/chat-attachments";
+import {
+  distillAttachments,
+  distillGardenDocumentSkill,
+} from "@/lib/document-skills/client";
+import { modelAttachmentFormat } from "@/lib/model-attachments";
+import { audioAttachmentFormat } from "@/lib/audio-attachments";
 import {
   currentLearnElapsedMs,
   formatLearnElapsedTime,
@@ -61,16 +168,216 @@ import {
   sumIngestTokenUsage,
   type IngestTokenUsage,
 } from "@/lib/ingest-token-usage";
+import {
+  agentBrowserUserMessage,
+  taskFromAgentBrowserCommand,
+} from "@/lib/agent-browser/identity";
+import {
+  deepResearchUserMessage,
+  parseResearchRequest,
+  taskFromDeepResearchCommand,
+} from "@/lib/deep-research/identity";
+import { loadAgentSettings } from "@/lib/agent-settings/client.ts";
+import { deepResearchDefaults } from "@/lib/agent-settings/defaults.ts";
+import {
+  OPENPLANTER_AGENT_ID,
+  OPENPLANTER_AGENT_NAME,
+  openPlanterUserMessage,
+  taskFromOpenPlanterCommand,
+} from "@/lib/openplanter/identity.ts";
+import {
+  AGENT_REACH_AGENT_ID,
+  AGENT_REACH_AGENT_NAME,
+  agentReachUserMessage,
+  taskFromAgentReachCommand,
+} from "@/lib/agent-reach/identity.ts";
+import {
+  MEETING_NOTES_AGENT_ID,
+  MEETING_NOTES_AGENT_NAME,
+  meetingNotesUserMessage,
+  taskFromMeetingNotesCommand,
+} from "@/lib/meeting-notes/identity.ts";
+import {
+  GET_DOC_AGENT_ID,
+  GET_DOC_AGENT_NAME,
+  getDocUserMessage,
+  taskFromGetDocCommand,
+} from "@/lib/get-doc/identity.ts";
+import {
+  DEEP_TUTOR_AGENT_ID,
+  DEEP_TUTOR_AGENT_NAME,
+  deepTutorUserMessage,
+  taskFromDeepTutorCommand,
+} from "@/lib/deep-tutor/identity.ts";
+import {
+  CAREER_OPS_AGENT_ID,
+  CAREER_OPS_AGENT_NAME,
+  careerOpsUserMessage,
+  taskFromCareerOpsCommand,
+} from "@/lib/career-ops/identity.ts";
+import {
+  TRADINGAGENTS_AGENT_ID,
+  TRADINGAGENTS_AGENT_NAME,
+  parseTradingAgentsCommand,
+  tradingAgentsRunLabel,
+  tradingAgentsUserMessage,
+  type TradingAgentsRequest,
+} from "@/lib/tradingagents/identity.ts";
+import {
+  SHORTS_AGENT_ID,
+  SHORTS_AGENT_NAME,
+  parseShortsCommand,
+  shortsRunLabel,
+  shortsUserMessage,
+  type ShortsRequest,
+} from "@/lib/shorts/identity.ts";
+import {
+  FORMSMITH_AGENT_ID,
+  FORMSMITH_AGENT_NAME,
+  formsmithRunLabel,
+  formsmithUserMessage,
+  isFormsmithCommand,
+  type FormsmithRequest,
+} from "@/lib/shaper/identity.ts";
+import {
+  VIBE_TRADING_AGENT_ID,
+  VIBE_TRADING_AGENT_NAME,
+  taskFromVibeTradingCommand,
+  vibeTradingUserMessage,
+} from "@/lib/vibe-trading/identity.ts";
+import {
+  STOCK_ANALYST_AGENT_ID,
+  STOCK_ANALYST_AGENT_NAME,
+  taskFromStockAnalystCommand,
+  stockAnalystUserMessage,
+} from "@/lib/stock-analyst/identity.ts";
+import {
+  PAPER_TRADER_AGENT_ID,
+  PAPER_TRADER_AGENT_NAME,
+  taskFromPaperTraderCommand,
+  paperTraderUserMessage,
+} from "@/lib/paper-trader/identity.ts";
+import {
+  DEER_FLOW_AGENT_ID,
+  DEER_FLOW_AGENT_NAME,
+  taskFromDeerFlowCommand,
+  deerFlowUserMessage,
+} from "@/lib/deer-flow/identity.ts";
+import {
+  socialsManagerUserMessage,
+  taskFromSocialsManagerCommand,
+} from "@/lib/socials-manager/identity.ts";
+import { findCapabilityConflict } from "@/lib/hermes/capability-combinations.ts";
+import {
+  MAX_AGENT_LAUNCH_HOPS,
+  agentLaunchContinuationMessage,
+  useAgentLaunchQueue,
+  type AgentLaunchRequestPayload,
+} from "@/app/components/hermes/use-agent-launch-queue";
+import AgentLaunchPrompt from "@/app/components/hermes/agent-launch-prompt";
+import {
+  OPENCODE_AGENT_ID,
+  OPENCODE_AGENT_NAME,
+  openCodeUserMessage,
+  taskFromOpenCodeCommand,
+} from "@/lib/opencode/identity";
+import {
+  CODEX_AGENT_ID,
+  CODEX_AGENT_NAME,
+  codexUserMessage,
+  taskFromCodexCommand,
+} from "@/lib/codex/identity";
+import {
+  RUFLO_AGENT_ID,
+  RUFLO_AGENT_NAME,
+  rufloUserMessage,
+  taskFromRufloCommand,
+} from "@/lib/ruflo/identity";
+import {
+  assistantExternalAgentRunId,
+  externalAgentCardContent,
+  type ExternalAgentActivityEntry,
+  type ExternalAgentEdits,
+  type ExternalAgentOutcome,
+  type ExternalAgentTerminalResult,
+} from "@/lib/conversations/external-agent-runs";
+import { notifyTaskCompleted } from "@/lib/task-completion-notification";
 
 interface Message {
+  id?: string;
+  artifactMessageId?: string;
   role: "user" | "assistant";
   content: string;
+  /** Model-to-model hand-back; retained in context but hidden from the user. */
+  internalAgentContinuation?: boolean;
+  createdAt?: string;
   sources?: string[];
   thinking?: string;
   attachmentNames?: string[];
+  attachments?: ChatMessageAttachment[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
+  agentBrowserRun?: { agentId: string; runId: string; task: string };
+  deepResearchRun?: {
+    runId: string;
+    query: string;
+    output: "report" | "answer";
+  };
+  openCodeRun?: {
+    runId: string;
+    task: string;
+    gardenSlug: string;
+    repository: string;
+  };
+  codexRun?: {
+    runId: string;
+    task: string;
+    gardenSlug: string;
+    repository: string;
+  };
+  openPlanterRun?: { runId: string; task: string };
+  agentReachRun?: { runId: string; task: string };
+  getDocRun?: { runId: string; query: string };
+  meetingNotesRun?: { runId: string; task: string };
+  deepTutorRun?: { runId: string; task: string; capability: string };
+  careerOpsRun?: { runId: string; task: string };
+  tradingAgentsRun?: { runId: string; task: string };
+  vibeTradingRun?: { runId: string; task: string };
+  stockAnalystRun?: { runId: string; task: string };
+  paperTraderRun?: { runId: string; task: string };
+  deerFlowRun?: { runId: string; task: string };
+  socialsManagerRun?: { runId: string; brief: string };
+  hardwareBlueprintRun?: { runId: string; brief: string };
+  parametricCadRun?: { runId: string; brief: string };
+  hyperframesRun?: { runId: string; brief: string };
+  openMontageRun?: { runId: string; brief: string };
+  openworkRun?: { runId: string; task: string };
+  openscienceRun?: { runId: string; task: string };
+  inboxZeroRun?: { runId: string; task: string };
+  vimaxRun?: { runId: string; brief: string };
+  moneyPrinterRun?: { runId: string; brief: string };
+  legalRun?: { runId: string; task: string };
+  shortsRun?: { runId: string; task: string };
+  formsmithRun?: { runId: string; task: string };
+  videoUseRun?: { runId: string; task: string; quiet?: boolean };
+  rufloRun?: {
+    runId: string;
+    task: string;
+    gardenSlug: string;
+    repository: string;
+  };
+  externalAgentOutcome?: ExternalAgentOutcome;
+  /** Model-selected worker state; observed invisibly by the Super Agent host. */
+  delegatedAgentRun?: boolean;
+  /** The Super Agent text that remains visible while its worker runs. */
+  delegatedAgentPreamble?: string;
+  /** Worker output returned to the Super Agent without replacing its message. */
+  externalAgentResult?: string;
+  externalAgentName?: string;
+  externalAgentActivity?: ExternalAgentActivityEntry[];
+  externalAgentEdits?: ExternalAgentEdits;
+  externalAgentState?: Record<string, unknown>;
 }
 
 interface ChatSession {
@@ -82,6 +389,44 @@ interface ChatSession {
   messages: Message[];
   ownerUsername?: string;
   isOwn?: boolean;
+}
+
+interface ExternalAgentSelection {
+  id: string;
+  name: string;
+}
+
+/** Shared by the two repository-scoped agents (OpenCode and Ruflo). */
+function explainRepositoryAgentError(
+  code: unknown,
+  fallback: string,
+  agentName: string,
+): string {
+  if (typeof code !== "string" || !code.trim()) return fallback;
+  switch (code) {
+    case "repository_not_connected":
+      return `Connect a local Git repository from this Garden's card before using ${agentName}.`;
+    case "repository_unavailable":
+      return "The connected repository is no longer available. Reconnect it from the Garden card.";
+    case "garden_not_found":
+      return "This Garden is no longer available.";
+    case "garden_required":
+      return `Open the Garden whose repository you want ${agentName} to use.`;
+    default:
+      return code;
+  }
+}
+
+function explainOpenCodeError(code: unknown, fallback: string): string {
+  return explainRepositoryAgentError(code, fallback, "OpenCode");
+}
+
+function explainCodexError(code: unknown, fallback: string): string {
+  return explainRepositoryAgentError(code, fallback, "Codex");
+}
+
+function explainRufloError(code: unknown, fallback: string): string {
+  return explainRepositoryAgentError(code, fallback, "Ruflo");
 }
 
 interface DocInfo {
@@ -231,6 +576,15 @@ interface LearnStatusResponse {
   sourceCount?: number;
   selectedSourceIds?: string[];
   selectedSourceCount?: number;
+  syllabusSourceId?: string | null;
+  syllabusCoverage?: {
+    unitCount: number;
+    materialCount: number;
+    availableCount: number;
+    missingCount: number;
+    genericCount: number;
+    missingCitations: string[];
+  } | null;
   hasTextbook?: boolean;
   sourceSetChanged?: boolean;
   buttonLabel?: string;
@@ -500,39 +854,91 @@ function isLearnActive(status?: LearnStatus): boolean {
   );
 }
 
+function hasRunningExternalAgent(message: Message): boolean {
+  return (
+    message.role === "assistant" &&
+    Boolean(
+      message.agentBrowserRun ||
+        message.deepResearchRun ||
+        message.codexRun ||
+        message.openCodeRun ||
+        message.openPlanterRun ||
+        message.agentReachRun ||
+        message.getDocRun ||
+        message.meetingNotesRun ||
+        message.deepTutorRun ||
+        message.careerOpsRun ||
+        message.tradingAgentsRun ||
+        message.vibeTradingRun ||
+        message.stockAnalystRun ||
+        message.paperTraderRun ||
+        message.deerFlowRun ||
+        message.socialsManagerRun ||
+        message.hardwareBlueprintRun ||
+        message.parametricCadRun ||
+        message.hyperframesRun ||
+        message.openMontageRun ||
+        message.openworkRun ||
+        message.openscienceRun ||
+        message.inboxZeroRun ||
+        message.vimaxRun ||
+        message.moneyPrinterRun ||
+        message.legalRun ||
+        message.shortsRun ||
+        message.formsmithRun ||
+        message.videoUseRun ||
+        message.rufloRun,
+    ) &&
+    (message.externalAgentOutcome ?? "running") === "running"
+  );
+}
+
 interface ChatTranscriptProps {
   clusterName: string;
+  clusterSlug: string;
+  chatSessionId: number | null;
   isStreaming: boolean;
   loadingChats: boolean;
   messages: Message[];
-  messagesEndRef: RefObject<HTMLDivElement | null>;
   activities: ActivityItem[];
   connection: ConnectionState;
   pendingPermission: PermissionPrompt | null;
-  onAbort: () => void;
   onPermissionDecision: (decision: "once" | "always" | "reject") => void;
   onRetryAssistant: (messageIndex: number) => void;
+  onExternalAgentTerminal: (
+    runId: string,
+    result: ExternalAgentTerminalResult,
+  ) => void;
+  inlineArtifactRetireVersion: number;
 }
 
 const ChatTranscript = memo(function ChatTranscript({
   clusterName,
+  clusterSlug,
+  chatSessionId,
   isStreaming,
   loadingChats,
   messages,
-  messagesEndRef,
   activities,
   connection,
   pendingPermission,
-  onAbort,
   onPermissionDecision,
   onRetryAssistant,
+  onExternalAgentTerminal,
+  inlineArtifactRetireVersion,
 }: ChatTranscriptProps) {
   const lastAssistantIndex = messages.reduce(
     (lastIndex, message, index) =>
       message.role === "assistant" ? index : lastIndex,
     -1,
   );
+  const timeSeparators = chatTimeSeparatorLabels(messages);
   return (
+    <InlineArtifactCardsProvider
+      legacyChatSessionId={chatSessionId}
+      gardenSlug={clusterSlug}
+      retireVersion={inlineArtifactRetireVersion}
+    >
     <div className="max-w-5xl mx-auto flex flex-col gap-6">
       {loadingChats ? (
         <div className="flex items-center justify-center py-28 text-gray-700">
@@ -566,38 +972,68 @@ const ChatTranscript = memo(function ChatTranscript({
         )
       )}
 
-      {messages.map((msg, i) => (
+      {messages.map((storedMessage, i) => {
+        // The worker result belongs to the hidden observer, not to the Super
+        // Agent's visible assistant message.
+        const msg =
+          storedMessage.delegatedAgentRun === true
+            ? {
+                ...storedMessage,
+                content: externalAgentCardContent(storedMessage),
+              }
+            : storedMessage;
+        if (msg.internalAgentContinuation === true) return null;
+        const externalRun =
+          msg.agentBrowserRun ??
+          msg.deepResearchRun ??
+          msg.codexRun ??
+          msg.openCodeRun ??
+          msg.openPlanterRun ??
+          msg.agentReachRun ??
+          msg.getDocRun ??
+          msg.meetingNotesRun ??
+          msg.deepTutorRun ??
+          msg.careerOpsRun ??
+          msg.tradingAgentsRun ??
+          msg.vibeTradingRun ??
+          msg.stockAnalystRun ??
+          msg.paperTraderRun ??
+          msg.deerFlowRun ??
+          msg.socialsManagerRun ??
+          msg.hardwareBlueprintRun ??
+          msg.parametricCadRun ??
+          msg.hyperframesRun ??
+          msg.openMontageRun ??
+          msg.openworkRun ??
+          msg.openscienceRun ??
+          msg.inboxZeroRun ??
+          msg.vimaxRun ??
+          msg.moneyPrinterRun ??
+          msg.legalRun ??
+          msg.shortsRun ??
+          msg.formsmithRun ??
+          msg.videoUseRun ??
+          msg.rufloRun;
+        return (
         <div
           key={i}
-          className={`flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
+          className="flex w-full flex-col gap-3"
         >
-          {msg.role === "user" ? (
-            <div className="flex flex-col items-end gap-1 max-w-[80%]">
-              {msg.attachmentNames && msg.attachmentNames.length > 0 && (
-                <div className="flex flex-wrap gap-1 justify-end">
-                  {msg.attachmentNames.map((name) => (
-                    <span
-                      key={name}
-                      className="neu-inset flex items-center gap-1 rounded-md border border-[var(--line)] bg-[var(--paper-surface)] px-2 py-0.5 text-xs text-[var(--ink-muted)]"
-                    >
-                      <svg
-                        className="w-3 h-3 shrink-0"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={1.5}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13"
-                        />
-                      </svg>
-                      {name}
-                    </span>
-                  ))}
-                </div>
-              )}
+          {timeSeparators[i] ? (
+            <ChatTimeSeparator
+              label={timeSeparators[i]}
+              dateTime={msg.createdAt}
+            />
+          ) : null}
+          <div
+            className={`flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
+          >
+            {msg.role === "user" ? (
+              <div className="flex flex-col items-end gap-1 max-w-[80%]">
+              <ChatMessageAttachments
+                attachments={msg.attachments}
+                attachmentNames={msg.attachmentNames}
+              />
               {msg.content && (
                 <div className="neu-chat-message neu-chat-message-user w-full rounded-2xl rounded-tr-sm px-4 py-3 text-sm">
                   {splitLeadingCommandTokens(msg.content) ? (
@@ -608,30 +1044,516 @@ const ChatTranscript = memo(function ChatTranscript({
                 </div>
               )}
             </div>
-          ) : (
-            <div className="flex w-full flex-col gap-2">
-            {msg.responseDurationMs !== undefined ||
-              msg.usage ||
-              (i === lastAssistantIndex &&
-                (isStreaming || pendingPermission || activities.length > 0)) ? (
+            ) : (
+              <div className="flex w-full flex-col gap-2">
+              <MessageActionsSlot>
+              {msg.delegatedAgentPreamble ? (
+                <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
+                  <ChatMarkdown content={msg.delegatedAgentPreamble} />
+                </div>
+              ) : null}
+            {!externalRun ? (
                 <ActivityPanel
                   activities={i === lastAssistantIndex ? activities : []}
                   connection={i === lastAssistantIndex ? connection : "idle"}
                   pendingPermission={i === lastAssistantIndex ? pendingPermission : null}
                   usage={msg.usage}
                   responseDurationMs={msg.responseDurationMs}
-                  onAbort={onAbort}
                   onPermissionDecision={onPermissionDecision}
                 />
               ) : null}
-              {msg.content ? (
+              {externalRun ? (
+                <div
+                  className={msg.delegatedAgentRun ? "hidden" : "contents"}
+                  aria-hidden={msg.delegatedAgentRun || undefined}
+                >
+              {msg.agentBrowserRun ? (
+                <InlineAgentBrowserRun
+                  agentId={msg.agentBrowserRun.agentId}
+                  runId={msg.agentBrowserRun.runId}
+                  task={msg.agentBrowserRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.agentBrowserRun!.runId, result)
+                  }
+                />
+              ) : msg.deepResearchRun ? (
+                <InlineDeepResearchRun
+                  runId={msg.deepResearchRun.runId}
+                  query={msg.deepResearchRun.query}
+                  output={msg.deepResearchRun.output}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.deepResearchRun!.runId, result)
+                  }
+                />
+              ) : msg.codexRun ? (
+                <InlineOpenCodeRun
+                  runId={msg.codexRun.runId}
+                  task={msg.codexRun.task}
+                  gardenSlug={msg.codexRun.gardenSlug}
+                  agentName="Codex"
+                  apiSlug="codex"
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedActivity={msg.externalAgentActivity}
+                  persistedEdits={msg.externalAgentEdits}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.codexRun!.runId, result)
+                  }
+                />
+              ) : msg.openCodeRun ? (
+                <InlineOpenCodeRun
+                  runId={msg.openCodeRun.runId}
+                  task={msg.openCodeRun.task}
+                  gardenSlug={msg.openCodeRun.gardenSlug}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedActivity={msg.externalAgentActivity}
+                  persistedEdits={msg.externalAgentEdits}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.openCodeRun!.runId, result)
+                  }
+                />
+              ) : msg.openPlanterRun ? (
+                <InlineOpenPlanterRun
+                  runId={msg.openPlanterRun.runId}
+                  task={msg.openPlanterRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.openPlanterRun!.runId, result)
+                  }
+                />
+              ) : msg.agentReachRun ? (
+                <InlineAgentReachRun
+                  runId={msg.agentReachRun.runId}
+                  task={msg.agentReachRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.agentReachRun!.runId, result)
+                  }
+                />
+              ) : msg.deepTutorRun ? (
+                <InlineDeepTutorRun
+                  runId={msg.deepTutorRun.runId}
+                  task={msg.deepTutorRun.task}
+                  capability={msg.deepTutorRun.capability}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.deepTutorRun!.runId, result)
+                  }
+                />
+              ) : msg.meetingNotesRun ? (
+                <InlineMeetingNotesRun
+                  runId={msg.meetingNotesRun.runId}
+                  task={msg.meetingNotesRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.meetingNotesRun!.runId, result)
+                  }
+                />
+              ) : msg.getDocRun ? (
+                <InlineGetDocRun
+                  runId={msg.getDocRun.runId}
+                  query={msg.getDocRun.query}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.getDocRun!.runId, result)
+                  }
+                />
+              ) : msg.tradingAgentsRun ? (
+                <InlineTradingAgentsRun
+                  runId={msg.tradingAgentsRun.runId}
+                  task={msg.tradingAgentsRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.tradingAgentsRun!.runId, result)
+                  }
+                />
+              ) : msg.vibeTradingRun ? (
+                <InlineVibeTradingRun
+                  runId={msg.vibeTradingRun.runId}
+                  task={msg.vibeTradingRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.vibeTradingRun!.runId, result)
+                  }
+                />
+              ) : msg.stockAnalystRun ? (
+                <InlineStockAnalystRun
+                  runId={msg.stockAnalystRun.runId}
+                  task={msg.stockAnalystRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.stockAnalystRun!.runId, result)
+                  }
+                />
+              ) : msg.paperTraderRun ? (
+                <InlinePaperTraderRun
+                  runId={msg.paperTraderRun.runId}
+                  task={msg.paperTraderRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.paperTraderRun!.runId, result)
+                  }
+                />
+              ) : msg.deerFlowRun ? (
+                <InlineDeerFlowRun
+                  runId={msg.deerFlowRun.runId}
+                  task={msg.deerFlowRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.deerFlowRun!.runId, result)
+                  }
+                />
+              ) : msg.careerOpsRun ? (
+                <InlineCareerOpsRun
+                  runId={msg.careerOpsRun.runId}
+                  task={msg.careerOpsRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.careerOpsRun!.runId, result)
+                  }
+                />
+              ) : msg.socialsManagerRun ? (
+                <InlineSocialsManagerRun
+                  runId={msg.socialsManagerRun.runId}
+                  brief={msg.socialsManagerRun.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.socialsManagerRun!.runId, result)
+                  }
+                />
+              ) : msg.hardwareBlueprintRun ? (
+                <InlineHardwareBlueprintRun
+                  runId={msg.hardwareBlueprintRun.runId}
+                  brief={msg.hardwareBlueprintRun.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  persistedState={msg.externalAgentState}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.hardwareBlueprintRun!.runId, result)
+                  }
+                />
+              ) : msg.parametricCadRun ? (
+                <InlineParametricCadRun
+                  runId={msg.parametricCadRun.runId}
+                  brief={msg.parametricCadRun.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.parametricCadRun!.runId, result)
+                  }
+                />
+              ) : msg.hyperframesRun ? (
+                <InlineHyperframesRun
+                  runId={msg.hyperframesRun.runId}
+                  brief={msg.hyperframesRun.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.hyperframesRun!.runId, result)
+                  }
+                />
+              ) : msg.openMontageRun ? (
+                <InlineOpenMontageRun
+                  runId={msg.openMontageRun.runId}
+                  brief={msg.openMontageRun.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.openMontageRun!.runId, result)
+                  }
+                />
+              ) : msg.openworkRun ? (
+                <InlineOpenworkRun
+                  runId={msg.openworkRun.runId}
+                  task={msg.openworkRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.openworkRun!.runId, result)
+                  }
+                />
+              ) : msg.openscienceRun ? (
+                <InlineOpenscienceRun
+                  runId={msg.openscienceRun.runId}
+                  task={msg.openscienceRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.openscienceRun!.runId, result)
+                  }
+                />
+              ) : msg.inboxZeroRun ? (
+                <InlineInboxZeroRun
+                  runId={msg.inboxZeroRun.runId}
+                  task={msg.inboxZeroRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.inboxZeroRun!.runId, result)
+                  }
+                />
+              ) : msg.vimaxRun ? (
+                <InlineVimaxRun
+                  runId={msg.vimaxRun.runId}
+                  brief={msg.vimaxRun.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.vimaxRun!.runId, result)
+                  }
+                />
+              ) : msg.moneyPrinterRun ? (
+                <InlineMoneyPrinterRun
+                  runId={msg.moneyPrinterRun.runId}
+                  brief={msg.moneyPrinterRun.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.moneyPrinterRun!.runId, result)
+                  }
+                />
+              ) : msg.legalRun ? (
+                <InlineLegalRun
+                  runId={msg.legalRun.runId}
+                  task={msg.legalRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.legalRun!.runId, result)
+                  }
+                />
+              ) : msg.shortsRun ? (
+                <InlineShortsRun
+                  runId={msg.shortsRun.runId}
+                  task={msg.shortsRun.task}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.shortsRun!.runId, result)
+                  }
+                />
+              ) : msg.formsmithRun ? (
+                <InlineFormsmithRun
+                  runId={msg.formsmithRun.runId}
+                  task={msg.formsmithRun.task}
+                  persistedContent={externalAgentCardContent(msg)}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.formsmithRun!.runId, result)
+                  }
+                />
+              ) : msg.videoUseRun ? (
+                <InlineVideoUseRun
+                  runId={msg.videoUseRun.runId}
+                  task={msg.videoUseRun.task}
+                  quiet={msg.videoUseRun.quiet === true}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.videoUseRun!.runId, result)
+                  }
+                />
+              ) : msg.rufloRun ? (
+                <InlineRufloRun
+                  runId={msg.rufloRun.runId}
+                  task={msg.rufloRun.task}
+                  gardenSlug={msg.rufloRun.gardenSlug}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedEdits={msg.externalAgentEdits}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.rufloRun!.runId, result)
+                  }
+                />
+              ) : null}
+                </div>
+              ) : msg.content ? (
                 <div className="max-w-[90%] text-sm leading-relaxed text-gray-200">
                   <ChatMarkdown content={msg.content} />
                 </div>
               ) : null}
-              {msg.content && !(isStreaming && i === lastAssistantIndex) ? (
+              {chatSessionId ? (
+                <InlineArtifactCards
+                  ownerMessageId={msg.artifactMessageId ?? msg.id ?? null}
+                />
+              ) : null}
+              {!externalRun &&
+              !(isStreaming && i === lastAssistantIndex) ? (
                 <AssistantMessageActions
-                  content={msg.content}
+                  content={msg.content || "Response unavailable"}
                   verification={msg.verification}
                   onRetry={
                     i === lastAssistantIndex
@@ -640,12 +1562,18 @@ const ChatTranscript = memo(function ChatTranscript({
                   }
                 />
               ) : null}
-            </div>
-          )}
+              </MessageActionsSlot>
+              </div>
+            )}
+          </div>
         </div>
-      ))}
-      <div ref={messagesEndRef} />
+        );
+      })}
+      {chatSessionId ? (
+        <InlineArtifactCards ownerMessageId={null} />
+      ) : null}
     </div>
+    </InlineArtifactCardsProvider>
   );
 });
 
@@ -800,9 +1728,6 @@ export default function WorkspaceClient({
   const [linksExpanded, setLinksExpanded] = useState(false);
   const [videosExpanded, setVideosExpanded] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
-  const artifactAutoOpenedRuns = useRef(new Set<string>());
-  const artifactDismissedRuns = useRef(new Set<string>());
-  const activeArtifactRunRef = useRef<string | null>(null);
   const [savedLinks, setSavedLinks] = useState<SavedLinkInfo[]>([]);
   const [linksLoading, setLinksLoading] = useState(true);
   const [newLinkTitle, setNewLinkTitle] = useState("");
@@ -811,18 +1736,6 @@ export default function WorkspaceClient({
   const [deletingLinkId, setDeletingLinkId] = useState<string | null>(null);
   const [sourceDocSearch, setSourceDocSearch] = useState("");
 
-  useEffect(() => {
-    const listener = (raw: Event) => {
-      const detail = (raw as CustomEvent<{ type?: string; gardenId?: string | null; runId?: string }>).detail;
-      if (detail?.type !== "artifact.created" || detail.gardenId !== clusterSlug || !detail.runId) return;
-      activeArtifactRunRef.current = detail.runId;
-      if (artifactDismissedRuns.current.has(detail.runId) || artifactAutoOpenedRuns.current.has(detail.runId)) return;
-      artifactAutoOpenedRuns.current.add(detail.runId);
-      setArtifactsExpanded(true);
-    };
-    window.addEventListener(ARTIFACT_BROWSER_EVENT, listener);
-    return () => window.removeEventListener(ARTIFACT_BROWSER_EVENT, listener);
-  }, [clusterSlug]);
   // Left chat sidebar: width is the single source of truth so it can be
   // dragged open/closed by its edge (no toggle button). Below the threshold it
   // renders as a thin rail; releasing snaps to a clean rail or open width.
@@ -906,6 +1819,8 @@ export default function WorkspaceClient({
   // Chat
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
+  const activeChatIdRef = useRef<number | null>(null);
+  const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] = useState(0);
   const [loadingChats, setLoadingChats] = useState(true);
   const [viewPublicChats, setViewPublicChats] = useState(false);
   const [confirmDeleteChatId, setConfirmDeleteChatId] = useState<number | null>(
@@ -918,9 +1833,129 @@ export default function WorkspaceClient({
   );
   const [isForking, setIsForking] = useState(false);
   const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
+  const [agentBrowserAgent, setAgentBrowserAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [deepResearchAgent, setDeepResearchAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [openCodeAgent, setOpenCodeAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [codexAgent, setCodexAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [openPlanterAgent, setOpenPlanterAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [agentReachAgent, setAgentReachAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [getDocAgent, setGetDocAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [meetingNotesAgent, setMeetingNotesAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [deepTutorAgent, setDeepTutorAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [careerOpsAgent, setCareerOpsAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [tradingAgentsAgent, setTradingAgentsAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [vibeTradingAgent, setVibeTradingAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [stockAnalystAgent, setStockAnalystAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [paperTraderAgent, setPaperTraderAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [deerFlowAgent, setDeerFlowAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  // A pasted /agents:trading-agent command pre-fills the request form; it never
+  // starts a run, because a symbol and a date are not a sentence.
+  const [tradingAgentsSeed, setTradingAgentsSeed] =
+    useState<Partial<TradingAgentsRequest> | null>(null);
+  const [shortsAgent, setShortsAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [formsmithAgent, setFormsmithAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  // Same contract for Shorts: a pasted command pre-fills the form, and a video
+  // still has to be chosen before anything runs.
+  const [shortsSeed, setShortsSeed] = useState<Partial<ShortsRequest> | null>(null);
+  const [rufloAgent, setRufloAgent] =
+    useState<ExternalAgentSelection | null>(null);
+  const [launchingExternalAgent, setLaunchingExternalAgent] = useState<
+    | "agent-browser"
+    | "deep-research"
+    | "codex"
+    | "opencode"
+    | "openplanter"
+    | "agent-reach"
+    | "get-doc"
+    | "meeting-notes"
+    | "deep-tutor"
+    | "career-ops"
+    | "trading-agent"
+    | "vibe-trading"
+    | "stock-analyst"
+    | "paper-trader"
+    | "deer-flow"
+    | "hardware-blueprint"
+    | "parametric-cad"
+    | "hyperframes"
+    | "openmontage"
+    | "openwork"
+    | "openscience"
+    | "inbox-zero"
+    | "vimax"
+    | "money-printer"
+    | "legal"
+    | "shorts"
+    | "formsmith"
+    | "socials-manager"
+    | "ruflo"
+    | null
+  >(null);
+  const externalAgentLaunchRef = useRef<
+    | "agent-browser"
+    | "deep-research"
+    | "codex"
+    | "opencode"
+    | "openplanter"
+    | "agent-reach"
+    | "get-doc"
+    | "meeting-notes"
+    | "deep-tutor"
+    | "career-ops"
+    | "trading-agent"
+    | "vibe-trading"
+    | "stock-analyst"
+    | "paper-trader"
+    | "deer-flow"
+    | "hardware-blueprint"
+    | "parametric-cad"
+    | "hyperframes"
+    | "openmontage"
+    | "openwork"
+    | "openscience"
+    | "inbox-zero"
+    | "vimax"
+    | "money-printer"
+    | "legal"
+    | "shorts"
+    | "formsmith"
+    | "socials-manager"
+    | "ruflo"
+    | null
+  >(null);
+  const [externalAgentStatus, setExternalAgentStatus] = useState("");
+  const [streamingChatIds, setStreamingChatIds] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const streamingChatIdsRef = useRef<Set<number>>(new Set());
+  const setChatStreaming = useCallback((sessionId: number, active: boolean) => {
+    const next = new Set(streamingChatIdsRef.current);
+    if (active) next.add(sessionId);
+    else next.delete(sessionId);
+    streamingChatIdsRef.current = next;
+    setStreamingChatIds(next);
+  }, []);
   const agentActivity = useLegacyAgentActivity();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const activeSteerContextRef = useRef<{
     sessionId: number;
@@ -933,10 +1968,12 @@ export default function WorkspaceClient({
         id?: string;
         title?: string;
         gardenId?: string | null;
+        renderer?: string;
+        sourceSkill?: string | null;
       }>).detail;
       if (!artifact?.id || artifact.gardenId !== clusterSlug) return;
       setInput(
-        `Revise the existing artifact "${artifact.title || "Untitled artifact"}" (artifact ID: ${artifact.id}). `,
+        `${interactiveVisualizerCommandForArtifact(artifact)}Revise the existing artifact "${artifact.title || "Untitled artifact"}" (artifact ID: ${artifact.id}). `,
       );
       requestAnimationFrame(() => textareaRef.current?.focus());
     };
@@ -960,6 +1997,8 @@ export default function WorkspaceClient({
   >({});
   const [uploadLabel, setUploadLabel] = useState("");
   const [isHandwriting, setIsHandwriting] = useState(false);
+  const [parseWithVlm, setParseWithVlm] = useState(false);
+  const [parseWithAnydoc, setParseWithAnydoc] = useState(false);
   const [generateMap, setGenerateMap] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -969,11 +2008,10 @@ export default function WorkspaceClient({
   const uploadCanceledRef = useRef(false);
 
   // Chat attachments (per-message, sent directly to the AI)
-  type ChatAttachment =
-    | { type: "text"; text: string; name: string }
-    | { type: "image"; dataUrl: string; name: string };
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
+  /** What a blocking document distillation is doing right now, or null. */
+  const [attachmentDistillStatus, setAttachmentDistillStatus] = useState<string | null>(null);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
 
   // Garden note generation
@@ -994,13 +2032,31 @@ export default function WorkspaceClient({
     string[] | null
   >(null);
   const [learnDocumentMenuOpen, setLearnDocumentMenuOpen] = useState(false);
+  // Syllabus: the document Learn treats as the course study guide rather than as
+  // subject matter. null means "no syllabus".
+  const [learnSyllabusSlug, setLearnSyllabusSlug] = useState<string | null>(null);
+  const [learnSyllabusMenuOpen, setLearnSyllabusMenuOpen] = useState(false);
+  const [learnSyllabusUploading, setLearnSyllabusUploading] = useState(false);
+  // "I want to learn everything introductory about electronics" — a syllabus
+  // written to order, for learners who have material but no course outline.
+  const [learnSyllabusPrompt, setLearnSyllabusPrompt] = useState("");
+  const [learnSyllabusGenerating, setLearnSyllabusGenerating] = useState(false);
+  const learnSyllabusInputRef = useRef<HTMLInputElement | null>(null);
   const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
   const [showSettledLearnIndicator, setShowSettledLearnIndicator] =
     useState(false);
   const learnSkipManualReviewRef = useRef(false);
   const lastSyncedLearnSelectionRef = useRef<string | null>(null);
+  const lastSyncedLearnSyllabusRef = useRef<string | null>(null);
   const autoConfirmingLearnJobRef = useRef<string | null>(null);
-  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
+  const {
+    model,
+    setModel,
+    reasoningEffort,
+    setReasoningEffort,
+    intelligenceModes,
+    failover: modelFailover,
+  } = useAssistantIntelligence();
 
   // Prompts
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
@@ -1018,9 +2074,7 @@ export default function WorkspaceClient({
   const [isSavingNote, setIsSavingNote] = useState(false);
 
   // Model selector
-  const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const { models, modelsLoading, loadModels } = useAssistantModels();
   const canViewPublicChats =
     isOwner && clusterVisibility === "public" && chatAccessible;
   const canForkCluster =
@@ -1029,30 +2083,6 @@ export default function WorkspaceClient({
   useEffect(() => {
     setPrompts(loadPrompts());
   }, []);
-
-  const loadModels = useCallback(async () => {
-    if (modelsLoading || modelsLoaded) return;
-    setModelsLoading(true);
-    try {
-      const response = await fetch("/api/models");
-      const data = await response.json().catch(() => ({}));
-      const ids = Array.isArray(data.data)
-        ? data.data
-            .map((item: { id?: unknown }) =>
-              typeof item?.id === "string" ? item.id : null,
-            )
-            .filter((id: string | null): id is string => Boolean(id))
-        : [];
-      if (ids.length > 0) {
-        setModels(mergeAssistantModels(ids));
-      }
-      setModelsLoaded(true);
-    } catch {
-      // Keep the default model when the model list cannot be loaded.
-    } finally {
-      setModelsLoading(false);
-    }
-  }, [modelsLoaded, modelsLoading]);
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -1080,6 +2110,23 @@ export default function WorkspaceClient({
   useEffect(() => {
     fetchDocuments();
   }, [fetchDocuments]);
+
+  useEffect(() => {
+    const handleGardenDocumentsChanged = (raw: Event) => {
+      const detail = (raw as CustomEvent<{
+        gardenId?: string;
+        folder?: string;
+      }>).detail;
+      if (detail?.gardenId !== clusterSlug) return;
+      if (detail.folder) {
+        setExpandedFolders((current) => new Set(current).add(detail.folder!));
+      }
+      setGraphRefreshVersion((current) => current + 1);
+      void fetchDocuments();
+    };
+    window.addEventListener(GARDEN_DOCUMENTS_CHANGED_EVENT, handleGardenDocumentsChanged);
+    return () => window.removeEventListener(GARDEN_DOCUMENTS_CHANGED_EVENT, handleGardenDocumentsChanged);
+  }, [clusterSlug, fetchDocuments]);
 
   const fetchSavedLinks = useCallback(async () => {
     setLinksLoading(true);
@@ -1131,6 +2178,19 @@ export default function WorkspaceClient({
   ]);
 
   useEffect(() => {
+    if (learnState?.syllabusSourceId === undefined) return;
+    const syllabusSourceId = learnState.syllabusSourceId ?? null;
+    const syncKey = `${learnState.job?.id ?? learnState.confirmedLearningMapId ?? "idle"}:${syllabusSourceId ?? ""}`;
+    if (lastSyncedLearnSyllabusRef.current === syncKey) return;
+    lastSyncedLearnSyllabusRef.current = syncKey;
+    setLearnSyllabusSlug(syllabusSourceId);
+  }, [
+    learnState?.confirmedLearningMapId,
+    learnState?.job?.id,
+    learnState?.syllabusSourceId,
+  ]);
+
+  useEffect(() => {
     if (loadingDocs) return;
     const availableSourceSlugs = new Set(
       documents
@@ -1141,6 +2201,11 @@ export default function WorkspaceClient({
       current === null
         ? null
         : current.filter((sourceSlug) => availableSourceSlugs.has(sourceSlug)),
+    );
+    // A deleted syllabus silently reverts to "no syllabus" rather than starting
+    // a run against a document that is no longer there.
+    setLearnSyllabusSlug((current) =>
+      current && !availableSourceSlugs.has(current) ? null : current,
     );
   }, [documents, loadingDocs]);
 
@@ -1223,9 +2288,286 @@ export default function WorkspaceClient({
 
   const activeChat = chatSessions.find((s) => s.id === activeChatId) ?? null;
   const messages = activeChat?.messages ?? EMPTY_MESSAGES;
+  // Selecting a chat is enough to ask for its artifacts; waiting for the
+  // transcript to mount its cards is what made them appear a beat late.
+  useInlineArtifactPrefetch({
+    legacyChatSessionId: activeChatId,
+    gardenSlug: clusterSlug,
+  });
+  const hasRunningExternalAgentInActiveChat = messages.some(
+    hasRunningExternalAgent,
+  );
+  const hasRunningExternalAgentInAnyChat = chatSessions.some((session) =>
+    session.messages.some(hasRunningExternalAgent),
+  );
+  // Agent selection/health checks happen before the concrete launcher's flag
+  // rises. Keep the originating assistant turn active across that whole gap.
+  const [delegatedAgentLaunching, setDelegatedAgentLaunching] = useState(false);
+  const isStreaming =
+    (activeChatId !== null && streamingChatIds.has(activeChatId)) ||
+    hasRunningExternalAgentInActiveChat;
+  const transcriptScrollRef = useChatAutoScroll<HTMLElement>({
+    isResponding: isStreaming,
+    responseKey: chatAutoScrollResponseKey(messages),
+    contentKey: chatAutoScrollContentKey(messages),
+  });
+
+  // A runtime agent a super-agent turn asked for, and the follow-up turn its
+  // result comes back on. The structured delegation goes straight to the
+  // selected launcher so its slash command is never persisted as user input.
+  const awaitedLaunchRef = useRef<{
+    agentName: string;
+    /** Runs already in the transcript when the launch was submitted. */
+    knownRunIds: Set<string>;
+    runId: string | null;
+  } | null>(null);
+  const launchHopsRef = useRef(0);
+  const continuedDelegatedRunsRef = useRef(new Set<string>());
+  const delegatedAgentLaunchRef = useRef<AgentLaunchRequestPayload | null>(null);
+  const [pendingLaunchContinuation, setPendingLaunchContinuation] = useState<
+    string | null
+  >(null);
+
+  async function launchDelegatedAgent(
+    request: AgentLaunchRequestPayload,
+  ): Promise<void> {
+    if (!request.originClientMessageId?.trim()) {
+      setExternalAgentStatus(
+        `${request.agentName} could not start because the originating assistant message is missing.`,
+      );
+      return;
+    }
+    delegatedAgentLaunchRef.current = request;
+    setDelegatedAgentLaunching(true);
+    try {
+      switch (request.agentId) {
+        case "codex":
+          await selectCodex();
+          await launchCodex(request.brief);
+          return;
+        case "opencode":
+          await selectOpenCode();
+          await launchOpenCode(request.brief);
+          return;
+        case "ruflo":
+          await selectRuflo();
+          await launchRuflo(request.brief);
+          return;
+        case "deep-research":
+          if (!deepResearchAgent) await selectDeepResearch();
+          await launchDeepResearch(request.brief);
+          return;
+        case "agent-browser": {
+          const selected = agentBrowserAgent ?? (await selectAgentBrowser());
+          if (selected) await launchAgentBrowser(request.brief, selected);
+          return;
+        }
+        case "openplanter":
+          if (!openPlanterAgent) await selectOpenPlanter();
+          await launchOpenPlanter(request.brief);
+          return;
+        case "agent-reach":
+          if (!agentReachAgent) await selectAgentReach();
+          await launchAgentReach(request.brief);
+          return;
+        case "get-doc":
+          if (!getDocAgent) await selectGetDoc();
+          await launchGetDoc(request.brief);
+          return;
+        case "meeting-notes":
+          if (!meetingNotesAgent) await selectMeetingNotes();
+          await launchMeetingNotes(request.brief);
+          return;
+        case "deep-tutor":
+          if (!deepTutorAgent) await selectDeepTutor();
+          await launchDeepTutor(request.brief);
+          return;
+        case "career-ops":
+          if (!careerOpsAgent) await selectCareerOps();
+          await launchCareerOps(request.brief);
+          return;
+        case "vibe-trading":
+          if (!vibeTradingAgent) await selectVibeTrading();
+          await launchVibeTrading(request.brief);
+          return;
+        case "paper-trader":
+          if (!paperTraderAgent) selectPaperTrader();
+          await launchPaperTrader(request.brief);
+          return;
+        case "stock-analyst":
+          if (!stockAnalystAgent) await selectStockAnalyst();
+          await launchStockAnalyst(request.brief);
+          return;
+        case "deer-flow":
+          if (!deerFlowAgent) await selectDeerFlow();
+          await launchDeerFlow(request.brief);
+          return;
+        case "socials-manager":
+          await launchSocialsManager(request.brief);
+          return;
+        case "hardware-blueprint":
+          await launchHardwareBlueprint(request.brief);
+          return;
+        case "parametric-cad":
+          await launchParametricCad(request.brief);
+          return;
+        case "hyperframes":
+          await launchHyperframes(request.brief);
+          return;
+        case "openmontage":
+          await launchOpenMontage(request.brief);
+          return;
+        case "openwork":
+          await launchOpenwork(request.brief);
+          break;
+        case "openscience":
+          await launchOpenscience(request.brief);
+          return;
+        case "inbox-zero":
+          await launchInboxZero(request.brief);
+          return;
+        case "vimax":
+          await launchVimax(request.brief);
+          return;
+        case "money-printer":
+          await launchMoneyPrinter(request.brief);
+          return;
+        default:
+          setExternalAgentStatus(`${request.agentName} cannot be launched from this chat.`);
+      }
+    } finally {
+      if (delegatedAgentLaunchRef.current?.requestId === request.requestId) {
+        delegatedAgentLaunchRef.current = null;
+      }
+      setDelegatedAgentLaunching(false);
+    }
+  }
+
+  const agentLaunchQueue = useAgentLaunchQueue({
+    submit: (request) => void launchDelegatedAgent(request),
+    scopeKey: activeChatId,
+    ready: !isStreaming && launchingExternalAgent === null,
+    onLaunched: (request) => {
+      launchHopsRef.current += 1;
+      awaitedLaunchRef.current = request.awaitResult
+        ? {
+            agentName: request.agentName,
+            knownRunIds: new Set(
+              messages.flatMap((message) => {
+                const runId = assistantExternalAgentRunId(message);
+                return runId ? [runId] : [];
+              }),
+            ),
+            runId: null,
+          }
+        : null;
+    },
+    onDismissed: () => {
+      awaitedLaunchRef.current = null;
+      setExternalAgentStatus("");
+    },
+  });
+  const agentLaunchScopeRef = useRef(activeChatId);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (agentLaunchScopeRef.current === activeChatId) return;
+    agentLaunchScopeRef.current = activeChatId;
+    awaitedLaunchRef.current = null;
+    continuedDelegatedRunsRef.current.clear();
+    setPendingLaunchContinuation(null);
+  }, [activeChatId]);
+
+  // Bind the launch to the run it started. The queue never has two in flight, so
+  // the first run id that was not already in the transcript is this one's — and
+  // binding by id means a run the user started themselves can never be mistaken
+  // for the chain's next step.
+  useEffect(() => {
+    const awaited = awaitedLaunchRef.current;
+    if (!awaited || awaited.runId) return;
+    for (const message of messages) {
+      const runId = assistantExternalAgentRunId(message);
+      if (runId && !awaited.knownRunIds.has(runId)) {
+        awaited.runId = runId;
+        return;
+      }
+    }
   }, [messages]);
+
+  // Restore the private hand-back contract after a page refresh. The child
+  // observer remains mounted (but hidden), while this ref tells its terminal
+  // callback which Super Agent turn is waiting. A result already persisted
+  // before refresh is sent straight into the hidden continuation instead.
+  useEffect(() => {
+    if (loadingChats || pendingLaunchContinuation) return;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== "assistant" || message.delegatedAgentRun !== true) {
+        continue;
+      }
+      if (messages[index + 1]) return;
+      const runId = assistantExternalAgentRunId(message);
+      const continuationKey = runId ?? message.id ?? `delegated-${index}`;
+      if (continuedDelegatedRunsRef.current.has(continuationKey)) return;
+      const agentName = message.externalAgentName ?? "The delegated agent";
+      if ((message.externalAgentOutcome ?? "running") === "running") {
+        if (awaitedLaunchRef.current || !runId) return;
+        awaitedLaunchRef.current = {
+          agentName,
+          knownRunIds: new Set(),
+          runId,
+        };
+        return;
+      }
+      const awaited = awaitedLaunchRef.current;
+      awaitedLaunchRef.current = null;
+      continuedDelegatedRunsRef.current.add(continuationKey);
+      launchHopsRef.current = Math.max(1, launchHopsRef.current);
+      setPendingLaunchContinuation(
+        agentLaunchContinuationMessage({
+          agentName: awaited?.agentName ?? agentName,
+          outcome: message.externalAgentOutcome ?? "failed",
+          content: externalAgentCardContent(message),
+        }),
+      );
+      return;
+    }
+  }, [loadingChats, messages, pendingLaunchContinuation]);
+
+  // The result of a finished run, handed back as a new turn. It has to wait for
+  // the surface to go idle: React has not yet cleared the streaming flags when
+  // the run's card reports its outcome, and a submit made then is dropped.
+  useEffect(() => {
+    if (
+      !pendingLaunchContinuation ||
+      isStreaming ||
+      launchingExternalAgent !== null
+    )
+      return;
+    const continuation = pendingLaunchContinuation;
+    const timer = window.setTimeout(() => {
+      setPendingLaunchContinuation(null);
+      void handleSubmit(continuation, undefined, undefined, true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // handleSubmit is redeclared every render and reads current state when it
+    // runs; depending on it here would reschedule this timer on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLaunchContinuation, isStreaming, launchingExternalAgent]);
+
+  // External coding runs are server-owned. On return from another browser/app
+  // tab, reload their durable state so a completed result replaces the running
+  // card even if the browser suspended its EventSource while hidden.
+  useEffect(() => {
+    if (!hasRunningExternalAgentInAnyChat) return;
+    const reconcile = () => {
+      if (document.visibilityState === "visible") void fetchChatSessions();
+    };
+    document.addEventListener("visibilitychange", reconcile);
+    window.addEventListener("focus", reconcile);
+    return () => {
+      document.removeEventListener("visibilitychange", reconcile);
+      window.removeEventListener("focus", reconcile);
+    };
+  }, [fetchChatSessions, hasRunningExternalAgentInAnyChat]);
 
   // Tick an elapsed-time counter while an upload is in progress.
   useEffect(() => {
@@ -1403,6 +2745,7 @@ export default function WorkspaceClient({
     setUploadElapsedMs(0);
     setUploadLabel("");
     setIsHandwriting(false);
+    setParseWithVlm(false);
     setGenerateMap(true);
     setIsDragging(false);
     setShowUpload(true);
@@ -1489,6 +2832,7 @@ export default function WorkspaceClient({
     let successCount = 0;
     let duplicateCount = 0;
     let snapshotCount = 0;
+    let figureCount = 0;
     let mapGeneratedCount = 0;
     const screenshotWarnings: string[] = [];
     const mapWarnings: string[] = [];
@@ -1500,14 +2844,31 @@ export default function WorkspaceClient({
       setUploadStatuses((prev) => ({ ...prev, [key]: "uploading" }));
       setUploadSteps((prev) => ({ ...prev, [key]: "Starting…" }));
 
+      // One reader per file, most specific first: the VLM reads pixels, anydoc
+      // reads document packages, handwriting OCR is the fallback for the pages
+      // neither of the first two was asked for.
+      const usesVlm =
+        parseWithVlm &&
+        vlmStatus.available &&
+        VLM_PARSE_FILE_RE.test(file.name);
+      const usesAnydoc =
+        !usesVlm &&
+        parseWithAnydoc &&
+        anydocStatus.available &&
+        ANYDOC_PARSE_FILE_RE.test(file.name);
       const usesHandwriting =
-        isHandwriting && HANDWRITING_FILE_RE.test(file.name);
+        !usesVlm &&
+        !usesAnydoc &&
+        isHandwriting &&
+        HANDWRITING_FILE_RE.test(file.name);
       const formData = new FormData();
       formData.append("file", file);
       formData.append("clusterSlug", clusterSlug);
       if (uploadLabel.trim())
         formData.append("sourceLabel", uploadLabel.trim());
       formData.append("isHandwriting", String(usesHandwriting));
+      formData.append("parseWithVlm", String(usesVlm));
+      formData.append("parseWithAnydoc", String(usesAnydoc));
       formData.append("generateMap", String(usesHandwriting || generateMap));
 
       try {
@@ -1623,6 +2984,8 @@ export default function WorkspaceClient({
             successCount++;
             snapshotCount +=
               typeof result.imageCount === "number" ? result.imageCount : 0;
+            figureCount +=
+              typeof result.figureCount === "number" ? result.figureCount : 0;
             if (result.mapGenerated === true) {
               mapGeneratedCount++;
             }
@@ -1659,18 +3022,25 @@ export default function WorkspaceClient({
       uploadCanceledRef.current || abortController.signal.aborted;
 
     if (!canceled && (successCount > 0 || duplicateCount > 0)) {
+      const readerLabel = vlmUploadEnabled
+        ? "VLM parsing"
+        : anydocUploadEnabled
+          ? "anydoc conversion"
+          : isHandwriting && hasHandwritingCompatibleFile
+            ? "handwriting OCR"
+            : "";
       const generationLabel = !generateMap
-        ? "no map generation"
+        ? readerLabel || "no map generation"
         : mapWarnings.length > 0 && mapGeneratedCount === 0
           ? "source saving; map generation needs retry"
           : mapWarnings.length > 0
             ? "partial map generation"
-            : isHandwriting && hasHandwritingCompatibleFile
-              ? "handwriting OCR and map generation"
+            : readerLabel
+              ? `${readerLabel} and map generation`
               : "map generation";
       if (successCount > 0) {
         addToast(
-          `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${generationLabel}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
+          `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${generationLabel}${figureCount > 0 ? `, ${figureCount} figure${figureCount === 1 ? "" : "s"}` : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
         );
         for (const warning of screenshotWarnings) addToast(warning);
         for (const warning of mapWarnings) addToast(warning);
@@ -1698,6 +3068,7 @@ export default function WorkspaceClient({
       setUploadFiles([]);
       setUploadLabel("");
       setIsHandwriting(false);
+      setParseWithVlm(false);
       setGenerateMap(true);
       setIsDragging(false);
     }
@@ -1718,6 +3089,24 @@ export default function WorkspaceClient({
     for (const file of files) {
       const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
       try {
+        // A mesh is checked and stored whole; there is no text to extract from
+        // it, and /api/extract-text would attach its bytes decoded as mojibake.
+        const modelFormat = modelAttachmentFormat(file.name);
+        if (modelFormat) {
+          results.push(await attachModelFile(file, modelFormat));
+          continue;
+        }
+
+        // A song is stored whole for the same reason: its content is a
+        // waveform, and the audio analyzer reads it server-side during the
+        // turn. Without this branch an mp3 dropped here would go to the text
+        // extractor and come back as an unreadable file.
+        const audioFormat = audioAttachmentFormat(file.name);
+        if (audioFormat) {
+          results.push(await attachAudioFile(file, audioFormat));
+          continue;
+        }
+
         if (["jpg", "jpeg", "png", "webp"].includes(ext)) {
           // Extract via API (handles vision / OCR)
           const fd = new FormData();
@@ -1797,6 +3186,15 @@ export default function WorkspaceClient({
     }
 
     setChatAttachments((prev) => [...prev, ...results]);
+    // A document too large to paste into every turn becomes a book-to-skill
+    // skill now, while the user is still typing. The turn builds it too if it
+    // has to, but by then this has almost always already cached it.
+    const distillErrors = await distillAttachments(results, {
+      clusterSlug,
+      onStatus: (status) => setAttachmentDistillStatus(status),
+    });
+    setAttachmentDistillStatus(null);
+    for (const message of distillErrors) addToast(message);
     setExtractingAttachments(false);
   }
 
@@ -1825,9 +3223,6 @@ export default function WorkspaceClient({
         })),
       );
       setChatAttachments((prev) => [...prev, ...pastedImages]);
-      addToast(
-        `Pasted ${pastedImages.length} screenshot${pastedImages.length === 1 ? "" : "s"}`,
-      );
     } catch {
       addToast("Could not read pasted image");
     } finally {
@@ -1840,11 +3235,27 @@ export default function WorkspaceClient({
   }
 
   function toggleSelectedDocument(slug: string) {
-    setSelectedDocumentSlugs((prev) =>
-      prev.includes(slug)
-        ? prev.filter((item) => item !== slug)
-        : [...prev, slug],
-    );
+    let selecting = false;
+    setSelectedDocumentSlugs((prev) => {
+      selecting = !prev.includes(slug);
+      return selecting ? [...prev, slug] : prev.filter((item) => item !== slug);
+    });
+    // Selecting a document is the moment the user decides to ask about it, so
+    // the distillation starts here rather than inside the first turn — where it
+    // would block the answer for minutes with nothing on screen but "Thinking".
+    // The turn builds it too if this has not finished; the second caller joins
+    // the same build.
+    if (selecting) void distillGardenDocument(slug);
+  }
+
+  async function distillGardenDocument(slug: string) {
+    const document = documents.find((doc) => doc.slug === slug);
+    const label = document?.title ?? slug;
+    const result = await distillGardenDocumentSkill(clusterSlug, slug, label, {
+      onStatus: setAttachmentDistillStatus,
+    });
+    setAttachmentDistillStatus(null);
+    if (result.error) addToast(`${label}: ${result.error}`);
   }
 
   // ── Document delete ─────────────────────────────────────────────────────────
@@ -1998,7 +3409,6 @@ export default function WorkspaceClient({
   }
 
   async function handleNewChat() {
-    if (isStreaming) return;
     await createChatSession();
     textareaRef.current?.focus();
   }
@@ -2019,9 +3429,11 @@ export default function WorkspaceClient({
     }
   }
 
+  // A streaming chat can be deleted: the route cancels the turn and any agent
+  // run it started before it removes the rows.
   async function handleDeleteChat(sessionId?: number) {
     const targetId = sessionId ?? activeChatId;
-    if (!targetId || isStreaming) return;
+    if (!targetId) return;
     const targetSession = chatSessions.find((s) => s.id === targetId);
     if (!targetSession || (targetSession.isOwn === false && !isOwner)) return;
     setConfirmDeleteChatId(null);
@@ -2042,7 +3454,12 @@ export default function WorkspaceClient({
   // ── Garden note generation ──────────────────────────────────────────────────
 
   function startRenameChat(session: ChatSession) {
-    if (isStreaming || session.isOwn === false) return;
+    if (
+      streamingChatIdsRef.current.has(session.id) ||
+      session.isOwn === false
+    ) {
+      return;
+    }
     setConfirmDeleteChatId(null);
     setEditingChatId(session.id);
     setEditingChatTitle(session.title);
@@ -2221,6 +3638,9 @@ export default function WorkspaceClient({
               ...(learnIncludedSourceSlugs !== null
                 ? { includedSourceIds: learnIncludedSourceSlugs }
                 : {}),
+              ...(learnSyllabusSlug
+                ? { syllabusSourceId: learnSyllabusSlug }
+                : {}),
               includeSourceSnapshots: false,
               // Keep planning interruptible from the UI. The live checkbox is
               // evaluated when the proposed map reaches the review boundary.
@@ -2235,13 +3655,30 @@ export default function WorkspaceClient({
           throw new Error(data.error ?? "Learn action failed");
         }
 
+        if (data.accepted === true) {
+          await fetchLearnStatus();
+          if (endpoint === "plan") {
+            addToast("Learning map generation started", "success");
+          } else if (endpoint === "regenerate") {
+            addToast("Issue repair started", "success");
+          } else if (endpoint === "rebuild") {
+            addToast("Garden rebuild started", "success");
+          } else if (endpoint === "confirm" || endpoint === "generate") {
+            addToast("Lesson generation started", "success");
+          }
+          return true;
+        }
+
         if (endpoint === "clear") {
           lastSyncedLearnSelectionRef.current = null;
+          lastSyncedLearnSyllabusRef.current = null;
           autoConfirmingLearnJobRef.current = null;
           learnSkipManualReviewRef.current = false;
           setLearnIncludedSourceSlugs(null);
           setLearnSkipManualReview(false);
           setLearnDocumentMenuOpen(false);
+          setLearnSyllabusSlug(null);
+          setLearnSyllabusMenuOpen(false);
         }
         await fetchLearnStatus();
         await fetchDocuments();
@@ -2293,6 +3730,7 @@ export default function WorkspaceClient({
       fetchLearnStatus,
       learnIncludedSourceSlugs,
       learnSourceOnly,
+      learnSyllabusSlug,
     ],
   );
 
@@ -2420,11 +3858,13 @@ export default function WorkspaceClient({
     }
     const previousUser = messages[userIndex];
     if (!previousUser || previousUser.role !== "user") return;
-    if (previousUser.attachmentNames?.length) {
-      addToast("Add the original attachments again before regenerating.");
-      return;
-    }
-    void handleSubmit(previousUser.content, messages.slice(0, userIndex));
+    const retryAttachments = reusableChatAttachments(previousUser.attachments);
+    setInlineArtifactRetireVersion((current) => current + 1);
+    void handleSubmit(
+      previousUser.content,
+      messages.slice(0, userIndex),
+      retryAttachments,
+    );
   }
 
   function handleSteerActiveResponse(text: string) {
@@ -2444,6 +3884,7 @@ export default function WorkspaceClient({
         const correctionMessage: Message = {
           role: "user",
           content: correction,
+          createdAt: new Date().toISOString(),
         };
         context.messages.push(correctionMessage);
         updateChatMessages(context.sessionId, (current) => {
@@ -2472,27 +3913,3694 @@ export default function WorkspaceClient({
       });
   }
 
+  async function selectAgentBrowser(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/agent-browser/agents");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "Agent Browser is unavailable.",
+        );
+      }
+      const agents = Array.isArray(data?.agents) ? data.agents : [];
+      const pick =
+        agents.find(
+          (agent: { runtimeState?: string }) =>
+            agent.runtimeState === "available",
+        ) ??
+        agents.find((agent: { isDefault?: boolean }) => agent.isDefault) ??
+        agents[0];
+      if (!pick?.id) throw new Error("No Agent Browser agent is configured.");
+      const selected = {
+        id: String(pick.id),
+        name: String(pick.name ?? "Agent Browser"),
+      };
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setAgentBrowserAgent(selected);
+      if (data.available === false) {
+        setExternalAgentStatus(
+          `Agent Browser selected, but the runtime is unavailable${data.reason ? ` (${data.reason})` : ""}.`,
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Agent Browser is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  async function selectDeepResearch(): Promise<ExternalAgentSelection> {
+    const selected = { id: "deep-research", name: "Deep Research" };
+    setExternalAgentStatus("");
+    setAgentBrowserAgent(null);
+    setCodexAgent(null);
+    setOpenCodeAgent(null);
+    setOpenPlanterAgent(null);
+    setRufloAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setDeepResearchAgent(selected);
+    try {
+      const response = await fetch("/api/deep-research/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setExternalAgentStatus(
+          typeof data?.error === "string"
+            ? data.error
+            : "Deep Research is unavailable.",
+        );
+      } else if (data.runtimeState !== "available") {
+        setExternalAgentStatus(
+          `Deep Research selected, but the service is ${data.runtimeState ?? "unavailable"}.`,
+        );
+      }
+    } catch {
+      setExternalAgentStatus("Deep Research is unavailable.");
+    }
+    return selected;
+  }
+
+  async function selectOpenPlanter(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/openplanter/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.available !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "OpenPlanter is unavailable.",
+        );
+      }
+      const selected = {
+        id: OPENPLANTER_AGENT_ID,
+        name: OPENPLANTER_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setOpenPlanterAgent(selected);
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "OpenPlanter is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  async function selectAgentReach(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/agent-reach/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.available !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Agent Reach is unavailable.",
+        );
+      }
+      const selected = {
+        id: AGENT_REACH_AGENT_ID,
+        name: AGENT_REACH_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(selected);
+      const live = Array.isArray(data.channels)
+        ? data.channels.filter(
+            (channel: { status?: string }) => channel.status === "ok",
+          ).length
+        : 0;
+      if (!live) {
+        setExternalAgentStatus(
+          "Agent Reach selected, but no platform reported itself as reachable. Run `agent-reach doctor` to see what needs setup.",
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Agent Reach is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Get Doc installs nothing, so selecting it only asks which catalogs will
+   * answer — and warns when no contact address is configured, because that
+   * quietly costs downloads Unpaywall would otherwise have found.
+   */
+  async function selectMeetingNotes(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/meeting-notes/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.available !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Meeting Notes is unavailable.",
+        );
+      }
+      const selected = { id: MEETING_NOTES_AGENT_ID, name: MEETING_NOTES_AGENT_NAME };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setMeetingNotesAgent(selected);
+      if (data.speakerLabels !== true && typeof data.detail === "string") {
+        setExternalAgentStatus("Meeting Notes selected. " + data.detail);
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Meeting Notes is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  async function selectGetDoc(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/get-doc/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.available !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Get Doc is unavailable.",
+        );
+      }
+      const selected = { id: GET_DOC_AGENT_ID, name: GET_DOC_AGENT_NAME };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setGetDocAgent(selected);
+      if (data.contactConfigured !== true) {
+        setExternalAgentStatus(
+          "Get Doc selected. Set GET_DOC_CONTACT_EMAIL to let Unpaywall find more free full texts.",
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Get Doc is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Activating checks the clone and this Garden at once: a tutor that runs but
+   * has nothing to read is the failure worth catching before the first
+   * question, not after a vague answer.
+   */
+  async function selectDeepTutor(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch(
+        `/api/deep-tutor/health?gardenSlug=${encodeURIComponent(clusterSlug)}`,
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.available !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Deep Tutor is unavailable.",
+        );
+      }
+      const selected = { id: DEEP_TUTOR_AGENT_ID, name: DEEP_TUTOR_AGENT_NAME };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setDeepTutorAgent(selected);
+      const scope = data.scope as { rootCount?: number } | undefined;
+      if (!scope?.rootCount) {
+        setExternalAgentStatus(
+          `Deep Tutor selected, but ${clusterName} has no files on disk yet — it will answer from the conversation alone.`,
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Deep Tutor is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Same contract as Trading Agent: this agent cannot partially work, so an
+   * unbuilt environment is worth saying before a video is chosen.
+   */
+  async function selectShorts(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/shorts/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Shorts is unavailable.",
+        );
+      }
+      const selected = { id: SHORTS_AGENT_ID, name: SHORTS_AGENT_NAME };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(selected);
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Shorts is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  async function selectFormsmith(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/shaper/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Formsmith is unavailable.",
+        );
+      }
+      const selected = { id: FORMSMITH_AGENT_ID, name: FORMSMITH_AGENT_NAME };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setChatAttachments([]);
+      setFormsmithAgent(selected);
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(error instanceof Error ? error.message : "Formsmith is unavailable.");
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    if (!formsmithAgent) return;
+    if (
+      agentBrowserAgent || deepResearchAgent || codexAgent || openCodeAgent ||
+      openPlanterAgent || rufloAgent || agentReachAgent || getDocAgent || meetingNotesAgent ||
+      deepTutorAgent || careerOpsAgent || tradingAgentsAgent || vibeTradingAgent ||
+      deerFlowAgent || shortsAgent
+    ) {
+      // This synchronizes a newly added selector with the older selector states.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setFormsmithAgent(null);
+    }
+  }, [
+    agentBrowserAgent, agentReachAgent, careerOpsAgent, codexAgent, deepResearchAgent,
+    deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent, openCodeAgent,
+    openPlanterAgent, rufloAgent, shortsAgent, tradingAgentsAgent, vibeTradingAgent,
+  ]);
+
+  async function selectTradingAgents(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/tradingagents/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Trading Agent is unavailable.",
+        );
+      }
+      const selected = {
+        id: TRADINGAGENTS_AGENT_ID,
+        name: TRADINGAGENTS_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(selected);
+      // An unbuilt environment is worth saying before the request is filled in,
+      // not after.
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Trading Agent is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  async function selectCareerOps(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/career-ops/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Career Ops is unavailable.",
+        );
+      }
+      const selected = {
+        id: CAREER_OPS_AGENT_ID,
+        name: CAREER_OPS_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(selected);
+      // Not being set up is worth saying now rather than three steps into a run,
+      // but it is not a refusal: several modes need no candidate profile.
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      } else if (data.onboardingNeeded === true) {
+        setExternalAgentStatus(
+          `Career Ops selected. It has no candidate profile yet (${(data.missing ?? []).join(", ")}), so ask it to help build one before evaluating offers.`,
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Career Ops is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  async function selectCodex(): Promise<ExternalAgentSelection> {
+    const selected = { id: CODEX_AGENT_ID, name: CODEX_AGENT_NAME };
+    setExternalAgentStatus("");
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setOpenPlanterAgent(null);
+    setOpenCodeAgent(null);
+    setRufloAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setCodexAgent(selected);
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/codex/health?gardenSlug=${encodeURIComponent(clusterSlug)}`,
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.available !== true) {
+          setExternalAgentStatus(
+            explainCodexError(data.reason ?? data.error, "Codex is unavailable."),
+          );
+        }
+      } catch {
+        setExternalAgentStatus("Codex is unavailable.");
+      }
+    })();
+    return selected;
+  }
+
+  async function selectOpenCode(): Promise<ExternalAgentSelection> {
+    const selected = { id: OPENCODE_AGENT_ID, name: OPENCODE_AGENT_NAME };
+    setExternalAgentStatus("");
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setCodexAgent(null);
+    setOpenPlanterAgent(null);
+    setRufloAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setOpenCodeAgent(selected);
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/opencode/health?gardenSlug=${encodeURIComponent(clusterSlug)}`,
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.available !== true) {
+          setExternalAgentStatus(
+            explainOpenCodeError(
+              data.reason ?? data.error,
+              "OpenCode is unavailable.",
+            ),
+          );
+        } else if (data.repository?.name) {
+          setExternalAgentStatus(
+            `OpenCode connected to ${String(data.repository.name)}.`,
+          );
+        }
+      } catch {
+        setExternalAgentStatus("OpenCode is unavailable.");
+      }
+    })();
+    return selected;
+  }
+
+  async function selectRuflo(): Promise<ExternalAgentSelection> {
+    const selected = { id: RUFLO_AGENT_ID, name: RUFLO_AGENT_NAME };
+    setExternalAgentStatus("");
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setOpenPlanterAgent(null);
+    setCodexAgent(null);
+    setOpenCodeAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setRufloAgent(selected);
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/ruflo/health?gardenSlug=${encodeURIComponent(clusterSlug)}`,
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.available !== true) {
+          setExternalAgentStatus(
+            explainRufloError(data.reason ?? data.error, "Ruflo is unavailable."),
+          );
+        } else if (data.repository?.name) {
+          setExternalAgentStatus(
+            `Ruflo ready to swarm ${String(data.repository.name)}.`,
+          );
+        }
+      } catch {
+        setExternalAgentStatus("Ruflo is unavailable.");
+      }
+    })();
+    return selected;
+  }
+
+  async function prepareExternalAgentSession(userContent: string) {
+    // The external-turn route owns first-prompt title generation.
+    void userContent;
+    const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
+    if (delegatedAgentLaunchRef.current) {
+      if (!writableActiveChat) {
+        setExternalAgentStatus(
+          "The delegated agent could not find its originating chat message.",
+        );
+        return null;
+      }
+      return { session: writableActiveChat, title: undefined };
+    }
+    const session = writableActiveChat ?? (await createChatSession());
+    if (!session) return null;
+    return {
+      session,
+      title: undefined,
+    };
+  }
+
+  async function commitExternalAgentTurn(
+    session: ChatSession,
+    userContent: string,
+    assistantMessage: Message,
+    title?: string,
+    userMessageFields: Pick<Message, "attachmentNames" | "attachments"> = {},
+  ) {
+    const createdAt = new Date().toISOString();
+    if (delegatedAgentLaunchRef.current) {
+      let assistantIndex = -1;
+      for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+        if (session.messages[index]?.role === "assistant") {
+          assistantIndex = index;
+          break;
+        }
+      }
+      if (assistantIndex < 0) {
+        throw new Error("The assistant message for this delegated run was not found.");
+      }
+      const delegatedResult =
+        (assistantMessage.externalAgentOutcome &&
+          assistantMessage.externalAgentOutcome !== "running") ||
+        (!assistantExternalAgentRunId(assistantMessage) &&
+          assistantMessage.content.trim())
+          ? assistantMessage.content
+          : undefined;
+      const nextMessages = session.messages.map((message, index) =>
+        index === assistantIndex
+          ? {
+              ...message,
+              ...assistantMessage,
+              // The delegated worker is private implementation detail. Keep
+              // the Super Agent's assistant text as this row's real content;
+              // the worker result is durable metadata used by its hidden
+              // observer and the model-to-model continuation.
+              content: message.content,
+              delegatedAgentRun: true,
+              externalAgentOutcome:
+                assistantMessage.externalAgentOutcome ??
+                (delegatedResult !== undefined
+                  ? "failed"
+                  : message.externalAgentOutcome ?? "running"),
+              ...(message.delegatedAgentPreamble?.trim()
+                ? { delegatedAgentPreamble: message.delegatedAgentPreamble }
+                : message.content.trim()
+                  ? { delegatedAgentPreamble: message.content }
+                  : {}),
+              ...(delegatedResult !== undefined
+                ? { externalAgentResult: delegatedResult }
+                : message.externalAgentResult !== undefined
+                  ? { externalAgentResult: message.externalAgentResult }
+                  : {}),
+              ...(delegatedAgentLaunchRef.current?.agentName
+                ? { externalAgentName: delegatedAgentLaunchRef.current.agentName }
+                : {}),
+              createdAt: message.createdAt ?? createdAt,
+            }
+          : message,
+      );
+      updateChatMessages(session.id, nextMessages);
+      await persistChatSession(session.id, nextMessages);
+      return;
+    }
+    const nextMessages: Message[] = [
+      ...session.messages,
+      { role: "user", content: userContent, createdAt, ...userMessageFields },
+      { ...assistantMessage, createdAt },
+    ];
+    updateChatMessages(session.id, nextMessages);
+    await persistChatSession(session.id, nextMessages, title);
+  }
+
+  async function runWorkflowAutomation(workflow: LocalWorkflowSummary, workflowInput: string) {
+    const request = workflowInput.trim();
+    const userContent = request
+      ? `Run the ${workflow.name} automation\n\n${request}`
+      : `Run the ${workflow.name} automation`;
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) return;
+    setChatStreaming(prepared.session.id, true);
+    try {
+      const response = await fetch(`/api/workflows/local/${encodeURIComponent(workflow.id)}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: workflowInput }),
+      });
+      const payload = await response.json().catch(() => ({})) as Partial<WorkflowRunResponse> & { error?: string };
+      if (!response.ok || typeof payload.assistantContent !== "string") {
+        throw new Error(payload.error || `${workflow.name} could not be run.`);
+      }
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `${payload.assistantContent}\n\n[Open automation settings](/workflows?workflow=${encodeURIComponent(workflow.id)})`,
+        },
+        prepared.title,
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : `${workflow.name} could not be run.`;
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `**${workflow.name}** could not be run.\n\n${message}\n\n[Open automation settings](/workflows?workflow=${encodeURIComponent(workflow.id)})`,
+        },
+        prepared.title,
+      );
+    } finally {
+      setChatStreaming(prepared.session.id, false);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchAgentBrowser(
+    task: string,
+    selection: ExternalAgentSelection,
+  ) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Type a task for Agent Browser.");
+      return;
+    }
+    externalAgentLaunchRef.current = "agent-browser";
+    setLaunchingExternalAgent("agent-browser");
+    setExternalAgentStatus("");
+    const userContent = agentBrowserUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/agent-browser/agents/${encodeURIComponent(selection.id)}/runs`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ task }),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Agent Browser run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          agentBrowserRun: {
+            agentId: selection.id,
+            runId: String(data.run.runId),
+            task,
+          },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Agent Browser task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchDeepResearch(task: string) {
+    if (externalAgentLaunchRef.current) return;
+    // The saved defaults first, then whatever flags this message carries.
+    const request = parseResearchRequest(
+      task,
+      deepResearchDefaults(await loadAgentSettings("deep-research")),
+    );
+    if (!request.query) {
+      setExternalAgentStatus("Type a question for Deep Research.");
+      return;
+    }
+    externalAgentLaunchRef.current = "deep-research";
+    setLaunchingExternalAgent("deep-research");
+    setExternalAgentStatus("");
+    const userContent = deepResearchUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/deep-research/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The research run could not start.",
+        );
+      }
+      const runMessage = {
+        deepResearchRun: {
+          runId: String(data.run.runId),
+          query: request.query,
+          output: request.output,
+        },
+        externalAgentOutcome: "running" as const,
+      };
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        { role: "assistant", content: "", ...runMessage },
+        prepared.title,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The research run could not start.";
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Deep Research task could not start: ${message}`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchOpenPlanter(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Type a task for OpenPlanter.");
+      return;
+    }
+    externalAgentLaunchRef.current = "openplanter";
+    setLaunchingExternalAgent("openplanter");
+    setExternalAgentStatus("");
+    const userContent = openPlanterUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/openplanter/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, model, reasoningEffort }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The OpenPlanter run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          openPlanterRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The OpenPlanter task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * Start one run from Garden Chat.
+   *
+   * No recording is named, and that is not an omission: the Garden composer has
+   * no attachment tray for one, so the run takes the newest recording already on
+   * this conversation. An empty task is allowed here, unlike every other agent's
+   * launcher, because "transcribe the meeting" with nothing further said is a
+   * complete request.
+   */
+  async function launchMeetingNotes(task: string) {
+    if (externalAgentLaunchRef.current) return;
+    externalAgentLaunchRef.current = "meeting-notes";
+    setLaunchingExternalAgent("meeting-notes");
+    setExternalAgentStatus("");
+    const userContent = meetingNotesUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/meeting-notes/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The meeting notes could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          meetingNotesRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The meeting notes could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchGetDoc(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Describe the paper you are looking for.");
+      return;
+    }
+    externalAgentLaunchRef.current = "get-doc";
+    setLaunchingExternalAgent("get-doc");
+    setExternalAgentStatus("");
+    const userContent = getDocUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/get-doc/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, model, reasoningEffort }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The document search could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          getDocRun: { runId: String(data.run.runId), query: task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The document search could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * The Garden's slug is the whole difference between this and the Terminal's
+   * launch: it is what scopes the tutor to this Garden's material.
+   */
+  async function launchDeepTutor(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Ask Deep Tutor something about this Garden.");
+      return;
+    }
+    externalAgentLaunchRef.current = "deep-tutor";
+    setLaunchingExternalAgent("deep-tutor");
+    setExternalAgentStatus("");
+    const userContent = deepTutorUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/deep-tutor/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          gardenSlug: clusterSlug,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The tutoring turn could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          deepTutorRun: {
+            runId: String(data.run.runId),
+            task,
+            capability: String(data?.request?.capability ?? "chat"),
+          },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The tutoring turn could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchAgentReach(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Ask Agent Reach what to look up.");
+      return;
+    }
+    externalAgentLaunchRef.current = "agent-reach";
+    setLaunchingExternalAgent("agent-reach");
+    setExternalAgentStatus("");
+    const userContent = agentReachUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/agent-reach/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, model, reasoningEffort }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Agent Reach run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          agentReachRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Agent Reach task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function selectDeerFlow(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/deer-flow/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "DeerFlow is unavailable.",
+        );
+      }
+      const selected = {
+        id: DEER_FLOW_AGENT_ID,
+        name: DEER_FLOW_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setDeerFlowAgent(selected);
+      // An unbuilt environment is worth saying before the task is typed, and so
+      // is the cold start the first run has to pay.
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      } else if (data.serviceRunning !== true) {
+        setExternalAgentStatus(
+          "DeerFlow selected. Its Gateway starts with the first run, which takes about a minute.",
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "DeerFlow is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  async function selectVibeTrading(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/vibe-trading/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Vibe Trading is unavailable.",
+        );
+      }
+      const selected = {
+        id: VIBE_TRADING_AGENT_ID,
+        name: VIBE_TRADING_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setVibeTradingAgent(selected);
+      // An unbuilt environment is worth saying before the question is typed,
+      // and so is the cold start the first run has to pay.
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      } else if (data.serviceRunning !== true) {
+        setExternalAgentStatus(
+          "Vibe Trading selected. Its service starts with the first run, which takes about a minute.",
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Vibe Trading is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Selecting is a local decision and it shows immediately; the health check
+   * runs behind it. See the note on the terminal's copy — the round trip was
+   * long enough to read as the app having hung, and nothing in the answer
+   * changes what selecting means.
+   */
+  function selectPaperTrader(): ExternalAgentSelection {
+    const selected = {
+      id: PAPER_TRADER_AGENT_ID,
+      name: PAPER_TRADER_AGENT_NAME,
+    };
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setCodexAgent(null);
+    setOpenCodeAgent(null);
+    setOpenPlanterAgent(null);
+    setRufloAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setStockAnalystAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setFormsmithAgent(null);
+    setPaperTraderAgent(selected);
+    setExternalAgentStatus(
+      "Paper Trader selected. Send to start it. It runs while Breadboard is open and resumes next time unless you stop it.",
+    );
+
+    void (async () => {
+      try {
+        const response = await fetch("/api/paper-trader/health");
+        const data = await response.json().catch(() => ({}));
+        // Two clones have to be ready for this one, and only one of them is the
+        // arena; saying which is missing beats a desk that starts and never trades.
+        if (!response.ok || data.cloned !== true) {
+          setExternalAgentStatus(
+            typeof data?.reason === "string"
+              ? data.reason
+              : typeof data?.error === "string"
+                ? data.error
+                : "Paper Trader is unavailable.",
+          );
+          return;
+        }
+        if (data.available !== true && typeof data.reason === "string") {
+          setExternalAgentStatus(data.reason);
+        } else if (data?.desk?.running === true) {
+          setExternalAgentStatus("The trading desk is already running. Send to see it, or say stop.");
+        }
+      } catch {
+        // The run route reports the real reason if it comes to that.
+      }
+    })();
+
+    return selected;
+  }
+
+  // Selectors written before Paper Trader do not know its state, so fold it
+  // into the same one-runtime-at-a-time contract here.
+  useEffect(() => {
+    if (!paperTraderAgent) return;
+    if (
+      agentBrowserAgent || deepResearchAgent || codexAgent || openCodeAgent ||
+      openPlanterAgent || rufloAgent || agentReachAgent || getDocAgent || meetingNotesAgent ||
+      deepTutorAgent || careerOpsAgent || tradingAgentsAgent || vibeTradingAgent ||
+      stockAnalystAgent || deerFlowAgent || shortsAgent || formsmithAgent
+    ) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPaperTraderAgent(null);
+    }
+  }, [
+    agentBrowserAgent, agentReachAgent, careerOpsAgent, codexAgent, deepResearchAgent,
+    deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent, openCodeAgent,
+    openPlanterAgent, paperTraderAgent, rufloAgent, shortsAgent, stockAnalystAgent,
+    tradingAgentsAgent, vibeTradingAgent,
+  ]);
+
+  async function selectStockAnalyst(): Promise<ExternalAgentSelection | null> {
+    setExternalAgentStatus("");
+    try {
+      const response = await fetch("/api/stock-analyst/health");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.cloned !== true) {
+        throw new Error(
+          typeof data?.reason === "string"
+            ? data.reason
+            : typeof data?.error === "string"
+              ? data.error
+              : "Stock Analyst is unavailable.",
+        );
+      }
+      const selected = {
+        id: STOCK_ANALYST_AGENT_ID,
+        name: STOCK_ANALYST_AGENT_NAME,
+      };
+      setAgentBrowserAgent(null);
+      setDeepResearchAgent(null);
+      setCodexAgent(null);
+      setOpenCodeAgent(null);
+      setOpenPlanterAgent(null);
+      setRufloAgent(null);
+      setAgentReachAgent(null);
+      setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+      setDeepTutorAgent(null);
+      setCareerOpsAgent(null);
+      setTradingAgentsAgent(null);
+      setVibeTradingAgent(null);
+      setDeerFlowAgent(null);
+      setShortsAgent(null);
+      setFormsmithAgent(null);
+      setStockAnalystAgent(selected);
+      // An unbuilt environment is worth saying before the question is typed,
+      // and so is the cold start the first run has to pay.
+      if (data.available !== true && typeof data.reason === "string") {
+        setExternalAgentStatus(data.reason);
+      } else if (data.serviceRunning !== true) {
+        setExternalAgentStatus(
+          "Stock Analyst selected. Its backend starts with the first question, which takes about a minute.",
+        );
+      }
+      return selected;
+    } catch (error) {
+      setExternalAgentStatus(
+        error instanceof Error ? error.message : "Stock Analyst is unavailable.",
+      );
+      return null;
+    }
+  }
+
+  // Selectors written before Stock Analyst do not know its state, so fold it
+  // into the same one-runtime-at-a-time contract here.
+  useEffect(() => {
+    if (!stockAnalystAgent) return;
+    if (
+      agentBrowserAgent || deepResearchAgent || codexAgent || openCodeAgent ||
+      openPlanterAgent || rufloAgent || agentReachAgent || getDocAgent || meetingNotesAgent ||
+      deepTutorAgent || careerOpsAgent || tradingAgentsAgent || vibeTradingAgent ||
+      deerFlowAgent || shortsAgent || formsmithAgent
+    ) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStockAnalystAgent(null);
+    }
+  }, [
+    agentBrowserAgent, agentReachAgent, careerOpsAgent, codexAgent, deepResearchAgent,
+    deepTutorAgent, deerFlowAgent, formsmithAgent, getDocAgent, meetingNotesAgent, openCodeAgent,
+    openPlanterAgent, rufloAgent, shortsAgent, stockAnalystAgent,
+    tradingAgentsAgent, vibeTradingAgent,
+  ]);
+
+  /**
+   * Start one cutting run from a Garden chat. The clips belong to this chat, so
+   * the run route is given the session it was launched from and resolves the
+   * conversation itself.
+   */
+  async function launchShorts(request: ShortsRequest) {
+    if (externalAgentLaunchRef.current) return;
+    externalAgentLaunchRef.current = "shorts";
+    setLaunchingExternalAgent("shorts");
+    setExternalAgentStatus("");
+    const userContent = shortsUserMessage(request);
+    const label = shortsRunLabel(request);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/shorts/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ request, model, chatSessionId: prepared.session.id }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string" ? data.error : "The clips could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          shortsRun: { runId: String(data.run.runId), task: label },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The clips could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+    }
+  }
+
+  async function launchFormsmith(request: FormsmithRequest) {
+    if (externalAgentLaunchRef.current) return;
+    externalAgentLaunchRef.current = "formsmith";
+    setLaunchingExternalAgent("formsmith");
+    setExternalAgentStatus("");
+    const userContent = formsmithUserMessage(request);
+    const label = formsmithRunLabel(request);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/shaper/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ request, chatSessionId: prepared.session.id }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(typeof data?.error === "string" ? data.error : "The reconstruction could not start.");
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          formsmithRun: { runId: String(data.run.runId), task: label },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The reconstruction could not start: ${error instanceof Error ? error.message : "unknown error"}`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+    }
+  }
+
+  async function launchTradingAgents(request: TradingAgentsRequest) {
+    if (externalAgentLaunchRef.current) return;
+    externalAgentLaunchRef.current = "trading-agent";
+    setLaunchingExternalAgent("trading-agent");
+    setExternalAgentStatus("");
+    const userContent = tradingAgentsUserMessage(request);
+    const label = tradingAgentsRunLabel(request);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/tradingagents/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ request, model, reasoningEffort }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The analysis could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          tradingAgentsRun: { runId: String(data.run.runId), task: label },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The analysis could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+    }
+  }
+
+  async function launchCareerOps(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) {
+        setExternalAgentStatus(
+          "Paste a job posting, or name a mode — tracker, scan, cover, interview.",
+        );
+      }
+      return;
+    }
+    externalAgentLaunchRef.current = "career-ops";
+    setLaunchingExternalAgent("career-ops");
+    setExternalAgentStatus("");
+    const userContent = careerOpsUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/career-ops/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, model, reasoningEffort }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Career Ops run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          careerOpsRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Career Ops task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchVibeTrading(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) {
+        setExternalAgentStatus(
+          "Ask a finance question — a strategy to backtest, a factor to test, a market to look at.",
+        );
+      }
+      return;
+    }
+    externalAgentLaunchRef.current = "vibe-trading";
+    setLaunchingExternalAgent("vibe-trading");
+    setExternalAgentStatus("");
+    const userContent = vibeTradingUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/vibe-trading/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, model, reasoningEffort }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Vibe Trading run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          vibeTradingRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Vibe Trading request could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * Carry one instruction to the trading desk. The task may be empty — a bare
+   * command is how the desk is opened — so nothing refuses on a blank message.
+   */
+  async function launchPaperTrader(task: string) {
+    if (externalAgentLaunchRef.current) return;
+    externalAgentLaunchRef.current = "paper-trader";
+    setLaunchingExternalAgent("paper-trader");
+    setExternalAgentStatus("");
+    const userContent = paperTraderUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/paper-trader/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The trading desk could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          paperTraderRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The trading desk could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+    }
+  }
+
+  async function launchStockAnalyst(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) {
+        setExternalAgentStatus(
+          "Ask about a stock — a code or a name, and what you want to know: trend, levels, news, whether to hold.",
+        );
+      }
+      return;
+    }
+    externalAgentLaunchRef.current = "stock-analyst";
+    setLaunchingExternalAgent("stock-analyst");
+    setExternalAgentStatus("");
+    const userContent = stockAnalystUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/stock-analyst/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, model }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Stock Analyst run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          stockAnalystRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Stock Analyst question could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchDeerFlow(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) {
+        setExternalAgentStatus(
+          "Give DeerFlow a job — something to research, write, work out or produce.",
+        );
+      }
+      return;
+    }
+    externalAgentLaunchRef.current = "deer-flow";
+    setLaunchingExternalAgent("deer-flow");
+    setExternalAgentStatus("");
+    const userContent = deerFlowUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    try {
+      const response = await fetch("/api/deer-flow/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          // The files a run presents belong to this chat, which the route
+          // resolves from the legacy session id this surface still runs on.
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The DeerFlow run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          deerFlowRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The DeerFlow run could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchSocialsManager(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell the Socials Manager what the post is about.");
+      return;
+    }
+    externalAgentLaunchRef.current = "socials-manager";
+    setLaunchingExternalAgent("socials-manager");
+    setExternalAgentStatus("");
+    const userContent = socialsManagerUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `socials-manager-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/socials-manager/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The Socials Manager run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          socialsManagerRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Socials Manager task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchHardwareBlueprint(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell Hardware Blueprint what to build.");
+      return;
+    }
+    externalAgentLaunchRef.current = "hardware-blueprint";
+    setLaunchingExternalAgent("hardware-blueprint");
+    setExternalAgentStatus("");
+    const userContent = hardwareBlueprintUserMessage(brief);
+    const launchClientMessageId = crypto.randomUUID();
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `hardware-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/hardware-blueprint/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+          clientMessageId: launchClientMessageId,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The hardware blueprint run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          hardwareBlueprintRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The hardware blueprint could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchParametricCad(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell Parametric CAD what part to design.");
+      return;
+    }
+    externalAgentLaunchRef.current = "parametric-cad";
+    setLaunchingExternalAgent("parametric-cad");
+    setExternalAgentStatus("");
+    const userContent = parametricCadUserMessage(brief);
+    // This key is scoped to the prepared Garden conversation by the run
+    // manager. Replaying the launch request can therefore recover the same run
+    // without changing the legacy Garden transcript owner below.
+    const launchClientMessageId = crypto.randomUUID();
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `cad-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/cad/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+          clientMessageId: launchClientMessageId,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.error === "string"
+            ? data.error
+            : "The parametric CAD run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          parametricCadRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The parametric CAD run could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * ViMax produces a film from an idea: story, screenplay, cast, storyboard and
+   * drawn frames, ending in one artifact that plays as an animatic. The run is
+   * long, so the turn is recorded as soon as it starts and the card streams in.
+   */
+  async function launchVimax(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell ViMax what film to make.");
+      return;
+    }
+    externalAgentLaunchRef.current = "vimax";
+    setLaunchingExternalAgent("vimax");
+    setExternalAgentStatus("");
+    const userContent = vimaxUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `vimax-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/vimax/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The film could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          vimaxRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The film could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * The Legal Agent works on the documents attached to the message: they are
+   * written into the run's workspace and read there, one file at a time, so
+   * the answer can cite which document a point came from. Whatever it drafts
+   * comes back as an artifact of this Garden's chat.
+   */
+  async function launchLegal(task: string, attachments: readonly ChatAttachment[]) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Tell the Legal Agent what the assignment is.");
+      return;
+    }
+    externalAgentLaunchRef.current = "legal";
+    setLaunchingExternalAgent("legal");
+    setExternalAgentStatus("");
+    const userContent = legalUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `legal-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+        attachments: chatMessageAttachments(attachments),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/legal/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          attachments,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The assignment could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          legalRun: { runId: String(data.run.runId), task: legalRunLabel({ task }) },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The assignment could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * MoneyPrinter cuts stock footage to a script it writes itself, so the turn
+   * carries only the subject of the video. The finished MP4 comes back as an
+   * artifact of this Garden's chat rather than as text.
+   */
+  async function launchMoneyPrinter(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell MoneyPrinter what the video should be about.");
+      return;
+    }
+    externalAgentLaunchRef.current = "money-printer";
+    setLaunchingExternalAgent("money-printer");
+    setExternalAgentStatus("");
+    const userContent = moneyPrinterUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `money-printer-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/money-printer/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The video could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          moneyPrinterRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The video could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * OpenWork works inside its own durable workspace rather than this Garden's
+   * repository, so the turn carries only the task — there is no repository to
+   * name and nothing to check out.
+   */
+  async function launchOpenwork(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Tell OpenWork what to do in your workspace.");
+      return;
+    }
+    externalAgentLaunchRef.current = "openwork";
+    setLaunchingExternalAgent("openwork");
+    setExternalAgentStatus("");
+    const userContent = openworkUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `openwork-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/openwork/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The OpenWork run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          openworkRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The OpenWork run could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+
+  /**
+   * Inbox Zero works on the user's mailbox rather than on this Garden, so the
+   * turn carries only the instruction — there is no repository to name and
+   * nothing to check out. A cold run also starts the mail app's containers,
+   * which is why the turn is committed before the first event arrives.
+   */
+  async function launchInboxZero(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Tell Inbox Zero what to do with your email.");
+      return;
+    }
+    externalAgentLaunchRef.current = "inbox-zero";
+    setLaunchingExternalAgent("inbox-zero");
+    setExternalAgentStatus("");
+    const userContent = inboxZeroUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `inbox-zero-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/inbox-zero/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The Inbox Zero run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          inboxZeroRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Inbox Zero run could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  /**
+   * OpenScience works inside its own durable research workspace rather than
+   * this Garden's repository, so the turn carries only the goal — there is no
+   * repository to name and nothing to check out.
+   */
+  async function launchOpenscience(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Tell OpenScience what to investigate.");
+      return;
+    }
+    externalAgentLaunchRef.current = "openscience";
+    setLaunchingExternalAgent("openscience");
+    setExternalAgentStatus("");
+    const userContent = openscienceUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `openscience-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/openscience/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The OpenScience run could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          openscienceRun: { runId: String(data.run.runId), task },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The OpenScience run could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchHyperframes(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell HyperFrames what video to make.");
+      return;
+    }
+    externalAgentLaunchRef.current = "hyperframes";
+    setLaunchingExternalAgent("hyperframes");
+    setExternalAgentStatus("");
+    const userContent = hyperframesUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `hyperframes-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/hyperframes/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The video build could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          hyperframesRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The video build could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchOpenMontage(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Tell OpenMontage what video to produce.");
+      return;
+    }
+    externalAgentLaunchRef.current = "openmontage";
+    setLaunchingExternalAgent("openmontage");
+    setExternalAgentStatus("");
+    const userContent = openMontageUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      {
+        id: `openmontage-pending-${crypto.randomUUID()}`,
+        role: "user",
+        content: userContent,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    try {
+      const response = await fetch("/api/openmontage/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          model,
+          reasoningEffort,
+          chatSessionId: prepared.session.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(
+          typeof data?.message === "string"
+            ? data.message
+            : typeof data?.error === "string"
+              ? data.error
+              : "The production could not start.",
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          openMontageRun: { runId: String(data.run.runId), brief },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The production could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchCodex(
+    task: string,
+    attachments: readonly ChatAttachment[] = [],
+  ) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Type a coding task for Codex.");
+      return;
+    }
+    externalAgentLaunchRef.current = "codex";
+    setLaunchingExternalAgent("codex");
+    setExternalAgentStatus("");
+    const userContent = codexUserMessage(task);
+    const delegatedRequest = delegatedAgentLaunchRef.current;
+    const clientMessageId =
+      delegatedRequest?.originClientMessageId ?? crypto.randomUUID();
+    const persistedAttachments = chatMessageAttachments(attachments);
+    const userMessageFields = persistedAttachments.length
+      ? {
+          attachmentNames: persistedAttachments.map((attachment) => attachment.name),
+          attachments: persistedAttachments,
+        }
+      : {};
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    if (!delegatedRequest) {
+      updateChatMessages(prepared.session.id, [
+        ...prepared.session.messages,
+        {
+          id: `codex-pending-${clientMessageId}`,
+          role: "user",
+          content: userContent,
+          createdAt: new Date().toISOString(),
+          ...userMessageFields,
+        },
+      ]);
+    }
+    try {
+      const response = await fetch("/api/codex/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          gardenSlug: clusterSlug,
+          chatSessionId: prepared.session.id,
+          clientMessageId,
+          attachToExistingTurn: Boolean(delegatedRequest),
+          attachments: attachments.filter((attachment) => attachment.type === "image"),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId || !data.run.gardenSlug || !data.run.repository) {
+        throw new Error(
+          data?.message ?? explainCodexError(data?.error, "The Codex task could not start."),
+        );
+      }
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: "",
+        codexRun: {
+          runId: String(data.run.runId),
+          task,
+          gardenSlug: String(data.run.gardenSlug),
+          repository: String(data.run.repository),
+        },
+        externalAgentOutcome: "running",
+      };
+      setChatStreaming(prepared.session.id, true);
+      if (data.turnPersisted === true) {
+        if (delegatedRequest) {
+          await commitExternalAgentTurn(
+            prepared.session,
+            userContent,
+            assistantMessage,
+            prepared.title,
+            userMessageFields,
+          );
+        } else {
+          const createdAt = new Date().toISOString();
+          updateChatMessages(prepared.session.id, [
+            ...prepared.session.messages,
+            { role: "user", content: userContent, createdAt, ...userMessageFields },
+            { ...assistantMessage, createdAt },
+          ]);
+        }
+        // Reconcile canonical ids and the server-generated title without
+        // waiting for the user to leave and reopen this Garden.
+        void fetchChatSessions();
+      } else {
+        await commitExternalAgentTurn(
+          prepared.session,
+          userContent,
+          assistantMessage,
+          prepared.title,
+          userMessageFields,
+        );
+      }
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Codex task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+        userMessageFields,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchOpenCode(
+    task: string,
+    attachments: readonly ChatAttachment[] = [],
+  ) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Type a coding task for OpenCode.");
+      return;
+    }
+    externalAgentLaunchRef.current = "opencode";
+    setLaunchingExternalAgent("opencode");
+    setExternalAgentStatus("");
+    const userContent = openCodeUserMessage(task);
+    const persistedAttachments = chatMessageAttachments(attachments);
+    const userMessageFields = persistedAttachments.length
+      ? {
+          attachmentNames: persistedAttachments.map((attachment) => attachment.name),
+          attachments: persistedAttachments,
+        }
+      : {};
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    if (!delegatedAgentLaunchRef.current) {
+      updateChatMessages(prepared.session.id, [
+        ...prepared.session.messages,
+        {
+          id: `opencode-pending-${crypto.randomUUID()}`,
+          role: "user",
+          content: userContent,
+          createdAt: new Date().toISOString(),
+          ...userMessageFields,
+        },
+      ]);
+    }
+    try {
+      const response = await fetch("/api/opencode/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          task,
+          model,
+          reasoningEffort,
+          gardenSlug: clusterSlug,
+          attachments: attachments.filter(
+            (attachment) => attachment.type === "image",
+          ),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (
+        !response.ok ||
+        !data?.run?.runId ||
+        !data.run.gardenSlug ||
+        !data.run.repository
+      ) {
+        throw new Error(
+          data?.message ??
+            explainOpenCodeError(
+              data?.error,
+              "The OpenCode task could not start.",
+            ),
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          openCodeRun: {
+            runId: String(data.run.runId),
+            task,
+            gardenSlug: String(data.run.gardenSlug),
+            repository: String(data.run.repository),
+          },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+        userMessageFields,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The OpenCode task could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+        userMessageFields,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  async function launchRuflo(task: string) {
+    if (!task || externalAgentLaunchRef.current) {
+      if (!task) setExternalAgentStatus("Type an objective for the Ruflo swarm.");
+      return;
+    }
+    externalAgentLaunchRef.current = "ruflo";
+    setLaunchingExternalAgent("ruflo");
+    setExternalAgentStatus("");
+    const userContent = rufloUserMessage(task);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    if (!delegatedAgentLaunchRef.current) {
+      updateChatMessages(prepared.session.id, [
+        ...prepared.session.messages,
+        {
+          id: `ruflo-pending-${crypto.randomUUID()}`,
+          role: "user",
+          content: userContent,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    }
+    try {
+      const response = await fetch("/api/ruflo/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task, gardenSlug: clusterSlug }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (
+        !response.ok ||
+        !data?.run?.runId ||
+        !data.run.gardenSlug ||
+        !data.run.repository
+      ) {
+        throw new Error(
+          data?.message ??
+            explainRufloError(data?.error, "The Ruflo swarm could not start."),
+        );
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: "",
+          rufloRun: {
+            runId: String(data.run.runId),
+            task,
+            gardenSlug: String(data.run.gardenSlug),
+            repository: String(data.run.repository),
+          },
+          externalAgentOutcome: "running",
+        },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        {
+          role: "assistant",
+          content: `The Ruflo swarm could not start: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
+  function handleExternalAgentTerminal(
+    runId: string,
+    result: ExternalAgentTerminalResult,
+  ) {
+    // Only the assistant half of the turn owns the run: the launch stamps the
+    // same descriptor on the user message, and rewriting that one would replace
+    // what the person typed with the agent's answer.
+    const ownsRun = (message: Message) =>
+      assistantExternalAgentRunId(message) === runId;
+    const session = chatSessions.find((candidate) =>
+      candidate.messages.some(ownsRun),
+    );
+    if (!session) return;
+    const nextMessages = session.messages.map((message) => {
+      return ownsRun(message)
+        ? {
+            ...message,
+            content:
+              message.delegatedAgentRun === true
+                ? message.content
+                : result.content,
+            ...(message.delegatedAgentRun === true
+              ? { externalAgentResult: result.content }
+              : {}),
+            externalAgentOutcome: result.outcome,
+            ...(result.usage ? { usage: result.usage } : {}),
+            ...(result.activity?.length
+              ? { externalAgentActivity: result.activity }
+              : {}),
+            ...(result.edits ? { externalAgentEdits: result.edits } : {}),
+            ...(result.state ? { externalAgentState: result.state } : {}),
+          }
+        : message;
+    });
+    setChatStreaming(session.id, false);
+    updateChatMessages(session.id, nextMessages);
+    void persistChatSession(session.id, nextMessages);
+
+    // If the assistant started this run and asked to hear how it went, hand the
+    // outcome back as a new turn. Matching on the bound run id keeps a run the
+    // user started themselves out of the chain.
+    const awaited = awaitedLaunchRef.current;
+    if (awaited?.runId !== runId) return;
+    awaitedLaunchRef.current = null;
+    continuedDelegatedRunsRef.current.add(runId);
+    if (launchHopsRef.current >= MAX_AGENT_LAUNCH_HOPS) {
+      setExternalAgentStatus(
+        `${awaited.agentName} finished. The assistant has handed off ${launchHopsRef.current} times in a row, so it is waiting for you before going further.`,
+      );
+      return;
+    }
+    setPendingLaunchContinuation(
+      agentLaunchContinuationMessage({
+        agentName: awaited.agentName,
+        outcome: result.outcome,
+        content: result.content,
+      }),
+    );
+  }
+
   async function handleSubmit(
     textOverride?: string,
     historyOverride?: Message[],
+    attachmentOverride?: readonly ChatAttachment[],
+    internalAgentContinuation = false,
   ) {
     const text = (textOverride ?? input).trim();
-    const pendingAttachments =
-      textOverride === undefined ? chatAttachments : [];
-    if ((!text && pendingAttachments.length === 0) || isStreaming) return;
+    const pendingAttachments: ChatAttachment[] = attachmentOverride
+      ? [...attachmentOverride]
+      : textOverride === undefined
+        ? chatAttachments
+        : [];
+    if (
+      (!text && pendingAttachments.length === 0) ||
+      isStreaming ||
+      launchingExternalAgent
+    )
+      return;
+
+    // Only the composer calls this with no override, so this is the one place
+    // that knows a human is speaking: it ends whatever hand-off chain was
+    // running and drops any launch still waiting to be confirmed.
+    if (textOverride === undefined) {
+      launchHopsRef.current = 0;
+      awaitedLaunchRef.current = null;
+      agentLaunchQueue.reset();
+    }
+
+    // Refuse an impossible combination before anything is dispatched. The
+    // branches below are a priority cascade, so without this a second runtime
+    // agent or a stacked skill would be silently swallowed into the winner's
+    // task string instead of being reported.
+    const conflict = findCapabilityConflict({
+      text,
+      surface: "garden_chat",
+      attachmentCount: pendingAttachments.length,
+      activeRuntimeAgentId:
+        (codexAgent && "codex") ||
+        (openCodeAgent && "opencode") ||
+        (rufloAgent && "ruflo") ||
+        (deepResearchAgent && "deep-research") ||
+        (openPlanterAgent && "openplanter") ||
+        (agentReachAgent && "agent-reach") ||
+        (getDocAgent && "get-doc") ||
+        (meetingNotesAgent && "meeting-notes") ||
+        (deepTutorAgent && "deep-tutor") ||
+        (careerOpsAgent && "career-ops") ||
+        (tradingAgentsAgent && "trading-agent") ||
+        (shortsAgent && "shorts") ||
+        (formsmithAgent && "formsmith") ||
+        (vibeTradingAgent && "vibe-trading") ||
+        (stockAnalystAgent && "stock-analyst") ||
+    (paperTraderAgent && "paper-trader") ||
+        (deerFlowAgent && "deer-flow") ||
+        (agentBrowserAgent && "agent-browser") ||
+        null,
+    });
+    if (conflict) {
+      setExternalAgentStatus(conflict.message);
+      return;
+    }
+    setExternalAgentStatus("");
+
+    const codexTask = taskFromCodexCommand(text);
+    if (codexTask !== null) {
+      const codexAttachments = pendingAttachments;
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        if (!codexAgent) await selectCodex();
+        if (codexTask || codexAttachments.length) {
+          await launchCodex(
+            codexTask || "Review the attached screenshot and implement the requested fix.",
+            codexAttachments,
+          );
+        }
+      })();
+      return;
+    }
+
+    const rufloTask = taskFromRufloCommand(text);
+    if (rufloTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        if (!rufloAgent) await selectRuflo();
+        if (rufloTask) await launchRuflo(rufloTask);
+      })();
+      return;
+    }
+
+    const openCodeTask = taskFromOpenCodeCommand(text);
+    if (openCodeTask !== null) {
+      const openCodeAttachments = pendingAttachments;
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        if (!openCodeAgent) await selectOpenCode();
+        if (openCodeTask || openCodeAttachments.length) {
+          await launchOpenCode(
+            openCodeTask || "Review the attached screenshot and implement the requested fix.",
+            openCodeAttachments,
+          );
+        }
+      })();
+      return;
+    }
+
+    const openPlanterTask = taskFromOpenPlanterCommand(text);
+    if (openPlanterTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = openPlanterAgent ?? (await selectOpenPlanter());
+        if (selected) await launchOpenPlanter(openPlanterTask);
+      })();
+      return;
+    }
+
+    const agentReachTask = taskFromAgentReachCommand(text);
+    if (agentReachTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = agentReachAgent ?? (await selectAgentReach());
+        if (selected) await launchAgentReach(agentReachTask);
+      })();
+      return;
+    }
+
+    const deepTutorTask = taskFromDeepTutorCommand(text);
+    if (deepTutorTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = deepTutorAgent ?? (await selectDeepTutor());
+        if (selected) await launchDeepTutor(deepTutorTask);
+      })();
+      return;
+    }
+
+    const meetingNotesTask = taskFromMeetingNotesCommand(text);
+    if (meetingNotesTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = meetingNotesAgent ?? (await selectMeetingNotes());
+        // A bare token is already a complete request here: it means "the
+        // recording in this chat", so this launches rather than waiting for a
+        // sentence the way the other agents do.
+        if (selected) await launchMeetingNotes(meetingNotesTask);
+      })();
+      return;
+    }
+
+    const getDocTask = taskFromGetDocCommand(text);
+    if (getDocTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = getDocAgent ?? (await selectGetDoc());
+        if (selected) await launchGetDoc(getDocTask);
+      })();
+      return;
+    }
+
+    const careerOpsTask = taskFromCareerOpsCommand(text);
+    if (careerOpsTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = careerOpsAgent ?? (await selectCareerOps());
+        if (selected) await launchCareerOps(careerOpsTask);
+      })();
+      return;
+    }
+
+    const deerFlowTask = taskFromDeerFlowCommand(text);
+    if (deerFlowTask !== null) {
+      setInput("");
+      void (async () => {
+        const selected = deerFlowAgent ?? (await selectDeerFlow());
+        if (selected) await launchDeerFlow(deerFlowTask);
+      })();
+      return;
+    }
+    const vibeTradingTask = taskFromVibeTradingCommand(text);
+    if (vibeTradingTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = vibeTradingAgent ?? (await selectVibeTrading());
+        if (selected) await launchVibeTrading(vibeTradingTask);
+      })();
+      return;
+    }
+    const stockAnalystTask = taskFromStockAnalystCommand(text);
+    if (stockAnalystTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = stockAnalystAgent ?? (await selectStockAnalyst());
+        if (selected) await launchStockAnalyst(stockAnalystTask);
+      })();
+      return;
+    }
+    const paperTraderTask = taskFromPaperTraderCommand(text);
+    if (paperTraderTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        // A bare token selects and stops there; the locked composer's send
+        // button is what opens the desk.
+        const selected = paperTraderAgent ?? selectPaperTrader();
+        if (selected) await launchPaperTrader(paperTraderTask);
+      })();
+      return;
+    }
+
+    const tradingAgents = parseTradingAgentsCommand(text);
+    if (tradingAgents) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = tradingAgentsAgent ?? (await selectTradingAgents());
+        // The command only opens the form: a run needs a complete request.
+        if (selected) setTradingAgentsSeed(tradingAgents.partial);
+      })();
+      return;
+    }
+
+    const shorts = parseShortsCommand(text);
+    if (shorts) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = shortsAgent ?? (await selectShorts());
+        // Same: the command opens the form, and a video still has to be chosen.
+        if (selected) setShortsSeed(shorts.partial);
+      })();
+      return;
+    }
+
+    if (isFormsmithCommand(text)) {
+      setInput("");
+      setChatAttachments([]);
+      void selectFormsmith();
+      return;
+    }
+
+    const socialsManagerBrief = taskFromSocialsManagerCommand(text);
+    if (socialsManagerBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchSocialsManager(socialsManagerBrief);
+      return;
+    }
+
+    const hardwareBrief = taskFromHardwareBlueprintCommand(text);
+    if (hardwareBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchHardwareBlueprint(hardwareBrief);
+      return;
+    }
+
+    const cadBrief = taskFromParametricCadCommand(text);
+    if (cadBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchParametricCad(cadBrief);
+      return;
+    }
+
+    const videoBrief = briefFromHyperframesCommand(text);
+    if (videoBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchHyperframes(videoBrief);
+      return;
+    }
+
+    const productionBrief = briefFromOpenMontageCommand(text);
+    if (productionBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchOpenMontage(productionBrief);
+      return;
+    }
+
+    const openworkTask = taskFromOpenworkCommand(text);
+    if (openworkTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchOpenwork(openworkTask);
+      return;
+    }
+
+    const openscienceTask = taskFromOpenscienceCommand(text);
+    if (openscienceTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchOpenscience(openscienceTask);
+      return;
+    }
+
+    const inboxZeroTask = taskFromInboxZeroCommand(text);
+    if (inboxZeroTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchInboxZero(inboxZeroTask);
+      return;
+    }
+
+    const filmBrief = briefFromVimaxCommand(text);
+    if (filmBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchVimax(filmBrief);
+      return;
+    }
+
+    const moneyPrinterBrief = briefFromMoneyPrinterCommand(text);
+    if (moneyPrinterBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchMoneyPrinter(moneyPrinterBrief);
+      return;
+    }
+
+    // The attachments are taken before they are cleared: for the Legal Agent
+    // they are the documents the run works on, not decoration on the message.
+    const legalTask = taskFromLegalCommand(text);
+    if (legalTask !== null) {
+      const legalDocuments = pendingAttachments;
+      setInput("");
+      setChatAttachments([]);
+      void launchLegal(legalTask, legalDocuments);
+      return;
+    }
+
+    const deepResearchTask = taskFromDeepResearchCommand(text);
+    if (deepResearchTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        if (!deepResearchAgent) await selectDeepResearch();
+        await launchDeepResearch(deepResearchTask);
+      })();
+      return;
+    }
+
+    const agentBrowserTask = taskFromAgentBrowserCommand(text);
+    if (agentBrowserTask !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void (async () => {
+        const selected = agentBrowserAgent ?? (await selectAgentBrowser());
+        if (selected) await launchAgentBrowser(agentBrowserTask, selected);
+      })();
+      return;
+    }
+
+    if (rufloAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchRuflo(text);
+      return;
+    }
+    if (codexAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchCodex(
+        text || "Review the attached screenshot and implement the requested fix.",
+        pendingAttachments,
+      );
+      return;
+    }
+    if (openCodeAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchOpenCode(
+        text || "Review the attached screenshot and implement the requested fix.",
+        pendingAttachments,
+      );
+      return;
+    }
+    if (openPlanterAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchOpenPlanter(text);
+      return;
+    }
+    if (agentReachAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchAgentReach(text);
+      return;
+    }
+    if (getDocAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchGetDoc(text);
+      return;
+    }
+    if (deepTutorAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchDeepTutor(text);
+      return;
+    }
+    if (careerOpsAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchCareerOps(text);
+      return;
+    }
+    if (deerFlowAgent) {
+      setInput("");
+      void launchDeerFlow(text);
+      return;
+    }
+    if (vibeTradingAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchVibeTrading(text);
+      return;
+    }
+    if (stockAnalystAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchStockAnalyst(text);
+      return;
+    }
+    if (paperTraderAgent) {
+      // An empty send is "start the desk", so unlike every other agent here
+      // there is nothing to refuse.
+      setInput("");
+      setChatAttachments([]);
+      void launchPaperTrader(text);
+      return;
+    }
+    if (deepResearchAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchDeepResearch(text);
+      return;
+    }
+    if (agentBrowserAgent) {
+      setInput("");
+      setChatAttachments([]);
+      void launchAgentBrowser(text, agentBrowserAgent);
+      return;
+    }
+
     const responseStartedAt = performance.now();
 
     const writableActiveChat = activeChat?.isOwn === false ? null : activeChat;
-    const firstMessageTitle = chatTitleFromFirstMessage(
-      text || pendingAttachments[0]?.name || "Document review",
-    );
-    const session =
-      writableActiveChat ?? (await createChatSession(firstMessageTitle));
+    const session = writableActiveChat ?? (await createChatSession());
     if (!session) return;
 
     const sessionId = session.id;
+    if (streamingChatIdsRef.current.has(sessionId)) return;
     const history = historyOverride ?? session.messages;
-    const title = history.length === 0 ? firstMessageTitle : undefined;
+    // The canonical first-turn pipeline replaces "New chat" with the title
+    // returned by its dedicated plain-LLM request. Do not race it with a
+    // browser-side heuristic when this transcript is persisted.
+    const title: string | undefined = undefined;
     const steerContext = { sessionId, messages: [] as Message[] };
     activeSteerContextRef.current = steerContext;
 
@@ -2504,15 +7612,22 @@ export default function WorkspaceClient({
       (attachmentNames.length > 0
         ? `Attached: ${attachmentNames.join(", ")}`
         : "");
+    const turnCreatedAt = new Date().toISOString();
     const userMsg: Message = {
       role: "user",
       content: displayText,
+      createdAt: turnCreatedAt,
+      ...(internalAgentContinuation ? { internalAgentContinuation: true } : {}),
       ...(attachmentNames.length > 0 ? { attachmentNames } : {}),
+      ...(pendingAttachments.length > 0
+        ? { attachments: chatMessageAttachments(pendingAttachments) }
+        : {}),
     };
     const nextMessages = [...history, userMsg];
     const assistantMsg: Message = {
       role: "assistant",
       content: "",
+      createdAt: turnCreatedAt,
       sources: [],
       thinking: "",
     };
@@ -2525,7 +7640,7 @@ export default function WorkspaceClient({
 
     setInput("");
     setChatAttachments([]);
-    setIsStreaming(true);
+    setChatStreaming(sessionId, true);
     updateChatMessages(sessionId, finalMessages);
     if (title) {
       setChatSessions((prev) =>
@@ -2576,7 +7691,7 @@ export default function WorkspaceClient({
         finalMessages = messagesWithAssistant();
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
-        setIsStreaming(false);
+        setChatStreaming(sessionId, false);
         if (activeSteerContextRef.current === steerContext) {
           activeSteerContextRef.current = null;
         }
@@ -2618,7 +7733,7 @@ export default function WorkspaceClient({
         finalMessages = messagesWithAssistant();
         updateChatMessages(sessionId, finalMessages);
         await persistChatSession(sessionId, finalMessages, title);
-        setIsStreaming(false);
+        setChatStreaming(sessionId, false);
         if (activeSteerContextRef.current === steerContext) {
           activeSteerContextRef.current = null;
         }
@@ -2628,8 +7743,11 @@ export default function WorkspaceClient({
     }
 
     let agentFailed = false;
+    let agentCompleted = false;
+    let agentReportedError = false;
+    let agentSignal: AbortSignal | undefined;
     try {
-      const signal = agentActivity.start();
+      agentSignal = agentActivity.start();
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2646,8 +7764,9 @@ export default function WorkspaceClient({
           reasoningEffort,
           attachments: pendingAttachments,
           selectedDocumentSlugs,
+          adhdMode: isDirectModeEnabled(),
         }),
-        signal,
+        signal: agentSignal,
       });
 
       if (!res.ok || !res.body) {
@@ -2672,7 +7791,7 @@ export default function WorkspaceClient({
 
       if (res.headers.get("X-Breadboard-AI-Fallback") === "1") {
         assistantMsg.thinking =
-          "OpenHarness failed at runtime. OPENHARNESS_MODE=preferred allowed this visible legacy ChatMock fallback.\n";
+          "Hermes failed at runtime. HERMES_MODE=preferred allowed this visible legacy ChatMock fallback.\n";
       }
 
       const reader = res.body.getReader();
@@ -2690,12 +7809,17 @@ export default function WorkspaceClient({
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           const payload = line.slice(6);
-          if (payload === "[DONE]") break;
+          if (payload === "[DONE]") {
+            agentCompleted = true;
+            break;
+          }
 
           try {
             const event = JSON.parse(payload) as
               | { type: "sources"; sources: string[] }
               | { type: "delta"; text: string }
+              | { type: "replace"; text: string }
+              | { type: "segment"; text: string; streamed: boolean }
               | { type: "thinking"; text: string }
               | { type: "tool"; toolName?: string; status?: string }
               | { type: "permission"; description?: string; requestId?: string }
@@ -2703,6 +7827,16 @@ export default function WorkspaceClient({
               | { type: "runtime"; backend: string; fallback: boolean }
               | { type: "verification"; verification: VerificationSummary }
               | { type: "usage"; usage: unknown }
+              | {
+                  type: "agent_launch";
+                  requestId: string;
+                  agentId: string;
+                  agentName: string;
+                  command: string;
+                  brief: string;
+                  reason: string;
+                  awaitResult: boolean;
+                }
               | {
                   type: `artifact.${string}`;
                   artifactId: string;
@@ -2717,7 +7851,12 @@ export default function WorkspaceClient({
 
             agentActivity.handleEvent(
               event as unknown as Record<string, unknown>,
+              agentSignal,
             );
+
+            // Queued, never launched from here: this turn is still streaming,
+            // and its own submit would be refused.
+            if (agentLaunchQueue.handleEvent(event)) continue;
 
             if (event.type === "sources") {
               assistantMsg.sources = event.sources;
@@ -2725,6 +7864,20 @@ export default function WorkspaceClient({
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "delta") {
               assistantMsg.content += event.text;
+              finalMessages = messagesWithAssistant();
+              updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "replace") {
+              assistantMsg.content = event.text;
+              finalMessages = messagesWithAssistant();
+              updateChatMessages(sessionId, finalMessages);
+            } else if (event.type === "segment") {
+              // Streamed text so far was tool-call narration, not the answer.
+              // Park it in the thinking strip; the bubble restarts with the
+              // next segment.
+              if (typeof event.text === "string" && event.text.trim()) {
+                assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\n${event.text}`.trim();
+              }
+              if (event.streamed) assistantMsg.content = "";
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "usage") {
@@ -2740,7 +7893,8 @@ export default function WorkspaceClient({
                 updateChatMessages(sessionId, finalMessages);
               }
             } else if (event.type === "error") {
-              assistantMsg.content += `\n\n${event.error ?? "OpenHarness reported an error."}`;
+              agentReportedError = true;
+              assistantMsg.content += `\n\n${event.error ?? "Hermes reported an error."}`;
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "verification") {
@@ -2748,10 +7902,18 @@ export default function WorkspaceClient({
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type === "runtime" && event.fallback) {
-              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nOpenHarness unavailable — using the visible preferred-mode ChatMock fallback.`;
+              assistantMsg.thinking = `${assistantMsg.thinking ?? ""}\nHermes unavailable — using the visible preferred-mode ChatMock fallback.`;
               finalMessages = messagesWithAssistant();
               updateChatMessages(sessionId, finalMessages);
             } else if (event.type.startsWith("artifact.")) {
+              if (
+                "assistantMessageId" in event &&
+                typeof event.assistantMessageId === "string"
+              ) {
+                assistantMsg.artifactMessageId = event.assistantMessageId;
+                finalMessages = messagesWithAssistant();
+                updateChatMessages(sessionId, finalMessages);
+              }
               window.dispatchEvent(new CustomEvent(ARTIFACT_BROWSER_EVENT, { detail: event }));
             }
           } catch {
@@ -2770,14 +7932,24 @@ export default function WorkspaceClient({
       finalMessages = messagesWithAssistant();
       updateChatMessages(sessionId, finalMessages);
     } finally {
-      agentActivity.finish(agentFailed);
+      agentActivity.finish(agentFailed, agentSignal);
       assistantMsg.responseDurationMs = Math.round(
         performance.now() - responseStartedAt,
       );
       finalMessages = messagesWithAssistant();
       updateChatMessages(sessionId, finalMessages);
       await persistChatSession(sessionId, finalMessages, title);
-      setIsStreaming(false);
+      setChatStreaming(sessionId, false);
+      if (
+        agentCompleted &&
+        !agentReportedError &&
+        assistantMsg.content.trim()
+      ) {
+        notifyTaskCompleted(displayText, {
+          chatId: sessionId,
+          activeChatId: activeChatIdRef.current,
+        });
+      }
       if (activeSteerContextRef.current === steerContext) {
         activeSteerContextRef.current = null;
       }
@@ -2837,6 +8009,20 @@ export default function WorkspaceClient({
   );
   const handwritingUploadEnabled =
     isHandwriting && hasHandwritingCompatibleFile;
+  const hasVlmCompatibleFile = uploadFiles.some((f) =>
+    VLM_PARSE_FILE_RE.test(f.name),
+  );
+  const { status: vlmStatus, loading: vlmStatusLoading } =
+    useVlmOcrAvailability(showUpload && hasVlmCompatibleFile);
+  const vlmUploadEnabled =
+    parseWithVlm && hasVlmCompatibleFile && vlmStatus.available;
+  const hasAnydocCompatibleFile = uploadFiles.some((f) =>
+    ANYDOC_PARSE_FILE_RE.test(f.name),
+  );
+  const { status: anydocStatus, loading: anydocStatusLoading } =
+    useAnydocAvailability(showUpload && hasAnydocCompatibleFile);
+  const anydocUploadEnabled =
+    parseWithAnydoc && hasAnydocCompatibleFile && anydocStatus.available;
   const allDoneOrError =
     uploadFiles.length > 0 &&
     uploadFiles.every((f) => {
@@ -2884,6 +8070,160 @@ export default function WorkspaceClient({
     effectiveLearnIncludedSourceSlugs,
   );
 
+  const learnSyllabusDocument =
+    sourceDocuments.find((doc) => doc.slug === learnSyllabusSlug) ?? null;
+  // Only meaningful for the syllabus the last run actually read; a freshly
+  // picked one has no coverage until Learn runs again.
+  const learnSyllabusCoverage =
+    learnSyllabusDocument &&
+    learnState?.syllabusSourceId === learnSyllabusSlug
+      ? (learnState?.syllabusCoverage ?? null)
+      : null;
+
+  /**
+   * Upload a study guide straight from the Learn panel and designate it.
+   *
+   * It goes through the same ingest pipeline as any other document — so it lands
+   * in Documents and can be reused later — but with map generation off: a
+   * syllabus is an outline to plan against, not material to mine for concepts.
+   */
+  async function handleSyllabusUpload(file: File) {
+    setLearnSyllabusUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("clusterSlug", clusterSlug);
+      formData.append("sourceLabel", "Syllabus");
+      formData.append("isHandwriting", "false");
+      formData.append("generateMap", "false");
+
+      const res = await fetch("/api/ingest", { method: "POST", body: formData });
+      if (!res.ok || !res.body) {
+        let message = "Syllabus upload failed";
+        try {
+          const data = await res.json();
+          if (typeof data?.error === "string" && data.error.trim()) {
+            message = data.error.trim();
+          }
+        } catch {
+          // Fall back to the generic message.
+        }
+        throw new Error(message);
+      }
+
+      // Same Server-Sent Events framing as the Documents upload modal.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result: Record<string, unknown> | null = null;
+      let streamError = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            const event = JSON.parse(payload) as {
+              type: "progress" | "usage" | "result" | "error";
+              error?: string;
+              [key: string]: unknown;
+            };
+            if (event.type === "result") result = event;
+            else if (event.type === "error") {
+              streamError =
+                typeof event.error === "string"
+                  ? event.error
+                  : "Syllabus upload failed";
+            }
+          } catch {
+            // malformed event — skip
+          }
+        }
+      }
+
+      if (!result?.success) {
+        throw new Error(streamError || "Syllabus upload failed");
+      }
+      const slug = typeof result.slug === "string" ? result.slug : "";
+      if (!slug) {
+        throw new Error("Syllabus uploaded but no document slug was returned");
+      }
+
+      setLearnSyllabusSlug(slug);
+      setLearnSyllabusMenuOpen(false);
+      await fetchDocuments();
+      addToast(
+        result.duplicate === true
+          ? `${file.name} was already in Documents; using it as the syllabus`
+          : `${file.name} set as the syllabus`,
+        "success",
+      );
+    } catch (error) {
+      addToast(
+        error instanceof Error ? error.message : "Syllabus upload failed",
+      );
+    } finally {
+      setLearnSyllabusUploading(false);
+    }
+  }
+
+  /**
+   * Write a syllabus from a description of what the learner wants to learn.
+   *
+   * The result is an ordinary source document, indistinguishable downstream
+   * from an uploaded study guide — so it lands in Documents, is designated the
+   * same way, and can be reused or edited later.
+   */
+  async function handleSyllabusGenerate() {
+    const prompt = learnSyllabusPrompt.trim();
+    if (!prompt) return;
+    setLearnSyllabusGenerating(true);
+    try {
+      const res = await fetch(
+        `/api/gardens/${encodeURIComponent(clusterSlug)}/learn/syllabus/generate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        },
+      );
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>);
+      if (!res.ok || data?.success !== true) {
+        throw new Error(
+          typeof data?.error === "string" && data.error.trim()
+            ? data.error.trim()
+            : "Could not write a syllabus",
+        );
+      }
+      const slug = typeof data.slug === "string" ? data.slug : "";
+      if (!slug) {
+        throw new Error("The syllabus was written but no document slug came back");
+      }
+
+      setLearnSyllabusSlug(slug);
+      setLearnSyllabusPrompt("");
+      setLearnSyllabusMenuOpen(false);
+      await fetchDocuments();
+      const unitCount = typeof data.unitCount === "number" ? data.unitCount : 0;
+      addToast(
+        `${data.courseTitle ?? "Syllabus"} written${unitCount ? ` — ${unitCount} unit${unitCount === 1 ? "" : "s"}` : ""} and set as the syllabus`,
+        "success",
+      );
+    } catch (error) {
+      addToast(
+        error instanceof Error ? error.message : "Could not write a syllabus",
+      );
+    } finally {
+      setLearnSyllabusGenerating(false);
+    }
+  }
+
   function toggleLearnSourceDocument(sourceSlug: string) {
     setLearnIncludedSourceSlugs((current) => {
       const selected = new Set(
@@ -2916,8 +8256,16 @@ export default function WorkspaceClient({
     const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
     const displayProgress =
       status === "complete" || status === "failed" ? 100 : progress;
-    const hasSelectedLearnSources =
-      effectiveLearnIncludedSourceSlugs.length > 0;
+    // The syllabus steers the lessons instead of becoming one, so it never
+    // counts toward the teaching material a run needs.
+    const learnTeachingSourceSlugs = effectiveLearnIncludedSourceSlugs.filter(
+      (sourceSlug) => sourceSlug !== learnSyllabusSlug,
+    );
+    const hasSelectedLearnSources = learnTeachingSourceSlugs.length > 0;
+    const syllabusIsSelectedAsSource = Boolean(
+      learnSyllabusSlug &&
+        effectiveLearnIncludedSourceSlugs.includes(learnSyllabusSlug),
+    );
     const canStart =
       Boolean(learnState?.hasSources) &&
       hasSelectedLearnSources &&
@@ -2985,7 +8333,9 @@ export default function WorkspaceClient({
       job?.currentSectionTitle ? `Section: ${job.currentSectionTitle}.` : null,
       job?.currentPageTitle ? `Page: ${job.currentPageTitle}.` : null,
       !hasSelectedLearnSources
-        ? `No source documents selected from ${sourceDocuments.length} available.`
+        ? learnSyllabusDocument
+          ? `Only the syllabus is selected; choose at least one of the ${sourceDocuments.length} documents to teach from.`
+          : `No source documents selected from ${sourceDocuments.length} available.`
         : null,
       status === "awaiting_confirmation" && !staleReviewForExistingGarden
         ? "Pipeline paused for review; timer stopped."
@@ -3028,7 +8378,7 @@ export default function WorkspaceClient({
     if (!shouldShowPanel) return null;
 
     return (
-      <section className="neu-surface-raised mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+      <section className="bb-neu-learn-tray neu-surface-raised mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3">
         <div className="flex flex-col gap-2">
           <div className="flex min-h-8 items-center justify-between gap-3">
             <div className="flex shrink-0 items-center gap-2">
@@ -3159,6 +8509,317 @@ export default function WorkspaceClient({
                     {learnDocumentSelectionLocked ? (
                       <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
                         This selection is locked for the current Learning Map.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setLearnSyllabusMenuOpen((open) => !open)}
+                  className="neu-button flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
+                  aria-expanded={learnSyllabusMenuOpen}
+                  aria-haspopup="menu"
+                  title="Choose a syllabus or study guide for Learn to plan against"
+                >
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 15.5z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"
+                    />
+                  </svg>
+                  <span className="max-w-40 truncate">
+                    {learnSyllabusDocument
+                      ? `Syllabus: ${learnSyllabusDocument.name || learnSyllabusDocument.title}`
+                      : "Syllabus: none"}
+                  </span>
+                  <svg
+                    className={`h-3 w-3 transition-transform ${learnSyllabusMenuOpen ? "rotate-180" : ""}`}
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+                {learnSyllabusMenuOpen ? (
+                  <div
+                    className="neu-popover absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2"
+                    role="menu"
+                    aria-label="Syllabus for Learn"
+                  >
+                    <div className="mb-2 border-b border-gray-800 pb-2">
+                      <p className="text-xs font-medium text-gray-200">
+                        Syllabus for Learn
+                      </p>
+                      <p className="mt-0.5 text-[10px] text-gray-600">
+                        A study guide Learn plans against: it sets which topics
+                        to cover, in what order, and how deep. It is not taught
+                        as source material.
+                      </p>
+                    </div>
+                    <div className="max-h-56 space-y-1 overflow-y-auto">
+                      <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900">
+                        <input
+                          type="radio"
+                          name="learn-syllabus"
+                          checked={learnSyllabusSlug === null}
+                          onChange={() => setLearnSyllabusSlug(null)}
+                          disabled={learnDocumentSelectionLocked}
+                          className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                        />
+                        <span className="block text-xs text-gray-300">
+                          No syllabus
+                        </span>
+                      </label>
+                      {sourceDocuments.map((doc) => {
+                        const fileLabel =
+                          doc.sourcePdf ||
+                          doc.sourceFile ||
+                          doc.name ||
+                          doc.title;
+                        return (
+                          <label
+                            key={doc.slug}
+                            className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900"
+                          >
+                            <input
+                              type="radio"
+                              name="learn-syllabus"
+                              checked={learnSyllabusSlug === doc.slug}
+                              onChange={() => setLearnSyllabusSlug(doc.slug)}
+                              disabled={learnDocumentSelectionLocked}
+                              className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs text-gray-300">
+                                {fileLabel}
+                              </span>
+                              {doc.description ? (
+                                <span className="mt-0.5 block truncate text-[10px] text-gray-600">
+                                  {doc.description}
+                                </span>
+                              ) : null}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {learnSyllabusCoverage ? (
+                      <div className="mt-2 rounded-md border border-gray-800 bg-gray-900/60 px-2 py-1.5">
+                        <p className="text-[10px] text-gray-400">
+                          Read {learnSyllabusCoverage.unitCount} unit
+                          {learnSyllabusCoverage.unitCount === 1 ? "" : "s"} and{" "}
+                          {learnSyllabusCoverage.materialCount} assigned
+                          material
+                          {learnSyllabusCoverage.materialCount === 1 ? "" : "s"};{" "}
+                          {learnSyllabusCoverage.availableCount} matched a
+                          document in this garden.
+                        </p>
+                        {learnSyllabusCoverage.missingCount > 0 ? (
+                          <>
+                            <p className="mt-1 text-[10px] text-amber-300">
+                              {learnSyllabusCoverage.missingCount} assigned work
+                              {learnSyllabusCoverage.missingCount === 1
+                                ? " is"
+                                : "s are"}{" "}
+                              not uploaded. Lessons are never written from{" "}
+                              {learnSyllabusCoverage.missingCount === 1
+                                ? "it"
+                                : "them"}
+                              — upload{" "}
+                              {learnSyllabusCoverage.missingCount === 1
+                                ? "it"
+                                : "them"}{" "}
+                              to have{" "}
+                              {learnSyllabusCoverage.missingCount === 1
+                                ? "that topic"
+                                : "those topics"}{" "}
+                              covered.
+                            </p>
+                            <ul className="mt-1 space-y-0.5">
+                              {learnSyllabusCoverage.missingCitations
+                                .slice(0, 5)
+                                .map((citation) => (
+                                  <li
+                                    key={citation}
+                                    className="truncate text-[10px] text-gray-500"
+                                    title={citation}
+                                  >
+                                    · {citation}
+                                  </li>
+                                ))}
+                              {learnSyllabusCoverage.missingCitations.length >
+                              5 ? (
+                                <li className="text-[10px] text-gray-600">
+                                  ·{" "}
+                                  {learnSyllabusCoverage.missingCitations
+                                    .length - 5}{" "}
+                                  more
+                                </li>
+                              ) : null}
+                            </ul>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {syllabusIsSelectedAsSource ? (
+                      <p className="mt-2 rounded-md border border-gray-800 bg-gray-900/60 px-2 py-1.5 text-[10px] text-gray-400">
+                        {learnSyllabusDocument?.name ??
+                          learnSyllabusDocument?.title}{" "}
+                        is also checked under Documents. As the syllabus it
+                        plans the lessons and is left out of the material they
+                        teach from.
+                      </p>
+                    ) : null}
+                    <div className="mt-2 border-t border-gray-800 pt-2">
+                      <label
+                        className="block text-[10px] font-medium text-gray-400"
+                        htmlFor="learn-syllabus-prompt"
+                      >
+                        Or describe what you want to learn
+                      </label>
+                      <textarea
+                        id="learn-syllabus-prompt"
+                        value={learnSyllabusPrompt}
+                        onChange={(event) =>
+                          setLearnSyllabusPrompt(event.target.value)
+                        }
+                        onKeyDown={(event) => {
+                          if (
+                            (event.metaKey || event.ctrlKey) &&
+                            event.key === "Enter"
+                          ) {
+                            event.preventDefault();
+                            void handleSyllabusGenerate();
+                          }
+                        }}
+                        rows={2}
+                        maxLength={4000}
+                        disabled={
+                          learnDocumentSelectionLocked ||
+                          learnSyllabusGenerating ||
+                          learnSyllabusUploading
+                        }
+                        placeholder="I want to learn everything introductory about electronics"
+                        className="neu-input mt-1 w-full resize-y rounded-md border border-gray-800 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-200 placeholder:text-gray-700 focus:border-gray-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleSyllabusGenerate()}
+                        disabled={
+                          learnDocumentSelectionLocked ||
+                          learnSyllabusGenerating ||
+                          learnSyllabusUploading ||
+                          !learnSyllabusPrompt.trim()
+                        }
+                        className="neu-button mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-gray-800 px-2 py-1.5 text-[11px] text-gray-300 transition-colors hover:border-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {learnSyllabusGenerating ? (
+                          <>
+                            <Spinner className="h-3 w-3" />
+                            Writing syllabus…
+                          </>
+                        ) : (
+                          <>
+                            <svg
+                              className="h-3.5 w-3.5"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="m12 3 1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18 15l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z"
+                              />
+                            </svg>
+                            Generate a syllabus
+                          </>
+                        )}
+                      </button>
+                      <p className="mt-1.5 text-[10px] text-gray-600">
+                        Written as a course outline over the documents in this
+                        garden, then saved to Documents like any other syllabus.
+                        It assigns no outside readings, so every unit is one your
+                        material can teach.
+                      </p>
+                    </div>
+                    <div className="mt-2 border-t border-gray-800 pt-2">
+                      <input
+                        ref={learnSyllabusInputRef}
+                        type="file"
+                        accept={ACCEPTED}
+                        className="hidden"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          event.target.value = "";
+                          if (file) void handleSyllabusUpload(file);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => learnSyllabusInputRef.current?.click()}
+                        disabled={
+                          learnDocumentSelectionLocked ||
+                          learnSyllabusUploading ||
+                          learnSyllabusGenerating
+                        }
+                        className="neu-button flex w-full items-center justify-center gap-1.5 rounded-md border border-gray-800 px-2 py-1.5 text-[11px] text-gray-300 transition-colors hover:border-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {learnSyllabusUploading ? (
+                          <>
+                            <Spinner className="h-3 w-3" />
+                            Uploading syllabus…
+                          </>
+                        ) : (
+                          <>
+                            <svg
+                              className="h-3.5 w-3.5"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth={1.8}
+                              aria-hidden="true"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M12 16V4m0 0L8 8m4-4 4 4M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"
+                              />
+                            </svg>
+                            Upload a syllabus
+                          </>
+                        )}
+                      </button>
+                      <p className="mt-1.5 text-[10px] text-gray-600">
+                        Uploaded syllabi are added to Documents so you can reuse
+                        them later.
+                      </p>
+                    </div>
+                    {learnDocumentSelectionLocked ? (
+                      <p className="mt-2 border-t border-gray-800 pt-2 text-[10px] text-gray-600">
+                        The syllabus is locked for the current Learning Map.
                       </p>
                     ) : null}
                   </div>
@@ -4358,7 +10019,7 @@ export default function WorkspaceClient({
       <div className="border-t border-gray-800 shrink-0">
         <button
           onClick={() => setSourceDocsExpanded((v) => !v)}
-          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${sourceDocsExpanded ? "bb-neu-accordion-open" : ""}`}
         >
           <div className="flex items-center gap-2">
             <svg
@@ -4421,7 +10082,7 @@ export default function WorkspaceClient({
           </div>
         </button>
         {sourceDocsExpanded && (
-          <div className="border-t border-gray-800">
+          <div className="bb-neu-accordion-panel border-t border-gray-800">
             {!loadingDocs && sourceDocuments.length > 0 && (
               <div className="border-b border-gray-800 px-3 py-2">
                 <div className="relative">
@@ -4442,7 +10103,7 @@ export default function WorkspaceClient({
                     value={sourceDocSearch}
                     onChange={(e) => setSourceDocSearch(e.target.value)}
                     placeholder="Search PDFs"
-                    className="h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                    className="neu-control h-8 w-full rounded-md border border-gray-800 bg-gray-950 pl-8 pr-8 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
                     aria-label="Search source PDFs"
                   />
                   {sourceDocSearch && (
@@ -4512,7 +10173,7 @@ export default function WorkspaceClient({
       <div className="border-t border-gray-800 shrink-0">
         <button
           onClick={() => setLinksExpanded((v) => !v)}
-          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${linksExpanded ? "bb-neu-accordion-open" : ""}`}
         >
           <div className="flex items-center gap-2">
             <svg
@@ -4548,7 +10209,7 @@ export default function WorkspaceClient({
           </div>
         </button>
         {linksExpanded && (
-          <div className="border-t border-gray-800">
+          <div className="bb-neu-accordion-panel border-t border-gray-800">
             {isOwner && (
               <form
                 onSubmit={handleSaveLink}
@@ -4559,7 +10220,7 @@ export default function WorkspaceClient({
                   value={newLinkTitle}
                   onChange={(e) => setNewLinkTitle(e.target.value)}
                   placeholder="Link name"
-                  className="h-8 w-full rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                  className="neu-control h-8 w-full rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
                   aria-label="Link name"
                 />
                 <div className="flex gap-2">
@@ -4568,13 +10229,13 @@ export default function WorkspaceClient({
                     value={newLinkUrl}
                     onChange={(e) => setNewLinkUrl(e.target.value)}
                     placeholder="https://..."
-                    className="h-8 min-w-0 flex-1 rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
+                    className="neu-control h-8 min-w-0 flex-1 rounded-md border border-gray-800 bg-gray-950 px-2.5 text-xs text-gray-200 outline-none transition-colors placeholder:text-gray-700 focus:border-gray-600"
                     aria-label="Link URL"
                   />
                   <button
                     type="submit"
                     disabled={!newLinkUrl.trim() || savingLink}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    className="neu-button-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-800 text-gray-500 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Save link"
                     title="Save link"
                   >
@@ -4696,7 +10357,7 @@ export default function WorkspaceClient({
         <button
           type="button"
           onClick={() => setVideosExpanded((value) => !value)}
-          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${videosExpanded ? "bb-neu-accordion-open" : ""}`}
           aria-expanded={videosExpanded}
           aria-controls="garden-videos-panel"
         >
@@ -4742,18 +10403,13 @@ export default function WorkspaceClient({
       <div className="border-t border-gray-800 shrink-0">
         <button
           type="button"
-          onClick={() => setArtifactsExpanded((value) => {
-            if (value && activeArtifactRunRef.current) artifactDismissedRuns.current.add(activeArtifactRunRef.current);
-            return !value;
-          })}
-          className="w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors"
+          onClick={() => setArtifactsExpanded((value) => !value)}
+          className={`bb-neu-accordion w-full flex items-center justify-between px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-white transition-colors ${artifactsExpanded ? "bb-neu-accordion-open" : ""}`}
           aria-expanded={artifactsExpanded}
           aria-controls="garden-artifacts-panel"
         >
           <div className="flex items-center gap-2">
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3.75h7.5l3 3v13.5H6.75V3.75Zm7.5 0v3h3" />
-            </svg>
+            <ArtifactArchiveIcon className="h-3.5 w-3.5 shrink-0" />
             Artifacts
           </div>
           <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${artifactsExpanded ? "" : "rotate-180"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -4761,8 +10417,8 @@ export default function WorkspaceClient({
           </svg>
         </button>
         {artifactsExpanded ? (
-          <div id="garden-artifacts-panel" className="h-[min(58vh,620px)] border-t border-gray-800">
-            <ArtifactPanel compact gardenSlug={clusterSlug} legacyChatSessionId={activeChatId} />
+          <div id="garden-artifacts-panel" className="bb-neu-accordion-panel h-[min(58vh,620px)] border-t border-gray-800">
+            <ArtifactPanel compact hideHeader gardenSlug={clusterSlug} sourceSurface="garden_chat" />
           </div>
         ) : null}
       </div>
@@ -4772,28 +10428,16 @@ export default function WorkspaceClient({
   return (
     <div className="h-screen bg-gray-950 text-white flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0">
+      <header
+        className="bb-neu-toolbar breadboard-flower-navbar neu-surface-subtle relative flex items-center justify-between px-6 py-3.5 border-b border-gray-800 shrink-0"
+      >
         <NavbarFlowerWind />
         <div className="relative z-10 flex items-center gap-3">
-          <Link
-            href="/dashboard"
+          <BackLink
+            fallbackHref="/dashboard"
+            fallbackLabel="Back to dashboard"
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.5}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"
-              />
-            </svg>
-            Dashboard
-          </Link>
+          />
           <span className="text-gray-700">/</span>
           <Link
             href={`/garden/${clusterSlug}${primarySourceDocument ? `?note=${encodeURIComponent(primarySourceDocument.slug)}` : ""}`}
@@ -4841,25 +10485,6 @@ export default function WorkspaceClient({
               )}
             </button>
           )}
-          <Link
-            href={`/garden/${clusterSlug}`}
-            className="neu-button flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
-          >
-            <svg
-              className="w-3.5 h-3.5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.5}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
-              />
-            </svg>
-            View garden
-          </Link>
           {isOwner && (
             <button
               type="button"
@@ -4929,14 +10554,14 @@ export default function WorkspaceClient({
         {leftSidebarOpen ? (
           <aside
             style={{ width: leftSidebarWidth }}
-            className="neu-surface-subtle relative shrink-0 border-r border-gray-800 flex flex-col bg-gray-950"
+            className="bb-neu-sidebar-left neu-surface-subtle relative shrink-0 border-r border-gray-800 flex flex-col bg-gray-950"
           >
             {leftSidebarResizeHandle}
             {/* New chat */}
             <div className="px-3 pt-3 pb-2 shrink-0 flex items-center gap-2">
               <button
                 onClick={handleNewChat}
-                disabled={isStreaming || loadingChats}
+                disabled={loadingChats}
                 className="neu-button flex-1 min-w-0 flex items-center gap-2 px-3 py-2.5 text-sm text-gray-300 rounded-lg border border-gray-800 hover:bg-gray-900 hover:text-white hover:border-gray-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <svg
@@ -5004,7 +10629,7 @@ export default function WorkspaceClient({
                                   void saveChatTitle(session.id);
                                 }}
                                 className={[
-                                  "flex items-center gap-1 rounded-lg px-2 py-1.5",
+                                  "neu-inset flex items-center gap-1 rounded-lg px-2 py-1.5",
                                   session.id === activeChatId
                                     ? "bg-gray-800"
                                     : "bg-gray-900",
@@ -5023,7 +10648,7 @@ export default function WorkspaceClient({
                                   }}
                                   autoFocus
                                   disabled={savingChatTitleId === session.id}
-                                  className="min-w-0 flex-1 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-white outline-none focus:border-gray-500 disabled:opacity-50"
+                                  className="neu-control min-w-0 flex-1 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-white outline-none focus:border-gray-500 disabled:opacity-50"
                                 />
                                 <button
                                   type="submit"
@@ -5075,14 +10700,12 @@ export default function WorkspaceClient({
                               </form>
                             ) : (
                               <button
-                                onClick={() =>
-                                  !isStreaming && setActiveChatId(session.id)
-                                }
+                                onClick={() => setActiveChatId(session.id)}
                                 onDoubleClick={() => startRenameChat(session)}
                                 className={[
-                                  "w-full text-left px-3 py-2 pr-14 text-sm rounded-lg transition-colors flex items-center gap-2",
+                                  "bb-neu-conversation-row w-full text-left px-3 py-2 pr-14 text-sm rounded-lg transition-colors flex items-center gap-2",
                                   session.id === activeChatId
-                                    ? "bg-gray-800 text-white"
+                                    ? "bb-neu-conversation-row-selected bg-gray-800 text-white"
                                     : "text-gray-400 hover:bg-gray-900 hover:text-white",
                                 ].join(" ")}
                               >
@@ -5101,7 +10724,7 @@ export default function WorkspaceClient({
                             )}
                             {canDeleteSession &&
                             confirmDeleteChatId === session.id ? (
-                              <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900 px-2 py-1 shadow-lg">
+                              <div className="neu-popover absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1.5 rounded-lg border border-gray-700 bg-gray-900 px-2 py-1 shadow-lg">
                                 <span className="text-[10px] text-gray-400">
                                   Delete?
                                 </span>
@@ -5111,7 +10734,6 @@ export default function WorkspaceClient({
                                     e.stopPropagation();
                                     handleDeleteChat(session.id);
                                   }}
-                                  disabled={isStreaming}
                                   className="text-[10px] font-medium text-red-500 transition-colors hover:text-red-400 disabled:opacity-40"
                                 >
                                   Yes
@@ -5137,7 +10759,7 @@ export default function WorkspaceClient({
                                       e.stopPropagation();
                                       startRenameChat(session);
                                     }}
-                                    disabled={isStreaming}
+                                    disabled={streamingChatIds.has(session.id)}
                                     className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-white disabled:hidden"
                                     aria-label="Rename chat"
                                     title="Rename chat"
@@ -5164,7 +10786,7 @@ export default function WorkspaceClient({
                                       e.stopPropagation();
                                       setConfirmDeleteChatId(session.id);
                                     }}
-                                    disabled={isStreaming}
+                                    disabled={streamingChatIds.has(session.id)}
                                     className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-red-400 disabled:hidden"
                                     aria-label="Delete chat"
                                     title="Delete chat"
@@ -5466,14 +11088,14 @@ export default function WorkspaceClient({
         ) : (
           <aside
             style={{ width: leftSidebarWidth }}
-            className="relative shrink-0 border-r border-gray-800 flex flex-col items-center bg-gray-950 py-3"
+            className="bb-neu-sidebar-left relative shrink-0 border-r border-gray-800 flex flex-col items-center bg-gray-950 py-3"
           >
             {leftSidebarResizeHandle}
             <button
               onClick={handleNewChat}
-              disabled={isStreaming || loadingChats}
+              disabled={loadingChats}
               title="New chat"
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-900 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="neu-button-icon flex h-9 w-9 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-900 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               aria-label="New chat"
             >
               <svg
@@ -5494,29 +11116,46 @@ export default function WorkspaceClient({
         )}
 
         {/* Chat area — warm paper surface so the green sidebars read as a frame */}
-        <div className="relative flex-1 flex flex-col min-h-0 bg-gray-900">
+        {/* min-w-0: without it the column keeps its ~1056px min-content width and
+            a widened map panel is pushed off-screen (clipped by the root overflow). */}
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-900">
           {renderLearnPanel()}
           {renderCollapsedLearnIndicator()}
-          <main className="flex-1 overflow-y-auto px-4 py-6">
+          <main ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 py-6">
             <ChatTranscript
               clusterName={clusterName}
-              isStreaming={isStreaming}
+              clusterSlug={clusterSlug}
+              chatSessionId={activeChatId}
+              isStreaming={
+                isStreaming || agentLaunchQueue.queued || delegatedAgentLaunching
+              }
               loadingChats={loadingChats}
               messages={messages}
-              messagesEndRef={messagesEndRef}
               activities={agentActivity.activities}
               connection={agentActivity.connection}
               pendingPermission={agentActivity.pendingPermission}
-              onAbort={agentActivity.abort}
               onPermissionDecision={(decision) =>
                 void agentActivity.respondToPermission(decision)
               }
               onRetryAssistant={handleRetryAssistant}
+              onExternalAgentTerminal={handleExternalAgentTerminal}
+              inlineArtifactRetireVersion={inlineArtifactRetireVersion}
             />
           </main>
 
           {/* Input area */}
           <div className="shrink-0 px-4 py-4">
+            {/* A runtime agent the assistant chose, waiting to be started. */}
+            {agentLaunchQueue.pending ? (
+              <div className="mx-auto mb-2 w-full max-w-5xl">
+                <AgentLaunchPrompt
+                  request={agentLaunchQueue.pending}
+                  waiting={agentLaunchQueue.waiting}
+                  onConfirm={agentLaunchQueue.confirm}
+                  onDismiss={agentLaunchQueue.dismiss}
+                />
+              </div>
+            ) : null}
             {/* Chat attachment preview strip */}
             {selectedChatDocuments.length > 0 && (
               <div className="mx-auto mb-2 flex max-w-5xl flex-wrap items-center gap-1.5">
@@ -5554,10 +11193,12 @@ export default function WorkspaceClient({
               </div>
             )}
 
+            {/* The chat picker offers what a chat accepts — including 3D
+                files — not what the Garden's document ingest accepts. */}
             <input
               ref={chatFileInputRef}
               type="file"
-              accept={ACCEPTED}
+              accept={CHAT_ATTACHMENT_ACCEPT}
               multiple
               onChange={handleChatFileInput}
               className="hidden"
@@ -5565,16 +11206,23 @@ export default function WorkspaceClient({
 
             <AssistantComposer
               capabilitySurface="garden_chat"
+              capabilityGardenSlug={clusterSlug}
               className="mx-auto w-full max-w-5xl"
               value={input}
               onChange={setInput}
               onSubmit={handleSubmit}
+              onRunWorkflow={runWorkflowAutomation}
               onPaste={handleChatPaste}
               textareaRef={textareaRef}
-              textareaStyle={{ fieldSizing: "content" } as React.CSSProperties}
               placeholder="Ask about your documents…"
               disabled={loadingChats}
-              isSending={isStreaming}
+              isSending={isStreaming || launchingExternalAgent !== null}
+              externalRunActive={
+                hasRunningExternalAgentInActiveChat ||
+                agentLaunchQueue.queued ||
+                delegatedAgentLaunching ||
+                launchingExternalAgent !== null
+              }
               canSubmit={Boolean(input.trim() || chatAttachments.length > 0)}
               model={model}
               models={models}
@@ -5583,10 +11231,13 @@ export default function WorkspaceClient({
               onModelChange={setModel}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
+          intelligenceModes={intelligenceModes}
+          modelFailover={modelFailover}
               onAddDocuments={() => chatFileInputRef.current?.click()}
               isAddingDocuments={extractingAttachments}
               attachments={chatAttachments}
               onRemoveAttachment={removeChatAttachment}
+              voiceMessages={messages}
               runState={
                 !isStreaming
                   ? "idle"
@@ -5599,6 +11250,131 @@ export default function WorkspaceClient({
               onQueueSteer={handleSteerActiveResponse}
               onStop={agentActivity.abort}
               permissionPending={Boolean(agentActivity.pendingPermission)}
+              // Distilling a book blocks the composer for minutes, so what it
+              // is doing takes the status line while it runs.
+              statusMessage={attachmentDistillStatus ?? externalAgentStatus}
+              agentBrowserAgent={agentBrowserAgent}
+              onSelectAgentBrowser={() => void selectAgentBrowser()}
+              onClearAgentBrowser={() => {
+                setAgentBrowserAgent(null);
+                setExternalAgentStatus("");
+              }}
+              deepResearchAgent={deepResearchAgent}
+              onSelectDeepResearch={() => void selectDeepResearch()}
+              onClearDeepResearch={() => {
+                setDeepResearchAgent(null);
+                setExternalAgentStatus("");
+              }}
+              openPlanterAgent={openPlanterAgent}
+              onSelectOpenPlanter={() => void selectOpenPlanter()}
+              onSelectSocialsManager={() => {}}
+              onSelectHardwareBlueprint={() => {}}
+              onSelectParametricCad={() => {}}
+              onSelectHyperframes={() => {}}
+              onSelectOpenMontage={() => {}}
+              onSelectOpenwork={() => {}}
+              onSelectOpenscience={() => {}}
+              onSelectInboxZero={() => {}}
+              onSelectVimax={() => {}}
+              onSelectMoneyPrinter={() => {}}
+              onSelectLegal={() => {}}
+              onClearOpenPlanter={() => {
+                setOpenPlanterAgent(null);
+                setExternalAgentStatus("");
+              }}
+              agentReachAgent={agentReachAgent}
+              onSelectAgentReach={() => void selectAgentReach()}
+              onClearAgentReach={() => {
+                setAgentReachAgent(null);
+                setExternalAgentStatus("");
+              }}
+              getDocAgent={getDocAgent}
+              onSelectGetDoc={() => void selectGetDoc()}
+              onClearGetDoc={() => {
+                setGetDocAgent(null);
+      setMeetingNotesAgent(null);
+                setExternalAgentStatus("");
+              }}
+              deepTutorAgent={deepTutorAgent}
+              onSelectDeepTutor={() => void selectDeepTutor()}
+              onClearDeepTutor={() => {
+                setDeepTutorAgent(null);
+                setExternalAgentStatus("");
+              }}
+              careerOpsAgent={careerOpsAgent}
+              onSelectCareerOps={() => void selectCareerOps()}
+              onClearCareerOps={() => {
+                setCareerOpsAgent(null);
+                setExternalAgentStatus("");
+              }}
+              vibeTradingAgent={vibeTradingAgent}
+              onSelectVibeTrading={() => void selectVibeTrading()}
+              onClearVibeTrading={() => {
+                setVibeTradingAgent(null);
+                setExternalAgentStatus("");
+              }}
+              stockAnalystAgent={stockAnalystAgent}
+              onSelectStockAnalyst={() => void selectStockAnalyst()}
+              onClearStockAnalyst={() => {
+                setStockAnalystAgent(null);
+                setExternalAgentStatus("");
+              }}
+              paperTraderAgent={paperTraderAgent}
+              onClearPaperTrader={() => {
+                setPaperTraderAgent(null);
+                setExternalAgentStatus("");
+              }}
+              deerFlowAgent={deerFlowAgent}
+              onSelectDeerFlow={() => void selectDeerFlow()}
+              onClearDeerFlow={() => {
+                setDeerFlowAgent(null);
+                setExternalAgentStatus("");
+              }}
+              tradingAgentsAgent={tradingAgentsAgent}
+              tradingAgentsSeed={tradingAgentsSeed}
+              onSelectTradingAgents={() => void selectTradingAgents()}
+              onClearTradingAgents={() => {
+                setTradingAgentsAgent(null);
+                setVibeTradingAgent(null);
+                setDeerFlowAgent(null);
+                setTradingAgentsSeed(null);
+                setExternalAgentStatus("");
+              }}
+              onSubmitTradingAgents={(request) => void launchTradingAgents(request)}
+              shortsAgent={shortsAgent}
+              shortsSeed={shortsSeed}
+              onSelectShorts={() => void selectShorts()}
+              onClearShorts={() => {
+                setShortsAgent(null);
+                setShortsSeed(null);
+                setExternalAgentStatus("");
+              }}
+              onSubmitShorts={(request) => void launchShorts(request)}
+              formsmithAgent={formsmithAgent}
+              onSelectFormsmith={() => void selectFormsmith()}
+              onClearFormsmith={() => {
+                setFormsmithAgent(null);
+                setExternalAgentStatus("");
+              }}
+              onSubmitFormsmith={(request) => void launchFormsmith(request)}
+              openCodeAgent={openCodeAgent}
+              onSelectOpenCode={() => void selectOpenCode()}
+              onClearOpenCode={() => {
+                setOpenCodeAgent(null);
+                setExternalAgentStatus("");
+              }}
+              codexAgent={codexAgent}
+              onSelectCodex={() => void selectCodex()}
+              onClearCodex={() => {
+                setCodexAgent(null);
+                setExternalAgentStatus("");
+              }}
+              rufloAgent={rufloAgent}
+              onSelectRuflo={() => void selectRuflo()}
+              onClearRuflo={() => {
+                setRufloAgent(null);
+                setExternalAgentStatus("");
+              }}
             />
           </div>
         </div>
@@ -5615,18 +11391,18 @@ export default function WorkspaceClient({
       {/* ── New markdown note modal ─────────────────────────────────────────── */}
       {showNewNote && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center p-4"
+          className="bb-modal-backdrop fixed inset-0 z-40 flex items-center justify-center p-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) setShowNewNote(false);
           }}
         >
           <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            className="absolute inset-0"
             onClick={() => setShowNewNote(false)}
           />
           <form
             onSubmit={handleSaveNewNote}
-            className="relative w-full max-w-4xl h-[85vh] bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+            className="bb-modal-panel neu-dialog relative flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border"
           >
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800 shrink-0">
               <div>
@@ -5638,7 +11414,7 @@ export default function WorkspaceClient({
               <button
                 type="button"
                 onClick={() => setShowNewNote(false)}
-                className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                className="neu-button-icon rounded-full p-1.5 text-gray-500"
               >
                 <svg
                   className="w-4 h-4"
@@ -5711,14 +11487,14 @@ export default function WorkspaceClient({
               <button
                 type="button"
                 onClick={() => setShowNewNote(false)}
-                className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+                className="neu-button px-4 py-1.5 text-sm"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={!newNoteTitle.trim() || isSavingNote}
-                className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="neu-button-primary flex items-center gap-1.5 px-4 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {isSavingNote ? "Saving…" : "Save note"}
               </button>
@@ -5730,18 +11506,18 @@ export default function WorkspaceClient({
       {/* ── Prompts panel ───────────────────────────────────────────────────── */}
       {showPrompts && (
         <div
-          className="fixed inset-0 z-40 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="bb-modal-backdrop fixed inset-0 z-40 flex items-end justify-center p-0 sm:items-center sm:p-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) setShowPrompts(false);
           }}
         >
           {/* Backdrop */}
           <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            className="absolute inset-0"
             onClick={() => setShowPrompts(false)}
           />
 
-          <div className="relative w-full sm:max-w-2xl bg-gray-900 border border-gray-700 rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden">
+          <div className="bb-modal-panel neu-dialog relative flex max-h-[80vh] w-full flex-col overflow-hidden rounded-t-2xl border sm:max-w-2xl sm:rounded-2xl">
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
               <div className="flex items-center gap-2.5">
@@ -5768,7 +11544,7 @@ export default function WorkspaceClient({
               <div className="flex items-center gap-2">
                 <button
                   onClick={openNewPrompt}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors"
+                  className="neu-button-primary flex items-center gap-1.5 px-3 py-1.5 text-xs"
                 >
                   <svg
                     className="w-3.5 h-3.5"
@@ -5787,7 +11563,7 @@ export default function WorkspaceClient({
                 </button>
                 <button
                   onClick={() => setShowPrompts(false)}
-                  className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                  className="neu-button-icon rounded-full p-1.5 text-gray-500"
                 >
                   <svg
                     className="w-4 h-4"
@@ -5896,7 +11672,7 @@ export default function WorkspaceClient({
                       <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                           onClick={() => openEditPrompt(p)}
-                          className="p-1.5 text-gray-500 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                          className="neu-button-icon rounded-full p-1.5 text-gray-500"
                           title="Edit"
                         >
                           <svg
@@ -5916,7 +11692,7 @@ export default function WorkspaceClient({
                         {!p.isDefault && (
                           <button
                             onClick={() => deletePrompt(p.id)}
-                            className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-950/30 rounded-lg transition-colors"
+                            className="neu-button-icon rounded-full p-1.5 text-red-400"
                             title="Delete"
                           >
                             <svg
@@ -5936,7 +11712,7 @@ export default function WorkspaceClient({
                         )}
                         <button
                           onClick={() => applyPrompt(p)}
-                          className="px-3 py-1.5 text-xs bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors"
+                          className="neu-button-primary px-3 py-1.5 text-xs"
                         >
                           Use
                         </button>
@@ -5953,12 +11729,12 @@ export default function WorkspaceClient({
       {/* ── Prompt edit / create modal ───────────────────────────────────────── */}
       {editingPrompt !== null && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) setEditingPrompt(null);
           }}
         >
-          <div className="w-full max-w-lg bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <div className="bb-modal-panel neu-dialog w-full max-w-lg rounded-2xl border p-6">
             <h2 className="text-lg font-semibold mb-5">
               {editingPrompt.id ? "Edit prompt" : "New prompt"}
             </h2>
@@ -6042,7 +11818,7 @@ export default function WorkspaceClient({
                 <button
                   type="button"
                   onClick={() => setEditingPrompt(null)}
-                  className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors"
+                  className="neu-button flex-1 py-2.5 text-sm"
                 >
                   Cancel
                 </button>
@@ -6051,7 +11827,7 @@ export default function WorkspaceClient({
                   disabled={
                     !editingPrompt.title.trim() || !editingPrompt.content.trim()
                   }
-                  className="flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="neu-button-primary flex-1 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Save prompt
                 </button>
@@ -6064,12 +11840,12 @@ export default function WorkspaceClient({
       {/* Upload modal */}
       {showUpload && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+          className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
             if (e.target === e.currentTarget) closeUploadModal();
           }}
         >
-          <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+          <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
             <div className="mb-5">
               <h2 className="text-lg font-semibold">Add documents</h2>
               <p className="text-sm text-gray-500 mt-0.5">{clusterName}</p>
@@ -6236,17 +12012,48 @@ export default function WorkspaceClient({
                 />
               )}
 
+              {/* Parse using VLM (local HunyuanOCR GGUF) */}
+              {hasVlmCompatibleFile && !allDoneOrError && (
+                <VlmParseOption
+                  checked={parseWithVlm}
+                  onChange={(next) => {
+                    setParseWithVlm(next);
+                    // The two page readers are alternatives, not a stack.
+                    if (next) setIsHandwriting(false);
+                  }}
+                  disabled={isUploading}
+                  status={vlmStatus}
+                  loading={vlmStatusLoading}
+                />
+              )}
+
+              {/* Parse with anydoc (local document → Markdown converter) */}
+              {hasAnydocCompatibleFile && !allDoneOrError && (
+                <AnydocParseOption
+                  checked={parseWithAnydoc}
+                  onChange={setParseWithAnydoc}
+                  disabled={isUploading}
+                  status={anydocStatus}
+                  loading={anydocStatusLoading}
+                  overriddenByVlm={vlmUploadEnabled}
+                />
+              )}
+
               {/* Handwriting checkbox */}
               {hasHandwritingCompatibleFile && !allDoneOrError && (
-                <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <label
+                  className={`flex items-start gap-2.5 select-none ${
+                    vlmUploadEnabled ? "cursor-not-allowed" : "cursor-pointer"
+                  }`}
+                >
                   <input
                     type="checkbox"
-                    checked={isHandwriting}
+                    checked={isHandwriting && !vlmUploadEnabled}
                     onChange={(e) => {
                       setIsHandwriting(e.target.checked);
                       if (e.target.checked) setGenerateMap(true);
                     }}
-                    disabled={isUploading}
+                    disabled={isUploading || vlmUploadEnabled}
                     className="mt-0.5 w-4 h-4 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-50"
                   />
                   <span>
@@ -6254,8 +12061,11 @@ export default function WorkspaceClient({
                       Handwritten or scanned pages
                     </span>
                     <span className="block text-[11px] text-gray-600 mt-0.5">
-                      Uses vision OCR on each PDF page or image before
-                      generating the Learning Map.
+                      {vlmUploadEnabled
+                        ? "Not used while Parse using VLM is on — the VLM already reads the pages."
+                        : anydocUploadEnabled
+                          ? "Used for images only while Parse with anydoc is on — anydoc reads the PDFs."
+                          : "Uses vision OCR on each PDF page or image before generating the Learning Map."}
                     </span>
                   </span>
                 </label>
@@ -6330,7 +12140,7 @@ export default function WorkspaceClient({
                 <button
                   type="button"
                   onClick={closeUploadModal}
-                  className="flex-1 py-2.5 text-sm text-gray-400 border border-gray-800 rounded-lg hover:border-gray-600 hover:text-white transition-colors disabled:opacity-40"
+                  className="neu-button flex-1 py-2.5 text-sm disabled:opacity-40"
                 >
                   {allDoneOrError
                     ? "Close"
@@ -6342,7 +12152,7 @@ export default function WorkspaceClient({
                   <button
                     type="submit"
                     disabled={uploadFiles.length === 0 || isUploading}
-                    className="flex-1 py-2.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    className="neu-button-primary flex flex-1 items-center justify-center gap-2 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isUploading && <Spinner />}
                     {isUploading

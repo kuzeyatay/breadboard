@@ -57,6 +57,40 @@ footer,
 }
 `;
 
+const PREVIEW_READY_SCRIPT = `
+<script>
+(() => {
+  const messageType = "breadboard:quartz-graph-preview";
+  let settled = false;
+  const post = (status, message) => {
+    window.parent.postMessage({ type: messageType, status, message }, window.location.origin);
+  };
+  const announceWhenReady = () => {
+    if (!document.querySelector(".graph.home-knowledge-graph > .graph-outer canvas")) return false;
+    settled = true;
+    observer.disconnect();
+    post("ready");
+    return true;
+  };
+  const observer = new MutationObserver(announceWhenReady);
+  window.addEventListener("DOMContentLoaded", () => {
+    if (!announceWhenReady()) {
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  });
+  window.addEventListener("error", (event) => {
+    if (!settled) post("error", event.message || "The garden preview could not load.");
+  });
+  window.addEventListener("unhandledrejection", () => {
+    if (!settled) post("error", "The garden preview could not load.");
+  });
+  window.setTimeout(() => {
+    if (!settled && !announceWhenReady()) post("error", "The garden preview timed out.");
+  }, 12000);
+})();
+</script>
+`;
+
 function previewError(message: string, status = 502): NextResponse {
   return new NextResponse(
     `<!doctype html><html><body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#161618;color:#646464;font:13px system-ui,sans-serif;">${message}</body></html>`,
@@ -78,6 +112,21 @@ function proxyUrl(origin: string, asset: string, refresh: string, clusterSlug: s
   return url.toString();
 }
 
+function browserRequestOrigin(request: NextRequest): string {
+  const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
+  const requestHost = forwardedHost || request.headers.get('host')?.trim();
+  const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const protocol = forwardedProtocol || request.nextUrl.protocol.replace(/:$/, '');
+
+  if (!requestHost) return request.nextUrl.origin;
+
+  try {
+    return new URL(`${protocol}://${requestHost}`).origin;
+  } catch {
+    return request.nextUrl.origin;
+  }
+}
+
 function injectPreviewShell(
   html: string,
   clusterSlug: string,
@@ -91,6 +140,7 @@ function injectPreviewShell(
   const headInjection = [
     `<base href="${baseHref}">`,
     `<style>${PREVIEW_STYLE}</style>`,
+    PREVIEW_READY_SCRIPT,
   ].join('');
 
   return html
@@ -243,7 +293,12 @@ export async function GET(request: NextRequest) {
       html = await response.text();
     }
 
-    const injectedHtml = injectPreviewShell(html, cluster.slug, refresh, request.nextUrl.origin);
+    const injectedHtml = injectPreviewShell(
+      html,
+      cluster.slug,
+      refresh,
+      browserRequestOrigin(request),
+    );
 
     return new NextResponse(injectedHtml, {
       headers: {

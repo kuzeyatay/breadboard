@@ -6,17 +6,20 @@ const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
 
 const actions = source("../src/app/components/assistant-message-actions.tsx");
-const activity = source("../src/app/components/openharness/activity-panel.tsx");
+const responseMeta = source(
+  "../src/app/components/assistant-response-meta.tsx",
+);
+const activity = source("../src/app/components/hermes/activity-panel.tsx");
 const timing = source("../src/lib/assistant-activity-timing.ts");
-const evidence = source("../src/app/components/openharness/evidence-panel.tsx");
+const evidence = source("../src/app/components/hermes/evidence-panel.tsx");
 const runtime = source(
-  "../src/app/components/openharness/agent-runtime-panel.tsx",
+  "../src/app/components/hermes/agent-runtime-panel.tsx",
 );
 const agentSession = source(
-  "../src/app/components/openharness/use-agent-session.ts",
+  "../src/app/components/hermes/use-agent-session.ts",
 );
-const sessionsRoute = source("../src/app/api/openharness/sessions/route.ts");
-const eventStream = source("../src/lib/openharness/event-stream.ts");
+const sessionsRoute = source("../src/app/api/hermes/sessions/route.ts");
+const eventStream = source("../src/lib/hermes/event-stream.ts");
 const conversationStore = source("../src/lib/conversations/store.ts");
 const chatSessionsRoute = source("../src/app/api/chat-sessions/route.ts");
 const chatSessionRoute = source(
@@ -26,17 +29,30 @@ const workspace = source(
   "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
 );
 const gardenAssistant = source("../src/app/garden/garden-assistant.tsx");
+const terminal = source(
+  "../src/app/components/hermes/dashboard-agent-terminal.tsx",
+);
+const gardenAgentChat = source(
+  "../src/app/components/hermes/garden-agent-chat.tsx",
+);
+const knowledgeTerminal = source(
+  "../src/app/components/knowledge-terminal.tsx",
+);
 const composer = source("../src/app/components/assistant-composer.tsx");
+const chatMarkdown = source("../src/app/components/chat-markdown.tsx");
+const commandText = source(
+  "../src/app/components/hermes/command-text.tsx",
+);
 const globalStyles = source("../src/app/globals.css");
 const quartzActivity = source(
   "../../quartz/quartz/components/scripts/breadboardAI.inline.ts",
 );
 
 test("thinking remains visible with response metadata and shimmers while active", () => {
-  assert.match(activity, /thinking-shimmer/);
-  assert.match(activity, /text-sm leading-6/);
-  assert.match(activity, /statusMetadata/);
-  assert.match(activity, /formatResponseDuration/);
+  assert.match(activity, /<AssistantResponseMeta/);
+  assert.match(responseMeta, /thinking-shimmer/);
+  assert.match(responseMeta, /text-sm leading-6/);
+  assert.match(responseMeta, /formatResponseDuration/);
   assert.match(activity, /assistantResponseElapsedMs/);
   assert.match(
     activity,
@@ -49,11 +65,27 @@ test("thinking remains visible with response metadata and shimmers while active"
     /if \(startedAt !== null\)[\s\S]*return Math\.max\(0, end - startedAt\);[\s\S]*return typeof input\.reportedDurationMs/,
     "live wall-clock timestamps must take precedence over provider duration",
   );
-  assert.match(activity, /formatTokenCount/);
-  assert.match(activity, /↓ counting tokens/);
-  assert.match(activity, /!activities\.length && !usage && responseDurationMs === undefined/);
+  assert.match(responseMeta, /formatTokenCount/);
+  assert.match(responseMeta, /↓ counting tokens/);
+  assert.match(responseMeta, /↓ tokens unavailable/);
+  // The row states one answer's cost. A cumulative session snapshot belongs to
+  // the whole conversation, so it must never be printed as this message's count.
+  assert.match(responseMeta, /usage\?\.scope === "session"/);
+  assert.match(responseMeta, /const responseTokens = sessionSnapshot \? undefined/);
+  assert.doesNotMatch(responseMeta, /session total/);
+  assert.doesNotMatch(responseMeta, /apiCalls/);
+  assert.doesNotMatch(
+    activity,
+    /return null/,
+    "every assistant response must retain its thinking and token metadata row",
+  );
   assert.doesNotMatch(activity, /\{reasoning\}/);
   assert.doesNotMatch(activity, /hasReasoningSummary/);
+  assert.doesNotMatch(
+    activity,
+    />\s*Stop\s*</,
+    "the response metadata row must not render a second Stop control",
+  );
   assert.match(globalStyles, /@keyframes thinking-shimmer/);
   assert.match(
     globalStyles,
@@ -65,6 +97,23 @@ test("thinking remains visible with response metadata and shimmers while active"
   );
 });
 
+test("a finished turn says Thought, and only the default label changes tense", () => {
+  // The row stays on the message for good, so once the turn is over it should
+  // say what the assistant did rather than what it is doing.
+  assert.match(
+    responseMeta,
+    /const displayLabel = label === "Thinking" && !active && !failed \? "Thought" : label;/,
+  );
+  assert.match(responseMeta, /\{displayLabel\}<\/span>/);
+  // A caller's own label already describes a state ("Interrupted", an
+  // artifact's) and must be shown exactly as given.
+  assert.match(activity, /stateLabel \?\? artifactState\?\.label \?\? "Thinking"/);
+  assert.match(runtime, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
+  // The accessible name follows the visible one instead of saying "thinking"
+  // under a row that reads Thought.
+  assert.match(responseMeta, /\$\{displayLabel\.toLowerCase\(\)\}/);
+});
+
 test("completed response duration remains attached to restored assistant messages", () => {
   assert.match(agentSession, /responseDurationMs\?: number/);
   assert.match(agentSession, /commitResponseDuration/);
@@ -72,7 +121,7 @@ test("completed response duration remains attached to restored assistant message
     agentSession,
     /responseDurationMs: Math\.max\(0, completedAtMs - responseStartedAtMs\)/,
   );
-  assert.match(runtime, /message\.responseDurationMs !== undefined/);
+  assert.doesNotMatch(runtime, /message\.responseDurationMs !== undefined/);
   assert.match(
     runtime,
     /responseDurationMs=\{message\.responseDurationMs\}/,
@@ -120,6 +169,9 @@ test("evidence opens from the overflow menu without a standalone disclosure", ()
   assert.doesNotMatch(evidence, /View evidence/);
   assert.match(evidence, /neu-popover/);
   assert.match(evidence, /border border-\[var\(--line\)\]/);
+  assert.match(evidence, /Garden grounding/);
+  assert.match(evidence, /Garden not consulted for this answer\./);
+  assert.match(evidence, /Open source page/);
 
   const menuStart = actions.indexOf('aria-label="More response actions menu"');
   const menuEnd = actions.indexOf("{evidenceOpen", menuStart);
@@ -140,10 +192,25 @@ test("assistant action buttons perform copy, feedback, download, retry, and menu
   assert.match(actions, /More response actions/);
 });
 
+test("quoted prompt fields can be copied independently without blocking text selection", () => {
+  assert.match(chatMarkdown, /blockquote: CopyableBlockquote/);
+  assert.match(chatMarkdown, /contentRef\.current\?\.innerText\.trim\(\)/);
+  assert.match(chatMarkdown, /await writeToClipboard\(value\)/);
+  assert.match(chatMarkdown, /aria-label=\{copied \? 'Text copied' : 'Copy this text'\}/);
+  assert.match(chatMarkdown, /data-selection-exclude/);
+  assert.match(globalStyles, /\.chat-markdown \.chat-field-copy/);
+  assert.match(globalStyles, /user-select: none/);
+});
+
 test("activity and actions render with assistant messages, not above composers", () => {
-  for (const transcript of [workspace, gardenAssistant, runtime]) {
+  for (const transcript of [
+    workspace,
+    gardenAssistant,
+    runtime,
+    knowledgeTerminal,
+  ]) {
     assert.match(transcript, /<AssistantMessageActions/);
-    assert.match(transcript, /<ActivityPanel/);
+    assert.match(transcript, /<(?:ActivityPanel|AssistantResponseMeta)/);
     assert.doesNotMatch(transcript, /<EvidencePanel/);
   }
 
@@ -175,20 +242,36 @@ test("activity and actions render with assistant messages, not above composers",
   assert.doesNotMatch(composer, /tokenUsagePending/);
   assert.match(workspace, /usage=\{msg\.usage\}/);
   assert.doesNotMatch(workspace, /reasoning=\{msg\.thinking\}/);
-  assert.match(workspace, /msg\.usage \|\|/);
   assert.match(gardenAssistant, /usage=\{message\.usage\}/);
   assert.doesNotMatch(gardenAssistant, /reasoning=\{message\.thinking\}/);
-  assert.match(gardenAssistant, /message\.usage \|\|/);
   assert.match(runtime, /usage=\{message\.usage\}/);
   assert.doesNotMatch(runtime, /reasoning=\{message\.reasoning\}/);
+  assert.match(knowledgeTerminal, /usage=\{message\.usage\}/);
+  assert.doesNotMatch(knowledgeTerminal, /Thinking \(\{formatResponseDuration/);
   assert.equal(workspace.match(/<ActivityPanel/g)?.length, 1);
   assert.equal(runtime.match(/<ActivityPanel/g)?.length, 1);
   assert.equal(gardenAssistant.match(/<ActivityPanel/g)?.length, 1);
+  assert.equal(knowledgeTerminal.match(/<AssistantResponseMeta/g)?.length, 1);
+});
+
+test("ordinary assistant rows mount metadata without requiring provider metrics", () => {
+  for (const transcript of [workspace, gardenAssistant, runtime]) {
+    assert.doesNotMatch(
+      transcript,
+      /responseDurationMs !== undefined \|\|[\s\S]{0,160}usage[\s\S]{0,240}<ActivityPanel/,
+    );
+  }
+  assert.doesNotMatch(
+    knowledgeTerminal,
+    /responseDurationMs !== undefined \? \([\s\S]{0,180}Thinking/,
+  );
+  assert.match(responseMeta, /active\s*\?\s*"↓ counting tokens\.\.\."/);
+  assert.match(responseMeta, /:\s*"↓ tokens unavailable"/);
 });
 
 test("permission requests use a softly layered action card", () => {
-  const start = activity.indexOf("{pendingPermission ? (");
-  const block = activity.slice(start, start + 6_000);
+  const start = activity.indexOf("Permission required");
+  const block = activity.slice(Math.max(0, start - 2_000), start + 4_000);
   assert.ok(start >= 0);
   assert.match(block, /neu-surface-subtle/);
   assert.match(block, /bg-\[var\(--paper-strong\)\]/);
@@ -201,14 +284,14 @@ test("permission requests use a softly layered action card", () => {
   assert.match(block, /border border-\[var\(--line\)\]/);
 });
 
-test("OpenHarness tool names stay out of assistant responses", () => {
+test("Hermes tool names stay out of assistant responses", () => {
   assert.doesNotMatch(runtime, /function ToolChip/);
   assert.doesNotMatch(runtime, /message\.tools/);
   assert.doesNotMatch(runtime, /tool\.toolName/);
   assert.match(runtime, /<ActivityPanel/);
 });
 
-test("restored OpenHarness usage is normalized before rendering", () => {
+test("restored Hermes usage is normalized before rendering", () => {
   assert.match(agentSession, /normalizeRestoredMessages/);
   assert.match(agentSession, /normalizeChatTokenUsage\(message\.usage\)/);
   assert.match(
@@ -221,12 +304,76 @@ test("regeneration resubmits the preceding user turn", () => {
   assert.match(workspace, /handleRetryAssistant/);
   assert.match(
     workspace,
-    /handleSubmit\(previousUser\.content, messages\.slice\(0, userIndex\)\)/,
+    /handleSubmit\([\s\S]*previousUser\.content,[\s\S]*messages\.slice\(0, userIndex\),[\s\S]*retryAttachments/,
   );
   assert.match(gardenAssistant, /retryAssistantMessage/);
   assert.match(
     gardenAssistant,
-    /sendMessage\(previousUser\.content, messages\.slice\(0, userIndex\)\)/,
+    /sendMessage\([\s\S]*previousUser\.content,[\s\S]*messages\.slice\(0, userIndex\),[\s\S]*reusableChatAttachments\(previousUser\.attachments\)/,
   );
   assert.match(runtime, /onRetryMessage/);
+});
+
+test("regenerating or editing a runtime turn carries its attachments along", () => {
+  // A retry that drops the image re-asks the question without the thing it was
+  // about, and the model answers that nothing was attached.
+  for (const surface of [terminal, gardenAgentChat]) {
+    assert.match(
+      surface,
+      /session\.send\(\s*previousUser\.content,[\s\S]*?attachments: reusableChatAttachments\(previousUser\.attachments\)/,
+    );
+    assert.match(
+      surface,
+      /session\.send\(\s*text,[\s\S]*?attachments: reusableChatAttachments\(\s*session\.messages\[messageIndex\]\?\.attachments,\s*\)/,
+    );
+  }
+});
+
+test("user messages accent only the leading slash command", () => {
+  assert.match(
+    commandText,
+    /<span className=\{COMMAND_TEXT_CLASS\}>\{split\.command\}<\/span>/,
+  );
+  // The rest of the message stays untinted (it only gains link rendering).
+  assert.match(
+    commandText,
+    /<span>\s*<LinkifiedText content=\{split\.rest\} \/>\s*<\/span>/,
+  );
+  assert.doesNotMatch(
+    commandText,
+    /<p className=\{`whitespace-pre-wrap \$\{COMMAND_TEXT_CLASS\}`\}>/,
+  );
+});
+
+test("stalled agent turns render a recoverable in-chat error", () => {
+  assert.match(runtime, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
+  assert.match(runtime, /stateAction=/);
+  assert.match(runtime, /role="alert"/);
+  assert.match(runtime, /Try again/);
+  assert.doesNotMatch(runtime, />\s*Response interrupted\s*</);
+  assert.doesNotMatch(activity, /Response stopped/);
+  assert.match(agentSession, /agentStreamTimeout/);
+  assert.match(agentSession, /isAgentStreamTimeoutError/);
+  assert.match(agentSession, /\/abort/);
+  assert.ok(
+    agentSession.indexOf('name === "AbortError"') <
+      agentSession.indexOf("commitResponseDuration();", agentSession.indexOf("catch (streamError)")),
+    "intentional stream aborts must not overwrite completed or clarified responses",
+  );
+});
+
+test("interrupted assistant turns retain their message actions and retry control", () => {
+  assert.match(runtime, /<ActivityPanel/);
+  assert.match(
+    runtime,
+    /message\.content \|\|[\s\S]{0,240}message\.interrupted/,
+  );
+  assert.match(runtime, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
+  assert.match(runtime, /canRetryResponseState[\s\S]*?Try again/);
+  assert.match(
+    runtime,
+    /message\.interrupted \|\|\s*index === lastAssistantIndex/,
+  );
+  assert.match(runtime, /!activeRun/);
+  assert.match(runtime, /\(\) => retryAssistantAsBranch\(index\)/);
 });

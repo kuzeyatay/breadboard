@@ -11,8 +11,9 @@ function timestamp(value: string | undefined): number | null {
 
 /**
  * Measure the full user-visible turn, from its earliest activity until the
- * response reaches a terminal state. Provider duration is only a fallback for
- * restored messages that no longer have their live activity timestamps.
+ * response reaches a terminal state. A completed message's persisted duration
+ * is authoritative because the shared live activity list may already belong to
+ * a newer response branch.
  */
 export function assistantResponseElapsedMs(input: {
   activities: TimedAssistantActivity[];
@@ -20,6 +21,14 @@ export function assistantResponseElapsedMs(input: {
   now: number;
   reportedDurationMs?: number;
 }): number | null {
+  if (
+    !input.active &&
+    typeof input.reportedDurationMs === "number" &&
+    Number.isFinite(input.reportedDurationMs)
+  ) {
+    return Math.max(0, input.reportedDurationMs);
+  }
+
   const starts = input.activities
     .map((activity) => timestamp(activity.startedAt))
     .filter((value): value is number => value !== null);

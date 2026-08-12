@@ -361,14 +361,37 @@ export async function handleBuild(argv) {
   let clientRefresh = () => {}
   if (argv.serve) {
     const connections = []
+    let initialBuildComplete = false
     clientRefresh = () => connections.forEach((conn) => conn.send("rebuild"))
 
     if (argv.baseDir !== "" && !argv.baseDir.startsWith("/")) {
       argv.baseDir = "/" + argv.baseDir
     }
 
-    await build(clientRefresh)
     const server = http.createServer(async (req, res) => {
+      // The initial garden build can take several minutes for large libraries.
+      // Expose process readiness before that work completes so desktop
+      // supervisors do not mistake a healthy cold build for a startup hang.
+      // Normal site requests still acquire buildMutex below and therefore
+      // never observe a partially emitted garden.
+      if (req.url?.split("?")[0] === "/__health") {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" })
+        res.end('{"ready":true}')
+        return
+      }
+
+      // Older desktop supervisors probe `/` and accept any HTTP status. Keep
+      // their Retry action non-blocking while they are being upgraded to the
+      // dedicated endpoint above.
+      if (!initialBuildComplete && req.url?.split("?")[0] === "/") {
+        res.writeHead(503, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Retry-After": "5",
+        })
+        res.end("Garden is still building")
+        return
+      }
+
       if (argv.baseDir && !req.url?.startsWith(argv.baseDir)) {
         console.log(
           styleText(
@@ -496,6 +519,8 @@ export async function handleBuild(argv) {
         `Started a Quartz server listening at http://localhost:${argv.port}${argv.baseDir}`,
       ),
     )
+    await build(clientRefresh)
+    initialBuildComplete = true
   } else {
     await build(clientRefresh)
     ctx.dispose()

@@ -1,4 +1,4 @@
-// The Quartz page AI panel must expose the same OpenHarness capability set as
+// The Quartz page AI panel must expose the same Hermes capability set as
 // the dashboard terminal: server-resolved model + reasoning effort, session
 // history with transcript restore, new chat, markdown answers, usage, retry.
 
@@ -11,24 +11,26 @@ const read = (relative) => fs.readFileSync(new URL(relative, import.meta.url), "
 const chatRoute = read("../src/app/api/quartz-ai/chat/route.ts");
 const modelsRoute = read("../src/app/api/quartz-ai/models/route.ts");
 const sessionsRoute = read("../src/app/api/quartz-ai/sessions/route.ts");
-const openharnessSessionsRoute = read("../src/app/api/openharness/sessions/route.ts");
-const runtimeStore = read("../src/lib/openharness/runtime-store.ts");
+const hermesSessionsRoute = read("../src/app/api/hermes/sessions/route.ts");
+const runtimeStore = read("../src/lib/hermes/runtime-store.ts");
 const conversationStore = read("../src/lib/conversations/store.ts");
 const component = read("../../quartz/quartz/components/BreadboardAI.tsx");
 const inline = read("../../quartz/quartz/components/scripts/breadboardAI.inline.ts");
 const styles = read("../../quartz/quartz/components/styles/breadboardAI.scss");
 
 test("quartz chat route resolves the engine server-side like the terminal", () => {
-  assert.match(chatRoute, /resolveOpenHarnessEngine\(body\.model, body\.reasoningEffort\)/);
+  assert.match(chatRoute, /resolveHermesEngine\(body\.model, body\.reasoningEffort\)/);
   // Both the first-turn and continuation dispatches carry the resolved engine.
-  const modelSends = chatRoute.match(/model: engine\.model,\s*\n\s*variant: engine\.variant,/g) ?? [];
+  const modelSends = chatRoute.match(
+    /model: engine\.model,\s*\n\s*modelIdentity: \{ modelID: engine\.selectedModelID \},\s*\n\s*variant: engine\.variant,/g,
+  ) ?? [];
   assert.equal(modelSends.length, 2, "both sendMessage branches must pass the engine");
   const auditFields = chatRoute.match(/modelId: engine\.model\.modelID/g) ?? [];
   assert.equal(auditFields.length, 2, "both audit events must record the model");
 });
 
 test("quartz models route serves the intelligence picker with CORS", () => {
-  assert.match(modelsRoute, /OPENHARNESS_MODEL_IDS/);
+  assert.match(modelsRoute, /HERMES_MODEL_IDS/);
   assert.match(modelsRoute, /DEFAULT_ASSISTANT_REASONING_EFFORT/);
   assert.match(modelsRoute, /corsHeaders\(request\.headers\.get\("origin"\)\)/);
   assert.match(modelsRoute, /export async function OPTIONS/);
@@ -51,9 +53,18 @@ test("session transcript presentation is shared, not duplicated", () => {
   assert.match(runtimeStore, /export function presentRuntimeMessage/);
   assert.match(runtimeStore, /export function runtimeSessionTitle/);
   assert.match(conversationStore, /export function presentConversationMessage/);
-  assert.match(openharnessSessionsRoute, /presentConversationMessage/);
+  assert.match(hermesSessionsRoute, /presentConversationMessage/);
   assert.match(sessionsRoute, /presentConversationMessage/);
-  assert.doesNotMatch(openharnessSessionsRoute, /function parseMessages/);
+  assert.doesNotMatch(hermesSessionsRoute, /function parseMessages/);
+});
+
+test("anonymous Quartz follow-ups carry prior user requests into planning", () => {
+  assert.match(chatRoute, /listRuntimeMessages\(session\.row\.id\)/);
+  assert.match(
+    chatRoute,
+    /filter\(\(message\) => message\.role === "user"\)[\s\S]*slice\(-8\)[\s\S]*map\(\(message\) => message\.content\)/,
+  );
+  assert.match(chatRoute, /prepareTurn\(\{\s*request: text,\s*priorRequests,/);
 });
 
 test("quartz panel markup gains terminal-style controls", () => {

@@ -6,6 +6,10 @@ export interface LearnTimerState {
 const RUNNING_STATUSES = new Set([
   'idle',
   'planning',
+  'analyzing_issues',
+  'repairing',
+  'revalidating',
+  'publishing_repair',
   'generating_learning_pages',
   'generating_textbook',
   'generating_visuals',

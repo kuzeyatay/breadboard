@@ -13,7 +13,7 @@ import type {
   UITarsAgentConfiguration,
 } from "./types.ts";
 
-/** A structured, upstream-agnostic description of a proposed browser action. */
+/** A structured, upstream-agnostic description of a proposed operator action. */
 export interface ProposedAction {
   toolName: string;
   action: ApprovalActionType;
@@ -67,6 +67,17 @@ export function classify(
   config: Pick<UITarsAgentConfiguration, "approvalMode" | "allowedDomains">,
 ): Classification {
   const everything = config.approvalMode === ("every_action" as ApprovalMode);
+
+  // A desktop session can see the real screen and operate the real mouse and
+  // keyboard. It is always an explicit, high-risk approval, independent of the
+  // per-action policy selected for the rest of the run.
+  if (action.action === "desktop_control") {
+    return {
+      sensitive: true,
+      risk: "high",
+      explanation: "Controls the actual desktop, mouse, and keyboard for this run",
+    };
+  }
 
   // Leaving the configured allowlist is always sensitive (high).
   if (action.action === "navigate" && action.targetUrl) {

@@ -1,9 +1,9 @@
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth-options";
-import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
-import { authorizeConversationRuntime, authorizeQuartzRuntimeSession } from "@/lib/openharness/session-service.ts";
-import { buildSessionEventStream } from "@/lib/openharness/event-stream.ts";
-import { corsHeaders } from "@/lib/openharness/quartz-support.ts";
+import { apiErrorResponse, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
+import { authorizeConversationRuntime, authorizeQuartzRuntimeSession } from "@/lib/hermes/session-service.ts";
+import { buildSessionEventStream } from "@/lib/hermes/event-stream.ts";
+import { corsHeaders } from "@/lib/hermes/quartz-support.ts";
 import { getConversationForUser } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,7 @@ export async function OPTIONS(request: Request) {
 }
 
 // GET (SSE): stream a Quartz page session's normalized events. Authorized by the
-// same owner/client-token rule as the chat endpoint; the OpenHarness session id
+// same owner/client-token rule as the chat endpoint; the Hermes session id
 // is derived server-side.
 export async function GET(request: Request) {
   const cors = corsHeaders(request.headers.get("origin"));

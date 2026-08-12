@@ -1,0 +1,252 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "breadboard",
+  "model": "chatmock/{env:CHATMOCK_MODEL}",
+  "provider": {
+    "chatmock": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ChatMock (Breadboard)",
+      "options": {
+        "baseURL": "{env:CHATMOCK_BASE_URL}",
+        "apiKey": "{env:CHATMOCK_API_KEY}"
+      },
+      "models": {
+        "default": {
+          "name": "Background model (Settings -> Providers)",
+          "reasoning": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol",
+          "reasoning": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT-5.6 Terra",
+          "reasoning": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT-5.6 Luna",
+          "reasoning": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "gpt-5.5": {
+          "name": "GPT-5.5",
+          "reasoning": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "gpt-5.4": {
+          "name": "GPT-5.4",
+          "reasoning": true,
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        }
+      }
+    }
+  },
+  "agent": {
+    "breadboard": {
+      "description": "OpenCode coding agent for the repository connected to this Breadboard Garden",
+      "mode": "primary",
+      "prompt": "You are OpenCode inside the local Git repository explicitly connected to this Breadboard Garden. Stay inside the current working directory. Call codebase_memory_list_projects once and reuse the repository index when it exists. Call codebase_memory_index_repository only when the repository is missing or the user explicitly requests a refresh, call it at most once per run, and wait for it to finish before making another codebase-memory request. If codebase memory fails or times out, continue with targeted filesystem search instead of retrying it. Implement the user's request, run proportionate checks, and finish with a concise summary of changes and validation. Never commit, push, or access paths outside the connected repository.",
+      "permission": {
+        "external_directory": "deny",
+        "bash": {
+          "git push": "deny",
+          "git push *": "deny",
+          "git commit": "deny",
+          "git commit *": "deny",
+          "git reset --hard": "deny",
+          "git reset --hard *": "deny",
+          "*": "ask"
+        }
+      }
+    }
+  },
+  "mcp": {
+    "codebase_memory": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "codebase-memory-mcp@0.8.1"
+      ],
+      "enabled": true,
+      "timeout": 600000
+    }
+  }
+}

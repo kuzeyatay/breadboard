@@ -18,7 +18,9 @@ from flask import Response, current_app, jsonify, make_response
 
 from ..ask import chatmock_ask
 from ..http import build_cors_headers
-from ..model_registry import extract_reasoning_from_model_name, normalize_model_name
+from ..model_registry import normalize_model_name
+from ..providers.registry import resolve_model
+from ..reasoning import request_reasoning_overrides
 from .policy import council_enabled
 from .types import CouncilInput, CouncilRun, CouncilTokenUsage
 
@@ -37,18 +39,40 @@ def _request_reasoning(
     requested_model: Optional[str],
 ) -> Tuple[Optional[str], Optional[str]]:
     """Read the same request-level reasoning overrides as non-Council routes."""
-    reasoning = payload.get("reasoning")
-    overrides = (
-        reasoning
-        if isinstance(reasoning, dict)
-        else extract_reasoning_from_model_name(requested_model) or {}
-    )
+    overrides = request_reasoning_overrides(payload, requested_model) or {}
     effort = overrides.get("effort")
     summary = overrides.get("summary")
     return (
         effort.strip().lower() if isinstance(effort, str) and effort.strip() else None,
         summary.strip().lower() if isinstance(summary, str) and summary.strip() else None,
     )
+
+
+def _non_text_content_part(messages: List[Dict[str, Any]]) -> Optional[str]:
+    """Name the first content part the council cannot carry, or None.
+
+    The council reasons over flattened text (`types.message_text`), which turns
+    an image part into the literal string "[image attachment]": every candidate
+    model answers as if nothing were attached, and the user gets a confident
+    "I can't see the image" back. So a message carrying anything that isn't
+    text belongs on the raw passthrough, which forwards the part upstream
+    intact. The Responses path already bypasses for the same reason — see
+    `_responses_input_to_messages`.
+    """
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                return "unknown"
+            part_type = part.get("type")
+            if part_type in _TEXT_PART_TYPES and isinstance(part.get("text"), str):
+                continue
+            return str(part_type or "unknown")
+    return None
 
 
 def council_bypass_reason(payload: Dict[str, Any], messages: List[Dict[str, Any]]) -> Optional[str]:
@@ -66,6 +90,9 @@ def council_bypass_reason(payload: Dict[str, Any], messages: List[Dict[str, Any]
         return "explicit tool_choice"
     if not messages:
         return "no messages"
+    non_text = _non_text_content_part(messages)
+    if non_text is not None:
+        return f"non-text content part ({non_text})"
     return None
 
 
@@ -74,6 +101,7 @@ def _build_council_input(
     messages: List[Dict[str, Any]],
     requested_model: Optional[str],
     normalized_model: str,
+    requested_model_alias: Optional[str] = None,
 ) -> CouncilInput:
     temperature = payload.get("temperature")
     max_tokens = payload.get("max_tokens") or payload.get("max_completion_tokens")
@@ -86,6 +114,8 @@ def _build_council_input(
         page_id=_payload_flag(payload, "pageId", "page_id"),
         source_context=_payload_flag(payload, "sourceContext", "source_context"),
         include_diagnostics=bool(_payload_flag(payload, "includeCouncilDiagnostics", "include_council_diagnostics")),
+        requested_model_alias=requested_model_alias,
+        resolved_model=requested_model or normalized_model,
         requested_model=requested_model or normalized_model,
         temperature=temperature if isinstance(temperature, (int, float)) else None,
         max_tokens=max_tokens if isinstance(max_tokens, int) else None,
@@ -140,6 +170,39 @@ def _with_cors(resp: Response) -> Response:
     return resp
 
 
+def _model_routing_summary(run: CouncilRun) -> Dict[str, Any]:
+    attempts = run.model_attempts_snapshot()
+    served: List[str] = []
+    for attempt in attempts:
+        if attempt.get("outcome") != "succeeded":
+            continue
+        model = attempt.get("resolvedModel")
+        if isinstance(model, str) and model not in served:
+            served.append(model)
+    return {
+        "requestedModel": run.requested_model,
+        "resolvedModel": run.resolved_model,
+        "servedModels": served,
+        "usedFallback": any(
+            attempt.get("fallback") is True
+            and attempt.get("outcome") == "succeeded"
+            for attempt in attempts
+        ),
+    }
+
+
+def _with_model_routing(resp: Response, run: CouncilRun) -> Response:
+    summary = _model_routing_summary(run)
+    if isinstance(summary.get("requestedModel"), str):
+        resp.headers["X-ChatMock-Requested-Model"] = summary["requestedModel"]
+    if isinstance(summary.get("resolvedModel"), str):
+        resp.headers["X-ChatMock-Resolved-Model"] = summary["resolvedModel"]
+    resp.headers["X-ChatMock-Failover"] = (
+        "true" if summary["usedFallback"] else "false"
+    )
+    return resp
+
+
 def _run_diagnostic_strings(run: CouncilRun) -> List[str]:
     values: List[str] = []
     for key in ("error", "candidateFailures", "reviewFailures", "synthesisFailure"):
@@ -177,6 +240,19 @@ def _empty_final_answer_message(run: CouncilRun) -> str:
         return (
             "The council could not produce an answer because the ChatGPT upstream was "
             "temporarily unavailable after automatic retries. Please try the request again."
+        )
+    # A refusal naming the account, not the request: every model fails the same
+    # way until someone signs in with an account that has Codex access, so say
+    # that rather than blaming the candidates.
+    if re.search(
+        r"\bnot supported when using Codex with a ChatGPT account\b",
+        diagnostics,
+        flags=re.IGNORECASE,
+    ):
+        return (
+            "The council could not produce an answer because the signed-in ChatGPT "
+            "account cannot serve these models. Switch to an account with Codex "
+            "access in Settings, or choose a model from another provider."
         )
     return "The council could not produce an answer because all candidate models failed."
 
@@ -246,6 +322,7 @@ def maybe_handle_with_council(
     *,
     requested_model: Optional[str],
     model: str,
+    requested_model_alias: Optional[str] = None,
     verbose: bool = False,
 ) -> Optional[Response]:
     """Returns a Flask response when the council handled the request, or None
@@ -256,7 +333,13 @@ def maybe_handle_with_council(
             print(f"[Council] bypass: {bypass}")
         return None
 
-    council_input = _build_council_input(payload, messages, requested_model, model)
+    council_input = _build_council_input(
+        payload,
+        messages,
+        requested_model,
+        model,
+        requested_model_alias,
+    )
     run = chatmock_ask(council_input)
 
     if verbose:
@@ -281,7 +364,7 @@ def maybe_handle_with_council(
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-        return _with_cors(resp)
+        return _with_model_routing(_with_cors(resp), run)
 
     usage, usage_estimated = _resolved_usage(run)
     completion: Dict[str, Any] = {
@@ -312,10 +395,14 @@ def maybe_handle_with_council(
         "usageEstimated": usage_estimated,
         "councilRunId": run.id,
         "councilMode": run.council_mode,
+        "chatmockModelRouting": _model_routing_summary(run),
     }
     if council_input.include_diagnostics:
         completion["council"] = run.diagnostics_dict()
-    return _with_cors(make_response(jsonify(completion), 200))
+    return _with_model_routing(
+        _with_cors(make_response(jsonify(completion), 200)),
+        run,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +564,11 @@ def _responses_object(run: CouncilRun, model_name: str, created: int, include_di
         ],
         "usage": _responses_usage(usage),
         "usageEstimated": usage_estimated,
-        "metadata": {"councilRunId": run.id, "councilMode": run.council_mode},
+        "metadata": {
+            "councilRunId": run.id,
+            "councilMode": run.council_mode,
+            "chatmockModelRouting": _model_routing_summary(run),
+        },
         "councilRunId": run.id,
         "councilMode": run.council_mode,
     }
@@ -603,15 +694,17 @@ def maybe_handle_responses_with_council(
             print(f"[Council] bypass responses: {bypass}")
         return None
 
-    requested_model = payload.get("model") if isinstance(payload.get("model"), str) else None
+    requested_model_alias = payload.get("model") if isinstance(payload.get("model"), str) else None
     try:
         debug_model = current_app.config.get("DEBUG_MODEL")
     except Exception:
         debug_model = None
-    model_name = requested_model or normalize_model_name(requested_model, debug_model)
+    resolved = resolve_model(requested_model_alias)
+    routed_model = normalize_model_name(resolved.upstream_model, debug_model)
+    model_name = resolved.public_model if routed_model == resolved.upstream_model else routed_model
 
     temperature = payload.get("temperature")
-    reasoning_effort, reasoning_summary = _request_reasoning(payload, requested_model)
+    reasoning_effort, reasoning_summary = _request_reasoning(payload, requested_model_alias)
     council_input = CouncilInput(
         messages=messages,
         task_type=_field(fields, "taskType", "task_type"),
@@ -620,7 +713,9 @@ def maybe_handle_responses_with_council(
         page_id=_field(fields, "pageId", "page_id"),
         source_context=_field(fields, "sourceContext", "source_context"),
         include_diagnostics=bool(_field(fields, "includeCouncilDiagnostics", "include_council_diagnostics")),
-        requested_model=normalize_model_name(requested_model, debug_model),
+        requested_model_alias=requested_model_alias,
+        resolved_model=model_name,
+        requested_model=routed_model,
         temperature=temperature if isinstance(temperature, (int, float)) else None,
         reasoning_effort=reasoning_effort,
         reasoning_summary=reasoning_summary,
@@ -644,7 +739,10 @@ def maybe_handle_responses_with_council(
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
-        return _with_cors(resp)
+        return _with_model_routing(_with_cors(resp), run)
 
     body = _responses_object(run, model_name, created, council_input.include_diagnostics)
-    return _with_cors(make_response(jsonify(body), 200))
+    return _with_model_routing(
+        _with_cors(make_response(jsonify(body), 200)),
+        run,
+    )

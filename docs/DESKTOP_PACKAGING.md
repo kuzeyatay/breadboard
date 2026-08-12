@@ -79,17 +79,19 @@ npx electron-builder --win nsis --x64 --prepackaged "<release>\win-unpacked" -c.
 
 | Runtime | Decision | Rationale |
 | --- | --- | --- |
-| Node (dashboard, Quartz) | Bundle the official `node.exe` (same version the repo is developed/tested with) under `resources/runtimes/node` | Keeps npm-prebuilt native modules (`better-sqlite3`, `bcrypt`) on the exact ABI they were installed for — no Electron-ABI rebuild, no ASAR-unpack complexity for service code. Services are plain resources, not ASAR members. |
-| Bun (OpenHarness) | Bundle `bun.exe` under `resources/runtimes/bun`; OpenHarness ships as **sources + lockfile + a bundled package cache** (`resources/bun-cache`), and the desktop app runs `bun install` into user data on first launch | Bun's isolated installs use machine-absolute junctions (not shippable) and its hoisted linker is broken on Windows (bun 1.3.14 leaves packages empty), so the only reliable path is Bun's default install performed on the target machine, fed offline-first from the bundled cache. Preserves the upstream-friendly fork; no rewrite into Electron. First launch may consult the npm registry for manifest revalidation — documented in the first-run experience. |
+| Node (dashboard, Quartz, Postiz coordinator) | Bundle the official `node.exe` (same version the repo is developed/tested with) under `resources/runtimes/node` | Keeps npm-prebuilt native modules (`better-sqlite3`, `bcrypt`) on the exact ABI they were installed for — no Electron-ABI rebuild, no ASAR-unpack complexity for service code. Services are plain resources, not ASAR members. |
+| Python (Hermes) | Bundle CPython with the pinned Hermes package/source and launch its authenticated loopback `serve` command | Matches Hermes's native runtime and requires no first-launch package install. |
 | Python (ChatMock) | CPython **embeddable distribution** matching the build machine's minor version, with ChatMock's pinned wheels installed into `Lib/site-packages` (`--only-binary=:all:`) | Deterministic; no dependency on the user's Python; controlled `sys.path` via `._pth` plus a relocation-safe `.pth` entry for the packaged ChatMock source. |
 | ffmpeg / ffprobe / yt-dlp | Resolved from `desktop/resources/bin` when present and passed as absolute `FFMPEG_PATH`/`FFPROBE_PATH`/`YTDLP_PATH`; not bundled by default | These are only used by the optional video pipeline; when absent the dashboard reports the capability unavailable (existing behavior). Bundling an LGPL ffmpeg build is a drop-in later (place binaries in `desktop/resources/bin`). |
 | Docker (Scriberr) | **Never required.** Optional compatibility mode, off by default | Scriberr is AGPL + has no native Windows binaries in this repo; transcription is an optional capability with an honest unavailable state. |
+| Docker/Podman (Postiz) | **Required at desktop startup.** Compose assets are bundled, container images are pulled by the local engine | The desktop supervisor waits for the web app, bootstraps its local account, verifies the authenticated API, and writes all coordinator/Compose output to `postiz.log`. |
 
 ## electron-builder layout
 
 - `app.asar` contains only the compiled desktop shell (`desktop/dist`).
-- `resources/app-services/` — dashboard standalone tree, chatmock, openharness,
-  openharness-config, quartz-template, scriberr compose file, shared assets.
+- `resources/app-services/` — dashboard standalone tree, chatmock, hermes-agent,
+  hermes-config, Postiz supervisor/Compose assets, quartz-template,
+  scriberr compose file, shared assets.
 - `resources/runtimes/` — node / bun / python.
 - `resources/licenses/` — MIT/PSF notices for bundled components.
 - NSIS: per-user (`perMachine: false`), `deleteAppDataOnUninstall: false`
@@ -131,7 +133,5 @@ installed executable.
 
 - Installer generation and installed automation support Windows x64 only.
 - Unsigned builds trigger SmartScreen and must not be called externally production-ready.
-- First-run OpenHarness provisioning prefers the bundled Bun cache but may consult the npm registry for metadata revalidation.
 - Scriberr, ffmpeg, ffprobe, and yt-dlp remain optional capabilities and are not bundled by default.
 - The installed smoke runner temporarily replaces the current per-user installation; it preserves normal user data and restores the generated build afterward.
-- A full upstream OpenHarness workspace install may need access to pinned `pkg.pr.new` snapshot packages. Desktop packaging validates and caches the staged server runtime closure during `npm run desktop:prepare`; development of the entire OpenHarness monorepo still requires that external host to be reachable.

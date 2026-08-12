@@ -26,6 +26,95 @@
   --neu-q-inset-shadow:
     inset 2px 2px 5px color-mix(in srgb, var(--dark) 12%, transparent),
     inset -2px -2px 5px color-mix(in srgb, var(--neu-q-highlight) 72%, transparent);
+  --neu-q-scrollbar-size: 0.625rem;
+  --neu-q-scrollbar-track: color-mix(in srgb, var(--light) 68%, var(--neu-q-surface));
+  --neu-q-scrollbar-thumb: color-mix(in srgb, var(--secondary) 42%, var(--neu-q-surface));
+  --neu-q-scrollbar-thumb-hover: color-mix(in srgb, var(--secondary) 56%, var(--neu-q-surface));
+  --neu-q-scrollbar-thumb-active: color-mix(in srgb, var(--secondary) 64%, var(--neu-q-surface));
+  --neu-q-scrollbar-shadow: color-mix(in srgb, var(--dark) 14%, transparent);
+  --neu-q-scrollbar-highlight: color-mix(in srgb, var(--light) 82%, white);
+}
+
+/* The dashboard owns the embedded reader theme. Only the opt-in dark path is
+ * overridden here; Quartz's existing light material remains untouched. */
+:root[saved-theme="dark"] {
+  --neu-q-surface: #20211f;
+  --neu-q-pressed: #1c1d1b;
+  --neu-q-border: #353d37;
+  --neu-q-highlight: rgb(255 255 255 / 6%);
+  --neu-q-shadow: rgb(0 0 0 / 48%);
+  --neu-q-shadow-strong: rgb(0 0 0 / 62%);
+  --neu-q-focus: #91b7a1;
+  --neu-q-scrollbar-shadow: rgb(0 0 0 / 42%);
+  --neu-q-scrollbar-highlight: rgb(255 255 255 / 5%);
+}
+
+:root[saved-theme="dark"] :where(img, canvas, video, iframe, svg) {
+  filter: none;
+}
+
+:root[saved-theme="dark"] .breadboard-ai {
+  --bb-ai-bg: #20211f;
+  --bb-ai-fg: #e6ebe5;
+  --bb-ai-border: #353d37;
+  --bb-ai-accent: #91b7a1;
+  --bb-ai-muted: #a5aea5;
+  --bb-ai-command: #b2a6c4;
+}
+
+:root[saved-theme="dark"] .breadboard-ai-toggle,
+:root[saved-theme="dark"] .breadboard-ai-panel {
+  filter: none;
+}
+
+@supports (-moz-appearance: none) {
+  * {
+    scrollbar-color: var(--neu-q-scrollbar-thumb) var(--neu-q-scrollbar-track);
+    scrollbar-width: thin;
+  }
+}
+
+*::-webkit-scrollbar {
+  width: var(--neu-q-scrollbar-size);
+  height: var(--neu-q-scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: var(--neu-q-scrollbar-track);
+  box-shadow:
+    inset 1px 1px 2px var(--neu-q-scrollbar-shadow),
+    inset -1px -1px 2px var(--neu-q-scrollbar-highlight);
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid var(--neu-q-scrollbar-track);
+  border-radius: 999px;
+  background: var(--neu-q-scrollbar-thumb);
+  box-shadow:
+    1px 1px 2px var(--neu-q-scrollbar-shadow),
+    -1px -1px 2px var(--neu-q-scrollbar-highlight);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--neu-q-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: var(--neu-q-scrollbar-thumb-active);
+  box-shadow:
+    inset 1px 1px 2px var(--neu-q-scrollbar-shadow),
+    inset -1px -1px 2px var(--neu-q-scrollbar-highlight);
+}
+
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--neu-q-scrollbar-track);
 }
 
 .search > .search-button,
@@ -278,6 +367,10 @@ button.desktop-explorer {
 }
 
 @media (forced-colors: active) {
+  * {
+    scrollbar-color: ButtonText Canvas;
+  }
+
   .search > .search-button,
   button.mobile-explorer,
   button.desktop-explorer,

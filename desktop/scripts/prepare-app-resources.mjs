@@ -6,10 +6,16 @@
 // Layout produced (mirrors the repo for the services' repo-root assumptions):
 //   app-services/
 //     dashboard-standalone/       <- .next-desktop/standalone (server.js tree)
-//     dashboard/                  <- marker only (repo-root detection)
+//     dashboard/                  <- marker + Postiz supervisor module closure
+//     scripts/                    <- desktop service launchers
+//     postiz-app/                 <- optional Postiz Compose definition
+//     nango/                      <- provider catalog metadata and logos only
 //     chatmock/                   <- ChatMock source (no docker/tests)
-//     openharness/                <- OpenHarness source + node_modules
-//     openharness-config/         <- agent/skill/system config (read-only)
+//     hermes-config/              <- Breadboard system prompts (read-only)
+//     hermes-skills/              <- reviewed first-party skills (read-only)
+//     agency-agents/              <- bundled specialist persona catalog (read-only)
+//     scientific-agent-skills/    <- pinned K-Dense scientific skills (read-only)
+//     auto-claude-code-research-in-sleep/ <- ARIS guide + research skills (read-only)
 //     quartz-template/            <- Quartz program files (no content/public)
 //     scriberr/                   <- docker-compose only (optional Docker mode)
 //     shared/                     <- static shared assets
@@ -25,6 +31,8 @@ const repoRoot = path.resolve(desktopRoot, "..");
 const stagingRoot = path.join(desktopRoot, "build-resources", "app-services");
 const hermesRoot = path.join(repoRoot, "hermes-agent");
 const HERMES_UPSTREAM_COMMIT = "55ef425d0c3967022cb54093112e638c5c3f9e01";
+const scientificSkillsRoot = path.join(repoRoot, "scientific-agent-skills");
+const SCIENTIFIC_SKILLS_UPSTREAM_COMMIT = "757b63b1c09798a45c79eea542c9b55dbe04e502";
 
 function log(message) {
   console.log(`[prepare-app] ${message}`);
@@ -33,6 +41,44 @@ function log(message) {
 function fail(message) {
   console.error(`[prepare-app] ERROR: ${message}`);
   process.exit(1);
+}
+
+function runChecked(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    ...options,
+  });
+  if (result.status !== 0) {
+    fail(`${command} ${args.join(" ")} failed with exit code ${result.status ?? "unknown"}`);
+  }
+}
+
+function resolveCodexBinary() {
+  const executable = process.platform === "win32" ? "codex.exe" : "codex";
+  const candidates = [
+    process.env.CODEX_BIN,
+    path.join(repoRoot, "codex", "codex-rs", "target", "release", executable),
+    path.join(repoRoot, "codex", "codex-rs", "target", "debug", executable),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return path.resolve(candidate);
+  }
+  const lookup = spawnSync(
+    process.platform === "win32" ? "where.exe" : "which",
+    [executable],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (lookup.status === 0) {
+    const found = lookup.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    if (found && fs.existsSync(found)) return found;
+  }
+  fail(
+    "Codex binary not found. Build ./codex/codex-rs, install Codex, or set CODEX_BIN before packaging.",
+  );
 }
 
 /** Copy `source` to `target`, skipping any relative path for which `skip` returns true. */
@@ -56,6 +102,93 @@ function freshDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+// Codex is a native coding agent launched per task by the dashboard. Stage the
+// exact executable so an installed app does not depend on a global install.
+const codexSource = resolveCodexBinary();
+const codexTarget = path.join(
+  desktopRoot,
+  "resources",
+  "bin",
+  process.platform === "win32" ? "codex.exe" : "codex",
+);
+log(`staging Codex coding agent from ${codexSource}`);
+fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
+fs.copyFileSync(codexSource, codexTarget);
+if (process.platform !== "win32") fs.chmodSync(codexTarget, 0o755);
+
+// Voicebox ships its Python/ML dependency closure as a native sidecar. A local
+// source checkout is not sufficient for an installed app, so stage the binary
+// when it has been built (or explicitly supplied) and otherwise leave Speech in
+// its truthful unavailable state without breaking unrelated packaging work.
+{
+  const voiceboxExecutable = process.platform === "win32" ? "voicebox-server.exe" : "voicebox-server";
+  const voiceboxTarget = path.join(desktopRoot, "resources", "bin", voiceboxExecutable);
+  const targetTriple =
+    process.platform === "win32"
+      ? "x86_64-pc-windows-msvc.exe"
+      : process.platform === "darwin" && process.arch === "arm64"
+        ? "aarch64-apple-darwin"
+        : process.platform === "darwin"
+          ? "x86_64-apple-darwin"
+          : "x86_64-unknown-linux-gnu";
+  const candidates = [
+    process.env.VOICEBOX_SERVER_BIN,
+    path.join(repoRoot, "voicebox", "tauri", "src-tauri", "binaries", `voicebox-server-${targetTriple}`),
+    path.join(repoRoot, "voicebox", "backend", "dist", voiceboxExecutable),
+  ].filter(Boolean);
+  const source = candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).size > 64 * 1024);
+  if (source) {
+    log(`staging Voicebox speech server from ${source}`);
+    fs.mkdirSync(path.dirname(voiceboxTarget), { recursive: true });
+    fs.copyFileSync(source, voiceboxTarget);
+    if (process.platform !== "win32") fs.chmodSync(voiceboxTarget, 0o755);
+  } else {
+    fs.rmSync(voiceboxTarget, { force: true });
+    log("Voicebox server binary not built; packaged Speech will report setup required");
+  }
+}
+
+/**
+ * Produce a production `node_modules` for an already-staged package.
+ *
+ * npm installs can fail under a OneDrive-synchronized checkout while native
+ * files are being scanned, so the install runs in the OS temp directory and the
+ * resulting tree is materialized back into build-resources.
+ */
+function installProductionDependencies({ label, target, tempName, command }) {
+  const localInstallDir = path.join(os.tmpdir(), tempName);
+  freshDir(localInstallDir);
+  copyTree(target, localInstallDir);
+  const npmCli = process.platform === "win32"
+    ? path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")
+    : null;
+  if (npmCli && !fs.existsSync(npmCli)) {
+    fail(`npm CLI was not found beside the active Node runtime: ${npmCli}`);
+  }
+  const npmCommand = npmCli ? process.execPath : "npm";
+  const npmPrefix = npmCli ? [npmCli] : [];
+  let installStatus = 1;
+  for (let attempt = 1; attempt <= 2 && installStatus !== 0; attempt += 1) {
+    if (attempt > 1) {
+      log(`retrying ${label} production install after a transient failure`);
+      fs.rmSync(path.join(localInstallDir, "node_modules"), { recursive: true, force: true });
+    }
+    const install = spawnSync(
+      npmCommand,
+      [...npmPrefix, command, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+      { cwd: localInstallDir, stdio: "inherit", shell: false },
+    );
+    installStatus = install.status ?? 1;
+  }
+  if (installStatus !== 0) fail(`production install for ${label} failed`);
+  const installedModules = path.join(localInstallDir, "node_modules");
+  if (!fs.existsSync(installedModules)) {
+    fail(`${label} production install produced no node_modules`);
+  }
+  copyTree(installedModules, path.join(target, "node_modules"));
+  fs.rmSync(localInstallDir, { recursive: true, force: true });
+}
+
 // --- dashboard standalone -------------------------------------------------
 const standaloneSource = path.join(repoRoot, "dashboard", ".next-desktop", "standalone");
 const serverJs = path.join(standaloneSource, "dashboard", "server.js");
@@ -71,7 +204,7 @@ freshDir(dashboardTarget);
 copyTree(standaloneSource, dashboardTarget, (rel) =>
   // Belt-and-braces: never ship data, secrets, or dev build state even if
   // tracing regressions reintroduce them.
-  /^dashboard\/(db\/|artifacts\/|\.env|\.next\/|\.next-dev|\.next-production|\.vercel\/|tmp-)/.test(rel),
+  /^dashboard\/(db\/|database\/|artifacts\/|\.env|\.next\/|\.next-dev|\.next-production|\.vercel\/|tmp-)/.test(rel),
 );
 // Static assets + public files live outside the standalone tree.
 log("staging dashboard static assets");
@@ -135,11 +268,141 @@ log("staging dashboard MCP proxy dependency closure");
 }
 
 // Repo-root marker so services that look for `<root>/dashboard` next to
-// `<root>/openharness-config` recognize the staged layout.
+// `<root>/hermes-config` recognize the staged layout.
 fs.mkdirSync(path.join(stagingRoot, "dashboard"), { recursive: true });
 fs.writeFileSync(
   path.join(stagingRoot, "dashboard", "README.txt"),
   "Marker directory. The dashboard server runs from dashboard-standalone/dashboard/server.js.\n",
+);
+
+// Postiz is an optional background desktop service. Its coordinator runs under
+// the bundled Node runtime outside app.asar, so stage the small source closure
+// it imports rather than duplicating the stack/bootstrap implementation.
+log("staging Postiz desktop supervisor");
+const scriptsTarget = path.join(stagingRoot, "scripts");
+fs.mkdirSync(scriptsTarget, { recursive: true });
+fs.copyFileSync(
+  path.join(repoRoot, "scripts", "start-postiz-supervisor.mjs"),
+  path.join(scriptsTarget, "start-postiz-supervisor.mjs"),
+);
+fs.copyFileSync(
+  path.join(repoRoot, "scripts", "start-n8n.mjs"),
+  path.join(scriptsTarget, "start-n8n.mjs"),
+);
+fs.copyFileSync(
+  path.join(repoRoot, "scripts", "voicebox-status.mjs"),
+  path.join(scriptsTarget, "voicebox-status.mjs"),
+);
+fs.copyFileSync(
+  path.join(repoRoot, "scripts", "ifixai-background-runner.py"),
+  path.join(scriptsTarget, "ifixai-background-runner.py"),
+);
+
+// iFixAi's package is installed into the bundled Python runtime. Preserve its
+// upstream license and exact source revision beside the staged services.
+{
+  const ifixAiRoot = path.join(repoRoot, "iFixAi");
+  const expected = "4ac9cc1c8765427300d98dc30855c18349610cf1";
+  const revision = spawnSync("git", ["-C", ifixAiRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    shell: false,
+  });
+  const actual = revision.status === 0 ? revision.stdout.trim() : "";
+  if (actual !== expected) {
+    fail(`iFixAi checkout must be pinned to ${expected}; found ${actual || "unknown"}.`);
+  }
+  const target = path.join(stagingRoot, "ifixai");
+  freshDir(target);
+  fs.copyFileSync(path.join(ifixAiRoot, "LICENSE"), path.join(target, "LICENSE"));
+  fs.writeFileSync(path.join(target, "BREADBOARD_UPSTREAM_COMMIT"), `${actual}\n`, "utf8");
+}
+
+// Deploy the exact cloned and Breadboard-patched n8n build as a portable
+// production package. The installed app can then start workflows immediately;
+// it never downloads or compiles n8n on the user's first launch.
+const n8nRoot = path.join(repoRoot, "n8n");
+const n8nTarget = path.join(stagingRoot, "n8n-runtime");
+if (!fs.existsSync(path.join(n8nRoot, "pnpm-lock.yaml"))) {
+  fail(`n8n checkout not found at ${n8nRoot}`);
+}
+log("building the patched n8n runtime");
+runChecked("corepack", ["pnpm", "--filter", "n8n...", "build"], {
+  cwd: n8nRoot,
+  env: { ...process.env, CI: "true" },
+});
+freshDir(n8nTarget);
+log("deploying the production n8n runtime");
+runChecked("corepack", ["pnpm", "--filter", "n8n", "deploy", "--prod", "--legacy", n8nTarget], {
+  cwd: n8nRoot,
+  env: { ...process.env, CI: "true" },
+});
+const postizRuntimeTarget = path.join(stagingRoot, "dashboard", "src", "lib", "socials-manager");
+fs.mkdirSync(postizRuntimeTarget, { recursive: true });
+for (const entry of ["api-client.ts", "bootstrap.ts", "config.ts", "docker.ts", "stack.ts"]) {
+  fs.copyFileSync(
+    path.join(repoRoot, "dashboard", "src", "lib", "socials-manager", entry),
+    path.join(postizRuntimeTarget, entry),
+  );
+}
+fs.copyFileSync(
+  path.join(repoRoot, "dashboard", "src", "lib", "runtime-paths.ts"),
+  path.join(stagingRoot, "dashboard", "src", "lib", "runtime-paths.ts"),
+);
+
+const postizAppTarget = path.join(stagingRoot, "postiz-app");
+freshDir(postizAppTarget);
+fs.copyFileSync(
+  path.join(repoRoot, "postiz-app", "docker-compose.yaml"),
+  path.join(postizAppTarget, "docker-compose.yaml"),
+);
+copyTree(
+  path.join(repoRoot, "postiz-app", "dynamicconfig"),
+  path.join(postizAppTarget, "dynamicconfig"),
+);
+
+// The embedded broker uses Nango's open-source provider definitions and logos
+// as static catalog data only. No Nango server, runtime, database, or secrets
+// are bundled or started.
+log("staging connected-app provider catalog");
+const providerCatalogTarget = path.join(stagingRoot, "nango");
+freshDir(providerCatalogTarget);
+fs.mkdirSync(
+  path.join(providerCatalogTarget, "packages", "providers"),
+  { recursive: true },
+);
+copyTree(
+  path.join(repoRoot, "nango", "packages", "providers", "providers.yaml"),
+  path.join(providerCatalogTarget, "packages", "providers", "providers.yaml"),
+);
+fs.mkdirSync(
+  path.join(
+    providerCatalogTarget,
+    "packages",
+    "webapp",
+    "public",
+    "images",
+  ),
+  { recursive: true },
+);
+copyTree(
+  path.join(
+    repoRoot,
+    "nango",
+    "packages",
+    "webapp",
+    "public",
+    "images",
+    "template-logos",
+  ),
+  path.join(
+    providerCatalogTarget,
+    "packages",
+    "webapp",
+    "public",
+    "images",
+    "template-logos",
+  ),
+  (rel) => !rel.toLowerCase().endsWith(".svg"),
 );
 
 // --- chatmock -------------------------------------------------------------
@@ -150,133 +413,177 @@ copyTree(path.join(repoRoot, "chatmock"), path.join(stagingRoot, "chatmock"), (r
   rel.includes("__pycache__"),
 );
 
-// --- openharness ----------------------------------------------------------
-// The vendored checkout uses Bun's isolated install layout (junctions into a
-// node_modules/.bun store) which cannot be copied portably. Stage only the
-// server-runtime workspace closure of packages/opencode (the web/console/
-// desktop app workspaces are dev-only and pull unreachable preview tarballs),
-// then run a hoisted install INSIDE the staging tree: real files, no
-// junctions, vendored checkout untouched.
-const OPENHARNESS_RUNTIME_WORKSPACES = [
-  "packages/codemode",
-  "packages/core",
-  "packages/effect-drizzle-sqlite",
-  "packages/effect-sqlite-node",
-  "packages/http-recorder",
-  "packages/llm",
-  "packages/opencode",
-  "packages/plugin",
-  "packages/protocol",
-  "packages/schema",
-  "packages/script",
-  "packages/sdk/js",
-  "packages/server",
-  "packages/tui",
-  "packages/ui",
-];
-log("staging openharness sources (server runtime closure)");
-const openharnessTarget = path.join(stagingRoot, "openharness");
-freshDir(openharnessTarget);
-for (const entry of [
-  "package.json",
-  "bun.lock",
-  "bunfig.toml",
-  "tsconfig.json",
-  "patches",
-  "AGENTS.md",
-  "BREADBOARD.md",
-  "LICENSE",
-  "README.md",
-]) {
-  const source = path.join(repoRoot, "openharness", entry);
-  if (!fs.existsSync(source)) continue;
-  copyTree(source, path.join(openharnessTarget, entry));
-}
-for (const workspace of OPENHARNESS_RUNTIME_WORKSPACES) {
-  const source = path.join(repoRoot, "openharness", workspace);
-  if (!fs.existsSync(source)) fail(`OpenHarness workspace missing: ${source}`);
-  copyTree(source, path.join(openharnessTarget, workspace), (rel) =>
-    /(^|\/)node_modules(\/|$)/.test(rel) || /(^|\/)(test|tests)(\/|$)/.test(rel),
+// --- unslop ---------------------------------------------------------------
+// The writing skill ChatMock attaches to final, user-facing prose. It is read
+// from disk at request time, and `council/unslop.py` finds it by walking up
+// from its own module — so it has to sit beside chatmock/ here. Without this
+// the packaged app silently answers without the skill while the dev repo
+// (which has the sibling clone) looks fine.
+log("staging unslop skill");
+{
+  const unslopSource = path.join(repoRoot, "unslop");
+  if (!fs.existsSync(path.join(unslopSource, "SKILL.md"))) {
+    fail("unslop/SKILL.md is missing; the packaged app would ship without the writing skill.");
+  }
+  const unslopTarget = path.join(stagingRoot, "unslop");
+  freshDir(unslopTarget);
+  copyTree(unslopSource, unslopTarget, (rel) =>
+    /^(\.git|node_modules\/|__pycache__)/.test(rel) || rel.includes("__pycache__"),
   );
 }
-// Restrict the staged workspace list to the runtime closure so bun does not
-// look for the excluded app workspaces.
+
+// --- loopx ----------------------------------------------------------------
+// The control plane that governs long-running Hermes conversations. Only the
+// Python package ships: the docs, the presentation app, and the regression
+// fixtures are not read at runtime. LoopX declares no third-party dependencies,
+// so the bundled CPython runs it as staged (see BREADBOARD_LOOPX_PYTHON in
+// service-definitions.ts).
+log("staging loopx control plane");
 {
-  const manifestPath = path.join(openharnessTarget, "package.json");
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  manifest.workspaces = {
-    packages: OPENHARNESS_RUNTIME_WORKSPACES,
-    catalog: manifest.workspaces.catalog,
-  };
-  delete manifest.scripts.prepare; // husky is dev-only
-  // Root-only lint/release tooling is not part of the server runtime and pulls
-  // large native packages (notably oxlint-tsgolint) that are neither imported
-  // nor needed during first-launch provisioning.
-  delete manifest.devDependencies;
-  // We install with --ignore-scripts, so the trusted-scripts list only
-  // triggers a bun hoisted-linker bug (packages left unextracted with
-  // "failed to enqueue lifecycle scripts: ENOENT"). Drop it.
-  delete manifest.trustedDependencies;
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-}
-// OpenHarness node_modules are NOT shipped: Bun's isolated installer uses
-// machine-absolute junctions, and its hoisted linker is broken on Windows
-// (bun 1.3.14 leaves packages empty). Instead:
-//   1. validate the trimmed workspace installs + produce a lockfile and a
-//      fresh, self-contained package cache in a LOCAL temp dir (Bun installs
-//      also silently fail on OneDrive-synced folders);
-//   2. ship sources + bun.lock + the cache (resources/bun-cache);
-//   3. the desktop app runs `bun install` at first launch (offline-first
-//      against the bundled cache) — see desktop/src/main/provisioning.ts.
-log("validating openharness install and building the bundled package cache");
-{
-  const bunBinary =
-    process.platform === "win32"
-      ? path.join(desktopRoot, "build-resources", "runtimes", "bun", "bun.exe")
-      : "bun";
-  const bunCommand = fs.existsSync(bunBinary) ? bunBinary : "bun";
-  const localInstallDir = path.join(os.tmpdir(), "breadboard-openharness-install");
-  const localCacheDir = path.join(os.tmpdir(), "breadboard-bun-cache");
-  fs.rmSync(localInstallDir, { recursive: true, force: true });
-  // Bun mutates patched-package cache entries during installation. Reusing a
-  // cache from an interrupted build can ship half-renamed directories that
-  // fail with ENOTEMPTY on the user's first launch.
-  fs.rmSync(localCacheDir, { recursive: true, force: true });
-  fs.mkdirSync(localInstallDir, { recursive: true });
-  fs.mkdirSync(localCacheDir, { recursive: true });
-  copyTree(openharnessTarget, localInstallDir);
-  const install = spawnSync(bunCommand, ["install", "--ignore-scripts"], {
-    cwd: localInstallDir,
-    stdio: "inherit",
-    shell: false,
-    env: { ...process.env, BUN_INSTALL_CACHE_DIR: localCacheDir },
-  });
-  if (install.status !== 0) fail("bun install validation for the trimmed OpenHarness tree failed");
-  // Isolated layout: real files live in node_modules/.bun/<pkg>@<ver>/...
-  const store = path.join(localInstallDir, "node_modules", ".bun");
-  const storeOk =
-    fs.existsSync(store) &&
-    fs
-      .readdirSync(store)
-      .some(
-        (name) =>
-          name.startsWith("hono@") &&
-          fs.existsSync(path.join(store, name, "node_modules", "hono", "package.json")),
-      );
-  if (!storeOk) fail(`bun install produced an empty node_modules store (${store})`);
-  // Ship the exact lockfile this resolution produced.
-  fs.copyFileSync(path.join(localInstallDir, "bun.lock"), path.join(openharnessTarget, "bun.lock"));
-  log("copying the bundled bun package cache into build-resources");
-  const cacheTarget = path.join(desktopRoot, "build-resources", "bun-cache");
-  fs.rmSync(cacheTarget, { recursive: true, force: true });
-  copyTree(localCacheDir, cacheTarget);
-  fs.rmSync(localInstallDir, { recursive: true, force: true });
+  const loopxSource = path.join(repoRoot, "loopx", "loopx");
+  if (!fs.existsSync(path.join(loopxSource, "entrypoint.py"))) {
+    fail("loopx/loopx/entrypoint.py is missing; the packaged app would ship without the control plane.");
+  }
+  const loopxTarget = path.join(stagingRoot, "loopx", "loopx");
+  freshDir(path.join(stagingRoot, "loopx"));
+  copyTree(loopxSource, loopxTarget, (rel) =>
+    /(^|\/)(__pycache__|tests?)(\/|$)/.test(rel) || /\.(pyc|pyo)$/.test(rel),
+  );
 }
 
-// --- openharness-config ---------------------------------------------------
-log("staging openharness-config");
-freshDir(path.join(stagingRoot, "openharness-config"));
-copyTree(path.join(repoRoot, "openharness-config"), path.join(stagingRoot, "openharness-config"));
+// --- Agency Agents -------------------------------------------------------
+// Breadboard reads these Markdown personas directly at request time. Stage
+// only the division catalog and its agent files: examples, contribution docs,
+// and repository automation are not runtime dependencies.
+log("staging Agency Agents persona catalog");
+{
+  const agencySource = path.join(repoRoot, "agency-agents");
+  const divisionsSource = path.join(agencySource, "divisions.json");
+  const licenseSource = path.join(agencySource, "LICENSE");
+  if (!fs.existsSync(divisionsSource) || !fs.existsSync(licenseSource)) {
+    fail("agency-agents checkout is incomplete; divisions.json and LICENSE are required.");
+  }
+  const parsed = JSON.parse(fs.readFileSync(divisionsSource, "utf8"));
+  const divisions = Object.keys(parsed?.divisions ?? {});
+  if (divisions.length === 0 || divisions.some((name) => !/^[a-z0-9-]+$/.test(name))) {
+    fail("agency-agents/divisions.json contains no valid division directories.");
+  }
+
+  const agencyTarget = path.join(stagingRoot, "agency-agents");
+  freshDir(agencyTarget);
+  fs.copyFileSync(divisionsSource, path.join(agencyTarget, "divisions.json"));
+  fs.copyFileSync(licenseSource, path.join(agencyTarget, "LICENSE"));
+  for (const division of divisions) {
+    const source = path.join(agencySource, division);
+    if (!fs.existsSync(source)) {
+      fail(`Agency Agents division is missing: ${division}`);
+    }
+    copyTree(source, path.join(agencyTarget, division), (rel) => {
+      const entry = path.join(source, ...rel.split("/"));
+      return fs.statSync(entry).isFile() && !rel.toLowerCase().endsWith(".md");
+    });
+  }
+}
+
+// --- meta-prompting -------------------------------------------------------
+// The paper's prompt assets, which lib/hermes/meta-prompting.ts parses at
+// request time to build each turn's scaffold. Only the prompt files ship: the
+// clone's Math/data corpus is ~40 MB of benchmark JSON that nothing reads.
+// Without this the packaged app falls back to the embedded structures while the
+// dev repo (which has the sibling clone) looks fine, exactly as unslop did.
+log("staging meta-prompting prompts");
+{
+  const metaSource = path.join(repoRoot, "meta-prompting");
+  const metaFiles = [
+    ["prompts", "cr-agent-assistant-v0.1.md"],
+    ["prompts", "mp-icpd-v0.2.md"],
+    ["prompts", "mp-pt-reasoning-v0.1.md"],
+    ["prompts", "mp-pt-concise-v0.1.md"],
+    ["Math", "prompts", "mp", "math.md"],
+  ];
+  const metaTarget = path.join(stagingRoot, "meta-prompting");
+  freshDir(metaTarget);
+  for (const parts of metaFiles) {
+    const source = path.join(metaSource, ...parts);
+    if (!fs.existsSync(source)) {
+      fail(
+        `meta-prompting/${parts.join("/")} is missing; the packaged app would ship without the meta prompt structures.`,
+      );
+    }
+    const target = path.join(metaTarget, ...parts);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+  }
+}
+
+// --- hermes-config --------------------------------------------------------
+log("staging hermes-config");
+freshDir(path.join(stagingRoot, "hermes-config"));
+copyTree(path.join(repoRoot, "hermes-config"), path.join(stagingRoot, "hermes-config"));
+
+// --- Breadboard first-party skills ---------------------------------------
+// These are immutable product capabilities, distinct from the user's mutable
+// approved/quarantine stores under app data.
+log("staging Breadboard first-party skills");
+const firstPartySkillsTarget = path.join(stagingRoot, "hermes-skills", "prebuilt");
+freshDir(firstPartySkillsTarget);
+copyTree(
+  path.join(repoRoot, "hermes-skills", "prebuilt"),
+  firstPartySkillsTarget,
+);
+
+// --- scientific-agent-skills ---------------------------------------------
+{
+  const revision = spawnSync("git", ["-C", scientificSkillsRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    shell: false,
+  });
+  const actual = revision.status === 0 ? revision.stdout.trim() : "";
+  if (actual !== SCIENTIFIC_SKILLS_UPSTREAM_COMMIT) {
+    fail(
+      `Scientific skills checkout must be pinned to ${SCIENTIFIC_SKILLS_UPSTREAM_COMMIT}; found ${actual || "unknown"}.`,
+    );
+  }
+  log(`staging scientific-agent-skills ${actual.slice(0, 12)} source closure`);
+  const target = path.join(stagingRoot, "scientific-agent-skills");
+  freshDir(target);
+  copyTree(path.join(scientificSkillsRoot, "skills"), path.join(target, "skills"));
+  fs.copyFileSync(path.join(scientificSkillsRoot, "LICENSE.md"), path.join(target, "LICENSE.md"));
+  fs.writeFileSync(path.join(target, "BREADBOARD_UPSTREAM_COMMIT"), `${actual}\n`, "utf8");
+}
+
+// --- ARIS autonomous research agent --------------------------------------
+// ARIS is a Markdown methodology and helper collection rather than a daemon.
+// Stage the source closure Bread uses to assemble its per-turn research persona
+// so installed builds behave exactly like the cloned development checkout.
+{
+  const arisRoot = path.join(repoRoot, "auto-claude-code-research-in-sleep");
+  const arisTarget = path.join(stagingRoot, "auto-claude-code-research-in-sleep");
+  const required = ["AGENT_GUIDE.md", "skills", "tools", "templates", "LICENSE"];
+  for (const entry of required) {
+    if (!fs.existsSync(path.join(arisRoot, entry))) {
+      fail(`ARIS checkout is incomplete; missing ${path.join(arisRoot, entry)}`);
+    }
+  }
+  const revision = spawnSync("git", ["-C", arisRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    shell: false,
+  });
+  const actual = revision.status === 0 ? revision.stdout.trim() : "unknown";
+  log(`staging ARIS ${actual.slice(0, 12)} research source closure`);
+  freshDir(arisTarget);
+  fs.copyFileSync(path.join(arisRoot, "AGENT_GUIDE.md"), path.join(arisTarget, "AGENT_GUIDE.md"));
+  fs.copyFileSync(path.join(arisRoot, "LICENSE"), path.join(arisTarget, "LICENSE"));
+  for (const entry of ["skills", "tools", "templates", "mcp-servers"]) {
+    const source = path.join(arisRoot, entry);
+    if (!fs.existsSync(source)) continue;
+    copyTree(source, path.join(arisTarget, entry), (rel) =>
+      /(^|\/)(__pycache__|\.pytest_cache)(\/|$)/.test(rel) ||
+      /\.(pyc|pyo)$/.test(rel),
+    );
+  }
+  fs.writeFileSync(path.join(arisTarget, "BREADBOARD_UPSTREAM_COMMIT"), `${actual}\n`, "utf8");
+}
 
 // --- hermes-agent ---------------------------------------------------------
 // Stage the pinned, minimal Python source closure. Dependencies are installed
@@ -345,6 +652,27 @@ copyTree(path.join(repoRoot, "openharness-config"), path.join(stagingRoot, "open
     `${actual}\n`,
     "utf8",
   );
+
+  // Hermes's Baileys WhatsApp bridge. Breadboard's dashboard spawns this Node
+  // script directly (docs/WHATSAPP_INTEGRATION.md), so it must ship with its
+  // production dependencies already installed — the bundled Node runtime is
+  // node.exe alone, with no npm to install them on the user's machine.
+  const bridgeSource = path.join(hermesRoot, "scripts", "whatsapp-bridge");
+  if (!fs.existsSync(bridgeSource)) fail(`Hermes WhatsApp bridge missing: ${bridgeSource}`);
+  log("staging Hermes WhatsApp bridge and production dependencies");
+  const bridgeTarget = path.join(hermesTarget, "scripts", "whatsapp-bridge");
+  freshDir(bridgeTarget);
+  copyTree(bridgeSource, bridgeTarget, (rel) =>
+    /(^|\/)node_modules(\/|$)/.test(rel) || /\.test\.(mjs|js)$/.test(rel),
+  );
+  installProductionDependencies({
+    label: "hermes whatsapp-bridge",
+    target: bridgeTarget,
+    tempName: "breadboard-whatsapp-bridge-install",
+    // The bridge ships a lockfile but no `npm ci` guarantee across Hermes bumps;
+    // `install` keeps packaging working when the lockfile drifts from the manifest.
+    command: "install",
+  });
 }
 
 // --- quartz template (program files only; content/public are user data) ---
@@ -382,20 +710,24 @@ if (fs.existsSync(path.join(repoRoot, "shared"))) {
   copyTree(path.join(repoRoot, "shared"), path.join(stagingRoot, "shared"));
 }
 
-// --- ui-tars-adapter (browser-operator sidecar; optional runtime) ---------
-// Staged as SOURCE. Its production dependencies (@agent-tars/core, puppeteer-core,
-// @tarko/*, @agent-infra/browser, react) must be installed into the staged dir at
-// package time — run `npm install --omit=dev` in resources/app-services/ui-tars-adapter
-// as a packaging step. UI-TARS is optional: if those deps or a system Chrome/Edge
-// are absent, the app still runs and the agent shows an unavailable state. Chromium
-// is NOT bundled; a system Chrome/Edge is located at runtime by browser-finder.
+// --- ui-tars-adapter (browser + actual-desktop sidecar; optional runtime) --
+// Stage source, then produce a clean production install on a local temp disk.
+// This includes Agent TARS' isolated-browser dependencies and the official
+// NutJS Windows desktop operator. Chromium remains external; a system
+// Chrome/Edge is located at runtime for isolated-browser mode.
 if (fs.existsSync(path.join(repoRoot, "ui-tars-adapter"))) {
-  log("staging ui-tars-adapter (source; prod deps installed at package time)");
+  log("staging ui-tars-adapter source and production dependencies");
   const uiTarsTarget = path.join(stagingRoot, "ui-tars-adapter");
   freshDir(uiTarsTarget);
   copyTree(path.join(repoRoot, "ui-tars-adapter"), uiTarsTarget, (rel) =>
     /(^|\/)node_modules(\/|$)/.test(rel) || /(^|\/)test(\/|$)/.test(rel),
   );
+  installProductionDependencies({
+    label: "ui-tars-adapter",
+    target: uiTarsTarget,
+    tempName: "breadboard-ui-tars-adapter-install",
+    command: "ci",
+  });
 }
 
 // --- licenses -------------------------------------------------------------
@@ -403,10 +735,13 @@ log("staging license notices");
 const licensesTarget = path.join(desktopRoot, "build-resources", "licenses");
 fs.mkdirSync(licensesTarget, { recursive: true });
 const licenseSources = [
+  ["agency-agents", path.join(repoRoot, "agency-agents", "LICENSE")],
   ["chatmock", path.join(repoRoot, "chatmock", "LICENSE")],
-  ["openharness", path.join(repoRoot, "openharness", "LICENSE")],
+  ["codex", path.join(repoRoot, "codex", "LICENSE")],
   ["hermes-agent", path.join(hermesRoot, "LICENSE")],
+  ["scientific-agent-skills", path.join(scientificSkillsRoot, "LICENSE.md")],
   ["quartz", path.join(repoRoot, "quartz", "LICENSE.txt")],
+  ["postiz", path.join(repoRoot, "postiz-app", "LICENSE")],
 ];
 for (const [name, source] of licenseSources) {
   if (fs.existsSync(source)) {
@@ -423,7 +758,15 @@ function scanForbidden(dir) {
       scanForbidden(full);
     } else if (/\.(db|db-shm|db-wal)$/.test(entry.name) || /^\.env($|\.)/.test(entry.name)) {
       // .env.example files are documentation, not secrets.
-      if (!entry.name.endsWith(".example")) forbidden.push(full);
+      if (entry.name.endsWith(".example")) continue;
+      // Third-party packages sometimes ship an empty .env of their own (psl@1.9.0
+      // in n8n's dependency tree does). A zero-byte file inside node_modules holds
+      // no secret, and blocking it only stops the build. Both conditions are
+      // required: anything with content, or anywhere outside node_modules, still
+      // fails as before.
+      const insideDependencies = full.split(path.sep).includes("node_modules");
+      if (insideDependencies && fs.statSync(full).size === 0) continue;
+      forbidden.push(full);
     }
   }
 }

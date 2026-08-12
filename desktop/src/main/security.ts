@@ -11,6 +11,18 @@ export interface AllowedOrigins {
   origins: Set<string>;
 }
 
+const themeLocationAllowedWebContents = new Set<number>();
+
+export function allowThemeLocationFor(webContentsId: number): boolean {
+  const added = !themeLocationAllowedWebContents.has(webContentsId);
+  themeLocationAllowedWebContents.add(webContentsId);
+  return added;
+}
+
+export function revokeThemeLocationFor(webContentsId: number): void {
+  themeLocationAllowedWebContents.delete(webContentsId);
+}
+
 export function allowedOriginsFor(urls: string[]): AllowedOrigins {
   const origins = new Set<string>();
   for (const value of urls) {
@@ -42,31 +54,91 @@ export function isSafeExternalUrl(targetUrl: string): boolean {
   }
 }
 
-export function hardenWindow(window: BrowserWindow, allowed: AllowedOrigins): void {
+export function isRendererPermissionAllowed(
+  allowed: AllowedOrigins,
+  permission: string,
+  requestingUrl: string | undefined,
+  mediaTypes: readonly string[] = [],
+  allowGeolocation = false,
+): boolean {
+  if (!requestingUrl) return false;
+  let origin: string;
+  try {
+    origin = new URL(requestingUrl).origin;
+  } catch {
+    return false;
+  }
+  if (!allowed.origins.has(origin)) return false;
+
+  if (permission === "media") {
+    // Dictation needs audio only. A compromised local renderer must not turn
+    // that narrow grant into camera access.
+    return mediaTypes.length > 0 && mediaTypes.every((type) => type === "audio");
+  }
+  if (permission === "geolocation") return allowGeolocation;
+  return permission === "clipboard-sanitized-write" || permission === "fullscreen";
+}
+
+export function hardenWindow(
+  window: BrowserWindow,
+  allowed: AllowedOrigins,
+  onOpenLocalWindow?: (url: string) => void,
+): void {
   window.webContents.on("will-navigate", (event, targetUrl) => {
     if (isNavigationAllowed(allowed, targetUrl)) return;
     event.preventDefault();
     if (isSafeExternalUrl(targetUrl)) void shell.openExternal(targetUrl);
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
-    // Local origins may open in-window navigations only; anything else goes to
-    // the OS browser. No new Electron windows are ever created from content.
+    // External URLs go to the OS browser. A local `target="_blank"` opens a new
+    // hardened Breadboard window when a handler is provided (so features like the
+    // Work timer get their own instance), otherwise it navigates in-window.
     if (isSafeExternalUrl(url) && !isNavigationAllowed(allowed, url)) {
       void shell.openExternal(url);
     } else if (isNavigationAllowed(allowed, url)) {
-      void window.loadURL(url);
+      if (onOpenLocalWindow) onOpenLocalWindow(url);
+      else void window.loadURL(url);
     }
     return { action: "deny" };
   });
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());
 }
 
-export function hardenSession(targetSession: Session): void {
-  targetSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    // Clipboard and fullscreen are reasonable for a local dashboard; everything
-    // else (camera, mic, geolocation, notifications, ...) is denied.
-    const allowedPermissions = new Set(["clipboard-sanitized-write", "fullscreen"]);
-    callback(allowedPermissions.has(permission));
+export function hardenSession(targetSession: Session, allowed: AllowedOrigins): void {
+  targetSession.setPermissionCheckHandler(
+    (_webContents, permission, requestingOrigin, details) => {
+      const mediaTypes =
+        permission === "media" && details.mediaType ? [details.mediaType] : [];
+      return isRendererPermissionAllowed(
+        allowed,
+        permission,
+        details.requestingUrl ?? details.securityOrigin ?? requestingOrigin,
+        mediaTypes,
+        Boolean(
+          _webContents &&
+            themeLocationAllowedWebContents.has(_webContents.id),
+        ),
+      );
+    },
+  );
+  targetSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const mediaTypes =
+      permission === "media" && "mediaTypes" in details
+        ? details.mediaTypes ?? []
+        : [];
+    const securityOrigin =
+      permission === "media" && "securityOrigin" in details
+        ? details.securityOrigin
+        : undefined;
+    callback(
+      isRendererPermissionAllowed(
+        allowed,
+        permission,
+        details.requestingUrl || securityOrigin || webContents.getURL(),
+        mediaTypes,
+        themeLocationAllowedWebContents.has(webContents.id),
+      ),
+    );
   });
 }
 
@@ -85,5 +157,5 @@ export function installGlobalSecurity(allowed: AllowedOrigins): void {
       return { action: "deny" };
     });
   });
-  hardenSession(session.defaultSession);
+  hardenSession(session.defaultSession, allowed);
 }

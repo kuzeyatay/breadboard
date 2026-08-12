@@ -6,6 +6,10 @@ export const IPC_CHANNELS = {
   copyDiagnostics: "breadboard:copy-diagnostics",
   quit: "breadboard:quit",
   pickFolder: "breadboard:pick-folder",
+  openMicrophoneSettings: "breadboard:open-microphone-settings",
+  allowThemeLocation: "breadboard:allow-theme-location",
+  setTheme: "breadboard:set-theme",
+  startupContinue: "breadboard:startup-continue",
+  startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",
 } as const;
-

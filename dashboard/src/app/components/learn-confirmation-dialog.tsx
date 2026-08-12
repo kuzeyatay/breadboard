@@ -92,7 +92,7 @@ export default function LearnConfirmationDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[130] flex items-center justify-center bg-[rgba(15,26,22,0.72)] px-4 py-6 backdrop-blur-[2px]"
+      className="bb-modal-backdrop fixed inset-0 z-[130] flex items-center justify-center px-4 py-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
@@ -103,7 +103,7 @@ export default function LearnConfirmationDialog({
         aria-modal="true"
         aria-labelledby="learn-confirmation-title"
         aria-describedby="learn-confirmation-description learn-confirmation-guidance"
-        className="neu-dialog w-full max-w-md overflow-hidden rounded-2xl border border-[var(--line-strong)] bg-[var(--paper-raised)] text-[var(--ink)]"
+        className="bb-modal-panel neu-dialog w-full max-w-md overflow-hidden rounded-2xl border bg-[var(--paper-raised)] text-[var(--ink)]"
       >
         <div className="p-6 pb-5">
           <div className="flex items-start gap-3.5">

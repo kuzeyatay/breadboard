@@ -6,20 +6,34 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import db from "@/lib/db";
-import type { VerificationSummary } from "@/lib/openharness/evidence";
+import type { VerificationSummary } from "@/lib/hermes/evidence";
+import {
+  normalizeChatMessageAttachments,
+  type ChatMessageAttachment,
+} from "@/lib/chat-attachments";
+import {
+  delegatedAgentPresentation,
+  externalAgentMessageFields,
+} from "@/lib/conversations/external-agent-runs";
+import { ensureConversationForLegacyChatSession } from "@/lib/conversations/store";
 
 export const dynamic = "force-dynamic";
 
 type ChatRole = "user" | "assistant";
 
-interface ChatMessage {
+type ChatMessage = {
+  id?: string;
   role: ChatRole;
   content: string;
+  internalAgentContinuation?: boolean;
+  createdAt?: string;
   sources?: string[];
+  attachmentNames?: string[];
+  attachments?: ChatMessageAttachment[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
-}
+} & ReturnType<typeof externalAgentMessageFields>;
 
 interface ChatSessionRow {
   id: number;
@@ -32,11 +46,13 @@ interface ChatSessionRow {
 
 interface ChatMessageRow {
   session_id: number;
+  canonical_message_id: number | null;
   role: ChatRole;
   content: string;
   sources: string | null;
   token_usage: string | null;
   tool_calls: string | null;
+  created_at: string;
 }
 
 function cleanTitle(value: unknown): string {
@@ -90,6 +106,60 @@ function parseResponseDuration(value: string | null): number | undefined {
       : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function parseInternalAgentContinuation(value: string | null): boolean {
+  if (!value) return false;
+  try {
+    const parsed = JSON.parse(value) as { internalAgentContinuation?: unknown };
+    return parsed?.internalAgentContinuation === true;
+  } catch {
+    return false;
+  }
+}
+
+function parseExternalAgentFields(
+  value: string | null,
+  role: ChatRole,
+): ReturnType<typeof externalAgentMessageFields> {
+  // A launch stores the run descriptor on both halves of the turn so the
+  // canonical store can detect a replayed clientMessageId. Only the assistant
+  // half may carry it back into a transcript — the writer that finalizes a run
+  // matches on the descriptor, and a user message wearing one gets its text
+  // replaced by the agent's answer.
+  if (!value || role !== "assistant") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? externalAgentMessageFields(parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseAttachmentFields(value: string | null): Pick<
+  ChatMessage,
+  "attachmentNames" | "attachments"
+> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const attachmentNames = Array.isArray(parsed.attachmentNames)
+      ? parsed.attachmentNames
+          .filter((name): name is string => typeof name === "string" && Boolean(name.trim()))
+          .map((name) => name.trim().slice(0, 240))
+          .slice(0, 12)
+      : [];
+    const attachments = normalizeChatMessageAttachments(parsed.attachments);
+    return {
+      ...(attachmentNames.length ? { attachmentNames } : {}),
+      ...(attachments.length ? { attachments } : {}),
+    };
+  } catch {
+    return {};
   }
 }
 
@@ -173,7 +243,7 @@ function readSessions(
   const placeholders = ids.map(() => "?").join(",");
   const messages = db
     .prepare(
-      `SELECT session_id, role, content, sources, token_usage, tool_calls
+      `SELECT session_id, canonical_message_id, role, content, sources, token_usage, tool_calls, created_at
        FROM chat_messages
        WHERE session_id IN (${placeholders})
        ORDER BY session_id, order_index`,
@@ -186,13 +256,29 @@ function readSessions(
     const usage = parseTokenUsage(message.token_usage);
     const verification = parseVerification(message.tool_calls);
     const responseDurationMs = parseResponseDuration(message.tool_calls);
+    const internalAgentContinuation =
+      message.role === "user" &&
+      parseInternalAgentContinuation(message.tool_calls);
+    const externalAgent = parseExternalAgentFields(
+      message.tool_calls,
+      message.role,
+    );
+    const attachmentFields = parseAttachmentFields(message.tool_calls);
     existing.push({
+      ...(message.canonical_message_id !== null
+        ? { id: `msg_${message.canonical_message_id}` }
+        : {}),
       role: message.role,
-      content: message.content,
+      ...delegatedAgentPresentation(message.content, externalAgent),
+      ...(internalAgentContinuation
+        ? { internalAgentContinuation: true }
+        : {}),
+      createdAt: message.created_at,
       sources: parseSources(message.sources),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(verification ? { verification } : {}),
+      ...attachmentFields,
     });
     bySession.set(message.session_id, existing);
   }
@@ -273,9 +359,13 @@ export async function POST(request: Request) {
     )
     .run(access.id, userId, cleanTitle(body.title));
 
+  ensureConversationForLegacyChatSession(
+    Number(result.lastInsertRowid),
+    userId,
+  );
   const session = db
     .prepare(
-      "SELECT id, user_id, title, created_at, updated_at FROM chat_sessions WHERE id = ?",
+      "SELECT id, user_id, title, created_at, updated_at, conversation_id FROM chat_sessions WHERE id = ?",
     )
     .get(result.lastInsertRowid) as ChatSessionRow;
 

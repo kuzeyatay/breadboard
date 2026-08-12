@@ -3,11 +3,18 @@ import {
   DEFAULT_CHATMOCK_TARGET,
   normalizeChatmockTarget,
   type ChatmockTarget,
-} from "@/lib/chatmock-target";
+  // Relative so subsystems that run outside the Next bundler (the UI-TARS
+  // library, exercised by node --test) can import this module.
+} from "./chatmock-target.ts";
 
 const DEFAULT_LOCAL_CHATMOCK_BASE_URL = "http://127.0.0.1:8765/v1";
 
-function normalizeBaseUrl(value?: string | null): string | null {
+/**
+ * Normalize a ChatMock base URL: add the protocol when omitted, drop query and
+ * fragment, and guarantee the OpenAI-compatible `/v1` suffix. Exported so other
+ * subsystems (UI-TARS) resolve the same endpoint the chat surfaces use.
+ */
+export function normalizeChatmockBaseUrl(value?: string | null): string | null {
   const trimmed = (value ?? "").trim();
   if (!trimmed) return null;
 
@@ -50,51 +57,27 @@ function parseCookieHeader(header: string | null): Record<string, string> {
   );
 }
 
-function requestHostname(request: Request): string | null {
-  const candidates = [
-    request.headers.get("x-forwarded-host"),
-    request.headers.get("host"),
-  ];
-
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const first = candidate.split(",")[0]?.trim();
-    if (!first) continue;
-
-    try {
-      return new URL(`http://${first}`).hostname;
-    } catch {
-      // Try the next candidate.
-    }
-  }
-
-  try {
-    return new URL(request.url).hostname;
-  } catch {
-    return null;
-  }
-}
-
-function localChatmockBaseUrl(): string {
+/**
+ * ChatMock as reached from the server with no request in hand — a background
+ * index, a scheduled job, a sidecar's default. Exported because subsystems that
+ * embed have no Request to resolve a per-user target from, and hard-coding the
+ * port in each of them is how they drift apart.
+ */
+export function localChatmockBaseUrl(): string {
   return (
-    normalizeBaseUrl(
-      process.env.OPENAI_LOCAL_BASE_URL ?? process.env.OPENAI_BASE_URL,
-    ) ?? DEFAULT_LOCAL_CHATMOCK_BASE_URL
+    normalizeChatmockBaseUrl(process.env.OPENAI_LOCAL_BASE_URL) ??
+    normalizeChatmockBaseUrl(process.env.OPENAI_BASE_URL) ??
+    DEFAULT_LOCAL_CHATMOCK_BASE_URL
   );
 }
 
-function hostChatmockBaseUrl(request: Request): string {
-  const configured = normalizeBaseUrl(process.env.OPENAI_HOST_BASE_URL);
-  if (configured) return configured;
-
-  const hostname = requestHostname(request);
-  if (!hostname) return localChatmockBaseUrl();
-
-  const protocol = (process.env.CHATMOCK_HOST_PROTOCOL ?? "http").trim() || "http";
-  const port = (process.env.CHATMOCK_HOST_PORT ?? "8765").trim() || "8765";
-
+function hostChatmockBaseUrl(): string {
+  // Request host headers are attacker-controlled in many deployments. Never
+  // turn them into an authenticated model destination. Desktop launchers put
+  // their dynamically allocated ChatMock URL in OPENAI_BASE_URL, while a
+  // container/remote-host setup can opt in explicitly with this host override.
   return (
-    normalizeBaseUrl(`${protocol}://${hostname}:${port}`) ??
+    normalizeChatmockBaseUrl(process.env.OPENAI_HOST_BASE_URL) ??
     localChatmockBaseUrl()
   );
 }
@@ -116,7 +99,7 @@ export function resolveChatmockBaseUrl(request: Request): {
     target,
     baseURL:
       target === "host"
-        ? hostChatmockBaseUrl(request)
+        ? hostChatmockBaseUrl()
         : localChatmockBaseUrl(),
   };
 }

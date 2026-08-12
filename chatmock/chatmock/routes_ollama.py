@@ -16,11 +16,15 @@ from .responses_api import instructions_for_model
 from .reasoning import (
     allowed_efforts_for_model,
     build_reasoning_param,
-    extract_reasoning_from_model_name,
+    request_reasoning_overrides,
 )
 from .transform import convert_ollama_messages, normalize_ollama_tools
 from .upstream import normalize_model_name, start_upstream_request
-from .utils import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses
+from .utils import (
+    convert_chat_messages_to_responses_input,
+    convert_tools_chat_to_responses,
+    upstream_error_message,
+)
 
 
 ollama_bp = Blueprint("ollama", __name__)
@@ -249,7 +253,7 @@ def ollama_chat() -> Response:
 
     input_items = convert_chat_messages_to_responses_input(messages)
 
-    model_reasoning = extract_reasoning_from_model_name(model)
+    model_reasoning = request_reasoning_overrides(payload, model)
     normalized_model = normalize_model_name(model, current_app.config.get("DEBUG_MODEL"))
     service_tier_resolution = resolve_service_tier(
         normalized_model,
@@ -324,14 +328,14 @@ def ollama_chat() -> Response:
             if err2 is None and upstream2 is not None and upstream2.status_code < 400:
                 upstream = upstream2
             else:
-                err = {"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error"), "code": "RESPONSES_TOOLS_REJECTED"}}
+                err = {"error": {"message": upstream_error_message(err_body), "code": "RESPONSES_TOOLS_REJECTED"}}
                 if verbose:
                     _log_json("OUT POST /api/chat", err)
                 return jsonify(err), (upstream2.status_code if upstream2 is not None else upstream.status_code)
         else:
             if verbose:
                 print("/api/chat upstream error status=", upstream.status_code, " body:", json.dumps(err_body)[:2000])
-            err = {"error": (err_body.get("error", {}) or {}).get("message", "Upstream error")}
+            err = {"error": upstream_error_message(err_body)}
             if verbose:
                 _log_json("OUT POST /api/chat", err)
             return jsonify(err), upstream.status_code

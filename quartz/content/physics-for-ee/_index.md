@@ -1,17 +1,17 @@
 ---
 title: "Physics for EE"
-date: "2026-07-25"
+date: "2026-08-12"
 description: "Learning garden with 6 source documents, 0 lesson pages, and 550 graph links."
 knowledge_type: "cluster-index"
 ---
 
 ## Garden overview
 
-This learning garden is organized from 6 source documents into a sequence of linked lessons. It currently contains 0 lesson pages, 550 graph links, and 150911 indexed words.
+This learning garden is organized from 6 source documents into a sequence of linked lessons. It currently contains 0 lesson pages, 550 graph links, and 150919 indexed words.
 
 No lessons yet.
 
-Last updated: 2026-07-25.
+Last updated: 2026-08-12.
 
 ## Learning
 

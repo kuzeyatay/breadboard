@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "version": "0.1.0",
-  "description": "First-party Breadboard-owned adapter around the official Agent TARS browser runtime. Loopback-only, secret-gated, browser-operator only. Breadboard is the sole control plane; this adapter never becomes a second authorization system.",
+  "description": "First-party Breadboard-owned adapter for Agent TARS. Loopback-only and secret-gated, with isolated-browser control by default and explicitly approved actual-desktop control. Breadboard remains the sole authorization plane.",
   "engines": {
     "node": ">=20"
   },
@@ -15,9 +15,12 @@
   "dependencies": {
     "@agent-infra/browser": "0.2.2",
     "@agent-tars/core": "0.3.0",
+    "@computer-use/nut-js": "4.2.0",
     "@tarko/agent-interface": "0.3.0",
     "@tarko/model-provider": "0.3.0",
+    "@ui-tars/operator-nut-js": "1.2.3",
+    "@ui-tars/sdk": "1.2.3",
     "react": "^18.3.1"
   },
-  "//dependencies": "@agent-tars/core@0.3.0 corresponds to bytedance/UI-TARS-desktop @ c2ad42e3eb9b27830db41a3e6f51ca7179d9b168. NOTE: the published @agent-infra/browser (0.2.2) diverged from that SHA's source (0.1.1) — its API is Browser.create({launchOrConnect}) with pptrBrowser/wsEndpoint, not LocalBrowser.launch(). The adapter targets the mutually-compatible PUBLISHED set (core 0.3.0 + browser 0.2.2), isolated behind RuntimeClient. `react` is a transitive peer of @agent-infra/browser (via valtio/react). The real runtime is loaded lazily only when UI_TARS_RUNTIME=agent-tars, so fast unit/CI tests need none of these installed."
+  "//dependencies": "@agent-tars/core@0.3.0 is the isolated-browser runtime. @ui-tars/sdk and @ui-tars/operator-nut-js@1.2.3 are the matching official actual-desktop runtime and Windows native operator. Native desktop dependencies are imported only after a desktop-session approval. The published @agent-infra/browser (0.2.2) uses Browser.create({launchOrConnect}) with pptrBrowser/wsEndpoint. All upstream integration remains isolated behind RuntimeClient. `react` is a transitive peer of @agent-infra/browser (via valtio/react)."
 }

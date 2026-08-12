@@ -3,11 +3,11 @@ import fs from "node:fs";
 import test from "node:test";
 
 const chat = fs.readFileSync(
-  new URL("../src/app/components/openharness/garden-agent-chat.tsx", import.meta.url),
+  new URL("../src/app/components/hermes/garden-agent-chat.tsx", import.meta.url),
   "utf8",
 );
 
-test("garden chat drives the OpenHarness runtime like the terminal", () => {
+test("garden chat drives the Hermes runtime like the terminal", () => {
   assert.match(chat, /useAgentSession\("garden_chat"/);
   assert.match(chat, /<AgentRuntimePanel/);
   assert.match(chat, /pendingPermission=\{session\.pendingPermission\}/);
@@ -17,8 +17,9 @@ test("garden chat drives the OpenHarness runtime like the terminal", () => {
 });
 
 test("garden chat offers the terminal's model and reasoning-effort picker", () => {
-  assert.match(chat, /fetch\("\/api\/models"\)/);
-  assert.match(chat, /mergeAssistantModels/);
+  // The catalog itself comes from the shared hook, which is also what makes a
+  // newly connected provider appear without restarting the app.
+  assert.match(chat, /useAssistantModels\(\{ eager: true \}\)/);
   assert.match(chat, /model=\{model\}/);
   assert.match(chat, /models=\{models\}/);
   assert.match(chat, /onModelChange=\{setModel\}/);
@@ -33,7 +34,7 @@ test("garden chat offers the terminal's model and reasoning-effort picker", () =
 });
 
 test("garden chat has terminal-style history, new chat, and skill review", () => {
-  assert.match(chat, /api\/openharness\/sessions\?surface=garden_chat/);
+  assert.match(chat, /api\/hermes\/sessions\?surface=garden_chat/);
   assert.match(chat, /item\.gardenId === gardenSlug/);
   assert.match(chat, /id: string/);
   assert.match(chat, /New chat/);

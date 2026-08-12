@@ -4,20 +4,21 @@ import {
   apiErrorResponse,
   readJsonBody,
   ApiError,
-} from "@/lib/openharness/route-helpers.ts";
-import { authorizeGardenAccess } from "@/lib/openharness/session-service.ts";
+} from "@/lib/hermes/route-helpers.ts";
+import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import {
   getProposalById,
   setProposalStatus,
-} from "@/lib/openharness/runtime-store.ts";
+} from "@/lib/hermes/runtime-store.ts";
+import { createGardenDocument } from "@/lib/garden-documents.ts";
 
 export const dynamic = "force-dynamic";
 
 // Apply or reject an agent proposal. Only the garden owner may decide. Applying
 // is where a proposal becomes a real change — routed through Breadboard's own
-// authoring paths, never a silent markdown overwrite by the agent. Here we mark
-// the decision; the actual apply is performed by the existing markdown-edit /
-// note-creation flows the dashboard already owns, keyed off the proposal payload.
+// authoring paths, never a silent markdown overwrite by the agent. New-note
+// proposals are written through the same canonical Garden document service as
+// the authoring UI; other proposal kinds retain their existing decision path.
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ gardenId: string; proposalId: string }> },
@@ -45,6 +46,30 @@ export async function POST(
       throw new ApiError(400, "invalid_decision", "decision must be apply or reject.");
     }
 
+    const payload = JSON.parse(proposal.payload) as Record<string, unknown>;
+    let document: Awaited<ReturnType<typeof createGardenDocument>> | null = null;
+    if (decision === "applied" && proposal.kind === "note") {
+      const title = typeof payload.title === "string" ? payload.title.trim() : "";
+      const content = typeof payload.content === "string" ? payload.content : "";
+      if (!title || !content.trim()) {
+        throw new ApiError(
+          400,
+          "invalid_note_proposal",
+          "This note proposal is missing its title or content.",
+        );
+      }
+      document = await createGardenDocument({
+        clusterSlug: access.slug,
+        title,
+        content,
+        folder: typeof payload.folder === "string" ? payload.folder : "",
+        tags: Array.isArray(payload.tags)
+          ? payload.tags.filter((tag): tag is string => typeof tag === "string")
+          : ["assistant-response"],
+      });
+    }
+
+    // A failed canonical write leaves the proposal pending and retryable.
     setProposalStatus(id, decision);
 
     // Incremental GBrain sync: after a proposal is APPLIED (a canonical write),
@@ -68,12 +93,11 @@ export async function POST(
     return NextResponse.json({
       id,
       status: decision,
-      // The payload is returned so the client can route an "apply" through the
-      // existing authoring UI (markdown editor / note creation) with the user in
-      // control of the final write.
-      payload: JSON.parse(proposal.payload),
+      // Return the reviewed payload and any canonical note created by Apply.
+      payload,
       kind: proposal.kind,
       pageSlug: proposal.page_slug,
+      document,
     });
   } catch (error) {
     return apiErrorResponse(error);

@@ -1,0 +1,17 @@
+[project]
+name = "breadboard-cad"
+version = "1.0.0"
+description = "Breadboard's local parametric CAD service (CadQuery + OpenCascade)."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "cadquery==2.6.0",
+  "cadquery-ocp==7.8.1.1.post1",
+  "pydantic==2.13.4",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["breadboard_cad*"]

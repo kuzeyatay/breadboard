@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..model_registry import normalize_model_name
+from ..providers import dispatch as provider_dispatch
+from ..providers.registry import resolve_model
 from ..providers.router import ProviderRouter
 from ..providers.types import ModelCall, ProviderError
 from . import ledger as ledger_events
@@ -26,6 +28,7 @@ from .prompts import (
     build_chair_user_prompt,
     build_review_user_prompt,
 )
+from .unslop import maybe_unslop_system
 from .types import (
     EVOLUTION_ARTIFACT_TYPES,
     AggregateRanking,
@@ -87,8 +90,23 @@ class CouncilRuntime:
 
     def _model_for_call(self, model: str, council_input: CouncilInput) -> str:
         call_model = model or self.config.upstream_fallback_model
-        if "/" not in call_model:
-            return call_model
+        # The router normalizes ChatGPT ids and substitutes its own fallback for
+        # anything it cannot serve, so a plain id here is already final.
+        effective = self.router.effective_model(call_model)
+        if "/" not in effective:
+            return effective
+
+        # Still provider-prefixed: keep it only when a configured provider owns
+        # it. Otherwise (a stale `COUNCIL_MODELS=vendor/model`) an explicitly
+        # requested ChatGPT model beats the generic fallback.
+        resolved = resolve_model(effective)
+        if not resolved.is_chatgpt and not resolved.is_unknown_external:
+            try:
+                provider_dispatch.credentials_for(resolved.provider)
+                return effective
+            except ProviderError:
+                pass
+
         requested = (council_input.requested_model or "").strip()
         if requested and "/" not in requested:
             return normalize_model_name(requested)
@@ -103,6 +121,14 @@ class CouncilRuntime:
             user_prompt=_clip(council_input.user_prompt, 8000),
             messages=council_input.messages,
             council_mode=mode,
+            requested_model=(
+                council_input.requested_model_alias
+                or council_input.requested_model
+            ),
+            resolved_model=(
+                council_input.resolved_model
+                or council_input.requested_model
+            ),
             garden_id=council_input.garden_id,
             page_id=council_input.page_id,
             task_type=council_input.task_type,
@@ -111,7 +137,12 @@ class CouncilRuntime:
         self.ledger.record_event(
             run.id,
             ledger_events.EVENT_RUN_CREATED,
-            {"councilMode": mode, "taskType": council_input.task_type},
+            {
+                "councilMode": mode,
+                "taskType": council_input.task_type,
+                "requestedModel": run.requested_model,
+                "resolvedModel": run.resolved_model,
+            },
         )
         try:
             if mode == "direct_council":
@@ -164,10 +195,16 @@ class CouncilRuntime:
             max_tokens=council_input.max_tokens,
             reasoning_effort=council_input.reasoning_effort,
             reasoning_summary=council_input.reasoning_summary,
+            client_requested_model=(
+                council_input.requested_model_alias
+                or council_input.requested_model
+            ),
+            request_id=run.id,
         )
         try:
             text = self.router.call_model(call)
         finally:
+            run.record_model_attempts(call.model_attempts_out)
             usage = call.usage_out
             run.record_model_call_usage(
                 input_tokens=usage.input_tokens if usage else None,
@@ -401,10 +438,14 @@ class CouncilRuntime:
             reviews,
             ranking.explanation if ranking else None,
         )
+        chair_system = maybe_unslop_system(
+            BREADBOARD_COUNCIL_SYSTEM + "\n\n" + CHAIR_SYNTHESIZER_PROMPT,
+            council_input.task_type,
+        )
         try:
             final, reasoning = self._call_with_reasoning(
                 self.config.chairman_model,
-                BREADBOARD_COUNCIL_SYSTEM + "\n\n" + CHAIR_SYNTHESIZER_PROMPT,
+                chair_system,
                 [{"role": "user", "content": chair_prompt}],
                 council_input,
                 run,
@@ -446,7 +487,10 @@ class CouncilRuntime:
 
     def _run_direct(self, council_input: CouncilInput, run: CouncilRun) -> None:
         model = council_input.requested_model or self.config.upstream_fallback_model
-        system = BREADBOARD_COUNCIL_SYSTEM + "\n\n" + COMPACT_CHECKLIST
+        system = maybe_unslop_system(
+            BREADBOARD_COUNCIL_SYSTEM + "\n\n" + COMPACT_CHECKLIST,
+            council_input.task_type,
+        )
         final, reasoning = self._call_with_reasoning(
             model,
             system,

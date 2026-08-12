@@ -52,7 +52,7 @@ Scriberr endpoints used: `GET /health`, `POST /api/v1/auth/login`,
 ### Scriberr clone location
 
 Scriberr is vendored at the repo root as `./scriberr` (plain tracked files, not
-a git submodule — the same arrangement as `./openharness` and `./reader`). Do
+a git submodule — the same arrangement as `./hermes` and `./reader`). Do
 not re-add it as a submodule and do not commit a nested `.git` directory.
 
 ### Running Scriberr

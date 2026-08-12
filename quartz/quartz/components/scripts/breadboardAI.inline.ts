@@ -1,8 +1,8 @@
 // Client logic for the Breadboard Quartz page AI panel.
 //
-// Talks ONLY to the Breadboard dashboard API (never OpenHarness). Streams the
+// Talks ONLY to the Breadboard dashboard API (never Hermes directly). Streams the
 // answer over SSE, supports abort, page-scoped session continuity (persisted in
-// sessionStorage), and clear error/reconnect states. No secrets, no OpenHarness
+// sessionStorage), and clear error/reconnect states. No secrets, no Hermes
 // URL — everything sensitive stays server-side.
 
 interface SessionState {
@@ -416,7 +416,14 @@ function setupPanel(root: HTMLElement) {
     if (role === "user" && LEADING_COMMAND_RUN.test(text)) {
       el.classList.add("breadboard-ai-command-text")
     }
-    el.textContent = text
+    if (role === "user") {
+      // Escape first, then autolink: the only markup here is the anchors
+      // autolinkBareUrls generates, so a pasted link is clickable and nothing
+      // the user typed can inject HTML.
+      el.innerHTML = autolinkBareUrls(escapeHtml(text))
+    } else {
+      el.textContent = text
+    }
     messages!.appendChild(el)
     messages!.scrollTop = messages!.scrollHeight
     return el
@@ -430,15 +437,41 @@ function setupPanel(root: HTMLElement) {
       .replaceAll('"', "&quot;")
   }
 
+  // GFM-style autolinking of bare URLs, matching what react-markdown does on
+  // the dashboard: "https://…" and "www.…" become links, trailing sentence
+  // punctuation stays outside them. Input is already HTML-escaped; the split
+  // keeps tags — and the anchors the markdown-link pass just wrote — untouched.
+  const BARE_URL = /(^|[^A-Za-z0-9@._%+-])((?:https?:\/\/|www\.)[^\s<]+)/gi
+  const URL_TRAILING_PUNCTUATION = /[.,;:!?'")\]}]+$/
+
+  function autolinkBareUrls(html: string): string {
+    return html
+      .split(/(<a\b[^>]*>[\s\S]*?<\/a>|<code\b[^>]*>[\s\S]*?<\/code>|<[^>]*>)/g)
+      .map((chunk, index) => {
+        if (index % 2 === 1) return chunk
+        return chunk.replace(BARE_URL, (match, prefix: string, candidate: string) => {
+          const url = candidate.replace(URL_TRAILING_PUNCTUATION, "")
+          // A host needs a dot-separated label that could be a TLD.
+          if (!/^(?:https?:\/\/)?(?:[^\s/.]+\.)+[A-Za-z]{2,}(?:[/:?#]|$)/i.test(url)) return match
+          const href = /^https?:\/\//i.test(url) ? url : `https://${url}`
+          const rest = candidate.slice(url.length)
+          return `${prefix}<a href="${href}" target="_blank" rel="noopener noreferrer">${url}</a>${rest}`
+        })
+      })
+      .join("")
+  }
+
   function inlineMarkdown(value: string): string {
-    return value
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-      .replace(
-        /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
-      )
+    return autolinkBareUrls(
+      value
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+        .replace(
+          /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+          '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+        ),
+    )
   }
 
   // Minimal, safe markdown for assistant answers (the dashboard surfaces render
@@ -736,7 +769,7 @@ function setupPanel(root: HTMLElement) {
       button.addEventListener("click", async () => {
         button.disabled = true
         const response = await fetch(
-          `${dashboard}/api/openharness/permissions/${encodeURIComponent(requestId)}`,
+          `${dashboard}/api/hermes/permissions/${encodeURIComponent(requestId)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -388,7 +388,7 @@ export default function GardenVideoImport({
   const visibleJobs = jobs.slice(0, 6);
 
   return (
-    <div id="garden-videos-panel" className="border-t border-gray-800">
+    <div id="garden-videos-panel" className="bb-neu-accordion-panel border-t border-gray-800">
       {isOwner && (
         <div className="space-y-3 border-b border-gray-800 px-3 py-3">
           {healthIssues.length > 0 && (

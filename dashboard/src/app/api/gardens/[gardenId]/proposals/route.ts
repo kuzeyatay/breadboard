@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import { apiErrorResponse } from "@/lib/openharness/route-helpers.ts";
-import { authorizeGardenAccess } from "@/lib/openharness/session-service.ts";
-import { listProposalsForGarden } from "@/lib/openharness/runtime-store.ts";
+import { apiErrorResponse } from "@/lib/hermes/route-helpers.ts";
+import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
+import { listProposalsForGarden } from "@/lib/hermes/runtime-store.ts";
 
 export const dynamic = "force-dynamic";
 

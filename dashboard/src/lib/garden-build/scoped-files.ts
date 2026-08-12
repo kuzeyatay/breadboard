@@ -34,13 +34,15 @@ function hash(buffer: Buffer | string): string {
 export function fingerprintGardenFiles(root: string): Record<string, string> {
   const result: Record<string, string> = {};
   const walk = (absolute: string, prefix: string) => {
-    let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(absolute, { withFileTypes: true }); } catch { return; }
+    const entries = fs.readdirSync(absolute, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const childRel = prefix ? `${prefix}/${entry.name}` : entry.name;
       const child = path.join(absolute, entry.name);
       if (entry.isDirectory()) walk(child, childRel);
       else if (entry.isFile()) result[childRel] = hash(fs.readFileSync(child));
+      else if (entry.isSymbolicLink()) {
+        throw new Error(`Garden fingerprint refuses symbolic link: ${childRel}`);
+      }
     }
   };
   walk(root, "");

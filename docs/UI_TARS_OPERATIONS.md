@@ -6,15 +6,17 @@ Companion to `UI_TARS_INTEGRATION.md` (architecture note) and
 ## Architecture summary
 
 ```
-Agents page (Next.js client)          browser; cookie-authenticated; no secrets
+Agents surface (Next.js client)       capability palette (/ button) -> Agents
+      |                                tab -> "Agent TARS"; /agents deep link
+      |                                browser; cookie-authenticated; no secrets
       |  /api/ui-tars/*  (requireUserId, ownership, rate limits, redaction)
 Breadboard dashboard (Next.js server) control plane, SQLite persistence, audit
       |  loopback HTTP + bearer secret (127.0.0.1 only)
 UI-TARS adapter (Node sidecar)        run state machine, approval enforcement,
       |  RuntimeClient boundary        event normalization, process ownership
-Agent TARS runtime (@agent-tars/core) lazily loaded; only in agent-tars mode
-      |
-Isolated Chromium/Edge (Puppeteer)    dedicated userDataDir; never the user profile
+Agent TARS runtimes (lazily loaded; only in agent-tars mode)
+      |-- @agent-tars/core -> isolated Chromium/Edge (default)
+      `-- @ui-tars/sdk + NutJS -> actual desktop (explicit approval required)
 ```
 
 - **Process ownership**: the adapter launches the browser (dedicated profile),
@@ -36,6 +38,10 @@ Isolated Chromium/Edge (Puppeteer)    dedicated userDataDir; never the user prof
   rebuilds from persisted events + a live adapter re-sync.
 - **Browser isolation**: dedicated `userDataDir`, `profilePath` never set, no
   inherited cookies/extensions/password-manager, headless.
+- **Actual desktop control**: opt-in per agent. Native screen capture and
+  mouse/keyboard packages are not loaded until the user approves that run's
+  high-risk `desktop_control` request. Stop/abort releases the agent promptly.
+  This mode exposes GUI actions only, never Agent TARS shell/filesystem tools.
 
 ## Trust boundaries
 
@@ -45,23 +51,36 @@ Isolated Chromium/Edge (Puppeteer)    dedicated userDataDir; never the user prof
 | Dashboard <-> adapter | Loopback-only; timing-safe bearer secret; sanitized error codes |
 | Adapter <-> runtime | In-process; provider key injected in memory only; never logged/persisted |
 | Runtime <-> browser | Isolated profile; owned PID; killed on abort/shutdown |
+| Runtime <-> actual desktop | Explicit per-run high-risk approval; visible warning; GUI-only action vocabulary; abortable |
 
 ## Installation & runtime prerequisites
 
 1. Adapter deps (only for the real runtime): `cd ui-tars-adapter && npm install`.
    Pulls `@agent-tars/core@0.3.0`, `@tarko/*`, `@agent-infra/browser@0.2.2`,
-   `puppeteer-core`, and `react` (transitive peer via `valtio/react`).
+   `@ui-tars/sdk@1.2.3`, `@ui-tars/operator-nut-js@1.2.3`, and their runtime
+   dependencies. The packaged desktop stages this complete production closure.
 2. A **Chrome or Edge** must be installed — `puppeteer-core` does not bundle
    Chromium; `@agent-infra/browser-finder` locates the system browser.
-3. A **UI-TARS-compatible model endpoint** is required to actually drive the
-   browser: `gui`/`hybrid` need a UI-TARS vision model; `dom` can bring up with a
-   general tool-calling model. Configure provider/model/endpoint/key per-agent in
-   the Agents page (never in env).
+3. A **model endpoint** is required to actually drive the browser. New agents
+   default to **ChatMock** (this install's local OpenAI-compatible gateway,
+   serving GPT-5.6), so `dom` runs work with no extra setup as long as ChatMock
+   is up. `gui`/`hybrid` need a vision-grounded provider — upstream only supports
+   volcengine there and silently falls back to `dom` for everything else.
+   Provider/model/endpoint/key stay per-agent (never in env) apart from
+   ChatMock's own connection settings.
 4. Node >= 20 (repo runs Node 24; adapter uses `--experimental-strip-types`).
 
 ## Model-provider configuration
 
 Provider-agnostic: `provider`, `model`, optional `endpoint`, write-only `API key`.
+
+Default provider: `chatmock`. Its endpoint comes from `CHATMOCK_BASE_URL` and its
+credential from `CHATMOCK_API_KEY`, both read on the server at run start, so the
+user never pastes a key; a per-agent key still wins if one is stored. The
+provider id is passed to Agent TARS unchanged — upstream routes providers it does
+not recognize through its `openai-compatible` client using the baseURL/apiKey we
+supply. An agent on any other provider is "misconfigured" until a key is stored.
+
 The key is stored in the server-only `ui_tars_agent_secrets` table, injected into
 the adapter in-memory at run start, and never returned to the browser, placed in
 argv, logged, or written to event payloads. Leave the key field blank to preserve
@@ -78,7 +97,7 @@ the stored value; check "Remove stored key" to delete it.
 | `UI_TARS_DATA_DIR` | `~/.breadboard/ui-tars` | screenshots, profiles, session registry |
 | `UI_TARS_RUNTIME` | `agent-tars` | `agent-tars` (real) \| `fake` (test-only) |
 | `UI_TARS_MAX_CONCURRENT_RUNS` | `3` | global run ceiling |
-| `UI_TARS_SCREENSHOT_RETENTION_MS` | `86400000` | screenshot retention sweep |
+| `UI_TARS_SCREENSHOT_RETENTION_MS` | `0` | screenshot retention sweep (`0` keeps chat-history screenshots; set an explicit duration to enable cleanup) |
 
 ## Data directories
 
@@ -99,6 +118,18 @@ Mutable data never lives in the installed app directory.
   tool and continue" — a documented later extension.
 - Approvals are single-use and expire (default 5 min); replay/expired/cross-run
   decisions are rejected with 409.
+- Actual-desktop mode always starts with one high-risk approval covering the
+  screen, mouse, and keyboard for that run. `sensitive_actions` prompts once;
+  `every_action` additionally pauses before every GUI interaction.
+
+## Actual desktop mode
+
+Select **Configure -> Control target -> Actual desktop**. Desktop mode captures
+the currently visible primary display and operates the logged-in user's real
+mouse and keyboard. Keep the intended app visible and avoid using input devices
+while it runs. Windows text entry temporarily uses the clipboard and restores
+the previous contents. The driver cannot cross Windows' secure desktop/UAC
+boundary or control elevated applications from a non-elevated Breadboard.
 
 ## Domain restrictions
 
@@ -111,7 +142,7 @@ and their subdomains; navigation elsewhere requires approval (blocked on reject)
 
 ```mermaid
 sequenceDiagram
-  participant U as Browser (Agents page)
+  participant U as Browser (Agents surface)
   participant D as Dashboard API
   participant A as Adapter
   participant R as Agent TARS + browser
@@ -210,11 +241,11 @@ sequenceDiagram
 
 | Symptom | Likely cause / fix |
 | --- | --- |
-| Agents page shows adapter "unavailable" | adapter not running or deps not installed (`cd ui-tars-adapter && npm install`); optional mode keeps Breadboard usable |
-| Agent shows "misconfigured" | model empty or credential missing — configure provider/model/key |
+| Agents surface shows adapter "unavailable" | adapter not running or deps not installed (`cd ui-tars-adapter && npm install`); optional mode keeps Breadboard usable |
+| Agent shows "misconfigured" | model empty, or a non-ChatMock provider without a stored key — configure provider/model/key |
 | Run fails `browser_launch_failed` | no Chrome/Edge found by `browser-finder`; install one |
 | Run `failed: model_not_configured` | set the model in the agent config |
-| Real run never progresses past launch | no reachable/compatible model endpoint |
+| Real run never progresses past launch | no reachable/compatible model endpoint (with the default provider: ChatMock is not running) |
 
 ## Security limitations (residual)
 

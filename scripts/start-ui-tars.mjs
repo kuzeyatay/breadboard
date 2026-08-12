@@ -11,10 +11,15 @@ import crypto from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { loadRootEnv } from "./load-root-env.mjs";
+import { loadRootEnv, loadDashboardEnv } from "./load-root-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
+// The dashboard keeps its loopback credentials in dashboard/.env.local. Load it
+// here too (as start-hermes.mjs does) so the adapter and the dashboard share one
+// UI_TARS_ADAPTER_SECRET instead of drifting onto a random per-launch token that
+// the dashboard cannot authenticate with.
+loadDashboardEnv(repoRoot);
 
 const mode = process.env.UI_TARS_MODE?.trim().toLowerCase() || "optional";
 if (mode === "disabled") {
@@ -39,7 +44,7 @@ const env = {
   // `agent-tars` (real browser runtime) is the default; `fake` is test-only.
   UI_TARS_RUNTIME: process.env.UI_TARS_RUNTIME || "agent-tars",
   UI_TARS_MAX_CONCURRENT_RUNS: process.env.UI_TARS_MAX_CONCURRENT_RUNS || "3",
-  UI_TARS_SCREENSHOT_RETENTION_MS: process.env.UI_TARS_SCREENSHOT_RETENTION_MS || "86400000",
+  UI_TARS_SCREENSHOT_RETENTION_MS: process.env.UI_TARS_SCREENSHOT_RETENTION_MS || "0",
 };
 
 const child = spawn(node, ["--experimental-strip-types", adapterEntry], {

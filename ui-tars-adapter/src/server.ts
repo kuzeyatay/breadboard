@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { resolveConfig, assertSecret, type AdapterConfig } from "./config.ts";
 import { validateAgentConfiguration } from "./config.ts";
 import { RunManager, RunManagerError } from "./run-manager.ts";
-import { ScreenshotStore } from "./screenshot-store.ts";
+import { ScreenshotStore, ScreenshotStoreError } from "./screenshot-store.ts";
 import { ProcessManager } from "./process-manager.ts";
 import { FakeRuntimeClient, type RuntimeClient } from "./runtime-client.ts";
 import { makeRedactor, safeErrorMessage } from "./redaction.ts";
@@ -121,6 +121,9 @@ export async function startAdapter(overrides: Partial<AdapterConfig> = {}): Prom
       case "task_too_long":
       case "invalid_json":
       case "invalid_configuration":
+      case "invalid_run_id":
+      case "invalid_screenshot_id":
+      case "invalid_owner_user_id":
         return 400;
       default:
         return 500;
@@ -135,7 +138,10 @@ export async function startAdapter(overrides: Partial<AdapterConfig> = {}): Prom
     const fail = (code: string, status?: number) => json({ ok: false, error: code }, status ?? codeToStatus(code));
 
     void handle(req, res, json, fail).catch((err) => {
-      const code = err instanceof RunManagerError ? err.code : "internal_error";
+      const code =
+        err instanceof RunManagerError || err instanceof ScreenshotStoreError
+          ? err.code
+          : "internal_error";
       if (!res.headersSent) fail(code, codeToStatus(code));
       else res.end();
       // Only a stable, redacted message ever reaches logs.
@@ -161,6 +167,7 @@ export async function startAdapter(overrides: Partial<AdapterConfig> = {}): Prom
         runtime: caps.runtime,
         realBrowser: caps.realBrowser,
         operator: caps.operator,
+        operators: caps.operators,
         version: caps.version,
       });
     }
@@ -219,13 +226,36 @@ export async function startAdapter(overrides: Partial<AdapterConfig> = {}): Prom
       // GET /runs/:id/screenshots/:sid
       if (parts[2] === "screenshots" && parts[3] && parts.length === 4 && method === "GET") {
         if (!Number.isFinite(uidQuery)) return fail("forbidden", 403);
-        // Ownership check via summary (throws forbidden/not_found).
-        runManager.summary(runId, uidQuery);
+        // Live runs use the in-memory owner. Restored runs use the durable
+        // ownership manifest written beside their screenshots.
+        try {
+          runManager.summary(runId, uidQuery);
+        } catch (error) {
+          if (!(error instanceof RunManagerError) || error.code !== "run_not_found") throw error;
+          const ownerUserId = screenshots.ownerOf(runId);
+          if (ownerUserId === null) throw error;
+          if (ownerUserId !== uidQuery) throw new ScreenshotStoreError("forbidden");
+        }
         const buf = await screenshots.read(runId, parts[3]);
         if (!buf) return fail("not_found", 404);
         res.writeHead(200, { "content-type": "image/png", "cache-control": "private, max-age=60" });
         res.end(buf);
         return;
+      }
+      // POST /runs/:id/screenshots/restore
+      // Repairs pre-manifest screenshot folders after the dashboard has
+      // verified this user owns the durable run record.
+      if (
+        parts[2] === "screenshots"
+        && parts[3] === "restore"
+        && parts.length === 4
+        && method === "POST"
+      ) {
+        const body = await readBody(req);
+        const userId = Number(body["userId"]);
+        if (!Number.isSafeInteger(userId) || userId <= 0) return fail("forbidden", 403);
+        screenshots.claimHistoricalRun(runId, userId);
+        return json({ ok: true });
       }
       // POST /runs/:id/{approve,reject,abort}
       if (method === "POST" && parts.length === 3) {

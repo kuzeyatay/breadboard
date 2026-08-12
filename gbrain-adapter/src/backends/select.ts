@@ -17,16 +17,32 @@ export interface BackendSelection {
   requested: "gbrain" | "fake";
 }
 
-function resolveEmbeddingEnv(env: NodeJS.ProcessEnv, testMode: boolean): EmbeddingEnv {
-  const raw = (env.GBRAIN_EMBEDDING_PROVIDER?.trim() || "none").toLowerCase();
+// Breadboard's local gateway serves `/v1/embeddings` from an ONNX model on the
+// CPU, so the production backend gets real vectors with no key and no quota.
+// This is why the default is no longer "none": that default meant every install
+// ran lexical-only retrieval and reported `lexical_degraded` forever, which was
+// honest but needlessly poor.
+const CHATMOCK_BASE_URL = "http://127.0.0.1:8765/v1";
+const CHATMOCK_MODEL = "local/bge-small-en-v1.5";
+const CHATMOCK_DIMENSIONS = 384;
+
+/** Exported so the defaults are testable without booting the engine. */
+export function resolveEmbeddingEnv(env: NodeJS.ProcessEnv, testMode: boolean): EmbeddingEnv {
+  const raw = (env.GBRAIN_EMBEDDING_PROVIDER?.trim() || "openai-compatible").toLowerCase();
   const provider: EmbeddingProviderName =
     raw === "openai-compatible" || raw === "deterministic-test" ? (raw as EmbeddingProviderName) : "none";
   return {
     provider,
-    baseUrl: env.GBRAIN_EMBEDDING_BASE_URL?.trim() || undefined,
-    apiKey: env.GBRAIN_EMBEDDING_API_KEY?.trim() || undefined,
-    model: env.GBRAIN_EMBEDDING_MODEL?.trim() || undefined,
-    dimensions: env.GBRAIN_EMBEDDING_DIMENSIONS ? Number(env.GBRAIN_EMBEDDING_DIMENSIONS) : undefined,
+    // Every field falls back to the local gateway, so an install that
+    // configures nothing still embeds. Naming a paid provider still overrides
+    // all four, and GBRAIN_EMBEDDING_PROVIDER=none turns embeddings off.
+    baseUrl: env.GBRAIN_EMBEDDING_BASE_URL?.trim() || CHATMOCK_BASE_URL,
+    // ChatMock ignores the value; the gateway refuses to configure without one.
+    apiKey: env.GBRAIN_EMBEDDING_API_KEY?.trim() || "local",
+    model: env.GBRAIN_EMBEDDING_MODEL?.trim() || CHATMOCK_MODEL,
+    dimensions: env.GBRAIN_EMBEDDING_DIMENSIONS
+      ? Number(env.GBRAIN_EMBEDDING_DIMENSIONS)
+      : CHATMOCK_DIMENSIONS,
     testMode,
   };
 }
@@ -46,7 +62,17 @@ export function selectBackend(
         "GBRAIN_BACKEND=fake is refused in packaged production. The fake backend is test-only; set GBRAIN_BACKEND=gbrain.",
       );
     }
-    return { backend: new GBrainStore({ pgDir, embeddingProvider: fallbackEmbeddingProvider }), requested };
+    const embedding = resolveEmbeddingEnv(env, testMode);
+    return {
+      backend: new GBrainStore({
+        pgDir,
+        embeddingProvider: fallbackEmbeddingProvider,
+        embeddingBaseUrl: embedding.baseUrl,
+        embeddingModel: embedding.model,
+        embeddingApiKey: embedding.apiKey,
+      }),
+      requested,
+    };
   }
 
   // Production default: the real vendored GBrain engine.

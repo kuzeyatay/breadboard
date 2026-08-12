@@ -82,8 +82,8 @@
 
   const styles = `
     :root { color-scheme: light dark; --bg:#fbfaf5; --panel:#f1f5ee; --line:#b7cdc0; --ink:#10251c; --muted:#5d6c65; --accent:#2f7d55; --accent-soft:#cce7d7; }
-    :root[data-theme="dark"] { --bg:#14211b; --panel:#1c2d25; --line:#486154; --ink:#eef7f1; --muted:#b2c4ba; --accent:#75d6a3; --accent-soft:#294c3a; }
-    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#14211b; --panel:#1c2d25; --line:#486154; --ink:#eef7f1; --muted:#b2c4ba; --accent:#75d6a3; --accent-soft:#294c3a; } }
+    :root[data-theme="dark"] { --bg:#18181a; --panel:#20211f; --line:#353d37; --ink:#e6ebe5; --muted:#a5aea5; --accent:#91b7a1; --accent-soft:#253832; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#18181a; --panel:#20211f; --line:#353d37; --ink:#e6ebe5; --muted:#a5aea5; --accent:#91b7a1; --accent-soft:#253832; } }
     * { box-sizing:border-box; }
     html,body { margin:0; min-height:100%; background:var(--bg); color:var(--ink); font:14px/1.45 ui-sans-serif,system-ui,sans-serif; }
     button,input,select { font:inherit; }
@@ -577,7 +577,11 @@
     parent.postMessage({ type: EVENT, event: "ready", height: document.documentElement.scrollHeight }, "*")
 
     if (window.__BREADBOARD_VISUAL_TEST_MODE__) {
-      requestAnimationFrame(() => {
+      let selfTestsRan = false
+      const runSelfTests = () => {
+        if (selfTestsRan) return
+        selfTestsRan = true
+        try {
         let passed = true
         const first = document.querySelector("[data-control-id]")
         if (first) {
@@ -614,7 +618,21 @@
         }
         document.body.dataset.breadboardRuntimeTests = passed ? "passed" : "failed"
         window.scrollTo(0, 0)
-      })
+        } catch (error) {
+          // Without this the attribute is simply never written, which reads as
+          // "the self-tests never ran" and hides the actual reason.
+          document.body.dataset.breadboardRuntimeTests = "failed"
+          document.body.dataset.breadboardRuntimeError =
+            error instanceof Error ? `${error.message}` : "self-test failed"
+        }
+      }
+      // A headless --dump-dom run renders on demand, so a frame after this
+      // message-driven render is not guaranteed and the rAF callback can be
+      // dropped entirely. Timers always advance under --virtual-time-budget,
+      // so they are what actually gets the self-tests to run; whichever fires
+      // first wins and the other is a no-op.
+      requestAnimationFrame(runSelfTests)
+      setTimeout(runSelfTests, 0)
     }
   }
 

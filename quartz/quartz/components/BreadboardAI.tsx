@@ -2,7 +2,7 @@
 //
 // This renders a floating "Ask AI" control and a drawer. All intelligence lives
 // in the Breadboard dashboard: the browser talks ONLY to the dashboard API
-// (never OpenHarness directly). The panel is read-only by default; any write is
+// (never Hermes directly). The panel is read-only by default; any write is
 // a typed proposal handled by Breadboard.
 //
 // The dashboard base URL is configurable for Quartz builds via the

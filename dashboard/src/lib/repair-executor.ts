@@ -11,6 +11,7 @@
 // a fake executor; production injects `createOpenAIRepairExecutor(...)`.
 
 import type OpenAI from "openai";
+import { breadSystemPrompt } from "./assistant-identity.ts";
 import { zettelHandlesForUnit, type LearningUnitContract } from "./learning-unit-contract.ts";
 import type { ModelRepairExecutor, RepairCandidate, UnitRepairRequest } from "./garden-finalize.ts";
 
@@ -102,7 +103,7 @@ export function buildModelRepairPrompt(
   const contract = request.learningUnitContract;
   const requiredHandles = zettelHandlesForUnit(contract);
 
-  const system = [
+  const system = breadSystemPrompt([
     "You are Breadboard's single-page repair model.",
     "You revise exactly ONE failed learning page so it satisfies its Learning Unit Contract and passes semantic validation.",
     "Hard constraints:",
@@ -115,7 +116,7 @@ export function buildModelRepairPrompt(
     "- Only change what the validation errors require; preserve correct existing content and flow from the previous/next unit.",
     "",
     RESPONSE_CONTRACT,
-  ].join("\n");
+  ].join("\n"));
 
   const user = [
     `# Repair request for unit ${request.unitId} — ${request.pagePath}`,

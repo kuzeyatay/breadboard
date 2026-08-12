@@ -1,10 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import EvidencePanel from "@/app/components/openharness/evidence-panel";
-import type { VerificationSummary } from "@/lib/openharness/evidence";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
+import EvidencePanel from "@/app/components/hermes/evidence-panel";
+import type { VerificationSummary } from "@/lib/hermes/evidence";
+import { playSpeechBlob, stopSpeechPlayback } from "@/lib/speech/playback";
 
 type Feedback = "up" | "down" | null;
+type SpeechState = "idle" | "loading" | "playing";
 
 interface Props {
   content: string;
@@ -46,8 +57,47 @@ function downloadMarkdown(content: string): void {
   URL.revokeObjectURL(url);
 }
 
+function responseTextForSpeech(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, " Code example omitted. ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/[*_~>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function speechError(response: Response): Promise<string> {
+  const body = (await response.json().catch(() => null)) as { error?: string } | null;
+  return body?.error || `Speech failed (${response.status}).`;
+}
+
 const actionClass =
   "rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-strong)] hover:text-[var(--ink-heading)] focus:outline-none focus:ring-2 focus:ring-[var(--line-strong)]";
+
+/**
+ * Where a message's action row belongs: under everything the message produced.
+ *
+ * Inline run cards render their own action row from deep inside the card, which
+ * put it above the artifact cards the transcript appends after the message. A
+ * transcript wraps each message in `MessageActionsSlot` and the row is
+ * portalled to the end, so copy/speak/retry always sit below the artifacts.
+ */
+const MessageActionsSlotContext = createContext<HTMLElement | null>(null);
+
+export function MessageActionsSlot({ children }: { children: ReactNode }) {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  return (
+    <MessageActionsSlotContext.Provider value={slot}>
+      {children}
+      {/* `contents` so an empty slot adds no gap to a flex message column. */}
+      <div ref={setSlot} className="contents" />
+    </MessageActionsSlotContext.Provider>
+  );
+}
 
 export default function AssistantMessageActions({
   content,
@@ -59,8 +109,13 @@ export default function AssistantMessageActions({
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [speechState, setSpeechState] = useState<SpeechState>("idle");
+  const [speechMessage, setSpeechMessage] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<number | null>(null);
+  const speechAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  const slot = useContext(MessageActionsSlotContext);
   const storageKey = useMemo(() => contentKey(content), [content]);
 
   useEffect(() => {
@@ -94,9 +149,55 @@ export default function AssistantMessageActions({
     () => () => {
       if (copyTimerRef.current !== null)
         window.clearTimeout(copyTimerRef.current);
+      mountedRef.current = false;
+      speechAbortRef.current?.abort();
     },
     [],
   );
+
+  async function toggleSpeech() {
+    setSpeechMessage(null);
+    if (speechState === "playing") {
+      stopSpeechPlayback();
+      setSpeechState("idle");
+      return;
+    }
+    if (speechState === "loading") {
+      speechAbortRef.current?.abort();
+      speechAbortRef.current = null;
+      setSpeechState("idle");
+      return;
+    }
+    const text = responseTextForSpeech(content);
+    if (!text) {
+      setSpeechMessage("This response has no readable text.");
+      return;
+    }
+    const controller = new AbortController();
+    speechAbortRef.current = controller;
+    setSpeechState("loading");
+    try {
+      const response = await fetch("/api/speech/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(await speechError(response));
+      await playSpeechBlob(await response.blob(), () => {
+        if (mountedRef.current) setSpeechState("idle");
+      });
+      if (mountedRef.current) setSpeechState("playing");
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setSpeechState("idle");
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        setSpeechMessage(error instanceof Error ? error.message : "This response could not be spoken.");
+      }
+    } finally {
+      if (speechAbortRef.current === controller) speechAbortRef.current = null;
+    }
+  }
 
   async function copyResponse() {
     try {
@@ -127,7 +228,7 @@ export default function AssistantMessageActions({
     onRetry?.();
   }
 
-  return (
+  const actions = (
     <div className="mt-2 flex items-center gap-0.5" aria-label="Assistant response actions">
       <button
         type="button"
@@ -147,6 +248,38 @@ export default function AssistantMessageActions({
           </svg>
         )}
       </button>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => void toggleSpeech()}
+          className={`${actionClass} ${speechState === "playing" ? "bg-[var(--paper-strong)] text-[var(--botanical)]" : ""}`}
+          title={speechState === "loading" ? "Cancel speech generation" : speechState === "playing" ? "Stop speaking" : "Read response aloud"}
+          aria-label={speechState === "loading" ? "Cancel speech generation" : speechState === "playing" ? "Stop reading response" : "Read response aloud"}
+          aria-pressed={speechState === "playing"}
+        >
+          {speechState === "loading" ? (
+            <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <circle className="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" />
+              <path className="opacity-80" fill="currentColor" d="M12 3a9 9 0 0 1 9 9h-3a6 6 0 0 0-6-6V3Z" />
+            </svg>
+          ) : speechState === "playing" ? (
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+              <rect x="7" y="7" width="10" height="10" rx="1.5" />
+            </svg>
+          ) : (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7} aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 9.5v5h3.5l4 3.5V6l-4 3.5H5Z" />
+              <path strokeLinecap="round" d="M16 9a4.2 4.2 0 0 1 0 6m2.5-8.5a7.8 7.8 0 0 1 0 11" />
+            </svg>
+          )}
+        </button>
+        {speechMessage ? (
+          <div role="alert" className="absolute bottom-full left-0 z-30 mb-1 w-64 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2 text-xs leading-5 text-[var(--ink)] shadow-lg">
+            <button type="button" className="float-right ml-2 text-[var(--ink-muted)]" onClick={() => setSpeechMessage(null)} aria-label="Dismiss speech error">×</button>
+            {speechMessage}
+          </div>
+        ) : null}
+      </div>
       <button
         type="button"
         onClick={() => setRating("up")}
@@ -280,4 +413,6 @@ export default function AssistantMessageActions({
       ) : null}
     </div>
   );
+
+  return slot ? createPortal(actions, slot) : actions;
 }

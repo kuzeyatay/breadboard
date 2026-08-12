@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import test from "node:test";
 
 import {
   createLearnBuildWorkspace,
+  fingerprintDurableGardenState,
   seedDurableInputs,
 } from "../src/lib/learn-build-workspace.ts";
 import {
@@ -14,7 +16,6 @@ import {
   ownershipMetadata,
   pageIdForUnit,
   readActiveBuildManifest,
-  readOwnershipFromFrontmatter,
   writeActiveBuildManifest,
 } from "../src/lib/learn-build-manifest.ts";
 import {
@@ -27,9 +28,14 @@ import {
   resetDisposableLearnProjections,
 } from "../src/lib/learn-projection-reset.ts";
 import {
+  acquireGardenLearnLease,
   acquireGardenLearnLock,
+  heartbeatGardenLearnLock,
+  LOCK_STALE_MS,
   promoteStagingGarden,
+  readGardenLearnLock,
   releaseGardenLearnLock,
+  resumeGardenLearnLock,
 } from "../src/lib/learn-atomic-promotion.ts";
 import {
   learnFinalizationMode,
@@ -43,6 +49,48 @@ function tmp(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
   roots.push(dir);
   return dir;
+}
+
+async function eventually(predicate, timeoutMs = 1500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("condition was not met before timeout");
+}
+
+function runLockContender(garden, jobId, buildId = `build-${jobId}`) {
+  const moduleUrl = new URL("../src/lib/learn-atomic-promotion.ts", import.meta.url).href;
+  const script = [
+    `import { acquireGardenLearnLock } from ${JSON.stringify(moduleUrl)};`,
+    `const result = acquireGardenLearnLock(${JSON.stringify(garden)}, {`,
+    `  gardenSlug: "g", jobId: ${JSON.stringify(jobId)}, buildId: ${JSON.stringify(buildId)}`,
+    `});`,
+    `process.stdout.write(JSON.stringify({ acquired: result.acquired }));`,
+  ].join("\n");
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      "--experimental-strip-types",
+      "--input-type=module",
+      "--eval",
+      script,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`lock contender exited ${code}: ${stderr}`));
+        return;
+      }
+      try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+    });
+  });
 }
 
 function unit(id, title, role = "core_concept") {
@@ -117,6 +165,65 @@ test("4. seeding leaves the repository garden unchanged", () => {
   seedDurableInputs(repo, staging);
   assert.ok(fs.existsSync(path.join(repo, "learning", "keep.md"))); // repo untouched
   assert.equal(fs.existsSync(path.join(staging, "learning")), false); // learning not seeded
+});
+
+test("1b. mixed-case Windows names cannot seed stale Learn projections", () => {
+  const repo = tmp("repo-case-seed");
+  fs.mkdirSync(path.join(repo, "LEARNING"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "LEARNING", "stale.md"), "stale learner page");
+  const breadboard = path.join(repo, ".BreadBoard");
+  fs.mkdirSync(breadboard, { recursive: true });
+  fs.writeFileSync(path.join(breadboard, "CLAIMS.JSON"), "{}");
+  fs.writeFileSync(path.join(breadboard, "CrItIc-RePoRt.Md"), "stale critic");
+  fs.writeFileSync(path.join(breadboard, "SOURCE-VISUALS.JSON"), "[]");
+  fs.writeFileSync(path.join(breadboard, "EVENTS.JSONL"), "");
+  fs.writeFileSync(path.join(breadboard, "Manual-Other.json"), "{}");
+  fs.writeFileSync(path.join(repo, "note.md"), "durable note");
+
+  const workspaceParent = tmp("workspace-case-seed");
+  const ws = createLearnBuildWorkspace({
+    gardenSlug: "g-case",
+    jobId: "job-case",
+    mode: "generate",
+    repositoryGardenDir: repo,
+    contractFingerprint: "cf-case",
+    sourceSetFingerprint: "sf-case",
+    workspaceRoot: path.join(workspaceParent, "workspace"),
+  });
+
+  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, "LEARNING")), false);
+  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "CLAIMS.JSON")), false);
+  assert.equal(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "CrItIc-RePoRt.Md")), false);
+  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "SOURCE-VISUALS.JSON")));
+  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "EVENTS.JSONL")));
+  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, ".breadboard", "Manual-Other.json")));
+  assert.ok(fs.existsSync(path.join(ws.stagingGardenDir, "note.md")));
+  assert.equal(
+    fingerprintDurableGardenState(repo),
+    fingerprintDurableGardenState(ws.stagingGardenDir),
+  );
+});
+
+test("2b. all-caps disposable paths never affect the durable fingerprint", () => {
+  const garden = tmp("repo-case-fingerprint");
+  fs.writeFileSync(path.join(garden, "note.md"), "durable note");
+  const before = fingerprintDurableGardenState(garden);
+
+  fs.mkdirSync(path.join(garden, "LEARNING"), { recursive: true });
+  fs.writeFileSync(path.join(garden, "LEARNING", "STALE.MD"), "stale");
+  fs.mkdirSync(path.join(garden, ".PREVIOUS-BUILDS"), { recursive: true });
+  fs.writeFileSync(path.join(garden, ".PREVIOUS-BUILDS", "OLD.MD"), "old");
+  const breadboard = path.join(garden, ".BREADBOARD");
+  fs.mkdirSync(path.join(breadboard, "INTERNAL"), { recursive: true });
+  fs.writeFileSync(path.join(breadboard, "INTERNAL", "STATE.JSON"), "{}");
+  fs.writeFileSync(path.join(breadboard, "CLAIMS.JSON"), "{}");
+  fs.writeFileSync(path.join(breadboard, "CRITIC-REPORT.MD"), "stale critic");
+  fs.writeFileSync(path.join(breadboard, "EVENTS.JSONL"), "ignored event\n");
+  fs.writeFileSync(path.join(breadboard, "LEARN-BUILD.LOCK.JSON"), "{}");
+
+  assert.equal(fingerprintDurableGardenState(garden), before);
+  fs.writeFileSync(path.join(breadboard, "SOURCE-VISUALS.JSON"), "[]");
+  assert.notEqual(fingerprintDurableGardenState(garden), before);
 });
 
 // ---------------------------------------------------------------------------
@@ -348,17 +455,211 @@ test("46c. caller may retain the previous tree until a second resource commits",
   assert.equal(fs.readFileSync(path.join(dest, "new.md"), "utf8"), "new");
 });
 
-test("48/50. only one job can own a garden; stale lock is recoverable", () => {
+test("47b. an active garden lock remains visible throughout atomic publication", async () => {
+  const parent = tmp("promote-locked");
+  const staging = path.join(parent, "staging");
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(path.join(staging, "new.md"), "new");
+  const dest = path.join(parent, "published");
+  fs.mkdirSync(dest, { recursive: true });
+  fs.writeFileSync(path.join(dest, "old.md"), "old");
+  const lock = acquireGardenLearnLock(dest, {
+    gardenSlug: "g",
+    jobId: "publishing-job",
+    buildId: "publishing-build",
+  });
+  assert.equal(lock.acquired, true);
+
+  const result = await promoteStagingGarden({
+    stagingGardenDir: staging,
+    destinationGardenDir: dest,
+  });
+  assert.equal(result.promoted, true);
+  assert.equal(readGardenLearnLock(dest)?.jobId, "publishing-job");
+  const competitor = acquireGardenLearnLock(dest, {
+    gardenSlug: "g",
+    jobId: "competing-job",
+    buildId: "competing-build",
+  });
+  assert.equal(competitor.acquired, false);
+  releaseGardenLearnLock(dest, "publishing-job");
+});
+
+test("47c. a legacy in-garden lock is honored and migrated to stable storage", () => {
+  const garden = tmp("legacy-lock");
+  const legacyPath = path.join(garden, ".breadboard", "learn-build.lock.json");
+  fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+  const timestamp = new Date().toISOString();
+  fs.writeFileSync(legacyPath, `${JSON.stringify({
+    gardenSlug: "g",
+    jobId: "legacy-job",
+    buildId: "legacy-build",
+    acquiredAt: timestamp,
+    heartbeatAt: timestamp,
+  })}\n`);
+
+  const blocked = acquireGardenLearnLock(garden, {
+    gardenSlug: "g",
+    jobId: "other-job",
+    buildId: "other-build",
+  });
+  assert.equal(blocked.acquired, false);
+  const resumed = acquireGardenLearnLock(garden, {
+    gardenSlug: "g",
+    jobId: "legacy-job",
+    buildId: "legacy-build",
+  });
+  assert.equal(resumed.acquired, true);
+  assert.equal(fs.existsSync(legacyPath), false);
+  assert.equal(readGardenLearnLock(garden)?.jobId, "legacy-job");
+  releaseGardenLearnLock(garden, "legacy-job");
+});
+
+test("48/50. a heartbeat keeps a long job fresh; a truly stale lock is recoverable", () => {
   const garden = tmp("lock");
-  const first = acquireGardenLearnLock(garden, { gardenSlug: "g", jobId: "job1", buildId: "b1" });
+  const started = Date.now();
+  const first = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "job1", buildId: "b1" },
+    started,
+  );
   assert.equal(first.acquired, true);
-  const second = acquireGardenLearnLock(garden, { gardenSlug: "g", jobId: "job2", buildId: "b2" });
+  const second = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "job2", buildId: "b2" },
+    started,
+  );
   assert.equal(second.acquired, false);
-  // A stale lock (heartbeat far in the past) can be taken over.
-  const later = Date.now() + 10 * 60 * 1000;
-  const takeover = acquireGardenLearnLock(garden, { gardenSlug: "g", jobId: "job2", buildId: "b2" }, later);
+
+  // The job has existed for more than five minutes, but its recent heartbeat
+  // prevents another process from stealing valid ownership.
+  assert.equal(heartbeatGardenLearnLock(garden, "job1", started + 4 * 60 * 1000), true);
+  const stillOwned = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "job2", buildId: "b2" },
+    started + 6 * 60 * 1000,
+  );
+  assert.equal(stillOwned.acquired, false);
+
+  // Once that heartbeat itself is stale, takeover is allowed.
+  const takeover = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "job2", buildId: "b2" },
+    started + 10 * 60 * 1000,
+  );
   assert.equal(takeover.acquired, true);
+  assert.equal(heartbeatGardenLearnLock(garden, "job1", started + 11 * 60 * 1000), false);
+  releaseGardenLearnLock(garden, "job1");
+  assert.equal(readGardenLearnLock(garden)?.jobId, "job2");
   releaseGardenLearnLock(garden, "job2");
+});
+
+test("48b. atomic acquisition lets exactly one competing process win", async () => {
+  const garden = tmp("lock-race");
+  const results = await Promise.all(
+    Array.from({ length: 8 }, (_, index) => runLockContender(garden, `job-${index}`)),
+  );
+  assert.equal(results.filter((result) => result.acquired).length, 1);
+  const winner = readGardenLearnLock(garden);
+  assert.ok(winner);
+  releaseGardenLearnLock(garden, winner.jobId);
+});
+
+test("48c. repeated public owner fields do not make a fresh lease reentrant", async () => {
+  const garden = tmp("lock-same-owner-race");
+  const results = await Promise.all(
+    Array.from(
+      { length: 8 },
+      () => runLockContender(garden, "same-job", "same-build"),
+    ),
+  );
+  assert.equal(results.filter((result) => result.acquired).length, 1);
+  const winner = readGardenLearnLock(garden);
+  assert.ok(winner?.leaseId);
+  releaseGardenLearnLock(garden, "same-job");
+});
+
+test("48d. only the returned lease token can explicitly resume a fresh owner", () => {
+  const garden = tmp("lock-authenticated-resume");
+  const first = acquireGardenLearnLock(garden, {
+    gardenSlug: "g",
+    jobId: "same-job",
+    buildId: "same-build",
+  });
+  assert.equal(first.acquired, true);
+  if (!first.acquired || !first.lock.leaseId) return;
+
+  const ordinaryRetry = acquireGardenLearnLock(garden, {
+    gardenSlug: "g",
+    jobId: "same-job",
+    buildId: "same-build",
+  });
+  assert.equal(ordinaryRetry.acquired, false);
+
+  const authenticatedRetry = resumeGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "same-job", buildId: "same-build" },
+    first.lock.leaseId,
+  );
+  assert.equal(authenticatedRetry.acquired, true);
+  if (authenticatedRetry.acquired) {
+    assert.equal(authenticatedRetry.lock.leaseId, first.lock.leaseId);
+  }
+  releaseGardenLearnLock(garden, "same-job");
+});
+
+test("49. the auto-renewing lease remains owned beyond the original stale boundary", async () => {
+  const garden = tmp("lock-lease");
+  const started = Date.now();
+  let clock = started;
+  const result = acquireGardenLearnLease(
+    garden,
+    { gardenSlug: "g", jobId: "long-job", buildId: "long-build" },
+    { heartbeatIntervalMs: 10, now: () => clock },
+  );
+  assert.equal(result.acquired, true);
+  if (!result.acquired) return;
+
+  const duplicate = acquireGardenLearnLease(
+    garden,
+    { gardenSlug: "g", jobId: "long-job", buildId: "long-build" },
+    { heartbeatIntervalMs: 10, now: () => clock },
+  );
+  assert.equal(duplicate.acquired, false);
+
+  clock = started + LOCK_STALE_MS + 1000;
+  await eventually(() => Date.parse(readGardenLearnLock(garden)?.heartbeatAt ?? "") === clock);
+  const competitor = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "other-job", buildId: "other-build" },
+    clock + LOCK_STALE_MS - 1,
+  );
+  assert.equal(competitor.acquired, false);
+  assert.equal(result.lease.lost, false);
+  assert.equal(result.lease.release(), true);
+  assert.equal(readGardenLearnLock(garden), null);
+});
+
+test("50b. an old fenced lease cannot release a stale takeover with the same job id", () => {
+  const garden = tmp("lock-fence");
+  const started = Date.now();
+  const original = acquireGardenLearnLease(
+    garden,
+    { gardenSlug: "g", jobId: "resumed-job", buildId: "old-build" },
+    { now: () => started },
+  );
+  assert.equal(original.acquired, true);
+  if (!original.acquired) return;
+
+  const takeover = acquireGardenLearnLock(
+    garden,
+    { gardenSlug: "g", jobId: "resumed-job", buildId: "new-build" },
+    started + LOCK_STALE_MS + 1,
+  );
+  assert.equal(takeover.acquired, true);
+  assert.equal(original.lease.release(), false);
+  assert.equal(readGardenLearnLock(garden)?.buildId, "new-build");
+  releaseGardenLearnLock(garden, "resumed-job");
 });
 
 // ---------------------------------------------------------------------------

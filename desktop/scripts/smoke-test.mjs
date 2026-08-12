@@ -4,7 +4,7 @@
 //
 // Launches the installed app, discovers the dynamically allocated ports from
 // the desktop log, exercises the running stack over HTTP (health, register,
-// login, cluster creation, ingestion, Quartz, OpenHarness surfaces), restarts
+// login, cluster creation, ingestion, Quartz, Hermes surfaces), restarts
 // the app to verify persistence, and verifies complete process-tree cleanup.
 //
 // This drives the real installed binary — it does not import any repo code.
@@ -33,6 +33,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const results = [];
 let failures = 0;
 let appPid = null;
+const runInteractiveVisualizerSmoke =
+  process.env.BREADBOARD_SMOKE_INTERACTIVE_VISUALIZER === "true";
+const interactiveVisualizerEvidence = [];
 
 function record(name, ok, detail = "") {
   results.push({ name, ok, detail, checkedAt: new Date().toISOString() });
@@ -265,6 +268,150 @@ async function waitForReady(maxMs, minStartedAt) {
   return null;
 }
 
+async function exerciseInteractiveVisualizer({
+  base,
+  cookie,
+  title,
+  prompt,
+  expectedMode,
+}) {
+  const headers = {
+    "Content-Type": "application/json",
+    Cookie: cookie,
+  };
+  const create = await fetchOk(`${base}/api/hermes/sessions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ surface: "dashboard_terminal", title }),
+  }, 30_000);
+  const created = create?.ok ? await create.json().catch(() => null) : null;
+  const conversationId = created?.session?.id ?? null;
+  record(
+    `${title}: authenticated Terminal conversation is created`,
+    typeof conversationId === "string" && conversationId.length > 0,
+    `status ${create?.status}`,
+  );
+  if (!conversationId) return null;
+
+  const clientMessageId = `smoke-visualizer-${Date.now()}-${expectedMode}`;
+  const turn = await fetchOk(
+    `${base}/api/hermes/sessions/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        text: prompt,
+        clientMessageId,
+        surface: "dashboard_terminal",
+        surfaceContext: {},
+      }),
+    },
+    90_000,
+  );
+  const turnBody = turn?.ok ? await turn.json().catch(() => null) : null;
+  record(
+    `${title}: visualization prompt is accepted`,
+    turn?.ok === true && turnBody?.accepted === true,
+    `status ${turn?.status}; run ${typeof turnBody?.runId === "string" ? "created" : "missing"}`,
+  );
+  if (!turn?.ok || turnBody?.accepted !== true) return null;
+
+  // The real UI opens this stream immediately. Draining it here starts the
+  // server-owned detached pump, so Hermes events are normalized/persisted and
+  // the assistant message reaches a terminal state even though this harness
+  // polls the artifact archive separately.
+  const streamController = new AbortController();
+  const eventDrain = fetch(
+    `${base}/api/hermes/sessions/${encodeURIComponent(conversationId)}/events?surface=dashboard_terminal`,
+    {
+      headers: { Accept: "text/event-stream", Cookie: cookie },
+      signal: streamController.signal,
+    },
+  ).then(async (response) => {
+    if (!response.ok || !response.body) {
+      throw new Error(`event stream failed (${response.status})`);
+    }
+    const reader = response.body.getReader();
+    while (true) {
+      const next = await reader.read();
+      if (next.done) return;
+    }
+  }).catch((error) => {
+    if (!streamController.signal.aborted) throw error;
+  });
+  const stopEventDrain = async () => {
+    streamController.abort();
+    await eventDrain.catch(() => undefined);
+  };
+
+  const deadline = Date.now() + 12 * 60_000;
+  let artifact = null;
+  while (Date.now() < deadline) {
+    const listing = await fetchOk(
+      `${base}/api/hermes/artifacts?conversationId=${encodeURIComponent(conversationId)}&sourceSurface=dashboard_terminal`,
+      { headers: { Cookie: cookie } },
+      15_000,
+    );
+    const body = listing?.ok ? await listing.json().catch(() => null) : null;
+    artifact = Array.isArray(body?.artifacts)
+      ? body.artifacts.find((item) => item?.renderer === "interactive-visualizer") ?? null
+      : null;
+    if (artifact?.status === "ready" || artifact?.status === "failed") break;
+    await delay(2_000);
+  }
+
+  const manifestMode = artifact?.metadata?.interactiveVisualizer?.manifest?.mode;
+  record(
+    `${title}: validated artifact reaches Ready`,
+    artifact?.status === "ready",
+    artifact ? `status ${artifact.status}; version ${artifact.version}` : "no artifact published",
+  );
+  record(
+    `${title}: automatic mode selection is ${expectedMode}`,
+    manifestMode === expectedMode && artifact?.sourceSkill === "interactive-visualizer",
+    `mode ${manifestMode ?? "missing"}; skill ${artifact?.sourceSkill ?? "missing"}`,
+  );
+  if (artifact?.status !== "ready") {
+    await stopEventDrain();
+    return null;
+  }
+
+  const preview = await fetchOk(
+    `${base}/api/hermes/artifacts/${encodeURIComponent(artifact.id)}/preview?conversationId=${encodeURIComponent(conversationId)}`,
+    { headers: { Cookie: cookie } },
+    30_000,
+  );
+  const previewHtml = preview?.ok ? await preview.text() : "";
+  const csp = preview?.headers.get("content-security-policy") ?? "";
+  const runtimePresent =
+    previewHtml.includes("breadboard:interactive-visualizer:v1") &&
+    previewHtml.includes("breadboardRuntimeTests");
+  const modeRuntimePresent = expectedMode === "3d"
+    ? /WebGLRenderer|breadboardWebgl/.test(previewHtml)
+    : !previewHtml.includes('from "three"');
+  record(
+    `${title}: packaged preview is served by the Breadboard artifact route`,
+    preview?.ok === true && runtimePresent && modeRuntimePresent,
+    `status ${preview?.status}; ${previewHtml.length} bytes`,
+  );
+  record(
+    `${title}: packaged preview retains the network-denying CSP`,
+    /connect-src 'none'/.test(csp) && /default-src 'none'/.test(csp),
+    csp ? "CSP present" : "CSP missing",
+  );
+
+  const evidence = {
+    conversationId,
+    artifactId: artifact.id,
+    version: artifact.version,
+    mode: manifestMode,
+    contentHash: artifact.contentHash,
+  };
+  interactiveVisualizerEvidence.push(evidence);
+  await stopEventDrain();
+  return evidence;
+}
+
 async function main() {
   const launchedAt = Date.now();
 
@@ -397,7 +544,7 @@ async function main() {
   }
   record("credentials login yields a session", sessionUser !== null, `user ${sessionUser}`);
   const runtimeHealth = sessionUser
-    ? await fetchOk(`${base}/api/openharness/health`, {
+    ? await fetchOk(`${base}/api/hermes/health`, {
         headers: { Cookie: cookieHeader() },
       }, 20_000)
     : null;
@@ -411,6 +558,31 @@ async function main() {
       ? `runtime ${runtimeHealthBody.runtime}; version ${runtimeHealthBody.version}`
       : `status ${runtimeHealth?.status}`,
   );
+
+  if (runInteractiveVisualizerSmoke && sessionUser) {
+    await exerciseInteractiveVisualizer({
+      base,
+      cookie: cookieHeader(),
+      title: "2D double pendulum",
+      expectedMode: "2d",
+      prompt:
+        "Show me how a double pendulum works. Let me change gravity, both arm lengths, both masses and animation speed.",
+    });
+    await exerciseInteractiveVisualizer({
+      base,
+      cookie: cookieHeader(),
+      title: "3D Moon orbit",
+      expectedMode: "3d",
+      prompt:
+        "Create an interactive 3D model showing how the Moon orbits Earth. Let me rotate the camera and change initial velocity and gravity.",
+    });
+  } else if (runInteractiveVisualizerSmoke) {
+    record(
+      "interactive visualizer packaged scenarios can authenticate",
+      false,
+      "credentials session unavailable",
+    );
+  }
 
   // Cluster creation + ingestion (authenticated API).
   let clusterOk = false;
@@ -513,6 +685,24 @@ async function main() {
     if (clusterSlug) {
       const contentDir = path.join(userData, "Data", "quartz", "content", clusterSlug);
       record("user files persist across restart", fs.existsSync(contentDir));
+    }
+    for (const evidence of interactiveVisualizerEvidence) {
+      const restored = await fetchOk(
+        `${base2}/api/hermes/artifacts/${encodeURIComponent(evidence.artifactId)}?conversationId=${encodeURIComponent(evidence.conversationId)}`,
+        {
+          headers: {
+            Cookie: [...jar2.entries()].map(([k, v]) => `${k}=${v}`).join("; "),
+          },
+        },
+        30_000,
+      );
+      const restoredBody = restored?.ok ? await restored.json().catch(() => null) : null;
+      record(
+        `${String(evidence.mode ?? "unknown").toUpperCase()} visualizer persists after packaged-app restart`,
+        restoredBody?.artifact?.status === "ready" &&
+          restoredBody?.artifact?.contentHash === evidence.contentHash,
+        `status ${restored?.status}; version ${restoredBody?.artifact?.version ?? "missing"}`,
+      );
     }
   }
 

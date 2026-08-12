@@ -16,12 +16,21 @@ import {
   type ChatTokenUsageStreamEvent,
 } from '@/lib/chat-token-usage';
 import type { ChatAttachment } from '@/lib/chat-attachments';
+import { modelAttachmentPromptText } from '@/lib/model-attachments';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
 import { retrieveGraphRag, type RetrievalGarden } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
 import { requireUserId, routeErrorResponse } from '@/lib/server-auth';
+import { directModeSection } from '@/lib/hermes/direct-mode.ts';
+import { responseStylePrompt } from '@/lib/hermes/system-prompts.ts';
+import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
+import {
+  assistantTextFromOutputItem,
+  createResponseTextRecovery,
+  reasoningTextFromOutputItem,
+} from '@/lib/responses-stream-text.ts';
 import db from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -88,17 +97,30 @@ function buildResponsesInput(
         : { type: 'message', role: 'user', content: message.content };
     }
 
+    // A document's `text` is its structured reading, so it belongs in the
+    // same block as a plain text file rather than in one of its own.
     const textAttachments = attachments.filter(
-      (attachment): attachment is Extract<ChatAttachment, { type: 'text' }> =>
-        attachment.type === 'text',
+      (attachment): attachment is Extract<ChatAttachment, { type: 'text' | 'document' }> =>
+        attachment.type === 'text' || attachment.type === 'document',
     );
     const imageAttachments = attachments.filter(
       (attachment): attachment is Extract<ChatAttachment, { type: 'image' }> =>
         attachment.type === 'image',
     );
-    const attachedText = textAttachments
-      .map((attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`)
-      .join('\n\n');
+    // A mesh has no text of its own, so what was measured from it stands in.
+    const modelAttachments = attachments.filter(
+      (attachment): attachment is Extract<ChatAttachment, { type: 'model' }> =>
+        attachment.type === 'model',
+    );
+    const attachedText = [
+      ...textAttachments.map(
+        (attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`,
+      ),
+      ...modelAttachments.map(
+        (attachment) =>
+          `--- Attached file: ${attachment.name} ---\n${modelAttachmentPromptText(attachment)}`,
+      ),
+    ].join('\n\n');
     const contentParts: Array<
       { type: 'input_text'; text: string } | { type: 'input_image'; image_url: string; detail: 'auto' }
     > = [
@@ -122,7 +144,8 @@ export async function POST(request: Request) {
   try {
     const { baseURL } = resolveChatmockBaseUrl(request);
     const userId = await requireUserId();
-    const { messages, model, thinking, reasoningEffort, attachments, scope } = await request.json();
+    const { messages, model, thinking, reasoningEffort, attachments, scope, adhdMode } =
+      await request.json();
 
     if (!Array.isArray(messages)) {
       return NextResponse.json({ error: 'messages are required' }, { status: 400 });
@@ -225,6 +248,11 @@ export async function POST(request: Request) {
     const notesContext = retrieval.context || 'No grounded chunk matched this query.';
 
     let systemPrompt =
+      // Same prose-first voice and minimal-background rule the Hermes surfaces
+      // get, so an answer does not change shape with the runtime behind it.
+      `${responseStylePrompt()}\n\n` +
+      // The switch shapes an answer wherever it is answered, including here.
+      (adhdMode === true ? `${directModeSection()}\n\n` : '') +
       (publicScope
         ? 'You are the assistant for the Breadboard public knowledge hub, which spans every public garden shared on the platform. ' +
           'Answer using the aggregated graph relationships and textbook pages from across all public gardens as grounded context. ' +
@@ -312,11 +340,16 @@ export async function POST(request: Request) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         }
 
+        // Assistant prose carries no em dashes; the reasoning stream is left as
+        // the model wrote it.
+        const emDash = createEmDashFilter();
+
         function emitText(type: 'delta' | 'thinking', text: string) {
-          if (!text) return;
+          const filtered = type === 'delta' ? emDash.push(text) : text;
+          if (!filtered) return;
           const chunkSize = 24000;
-          for (let index = 0; index < text.length; index += chunkSize) {
-            emit({ type, text: text.slice(index, index + chunkSize) });
+          for (let index = 0; index < filtered.length; index += chunkSize) {
+            emit({ type, text: filtered.slice(index, index + chunkSize) });
           }
         }
 
@@ -330,15 +363,33 @@ export async function POST(request: Request) {
 
         emit({ type: 'sources', sources: sourceNames });
 
+        // Providers that deliver the message as a finished item rather than as
+        // deltas would otherwise answer with silence. See responses-stream-text.
+        const answerRecovery = createResponseTextRecovery();
+        const thinkingRecovery = createResponseTextRecovery();
+
         try {
           for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
             if (event.type === 'response.output_text.delta') {
+              answerRecovery.recordStreamed(event.output_index, event.delta);
               emitText('delta', event.delta);
             } else if (
               event.type === 'response.reasoning_summary_text.delta' ||
               event.type === 'response.reasoning_text.delta'
             ) {
+              thinkingRecovery.recordStreamed(event.output_index, event.delta);
               emitText('thinking', event.delta);
+            } else if (event.type === 'response.output_item.done') {
+              const missingThinking = thinkingRecovery.missingFrom(
+                event.output_index,
+                reasoningTextFromOutputItem(event.item),
+              );
+              if (missingThinking) emitText('thinking', missingThinking);
+              const missingAnswer = answerRecovery.missingFrom(
+                event.output_index,
+                assistantTextFromOutputItem(event.item),
+              );
+              if (missingAnswer) emitText('delta', missingAnswer);
             } else if (event.type === 'response.completed') {
               emitUsageFromResponse(event.response);
             } else if (event.type === 'response.incomplete') {
@@ -357,6 +408,8 @@ export async function POST(request: Request) {
             error instanceof Error ? error.message : 'Something went wrong while streaming the response.';
           emitText('delta', `\n\n${message}`);
         } finally {
+          const held = emDash.flush();
+          if (held) emit({ type: 'delta', text: held });
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
         }

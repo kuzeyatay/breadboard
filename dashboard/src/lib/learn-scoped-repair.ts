@@ -62,6 +62,56 @@ function copyTree(source: string, destination: string): void {
   }
 }
 
+function identicalFingerprints(
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) => key === rightKeys[index] && left[key] === right[key],
+    )
+  );
+}
+
+const VOLATILE_REPAIR_PATHS = new Set([".breadboard/events.jsonl"]);
+
+function stableRepairFingerprints(
+  fingerprints: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(fingerprints).filter(
+      ([relativePath]) => !VOLATILE_REPAIR_PATHS.has(relativePath.replace(/\\/g, "/")),
+    ),
+  );
+}
+
+function mergeRepairEventLedgers(currentGarden: string, incomingGarden: string): void {
+  const relativePath = path.join(".breadboard", "events.jsonl");
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const gardenDir of [currentGarden, incomingGarden]) {
+    let raw = "";
+    try {
+      raw = fs.readFileSync(path.join(gardenDir, relativePath), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      continue;
+    }
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line || seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  if (lines.length === 0) return;
+  const destination = path.join(incomingGarden, relativePath);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, `${lines.join("\n")}\n`, "utf8");
+}
+
 function pageLookup(state: GardenBuildState): { pageIdByLegacyPath: Record<string, string>; unitIdByLegacyPath: Record<string, string> } {
   const pageIdByLegacyPath: Record<string, string> = {};
   const unitIdByLegacyPath: Record<string, string> = {};
@@ -318,9 +368,12 @@ export async function executeLearnScopedRepair(input: {
   gardenDir: string;
   gardenId: string;
   request: StartLearnOperationRequest;
+  recoveryOwnerId?: string;
   modelRepair?: ScopedModelRepairExecutor;
   loopOptions?: Partial<ScopedRepairLoopOptions>;
   onProgress?: (progress: LearnScopedRepairProgress) => void;
+  /** Fenced ownership check required immediately before atomic publication. */
+  verifyLease?: () => boolean;
 }): Promise<LearnScopedRepairResult> {
   if (input.request.mode !== "repair") throw new Error("Scoped repair can run only with mode=repair.");
   input.onProgress?.({ step: "Analyzing validation issues" });
@@ -334,7 +387,22 @@ export async function executeLearnScopedRepair(input: {
   const policy = buildScopedFileMutationPolicy(current.state, scope, beforeFiles);
   const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), `breadboard-${input.gardenId}-repair-`));
   const staging = path.join(workspaceRoot, "staging");
-  copyTree(input.gardenDir, staging);
+  try {
+    copyTree(input.gardenDir, staging);
+    if (!identicalFingerprints(beforeFiles, fingerprintGardenFiles(staging))) {
+      throw new Error(
+        "Garden files changed while scoped repair was creating its staging copy. No repair was published; retry the operation.",
+      );
+    }
+    if (input.verifyLease && !input.verifyLease()) {
+      throw new Error(
+        "Scoped repair lost its fenced garden lease while creating its staging copy.",
+      );
+    }
+  } catch (error) {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    throw error;
+  }
   const options = { ...DEFAULT_SCOPED_REPAIR_LOOP_OPTIONS, ...input.loopOptions };
   const blockersBefore = current.issues.filter((issue) => issue.severity === "blocking").map((issue) => issue.issueId).sort();
   let state = current.state;
@@ -390,8 +458,9 @@ export async function executeLearnScopedRepair(input: {
     const provisionalFileCheck = verifyScopedFileMutationPolicy(beforeFiles, provisionalAfterFiles, policy);
     const accepted = finalizationAudit.passed && finalStateAudit.ok;
     const publishReady = accepted;
-    const safeToCommit = blockerProgress && newBlockers.length === 0 && pageIdentity.passed && provisionalFileCheck.passed;
-    const reason = !blockerProgress ? "target blocker count did not decrease"
+    const safeToCommit = publishReady && blockerProgress && newBlockers.length === 0 && pageIdentity.passed && provisionalFileCheck.passed;
+    const reason = !publishReady ? "repaired garden did not pass the final publication audit"
+      : !blockerProgress ? "target blocker count did not decrease"
       : newBlockers.length ? `repair introduced ${newBlockers.length} unrelated blocker(s)`
         : !pageIdentity.passed ? "page byte-identity boundary failed"
           : !provisionalFileCheck.passed ? "allowed-file mutation boundary failed"
@@ -418,7 +487,19 @@ export async function executeLearnScopedRepair(input: {
       ? await promoteStagingGarden({
           stagingGardenDir: staging,
           destinationGardenDir: input.gardenDir,
+          retainPreviousUntilCallerCommit: true,
+          recoveryOwnerId: input.recoveryOwnerId,
           verifyManifest: (incoming) => verifyScopedFileMutationPolicy(beforeFiles, fingerprintGardenFiles(incoming), policy).passed,
+          verifyCurrentDestination: (current) =>
+            (input.verifyLease?.() ?? true) &&
+            identicalFingerprints(
+              stableRepairFingerprints(beforeFiles),
+              stableRepairFingerprints(fingerprintGardenFiles(current)),
+            ),
+          prepareIncomingForCommit: (incoming, current) => {
+            mergeRepairEventLedgers(current, incoming);
+            return true;
+          },
         })
       : { promoted: false, destination: input.gardenDir, attempts: 0, reason };
     const committed = finalSafeToCommit && promotion.promoted;
@@ -439,12 +520,18 @@ export async function executeLearnScopedRepair(input: {
       publicationResult: promotion,
       reason: transaction.reason,
     };
-    writeIfChanged(absolute(input.gardenDir, ".breadboard/scoped-repair.json"), `${JSON.stringify(finalReport, null, 2)}\n`);
-    writeIfChanged(absolute(input.gardenDir, ".breadboard/scoped-repair.md"), reportMarkdown({
-      scope, policy, changedFiles: files.changedFiles, operations, modelCalls,
-      verified: verifiedModelDecisions, rejected: rejectedModelDecisions, blockersBefore, blockersAfter,
-      pageIdentityPassed: pageIdentity.passed, committed, reason: transaction.reason, accepted, publishReady,
-    }));
+    try {
+      writeIfChanged(absolute(input.gardenDir, ".breadboard/scoped-repair.json"), `${JSON.stringify(finalReport, null, 2)}\n`);
+      writeIfChanged(absolute(input.gardenDir, ".breadboard/scoped-repair.md"), reportMarkdown({
+        scope, policy, changedFiles: files.changedFiles, operations, modelCalls,
+        verified: verifiedModelDecisions, rejected: rejectedModelDecisions, blockersBefore, blockersAfter,
+        pageIdentityPassed: pageIdentity.passed, committed, reason: transaction.reason, accepted, publishReady,
+      }));
+    } catch {
+      // The staged reports were already promoted. Enriching them with the
+      // publication receipt is diagnostic-only and must not strand a retained
+      // previous garden by throwing after the atomic swap.
+    }
     return {
       scope, policy, transaction, selectedIssues, finalIssues: afterTyped.issues, files, pageIdentity,
       accepted, publishReady, promotion,

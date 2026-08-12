@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   allowedOriginsFor,
   isNavigationAllowed,
+  isRendererPermissionAllowed,
   isSafeExternalUrl,
 } from "../src/main/security";
 
@@ -24,4 +25,48 @@ test("external link safety only admits web/mailto schemes", () => {
   assert.ok(!isSafeExternalUrl("javascript:alert(1)"));
   assert.ok(!isSafeExternalUrl("file:///C:/Windows/system32"));
   assert.ok(!isSafeExternalUrl("vbscript:x"));
+});
+
+test("only the owned dashboard origin may request an audio-only microphone grant", () => {
+  const allowed = allowedOriginsFor(["http://127.0.0.1:4300"]);
+  assert.ok(
+    isRendererPermissionAllowed(
+      allowed,
+      "media",
+      "http://127.0.0.1:4300/dashboard",
+      ["audio"],
+    ),
+  );
+  assert.ok(
+    !isRendererPermissionAllowed(
+      allowed,
+      "media",
+      "http://127.0.0.1:4300/dashboard",
+      ["audio", "video"],
+    ),
+  );
+  assert.ok(
+    !isRendererPermissionAllowed(
+      allowed,
+      "media",
+      "https://example.com/",
+      ["audio"],
+    ),
+  );
+  assert.ok(
+    !isRendererPermissionAllowed(
+      allowed,
+      "geolocation",
+      "http://127.0.0.1:4300/dashboard",
+    ),
+  );
+  assert.ok(
+    isRendererPermissionAllowed(
+      allowed,
+      "geolocation",
+      "http://127.0.0.1:4300/profile",
+      [],
+      true,
+    ),
+  );
 });

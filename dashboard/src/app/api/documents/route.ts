@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
 import path from 'path';
-import { listClusterFolders, normalizeTopicTags, refreshClusterIndex, scanClusterKnowledge, slugify } from '@/lib/knowledge';
+import { listClusterFolders, scanClusterKnowledge } from '@/lib/knowledge';
 import { INTERNAL_CONCEPT_TYPE, isLegacySubtopicRelPath, readingOrderRank } from '@/lib/learning-garden';
-import { publishQuartzAfterMutation } from '@/lib/quartz-publish';
+import { createGardenDocument } from '@/lib/garden-documents.ts';
 import { requireOwnedClusterFromSlug, requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
 
 export const dynamic = 'force-dynamic';
@@ -120,56 +119,15 @@ export async function POST(request: Request) {
 
     const { cluster } = await requireOwnedClusterFromSlug(clusterSlug);
 
-    const contentPath = process.env.QUARTZ_CONTENT_PATH;
-    if (!contentPath) {
-      return NextResponse.json({ error: 'QUARTZ_CONTENT_PATH not configured' }, { status: 500 });
-    }
+    const created = await createGardenDocument({
+      clusterSlug: cluster.slug,
+      title,
+      content,
+      folder,
+      tags: Array.isArray(tags) ? tags : [],
+    });
 
-    const clusterDir = path.resolve(contentPath, cluster.slug);
-
-    // Optional target sub-folder (slugified, kept inside the cluster directory).
-    const relFolder =
-      typeof folder === 'string'
-        ? folder
-            .replace(/\\/g, '/')
-            .split('/')
-            .map((segment) => segment.trim())
-            .filter((segment) => segment && segment !== '.' && segment !== '..')
-            .map((segment) => slugify(segment))
-            .filter(Boolean)
-            .join('/')
-        : '';
-    const targetDir = path.resolve(clusterDir, relFolder);
-    if (targetDir !== clusterDir && !targetDir.startsWith(clusterDir + path.sep)) {
-      return NextResponse.json({ error: 'Invalid folder path' }, { status: 400 });
-    }
-    fs.mkdirSync(targetDir, { recursive: true });
-
-    const baseSlug = slugify(title.trim());
-    const timestamp = Date.now();
-    const slug = `${baseSlug}-${timestamp}`;
-    const date = new Date().toISOString();
-
-    const body_ = content.trim() ? content : `## ${title.trim()}\n\n`;
-    const normalizedTags = Array.isArray(tags)
-      ? normalizeTopicTags(
-          tags.map((tag: string) => tag.trim()).filter(Boolean),
-          body_,
-          5,
-          `${title.trim()}\n${body_}`,
-        )
-      : [];
-    const semanticHintsLine =
-      normalizedTags.length > 0
-        ? `semanticHints: [${normalizedTags.map((tag) => JSON.stringify(tag)).join(', ')}]\n`
-        : '';
-    const frontmatter = `---\ntitle: ${JSON.stringify(title.trim())}\ndate: ${JSON.stringify(date)}\nsource: "user-note"\nknowledge_type: "user-note"\n${semanticHintsLine}---\n\n`;
-    fs.writeFileSync(path.join(targetDir, `${slug}.md`), frontmatter + body_, 'utf-8');
-
-    refreshClusterIndex(contentPath, cluster.slug);
-    await publishQuartzAfterMutation(`create document ${cluster.slug}/${slug}`);
-
-    return NextResponse.json({ success: true, slug, tags: normalizedTags });
+    return NextResponse.json({ success: true, ...created });
   } catch (err) {
     return routeErrorResponse(err);
   }

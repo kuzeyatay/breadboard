@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 // Curated Breadboard GBrain skillpack: visibility split + capability restrictions.
-const packDir = path.resolve(process.cwd(), "..", "openharness-skills", "breadboard-gbrain");
+const packDir = path.resolve(process.cwd(), "..", "hermes-skills", "breadboard-gbrain");
 const manifest = JSON.parse(fs.readFileSync(path.join(packDir, "manifest.json"), "utf8"));
 
 function frontmatter(slug) {

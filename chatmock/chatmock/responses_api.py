@@ -8,11 +8,10 @@ from .config import BASE_INSTRUCTIONS, GPT5_CODEX_INSTRUCTIONS
 from .fast_mode import ServiceTierResolution, resolve_service_tier
 from .model_registry import (
     allowed_efforts_for_model,
-    extract_reasoning_from_model_name,
     normalize_model_name,
     uses_codex_instructions,
 )
-from .reasoning import build_reasoning_param
+from .reasoning import build_reasoning_param, request_reasoning_overrides
 from .session import ensure_session_id
 
 
@@ -103,17 +102,16 @@ def normalize_responses_payload(
 
     reasoning_effort = config.get("REASONING_EFFORT", "medium")
     reasoning_summary = config.get("REASONING_SUMMARY", "auto")
-    reasoning_overrides = (
-        normalized.get("reasoning")
-        if isinstance(normalized.get("reasoning"), dict)
-        else extract_reasoning_from_model_name(requested_model)
-    )
     normalized["reasoning"] = build_reasoning_param(
         reasoning_effort,
         reasoning_summary,
-        reasoning_overrides,
+        request_reasoning_overrides(normalized, requested_model),
         allowed_efforts=allowed_efforts_for_model(normalized_model),
     )
+    # A Chat-Completions-shaped client may have sent the effort as
+    # `reasoning_effort`; it has been folded into `reasoning` above, and the
+    # Responses API has no such field, so it must not be forwarded upstream.
+    normalized.pop("reasoning_effort", None)
 
     include = normalized.get("include")
     include_list = [item for item in include if isinstance(item, str)] if isinstance(include, list) else []
@@ -181,8 +179,19 @@ def aggregate_response_from_sse(
     *,
     on_event: Any | None = None,
 ) -> tuple[Dict[str, Any] | None, Dict[str, Any] | None]:
+    """Rebuild one non-streaming response object from an SSE turn.
+
+    The completed event is not authoritative about ``output``. Image generation
+    is the case that proves it: the upstream emits the rendered
+    ``image_generation_call`` on ``response.output_item.done`` and then completes
+    with ``output: []``, so a client that trusted the aggregate saw a successful
+    turn carrying no image. Streamed items are therefore collected and used
+    whenever the final object omits them, keeping the two transports equivalent.
+    """
     response_obj: Dict[str, Any] | None = None
     error_obj: Dict[str, Any] | None = None
+    # output_index -> item, so the reassembled list keeps the upstream's order.
+    streamed_items: Dict[int, Dict[str, Any]] = {}
     try:
         for evt in iter_sse_event_payloads(upstream):
             if callable(on_event):
@@ -194,6 +203,11 @@ def aggregate_response_from_sse(
             if isinstance(response, dict):
                 response_obj = response
             kind = evt.get("type")
+            if kind == "response.output_item.done":
+                item = evt.get("item")
+                if isinstance(item, dict):
+                    index = evt.get("output_index")
+                    streamed_items[index if isinstance(index, int) else len(streamed_items)] = item
             if kind == "response.failed":
                 if isinstance(response, dict) and isinstance(response.get("error"), dict):
                     error_obj = {"error": response.get("error")}
@@ -204,6 +218,12 @@ def aggregate_response_from_sse(
                 break
     finally:
         upstream.close()
+
+    if response_obj is not None and streamed_items:
+        final_output = response_obj.get("output")
+        if not isinstance(final_output, list) or len(final_output) < len(streamed_items):
+            response_obj = dict(response_obj)
+            response_obj["output"] = [streamed_items[key] for key in sorted(streamed_items)]
     return response_obj, error_obj
 
 

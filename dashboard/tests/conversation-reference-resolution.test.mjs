@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -133,6 +136,48 @@ test("named and ordinal references select only matching verified list entries", 
       [listMessage()],
     ).map((resource) => resource.value),
     [LISTED_FILES[1], LISTED_FILES[2]],
+  );
+});
+
+test("a plural reference to verified folders resolves the folders themselves", (t) => {
+  // Real directories, because a name alone cannot tell `.gradle` the cache
+  // folder from a file with a seven-letter extension — and reading it as a file
+  // makes the permission request point at the parent user profile instead.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-refs-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const wpilib = path.join(root, "wpilib");
+  const gradle = path.join(root, ".gradle");
+  fs.mkdirSync(wpilib);
+  fs.mkdirSync(gradle);
+
+  const answer = message({
+    content: [
+      "All the FRC-related folders add up to about **7.2 GB**.",
+      "",
+      `The biggest single piece is the WPILib install at \`${wpilib}\`, which is 5.5 GB.`,
+      `Then there is \`${gradle}\` at 1.7 GB, which is the shared Gradle cache.`,
+    ].join("\n"),
+  });
+
+  assert.deepEqual(
+    resolveVerifiedFilesystemReferences("please delete them all", [answer]),
+    [wpilib, gradle].map((value) => ({
+      kind: "path",
+      value,
+      absolute: true,
+      resourceType: "directory",
+    })),
+  );
+});
+
+test("a folder that merely holds the listed files is not itself a target", () => {
+  // `listMessage` names the Downloads folder as the location of four files.
+  // "Delete them" means the files; the folder is where they are, not one of them.
+  assert.deepEqual(
+    resolveVerifiedFilesystemReferences("delete them", [listMessage()]).map(
+      (resource) => resource.value,
+    ),
+    LISTED_FILES,
   );
 });
 

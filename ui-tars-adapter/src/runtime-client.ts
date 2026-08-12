@@ -8,11 +8,20 @@
 
 import type { RuntimeKind } from "./config.ts";
 import type { ProposedAction } from "./approval-policy.ts";
-import type { ApprovalActionType, RunFailure, UITarsAgentConfiguration } from "./types.ts";
+import type {
+  AgentThinkingUpdate,
+  AgentTokenUsage,
+  ApprovalActionType,
+  OperatorType,
+  RunFailure,
+  UITarsAgentConfiguration,
+} from "./types.ts";
 
 export interface RuntimeCapabilities {
   runtime: RuntimeKind;
+  /** Legacy/default target, retained for existing health consumers. */
   operator: "browser";
+  operators: ReadonlyArray<OperatorType>;
   strategies: ReadonlyArray<"gui" | "dom" | "hybrid">;
   /** True only for the real Agent TARS runtime. */
   realBrowser: boolean;
@@ -39,8 +48,12 @@ export interface StartRunParams {
  */
 export interface RuntimeHost {
   status(text: string): void;
+  /** Emit safe progress metadata, never raw chain-of-thought. */
+  thinking?(update: AgentThinkingUpdate): void;
+  /** Emit cumulative provider-reported or explicitly estimated usage. */
+  usage?(usage: AgentTokenUsage): void;
   page(info: { url?: string; title?: string }): void;
-  screenshot(data: { base64?: string; caption?: string }): void;
+  screenshot(data: { base64?: string; caption?: string }): Promise<void>;
   actionStarted(a: { actionId: string; action: ApprovalActionType; target: string }): void;
   actionCompleted(a: { actionId: string; summary?: string }): void;
   actionFailed(a: { actionId: string; error: string }): void;
@@ -117,6 +130,7 @@ export class FakeRuntimeClient implements RuntimeClient {
     return {
       runtime: "fake",
       operator: "browser",
+      operators: ["browser"],
       strategies: ["dom", "gui", "hybrid"],
       realBrowser: false,
       version: this.version,
@@ -124,6 +138,15 @@ export class FakeRuntimeClient implements RuntimeClient {
   }
 
   async run(params: StartRunParams, host: RuntimeHost): Promise<RunOutcome> {
+    if (params.config.operator === "computer") {
+      return {
+        status: "failed",
+        failure: {
+          code: "desktop_runtime_unavailable",
+          message: "Actual desktop control requires the Agent TARS runtime",
+        },
+      };
+    }
     const { signal } = host;
     const startUrl = FIRST_URL_RE.exec(params.task)?.[0] ?? "http://127.0.0.1/index.html";
     const step = () => delay(this.stepDelayMs, signal);
@@ -148,7 +171,7 @@ export class FakeRuntimeClient implements RuntimeClient {
     if (signal.aborted) return aborted();
     host.page({ url: navUrl, title: navHost });
     host.actionCompleted({ actionId: "nav-1", summary: `Opened ${navHost}` });
-    host.screenshot({ base64: onePixelPng(), caption: `Loaded ${navHost}` });
+    await host.screenshot({ base64: onePixelPng(), caption: `Loaded ${navHost}` });
     await step();
     if (signal.aborted) return aborted();
 
@@ -156,7 +179,7 @@ export class FakeRuntimeClient implements RuntimeClient {
     host.actionStarted({ actionId: "fill-1", action: "type", target: "input#name" });
     await step();
     host.actionCompleted({ actionId: "fill-1", summary: "Filled form fields" });
-    host.screenshot({ base64: onePixelPng(), caption: "Form filled" });
+    await host.screenshot({ base64: onePixelPng(), caption: "Form filled" });
     await step();
     if (signal.aborted) return aborted();
 
@@ -177,7 +200,7 @@ export class FakeRuntimeClient implements RuntimeClient {
     await step();
     if (signal.aborted) return aborted();
     host.actionCompleted({ actionId: "submit-1", summary: "Form submitted" });
-    host.screenshot({ base64: onePixelPng(), caption: "Submission complete" });
+    await host.screenshot({ base64: onePixelPng(), caption: "Submission complete" });
     host.status("Task complete");
     return { status: "completed", summary: `Submitted the form on ${navHost}` };
   }

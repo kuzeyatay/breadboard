@@ -290,6 +290,9 @@ func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context,
 	// Perform transcription using the preprocessed audio
 	if transcriptionModelID != "" {
 		logger.Info("Running transcription", "model_id", transcriptionModelID)
+		if err := u.registry.PrepareTranscriptionModel(ctx, transcriptionModelID); err != nil {
+			return fmt.Errorf("failed to prepare transcription model: %w", err)
+		}
 		transcriptionAdapter, err := u.registry.GetTranscriptionAdapter(transcriptionModelID)
 		if err != nil {
 			return fmt.Errorf("failed to get transcription adapter: %w", err)
@@ -311,6 +314,9 @@ func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context,
 
 		if !u.transcriptionIncludesDiarization(transcriptionModelID, job.Parameters) {
 			logger.Info("Running separate diarization", "model_id", diarizationModelID)
+			if err := u.registry.PrepareDiarizationModel(ctx, diarizationModelID); err != nil {
+				return fmt.Errorf("failed to prepare diarization model: %w", err)
+			}
 			diarizationAdapter, err := u.registry.GetDiarizationAdapter(diarizationModelID)
 			if err != nil {
 				return fmt.Errorf("failed to get diarization adapter: %w", err)

@@ -49,5 +49,8 @@
     "additionalDirectories": [
       "C:\\Users\\20252082\\.claude\\skills"
     ]
+  },
+  "enabledPlugins": {
+    "ponytail@ponytail": true
   }
 }

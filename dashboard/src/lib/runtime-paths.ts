@@ -8,11 +8,13 @@ import path from "path";
 // user-data directory and read-only assets under the install resources:
 //   BREADBOARD_DATA_DIR  — base directory containing db/ (brain.db etc.)
 //   BREADBOARD_REPO_ROOT — directory that mirrors the repo layout for
-//                          read-only assets (openharness-config/, gbrain/, …)
+//                          read-only assets (hermes-config/, gbrain/, …)
 
 export function dashboardDataDir(): string {
   const configured = process.env.BREADBOARD_DATA_DIR?.trim();
   if (configured) return path.resolve(configured);
+  const developmentDashboard = process.env.BREADBOARD_DEVELOPMENT_DASHBOARD_DIR?.trim();
+  if (developmentDashboard) return path.resolve(developmentDashboard);
   return path.basename(process.cwd()).toLowerCase() === "dashboard"
     ? process.cwd()
     : path.join(process.cwd(), "dashboard");

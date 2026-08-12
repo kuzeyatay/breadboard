@@ -16,6 +16,7 @@
 import fs from "fs";
 import path from "path";
 import type OpenAI from "openai";
+import { breadSystemPrompt } from "./assistant-identity.ts";
 import { cropPng } from "./png-crop.ts";
 import { slugify } from "./tags.ts";
 
@@ -109,7 +110,7 @@ function expandedCropBBox(
   };
 }
 
-const DETECTION_SYSTEM_PROMPT = `You identify the meaningful visuals on one page of an academic or educational document.
+const DETECTION_SYSTEM_PROMPT = breadSystemPrompt(`You identify the meaningful visuals on one page of an academic or educational document.
 Return ONLY a JSON array (no fence, no commentary). Each element:
 {
   "type": "figure" | "graph" | "table" | "equation" | "diagram",
@@ -122,7 +123,7 @@ Rules:
 - Do NOT report running body text, headers, footers, page numbers, author blocks, references, or logos.
 - Do NOT report the whole page as one visual.
 - captions must describe content ("Latency comparison across models"), never position ("image at top").
-- If the page has no meaningful visuals, return [].`;
+- If the page has no meaningful visuals, return [].`);
 
 export function sourceVisualsLedgerPath(contentPath: string, gardenSlug: string): string {
   return path.join(contentPath, gardenSlug, LEDGER_RELATIVE_PATH);

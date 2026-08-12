@@ -9,7 +9,7 @@ import {
   requireOwnedClusterFromSlug,
 } from "../server-auth.ts";
 import { getVideoTranscriptionConfig } from "./config.ts";
-import { ScriberrClient } from "./client.ts";
+import { ScriberrClient, scriberrClientFromConfig } from "./client.ts";
 import { VideoTranscriptionJobStore } from "./job-store.ts";
 import { VideoTranscriptionRunner } from "./job-runner.ts";
 import { ingestTranscriptSource, resumeTranscriptIndexing } from "./ingest.ts";
@@ -35,14 +35,7 @@ export function getVideoTranscriptionStore(): VideoTranscriptionJobStore {
 }
 
 export function createScriberrClientFromConfig(): ScriberrClient {
-  const config = getVideoTranscriptionConfig();
-  return new ScriberrClient({
-    baseUrl: config.scriberrBaseUrl,
-    apiToken: config.scriberrApiToken,
-    username: config.scriberrUsername,
-    password: config.scriberrPassword,
-    requestTimeoutMs: config.requestTimeoutMs,
-  });
+  return scriberrClientFromConfig();
 }
 
 export function getVideoTranscriptionRunner(): VideoTranscriptionRunner {

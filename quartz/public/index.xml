@@ -6,6 +6,30 @@
       <description>Last 10 notes on breadboard</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
+    <title>Physics for EE</title>
+    <link>https://localhost:8081/physics-for-ee/</link>
+    <guid>https://localhost:8081/physics-for-ee/</guid>
+    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 550 graph links. ]]></description>
+    <pubDate>Tue, 11 Aug 2026 21:00:00 GMT</pubDate>
+  </item><item>
+    <title>Sources</title>
+    <link>https://localhost:8081/physics-for-ee/sources/</link>
+    <guid>https://localhost:8081/physics-for-ee/sources/</guid>
+    <description><![CDATA[ Sources Standing Waves, Reflection, and Resonance on Strings Refraction, Fermat’s Principle, Apparent Images, and Total Internal Reflection Diffraction, Interference, and Course Feedback 981623_English Schrodinger Equation, Wave Functions, and Probability Interpretation Quantum Entanglement, Bell In... ]]></description>
+    <pubDate>Tue, 11 Aug 2026 21:00:00 GMT</pubDate>
+  </item><item>
+    <title>breadboard-dev</title>
+    <link>https://localhost:8081/breadboard-dev/</link>
+    <guid>https://localhost:8081/breadboard-dev/</guid>
+    <description><![CDATA[ Learning garden with 0 source documents, 0 lesson pages, and 0 graph links. ]]></description>
+    <pubDate>Tue, 28 Jul 2026 21:00:00 GMT</pubDate>
+  </item><item>
+    <title>My garden</title>
+    <link>https://localhost:8081/private-library/user-1/</link>
+    <guid>https://localhost:8081/private-library/user-1/</guid>
+    <description><![CDATA[ All the gardens attached to your account. ]]></description>
+    <pubDate>Tue, 28 Jul 2026 21:00:00 GMT</pubDate>
+  </item><item>
     <title>Communication 1</title>
     <link>https://localhost:8081/communication-1/</link>
     <guid>https://localhost:8081/communication-1/</guid>
@@ -40,30 +64,6 @@
     <link>https://localhost:8081/math-2/sources/</link>
     <guid>https://localhost:8081/math-2/sources/</guid>
     <description><![CDATA[ Sources 5EZB0_SC_week2-1 5EZB0_SC_week6 calculus-a-complete-course-10_compress Final_exam_2024 final_exam_2025 final-exam-for-5ezb0-math-2-exam-details-and-instructions lecture transcripts Math2 Midterm2026 Mathematics 2 - Lec 1-1 Mathematics 2 - Lec 10 Mathematics 2 - Lec 11 Mathematics 2 - Lec 12 ... ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Physics for EE</title>
-    <link>https://localhost:8081/physics-for-ee/</link>
-    <guid>https://localhost:8081/physics-for-ee/</guid>
-    <description><![CDATA[ Learning garden with 6 source documents, 0 lesson pages, and 550 graph links. ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Sources</title>
-    <link>https://localhost:8081/physics-for-ee/sources/</link>
-    <guid>https://localhost:8081/physics-for-ee/sources/</guid>
-    <description><![CDATA[ Sources Standing Waves, Reflection, and Resonance on Strings Refraction, Fermat’s Principle, Apparent Images, and Total Internal Reflection Diffraction, Interference, and Course Feedback 981623_English Schrodinger Equation, Wave Functions, and Probability Interpretation Quantum Entanglement, Bell In... ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>My garden</title>
-    <link>https://localhost:8081/private-library/user-1/</link>
-    <guid>https://localhost:8081/private-library/user-1/</guid>
-    <description><![CDATA[ All the gardens attached to your account. ]]></description>
-    <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
-  </item><item>
-    <title>Public garden</title>
-    <link>https://localhost:8081/public-library/</link>
-    <guid>https://localhost:8081/public-library/</guid>
-    <description><![CDATA[ Shared gardens ranked by popularity. ]]></description>
     <pubDate>Fri, 24 Jul 2026 21:00:00 GMT</pubDate>
   </item>
     </channel>

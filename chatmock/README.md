@@ -109,6 +109,40 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 - `gpt-5.1-codex-mini`
 - `codex-mini`
 
+### Other providers
+
+Breadboard's fork also reaches Anthropic, Google Gemini, OpenAI, OpenRouter,
+Groq, DeepSeek, xAI, Mistral, Together, Ollama and any custom OpenAI-compatible
+endpoint. Those models are addressed with a provider prefix
+(`anthropic/claude-opus-4-5`, `openrouter/<vendor>/<model>`), and `default`
+resolves to whichever model was chosen as the global background model.
+
+Credentials are managed through `GET/PUT /v1/providers` (or the dashboard's
+Settings → Providers tab) and stored beside `auth.json`. See
+[docs/MODEL_PROVIDERS.md](../docs/MODEL_PROVIDERS.md).
+
+### Embeddings
+
+`POST /v1/embeddings` speaks the OpenAI shape and picks its backend from the
+model id:
+
+- `local/bge-small-en-v1.5` (and the other ids from `GET /v1/embeddings/models`)
+  runs in-process through [fastembed](https://github.com/qdrant/fastembed) —
+  ONNX Runtime on the CPU, no key, and no network once the weights are cached
+  under `<home>/embedding-models`. This is the only backend that works on a
+  machine with no paid provider configured, which is why it is the default.
+- `openai/text-embedding-3-small`, `google/…`, or any other configured
+  provider relays to that provider's own `/embeddings` with the credentials
+  already stored for chat.
+
+Local embeddings need the extra: `pip install -e '.[embeddings]'`. Without it
+the endpoint answers 503 naming the install, and everything else keeps working.
+The ChatGPT and Anthropic upstreams have no embeddings endpoint and say so
+rather than 404ing.
+
+Embedding models are deliberately absent from `/v1/models` — that list feeds
+model pickers, where a vector model would be a model that produces no answer.
+
 <br>
 
 ## Features
@@ -120,6 +154,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 - Fast mode for supported models
 - Web search tool
 - OpenAI-compatible `/v1/responses` (HTTP + WebSocket)
+- OpenAI-compatible `/v1/embeddings`, with a keyless local backend
 - Ollama-compatible endpoints
 - Reasoning effort exposed as separate models (optional)
 

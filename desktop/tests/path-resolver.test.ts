@@ -28,6 +28,7 @@ test("dev mode resolves everything inside the repository", () => {
   assert.equal(paths.databaseDir, path.join(fakeRepo, "dashboard", "db"));
   assert.equal(paths.quartzContent, path.join(fakeRepo, "quartz", "content"));
   assert.equal(paths.dashboardServerDir, path.join(fakeRepo, "dashboard"));
+  assert.equal(paths.codexHome, path.join(fakeRepo, ".runtime", "codex-desktop"));
   assert.equal(paths.runtimesDir, "");
 });
 
@@ -46,7 +47,11 @@ test("packaged mode separates resources from user data", () => {
   assert.ok(isInside(userData, paths.databaseDir));
   assert.ok(isInside(userData, paths.quartzContent));
   assert.ok(isInside(userData, paths.logsDir));
-  assert.ok(isInside(userData, paths.openharnessRoot));
+  assert.ok(isInside(userData, paths.hermesWorkspaceRoot));
+  assert.ok(isInside(userData, paths.codexHome));
+  assert.ok(isInside(userData, paths.skillsQuarantine));
+  assert.ok(isInside(userData, paths.skillsApproved));
+  assert.ok(isInside(userData, paths.skillsConditional));
   // No mutable directory may live under the read-only resources.
   for (const dir of mutableDirectories(paths)) {
     assert.ok(!isInside(resources, dir), `${dir} must not be inside resources`);

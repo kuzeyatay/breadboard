@@ -27,6 +27,7 @@ import type {
   RunStatus,
   UITarsAgentConfiguration,
   ApprovalRequest,
+  OperatorType,
 } from "./types.ts";
 
 export interface CreateRunParams {
@@ -42,7 +43,7 @@ export interface RunSummary {
   ownerUserId: number;
   status: RunStatus;
   task: string;
-  operatorType: "browser";
+  operatorType: OperatorType;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -66,6 +67,7 @@ interface ManagedRun {
   failure?: RunFailure;
   actionCount: number;
   lastScreenshotId?: string;
+  pendingScreenshotWrites: Set<Promise<void>>;
   timeoutTimer?: NodeJS.Timeout;
   done: Promise<void>;
 }
@@ -124,6 +126,10 @@ export class RunManager {
     if (params.task.length > MAX_TASK_LENGTH) throw new RunManagerError("task_too_long");
     if (this.activeCount() >= this.opts.maxConcurrentRuns) throw new RunManagerError("too_many_runs");
 
+    // Screenshot files outlive this in-memory manager, so their authorization
+    // metadata must be durable before the run can emit its first image.
+    this.screenshots.registerRun(params.runId, params.ownerUserId);
+
     const run: ManagedRun = {
       state: new RunState(params.runId),
       ownerUserId: params.ownerUserId,
@@ -135,6 +141,7 @@ export class RunManager {
       abort: new AbortController(),
       createdAt: new Date(this.nowMs()).toISOString(),
       actionCount: 0,
+      pendingScreenshotWrites: new Set(),
       done: Promise.resolve(),
     };
     this.runs.set(params.runId, run);
@@ -184,28 +191,51 @@ export class RunManager {
       status: (text) => {
         this.emit(run, "run.status", { message: redact(String(text)) });
       },
+      thinking: (update) => {
+        this.emit(run, "agent.thinking", {
+          state: update.state,
+          summary: update.summary ? redact(String(update.summary)).slice(0, 300) : undefined,
+          durationMs: Number.isFinite(update.durationMs) ? Math.max(0, Math.trunc(update.durationMs!)) : undefined,
+        });
+      },
+      usage: (usage) => {
+        const count = (value: number | undefined) =>
+          Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : undefined;
+        this.emit(run, "agent.usage", {
+          inputTokens: count(usage.inputTokens),
+          outputTokens: count(usage.outputTokens),
+          totalTokens: count(usage.totalTokens) ?? 0,
+          calls: count(usage.calls) ?? 0,
+          estimated: usage.estimated === true,
+        });
+      },
       page: (info) => {
         this.emit(run, "observation.page", {
           url: info.url ? redact(info.url) : undefined,
           title: info.title ? redact(info.title) : undefined,
         });
       },
-      screenshot: (data) => {
+      screenshot: async (data) => {
+        if (!data.base64) return;
         const seq = run.state.nextSequence;
-        if (data.base64) {
-          void this.screenshots
-            .put(run.state.runId, seq, data.base64)
-            .then((stored) => {
-              run.lastScreenshotId = stored.screenshotId;
-              this.emit(run, "observation.screenshot", {
-                screenshotId: stored.screenshotId,
-                caption: data.caption ? redact(data.caption) : undefined,
-              });
-            })
-            .catch(() => {
-              this.emit(run, "run.status", { note: "screenshot_store_failed" });
+        let write!: Promise<void>;
+        write = this.screenshots
+          .put(run.state.runId, seq, data.base64)
+          .then((stored) => {
+            run.lastScreenshotId = stored.screenshotId;
+            this.emit(run, "observation.screenshot", {
+              screenshotId: stored.screenshotId,
+              caption: data.caption ? redact(data.caption) : undefined,
             });
-        }
+          })
+          .catch(() => {
+            this.emit(run, "run.status", { note: "screenshot_store_failed" });
+          })
+          .finally(() => {
+            run.pendingScreenshotWrites.delete(write);
+          });
+        run.pendingScreenshotWrites.add(write);
+        await write;
       },
       actionStarted: (a) => {
         run.actionCount += 1;
@@ -281,7 +311,11 @@ export class RunManager {
     this.emit(run, "run.status", { message: "Starting run" });
     if (!this.safeTransition(run, "running")) return;
     run.startedAt = new Date(this.nowMs()).toISOString();
-    this.emit(run, "run.started", { task: run.task, strategy: run.config.browserStrategy });
+    this.emit(run, "run.started", {
+      task: run.task,
+      operator: run.config.operator,
+      strategy: run.config.browserStrategy,
+    });
 
     run.timeoutTimer = setTimeout(() => {
       this.fail(run, "timeout", "Run exceeded the configured time limit");
@@ -302,6 +336,13 @@ export class RunManager {
       outcome = { status: "runtime_lost", failure: { code: "runtime_error", message: "Runtime failed" } };
     } finally {
       if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
+    }
+
+    // A screenshot store write may still be in flight when a fast runtime
+    // returns. Flush it before the terminal event so SSE consumers cannot close
+    // on run.completed and permanently miss the final screenshot.
+    while (run.pendingScreenshotWrites.size > 0) {
+      await Promise.allSettled([...run.pendingScreenshotWrites]);
     }
 
     // The gate/timeout may have already driven a terminal state; respect it.
@@ -406,7 +447,7 @@ export class RunManager {
       ownerUserId: run.ownerUserId,
       status: run.state.status,
       task: run.task,
-      operatorType: "browser",
+      operatorType: run.config.operator,
       createdAt: run.createdAt,
       ...(run.startedAt ? { startedAt: run.startedAt } : {}),
       ...(run.completedAt ? { completedAt: run.completedAt } : {}),

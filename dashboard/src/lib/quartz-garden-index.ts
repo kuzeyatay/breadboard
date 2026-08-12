@@ -26,6 +26,9 @@ interface GardenCluster {
 const PRIVATE_LIBRARY_ROOT = "private-library";
 const PUBLIC_LIBRARY_ROOT = "public-library";
 
+// `clusters.folder` holds a materialized path, so clusters can nest.
+const FOLDER_SEPARATOR = "/";
+
 function contentPath(): string | null {
   const configured = process.env.QUARTZ_CONTENT_PATH?.trim();
   if (!configured) return null;
@@ -159,13 +162,41 @@ function writeGardenIndex({
         ungrouped.map((cluster, index) => clusterLine(cluster, index)).join("\n"),
       );
     }
-    for (const name of [...groups.keys()]
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b))) {
-      const list = groups.get(name) ?? [];
+
+    // Clusters nest, and `folder` holds a materialized path ("A/B/C"). Expand
+    // each one into its ancestor chain so an intermediate cluster still gets a
+    // heading when it holds only nested clusters and no gardens of its own.
+    const paths = new Set<string>();
+    for (const key of groups.keys()) {
+      const segments = key.split(FOLDER_SEPARATOR).filter(Boolean);
+      for (let i = 0; i < segments.length; i += 1) {
+        paths.add(segments.slice(0, i + 1).join(FOLDER_SEPARATOR));
+      }
+    }
+
+    // Depth-first order: compare segment by segment, since a plain string sort
+    // would let a sibling like "A B" slip between "A" and its child "A/B".
+    const byPath = (a: string, b: string): number => {
+      const left = a.split(FOLDER_SEPARATOR);
+      const right = b.split(FOLDER_SEPARATOR);
+      for (let i = 0; i < Math.min(left.length, right.length); i += 1) {
+        const cmp = left[i].localeCompare(right[i]);
+        if (cmp !== 0) return cmp;
+      }
+      return left.length - right.length;
+    };
+
+    for (const folder of [...paths].sort(byPath)) {
+      const segments = folder.split(FOLDER_SEPARATOR);
+      const heading = `${"#".repeat(Math.min(2 + segments.length, 6))} ${
+        segments[segments.length - 1]
+      }`;
+      const list = groups.get(folder) ?? [];
       sections.push(
-        `### ${name}\n\n` +
-          list.map((cluster, index) => clusterLine(cluster, index)).join("\n"),
+        list.length > 0
+          ? `${heading}\n\n` +
+              list.map((cluster, index) => clusterLine(cluster, index)).join("\n")
+          : heading,
       );
     }
     return sections.join("\n\n");

@@ -30,13 +30,13 @@ Dashboard presentation surfaces migrated to shared primitives:
 - `dashboard/src/app/components/markdown-to-pdf-button.tsx`
 - `dashboard/src/app/components/toast.tsx`
 - `dashboard/src/app/components/usage-limits-popover.tsx`
-- `dashboard/src/app/components/openharness/activity-panel.tsx`
-- `dashboard/src/app/components/openharness/command-hub.tsx`
-- `dashboard/src/app/components/openharness/dashboard-agent-terminal.tsx`
-- `dashboard/src/app/components/openharness/evidence-panel.tsx`
-- `dashboard/src/app/components/openharness/garden-agent-chat.tsx`
-- `dashboard/src/app/components/openharness/garden-assistant-switch.tsx`
-- `dashboard/src/app/components/openharness/skills-catalog-panel.tsx`
+- `dashboard/src/app/components/hermes/activity-panel.tsx`
+- `dashboard/src/app/components/hermes/command-hub.tsx`
+- `dashboard/src/app/components/hermes/dashboard-agent-terminal.tsx`
+- `dashboard/src/app/components/hermes/evidence-panel.tsx`
+- `dashboard/src/app/components/hermes/garden-agent-chat.tsx`
+- `dashboard/src/app/components/hermes/garden-assistant-switch.tsx`
+- `dashboard/src/app/components/hermes/skills-catalog-panel.tsx`
 - `dashboard/src/app/dashboard/dashboard-client.tsx`
 - `dashboard/src/app/garden/garden-assistant.tsx`
 - `dashboard/src/app/garden/library-garden-client.tsx`
@@ -171,10 +171,10 @@ The automated pre-change Learn capture reached the workspace route but did not s
 
 ## 13. Functionality not manually verified
 
-The production builds and automated suites cover OpenHarness, ChatMock, ingestion, Learn, Quartz, permission-client, and generic lifecycle code paths, but this visual pass intentionally did not execute destructive or externally dependent live actions. Specifically:
+The production builds and automated suites cover Hermes, ChatMock, ingestion, Learn, Quartz, permission-client, and generic lifecycle code paths, but this visual pass intentionally did not execute destructive or externally dependent live actions. Specifically:
 
 - Real Clear Learn/Rebuild/Delete mutations were not submitted.
-- A live OpenHarness permission request and error dialog were not forced against an external session.
+- A live Hermes permission request and error dialog were not forced against an external session.
 - A real video ingestion/Scriberr/Reader job and document upload were not started.
 - New-note save, Markdown/PDF export, and remote ChatMock responses were not submitted manually.
 - Hover behavior was source-reviewed; keyboard, reduced-motion, forced-colors, responsive overflow, and the captured click-open states were exercised in the browser.

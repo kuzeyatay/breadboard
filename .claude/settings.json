@@ -63,7 +63,8 @@
       "Bash(node --test --experimental-strip-types tests/semantic-repair-e2e.test.mjs tests/repair-executor.test.mjs)",
       "Bash(node --experimental-strip-types \"C:\\\\Users\\\\20252082\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard\\\\5c34f316-262c-47e4-acfa-55e2fa711f7a\\\\scratchpad\\\\f24.mjs\")",
       "Bash(node --experimental-strip-types \"C:\\\\Users\\\\20252082\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-20252082-OneDrive---TU-Eindhoven-Desktop-breadboard\\\\5c34f316-262c-47e4-acfa-55e2fa711f7a\\\\scratchpad\\\\finalcap.mjs\")",
-      "PowerShell(node --test tests/dashboard-agent-terminal-ui.test.mjs)"
+      "PowerShell(node --test tests/dashboard-agent-terminal-ui.test.mjs)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(p.dependencies&&p.dependencies['lucide-react']?\\('lucide-react '+p.dependencies['lucide-react']\\):'NOT a dependency'\\)\")"
     ],
     "additionalDirectories": [
       "\\tmp"

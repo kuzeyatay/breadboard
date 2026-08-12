@@ -126,7 +126,25 @@ test('supports providers that omit optional usage details', () => {
   );
 });
 
-test('normalizes OpenHarness completion token usage', () => {
+test('normalizes Anthropic cache usage into complete input totals', () => {
+  assert.deepEqual(
+    normalizeChatTokenUsage({
+      input_tokens: 40,
+      cache_creation_input_tokens: 15,
+      cache_read_input_tokens: 120,
+      output_tokens: 10,
+    }),
+    {
+      inputTokens: 175,
+      outputTokens: 10,
+      totalTokens: 185,
+      cachedInputTokens: 120,
+      reasoningTokens: 0,
+    },
+  );
+});
+
+test('normalizes Hermes completion token usage', () => {
   assert.deepEqual(
     normalizeChatTokenUsage({
       total: 11_537,
@@ -143,6 +161,38 @@ test('normalizes OpenHarness completion token usage', () => {
       reasoningTokens: 0,
     },
   );
+});
+
+test('preserves scoped Hermes turn usage and identifies legacy snapshots', () => {
+  assert.deepEqual(
+    normalizeChatTokenUsage({
+      scope: 'turn', input: 22_000, output: 500, total: 22_500,
+      calls: 2, cache_read: 10_000, context_used: 12_500,
+      context_max: 128_000,
+    }),
+    {
+      inputTokens: 22_000, outputTokens: 500, totalTokens: 22_500,
+      cachedInputTokens: 10_000, reasoningTokens: 0, scope: 'turn',
+      apiCalls: 2, contextUsedTokens: 12_500, contextLimitTokens: 128_000,
+    },
+  );
+  assert.equal(
+    normalizeChatTokenUsage({
+      model: 'test', input: 566_802, output: 6_842,
+      total: 573_644, calls: 20,
+    }).scope,
+    'session',
+  );
+});
+
+test('legacy session snapshots are not double-counted as turn usage', () => {
+  const legacy = normalizeChatTokenUsage({
+    model: 'test', input: 100, output: 10, total: 110, calls: 2,
+  });
+  const turn = normalizeChatTokenUsage({
+    scope: 'turn', input: 40, output: 5, total: 45, calls: 1,
+  });
+  assert.equal(sumChatTokenUsage([legacy, turn]).totalTokens, 45);
 });
 
 test('rejects missing, negative, and non-finite token totals', () => {

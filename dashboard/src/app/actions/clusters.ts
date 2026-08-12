@@ -11,6 +11,15 @@ import {
 } from "@/lib/quartz-garden-index";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { requireUserId } from "@/lib/server-auth";
+import {
+  createFolder,
+  deleteFolder,
+  ensureFolderPath,
+  listFolders,
+  moveFolder,
+  normalizeFolderPath,
+  renameFolder,
+} from "@/lib/cluster-folders";
 
 export interface Cluster {
   id: number;
@@ -32,6 +41,8 @@ export interface Cluster {
   ownerEmail?: string;
   ownerUsername?: string;
   isOwner?: boolean;
+  repo_connected: boolean;
+  repo_name: string | null;
 }
 
 export type ClusterVisibility = "private" | "public";
@@ -55,6 +66,8 @@ type ClusterRow = Omit<
   | "fork_allowed"
   | "view_count"
   | "last_viewed_at"
+  | "repo_connected"
+  | "repo_name"
 > & {
   visibility?: string | null;
   border_color?: string | null;
@@ -64,6 +77,7 @@ type ClusterRow = Omit<
   fork_allowed?: number | null;
   view_count?: number | null;
   last_viewed_at?: string | null;
+  repo_path?: string | null;
 };
 
 function normalizeVisibility(
@@ -123,8 +137,11 @@ function toCluster(
   noteCount: number,
   userId?: number,
 ): Cluster {
+  const { repo_path: repoPath, ...safeRow } = row;
+  const isOwner =
+    typeof userId === "number" ? row.user_id === userId : Boolean(row.isOwner);
   return {
-    ...row,
+    ...safeRow,
     visibility: normalizeVisibility(row.visibility),
     border_color: normalizeBorderColor(row.border_color),
     card_width: normalizeCardWidth(row.card_width),
@@ -138,7 +155,9 @@ function toCluster(
         ? row.folder.trim()
         : null,
     noteCount,
-    isOwner: typeof userId === "number" ? row.user_id === userId : row.isOwner,
+    isOwner,
+    repo_connected: isOwner && Boolean(repoPath),
+    repo_name: isOwner && repoPath ? path.basename(repoPath) : null,
   };
 }
 
@@ -393,41 +412,21 @@ export async function setClusterVisibility(
   }
 }
 
-function normalizeFolderName(value: string | null | undefined): string {
-  return (value ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
-}
-
 export async function getClusterFolders(userId: number): Promise<string[]> {
   try {
-    const registered = db
-      .prepare("SELECT name FROM cluster_folders WHERE user_id = ?")
-      .all(userId) as { name: string }[];
-    const assigned = db
-      .prepare(
-        "SELECT DISTINCT folder AS name FROM clusters WHERE user_id = ? AND folder IS NOT NULL AND folder <> ''",
-      )
-      .all(userId) as { name: string }[];
-
-    const names = new Set<string>();
-    for (const row of [...registered, ...assigned]) {
-      const name = normalizeFolderName(row.name);
-      if (name) names.add(name);
-    }
-    return [...names].sort((a, b) => a.localeCompare(b));
+    return listFolders(db, userId);
   } catch {
     return [];
   }
 }
 
-export async function createClusterFolder(name: string): Promise<void> {
+export async function createClusterFolder(
+  name: string,
+  parent?: string | null,
+): Promise<void> {
   try {
     const userId = await requireUserId();
-    const folder = normalizeFolderName(name);
-    if (!folder) throw new Error("Cluster name is required");
-
-    db.prepare(
-      "INSERT OR IGNORE INTO cluster_folders (user_id, name) VALUES (?, ?)",
-    ).run(userId, folder);
+    createFolder(db, userId, name, parent ?? null);
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
@@ -450,12 +449,8 @@ export async function setClusterFolder(
       .get(clusterId, userId) as { slug: string } | undefined;
     if (!cluster) throw new Error("Garden not found");
 
-    const cleanFolder = normalizeFolderName(folder);
-    if (cleanFolder) {
-      db.prepare(
-        "INSERT OR IGNORE INTO cluster_folders (user_id, name) VALUES (?, ?)",
-      ).run(userId, cleanFolder);
-    }
+    const cleanFolder = normalizeFolderPath(folder);
+    if (cleanFolder) ensureFolderPath(db, userId, cleanFolder);
 
     db.prepare(
       "UPDATE clusters SET folder = ? WHERE id = ? AND user_id = ?",
@@ -471,28 +466,14 @@ export async function setClusterFolder(
   }
 }
 
+/** Rename a cluster in place, carrying its nested clusters and gardens along. */
 export async function renameClusterFolder(
-  oldName: string,
+  oldPath: string,
   newName: string,
 ): Promise<void> {
   try {
     const userId = await requireUserId();
-    const from = normalizeFolderName(oldName);
-    const to = normalizeFolderName(newName);
-    if (!from || !to) throw new Error("Cluster name is required");
-
-    const tx = db.transaction(() => {
-      db.prepare(
-        "INSERT OR IGNORE INTO cluster_folders (user_id, name) VALUES (?, ?)",
-      ).run(userId, to);
-      db.prepare(
-        "DELETE FROM cluster_folders WHERE user_id = ? AND name = ?",
-      ).run(userId, from);
-      db.prepare(
-        "UPDATE clusters SET folder = ? WHERE user_id = ? AND folder = ?",
-      ).run(to, userId, from);
-    });
-    tx();
+    renameFolder(db, userId, oldPath, newName);
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
@@ -504,21 +485,30 @@ export async function renameClusterFolder(
   }
 }
 
+/** Re-parent a cluster. `targetParent` of null moves it back to the top level. */
+export async function moveClusterFolder(
+  sourcePath: string,
+  targetParent: string | null,
+): Promise<void> {
+  try {
+    const userId = await requireUserId();
+    moveFolder(db, userId, sourcePath, targetParent);
+
+    refreshPrivateQuartzIndex(userId);
+    revalidatePath("/dashboard");
+    revalidatePath("/garden");
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to move cluster",
+    );
+  }
+}
+
+/** Delete a cluster and every cluster nested in it. Gardens survive, unfiled. */
 export async function deleteClusterFolder(name: string): Promise<void> {
   try {
     const userId = await requireUserId();
-    const folder = normalizeFolderName(name);
-    if (!folder) throw new Error("Cluster name is required");
-
-    const tx = db.transaction(() => {
-      db.prepare(
-        "UPDATE clusters SET folder = NULL WHERE user_id = ? AND folder = ?",
-      ).run(userId, folder);
-      db.prepare(
-        "DELETE FROM cluster_folders WHERE user_id = ? AND name = ?",
-      ).run(userId, folder);
-    });
-    tx();
+    deleteFolder(db, userId, name);
 
     refreshPrivateQuartzIndex(userId);
     revalidatePath("/dashboard");
@@ -574,6 +564,41 @@ export async function setClusterForkAllowed(
       err instanceof Error
         ? err.message
         : "Failed to update garden fork setting",
+    );
+  }
+}
+
+export async function setClusterRepository(
+  clusterId: number,
+  repositoryPath: string,
+): Promise<{ connected: true; repoName: string }> {
+  try {
+    const userId = await requireUserId();
+    const requestedPath = repositoryPath.trim();
+    if (!requestedPath || !path.isAbsolute(requestedPath)) {
+      throw new Error("Choose a local repository folder");
+    }
+
+    const resolvedPath = fs.realpathSync(path.resolve(requestedPath));
+    if (!fs.statSync(resolvedPath).isDirectory()) {
+      throw new Error("The selected path is not a folder");
+    }
+    if (!fs.existsSync(path.join(resolvedPath, ".git"))) {
+      throw new Error("Choose a Git repository (the folder must contain .git)");
+    }
+
+    const result = db
+      .prepare(
+        "UPDATE clusters SET repo_path = ? WHERE id = ? AND user_id = ?",
+      )
+      .run(resolvedPath, clusterId, userId);
+    if (result.changes !== 1) throw new Error("Garden not found");
+
+    revalidatePath("/dashboard");
+    return { connected: true, repoName: path.basename(resolvedPath) };
+  } catch (err) {
+    throw new Error(
+      err instanceof Error ? err.message : "Failed to connect repository",
     );
   }
 }
