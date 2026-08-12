@@ -10,33 +10,33 @@ const source = (relativePath) =>
 
 const composer = source("../src/app/components/assistant-composer.tsx");
 const runtimePanel = source(
-  "../src/app/components/openharness/agent-runtime-panel.tsx",
+  "../src/app/components/hermes/agent-runtime-panel.tsx",
 );
 const sessionHook = source(
-  "../src/app/components/openharness/use-agent-session.ts",
+  "../src/app/components/hermes/use-agent-session.ts",
 );
 const terminal = source(
-  "../src/app/components/openharness/dashboard-agent-terminal.tsx",
+  "../src/app/components/hermes/dashboard-agent-terminal.tsx",
 );
 const garden = source(
-  "../src/app/components/openharness/garden-agent-chat.tsx",
+  "../src/app/components/hermes/garden-agent-chat.tsx",
 );
 const legacyActivity = source(
-  "../src/app/components/openharness/use-legacy-agent-activity.ts",
+  "../src/app/components/hermes/use-legacy-agent-activity.ts",
 );
 const workspace = source(
   "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
 );
 const gardenAdapter = source(
-  "../src/lib/openharness/garden-chat-adapter.ts",
+  "../src/lib/hermes/garden-chat-adapter.ts",
 );
 const steerRoute = source(
-  "../src/app/api/openharness/sessions/[sessionId]/steer/route.ts",
+  "../src/app/api/hermes/sessions/[sessionId]/steer/route.ts",
 );
 const abortRoute = source(
-  "../src/app/api/openharness/sessions/[sessionId]/abort/route.ts",
+  "../src/app/api/hermes/sessions/[sessionId]/abort/route.ts",
 );
-const eventStream = source("../src/lib/openharness/event-stream.ts");
+const eventStream = source("../src/lib/hermes/event-stream.ts");
 const database = source("../src/lib/db.ts");
 
 test("the shared composer keeps its controls stable during an active run", () => {
@@ -65,14 +65,26 @@ test("the shared composer keeps its controls stable during an active run", () =>
     composer,
     /const sessionActionsDisabled = disabled \|\| runState === 'stopping'/,
   );
-  assert.match(composer, /activeRun &&\s*!disabled &&\s*canSubmit/);
+  assert.match(composer, /runInFlight &&\s*!disabled &&\s*canSubmit/);
   const textarea = composer.slice(
     composer.indexOf("<textarea"),
     composer.indexOf("<textarea") + 2_000,
   );
   assert.ok(composer.indexOf("<textarea") >= 0);
   assert.doesNotMatch(textarea, /disabled=\{/);
-  assert.match(composer, /disabled=\{!canSubmit \|\| isSending \|\| disabled\}/);
+  // Nothing can be sent without something to send. `canSend` is `canSubmit` for
+  // every agent that takes a message, and the request's validity for the one
+  // that takes a form instead.
+  assert.match(composer, /disabled=\{!canSend \|\| isSending \|\| disabled/);
+  // Two agents take a form instead of a message — Trading Agent and Shorts —
+  // so the rule is written once, against whichever of them is selected.
+  assert.match(composer, /const canSend = formAgent \? formRequestReady : canSubmit/);
+  assert.match(
+    composer,
+    /const formAgent = tradingAgentsAgent \?\? shortsAgent \?\? formsmithAgent \?\? paperTraderSelection \?\? null/,
+  );
+  assert.match(composer, /Boolean\(tradingAgentsRequest\)/);
+  assert.match(composer, /Boolean\(shortsRequest\)/);
   assert.match(composer, /activeRun && permissionPending/);
   assert.match(composer, /onQueueSteer\?\.\(text\)/);
   assert.doesNotMatch(composer, /pendingSteer|applyingSteer|steerError/);
@@ -98,6 +110,78 @@ test("the shared composer keeps its controls stable during an active run", () =>
   assert.match(runtimePanel, /disabled=\{disabled\}/);
 });
 
+test("a working external agent holds the composer and the queue", () => {
+  // External agents run outside the Hermes run-state machine: their inline card
+  // polls the run while runState stays "idle". Watching runState alone let the
+  // next message overtake a working agent instead of queueing behind it.
+  // One list pairs each per-kind message field with its run kind, so a message
+  // can be read both ways: is this a run card, and where is that run stopped.
+  for (const [run, kind] of [
+    ["browserRun", "agent_tars"],
+    ["agentBrowserRun", "agent_browser"],
+    ["agentReachRun", "agent_reach"],
+    ["deepResearchRun", "deep_research"],
+    ["openPlanterRun", "openplanter"],
+    ["socialsManagerRun", "socials_manager"],
+    ["hardwareBlueprintRun", "hardware_blueprint"],
+    ["openCodeRun", "opencode"],
+    ["codexRun", "codex"],
+    ["rufloRun", "ruflo"],
+    ["videoUseRun", "video_use"],
+  ]) {
+    assert.match(sessionHook, new RegExp(`\\["${run}", "${kind}"\\]`));
+  }
+  assert.match(sessionHook, /export function externalAgentRunInFlight/);
+  assert.match(sessionHook, /externalAgentOutcome \?\? "running"\) === "running"/);
+  assert.match(
+    runtimePanel,
+    /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/,
+  );
+  assert.match(runtimePanel, /!\(runInFlight && index === lastAssistantIndex\)/);
+  assert.match(runtimePanel, /queuedFollowUps\.length === 0 \|\|\s*runInFlight \|\|/);
+  assert.match(runtimePanel, /externalRunActive=\{externalRunActive\}/);
+  // The dispatch window, before the launched turn reaches the transcript.
+  for (const surface of [terminal, garden]) {
+    assert.match(surface, /const externalRunLaunching =/);
+  }
+  assert.match(garden, /externalRunLaunching=\{externalRunLaunching\}/);
+  assert.match(
+    terminal,
+    /externalRunLaunching \|\| agentLaunchQueue\.queued/,
+  );
+  // Steering stays a chat-turn affordance: an agent card owns its own run, so
+  // the queued message waits for it rather than trying to redirect it.
+  assert.match(runtimePanel, /!activeRun \|\|\s*runState === "stopping"/);
+  // Stopping, though, is not a chat-turn affordance. A run card can be
+  // suppressed (a quiet run) or never arrive, and then nothing on screen could
+  // stop a working conversation — so the composer's square covers both.
+  assert.match(composer, /runInFlight && onStop \? \(/);
+  assert.match(runtimePanel, /onStop=\{canStop \? stopEverything : undefined\}/);
+  assert.match(runtimePanel, /if \(activeRun\) onAbort\(\)/);
+  assert.match(runtimePanel, /for \(const url of externalStops\)/);
+  assert.match(runtimePanel, /externalAgentAbortUrls\(messages\)/);
+  // Nothing to stop during the dispatch window, so the composer keeps its send
+  // button and the draft queues rather than meeting a square that does nothing.
+  assert.match(
+    runtimePanel,
+    /const canStop = activeRun \|\| externalStops\.length > 0/,
+  );
+  // Every kind reaches a real endpoint, so the square is never a dead control.
+  const kinds = source("../src/lib/conversations/external-agent-runs.ts");
+  const slugs = kinds.slice(
+    kinds.indexOf("const EXTERNAL_AGENT_API_SLUG_BY_KIND"),
+    kinds.indexOf("export function externalAgentAbortUrl"),
+  );
+  for (const kind of kinds
+    .slice(
+      kinds.indexOf("export const EXTERNAL_AGENT_RUN_KINDS"),
+      kinds.indexOf("] as const;"),
+    )
+    .matchAll(/"([a-z_]+)"/g)) {
+    assert.match(slugs, new RegExp(`\\b${kind[1]}:`), kind[1]);
+  }
+});
+
 test("Dashboard terminal and Garden Chat share real steering controls", () => {
   for (const surface of [terminal, garden]) {
     assert.match(surface, /runState=\{session\.runState\}/);
@@ -111,7 +195,7 @@ test("Dashboard terminal and Garden Chat share real steering controls", () => {
   }
 });
 
-test("the garden workspace stays editable and steers its active OpenHarness run", () => {
+test("the garden workspace stays editable and steers its active Hermes run", () => {
   const composerStart = workspace.lastIndexOf("<AssistantComposer");
   const composerBlock = workspace.slice(composerStart, composerStart + 2_500);
   assert.ok(composerStart >= 0);
@@ -120,6 +204,9 @@ test("the garden workspace stays editable and steers its active OpenHarness run"
   assert.match(composerBlock, /runState=\{/);
   assert.match(composerBlock, /onQueueSteer=\{handleSteerActiveResponse\}/);
   assert.match(composerBlock, /onStop=\{agentActivity\.abort\}/);
+  assert.match(composerBlock, /externalRunActive=\{/);
+  assert.match(composerBlock, /agentLaunchQueue\.queued/);
+  assert.match(composerBlock, /delegatedAgentLaunching/);
   assert.match(gardenAdapter, /sessionId: session\.row\.id,\s*runId,/);
   assert.match(legacyActivity, /const runtimeRunId = useRef<string \| null>\(null\)/);
   assert.match(legacyActivity, /sessions\/\$\{sessionId\}\/steer/);
@@ -146,19 +233,19 @@ test("steering reuses the active session and only falls back on run_not_active",
   assert.doesNotMatch(block, /ensureSession\(/);
 });
 
-test("steering maps request UUIDs to deterministic native OpenHarness message IDs", async () => {
+test("steering maps request UUIDs to deterministic native Hermes message IDs", async () => {
   const messageIdUrl = new URL(
-    "../src/lib/openharness/message-id.ts",
+    "../src/lib/hermes/message-id.ts",
     import.meta.url,
   ).href;
-  const { openHarnessMessageId } = await import(messageIdUrl);
-  const first = openHarnessMessageId("2ccce7d7-32c4-47be-baf3-90d039aeec76");
+  const { hermesMessageId } = await import(messageIdUrl);
+  const first = hermesMessageId("2ccce7d7-32c4-47be-baf3-90d039aeec76");
   assert.match(first, /^msg_[A-Za-z0-9_-]{26}$/);
   assert.equal(
-    openHarnessMessageId("2ccce7d7-32c4-47be-baf3-90d039aeec76"),
+    hermesMessageId("2ccce7d7-32c4-47be-baf3-90d039aeec76"),
     first,
   );
-  assert.notEqual(openHarnessMessageId("another-request"), first);
+  assert.notEqual(hermesMessageId("another-request"), first);
 });
 
 test("the steer route enforces auth, ownership, active-run validation, dedupe, and audit", () => {
@@ -191,19 +278,39 @@ test("Stop is idempotent and cancelled output remains distinct from failure", ()
     sessionHook,
     /case "cancelled":\s*failed = false;\s*setError\(null\)/,
   );
-  assert.match(runtimePanel, />\s*Interrupted\s*</);
+  assert.match(runtimePanel, /stateLabel=\{responseInterrupted \? "Interrupted" : undefined\}/);
 });
 
-test("runtime problems render as plain text instead of banners", () => {
-  const errorStart = runtimePanel.indexOf("{error || steerError ?");
-  const errorBlock = runtimePanel.slice(errorStart, errorStart + 500);
-  assert.ok(errorStart >= 0);
-  assert.match(errorBlock, /role="alert"/);
-  assert.match(errorBlock, /text-\[var\(--danger\)\]/);
-  assert.doesNotMatch(
-    errorBlock,
-    /border|rounded|bg-|shadow|red-950/,
+test("runtime problems render as recoverable in-chat errors", () => {
+  // The failure renders inside the assistant message that broke. Interrupted
+  // and Try again occupy its normal lifecycle row, with the error text below.
+  const stateRow = runtimePanel.indexOf(
+    'stateLabel={responseInterrupted ? "Interrupted" : undefined}',
   );
+  assert.ok(stateRow >= 0);
+  const stateBlock = runtimePanel.slice(stateRow, stateRow + 900);
+  assert.match(stateBlock, /stateAction=/);
+  assert.match(stateBlock, /Try again/);
+  assert.match(stateBlock, /retryAssistantAsBranch\(index\)/);
+  const inlineError = runtimePanel.indexOf(
+    "{failureInline && index === lastAssistantIndex ? (",
+  );
+  assert.ok(inlineError > stateRow);
+  const inlineBlock = runtimePanel.slice(inlineError, inlineError + 300);
+  assert.match(inlineBlock, /role="alert"/);
+  assert.match(inlineBlock, /<ChatMarkdown content=\{failureText/);
+  // Failures that cannot attach to a plain assistant message — run cards,
+  // inline selection answers, turns with no assistant message yet — keep the
+  // standalone notice at the end of the transcript.
+  const fallback = runtimePanel.indexOf("{failureText && !failureInline ? (");
+  assert.ok(fallback >= 0);
+  const fallbackBlock = runtimePanel.slice(fallback, fallback + 2_000);
+  assert.match(fallbackBlock, /role="alert"/);
+  assert.match(fallbackBlock, /<AssistantResponseMeta/);
+  assert.match(fallbackBlock, /label="Interrupted"/);
+  assert.match(fallbackBlock, /Try again/);
+  assert.doesNotMatch(fallbackBlock, /Response interrupted/);
+  assert.doesNotMatch(fallbackBlock, /backdrop-blur|red-950/);
 });
 
 test("a newly opened turn stream ignores stale zero-output completion events", () => {
@@ -215,11 +322,23 @@ test("a newly opened turn stream ignores stale zero-output completion events", (
   assert.match(eventStream, /event\.messageId !== assistantMessageId/);
 });
 
-test("send and stop use one stable responsive button shell", () => {
-  const sendButton = composer.slice(
-    composer.indexOf('aria-label="Send"') - 1_000,
-    composer.indexOf('aria-label="Send"') + 500,
+test("an accepted run is reattached when its pre-dispatch viewer closes", () => {
+  assert.match(sessionHook, /let streamFailedBeforeDispatch = false/);
+  assert.match(
+    sessionHook,
+    /if \(!dispatchAccepted\) streamFailedBeforeDispatch = true/,
   );
+  assert.match(
+    sessionHook,
+    /if \(streamFailedBeforeDispatch\)[\s\S]*setRunToResume\(\{[\s\S]*runId: responseBody\.runId/,
+  );
+  assert.match(sessionHook, /transition\("connecting"\)/);
+});
+
+test("send and stop use one stable responsive button shell", () => {
+  const sendLabel = composer.indexOf("'Queue message' : 'Send'");
+  assert.ok(sendLabel >= 0);
+  const sendButton = composer.slice(sendLabel - 1_000, sendLabel + 500);
   const stopButton = composer.slice(
     composer.indexOf("aria-label={runState === 'stopping'") - 1_000,
     composer.indexOf("aria-label={runState === 'stopping'") + 500,
@@ -232,10 +351,10 @@ test("send and stop use one stable responsive button shell", () => {
 });
 
 test("run and steer identities are durable in the additive database schema", () => {
-  assert.match(database, /CREATE TABLE IF NOT EXISTS openharness_runs/);
-  assert.match(database, /idx_openharness_runs_one_active/);
+  assert.match(database, /CREATE TABLE IF NOT EXISTS hermes_runs/);
+  assert.match(database, /idx_hermes_runs_one_active/);
   assert.match(database, /WHERE status = 'active'/);
-  assert.match(database, /CREATE TABLE IF NOT EXISTS openharness_steer_requests/);
+  assert.match(database, /CREATE TABLE IF NOT EXISTS hermes_steer_requests/);
   assert.match(database, /UNIQUE\(runtime_session_id, client_request_id\)/);
 });
 
@@ -243,13 +362,13 @@ test("the durable steer store accepts a client request exactly once", () => {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-steer-"));
   try {
     const dbUrl = new URL("../src/lib/db.ts", import.meta.url).href;
-    const storeUrl = new URL("../src/lib/openharness/run-store.ts", import.meta.url).href;
+    const storeUrl = new URL("../src/lib/hermes/run-store.ts", import.meta.url).href;
     const script = `
       import assert from "node:assert/strict";
       const db = (await import(${JSON.stringify(dbUrl)})).default;
       const store = await import(${JSON.stringify(storeUrl)});
       const inserted = db.prepare(
-        "INSERT INTO openharness_runtime_sessions (surface, agent_name, workspace_key) VALUES (?, ?, ?)",
+        "INSERT INTO hermes_runtime_sessions (surface, agent_name, workspace_key) VALUES (?, ?, ?)",
       ).run("dashboard_terminal", "breadboard-terminal", "terminal/test");
       const sessionId = Number(inserted.lastInsertRowid);
       const run = store.beginRuntimeRun({
@@ -258,6 +377,13 @@ test("the durable steer store accepts a client request exactly once", () => {
         dispatch: { variant: "high" },
       });
       assert.equal(store.getActiveRuntimeRun(sessionId).id, run.id);
+      assert.equal(store.parseRuntimeRunDispatch(run).submittedAt, undefined);
+      assert.equal(store.markRuntimeRunSubmitted(run.id), true);
+      assert.match(
+        store.parseRuntimeRunDispatch(store.getRuntimeRun(run.id)).submittedAt,
+        /^\\d{4}-\\d{2}-\\d{2}T/,
+      );
+      assert.equal(store.markRuntimeRunSubmitted(run.id), false);
       const first = store.reserveSteerRequest({
         runtimeSessionId: sessionId,
         runId: run.id,
@@ -289,7 +415,7 @@ test("the durable steer store accepts a client request exactly once", () => {
         resultMode: "steer",
       }), false);
       const visible = db.prepare(
-        "SELECT count(*) AS count FROM openharness_messages WHERE runtime_session_id = ? AND role = 'user'",
+        "SELECT count(*) AS count FROM hermes_messages WHERE runtime_session_id = ? AND role = 'user'",
       ).get(sessionId);
       assert.equal(visible.count, 1);
       assert.equal(store.finishRuntimeRun(run.id, "completed"), true);

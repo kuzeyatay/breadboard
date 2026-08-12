@@ -8,10 +8,48 @@ import time
 import unittest
 from unittest.mock import patch
 
+import tempfile
+
 from chatmock.app import create_app
+from chatmock.model_identity import (
+    RESOLVED_MODEL_PLACEHOLDER,
+    RESOLVED_PROVIDER_PLACEHOLDER,
+)
 from chatmock.session import reset_session_state
 from chatmock.utils import sse_translate_chat
 from websockets.sync.client import connect as ws_connect
+
+_provider_isolation: tempfile.TemporaryDirectory | None = None
+
+
+def setUpModule() -> None:
+    """Keep these tests off the developer's real provider settings.
+
+    Routing now consults `providers.json` — a request with no model resolves to
+    the configured background model — so without this the suite passes or fails
+    depending on which model the machine running it happens to have selected.
+    """
+    global _provider_isolation
+    _provider_isolation = tempfile.TemporaryDirectory()
+    os.environ["CHATMOCK_PROVIDERS_FILE"] = os.path.join(
+        _provider_isolation.name, "providers.json"
+    )
+    os.environ["CHATMOCK_MODEL_TELEMETRY_FILE"] = os.path.join(
+        _provider_isolation.name, "model-routing.jsonl"
+    )
+    os.environ["CHATMOCK_FAILOVER_FILE"] = os.path.join(
+        _provider_isolation.name, "failover.json"
+    )
+    os.environ["CHATMOCK_DEFAULT_MODEL"] = "gpt-5.6-sol"
+
+
+def tearDownModule() -> None:
+    os.environ.pop("CHATMOCK_PROVIDERS_FILE", None)
+    os.environ.pop("CHATMOCK_MODEL_TELEMETRY_FILE", None)
+    os.environ.pop("CHATMOCK_FAILOVER_FILE", None)
+    os.environ.pop("CHATMOCK_DEFAULT_MODEL", None)
+    if _provider_isolation is not None:
+        _provider_isolation.cleanup()
 
 
 class FakeUpstream:
@@ -131,6 +169,41 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.get_json()["model"], "gpt-5.6-sol")
 
     @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_resolves_hermes_model_identity(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp-identity"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "default",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            f"Model: {RESOLVED_MODEL_PLACEHOLDER}\n"
+                            f"Provider: {RESOLVED_PROVIDER_PLACEHOLDER}"
+                        ),
+                    },
+                    {"role": "user", "content": "what model are you?"},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        dispatched_input = json.dumps(mock_start.call_args.args[1])
+        self.assertIn("Model: gpt-5.6-sol", dispatched_input)
+        self.assertIn("Provider: chatgpt", dispatched_input)
+        self.assertNotIn(RESOLVED_MODEL_PLACEHOLDER, dispatched_input)
+        self.assertNotIn(RESOLVED_PROVIDER_PLACEHOLDER, dispatched_input)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions(self, mock_start) -> None:
         mock_start.return_value = (
             FakeUpstream(
@@ -149,6 +222,64 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(body["choices"][0]["message"]["content"], "hello")
         self.assertEqual(body["model"], "gpt5.4-mini")
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_reports_the_upstream_refusal_verbatim(self, mock_start) -> None:
+        # The regression: the ChatGPT backend refuses a model with a `detail`
+        # body, not an `error.message` one, so every refusal reached the caller
+        # as the unactionable words "Upstream error".
+        detail = "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."
+        mock_start.return_value = (
+            FakeUpstream(
+                status_code=400,
+                content=json.dumps({"detail": detail}).encode("utf-8"),
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"]["message"], detail)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_falls_back_when_the_body_says_nothing(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(status_code=500, content=b"{}", text=""),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.get_json()["error"]["message"], "Upstream error")
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_normalizes_forced_tool_choice(self, mock_start) -> None:
+        # Chat clients force a function with a nested {"function": {"name": ...}}
+        # object; the Responses API needs the name at the top level or upstream
+        # rejects the call with "Missing required parameter: 'tool_choice.name'".
+        mock_start.return_value = (
+            FakeUpstream([{"type": "response.completed", "response": {"id": "resp-tool"}}]),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "json", "parameters": {"type": "object", "properties": {}}},
+                    }
+                ],
+                "tool_choice": {"type": "function", "function": {"name": "json"}},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_start.call_args.kwargs["tool_choice"], {"type": "function", "name": "json"})
 
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_chat_completions_honors_debug_model_override(self, mock_start) -> None:
@@ -273,6 +404,134 @@ class RouteTests(unittest.TestCase):
         self.assertIn("Fast mode is not supported", body["error"]["message"])
         mock_start.assert_not_called()
 
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_honors_top_level_reasoning_effort(self, mock_start) -> None:
+        """`reasoning_effort` is the field an OpenAI SDK client sends.
+
+        Hermes puts every Terminal/Garden turn through it, so while only the
+        Responses-shaped `reasoning` object was read here, the intelligence mode
+        chosen in the UI never reached a ChatGPT model — each turn silently ran
+        at the server default.
+        """
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp-effort"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "reasoning_effort": "xhigh",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_start.call_args.kwargs["reasoning_param"]["effort"], "xhigh")
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_reasoning_object_outranks_top_level_effort(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp-effort-order"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.6-sol",
+                "reasoning": {"effort": "max"},
+                "reasoning_effort": "low",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_start.call_args.kwargs["reasoning_param"]["effort"], "max")
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_drops_effort_the_model_does_not_honour(self, mock_start) -> None:
+        # gpt-5.1 stops at high. Sending `max` must leave the server default in
+        # place rather than forward a level the upstream would reject.
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp-effort-clamp"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.1",
+                "reasoning_effort": "max",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_start.call_args.kwargs["reasoning_param"]["effort"], "medium")
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_completions_honors_top_level_reasoning_effort(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp-effort-legacy"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/completions",
+            json={"model": "gpt-5.6-sol", "prompt": "hi", "reasoning_effort": "high"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_start.call_args.kwargs["reasoning_param"]["effort"], "high")
+
+    @patch("chatmock.routes_openai.start_upstream_raw_request")
+    def test_responses_route_honors_top_level_reasoning_effort(self, mock_start) -> None:
+        # The Responses API has no `reasoning_effort` field, so a chat-shaped
+        # client's value is folded into `reasoning` and must not be forwarded.
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {
+                        "type": "response.created",
+                        "response": {"id": "resp_effort", "object": "response", "status": "in_progress"},
+                    },
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_effort",
+                            "object": "response",
+                            "status": "completed",
+                            "output": [],
+                        },
+                    },
+                ],
+                headers={"Content-Type": "text/event-stream"},
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "gpt-5.6-sol", "input": "hello", "reasoning_effort": "xhigh"},
+        )
+        self.assertEqual(response.status_code, 200)
+        outbound_payload = mock_start.call_args.args[0]
+        self.assertEqual(outbound_payload["reasoning"]["effort"], "xhigh")
+        self.assertNotIn("reasoning_effort", outbound_payload)
+
     @patch("chatmock.routes_openai.start_upstream_raw_request")
     def test_responses_route_returns_completed_response_object(self, mock_start) -> None:
         mock_start.return_value = (
@@ -312,6 +571,40 @@ class RouteTests(unittest.TestCase):
         )
         self.assertEqual(outbound_payload["reasoning"]["effort"], "medium")
         self.assertIsInstance(outbound_payload["prompt_cache_key"], str)
+
+    @patch("chatmock.routes_openai.start_upstream_raw_request")
+    def test_responses_default_is_resolved_before_dispatch_and_telemetry(self, mock_start) -> None:
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_default",
+                            "object": "response",
+                            "status": "completed",
+                            "output": [],
+                        },
+                    }
+                ],
+                headers={"Content-Type": "text/event-stream"},
+            ),
+            None,
+        )
+
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "default", "input": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_start.call_args.args[0]["model"], "gpt-5.6-sol")
+        with open(os.environ["CHATMOCK_MODEL_TELEMETRY_FILE"], encoding="utf-8") as handle:
+            attempts = [json.loads(line) for line in handle if line.strip()]
+        self.assertEqual(attempts[-1]["requestedModel"], "default")
+        self.assertEqual(attempts[-1]["resolvedModel"], "gpt-5.6-sol")
+        self.assertEqual(attempts[-1]["upstreamModel"], "gpt-5.6-sol")
+        self.assertEqual(attempts[-1]["outcome"], "dispatched")
 
     @patch("chatmock.routes_openai.start_upstream_raw_request")
     def test_responses_route_honors_debug_model_override(self, mock_start) -> None:

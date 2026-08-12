@@ -122,8 +122,8 @@ test("Learn panel stays outside the independently scrolling chat transcript", ()
     "utf8",
   );
   const panelIndex = workspaceSource.indexOf("{renderLearnPanel()}");
-  const chatScrollerIndex = workspaceSource.indexOf(
-    '<main className="flex-1 overflow-y-auto px-4 py-6">',
+  const chatScrollerIndex = workspaceSource.search(
+    /<main(?:\s+ref=\{transcriptScrollRef\})?\s+className="flex-1 overflow-y-auto px-4 py-6">/,
   );
   const transcriptIndex = workspaceSource.indexOf("<ChatTranscript", chatScrollerIndex);
 
@@ -142,8 +142,8 @@ test("navbar toggles Learn while a collapsed status indicator remains outside ch
     "utf8",
   );
   const indicatorIndex = workspaceSource.indexOf("{renderCollapsedLearnIndicator()}");
-  const chatScrollerIndex = workspaceSource.indexOf(
-    '<main className="flex-1 overflow-y-auto px-4 py-6">',
+  const chatScrollerIndex = workspaceSource.search(
+    /<main(?:\s+ref=\{transcriptScrollRef\})?\s+className="flex-1 overflow-y-auto px-4 py-6">/,
   );
 
   assert.match(workspaceSource, /learnPanelOpen \? "Close Learn panel" : "Open Learn panel"/);

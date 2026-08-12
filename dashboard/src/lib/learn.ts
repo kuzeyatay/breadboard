@@ -120,6 +120,7 @@ import {
   canonicalizeLearnerWikilinks,
   containsRawVisualPlaceholder,
   ensureQuestionBlock,
+  excludeSyllabusFromSources,
   fallbackLearningMapFromSources,
   formulaMetricFamily,
   isGroundableFormula,
@@ -135,8 +136,10 @@ import {
   scrubSourceCommentaryProse,
   scrubLearnerProse,
   selectLearnSources,
+  selectLearnSyllabus,
   sourceAppearsVisualRich,
   sourceSetHashForSources,
+  sourceSetHashWithSyllabus,
   stripMarkdownFence,
   stripMarkdownFrontmatter,
   textbookPageFileName,
@@ -162,6 +165,17 @@ import {
   type LearnTokenUsageEvent,
 } from "@/lib/learn-token-usage";
 import { transitionLearnTimer } from "@/lib/learn-timer";
+import {
+  buildSyllabusCoverage,
+  detectUnavailableCitations,
+  matchSyllabusUnitForPage,
+  normalizeSyllabusPlan,
+  resolveSyllabusMaterials,
+  summarizeSyllabusCoverage,
+  unavailableCitationProbes,
+  type SyllabusCoverage,
+  type UnavailableCitationProbe,
+} from "@/lib/learn-syllabus";
 import {
   applyVisualNecessityDecisionsToUnits,
   loadVisualDecisionOverrides,
@@ -197,10 +211,19 @@ import {
 } from "@/lib/learn-operation-mode";
 import { executeLearnScopedRepair, type LearnScopedRepairResult } from "@/lib/learn-scoped-repair";
 import {
+  acquireGardenLearnLease,
   acquireGardenLearnLock,
+  LOCK_STALE_MS,
   promoteStagingGarden,
-  releaseGardenLearnLock,
+  type GardenLearnLease,
 } from "@/lib/learn-atomic-promotion";
+import {
+  createLearnBuildWorkspace,
+  defaultWorkspaceRoot,
+  disposeLearnBuildWorkspace,
+  fingerprintDurableGardenState,
+  type LearnBuildWorkspace,
+} from "@/lib/learn-build-workspace";
 import {
   clearGeneratedLearnState,
   type LearnFilesystemClearResult,
@@ -237,6 +260,8 @@ export interface LearnJob {
   latestTextbookVersionId?: string;
   sourceSetHash?: string;
   sourceIds: string[];
+  /** Slug of the document designated as this run's syllabus (study guide). */
+  syllabusSourceId?: string;
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
   tokenUsage: LearnTokenUsage;
@@ -259,6 +284,13 @@ export interface StoredLearningMap {
   coveragePlan: unknown;
   sourceSetHash: string;
   sourceIds: string[];
+  /** Slug of the document this map was planned against as its syllabus. Page
+   * generation re-reads it so lessons follow the same study guide the plan did. */
+  syllabusSourceId?: string;
+  /** The syllabus read into units + the availability check of every work it
+   * assigns. Persisted so page writing gates on the same answer planning did,
+   * without a second model call that could resolve differently. */
+  syllabusCoverage?: SyllabusCoverage | null;
   createdAt: string;
   confirmedAt?: string;
 }
@@ -272,6 +304,18 @@ export interface LearnStatusSnapshot {
   sourceCount: number;
   selectedSourceIds: string[];
   selectedSourceCount: number;
+  /** Document designated as the syllabus, or null when the run has none. */
+  syllabusSourceId: string | null;
+  /** What the syllabus asked for versus what this garden can actually teach.
+   * Null until a run has read the syllabus. */
+  syllabusCoverage: {
+    unitCount: number;
+    materialCount: number;
+    availableCount: number;
+    missingCount: number;
+    genericCount: number;
+    missingCitations: string[];
+  } | null;
   hasTextbook: boolean;
   sourceSetChanged: boolean;
   buttonLabel: string;
@@ -322,6 +366,7 @@ interface LearnJobRow {
   latest_textbook_version_id: string | null;
   source_set_hash: string | null;
   source_ids_json: string | null;
+  syllabus_source_id: string | null;
   source_only: number | null;
   include_source_snapshots: number | null;
   active_elapsed_ms: number | null;
@@ -357,6 +402,8 @@ interface LearnMapRow {
   coverage_plan_json: string;
   source_set_hash: string;
   source_ids_json: string | null;
+  syllabus_source_id: string | null;
+  syllabus_coverage_json: string | null;
   created_at: string;
   confirmed_at: string | null;
 }
@@ -377,6 +424,12 @@ interface LearnSourceContext extends LearnContextSummary {
   sourceFigures: SourceFigure[];
   existingTextbookPages: LearnSourceSummary[];
   conceptNodes: LearnConceptSummary[];
+  /** The designated study guide, kept out of `sources` so it steers the lessons
+   * instead of becoming one of them. */
+  syllabus: LearnSourceSummary | null;
+  /** Every document the user selected, syllabus included. Persisted on the job
+   * and map so a confirmed run re-derives exactly this split later. */
+  selectedSourceIds: string[];
 }
 
 interface CouncilCallResult {
@@ -385,8 +438,18 @@ interface CouncilCallResult {
   councilMode?: string;
 }
 
-/** Learn is an intentionally fixed ChatMock Council workload. It must not
- * inherit the interactive assistant's currently selected model. */
+/**
+ * Fallback model for Learn.
+ *
+ * Learn used to be pinned to this model on the grounds that a Council workload
+ * should not drift with the interactive assistant's picker. That is no longer
+ * the behaviour: the Learn panel runs on whatever model the user has selected,
+ * so one choice governs every AI call Breadboard makes. This constant is what
+ * that resolution falls back to when the user has expressed no preference.
+ *
+ * The trade-off is real — a model with a smaller context window or weaker
+ * instruction-following will produce a weaker garden here than it does in chat.
+ */
 export const LEARN_MODEL = "gpt-5.6-sol";
 export const LEARN_REASONING = {
   effort: "high",
@@ -629,6 +692,76 @@ Contract rules:
 - Never turn claim text into a concept slug and never create role-template claims. Claim endpoints must use concept slugs from semanticConcepts.
 - First job: planning only. Do not generate final prose yet.`;
 
+const SYLLABUS_READING_PROMPT = `You read a course syllabus / study guide and extract its structure. This is internal planning data; learners never see it.
+Return ONLY JSON with this shape:
+{
+  "courseTitle": "the course's own title, if stated",
+  "units": [
+    {
+      "id": "SU1",
+      "label": "the syllabus's own numbering, e.g. 'Week 1', 'Module 2', 'Session 3'",
+      "title": "what this unit teaches",
+      "objectives": ["a learning objective or outcome exactly as the syllabus states it"],
+      "topics": ["a topic this unit covers"],
+      "materialIds": ["ids of the referencedMaterials this unit assigns"]
+    }
+  ],
+  "referencedMaterials": [
+    {
+      "id": "R1",
+      "citation": "the reference exactly as the syllabus writes it",
+      "title": "the work's title alone, without chapter/page numbers",
+      "authors": ["surname or full name as written"],
+      "kind": "textbook | chapter | paper | reading | lecture | slides | dataset | video | other",
+      "locator": "the assigned part, e.g. 'ch. 3', 'pp. 40-58'",
+      "required": true
+    }
+  ]
+}
+Extraction rules:
+- Extract only what the syllabus actually says. Never invent a unit, objective, topic, author, or reading.
+- Every book, chapter, paper, article, dataset, slide deck, or handout the syllabus points at belongs in referencedMaterials — required and optional alike, with "required" set accordingly.
+- Put the work's own title in "title" and the assigned part in "locator". "Smith, Neural Dynamics, ch. 3" has title "Neural Dynamics" and locator "ch. 3".
+- A reference with no identifiable work ("Readings TBD", "Lecture 4 slides") still belongs in the list; leave "title" empty.
+- Link each unit to its readings through materialIds. A unit that assigns nothing gets an empty list.
+- If the document has no unit/week structure, return one unit covering the whole course.
+- If the document is not a syllabus or study guide at all, return empty units and referencedMaterials.`;
+
+/**
+ * Extra planning rules that apply only when the user designated a syllabus.
+ * A syllabus is the course's own statement of what must be learned, so it
+ * outranks the planner's judgment about scope, ordering, and emphasis — but it
+ * can never invent material the sources do not support.
+ */
+const SYLLABUS_PLANNING_RULES = `
+Syllabus (hard requirements):
+- A syllabus (study guide / course outline) was provided as \`syllabus\`, already read into \`syllabusCoverage\`. It states what this course must teach, in what order, and to what depth.
+- The syllabus is NOT source material and is NOT a topic. Never write a page about the syllabus, never cite it as a source, never treat its headings as content to summarize, and never mention it in learner-facing text.
+- Treat \`syllabusCoverage.units\` as the required plan: work through them in order, cover each unit's objectives and topics, and match the depth each is given. An item the syllabus treats as central earns a full learning unit; background or optional items earn proportionally less.
+- Source material that no syllabus unit covers is out of scope. Exclude it rather than adding units for it.
+
+Material availability (hard requirements — this is what stops fabrication):
+- Breadboard has already checked every work the syllabus assigns against the documents in this garden. That check is authoritative. Do not second-guess it.
+- \`unit.availableSourceIds\` lists the documents that ARE present for that unit. Ground that unit heavily and specifically in those documents: its definitions, figures, formulas, numbers, and examples come from there first, and only then from the rest of the garden.
+- \`unit.missingCitations\` lists works the syllabus assigns that NOBODY UPLOADED. You have never seen their contents. Never plan a unit, anchor, figure, formula, result, or claim that depends on them. Never summarize, paraphrase, characterize, or state what such a work says, argues, shows, or concludes. Never name one in learner-facing text.
+- Cover a syllabus topic whose material is missing ONLY from the source material that IS present, and only as far as that material genuinely supports. If it does not support the topic, leave the topic uncovered and record it in warnings.
+- \`syllabusCoverage.untaughtUnitTitles\` lists units with no available material at all. Do not create learning units for them. Record each one in warnings as an uncoverable syllabus item.
+- Every warning about missing material must name the syllabus item, never invent a substitute for it.`;
+
+/** Page-writing rules that apply only when a syllabus is in play. */
+const SYLLABUS_PAGE_RULES = `
+Syllabus:
+- \`dossier.syllabus\` is the course study guide. Use it only to judge what this page must cover and how deep to go.
+- Never mention, quote, cite, or describe the syllabus in the lesson. The learner reads a lesson on the subject, not a walkthrough of their course outline.
+- \`dossier.syllabusUnit.objectives\` are what the learner must be able to do after this page. Teach to them.
+- \`dossier.unavailableCitations\` lists works the course assigns that are NOT in this garden. You have never read them. Never name, quote, summarize, paraphrase, or state the findings of anything on that list, and never imply the page is based on one. Teach only from the source material provided in this dossier.`;
+
+/** Append syllabus rules to a base prompt only when a syllabus is present, so
+ * runs without one keep their existing prompts byte-for-byte. */
+function withSyllabusRules(basePrompt: string, rules: string, hasSyllabus: boolean): string {
+  return hasSyllabus ? `${basePrompt}\n${rules}` : basePrompt;
+}
+
 const OVERVIEW_PROMPT = `Write the Topic Overview page: the first page a learner reads in this Breadboard learning garden.
 Return Markdown body only, no frontmatter.
 ${LEARNER_VOICE_RULES}
@@ -723,6 +856,7 @@ function ensureLearnTables(): void {
       latest_textbook_version_id TEXT,
       source_set_hash            TEXT,
       source_ids_json            TEXT NOT NULL DEFAULT '[]',
+      syllabus_source_id         TEXT,
       source_only                INTEGER NOT NULL DEFAULT 1,
       include_source_snapshots   INTEGER NOT NULL DEFAULT 0,
       active_elapsed_ms          INTEGER NOT NULL DEFAULT 0,
@@ -761,6 +895,8 @@ function ensureLearnTables(): void {
       coverage_plan_json        TEXT NOT NULL,
       source_set_hash           TEXT NOT NULL,
       source_ids_json           TEXT NOT NULL DEFAULT '[]',
+      syllabus_source_id        TEXT,
+      syllabus_coverage_json    TEXT,
       created_at                TEXT NOT NULL,
       confirmed_at              TEXT
     );
@@ -781,7 +917,45 @@ function ensureLearnTables(): void {
 
     CREATE INDEX IF NOT EXISTS idx_learn_versions_garden_created
       ON learn_versions(garden_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS learn_clear_operations (
+      id                  TEXT PRIMARY KEY,
+      garden_id           TEXT NOT NULL,
+      phase               TEXT NOT NULL,
+      previous_garden_dir TEXT,
+      pre_clear_fingerprint TEXT,
+      created_at          TEXT NOT NULL,
+      updated_at          TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learn_clear_operations_updated
+      ON learn_clear_operations(updated_at ASC);
+
+    CREATE TABLE IF NOT EXISTS learn_publication_retries (
+      garden_id   TEXT PRIMARY KEY,
+      reason      TEXT NOT NULL,
+      last_error  TEXT,
+      requested_at TEXT NOT NULL,
+      updated_at   TEXT NOT NULL
+    );
   `);
+
+  const duplicateClearJournal = db
+    .prepare(
+      `SELECT garden_id, COUNT(*) AS operation_count
+       FROM learn_clear_operations
+       GROUP BY garden_id HAVING COUNT(*) > 1 LIMIT 1`,
+    )
+    .get() as { garden_id: string; operation_count: number } | undefined;
+  if (duplicateClearJournal) {
+    throw new Error(
+      `Garden ${duplicateClearJournal.garden_id} has ${duplicateClearJournal.operation_count} unresolved Learn Clear journals; refusing to guess recovery order.`,
+    );
+  }
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_learn_clear_operations_garden
+     ON learn_clear_operations(garden_id)`,
+  );
 
   const learnJobColumns = new Set(
     (db.prepare("PRAGMA table_info(learn_jobs)").all() as Array<{ name: string }>).map(
@@ -799,6 +973,9 @@ function ensureLearnTables(): void {
   if (!learnJobColumns.has("source_ids_json")) {
     db.exec("ALTER TABLE learn_jobs ADD COLUMN source_ids_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!learnJobColumns.has("syllabus_source_id")) {
+    db.exec("ALTER TABLE learn_jobs ADD COLUMN syllabus_source_id TEXT");
+  }
 
   const learnMapColumns = new Set(
     (db.prepare("PRAGMA table_info(learn_maps)").all() as Array<{ name: string }>).map(
@@ -808,10 +985,69 @@ function ensureLearnTables(): void {
   if (!learnMapColumns.has("source_ids_json")) {
     db.exec("ALTER TABLE learn_maps ADD COLUMN source_ids_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!learnMapColumns.has("syllabus_source_id")) {
+    db.exec("ALTER TABLE learn_maps ADD COLUMN syllabus_source_id TEXT");
+  }
+  if (!learnMapColumns.has("syllabus_coverage_json")) {
+    db.exec("ALTER TABLE learn_maps ADD COLUMN syllabus_coverage_json TEXT");
+  }
+
+  const learnClearOperationColumns = new Set(
+    (db.prepare("PRAGMA table_info(learn_clear_operations)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  if (!learnClearOperationColumns.has("pre_clear_fingerprint")) {
+    db.exec("ALTER TABLE learn_clear_operations ADD COLUMN pre_clear_fingerprint TEXT");
+  }
 }
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function pendingLearnClearOperation(gardenId: string): { id: string; phase: string } | null {
+  ensureLearnTables();
+  return (db
+    .prepare(
+      `SELECT id, phase FROM learn_clear_operations
+       WHERE garden_id = ? ORDER BY created_at ASC LIMIT 1`,
+    )
+    .get(gardenId) as { id: string; phase: string } | undefined) ?? null;
+}
+
+function assertNoPendingLearnClear(gardenId: string): void {
+  const pending = pendingLearnClearOperation(gardenId);
+  if (pending) {
+    throw new LearnPipelineConflictError(
+      `Interrupted Learn Clear ${pending.id} (${pending.phase}) must recover before this garden can be changed.`,
+    );
+  }
+}
+
+function queueLearnPublicationRetry(
+  gardenId: string,
+  reason: string,
+  error: unknown,
+): string {
+  const timestamp = nowIso();
+  db.prepare(
+    `INSERT INTO learn_publication_retries (
+       garden_id, reason, last_error, requested_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(garden_id) DO UPDATE SET
+       reason = excluded.reason,
+       last_error = excluded.last_error,
+       updated_at = excluded.updated_at`,
+  ).run(gardenId, reason, errorMessage(error), timestamp, timestamp);
+  return timestamp;
+}
+
+function clearLearnPublicationRetry(gardenId: string, updateToken: string): void {
+  db.prepare(
+    `DELETE FROM learn_publication_retries
+     WHERE garden_id = ? AND updated_at = ?`,
+  ).run(gardenId, updateToken);
 }
 
 function makeId(prefix: string): string {
@@ -984,6 +1220,7 @@ function rowToJob(row: LearnJobRow | undefined): LearnJob | null {
     latestTextbookVersionId: row.latest_textbook_version_id ?? undefined,
     sourceSetHash: row.source_set_hash ?? undefined,
     sourceIds: parseSourceIds(row.source_ids_json),
+    syllabusSourceId: row.syllabus_source_id ?? undefined,
     sourceOnly: Boolean(row.source_only ?? 1),
     includeSourceSnapshots: Boolean(row.include_source_snapshots ?? 0),
     tokenUsage: learnTokenUsageForJob(row.id),
@@ -1017,30 +1254,37 @@ function rowToMap(row: LearnMapRow | undefined): StoredLearningMap | null {
     coveragePlan: parseJson(row.coverage_plan_json),
     sourceSetHash: row.source_set_hash,
     sourceIds: parseSourceIds(row.source_ids_json),
+    syllabusSourceId: row.syllabus_source_id ?? undefined,
+    syllabusCoverage:
+      (parseJson(row.syllabus_coverage_json ?? "") as SyllabusCoverage | null) ?? null,
     createdAt: row.created_at,
     confirmedAt: row.confirmed_at ?? undefined,
   };
 }
 
 function createLearnJob({
+  id,
   gardenId,
   userId,
   mode,
   sourceIds,
+  syllabusSourceId,
   sourceOnly,
   includeSourceSnapshots,
 }: {
+  id?: string;
   gardenId: string;
   userId?: number;
   mode: LearnMode;
   sourceIds: string[];
+  syllabusSourceId?: string;
   sourceOnly: boolean;
   includeSourceSnapshots: boolean;
 }): LearnJob {
   ensureLearnTables();
   const date = nowIso();
   const job: LearnJob = {
-    id: makeId("learn_job"),
+    id: id ?? makeId("learn_job"),
     gardenId,
     userId,
     status: "idle",
@@ -1048,6 +1292,7 @@ function createLearnJob({
     currentStep: "",
     progressPercent: 0,
     sourceIds: [...sourceIds],
+    syllabusSourceId,
     sourceOnly,
     includeSourceSnapshots,
     tokenUsage: emptyLearnTokenUsage(),
@@ -1059,9 +1304,9 @@ function createLearnJob({
   db.prepare(
     `INSERT INTO learn_jobs (
       id, garden_id, user_id, status, mode, current_step, progress_percent,
-      source_ids_json, source_only, include_source_snapshots, active_elapsed_ms, timer_started_at,
-      created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      source_ids_json, syllabus_source_id, source_only, include_source_snapshots,
+      active_elapsed_ms, timer_started_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     job.id,
     job.gardenId,
@@ -1071,6 +1316,7 @@ function createLearnJob({
     job.currentStep,
     job.progressPercent,
     jsonString(job.sourceIds),
+    job.syllabusSourceId ?? null,
     job.sourceOnly ? 1 : 0,
     job.includeSourceSnapshots ? 1 : 0,
     job.elapsedMs,
@@ -1095,6 +1341,26 @@ export class LearnCancelledError extends Error {
 }
 
 const activeLearnAbortControllers = new Map<string, AbortController>();
+const leaseLostLearnJobs = new Set<string>();
+const LEARN_JOB_HEARTBEAT_INTERVAL_MS = 15_000;
+const LEARN_CANCELLATION_REQUESTED_STEP =
+  "Cancellation requested; waiting for the Learn worker to stop";
+/** Publication is a short, non-cancellable commit section. Cancelling after the
+ * atomic swap but before the DB/version commit could otherwise strand a valid
+ * tree behind a cancelled job. */
+const committingLearnJobs = new Set<string>();
+
+function abortLearnWorkerAfterLeaseLoss(jobId: string): void {
+  leaseLostLearnJobs.add(jobId);
+  const controller = activeLearnAbortControllers.get(jobId);
+  if (!controller?.signal.aborted) {
+    controller?.abort(
+      new LearnPipelineConflictError(
+        "This Learn worker lost its fenced garden lease to another process.",
+      ),
+    );
+  }
+}
 
 function jobStatusById(jobId: string): LearnStatus | null {
   const row = db
@@ -1107,7 +1373,18 @@ function jobStatusById(jobId: string): LearnStatus | null {
  * "cancelled"; long-running pipelines call this between model calls / pages so
  * the run actually halts instead of finishing in the background. */
 function throwIfLearnCancelled(jobId: string): void {
-  if (jobStatusById(jobId) === "cancelled") throw new LearnCancelledError();
+  if (leaseLostLearnJobs.has(jobId)) {
+    throw new LearnPipelineConflictError(
+      "This Learn worker lost its fenced garden lease to another process.",
+    );
+  }
+  const status = jobStatusById(jobId);
+  if (status === "cancelled") throw new LearnCancelledError();
+  if (status === "failed") {
+    throw new LearnPipelineConflictError(
+      "This Learn worker lost ownership after recovery marked its job failed.",
+    );
+  }
 }
 
 function isLearnCancellation(jobId: string, error: unknown): boolean {
@@ -1127,6 +1404,13 @@ function attachLearnJobModelTracking({
 }): () => void {
   const controller = new AbortController();
   activeLearnAbortControllers.set(jobId, controller);
+  if (leaseLostLearnJobs.has(jobId)) {
+    controller.abort(
+      new LearnPipelineConflictError(
+        "This Learn worker lost its fenced garden lease to another process.",
+      ),
+    );
+  }
   const cancellationPoll = setInterval(() => {
     try {
       if (jobStatusById(jobId) === "cancelled" && !controller.signal.aborted) {
@@ -1138,6 +1422,19 @@ function attachLearnJobModelTracking({
     }
   }, 500);
   cancellationPoll.unref();
+  const jobHeartbeat = setInterval(() => {
+    try {
+      if (leaseLostLearnJobs.has(jobId)) return;
+      const status = jobStatusById(jobId);
+      if (status && activeStatus(status)) {
+        db.prepare("UPDATE learn_jobs SET updated_at = ? WHERE id = ?").run(nowIso(), jobId);
+      }
+    } catch {
+      // Recovery treats a missing heartbeat as abandoned only after the garden
+      // lease is stale too, so a transient database failure is harmless here.
+    }
+  }, LEARN_JOB_HEARTBEAT_INTERVAL_MS);
+  jobHeartbeat.unref();
 
   attachLearnTokenUsageTracking(
     client,
@@ -1178,9 +1475,11 @@ function attachLearnJobModelTracking({
 
   return () => {
     clearInterval(cancellationPoll);
+    clearInterval(jobHeartbeat);
     if (activeLearnAbortControllers.get(jobId) === controller) {
       activeLearnAbortControllers.delete(jobId);
     }
+    leaseLostLearnJobs.delete(jobId);
   };
 }
 
@@ -1191,9 +1490,20 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     .get(jobId) as LearnJobRow | undefined;
   if (!row) throw new Error(`Learn job ${jobId} not found`);
   const current = rowToJob(row)!;
-  // A cancelled job stays cancelled: progress updates from the still-unwinding
-  // pipeline must not resurrect it into an active status.
+  // Terminal jobs stay fenced against a suspended/stale worker. Failed may
+  // transition only to cancelled when the user explicitly discards its run;
+  // retries always create a new job and lease.
   if (current.status === "cancelled" && updates.status !== "cancelled") {
+    return current;
+  }
+  if (
+    current.status === "failed" &&
+    updates.status !== "failed" &&
+    updates.status !== "cancelled"
+  ) {
+    return current;
+  }
+  if (current.status === "complete" && updates.status !== "complete") {
     return current;
   }
   const updatedAt = nowIso();
@@ -1210,7 +1520,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     timerStartedAt: timer.startedAt,
     updatedAt,
   };
-  db.prepare(
+  const result = db.prepare(
     `UPDATE learn_jobs
      SET status = ?,
          mode = ?,
@@ -1229,7 +1539,7 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
          active_elapsed_ms = ?,
          timer_started_at = ?,
          updated_at = ?
-     WHERE id = ?`,
+     WHERE id = ? AND status = ?`,
   ).run(
     next.status,
     next.mode,
@@ -1249,21 +1559,160 @@ function updateLearnJob(jobId: string, updates: Partial<LearnJob>): LearnJob {
     next.timerStartedAt ?? null,
     next.updatedAt,
     jobId,
+    current.status,
   );
+  if (result.changes === 0) {
+    const concurrent = db
+      .prepare("SELECT * FROM learn_jobs WHERE id = ?")
+      .get(jobId) as LearnJobRow | undefined;
+    if (!concurrent) throw new Error(`Learn job ${jobId} disappeared during update`);
+    return rowToJob(concurrent)!;
+  }
   return next;
+}
+
+function updateLearnJobExpectStatus(
+  jobId: string,
+  updates: Partial<LearnJob> & { status: LearnStatus },
+): LearnJob {
+  const updated = updateLearnJob(jobId, updates);
+  if (updated.status !== updates.status) {
+    throw new LearnPipelineConflictError(
+      `Learn job ${jobId} changed to ${updated.status} before it could commit ${updates.status}.`,
+    );
+  }
+  return updated;
 }
 
 export function getLatestLearnJob(gardenId: string): LearnJob | null {
   ensureLearnTables();
   const row = db
-    .prepare("SELECT * FROM learn_jobs WHERE garden_id = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1")
+    .prepare("SELECT * FROM learn_jobs WHERE garden_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
     .get(gardenId) as LearnJobRow | undefined;
   return rowToJob(row);
 }
 
-function getLearnMapById(mapId: string): StoredLearningMap | null {
+function getLearnJobById(jobId: string): LearnJob | null {
   ensureLearnTables();
-  const row = db.prepare("SELECT * FROM learn_maps WHERE id = ?").get(mapId) as
+  const row = db
+    .prepare("SELECT * FROM learn_jobs WHERE id = ?")
+    .get(jobId) as LearnJobRow | undefined;
+  return rowToJob(row);
+}
+
+interface UnresolvedLearnJobRow {
+  id: string;
+  status: LearnStatus;
+  current_step: string;
+}
+
+function learnJobNeedsExclusiveResolution(
+  job: Pick<UnresolvedLearnJobRow, "status" | "current_step">,
+): boolean {
+  return (
+    recoverableLearnStatus(job.status) ||
+    job.status === "awaiting_confirmation" ||
+    (job.status === "cancelled" &&
+      job.current_step === LEARN_CANCELLATION_REQUESTED_STEP)
+  );
+}
+
+function unresolvedLearnJob(
+  gardenId: string,
+  allowedJobId?: string,
+): UnresolvedLearnJobRow | null {
+  ensureLearnTables();
+  const rows = db
+    .prepare(
+      `SELECT id, status, current_step
+       FROM learn_jobs
+       WHERE garden_id = ?
+       ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(gardenId) as UnresolvedLearnJobRow[];
+  return (
+    rows.find(
+      (job) =>
+        job.id !== allowedJobId && learnJobNeedsExclusiveResolution(job),
+    ) ?? null
+  );
+}
+
+/**
+ * Older releases could leave a manual planning row awaiting forever after a
+ * newer generation or scoped repair committed. Reconcile only that provably
+ * superseded state, and only while the caller owns the garden lease.
+ */
+function reconcileSupersededAwaitingLearnJobs(gardenId: string): string[] {
+  ensureLearnTables();
+  const awaiting = db
+    .prepare(
+      `SELECT rowid AS job_rowid, id, created_at
+       FROM learn_jobs
+       WHERE garden_id = ? AND status = 'awaiting_confirmation'
+       ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(gardenId) as Array<{
+      job_rowid: number;
+      id: string;
+      created_at: string;
+    }>;
+  const reconciled: string[] = [];
+  for (const waiting of awaiting) {
+    const newer = db
+      .prepare(
+        `SELECT newer.rowid AS job_rowid, newer.id, newer.mode, newer.status
+         FROM learn_jobs AS newer
+         WHERE newer.garden_id = ?
+           AND (newer.created_at > ? OR (newer.created_at = ? AND newer.rowid > ?))
+           AND newer.status = 'complete'
+           AND (
+             newer.mode = 'repair'
+             OR EXISTS (
+               SELECT 1 FROM learn_versions AS version
+               WHERE version.garden_id = newer.garden_id
+                 AND version.job_id = newer.id
+             )
+           )
+         ORDER BY newer.created_at DESC, newer.rowid DESC
+         LIMIT 1`,
+      )
+      .get(
+        gardenId,
+        waiting.created_at,
+        waiting.created_at,
+        waiting.job_rowid,
+      ) as
+      | { job_rowid: number; id: string; mode: LearnMode; status: LearnStatus }
+      | undefined;
+    if (!newer) continue;
+    updateLearnJobExpectStatus(waiting.id, {
+      status: "complete",
+      currentStep: `Planning result superseded by committed Learn job ${newer.id}`,
+      progressPercent: 100,
+      error: undefined,
+    });
+    reconciled.push(waiting.id);
+  }
+  return reconciled;
+}
+
+function assertNoUnresolvedLearnJob(
+  gardenId: string,
+  allowedJobId?: string,
+): void {
+  const conflict = unresolvedLearnJob(gardenId, allowedJobId);
+  if (!conflict) return;
+  throw new LearnPipelineConflictError(
+    `Learn operation ${conflict.id} (${conflict.status}) must finish, be cancelled, or recover before another operation can change this garden.`,
+  );
+}
+
+function getLearnMapById(mapId: string, gardenId: string): StoredLearningMap | null {
+  ensureLearnTables();
+  const row = db
+    .prepare("SELECT * FROM learn_maps WHERE id = ? AND garden_id = ?")
+    .get(mapId, gardenId) as
     | LearnMapRow
     | undefined;
   return rowToMap(row);
@@ -1296,6 +1745,8 @@ function insertLearnMap({
   coveragePlan,
   sourceSetHash,
   sourceIds,
+  syllabusSourceId,
+  syllabusCoverage,
 }: {
   gardenId: string;
   jobId: string;
@@ -1305,6 +1756,8 @@ function insertLearnMap({
   coveragePlan: unknown;
   sourceSetHash: string;
   sourceIds: string[];
+  syllabusSourceId?: string;
+  syllabusCoverage?: SyllabusCoverage | null;
 }): StoredLearningMap {
   ensureLearnTables();
   const createdAt = nowIso();
@@ -1329,6 +1782,8 @@ function insertLearnMap({
     coveragePlan,
     sourceSetHash,
     sourceIds: [...sourceIds],
+    syllabusSourceId,
+    syllabusCoverage: syllabusCoverage ?? null,
     createdAt,
   };
 
@@ -1336,8 +1791,9 @@ function insertLearnMap({
     `INSERT INTO learn_maps (
       id, garden_id, job_id, status, source_map_json, scope_contract_json,
       learning_map_json, proposed_order_json, visual_opportunities_json,
-      coverage_plan_json, source_set_hash, source_ids_json, created_at, confirmed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      coverage_plan_json, source_set_hash, source_ids_json, syllabus_source_id,
+      syllabus_coverage_json, created_at, confirmed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     stored.id,
     stored.gardenId,
@@ -1351,6 +1807,8 @@ function insertLearnMap({
     jsonString(stored.coveragePlan),
     stored.sourceSetHash,
     jsonString(stored.sourceIds),
+    stored.syllabusSourceId ?? null,
+    stored.syllabusCoverage ? jsonString(stored.syllabusCoverage) : null,
     stored.createdAt,
     null,
   );
@@ -1464,8 +1922,14 @@ export function collectLearnSourceContext(
   contentPath: string,
   gardenId: string,
   includedSourceIds?: readonly string[],
+  syllabusSourceId?: string | null,
 ): LearnSourceContext {
-  const knowledge = scanClusterKnowledge(contentPath, gardenId);
+  // Context collection is a read path. Legacy source migration belongs to an
+  // explicit owner-authorized ingestion/migration operation, never a status
+  // request or a generation preflight.
+  const knowledge = scanClusterKnowledge(contentPath, gardenId, {
+    migrateSources: false,
+  });
   const gardenTitle = gardenTitleFromDb(gardenId);
   const availableSources: LearnSourceSummary[] = knowledge.nodes
     .filter((node) => node.type === "source-document")
@@ -1484,14 +1948,26 @@ export function collectLearnSourceContext(
       tags: node.tags,
       sourceImages: sourcePageImageUrls(node.content),
     }));
-  const sources = selectLearnSources(availableSources, includedSourceIds);
+  const selectedSources = selectLearnSources(availableSources, includedSourceIds);
+  // The syllabus resolves against every document, not just the selected ones, so
+  // a study guide can steer a run without also being taught as subject matter.
+  const syllabus = selectLearnSyllabus(availableSources, syllabusSourceId);
+  const sources = excludeSyllabusFromSources(selectedSources, syllabus);
+  if (syllabus && sources.length === 0) {
+    throw new Error(
+      `"${syllabus.title}" is set as the syllabus, so it is not taught as source material. Select at least one other document for Learn.`,
+    );
+  }
   const selectedSourceIdSet = new Set(sources.map((source) => source.slug));
   const conceptNodes: LearnConceptSummary[] = knowledge.nodes
     .filter(
       (node) =>
         node.type === "internal-concept" &&
         (includedSourceIds === undefined
-          ? true
+          ? // No explicit selection means every document is in play — except
+            // concepts mined from the syllabus, which describe the course rather
+            // than the subject and would otherwise re-enter through this door.
+            node.sourceDocument !== syllabus?.slug
           : Boolean(node.sourceDocument && selectedSourceIdSet.has(node.sourceDocument))),
     )
     .map((node) => ({
@@ -1531,7 +2007,12 @@ export function collectLearnSourceContext(
     conceptNodes,
     existingTextbookPages,
     sourceFigures,
-    sourceSetHash: sourceSetHashForSources(sources),
+    syllabus,
+    selectedSourceIds: selectedSources.map((source) => source.slug),
+    sourceSetHash: sourceSetHashWithSyllabus(
+      sourceSetHashForSources(sources),
+      syllabus,
+    ),
   };
 }
 
@@ -1612,6 +2093,29 @@ async function ensureSourceVisualsExtracted({
 function truncate(value: string | undefined, maxLength: number): string {
   if (!value) return "";
   return value.length <= maxLength ? value : `${value.slice(0, maxLength).trimEnd()}\n[truncated]`;
+}
+
+/** How much of the study guide the planner sees. Syllabi are short documents;
+ * this is generous enough for a full course outline without crowding out the
+ * source material it is meant to organize. */
+const MAX_SYLLABUS_PROMPT_CHARS = 12000;
+/** Page writing only needs the outline as orientation, not the whole guide. */
+const MAX_SYLLABUS_DOSSIER_CHARS = 3000;
+
+/** The designated study guide, in the shape planning prompts read it. */
+function promptSyllabus(
+  context: LearnSourceContext,
+  maxChars = MAX_SYLLABUS_PROMPT_CHARS,
+): unknown {
+  const syllabus = context.syllabus;
+  if (!syllabus) return undefined;
+  return {
+    id: syllabus.slug,
+    title: syllabus.title,
+    description: syllabus.description,
+    sourceFile: syllabus.sourceFile,
+    content: truncate(syllabus.body, maxChars),
+  };
 }
 
 function promptSources(context: LearnSourceContext): unknown {
@@ -1852,6 +2356,7 @@ async function planAndReviewVisualNecessity(input: {
     units: deterministic.learningUnits,
     decisions: deterministic.decisions,
     maxReviews: input.maxReviews ?? 3,
+    shouldRethrowError: () => jobStatusById(input.jobId) === "cancelled",
     reviewer: async (packet: VisualNecessityReviewPacket): Promise<VisualNecessityReviewResponse> => {
       const { parsed } = await callCouncilJson({
         client: input.client,
@@ -2638,9 +3143,11 @@ export async function runLearnPlanning({
   model = DEFAULT_MODEL,
   contentPath,
   includedSourceIds,
+  syllabusSourceId,
   sourceOnly = true,
   includeSourceSnapshots = false,
   resetSourceMap = false,
+  retainLeaseOnSuccess = false,
 }: {
   gardenId: string;
   userId?: number;
@@ -2648,41 +3155,141 @@ export async function runLearnPlanning({
   model?: string;
   contentPath: string;
   includedSourceIds?: readonly string[];
+  /** Slug of an uploaded document to use as the course study guide. */
+  syllabusSourceId?: string | null;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
   resetSourceMap?: boolean;
-}): Promise<{ job: LearnJob; learningMap: StoredLearningMap }> {
-  if (resetSourceMap) {
-    const previousJob = getLatestLearnJob(gardenId);
-    if (previousJob?.status === "failed") {
-      rollbackLearnRun({ gardenId, contentPath, jobId: previousJob.id });
-    }
-  }
-  const context = collectLearnSourceContext(contentPath, gardenId, includedSourceIds);
-  const job = createLearnJob({
-    gardenId,
-    userId,
-    mode: resetSourceMap ? "full_rebuild" : "plan",
-    sourceIds: context.sources.map((source) => source.slug),
-    sourceOnly,
-    includeSourceSnapshots,
+  /** Internal full-rebuild handoff: the caller must release retainedLease. */
+  retainLeaseOnSuccess?: boolean;
+}): Promise<{
+  job: LearnJob;
+  learningMap: StoredLearningMap;
+  retainedLease?: GardenLearnLease;
+}> {
+  assertNoPendingLearnClear(gardenId);
+  const gardenDir = clusterPath(contentPath, gardenId);
+  const jobId = makeId("learn_job");
+  const leaseResult = acquireGardenLearnLease(gardenDir, {
+    gardenSlug: gardenId,
+    jobId,
+    buildId: `planning:${jobId}`,
+  }, {
+    onLeaseLost: () => abortLearnWorkerAfterLeaseLoss(jobId),
   });
-  createLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
-  if (resetSourceMap) {
-    const reset = clearSourceMapForRegeneration({ gardenId, contentPath });
-    appendLearnEvent(contentPath, gardenId, "learn_regeneration_source_map_cleared", {
-      jobId: job.id,
-      removedPathCount: reset.removedPaths.length,
-      deletedMaps: reset.deletedMaps,
-      deletedVersions: reset.deletedVersions,
-    });
+  if (!leaseResult.acquired) {
+    const message = `Another Learn operation (${leaseResult.conflict.jobId}) is already changing this garden.`;
+    throw new LearnPipelineConflictError(message);
   }
-  const disposeModelTracking = attachLearnJobModelTracking({
-    client,
-    jobId: job.id,
-    gardenId,
+  const lease = leaseResult.lease;
+  try {
+    assertNoPendingLearnClear(gardenId);
+    reconcileSupersededAwaitingLearnJobs(gardenId);
+    assertNoUnresolvedLearnJob(gardenId);
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+  const context = collectLearnSourceContext(
     contentPath,
-  });
+    gardenId,
+    includedSourceIds,
+    syllabusSourceId,
+  );
+  let leaseTransferred = false;
+  let job: LearnJob;
+  try {
+    if (resetSourceMap) {
+      const previousJob = getLatestLearnJob(gardenId);
+      if (previousJob?.status === "failed") {
+        await rollbackLearnRun({
+          gardenId,
+          contentPath,
+          jobId: previousJob.id,
+          lease,
+        });
+        if (!lease.heartbeat()) {
+          throw new LearnPipelineConflictError(
+            "Learn planning lost its lease after restoring the previous failed run.",
+          );
+        }
+        discardLearnRunSnapshot({
+          gardenId,
+          contentPath,
+          jobId: previousJob.id,
+        });
+      }
+    }
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn planning lost its garden lease before creating its job.",
+      );
+    }
+    assertNoPendingLearnClear(gardenId);
+    assertNoUnresolvedLearnJob(gardenId);
+    job = createLearnJob({
+      id: jobId,
+      gardenId,
+      userId,
+      mode: resetSourceMap ? "full_rebuild" : "plan",
+      // The full selection is persisted, syllabus included, so a later run
+      // reproduces exactly the same teaching-set/syllabus split.
+      sourceIds: context.selectedSourceIds,
+      syllabusSourceId: context.syllabus?.slug,
+      sourceOnly,
+      includeSourceSnapshots,
+    });
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+  let disposeModelTracking = (): void => {};
+  try {
+    createLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+    throwIfLearnCancelled(job.id);
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn planning lost its garden lease while creating the rollback snapshot.",
+      );
+    }
+    if (resetSourceMap) {
+      const reset = clearSourceMapForRegeneration({ gardenId, contentPath });
+      appendLearnEvent(contentPath, gardenId, "learn_regeneration_source_map_cleared", {
+        jobId: job.id,
+        removedPathCount: reset.removedPaths.length,
+        deletedMaps: reset.deletedMaps,
+        deletedVersions: reset.deletedVersions,
+      });
+    }
+    disposeModelTracking = attachLearnJobModelTracking({
+      client,
+      jobId: job.id,
+      gardenId,
+      contentPath,
+    });
+  } catch (error) {
+    const message = errorMessage(error, "Planning workspace could not be prepared");
+    if (!lease.lost && !leaseLostLearnJobs.has(job.id)) {
+      try {
+        await rollbackLearnRun({ gardenId, contentPath, jobId: job.id, lease });
+        updateLearnJobExpectStatus(job.id, {
+          status: "failed",
+          currentStep: "Planning could not start; prior Learn state restored",
+          error: message,
+        });
+        discardLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+      } catch (rollbackError) {
+        appendLearnEvent(
+          contentPath,
+          gardenId,
+          "learn_planning_setup_rollback_failed",
+          { jobId: job.id, error: errorMessage(rollbackError) },
+        );
+      }
+    }
+    lease.release();
+    throw error;
+  }
 
   try {
     updateLearnJob(job.id, {
@@ -2702,6 +3309,15 @@ export async function runLearnPlanning({
     });
 
     const promptSourceContext = promptSources(context);
+    const hasSyllabus = Boolean(context.syllabus);
+    const syllabusPayload = promptSyllabus(context);
+    if (context.syllabus) {
+      appendLearnEvent(contentPath, gardenId, "learn_syllabus_applied", {
+        jobId: job.id,
+        syllabusSourceId: context.syllabus.slug,
+        syllabusTitle: context.syllabus.title,
+      });
+    }
     updateLearnJob(job.id, {
       status: "planning",
       currentStep: "Building source map",
@@ -2722,6 +3338,80 @@ export async function runLearnPlanning({
       sourceSetHash: context.sourceSetHash,
     };
     const planningWarnings: string[] = [];
+
+    // Stage 1b: read the syllabus into units + assigned materials, then check
+    // every assigned work against the documents actually in this garden. The
+    // check is deterministic on purpose — it is the only thing standing between
+    // "the syllabus assigns chapter 3" and a confidently fabricated chapter 3.
+    let syllabusCoverage: SyllabusCoverage | null = null;
+    if (context.syllabus) {
+      updateLearnJob(job.id, {
+        currentStep: "Reading the syllabus",
+        progressPercent: 4,
+      });
+      throwIfLearnCancelled(job.id);
+      try {
+        const syllabusCall = await callPlanningJsonWithRetry({
+          client,
+          model,
+          taskType: "source_map",
+          gardenId,
+          system: SYLLABUS_READING_PROMPT,
+          user: compactJson({ syllabus: syllabusPayload }),
+          sourceContext: { ...planningSourceMeta, taskType: "syllabus_reading" },
+          contentPath,
+          jobId: job.id,
+        });
+        const syllabusPlan = normalizeSyllabusPlan(syllabusCall.parsed);
+        syllabusCoverage = buildSyllabusCoverage(
+          syllabusPlan,
+          resolveSyllabusMaterials(syllabusPlan, context.sources),
+        );
+      } catch (error) {
+        if (!isPlanningTimeoutError(error)) throw error;
+        // Without a reading, the syllabus still steers as plain text; it just
+        // cannot gate material availability. Say so rather than pretending.
+        const warning = planningFallbackWarning("Syllabus reading", error);
+        planningWarnings.push(
+          `${warning} Assigned readings were not checked against this garden's documents.`,
+        );
+        appendLearnEvent(contentPath, gardenId, "learn_syllabus_reading_fallback", {
+          jobId: job.id,
+          error: errorMessage(error),
+        });
+      }
+
+      if (syllabusCoverage) {
+        const summary = summarizeSyllabusCoverage(syllabusCoverage);
+        appendLearnEvent(contentPath, gardenId, "learn_syllabus_materials_resolved", {
+          jobId: job.id,
+          ...summary,
+          missingCitations: syllabusCoverage.missingCitations,
+          untaughtUnitTitles: syllabusCoverage.untaughtUnitTitles,
+        });
+        if (syllabusCoverage.missingCitations.length > 0) {
+          planningWarnings.push(
+            `The syllabus assigns ${syllabusCoverage.missingCitations.length} work(s) that are not in this garden: ${syllabusCoverage.missingCitations
+              .slice(0, 8)
+              .join("; ")}. Lessons will not be written from them — upload them to have them covered.`,
+          );
+        }
+        for (const unitTitle of syllabusCoverage.untaughtUnitTitles.slice(0, 8)) {
+          planningWarnings.push(
+            `Syllabus item "${unitTitle}" has no available material in this garden and was left uncovered.`,
+          );
+        }
+      }
+    }
+    const syllabusCoveragePayload = syllabusCoverage
+      ? {
+          courseTitle: syllabusCoverage.courseTitle,
+          units: syllabusCoverage.units,
+          missingCitations: syllabusCoverage.missingCitations,
+          untaughtUnitTitles: syllabusCoverage.untaughtUnitTitles,
+        }
+      : undefined;
+
     throwIfLearnCancelled(job.id);
     let sourceMapCall: CouncilJsonResult;
     try {
@@ -2730,8 +3420,13 @@ export async function runLearnPlanning({
         model,
         taskType: "source_map",
         gardenId,
-        system: SOURCE_MAP_PROMPT,
-        user: compactJson({ sourceOnly, sourceContext: promptSourceContext }),
+        system: withSyllabusRules(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
+        user: compactJson({
+          sourceOnly,
+          syllabus: syllabusPayload,
+          syllabusCoverage: syllabusCoveragePayload,
+          sourceContext: promptSourceContext,
+        }),
         sourceContext: { ...planningSourceMeta, taskType: "source_map" },
         contentPath,
         jobId: job.id,
@@ -2769,11 +3464,14 @@ export async function runLearnPlanning({
         model,
         taskType: "scope_contract",
         gardenId,
-        system: SCOPE_CONTRACT_PROMPT,
+        system: withSyllabusRules(SCOPE_CONTRACT_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
         // The scope contract reasons over the source map (already a digest of the
         // full text), so it takes the compacted map + a body-free source context.
+        // The syllabus stays in full: it is what defines the scope.
         user: compactJson({
           sourceOnly,
+          syllabus: syllabusPayload,
+          syllabusCoverage: syllabusCoveragePayload,
           sourceMap: compactPlanningPayload(sourceMap),
           sources: promptSourcesCompact(context),
         }),
@@ -2814,6 +3512,8 @@ export async function runLearnPlanning({
     const topicMapUser = (deepenNote: string) =>
       compactJson({
         sourceOnly,
+        syllabus: syllabusPayload,
+        syllabusCoverage: syllabusCoveragePayload,
         sourceMap: compactPlanningPayload(sourceMap),
         scopeContract: compactPlanningPayload(scopeContract),
         sources: spineSourceContext,
@@ -2836,7 +3536,7 @@ export async function runLearnPlanning({
         model,
         taskType: "learning_spine",
         gardenId,
-        system: TOPIC_MAP_PROMPT,
+        system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
         user: topicMapUser(""),
         sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
         contentPath,
@@ -2881,7 +3581,7 @@ export async function runLearnPlanning({
           model,
           taskType: "learning_spine",
           gardenId,
-          system: TOPIC_MAP_PROMPT,
+          system: withSyllabusRules(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus),
           user: topicMapUser(deepenNote),
           sourceContext: { ...planningSourceMeta, taskType: "learning_spine" },
           contentPath,
@@ -2967,6 +3667,10 @@ export async function runLearnPlanning({
       jobId: job.id,
       learningUnits,
     });
+    // The visual reviewer intentionally converts model failures into an
+    // unresolved decision. A user abort can surface through that same catch, so
+    // re-check the durable job state before any map/artifact commit.
+    throwIfLearnCancelled(job.id);
     learningUnits = visualNecessityReview.learningUnits;
     const planRecord = planningRecord(topicMapCall.parsed);
     const sourceArtifactAssignments = assignSourceArtifacts(learningUnits);
@@ -2999,6 +3703,23 @@ export async function runLearnPlanning({
       removedFrom: string[];
       reason: string;
     }> = [];
+    const commitContext = collectLearnSourceContext(
+      contentPath,
+      gardenId,
+      context.selectedSourceIds,
+      context.syllabus?.slug,
+    );
+    if (commitContext.sourceSetHash !== context.sourceSetHash) {
+      throw new LearnPipelineConflictError(
+        "The selected sources changed during planning. Run Learn again to review a map grounded in the current files.",
+      );
+    }
+    throwIfLearnCancelled(job.id);
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn planning lost its garden lease before committing artifacts.",
+      );
+    }
     const storedMap = db.transaction(() => {
       const stored = insertLearnMap({
         gardenId,
@@ -3008,7 +3729,9 @@ export async function runLearnPlanning({
         learningMap,
         coveragePlan,
         sourceSetHash: context.sourceSetHash,
-        sourceIds: context.sources.map((source) => source.slug),
+        sourceIds: context.selectedSourceIds,
+        syllabusSourceId: context.syllabus?.slug,
+        syllabusCoverage,
       });
       // A failed semantic artifact commit rolls this database insert back, so
       // a failed Learn job cannot leave behind a confirmable orphan map.
@@ -3132,24 +3855,70 @@ export async function runLearnPlanning({
       learningMapId: storedMap.id,
       sourceIds: context.sources.map((source) => source.slug),
     });
-    appendLearnEvent(contentPath, gardenId, "learn_awaiting_confirmation", {
+    appendLearnEvent(
+      contentPath,
+      gardenId,
+      retainLeaseOnSuccess
+        ? "learn_automatic_generation_handoff_ready"
+        : "learn_awaiting_confirmation",
+      {
       jobId: job.id,
       learningMapId: storedMap.id,
-    });
-    const nextJob = updateLearnJob(job.id, {
-      status: "awaiting_confirmation",
-      currentStep: "Awaiting section order confirmation",
-      progressPercent: 100,
+      },
+    );
+    throwIfLearnCancelled(job.id);
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn planning lost its garden lease before awaiting confirmation.",
+      );
+    }
+    const nextJob = updateLearnJobExpectStatus(job.id, {
+      status: retainLeaseOnSuccess ? "building_navigation" : "awaiting_confirmation",
+      currentStep: retainLeaseOnSuccess
+        ? "Planning complete; continuing to lesson generation"
+        : "Awaiting section order confirmation",
+      progressPercent: retainLeaseOnSuccess ? 55 : 100,
       proposedLearningMapId: storedMap.id,
       sourceSetHash: context.sourceSetHash,
     });
-    return { job: nextJob, learningMap: storedMap };
+    leaseTransferred = retainLeaseOnSuccess;
+    return {
+      job: nextJob,
+      learningMap: storedMap,
+      retainedLease: retainLeaseOnSuccess ? lease : undefined,
+    };
   } catch (error) {
+    if (
+      lease.lost ||
+      leaseLostLearnJobs.has(job.id) ||
+      !lease.heartbeat()
+    ) {
+      // A fenced recovery/takeover now owns cleanup. The stale worker must not
+      // touch either the repository or SQLite after losing that authority.
+      throw error;
+    }
     if (isLearnCancellation(job.id, error)) {
       // The Stop button already flipped the job to cancelled; remove anything
       // planning managed to write before the cancellation checkpoint fired.
       try {
-        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath, jobId: job.id });
+        const cleanup = await cleanupLearnArtifactsAfterCancel({
+          gardenId,
+          contentPath,
+          jobId: job.id,
+          lease,
+        });
+        updateLearnJob(job.id, {
+          status: "cancelled",
+          currentStep: "Cancelled; latest Learn changes rolled back",
+        });
+        discardLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+        appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
+          jobId: job.id,
+          removedPathCount: cleanup.removedPaths.length,
+          restoredPathCount: cleanup.restoredPaths.length,
+          deletedMaps: cleanup.deletedMaps,
+          deletedVersions: cleanup.deletedVersions,
+        });
       } catch {
         // Cleanup is best-effort during unwind; the cancel endpoint reports its
         // own cleanup errors when the user presses Stop.
@@ -3159,6 +3928,48 @@ export async function runLearnPlanning({
     const message = errorMessage(error, "Learn planning failed");
     const failedJob = getLatestLearnJob(gardenId);
     const lastInternalStep = failedJob?.id === job.id ? failedJob.currentStep.trim() : "";
+    let planningRolledBack = false;
+    try {
+      const rollback = await rollbackLearnRun({
+        gardenId,
+        contentPath,
+        jobId: job.id,
+        lease,
+      });
+      planningRolledBack = true;
+      const publicationToken = queueLearnPublicationRetry(
+        gardenId,
+        "failed Learn planning rollback",
+        new Error("Publication pending"),
+      );
+      appendLearnEvent(contentPath, gardenId, "learn_planning_rolled_back", {
+        jobId: job.id,
+        removedPathCount: rollback.removedPaths.length,
+        restoredPathCount: rollback.restoredPaths.length,
+        deletedMaps: rollback.deletedMaps,
+        deletedVersions: rollback.deletedVersions,
+      });
+      void publishQuartzAfterMutation(
+        `failed Learn planning rollback in ${gardenId}`,
+        { requireSuccess: true },
+      )
+        .then(() => clearLearnPublicationRetry(gardenId, publicationToken))
+        .catch((publicationError) => {
+          queueLearnPublicationRetry(
+            gardenId,
+            "failed Learn planning rollback",
+            publicationError,
+          );
+        });
+    } catch (rollbackError) {
+      if (lease.lost || !lease.heartbeat()) {
+        throw rollbackError;
+      }
+      appendLearnEvent(contentPath, gardenId, "learn_planning_rollback_failed", {
+        jobId: job.id,
+        error: errorMessage(rollbackError, "Planning rollback failed"),
+      });
+    }
     appendLearnEvent(contentPath, gardenId, "learn_failed", {
       jobId: job.id,
       error: message,
@@ -3170,9 +3981,13 @@ export async function runLearnPlanning({
         : "Planning failed",
       error: message,
     });
+    if (planningRolledBack) {
+      discardLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+    }
     throw error;
   } finally {
     disposeModelTracking();
+    if (!leaseTransferred) lease.release();
   }
 }
 
@@ -3180,37 +3995,123 @@ export function confirmLearningMap({
   gardenId,
   learningMapId,
   contentPath,
+  gardenLease,
 }: {
   gardenId: string;
   learningMapId?: string;
   contentPath: string;
+  /** Internal automatic handoff; external confirmation acquires its own lease. */
+  gardenLease?: GardenLearnLease;
 }): StoredLearningMap {
   ensureLearnTables();
-  const map =
-    (learningMapId ? getLearnMapById(learningMapId) : null) ??
-    getLatestProposedLearnMap(gardenId);
-  if (!map) throw new Error("No proposed learning map found");
-  if (!isContractBackedLearningMap(map)) {
-    throw new Error(
-      "This learning map was created before Learning Unit Contracts existed. Run Learn again to draft a new source-grounded map.",
-    );
-  }
-  const confirmedAt = nowIso();
-  db.prepare(
-    "UPDATE learn_maps SET status = 'confirmed', confirmed_at = ? WHERE id = ?",
-  ).run(confirmedAt, map.id);
-  const latestJob = getLatestLearnJob(gardenId);
-  if (latestJob) {
-    updateLearnJob(latestJob.id, {
-      confirmedLearningMapId: map.id,
-      currentStep: "Learning map confirmed",
+  assertNoPendingLearnClear(gardenId);
+  const gardenDir = clusterPath(contentPath, gardenId);
+  fs.mkdirSync(gardenDir, { recursive: true });
+  let lease = gardenLease;
+  let ownsLease = false;
+  if (lease) {
+    if (lease.lost || !lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn lost its retained garden lease before map confirmation.",
+      );
+    }
+  } else {
+    const confirmationId = makeId("learn_confirm");
+    const leaseResult = acquireGardenLearnLease(gardenDir, {
+      gardenSlug: gardenId,
+      jobId: confirmationId,
+      buildId: `confirm:${confirmationId}`,
     });
+    if (!leaseResult.acquired) {
+      throw new LearnPipelineConflictError(
+        `Another Learn operation (${leaseResult.conflict.jobId}) is changing this garden; confirmation was not applied.`,
+      );
+    }
+    lease = leaseResult.lease;
+    ownsLease = true;
   }
-  appendLearnEvent(contentPath, gardenId, "learn_learning_map_confirmed", {
-    jobId: latestJob?.id,
-    learningMapId: map.id,
-  });
-  return getLearnMapById(map.id)!;
+  try {
+    assertNoPendingLearnClear(gardenId);
+    reconcileSupersededAwaitingLearnJobs(gardenId);
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn lost its garden lease before map confirmation.",
+      );
+    }
+    const confirmTransaction = db.transaction(() => {
+      const map = learningMapId
+        ? getLearnMapById(learningMapId, gardenId)
+        : getLatestProposedLearnMap(gardenId);
+      if (learningMapId && !map) {
+        throw new LearnPipelineConflictError(
+          "The requested Learning Map does not belong to this garden or no longer exists.",
+        );
+      }
+      if (!map) throw new Error("No proposed learning map found");
+      assertNoUnresolvedLearnJob(gardenId, map.jobId);
+      if (!isContractBackedLearningMap(map)) {
+        throw new Error(
+          "This learning map was created before Learning Unit Contracts existed. Run Learn again to draft a new source-grounded map.",
+        );
+      }
+      if (map.status === "confirmed") return { map, jobId: map.jobId, changed: false };
+      if (map.status !== "proposed") {
+        throw new LearnPipelineConflictError(
+          `Learning Map ${map.id} is ${map.status} and cannot be confirmed.`,
+        );
+      }
+      const planningJob = getLearnJobById(map.jobId);
+      if (
+        !planningJob ||
+        planningJob.gardenId !== gardenId ||
+        (planningJob.status !== "awaiting_confirmation" &&
+          planningJob.status !== "building_navigation")
+      ) {
+        throw new LearnPipelineConflictError(
+          "The proposed Learning Map is no longer the active planning result.",
+        );
+      }
+      const confirmedAt = nowIso();
+      const mapUpdate = db.prepare(
+        `UPDATE learn_maps
+         SET status = 'confirmed', confirmed_at = ?
+         WHERE id = ? AND garden_id = ? AND status = 'proposed'`,
+      ).run(confirmedAt, map.id, gardenId);
+      if (mapUpdate.changes !== 1) {
+        throw new LearnPipelineConflictError(
+          "The Learning Map changed before confirmation could commit.",
+        );
+      }
+      const updatedJob = updateLearnJob(planningJob.id, {
+        confirmedLearningMapId: map.id,
+        currentStep: "Learning map confirmed",
+      });
+      if (
+        updatedJob.status === "cancelled" ||
+        updatedJob.status === "failed" ||
+        updatedJob.status === "complete"
+      ) {
+        throw new LearnPipelineConflictError(
+          `The planning job became ${updatedJob.status} before confirmation committed.`,
+        );
+      }
+      return {
+        map: getLearnMapById(map.id, gardenId)!,
+        jobId: planningJob.id,
+        changed: true,
+      };
+    });
+    const confirmed = confirmTransaction.immediate();
+    if (confirmed.changed) {
+      appendLearnEvent(contentPath, gardenId, "learn_learning_map_confirmed", {
+        jobId: confirmed.jobId,
+        learningMapId: confirmed.map.id,
+      });
+    }
+    return confirmed.map;
+  } finally {
+    if (ownsLease) lease.release();
+  }
 }
 
 function renderObjectMarkdown(value: unknown): string {
@@ -3921,8 +4822,6 @@ interface LearnRunSnapshotManifest {
 
 const LEARN_RUN_SNAPSHOT_ROOT = ".breadboard/learn-run-snapshots";
 const LEARN_RUN_ROLLBACK_PATHS = [
-  "_index.md",
-  "sources/_index.md",
   LEARNING_ROOT,
   "Learning",
   "assets/source-visuals",
@@ -4007,35 +4906,6 @@ function copySnapshotPath(source: string, destination: string): void {
   fs.cpSync(source, destination, { recursive: true, force: true });
 }
 
-function learnRollbackMarkdownPaths(clusterDir: string): string[] {
-  const results: string[] = [];
-  const visit = (directory: string): void => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      const absolute = path.join(directory, entry.name);
-      const relPath = normalizeRelPath(path.relative(clusterDir, absolute));
-      if (
-        entry.isDirectory() &&
-        (relPath === ".breadboard/backups" ||
-          relPath.startsWith(".breadboard/backups/") ||
-          relPath === LEARN_RUN_SNAPSHOT_ROOT ||
-          relPath.startsWith(`${LEARN_RUN_SNAPSHOT_ROOT}/`))
-      ) {
-        continue;
-      }
-      if (entry.isDirectory()) {
-        visit(absolute);
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        const coveredByManagedRoot = LEARN_RUN_ROLLBACK_PATHS.some(
-          (managed) => relPath === managed || relPath.startsWith(`${managed}/`),
-        );
-        if (!coveredByManagedRoot) results.push(relPath);
-      }
-    }
-  };
-  visit(clusterDir);
-  return results.sort();
-}
-
 function createLearnRunSnapshot({
   gardenId,
   contentPath,
@@ -4073,10 +4943,10 @@ function createLearnRunSnapshot({
     return;
   }
 
-  const snapshotCandidates = [
-    ...LEARN_RUN_ROLLBACK_PATHS,
-    ...learnRollbackMarkdownPaths(clusterDir),
-  ];
+  // Only Learn-owned projections are rollback material. Capturing arbitrary
+  // Markdown here used to let Stop overwrite source/user notes edited after a
+  // plan began.
+  const snapshotCandidates = [...LEARN_RUN_ROLLBACK_PATHS];
   const capturedPaths = Array.from(new Set(snapshotCandidates)).filter((relPath) => {
     const source = clusterRelativePath(clusterDir, relPath);
     if (!fs.existsSync(source)) return false;
@@ -4133,12 +5003,16 @@ function restoreLearnDatabaseSnapshot(
   db.transaction(() => {
     db.prepare("DELETE FROM learn_versions WHERE garden_id = ?").run(gardenId);
     db.prepare("DELETE FROM learn_maps WHERE garden_id = ?").run(gardenId);
+    // The document selection and syllabus are restored explicitly: without them
+    // a rolled-back map would silently fall back to "every document, no
+    // syllabus" and quietly widen the next run's scope.
     const insertMap = db.prepare(
       `INSERT INTO learn_maps (
         id, garden_id, job_id, status, source_map_json, scope_contract_json,
         learning_map_json, proposed_order_json, visual_opportunities_json,
-        coverage_plan_json, source_set_hash, created_at, confirmed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        coverage_plan_json, source_set_hash, source_ids_json, syllabus_source_id,
+        syllabus_coverage_json, created_at, confirmed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of baselineMaps) {
       insertMap.run(
@@ -4153,6 +5027,10 @@ function restoreLearnDatabaseSnapshot(
         row.visual_opportunities_json,
         row.coverage_plan_json,
         row.source_set_hash,
+        // Snapshots taken before these columns existed have no value to restore.
+        row.source_ids_json ?? "[]",
+        row.syllabus_source_id ?? null,
+        row.syllabus_coverage_json ?? null,
         row.created_at,
         row.confirmed_at,
       );
@@ -4194,7 +5072,10 @@ function discardLearnRunSnapshot({
 }): void {
   const clusterDir = clusterPath(contentPath, gardenId);
   const resolved = resolveLearnRunSnapshot(clusterDir, jobId);
-  fs.rmSync(learnRunSnapshotDir(clusterDir, jobId), { recursive: true, force: true });
+  fs.rmSync(learnRunSnapshotDir(clusterDir, jobId), {
+    recursive: true,
+    force: true,
+  });
   if (resolved && resolved.jobId !== jobId) {
     fs.rmSync(learnRunSnapshotDir(clusterDir, resolved.jobId), {
       recursive: true,
@@ -4203,16 +5084,23 @@ function discardLearnRunSnapshot({
   }
 }
 
-function rollbackLearnRun({
+async function rollbackLearnRun({
   gardenId,
   contentPath,
   jobId,
+  lease,
 }: {
   gardenId: string;
   contentPath: string;
   jobId: string;
-}): LearnCleanupResult {
+  lease: GardenLearnLease;
+}): Promise<LearnCleanupResult> {
   ensureLearnTables();
+  if (lease.lost || !lease.heartbeat()) {
+    throw new LearnPipelineConflictError(
+      "Learn rollback lost its fenced garden lease before staging.",
+    );
+  }
   const clusterDir = clusterPath(contentPath, gardenId);
   const resolved = resolveLearnRunSnapshot(clusterDir, jobId);
   if (!resolved || resolved.manifest.gardenId !== gardenId) {
@@ -4225,37 +5113,154 @@ function rollbackLearnRun({
     };
   }
 
-  const removedPaths: string[] = [];
-  const restoredPaths: string[] = [];
-  for (const relPath of LEARN_RUN_ROLLBACK_PATHS) {
-    removeClusterPath(clusterDir, relPath, removedPaths);
-  }
-  const snapshotDir = learnRunSnapshotDir(clusterDir, resolved.jobId);
-  for (const relPath of resolved.manifest.capturedPaths ?? []) {
-    const source = path.join(snapshotDir, "files", ...relPath.split("/"));
-    if (!fs.existsSync(source)) continue;
-    copySnapshotPath(source, clusterRelativePath(clusterDir, relPath));
-    restoredPaths.push(relPath);
-  }
+  const durableFingerprintBefore = fingerprintDurableGardenState(clusterDir);
+  const fileFingerprintsBefore = fingerprintGardenFiles(clusterDir);
+  const temporaryRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "breadboard-learn-rollback-"),
+  );
+  const stagingGardenDir = path.join(temporaryRoot, gardenId);
+  let previousGardenDir: string | undefined;
+  try {
+    fs.cpSync(clusterDir, stagingGardenDir, { recursive: true, force: true });
+    if (
+      fingerprintDurableGardenState(stagingGardenDir) !==
+      durableFingerprintBefore
+    ) {
+      throw new LearnPipelineConflictError(
+        "The garden changed while Learn prepared its rollback candidate.",
+      );
+    }
 
-  const baselineBackupEntries = new Set(resolved.manifest.backupEntries ?? []);
-  const backupsRoot = clusterRelativePath(clusterDir, ".breadboard/backups");
-  if (fs.existsSync(backupsRoot)) {
-    for (const entry of fs.readdirSync(backupsRoot)) {
-      if (!baselineBackupEntries.has(entry)) {
-        removeClusterPath(clusterDir, `.breadboard/backups/${entry}`, removedPaths);
+    const removedPaths: string[] = [];
+    const restoredPaths: string[] = [];
+    for (const relPath of LEARN_RUN_ROLLBACK_PATHS) {
+      removeClusterPath(stagingGardenDir, relPath, removedPaths);
+    }
+    const snapshotDir = learnRunSnapshotDir(clusterDir, resolved.jobId);
+    for (const relPath of resolved.manifest.capturedPaths ?? []) {
+      const source = path.join(snapshotDir, "files", ...relPath.split("/"));
+      if (!fs.existsSync(source)) continue;
+      copySnapshotPath(source, clusterRelativePath(stagingGardenDir, relPath));
+      restoredPaths.push(relPath);
+    }
+
+    const baselineBackupEntries = new Set(resolved.manifest.backupEntries ?? []);
+    const backupsRoot = clusterRelativePath(stagingGardenDir, ".breadboard/backups");
+    if (fs.existsSync(backupsRoot)) {
+      for (const entry of fs.readdirSync(backupsRoot)) {
+        if (!baselineBackupEntries.has(entry)) {
+          removeClusterPath(
+            stagingGardenDir,
+            `.breadboard/backups/${entry}`,
+            removedPaths,
+          );
+        }
       }
     }
-  }
 
-  const database = restoreLearnDatabaseSnapshot(gardenId, resolved.manifest);
-  discardLearnRunSnapshot({ gardenId, contentPath, jobId });
-  return {
-    removedPaths: Array.from(new Set(removedPaths)),
-    restoredPaths: Array.from(new Set(restoredPaths)),
-    prunedVisualIds: [],
-    ...database,
-  };
+    const allowedMutationRoots = [
+      ...LEARN_RUN_ROLLBACK_PATHS,
+      ".breadboard/backups",
+      ".breadboard/events.jsonl",
+    ];
+    const candidateViolations = gardenClearBoundaryViolations({
+      before: fileFingerprintsBefore,
+      candidateGardenDir: stagingGardenDir,
+      allowedMutationRoots,
+    });
+    if (candidateViolations.length > 0) {
+      throw new Error(
+        `Learn rollback candidate changed protected content: ${candidateViolations
+          .slice(0, 6)
+          .join("; ")}`,
+      );
+    }
+
+    const promotion = await promoteStagingGarden({
+      stagingGardenDir,
+      destinationGardenDir: clusterDir,
+      retainPreviousUntilCallerCommit: true,
+      recoveryOwnerId: `rollback:${jobId}`,
+      verifyCurrentDestination: (destinationDir) =>
+        lease.heartbeat() &&
+        fingerprintDurableGardenState(destinationDir) === durableFingerprintBefore,
+      prepareIncomingForCommit: (incomingDir, destinationDir) => {
+        mergeLearnEventLedgers(destinationDir, incomingDir);
+        return true;
+      },
+      verifyManifest: (candidateDir) =>
+        gardenClearBoundaryViolations({
+          before: fileFingerprintsBefore,
+          candidateGardenDir: candidateDir,
+          allowedMutationRoots,
+        }).length === 0,
+    });
+    previousGardenDir = promotion.previousPreservedAt;
+    if (!promotion.promoted) {
+      if (previousGardenDir) {
+        await restorePreviousPromotedGarden(
+          clusterDir,
+          previousGardenDir,
+          () => lease.heartbeat(),
+        );
+        previousGardenDir = undefined;
+      }
+      throw new LearnPipelineConflictError(
+        `Learn rollback was not published: ${promotion.reason}`,
+      );
+    }
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn rollback lost its fenced garden lease before restoring SQLite.",
+      );
+    }
+
+    let database: ReturnType<typeof restoreLearnDatabaseSnapshot>;
+    try {
+      database = restoreLearnDatabaseSnapshot(gardenId, resolved.manifest);
+    } catch (databaseError) {
+      if (!previousGardenDir) throw databaseError;
+      try {
+        await restorePreviousPromotedGarden(
+          clusterDir,
+          previousGardenDir,
+          () => lease.heartbeat(),
+        );
+        previousGardenDir = undefined;
+      } catch (restoreError) {
+        throw new Error(
+          `Learn rollback database restore failed (${errorMessage(databaseError)}), and the pre-rollback garden could not be restored (${errorMessage(restoreError)}).`,
+          { cause: databaseError },
+        );
+      }
+      throw databaseError;
+    }
+
+    if (previousGardenDir) {
+      try {
+        fs.rmSync(previousGardenDir, { recursive: true, force: true });
+        previousGardenDir = undefined;
+      } catch (cleanupError) {
+        console.warn(
+          `[learn] Pre-rollback garden remains at ${previousGardenDir}:`,
+          cleanupError,
+        );
+      }
+    }
+    return {
+      removedPaths: Array.from(new Set(removedPaths)),
+      restoredPaths: Array.from(new Set(restoredPaths)),
+      prunedVisualIds: [],
+      ...database,
+    };
+  } finally {
+    try {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    } catch {
+      // The rollback candidate is outside the repository and can be reclaimed
+      // later if desktop sync or antivirus briefly retains a handle.
+    }
+  }
 }
 
 function clearSourceMapForRegeneration({
@@ -4287,20 +5292,30 @@ async function cleanupLearnArtifactsAfterCancel({
   gardenId,
   contentPath,
   jobId,
+  lease,
 }: {
   gardenId: string;
   contentPath: string;
   jobId: string;
+  lease: GardenLearnLease;
 }): Promise<LearnCleanupResult> {
-  const result = rollbackLearnRun({ gardenId, contentPath, jobId });
+  const result = await rollbackLearnRun({ gardenId, contentPath, jobId, lease });
   // The rollback above is the cancellation commit point. Rebuilding Quartz can
   // take minutes and must not keep the Cancel request (or its UI) stuck after
   // the database and garden have already returned to the prior valid state.
-  void publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`).catch(
-    (error) => {
-      console.error("[learn] Background cancellation publication failed:", error);
-    },
+  const publicationToken = queueLearnPublicationRetry(
+    gardenId,
+    "Learn cancellation cleanup",
+    new Error("Publication pending"),
   );
+  void publishQuartzAfterMutation(`learn cancellation cleanup in ${gardenId}`, {
+    requireSuccess: true,
+  })
+    .then(() => clearLearnPublicationRetry(gardenId, publicationToken))
+    .catch((error) => {
+      console.error("[learn] Background cancellation publication failed:", error);
+      queueLearnPublicationRetry(gardenId, "Learn cancellation cleanup", error);
+    });
   return result;
 }
 
@@ -5319,6 +6334,25 @@ type PageDossier = {
   mustCover: string[];
   avoid: string[];
 
+  /** The course study guide, when one was designated. Orientation only — it
+   * never appears in the lesson. */
+  syllabus?: {
+    title: string;
+    outline: string;
+  };
+
+  /** The syllabus unit this page serves, when one maps to it. */
+  syllabusUnit?: {
+    label?: string;
+    title: string;
+    objectives: string[];
+    topics: string[];
+  };
+
+  /** Works the course assigns that this garden does not contain. The page must
+   * not name, summarize, or teach from any of them. */
+  unavailableCitations?: string[];
+
   relevantSourceSnippets: Array<{
     sourceId: string;
     title: string;
@@ -5354,9 +6388,14 @@ function snippetLooksHighValue(text: string): boolean {
 function selectRelevantSourceSnippets({
   sources,
   keywords,
+  preferredSourceIds,
 }: {
   sources: LearnSourceSummary[];
   keywords: Set<string>;
+  /** Documents the syllabus assigns for this page's unit. Their blocks win ties
+   * and outrank equally-scoring blocks elsewhere, so the page is genuinely
+   * built on the assigned reading rather than merely consistent with it. */
+  preferredSourceIds?: ReadonlySet<string>;
 }): Array<{ sourceId: string; title: string; excerpt: string }> {
   const candidates: Array<{
     sourceId: string;
@@ -5373,6 +6412,7 @@ function selectRelevantSourceSnippets({
       let score = words.reduce((sum, word) => sum + (keywords.has(word) ? 1 : 0), 0);
       if (score === 0) continue;
       if (snippetLooksHighValue(text)) score += 2;
+      if (preferredSourceIds?.has(source.slug)) score += 5;
       candidates.push({
         sourceId: source.slug,
         title: source.title,
@@ -5402,7 +6442,13 @@ function selectRelevantSourceSnippets({
   // No keyword hit anywhere (very short sources, odd titles): still ground the
   // page with each source's opening so source-awareness never drops to zero.
   if (selected.length === 0) {
-    for (const source of sources.slice(0, MAX_SNIPPETS_PER_PAGE)) {
+    const openingOrder = preferredSourceIds
+      ? [
+          ...sources.filter((source) => preferredSourceIds.has(source.slug)),
+          ...sources.filter((source) => !preferredSourceIds.has(source.slug)),
+        ]
+      : sources;
+    for (const source of openingOrder.slice(0, MAX_SNIPPETS_PER_PAGE)) {
       const text = compactFallbackText(source.excerpt ?? source.body ?? "");
       if (text.length < 40) continue;
       const excerpt = text.slice(0, MAX_CHARS_PER_SNIPPET);
@@ -5433,6 +6479,8 @@ function buildPageDossier({
   anchors,
   scopeContract,
   sources,
+  syllabus,
+  syllabusCoverage,
   assignedVisuals,
   sourceArtifactAssignments,
   sourceOnly,
@@ -5444,6 +6492,8 @@ function buildPageDossier({
   anchors: string[];
   scopeContract: unknown;
   sources: LearnSourceSummary[];
+  syllabus?: LearnSourceSummary | null;
+  syllabusCoverage?: SyllabusCoverage | null;
   assignedVisuals: SourceVisual[];
   sourceArtifactAssignments?: SourceArtifactAssignment[];
   sourceOnly: boolean;
@@ -5459,6 +6509,20 @@ function buildPageDossier({
     .split(/[^a-z0-9]+/g)) {
     if (word.length > 3) keywords.add(word);
   }
+
+  // Which syllabus unit this page serves, and therefore which uploaded reading
+  // the course actually assigns for it.
+  const matchedSyllabusUnit = matchSyllabusUnitForPage(
+    syllabusCoverage ?? null,
+    [
+      subsectionTitle,
+      subsection.purpose ?? "",
+      subsection.learningQuestion ?? "",
+      ...(subsection.conceptTags ?? []),
+      ...(subsection.newConcepts ?? []),
+    ].join(" "),
+  );
+  const assignedSourceIds = new Set(matchedSyllabusUnit?.availableSourceIds ?? []);
 
   return {
     gardenTitle,
@@ -5490,7 +6554,28 @@ function buildPageDossier({
       .filter(Boolean)
       .slice(0, 8),
     avoid: scopeAvoidList(scopeContract),
-    relevantSourceSnippets: selectRelevantSourceSnippets({ sources, keywords }),
+    syllabus: syllabus
+      ? {
+          title: syllabus.title,
+          outline: truncate(syllabus.body, MAX_SYLLABUS_DOSSIER_CHARS),
+        }
+      : undefined,
+    syllabusUnit: matchedSyllabusUnit
+      ? {
+          label: matchedSyllabusUnit.label,
+          title: matchedSyllabusUnit.title,
+          objectives: matchedSyllabusUnit.objectives,
+          topics: matchedSyllabusUnit.topics,
+        }
+      : undefined,
+    unavailableCitations: syllabusCoverage?.missingCitations.length
+      ? syllabusCoverage.missingCitations
+      : undefined,
+    relevantSourceSnippets: selectRelevantSourceSnippets({
+      sources,
+      keywords,
+      preferredSourceIds: assignedSourceIds,
+    }),
     assignedSourceVisuals: assignedVisuals
       .slice(0, MAX_VISUALS_PER_PAGE)
       .map((visual) => ({
@@ -5534,6 +6619,7 @@ export async function runTextbookGeneration({
   sourceOnly = true,
   includeSourceSnapshots = false,
   autoConfirmTopicMap = false,
+  gardenLease,
 }: {
   gardenId: string;
   userId?: number;
@@ -5551,65 +6637,286 @@ export async function runTextbookGeneration({
    * `confirmLearningMap` after reviewing the proposed map.
    */
   autoConfirmTopicMap?: boolean;
+  /** Internal full-rebuild handoff. The caller retains release ownership. */
+  gardenLease?: GardenLearnLease;
 }): Promise<{ job: LearnJob; textbookVersionId: string; pageCount: number }> {
   if (mode === "repair") {
     throw new Error("Scoped repair must use runLearnRepairOperation; it cannot enter the full page-generation loop.");
   }
-  let map =
-    (confirmedLearningMapId ? getLearnMapById(confirmedLearningMapId) : null) ??
-    getLatestConfirmedLearnMap(gardenId);
-  if ((!map || map.status !== "confirmed") && autoConfirmTopicMap) {
-    // Explicitly requested: promote the latest proposed map without the gate.
-    const proposed =
-      (confirmedLearningMapId ? getLearnMapById(confirmedLearningMapId) : null) ??
-      getLatestProposedLearnMap(gardenId);
-    if (proposed && proposed.status !== "confirmed") {
-      confirmLearningMap({ gardenId, learningMapId: proposed.id, contentPath });
+  assertNoPendingLearnClear(gardenId);
+  const repositoryGardenDir = clusterPath(contentPath, gardenId);
+  fs.mkdirSync(repositoryGardenDir, { recursive: true });
+  const jobId = gardenLease?.lock.jobId ?? makeId("learn_job");
+  let lease: GardenLearnLease;
+  let ownsLease = false;
+  if (gardenLease) {
+    if (gardenLease.lost || !gardenLease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "The full rebuild lost its garden lease before generation could start.",
+      );
     }
-    map = proposed ? getLearnMapById(proposed.id) : map;
+    lease = gardenLease;
+  } else {
+    const leaseResult = acquireGardenLearnLease(repositoryGardenDir, {
+      gardenSlug: gardenId,
+      jobId,
+      buildId: `generation:${jobId}`,
+    }, {
+      onLeaseLost: () => abortLearnWorkerAfterLeaseLoss(jobId),
+    });
+    if (!leaseResult.acquired) {
+      const message = `Another Learn operation (${leaseResult.conflict.jobId}) is already changing this garden.`;
+      throw new LearnPipelineConflictError(message);
+    }
+    lease = leaseResult.lease;
+    ownsLease = true;
   }
-  if (!map || map.status !== "confirmed") {
-    throw new Error(
-      "Confirm a learning map before generating lessons (status must be 'confirmed'; " +
-        "pass autoConfirmTopicMap:true only in noninteractive/test runs).",
-    );
-  }
-  if (!isContractBackedLearningMap(map)) {
-    throw new Error(
-      "This confirmed learning map was created before Learning Unit Contracts existed. Start Learn again to draft a new source-grounded learning map.",
-    );
+  try {
+    assertNoPendingLearnClear(gardenId);
+    reconcileSupersededAwaitingLearnJobs(gardenId);
+  } catch (error) {
+    if (ownsLease) lease.release();
+    throw error;
   }
 
-  // A confirmed map owns its document selection. Reusing that persisted set
-  // prevents excluded PDFs from leaking back in during confirmation, retries,
-  // or lesson regeneration.
-  const context = collectLearnSourceContext(
-    contentPath,
-    gardenId,
-    map.sourceIds.length > 0 ? map.sourceIds : undefined,
+  let map: StoredLearningMap;
+  let context: LearnSourceContext;
+  let handoffJobId: string | undefined;
+  try {
+    let selectedMap = confirmedLearningMapId
+      ? getLearnMapById(confirmedLearningMapId, gardenId)
+      : getLatestConfirmedLearnMap(gardenId);
+    if (confirmedLearningMapId && !selectedMap) {
+      throw new LearnPipelineConflictError(
+        "The requested confirmed Learning Map does not belong to this garden or no longer exists.",
+      );
+    }
+    let proposedForAutoConfirm: StoredLearningMap | null = null;
+    if ((!selectedMap || selectedMap.status !== "confirmed") && autoConfirmTopicMap) {
+      proposedForAutoConfirm = confirmedLearningMapId
+        ? getLearnMapById(confirmedLearningMapId, gardenId)
+        : getLatestProposedLearnMap(gardenId);
+    }
+    const workflowMap = selectedMap ?? proposedForAutoConfirm;
+    // A manual confirmation normally leaves its planning row waiting. It is
+    // the one row this generation is allowed to hand off; every other active,
+    // pending-cancel, or awaiting workflow must be reconciled first.
+    const workflowJob = workflowMap ? getLearnJobById(workflowMap.jobId) : null;
+    handoffJobId =
+      workflowJob?.gardenId === gardenId &&
+      (workflowJob.status === "awaiting_confirmation" ||
+        workflowJob.status === "building_navigation")
+        ? workflowJob.id
+        : undefined;
+    assertNoUnresolvedLearnJob(gardenId, handoffJobId);
+    if (proposedForAutoConfirm) {
+      // This mutation is deliberately inside the fenced garden lease.
+      if (proposedForAutoConfirm.status !== "confirmed") {
+        confirmLearningMap({
+          gardenId,
+          learningMapId: proposedForAutoConfirm.id,
+          contentPath,
+          gardenLease: lease,
+        });
+      }
+      selectedMap = getLearnMapById(proposedForAutoConfirm.id, gardenId);
+    }
+    if (!selectedMap || selectedMap.status !== "confirmed") {
+      throw new Error(
+        "Confirm a learning map before generating lessons (status must be 'confirmed'; " +
+          "pass autoConfirmTopicMap:true only in noninteractive/test runs).",
+      );
+    }
+    if (!isContractBackedLearningMap(selectedMap)) {
+      throw new Error(
+        "This confirmed learning map was created before Learning Unit Contracts existed. Start Learn again to draft a new source-grounded learning map.",
+      );
+    }
+    if (gardenLease && selectedMap.jobId !== jobId) {
+      throw new LearnPipelineConflictError(
+        "The retained planning lease does not own the confirmed Learning Map.",
+      );
+    }
+    map = selectedMap;
+    // Reload source state only after lease acquisition. A confirmed map owns
+    // its exact document/syllabus selection, so a concurrent rebuild cannot
+    // leave this worker generating from stale pre-lock bytes.
+    context = collectLearnSourceContext(
+      contentPath,
+      gardenId,
+      map.sourceIds.length > 0 ? map.sourceIds : undefined,
+      map.syllabusSourceId,
+    );
+    if (context.sourceSetHash !== map.sourceSetHash) {
+      throw new LearnPipelineConflictError(
+        "The selected sources changed after this Learning Map was created. Run Learn planning again and review the updated map before generating lessons.",
+      );
+    }
+  } catch (error) {
+    if (ownsLease) lease.release();
+    throw error;
+  }
+
+  let job: LearnJob;
+  try {
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn generation lost its garden lease before creating or adopting its job.",
+      );
+    }
+    assertNoPendingLearnClear(gardenId);
+    const currentHandoffJob = handoffJobId
+      ? getLearnJobById(handoffJobId)
+      : null;
+    handoffJobId =
+      currentHandoffJob?.gardenId === gardenId &&
+      (currentHandoffJob.status === "awaiting_confirmation" ||
+        currentHandoffJob.status === "building_navigation")
+        ? currentHandoffJob.id
+        : undefined;
+    assertNoUnresolvedLearnJob(gardenId, handoffJobId);
+    if (gardenLease) {
+      throwIfLearnCancelled(jobId);
+      const retainedJob = getLearnJobById(jobId);
+      if (!retainedJob || retainedJob.gardenId !== gardenId) {
+        throw new LearnPipelineConflictError(
+          "The retained planning job no longer exists for this garden.",
+        );
+      }
+      job = updateLearnJob(jobId, {
+        mode,
+        sourceIds: context.selectedSourceIds,
+        syllabusSourceId: context.syllabus?.slug,
+        sourceOnly,
+        includeSourceSnapshots,
+        confirmedLearningMapId: map.id,
+        currentStep: "Preparing isolated lesson workspace",
+      });
+      if (job.status === "cancelled" || job.status === "failed" || job.status === "complete") {
+        throw new LearnPipelineConflictError(
+          `The retained Learn workflow is already ${job.status}.`,
+        );
+      }
+    } else {
+      job = db.transaction(() => {
+        const planningJob = getLearnJobById(map.jobId);
+        if (
+          planningJob?.gardenId === gardenId &&
+          (planningJob.status === "awaiting_confirmation" ||
+            planningJob.status === "building_navigation")
+        ) {
+          updateLearnJobExpectStatus(planningJob.id, {
+            status: "complete",
+            currentStep: `Learning map confirmed; lesson generation handed off to ${jobId}`,
+            progressPercent: 100,
+            confirmedLearningMapId: map.id,
+          });
+        }
+        return createLearnJob({
+          id: jobId,
+          gardenId,
+          userId,
+          mode,
+          sourceIds: context.selectedSourceIds,
+          syllabusSourceId: context.syllabus?.slug,
+          sourceOnly,
+          includeSourceSnapshots,
+        });
+      }).immediate();
+    }
+  } catch (error) {
+    if (ownsLease) lease.release();
+    throw error;
+  }
+
+  let workspace: LearnBuildWorkspace | null = null;
+  let disposeModelTracking = (): void => {};
+  try {
+    if (!gardenLease) {
+      createLearnRunSnapshot({
+        gardenId,
+        contentPath,
+        jobId: job.id,
+        inheritFromJobId: map.jobId,
+      });
+      throwIfLearnCancelled(job.id);
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn generation lost its garden lease while creating the rollback snapshot.",
+        );
+      }
+    }
+    workspace = createLearnBuildWorkspace({
+      gardenSlug: gardenId,
+      jobId: job.id,
+      mode:
+        mode === "update_sources"
+          ? "update"
+          : mode === "generate"
+            ? "generate"
+            : "regenerate",
+      repositoryGardenDir,
+      contractFingerprint: createHash("sha256")
+        .update(JSON.stringify(map.coveragePlan ?? null))
+        .digest("hex"),
+      sourceSetFingerprint: context.sourceSetHash,
+      stagingDirectoryName: gardenId,
+    });
+    throwIfLearnCancelled(job.id);
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn generation lost its garden lease while seeding the isolated workspace.",
+      );
+    }
+    const stagedContext = collectLearnSourceContext(
+      workspace.workspaceRoot,
+      gardenId,
+      map.sourceIds.length > 0 ? map.sourceIds : undefined,
+      map.syllabusSourceId,
+    );
+    throwIfLearnCancelled(job.id);
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn generation lost its garden lease while validating staged sources.",
+      );
+    }
+    if (stagedContext.sourceSetHash !== map.sourceSetHash) {
+      throw new LearnPipelineConflictError(
+        "The selected sources changed while Learn was preparing its isolated workspace. Run planning again before generating lessons.",
+      );
+    }
+    context = stagedContext;
+    disposeModelTracking = attachLearnJobModelTracking({
+      client,
+      jobId: job.id,
+      gardenId,
+      contentPath,
+    });
+  } catch (error) {
+    if (workspace) disposeLearnBuildWorkspace(workspace);
+    if (ownsLease) lease.release();
+    const message = errorMessage(error, "Generation workspace could not be prepared");
+    updateLearnJob(job.id, {
+      status: "failed",
+      currentStep: "Generation could not start",
+      error: message,
+    });
+    throw error;
+  }
+  const artifactContentPath = workspace.workspaceRoot;
+  const clusterDir = workspace.stagingGardenDir;
+  let previousPromotedGardenDir: string | undefined;
+  let promotionCommitted = false;
+  // Built once from the confirmed map's own availability check, so every page in
+  // this run is judged against the same answer planning used. Empty when there
+  // is no syllabus or nothing it assigns is missing, in which case the gate
+  // costs nothing and never fires.
+  const missingCitationProbes: UnavailableCitationProbe[] = unavailableCitationProbes(
+    map.syllabusCoverage ?? null,
   );
-  const job = createLearnJob({
-    gardenId,
-    userId,
-    mode,
-    sourceIds: context.sources.map((source) => source.slug),
-    sourceOnly,
-    includeSourceSnapshots,
-  });
-  createLearnRunSnapshot({
-    gardenId,
-    contentPath,
-    jobId: job.id,
-    inheritFromJobId: map.jobId,
-  });
-  const disposeModelTracking = attachLearnJobModelTracking({
-    client,
-    jobId: job.id,
-    gardenId,
-    contentPath,
-  });
-  const clusterDir = clusterPath(contentPath, gardenId);
-  fs.mkdirSync(clusterDir, { recursive: true });
+  const unavailableCitationGate = missingCitationProbes.length
+    ? { detect: (prose: string) => detectUnavailableCitations(prose, missingCitationProbes) }
+    : undefined;
   let confirmedLearningUnits = learningUnitsFromCoveragePlan(map.coveragePlan);
   const confirmedSourceArtifactAssignments = sourceArtifactAssignmentsFromCoveragePlan(map.coveragePlan);
   // Version ids are learning_* so nothing named "textbook" can leak into a
@@ -5658,7 +6965,7 @@ export async function runTextbookGeneration({
     const ledgerVisuals = await ensureSourceVisualsExtracted({
       client,
       model,
-      contentPath,
+      contentPath: artifactContentPath,
       gardenId,
       context,
       onProgress: (step) => updateLearnJob(job.id, { currentStep: step }),
@@ -5777,7 +7084,7 @@ export async function runTextbookGeneration({
       client,
       model,
       gardenId,
-      contentPath,
+      contentPath: artifactContentPath,
       jobId: job.id,
       learningUnits: confirmedLearningUnits,
     });
@@ -5864,16 +7171,6 @@ export async function runTextbookGeneration({
         });
       }
     }
-    db.prepare(
-      `UPDATE learn_maps
-       SET coverage_plan_json = ?, learning_map_json = ?, proposed_order_json = ?
-       WHERE id = ?`,
-    ).run(
-      jsonString(repairedCoveragePlan),
-      jsonString(repairedLearningMap),
-      jsonString(repairedLearningMap.sections),
-      map.id,
-    );
     if (contractWrite.semanticAliasRepairs.length > 0) {
       appendLearnEvent(contentPath, gardenId, "learn_concept_aliases_reconciled", {
         jobId: job.id,
@@ -6104,6 +7401,8 @@ export async function runTextbookGeneration({
           anchors,
           scopeContract: map.scopeContract,
           sources: context.sources,
+          syllabus: context.syllabus,
+          syllabusCoverage: map.syllabusCoverage,
           assignedVisuals,
           sourceArtifactAssignments: confirmedSourceArtifactAssignments,
           sourceOnly,
@@ -6184,7 +7483,11 @@ export async function runTextbookGeneration({
               taskType: "subsection_generation",
               gardenId,
               pageId,
-              system: SUBSECTION_PROMPT,
+              system: withSyllabusRules(
+                SUBSECTION_PROMPT,
+                SYLLABUS_PAGE_RULES,
+                Boolean(context.syllabus),
+              ),
               user: compactJson({
                 task: "write_subsection",
                 dossier: pageDossier,
@@ -6236,13 +7539,19 @@ export async function runTextbookGeneration({
           attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
           attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
 
-          let quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
+          let quality = assessLessonQuality(attemptBody, {
+            assignedVisualUrls,
+            unavailableCitations: unavailableCitationGate,
+          });
           if (quality.problems.some((problem) => problem.code === "source-commentary")) {
             // Free deterministic re-scrub before spending any model call.
             attemptBody = scrubSourceCommentaryProse(attemptBody);
             attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
             attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
-            quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
+            quality = assessLessonQuality(attemptBody, {
+            assignedVisualUrls,
+            unavailableCitations: unavailableCitationGate,
+          });
           }
 
           // Hard-fail-only repair: one focused call that fixes the listed
@@ -6277,6 +7586,11 @@ export async function runTextbookGeneration({
                     "Remove empty or ellipsis-only bullets instead of returning scaffold bullets.",
                     "Keep source-only constraints.",
                     "Keep assigned visuals embedded where relevant.",
+                    ...(unavailableCitationGate
+                      ? [
+                          "If unavailable-citation is listed, the page wrote about a work this garden does not contain. Delete every sentence that names, summarizes, or draws on it, and re-teach that point from the dossier's own source snippets — or drop the point entirely. Never replace it with a rephrased version of the same claim.",
+                        ]
+                      : []),
                     "Return only the final markdown.",
                   ],
                 }),
@@ -6292,7 +7606,10 @@ export async function runTextbookGeneration({
               attemptBody = scrubSourceCommentaryProse(scrubAiisms(scrubLearnerProse(attemptBody)));
               attemptBody = ensureQuestionBlock(attemptBody, subsectionTitle);
               attemptBody = embedAssignedSourceVisuals(attemptBody, assignedVisuals);
-              quality = assessLessonQuality(attemptBody, { assignedVisualUrls });
+              quality = assessLessonQuality(attemptBody, {
+            assignedVisualUrls,
+            unavailableCitations: unavailableCitationGate,
+          });
             } catch {
               // Keep the deterministic result and let the hard gate decide.
             }
@@ -6353,7 +7670,7 @@ export async function runTextbookGeneration({
         const visualized = await reconcileInteractiveVisuals({
           client,
           model,
-          contentPath,
+          contentPath: artifactContentPath,
           gardenId,
           jobId: job.id,
           textbookVersionId,
@@ -6475,7 +7792,7 @@ export async function runTextbookGeneration({
     throwIfLearnCancelled(job.id);
     {
       const liveVisualIds = new Set(generatedPages.flatMap((page) => page.visualIds));
-      const pruned = pruneVisualArtifacts(contentPath, gardenId, liveVisualIds);
+      const pruned = pruneVisualArtifacts(artifactContentPath, gardenId, liveVisualIds);
       if (pruned.removedFromIndex.length > 0 || pruned.removedSpecFiles.length > 0) {
         appendLearnEvent(contentPath, gardenId, "learn_visual_index_pruned", {
           jobId: job.id,
@@ -6516,7 +7833,7 @@ export async function runTextbookGeneration({
     // Stage 3 closeout: every extracted visual is either assigned to the page
     // that embedded it, or intentionally skipped with a recorded reason.
     const finalLedger = recordSourceVisualAssignments(
-      contentPath,
+      artifactContentPath,
       gardenId,
       visualAssignments,
       (visual) =>
@@ -6562,7 +7879,7 @@ export async function runTextbookGeneration({
       currentPageTitle: undefined,
     });
     throwIfLearnCancelled(job.id);
-    refreshClusterIndex(contentPath, gardenId);
+    refreshClusterIndex(artifactContentPath, gardenId, { migrateSources: false });
 
     updateLearnJob(job.id, {
       status: "building_navigation",
@@ -7014,10 +8331,9 @@ export async function runTextbookGeneration({
     }
 
     // Stage 8c (end-stage semantic critic): ChatMock reviews the FINAL exported
-    // state and drives targeted repair rounds. It NEVER fails generation — the
-    // garden is a draft regardless of critic outcome. It becomes publish-ready
-    // only when deterministic validation AND the critic find no blocking issues.
-    // Any error (e.g. ChatMock unreachable) is swallowed so a draft still ships.
+    // state and drives targeted repair rounds. When enabled, critic acceptance
+    // is a publication gate alongside deterministic validation; an unavailable
+    // critic or unresolved blocker leaves the published garden untouched.
     try {
       if ((process.env.BREADBOARD_CRITIC_ENABLED ?? "true").trim() !== "false") {
         // Fix 13 step 2: migrate/rescore LEGACY text-concept anchors BEFORE the
@@ -7095,27 +8411,57 @@ export async function runTextbookGeneration({
           warnings: criticLoop.finalWarnings.length,
           reason: criticLoop.status.reason,
         });
+        if (!criticLoop.status.publishReady || criticLoop.finalBlockingIssues.length > 0) {
+          throw new Error(
+            `Semantic critic did not approve publication: ${criticLoop.status.reason || `${criticLoop.finalBlockingIssues.length} blocking issue(s) remain`}.`,
+          );
+        }
       }
     } catch (criticError) {
-      appendLearnEvent(contentPath, gardenId, "learn_critic_loop_skipped", {
+      appendLearnEvent(contentPath, gardenId, "learn_critic_loop_failed", {
         jobId: job.id,
         reason: criticError instanceof Error ? criticError.message : String(criticError),
       });
+      throw criticError;
     }
 
     throwIfLearnCancelled(job.id);
-    await publishQuartzAfterMutation(`learn textbook generation in ${gardenId}`);
-    throwIfLearnCancelled(job.id);
-
-    insertLearnVersion({
-      id: textbookVersionId,
-      gardenId,
-      jobId: job.id,
-      learningMapId: map.id,
-      sourceSetHash: context.sourceSetHash,
-      pageCount: generatedPages.length + learningRelPaths.length + 1,
-      backupDir,
+    mergeLearnEventLedgers(repositoryGardenDir, clusterDir);
+    updateLearnJobExpectStatus(job.id, {
+      status: "writing_quartz",
+      currentStep: "Publishing validated garden",
+      progressPercent: 99,
     });
+    committingLearnJobs.add(job.id);
+    const promotion = await promoteStagingGarden({
+      stagingGardenDir: clusterDir,
+      destinationGardenDir: repositoryGardenDir,
+      retainPreviousUntilCallerCommit: true,
+      recoveryOwnerId: job.id,
+      verifyCurrentDestination: (destinationDir) =>
+        lease.heartbeat() &&
+        fingerprintDurableGardenState(destinationDir) === workspace!.durableInputFingerprint,
+      prepareIncomingForCommit: (incomingDir, destinationDir) => {
+        mergeLearnEventLedgers(destinationDir, incomingDir);
+        return true;
+      },
+      verifyManifest: (candidateDir) =>
+        verifyFinalArtifactNoMutation({ gardenDir: candidateDir, gardenSlug: gardenId }).accepted,
+    });
+    previousPromotedGardenDir = promotion.previousPreservedAt;
+    if (!promotion.promoted) {
+      throw new LearnPipelineConflictError(
+        `Validated Learn output was not published: ${promotion.reason}`,
+      );
+    }
+    await publishQuartzAfterMutation(`learn textbook generation in ${gardenId}`, {
+      requireSuccess: true,
+    });
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn generation lost its garden lease after Quartz publication.",
+      );
+    }
 
     appendLearnEvent(contentPath, gardenId, "learn_generation_completed", {
       jobId: job.id,
@@ -7123,26 +8469,144 @@ export async function runTextbookGeneration({
       pageCount: generatedPages.length,
       sourceIds: context.sources.map((source) => source.slug),
     });
-    const finalJob = updateLearnJob(job.id, {
-      status: "complete",
-      currentStep: "Lessons complete",
-      progressPercent: 100,
-      confirmedLearningMapId: map.id,
-      latestTextbookVersionId: textbookVersionId,
-      sourceSetHash: context.sourceSetHash,
-    });
-    discardLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+    const mapToCommit = map;
+    const finalJob = db.transaction(() => {
+      const mapUpdate = db.prepare(
+        `UPDATE learn_maps
+         SET coverage_plan_json = ?, learning_map_json = ?, proposed_order_json = ?
+         WHERE id = ? AND garden_id = ?`,
+      ).run(
+        jsonString(mapToCommit.coveragePlan),
+        jsonString(mapToCommit.learningMap),
+        jsonString(mapToCommit.proposedOrder),
+        mapToCommit.id,
+        gardenId,
+      );
+      if (mapUpdate.changes !== 1) {
+        throw new LearnPipelineConflictError(
+          "The confirmed Learning Map disappeared before generation could commit.",
+        );
+      }
+      insertLearnVersion({
+        id: textbookVersionId,
+        gardenId,
+        jobId: job.id,
+        learningMapId: mapToCommit.id,
+        sourceSetHash: context.sourceSetHash,
+        pageCount: generatedPages.length + learningRelPaths.length + 1,
+        backupDir,
+      });
+      return updateLearnJobExpectStatus(job.id, {
+        status: "complete",
+        currentStep: "Lessons complete",
+        progressPercent: 100,
+        confirmedLearningMapId: mapToCommit.id,
+        latestTextbookVersionId: textbookVersionId,
+        sourceSetHash: context.sourceSetHash,
+      });
+    })();
+    // Filesystem publication, Quartz, and the SQLite version/job pair are now
+    // committed. Everything after this point is best-effort garbage collection
+    // and must never turn a successful run into a failed/rolled-back one.
+    promotionCommitted = true;
+    if (previousPromotedGardenDir && lease.heartbeat()) {
+      try {
+        fs.rmSync(previousPromotedGardenDir, { recursive: true, force: true });
+        previousPromotedGardenDir = undefined;
+      } catch (cleanupError) {
+        console.warn(
+          `[learn] Previous published garden remains at ${previousPromotedGardenDir}:`,
+          cleanupError,
+        );
+      }
+    }
     return {
       job: finalJob,
       textbookVersionId,
       pageCount: generatedPages.length,
     };
   } catch (error) {
+    if (
+      lease.lost ||
+      leaseLostLearnJobs.has(job.id) ||
+      !lease.heartbeat()
+    ) {
+      throw error;
+    }
+    if (previousPromotedGardenDir && !promotionCommitted) {
+      let restored = false;
+      try {
+        await restorePreviousPromotedGarden(
+          repositoryGardenDir,
+          previousPromotedGardenDir,
+          () => lease.heartbeat(),
+        );
+        if (!lease.heartbeat()) {
+          throw new LearnPipelineConflictError(
+            "Learn generation lost its lease after restoring the previous garden.",
+          );
+        }
+        previousPromotedGardenDir = undefined;
+        restored = true;
+      } catch (restoreError) {
+        appendLearnEvent(contentPath, gardenId, "learn_publication_restore_failed", {
+          jobId: job.id,
+          error: restoreError instanceof Error ? restoreError.message : String(restoreError),
+        });
+        updateLearnJob(job.id, {
+          status: "writing_quartz",
+          currentStep: "Filesystem restore pending retry",
+          error: errorMessage(restoreError),
+        });
+        throw restoreError;
+      }
+      if (restored) {
+        const publicationToken = queueLearnPublicationRetry(
+          gardenId,
+          "restored failed Learn generation",
+          new Error("Publication pending"),
+        );
+        try {
+          await publishQuartzAfterMutation(
+            `rolled back failed Learn generation in ${gardenId}`,
+            { requireSuccess: true },
+          );
+          clearLearnPublicationRetry(gardenId, publicationToken);
+        } catch (republishError) {
+          queueLearnPublicationRetry(
+            gardenId,
+            "restored failed Learn generation",
+            republishError,
+          );
+          appendLearnEvent(contentPath, gardenId, "learn_publication_republish_queued", {
+            jobId: job.id,
+            error: errorMessage(republishError),
+          });
+        }
+      }
+    }
     if (isLearnCancellation(job.id, error)) {
       // The Stop button already flipped the job to cancelled; sweep any
       // partial Learn output that was written before the checkpoint fired.
       try {
-        await cleanupLearnArtifactsAfterCancel({ gardenId, contentPath, jobId: job.id });
+        const cleanup = await cleanupLearnArtifactsAfterCancel({
+          gardenId,
+          contentPath,
+          jobId: job.id,
+          lease,
+        });
+        updateLearnJob(job.id, {
+          status: "cancelled",
+          currentStep: "Cancelled; latest Learn changes rolled back",
+        });
+        discardLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+        appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
+          jobId: job.id,
+          removedPathCount: cleanup.removedPaths.length,
+          restoredPathCount: cleanup.restoredPaths.length,
+          deletedMaps: cleanup.deletedMaps,
+          deletedVersions: cleanup.deletedVersions,
+        });
       } catch {
         // Cleanup is best-effort during unwind; the cancel endpoint reports its
         // own cleanup errors when the user presses Stop.
@@ -7166,7 +8630,10 @@ export async function runTextbookGeneration({
     });
     throw error;
   } finally {
+    committingLearnJobs.delete(job.id);
     disposeModelTracking();
+    if (workspace) disposeLearnBuildWorkspace(workspace);
+    if (ownsLease) lease.release();
   }
 }
 
@@ -7176,10 +8643,127 @@ export interface FullRebuildOptions {
   model?: string;
   contentPath: string;
   includedSourceIds?: readonly string[];
+  /** Slug of an uploaded document to use as the course study guide. */
+  syllabusSourceId?: string | null;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
   /** Destructive confirmation. The literal true is required at runtime too. */
   forceFullRebuild: true;
+}
+
+function mergeLearnEventLedgers(repositoryGardenDir: string, stagingGardenDir: string): void {
+  const relative = path.join(".breadboard", "events.jsonl");
+  const livePath = path.join(repositoryGardenDir, relative);
+  const stagingPath = path.join(stagingGardenDir, relative);
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const eventPath of [livePath, stagingPath]) {
+    let raw = "";
+    try {
+      raw = fs.readFileSync(eventPath, "utf-8");
+    } catch {
+      continue;
+    }
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line || seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  if (lines.length === 0) return;
+  fs.mkdirSync(path.dirname(stagingPath), { recursive: true });
+  fs.writeFileSync(stagingPath, `${lines.join("\n")}\n`, "utf-8");
+}
+
+async function restorePreviousPromotedGarden(
+  destinationGardenDir: string,
+  previousGardenDir?: string,
+  ownsLease?: () => boolean,
+): Promise<void> {
+  const failedDir = path.join(
+    path.dirname(destinationGardenDir),
+    `.${path.basename(destinationGardenDir)}.failed-commit-${Date.now().toString(36)}`,
+  );
+  const retryRename = async (
+    source: string,
+    destination: string,
+    requireOwnership = true,
+  ): Promise<string | null> => {
+    let lastError = "";
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      if (requireOwnership && ownsLease && !ownsLease()) {
+        return "lost the fenced garden lease before filesystem restore";
+      }
+      try {
+        fs.renameSync(source, destination);
+        return null;
+      } catch (error) {
+        lastError = errorMessage(error);
+        if (attempt < 6) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(1_500, 100 * 2 ** (attempt - 1))),
+          );
+        }
+      }
+    }
+    return lastError;
+  };
+
+  const hadDestination = fs.existsSync(destinationGardenDir);
+  if (hadDestination) {
+    const displaceError = await retryRename(destinationGardenDir, failedDir);
+    if (displaceError) {
+      throw new Error(
+        `Could not move the current garden aside for restore; destination remains intact. ${displaceError}`,
+      );
+    }
+  }
+
+  let restoreError: string | null = null;
+  if (previousGardenDir && fs.existsSync(previousGardenDir)) {
+    restoreError = await retryRename(previousGardenDir, destinationGardenDir);
+  } else if (hadDestination) {
+    restoreError = "The retained previous garden is missing; refusing a destructive restore.";
+  }
+
+  if (restoreError) {
+    let fallbackError: string | null = null;
+    if (
+      hadDestination &&
+      !fs.existsSync(destinationGardenDir) &&
+      fs.existsSync(failedDir)
+    ) {
+      // Restoring the tree we displaced is a compensating action: once this
+      // worker made the destination absent it must repair that absence, even if
+      // fencing was lost in the meantime. It never overwrites a new destination.
+      fallbackError = await retryRename(failedDir, destinationGardenDir, false);
+    }
+    if (fallbackError) {
+      throw new Error(
+        `Previous garden restore failed (${restoreError}); restoring the displaced live garden also failed (${fallbackError}). Recovery copies remain at ${previousGardenDir ?? "(missing previous)"} and ${failedDir}.`,
+      );
+    }
+    throw new Error(
+      `Previous garden restore failed (${restoreError}); the displaced live garden was restored and the retained previous copy remains at ${previousGardenDir ?? "(missing previous)"}.`,
+    );
+  }
+  if ((!ownsLease || ownsLease()) && fs.existsSync(failedDir)) {
+    try {
+      fs.rmSync(failedDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      console.warn(
+        `[learn] Restored the previous garden; displaced failed tree remains at ${failedDir}:`,
+        cleanupError,
+      );
+    }
+  }
+}
+
+export class LearnPipelineConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LearnPipelineConflictError";
+  }
 }
 
 /** The only Learn flow allowed to discard and recreate the plan, contract,
@@ -7191,34 +8775,106 @@ export async function rebuildEntireGarden(
   if (options.forceFullRebuild !== true) {
     throw new Error("Rebuilding the entire garden requires explicit confirmation.");
   }
-  const planning = await runLearnPlanning({
-    gardenId,
-    userId: options.userId,
-    client: options.client,
-    model: options.model ?? DEFAULT_MODEL,
-    contentPath: options.contentPath,
-    includedSourceIds: options.includedSourceIds,
-    sourceOnly: options.sourceOnly ?? true,
-    includeSourceSnapshots: options.includeSourceSnapshots ?? false,
-    resetSourceMap: true,
-  });
-  const confirmed = confirmLearningMap({
-    gardenId,
-    learningMapId: planning.learningMap.id,
-    contentPath: options.contentPath,
-  });
-  const generation = await runTextbookGeneration({
-    gardenId,
-    userId: options.userId,
-    client: options.client,
-    model: options.model ?? DEFAULT_MODEL,
-    contentPath: options.contentPath,
-    confirmedLearningMapId: confirmed.id,
-    mode: "full_rebuild",
-    sourceOnly: options.sourceOnly ?? true,
-    includeSourceSnapshots: options.includeSourceSnapshots ?? false,
-  });
-  return generation.job;
+  let rebuildLease: GardenLearnLease | undefined;
+  let planningJobId: string | undefined;
+  try {
+    const planning = await runLearnPlanning({
+      gardenId,
+      userId: options.userId,
+      client: options.client,
+      model: options.model ?? DEFAULT_MODEL,
+      contentPath: options.contentPath,
+      includedSourceIds: options.includedSourceIds,
+      syllabusSourceId: options.syllabusSourceId,
+      sourceOnly: options.sourceOnly ?? true,
+      includeSourceSnapshots: options.includeSourceSnapshots ?? false,
+      resetSourceMap: true,
+      retainLeaseOnSuccess: true,
+    });
+    rebuildLease = planning.retainedLease;
+    planningJobId = planning.job.id;
+    if (!rebuildLease) {
+      throw new Error("Full rebuild planning did not retain its garden lease.");
+    }
+    throwIfLearnCancelled(planning.job.id);
+    const confirmed = confirmLearningMap({
+      gardenId,
+      learningMapId: planning.learningMap.id,
+      contentPath: options.contentPath,
+      gardenLease: rebuildLease,
+    });
+    const generation = await runTextbookGeneration({
+      gardenId,
+      userId: options.userId,
+      client: options.client,
+      model: options.model ?? DEFAULT_MODEL,
+      contentPath: options.contentPath,
+      confirmedLearningMapId: confirmed.id,
+      mode: "full_rebuild",
+      sourceOnly: options.sourceOnly ?? true,
+      includeSourceSnapshots: options.includeSourceSnapshots ?? false,
+      gardenLease: rebuildLease,
+    });
+    return generation.job;
+  } catch (error) {
+    if (
+      planningJobId &&
+      rebuildLease &&
+      (rebuildLease.lost ||
+        leaseLostLearnJobs.has(planningJobId) ||
+        !rebuildLease.heartbeat())
+    ) {
+      throw error;
+    }
+    if (planningJobId && rebuildLease) {
+      const rollback = await rollbackLearnRun({
+        gardenId,
+        contentPath: options.contentPath,
+        jobId: planningJobId,
+        lease: rebuildLease,
+      });
+      const publicationToken = queueLearnPublicationRetry(
+        gardenId,
+        "failed Learn rebuild rollback",
+        new Error("Publication pending"),
+      );
+      appendLearnEvent(options.contentPath, gardenId, "learn_full_rebuild_rolled_back", {
+        jobId: planningJobId,
+        restoredPathCount: rollback.restoredPaths.length,
+        deletedMaps: rollback.deletedMaps,
+        deletedVersions: rollback.deletedVersions,
+      });
+      if (!isLearnCancellation(planningJobId, error)) {
+        updateLearnJob(planningJobId, {
+          status: "failed",
+          currentStep: "Full rebuild failed; prior garden restored",
+          error: errorMessage(error, "Full rebuild failed"),
+        });
+      }
+      discardLearnRunSnapshot({
+        gardenId,
+        contentPath: options.contentPath,
+        jobId: planningJobId,
+      });
+      try {
+        await publishQuartzAfterMutation(`failed Learn rebuild rollback in ${gardenId}`, {
+          requireSuccess: true,
+        });
+        clearLearnPublicationRetry(gardenId, publicationToken);
+      } catch (publicationError) {
+        queueLearnPublicationRetry(
+          gardenId,
+          "failed Learn rebuild rollback",
+          publicationError,
+        );
+        // The prior filesystem state is already restored; publication can be
+        // retried independently without sacrificing the original error.
+      }
+    }
+    throw error;
+  } finally {
+    rebuildLease?.release();
+  }
 }
 
 export class LearnRepairPendingMapError extends Error {
@@ -7252,23 +8908,55 @@ export async function runLearnRepairOperation({
   if (latestJob?.status === "awaiting_confirmation") {
     throw new LearnRepairPendingMapError(latestJob.id);
   }
-  const context = collectLearnSourceContext(contentPath, gardenId);
-  const job = createLearnJob({
-    gardenId,
-    userId,
-    mode: "repair",
-    sourceIds: context.sources.map((source) => source.slug),
-    sourceOnly: true,
-    includeSourceSnapshots: false,
-  });
+  assertNoPendingLearnClear(gardenId);
   const gardenDir = clusterPath(contentPath, gardenId);
-  const lock = acquireGardenLearnLock(gardenDir, { gardenSlug: gardenId, jobId: job.id, buildId: `repair:${job.id}` });
-  if (!lock.acquired) {
-    const message = `Another Learn operation (${lock.conflict.jobId}) is already active for this garden.`;
-    updateLearnJob(job.id, { status: "failed", currentStep: "Repair could not start", error: message });
-    throw new Error(message);
+  const jobId = makeId("learn_job");
+  const leaseResult = acquireGardenLearnLease(gardenDir, {
+    gardenSlug: gardenId,
+    jobId,
+    buildId: `repair:${jobId}`,
+  }, {
+    onLeaseLost: () => abortLearnWorkerAfterLeaseLoss(jobId),
+  });
+  if (!leaseResult.acquired) {
+    const message = `Another Learn operation (${leaseResult.conflict.jobId}) is already active for this garden.`;
+    throw new LearnPipelineConflictError(message);
+  }
+  const lease = leaseResult.lease;
+  try {
+    assertNoPendingLearnClear(gardenId);
+    reconcileSupersededAwaitingLearnJobs(gardenId);
+    assertNoUnresolvedLearnJob(gardenId);
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+  const context = collectLearnSourceContext(contentPath, gardenId);
+  let job: LearnJob;
+  try {
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn repair lost its garden lease before creating its job.",
+      );
+    }
+    assertNoPendingLearnClear(gardenId);
+    assertNoUnresolvedLearnJob(gardenId);
+    job = createLearnJob({
+      id: jobId,
+      gardenId,
+      userId,
+      mode: "repair",
+      sourceIds: context.sources.map((source) => source.slug),
+      sourceOnly: true,
+      includeSourceSnapshots: false,
+    });
+  } catch (error) {
+    lease.release();
+    throw error;
   }
   let disposeModelTracking = () => {};
+  let previousRepairGardenDir: string | undefined;
+  let repairCommitRecorded = false;
   try {
     disposeModelTracking = attachLearnJobModelTracking({
       client,
@@ -7276,12 +8964,21 @@ export async function runLearnRepairOperation({
       gardenId,
       contentPath,
     });
+    createLearnRunSnapshot({ gardenId, contentPath, jobId: job.id });
+    throwIfLearnCancelled(job.id);
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn repair lost its garden lease while creating the rollback snapshot.",
+      );
+    }
     updateLearnJob(job.id, { status: "analyzing_issues", currentStep: "Analyzing validation issues", progressPercent: 5 });
     appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_started", { jobId: job.id, request });
     const repair = await executeLearnScopedRepair({
       gardenDir,
       gardenId,
       request,
+      recoveryOwnerId: job.id,
+      verifyLease: () => lease.heartbeat(),
       modelRepair: async (packet: unknown, issue: GardenIssue) => {
         const result = await callCouncilJson({
           client,
@@ -7311,34 +9008,146 @@ export async function runLearnRepairOperation({
         const status: LearnStatus = lower.includes("analyzing") ? "analyzing_issues"
           : lower.includes("revalidating") ? "revalidating"
             : lower.includes("publishing") ? "publishing_repair" : "repairing";
+        if (status === "publishing_repair") {
+          if (!lease.heartbeat()) {
+            throw new LearnPipelineConflictError(
+              "Learn repair lost its garden lease before publication.",
+            );
+          }
+          committingLearnJobs.add(job.id);
+        }
         const progressPercent = status === "analyzing_issues" ? 10 : status === "repairing" ? 55 : status === "revalidating" ? 85 : 95;
-        updateLearnJob(job.id, {
+        const progressUpdate = {
           status, currentStep: step, progressPercent,
           currentPageTitle: issue?.target.pageId,
           currentSectionTitle: scope?.sectionIds.join(", ") || undefined,
-        });
+        };
+        if (status === "publishing_repair") {
+          updateLearnJobExpectStatus(job.id, progressUpdate);
+        } else {
+          updateLearnJob(job.id, progressUpdate);
+        }
       },
     });
+    previousRepairGardenDir = repair.promotion.previousPreservedAt;
     throwIfLearnCancelled(job.id);
-    if (!repair.transaction.committed) {
+    if (!repair.transaction.committed || !repair.accepted || !repair.publishReady) {
       const remaining = repair.transaction.blockersAfter.length;
       throw new Error(`Scoped repair stopped without publishing because its safety/progress gate failed. ${remaining} blocker(s) remain. Inspect .breadboard/scoped-repair.md; Full rebuild remains a separate action.`);
     }
-    updateLearnJob(job.id, { status: "publishing_repair", currentStep: "Publishing repaired projection", progressPercent: 96 });
-    await publishQuartzAfterMutation(`scoped Learn repair in ${gardenId}`);
+    updateLearnJobExpectStatus(job.id, { status: "publishing_repair", currentStep: "Publishing repaired projection", progressPercent: 96 });
+    await publishQuartzAfterMutation(`scoped Learn repair in ${gardenId}`, {
+      requireSuccess: true,
+    });
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn repair lost its garden lease after Quartz publication.",
+      );
+    }
     appendLearnEvent(contentPath, gardenId, "learn_scoped_repair_completed", {
       jobId: job.id, repairId: repair.scope.repairId, changedFiles: repair.files.changedFiles,
       preservedPageCount: repair.scope.explicitlyExcludedPageIds.length,
       modelCalls: repair.transaction.modelCalls, blockersBefore: repair.transaction.blockersBefore.length,
       blockersAfter: repair.transaction.blockersAfter.length, accepted: repair.accepted, publishReady: repair.publishReady,
     });
-    const finalJob = updateLearnJob(job.id, {
+    const finalJob = updateLearnJobExpectStatus(job.id, {
       status: "complete", currentStep: "Repair complete", progressPercent: 100,
       sourceSetHash: context.sourceSetHash,
     });
+    repairCommitRecorded = true;
+    try {
+      fs.rmSync(learnRunSnapshotDir(gardenDir, job.id), {
+        recursive: true,
+        force: true,
+      });
+    } catch (snapshotCleanupError) {
+      console.warn(
+        `[learn] Completed repair snapshot remains for ${job.id}:`,
+        snapshotCleanupError,
+      );
+    }
+    if (previousRepairGardenDir && lease.heartbeat()) {
+      try {
+        fs.rmSync(previousRepairGardenDir, { recursive: true, force: true });
+        previousRepairGardenDir = undefined;
+      } catch (cleanupError) {
+        console.warn(
+          `[learn] Previous repaired garden remains at ${previousRepairGardenDir}:`,
+          cleanupError,
+        );
+      }
+    }
     return { job: finalJob, repair };
   } catch (error) {
+    if (
+      lease.lost ||
+      leaseLostLearnJobs.has(job.id) ||
+      !lease.heartbeat()
+    ) {
+      throw error;
+    }
+    if (previousRepairGardenDir && !repairCommitRecorded) {
+      let restored = false;
+      try {
+        await restorePreviousPromotedGarden(
+          gardenDir,
+          previousRepairGardenDir,
+          () => lease.heartbeat(),
+        );
+        if (!lease.heartbeat()) {
+          throw new LearnPipelineConflictError(
+            "Learn repair lost its lease after restoring the previous garden.",
+          );
+        }
+        previousRepairGardenDir = undefined;
+        restored = true;
+      } catch (restoreError) {
+        appendLearnEvent(contentPath, gardenId, "learn_repair_restore_failed", {
+          jobId: job.id,
+          error: errorMessage(restoreError, "Repair restore failed"),
+        });
+        updateLearnJob(job.id, {
+          status: "publishing_repair",
+          currentStep: "Repair filesystem restore pending retry",
+          error: errorMessage(restoreError),
+        });
+        throw restoreError;
+      }
+      if (restored) {
+        const publicationToken = queueLearnPublicationRetry(
+          gardenId,
+          "restored failed Learn repair",
+          new Error("Publication pending"),
+        );
+        try {
+          await publishQuartzAfterMutation(
+            `rolled back failed Learn repair in ${gardenId}`,
+            { requireSuccess: true },
+          );
+          clearLearnPublicationRetry(gardenId, publicationToken);
+        } catch (republishError) {
+          queueLearnPublicationRetry(
+            gardenId,
+            "restored failed Learn repair",
+            republishError,
+          );
+          appendLearnEvent(contentPath, gardenId, "learn_repair_republish_queued", {
+            jobId: job.id,
+            error: errorMessage(republishError),
+          });
+        }
+      }
+    }
     if (isLearnCancellation(job.id, error)) {
+      updateLearnJob(job.id, {
+        status: "cancelled",
+        currentStep: "Cancelled; scoped repair changes were not published",
+        progressPercent: 0,
+      });
+      appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
+        jobId: job.id,
+        operation: "repair",
+      });
       throw new LearnCancelledError();
     }
     const raw = errorMessage(error, "Learn repair failed");
@@ -7347,8 +9156,25 @@ export async function runLearnRepairOperation({
     updateLearnJob(job.id, { status: "failed", currentStep: "Repair stopped with remaining blockers", error: message });
     throw error;
   } finally {
+    if (
+      !lease.lost &&
+      !leaseLostLearnJobs.has(job.id) &&
+      lease.heartbeat() &&
+      !previousRepairGardenDir
+    ) {
+      try {
+        fs.rmSync(learnRunSnapshotDir(gardenDir, job.id), {
+          recursive: true,
+          force: true,
+        });
+      } catch {
+        // Preserve the primary repair result; abandoned snapshot cleanup is
+        // best-effort once no retained rollback tree remains.
+      }
+    }
+    committingLearnJobs.delete(job.id);
     disposeModelTracking();
-    releaseGardenLearnLock(gardenDir, job.id);
+    lease.release();
   }
 }
 
@@ -7358,6 +9184,7 @@ export async function runLearnPipeline({
   mode,
   confirmedLearningMapId,
   includedSourceIds,
+  syllabusSourceId,
   sourceOnly = true,
   includeSourceSnapshots = false,
   autoConfirmTopicMap = false,
@@ -7370,6 +9197,8 @@ export async function runLearnPipeline({
   mode: LegacyLearnOperationMode;
   confirmedLearningMapId?: string;
   includedSourceIds?: readonly string[];
+  /** Slug of an uploaded document to use as the course study guide. */
+  syllabusSourceId?: string | null;
   sourceOnly?: boolean;
   includeSourceSnapshots?: boolean;
   autoConfirmTopicMap?: boolean;
@@ -7395,28 +9224,79 @@ export async function runLearnPipeline({
       model,
       contentPath,
       includedSourceIds,
+      syllabusSourceId,
       sourceOnly,
       includeSourceSnapshots,
+      retainLeaseOnSuccess: autoConfirmTopicMap,
     });
     if (!autoConfirmTopicMap) return planning;
-
-    const learningMap = confirmLearningMap({
-      gardenId,
-      learningMapId: planning.learningMap.id,
-      contentPath,
-    });
-    const generation = await runTextbookGeneration({
-      gardenId,
-      userId,
-      client,
-      model,
-      contentPath,
-      confirmedLearningMapId: learningMap.id,
-      mode: "generate",
-      sourceOnly,
-      includeSourceSnapshots,
-    });
-    return { planning, learningMap, generation };
+    const retainedLease = planning.retainedLease;
+    if (!retainedLease) {
+      throw new Error("Automatic Learn continuation did not retain its garden lease.");
+    }
+    try {
+      throwIfLearnCancelled(planning.job.id);
+      const learningMap = confirmLearningMap({
+        gardenId,
+        learningMapId: planning.learningMap.id,
+        contentPath,
+        gardenLease: retainedLease,
+      });
+      const generation = await runTextbookGeneration({
+        gardenId,
+        userId,
+        client,
+        model,
+        contentPath,
+        confirmedLearningMapId: learningMap.id,
+        mode: "generate",
+        sourceOnly,
+        includeSourceSnapshots,
+        gardenLease: retainedLease,
+      });
+      const publicPlanning = {
+        job: planning.job,
+        learningMap: planning.learningMap,
+      };
+      return { planning: publicPlanning, learningMap, generation };
+    } catch (error) {
+      if (
+        !retainedLease.lost &&
+        isLearnCancellation(planning.job.id, error)
+      ) {
+        try {
+          const cleanup = await cleanupLearnArtifactsAfterCancel({
+            gardenId,
+            contentPath,
+            jobId: planning.job.id,
+            lease: retainedLease,
+          });
+          updateLearnJobExpectStatus(planning.job.id, {
+            status: "cancelled",
+            currentStep: "Cancelled; latest Learn changes rolled back",
+            progressPercent: 0,
+          });
+          discardLearnRunSnapshot({
+            gardenId,
+            contentPath,
+            jobId: planning.job.id,
+          });
+          appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
+            jobId: planning.job.id,
+            removedPathCount: cleanup.removedPaths.length,
+            restoredPathCount: cleanup.restoredPaths.length,
+            deletedMaps: cleanup.deletedMaps,
+            deletedVersions: cleanup.deletedVersions,
+          });
+        } catch {
+          // Leave the durable cancellation-request marker and snapshot intact;
+          // startup recovery can retry after this retained lease is released.
+        }
+      }
+      throw error;
+    } finally {
+      retainedLease.release();
+    }
   }
   return runTextbookGeneration({
     gardenId,
@@ -7448,6 +9328,7 @@ export async function cancelLatestLearnJob({
   contentPath: string;
   expectedJobId?: string;
 }): Promise<LearnJob | null> {
+  assertNoPendingLearnClear(gardenId);
   const latest = getLatestLearnJob(gardenId);
   if (!latest) {
     if (expectedJobId) {
@@ -7462,30 +9343,90 @@ export async function cancelLatestLearnJob({
       `The visible Learn operation (${expectedJobId}) is no longer current. Refresh before cancelling ${latest.id}.`,
     );
   }
-  const next = updateLearnJob(latest.id, {
-    status: "cancelled",
-    currentStep: "Cancelled; latest Learn changes rolled back",
-    progressPercent: 0,
-    currentSectionTitle: undefined,
-    currentPageTitle: undefined,
-    proposedLearningMapId: undefined,
-    confirmedLearningMapId: undefined,
-    latestTextbookVersionId: undefined,
-  });
-  activeLearnAbortControllers.get(latest.id)?.abort(new LearnCancelledError());
-  const cleanup = await cleanupLearnArtifactsAfterCancel({
-    gardenId,
-    contentPath,
+  if (
+    committingLearnJobs.has(latest.id) ||
+    latest.status === "writing_quartz" ||
+    latest.status === "publishing_repair"
+  ) {
+    throw new LearnCancelConflictError(
+      "Learn has finished validation and is atomically committing the garden. Wait for publication to complete before starting another operation.",
+    );
+  }
+  const cancellationCleanupPending =
+    latest.status === "cancelled" &&
+    latest.currentStep === LEARN_CANCELLATION_REQUESTED_STEP;
+  if (latest.status === "cancelled" && !cancellationCleanupPending) return latest;
+  if (
+    !cancellationCleanupPending &&
+    !activeStatus(latest.status) &&
+    latest.status !== "awaiting_confirmation"
+  ) {
+    throw new LearnCancelConflictError(
+      `Learn operation ${latest.id} is already ${latest.status} and can no longer be cancelled.`,
+    );
+  }
+  const activeController = activeLearnAbortControllers.get(latest.id);
+  const next = cancellationCleanupPending
+    ? latest
+    : updateLearnJobExpectStatus(latest.id, {
+        status: "cancelled",
+        currentStep: LEARN_CANCELLATION_REQUESTED_STEP,
+        progressPercent: 0,
+        currentSectionTitle: undefined,
+        currentPageTitle: undefined,
+        proposedLearningMapId: undefined,
+        confirmedLearningMapId: undefined,
+        latestTextbookVersionId: undefined,
+      });
+  activeController?.abort(new LearnCancelledError());
+  if (!cancellationCleanupPending) {
+    appendLearnEvent(contentPath, gardenId, "learn_cancellation_requested", {
+      jobId: latest.id,
+    });
+  }
+  // The running worker owns rollback after it has left every write-capable
+  // section. Rolling back here used to race the still-unwinding pipeline and
+  // allowed artifacts to reappear after Stop returned.
+  if (activeController) {
+    return next;
+  }
+  const gardenDir = clusterPath(contentPath, gardenId);
+  const leaseResult = acquireGardenLearnLease(gardenDir, {
+    gardenSlug: gardenId,
     jobId: latest.id,
+    buildId: `cancel:${latest.id}`,
   });
-  appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
-    jobId: latest.id,
-    removedPathCount: cleanup.removedPaths.length,
-    restoredPathCount: cleanup.restoredPaths.length,
-    deletedMaps: cleanup.deletedMaps,
-    deletedVersions: cleanup.deletedVersions,
-  });
-  return next;
+  if (!leaseResult.acquired) {
+    // A worker in another process still owns the garden. Its durable status
+    // poll will observe `cancelled`, abort, and perform rollback under its own
+    // lease; this process must never race that cleanup.
+    return next;
+  }
+  try {
+    assertNoPendingLearnClear(gardenId);
+    const cleanup = await cleanupLearnArtifactsAfterCancel({
+      gardenId,
+      contentPath,
+      jobId: latest.id,
+      lease: leaseResult.lease,
+    });
+    const cancelled = updateLearnJobExpectStatus(latest.id, {
+      status: "cancelled",
+      currentStep: "Cancelled; latest Learn changes rolled back",
+      progressPercent: 0,
+    });
+    discardLearnRunSnapshot({ gardenId, contentPath, jobId: latest.id });
+    appendLearnEvent(contentPath, gardenId, "learn_cancelled", {
+      jobId: latest.id,
+      removedPathCount: cleanup.removedPaths.length,
+      restoredPathCount: cleanup.restoredPaths.length,
+      deletedMaps: cleanup.deletedMaps,
+      deletedVersions: cleanup.deletedVersions,
+    });
+    return cancelled;
+  } finally {
+    leaseResult.lease.release();
+  }
 }
 
 export class LearnClearConflictError extends Error {
@@ -7519,6 +9460,67 @@ interface GardenFileFingerprints {
 interface ClearLearnDatabaseResult extends LearnDatabaseClearResult {
   deletedChunks: number;
   deletedFtsRows: number;
+}
+
+type LearnClearOperationPhase =
+  | "prepared"
+  | "filesystem_promoted"
+  | "restored_pending_publication"
+  | "database_committed";
+
+interface LearnClearOperationRow {
+  id: string;
+  garden_id: string;
+  phase: LearnClearOperationPhase;
+  previous_garden_dir: string | null;
+  pre_clear_fingerprint: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function clearRecoveryFingerprint(files: GardenFileFingerprints): string {
+  const stableEntries = Object.entries(files)
+    .filter(([relativePath]) => {
+      const normalized = normalizeRelPath(relativePath).toLowerCase();
+      return (
+        normalized !== ".breadboard/events.jsonl" &&
+        normalized !== ".breadboard/learn-build.lock.json"
+      );
+    })
+    .sort(([left], [right]) => left.localeCompare(right));
+  return createHash("sha256")
+    .update(JSON.stringify(stableEntries))
+    .digest("hex");
+}
+
+function createLearnClearOperation(
+  clearId: string,
+  gardenId: string,
+  preClearFingerprint: string,
+): void {
+  const timestamp = nowIso();
+  db.prepare(
+    `INSERT INTO learn_clear_operations (
+       id, garden_id, phase, previous_garden_dir, pre_clear_fingerprint,
+       created_at, updated_at
+     ) VALUES (?, ?, 'prepared', NULL, ?, ?, ?)`,
+  ).run(clearId, gardenId, preClearFingerprint, timestamp, timestamp);
+}
+
+function updateLearnClearOperation(
+  clearId: string,
+  phase: LearnClearOperationPhase,
+  previousGardenDir?: string | null,
+): void {
+  db.prepare(
+    `UPDATE learn_clear_operations
+     SET phase = ?, previous_garden_dir = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(phase, previousGardenDir ?? null, nowIso(), clearId);
+}
+
+function deleteLearnClearOperation(clearId: string): void {
+  db.prepare("DELETE FROM learn_clear_operations WHERE id = ?").run(clearId);
 }
 
 const STATIC_LEARN_CLEAR_REMOVAL_ROOTS = [
@@ -7713,39 +9715,52 @@ async function restoreGardenAfterClearDatabaseFailure({
   gardenDir,
   previousGardenDir,
   clearId,
+  ownsLease,
 }: {
   gardenDir: string;
   previousGardenDir: string;
   clearId: string;
+  ownsLease?: () => boolean;
 }): Promise<{ restored: boolean; reason: string }> {
   const parent = path.dirname(path.resolve(gardenDir));
   const previous = path.resolve(previousGardenDir);
   if (path.dirname(previous) !== parent) {
     return { restored: false, reason: "previous garden path escaped the garden parent" };
   }
-  const displaced = path.resolve(
-    parent,
-    `.${path.basename(gardenDir)}.failed-clear-${clearId}`,
-  );
-  if (path.dirname(displaced) !== parent) {
-    return { restored: false, reason: "computed recovery path escaped the garden parent" };
-  }
-
   let lastError = "";
+  const displacedCopies: string[] = [];
   for (let attempt = 1; attempt <= 6; attempt += 1) {
+    if (ownsLease && !ownsLease()) {
+      return {
+        restored: false,
+        reason: "lost the fenced garden lease before filesystem recovery",
+      };
+    }
+    const displaced = path.resolve(
+      parent,
+      `.${path.basename(gardenDir)}.failed-clear-${clearId}-${attempt}-${Date.now().toString(36)}`,
+    );
+    if (path.dirname(displaced) !== parent) {
+      return { restored: false, reason: "computed recovery path escaped the garden parent" };
+    }
     let currentMovedAside = false;
     try {
-      fs.rmSync(displaced, { recursive: true, force: true });
       if (fs.existsSync(gardenDir)) {
         fs.renameSync(gardenDir, displaced);
         currentMovedAside = true;
+        displacedCopies.push(displaced);
       }
       fs.renameSync(previous, gardenDir);
-      try {
-        fs.rmSync(displaced, { recursive: true, force: true });
-      } catch {
-        // The previous garden is already restored. A locked discarded clear
-        // projection can be cleaned up later without risking source content.
+      if (!ownsLease || ownsLease()) {
+        for (const displacedCopy of displacedCopies) {
+          try {
+            fs.rmSync(displacedCopy, { recursive: true, force: true });
+          } catch {
+            // The previous garden is already restored. Locked displaced copies
+            // remain as explicit recovery material; never delete them before a
+            // verified destination exists.
+          }
+        }
       }
       return { restored: true, reason: `restored previous garden on attempt ${attempt}` };
     } catch (error) {
@@ -7765,7 +9780,11 @@ async function restoreGardenAfterClearDatabaseFailure({
   }
   return {
     restored: false,
-    reason: `could not restore the previous garden after 6 attempts: ${lastError}`,
+    reason:
+      `could not restore the previous garden after 6 attempts: ${lastError}` +
+      (displacedCopies.length > 0
+        ? `. Displaced garden copies were preserved at ${displacedCopies.join(", ")}`
+        : ""),
   };
 }
 
@@ -7787,12 +9806,15 @@ export async function clearAllLearnData({
     throw new Error("Clearing Learn data requires explicit confirmation.");
   }
   ensureLearnTables();
+  assertNoPendingLearnClear(gardenId);
 
   const jobsAtStart = db
     .prepare("SELECT id, status FROM learn_jobs WHERE garden_id = ? ORDER BY updated_at DESC")
     .all(gardenId) as Array<{ id: string; status: LearnStatus }>;
   const jobIdsAtStart = new Set(jobsAtStart.map((job) => job.id));
-  const activeJob = jobsAtStart.find((job) => activeStatus(job.status));
+  const activeJob = jobsAtStart.find(
+    (job) => activeStatus(job.status),
+  );
   if (activeJob) {
     throw new LearnClearConflictError(
       `Stop the active Learn operation (${activeJob.id}) before clearing Learn data.`,
@@ -7802,15 +9824,24 @@ export async function clearAllLearnData({
   const gardenDir = clusterPath(contentPath, gardenId);
   fs.mkdirSync(gardenDir, { recursive: true });
   const clearId = makeId("learn_clear");
-  const lock = acquireGardenLearnLock(gardenDir, {
+  const leaseResult = acquireGardenLearnLease(gardenDir, {
     gardenSlug: gardenId,
     jobId: clearId,
     buildId: `clear:${clearId}`,
   });
-  if (!lock.acquired) {
+  if (!leaseResult.acquired) {
     throw new LearnClearConflictError(
-      `Another Learn operation (${lock.conflict.jobId}) is still writing this garden. Stop it before clearing Learn data.`,
+      `Another Learn operation (${leaseResult.conflict.jobId}) is still writing this garden. Stop it before clearing Learn data.`,
     );
+  }
+  const lease = leaseResult.lease;
+  try {
+    assertNoPendingLearnClear(gardenId);
+    reconcileSupersededAwaitingLearnJobs(gardenId);
+    assertNoUnresolvedLearnJob(gardenId);
+  } catch (error) {
+    lease.release();
+    throw error;
   }
 
   let temporaryRoot: string | undefined;
@@ -7879,6 +9910,22 @@ export async function clearAllLearnData({
       );
     }
 
+    // This SQLite journal is created before the filesystem swap and advanced
+    // in the same transaction as database deletion. Startup recovery can
+    // therefore distinguish rollback from post-commit cleanup after a crash.
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn Clear lost its garden lease while creating its staging copy.",
+      );
+    }
+    assertNoPendingLearnClear(gardenId);
+    assertNoUnresolvedLearnJob(gardenId);
+    createLearnClearOperation(
+      clearId,
+      gardenId,
+      clearRecoveryFingerprint(fingerprintsBefore),
+    );
+
     let promotedViolations: string[] = [];
     let destinationViolations: string[] = [];
     let concurrentLearnJobId: string | undefined;
@@ -7886,6 +9933,7 @@ export async function clearAllLearnData({
       stagingGardenDir,
       destinationGardenDir: gardenDir,
       retainPreviousUntilCallerCommit: true,
+      recoveryOwnerId: clearId,
       verifyManifest: (candidateDir) => {
         promotedViolations = gardenClearBoundaryViolations({
           before: fingerprintsBefore,
@@ -7895,6 +9943,7 @@ export async function clearAllLearnData({
         return promotedViolations.length === 0;
       },
       verifyCurrentDestination: (currentDestinationDir) => {
+        if (!lease.heartbeat()) return false;
         const currentJobs = db
           .prepare("SELECT id, status FROM learn_jobs WHERE garden_id = ?")
           .all(gardenId) as Array<{ id: string; status: LearnStatus }>;
@@ -7911,6 +9960,25 @@ export async function clearAllLearnData({
       },
     });
     if (!publication.promoted) {
+      if (publication.previousPreservedAt) {
+        const recovery = await restoreGardenAfterClearDatabaseFailure({
+          gardenDir,
+          previousGardenDir: publication.previousPreservedAt,
+          clearId,
+          ownsLease: () => lease.heartbeat(),
+        });
+        if (!recovery.restored) {
+          throw new Error(
+            `${publication.reason}; the Clear journal and retained garden were preserved because recovery could not finish: ${recovery.reason}`,
+          );
+        }
+      }
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn Clear lost its garden lease after a failed promotion; its journal was retained for recovery.",
+        );
+      }
+      deleteLearnClearOperation(clearId);
       const violations = [...destinationViolations, ...promotedViolations];
       const violationDetail = concurrentLearnJobId
         ? ` A concurrent Learn operation started (${concurrentLearnJobId}).`
@@ -7918,6 +9986,63 @@ export async function clearAllLearnData({
         ? ` ${violations.slice(0, 6).join("; ")}`
         : "";
       throw new Error(`${publication.reason}${violationDetail}`);
+    }
+    updateLearnClearOperation(
+      clearId,
+      "filesystem_promoted",
+      publication.previousPreservedAt,
+    );
+
+    try {
+      await publishQuartzAfterMutation(`cleared Learn data in ${gardenId}`, {
+        requireSuccess: true,
+      });
+    } catch (publicationError) {
+      const previousGardenDir = publication.previousPreservedAt;
+      const recovery = previousGardenDir
+        ? await restoreGardenAfterClearDatabaseFailure({
+            gardenDir,
+            previousGardenDir,
+            clearId,
+            ownsLease: () => lease.heartbeat(),
+          })
+        : { restored: false, reason: "atomic promotion did not retain a previous garden" };
+      if (!recovery.restored) {
+        throw new Error(
+          `Learn Clear publication failed (${errorMessage(publicationError)}), and filesystem recovery failed: ${recovery.reason}`,
+          { cause: publicationError },
+        );
+      }
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn Clear lost its garden lease after restoring a failed publication; its journal was retained for recovery.",
+        );
+      }
+      updateLearnClearOperation(clearId, "restored_pending_publication");
+      try {
+        await publishQuartzAfterMutation(
+          `rolled back failed Learn Clear publication in ${gardenId}`,
+          { requireSuccess: true },
+        );
+      } catch (republishError) {
+        throw new Error(
+          `Learn Clear publication failed (${errorMessage(publicationError)}). The repository was restored, but republishing that restored garden also failed (${errorMessage(republishError)}).`,
+          { cause: publicationError },
+        );
+      }
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn Clear lost its garden lease after republishing the restored garden; its journal was retained for recovery.",
+        );
+      }
+      deleteLearnClearOperation(clearId);
+      throw publicationError;
+    }
+
+    if (!lease.heartbeat()) {
+      throw new LearnPipelineConflictError(
+        "Learn Clear lost its garden lease after publication; the journal was retained for recovery.",
+      );
     }
 
     let databaseResult: ClearLearnDatabaseResult;
@@ -7942,6 +10067,11 @@ export async function clearAllLearnData({
           db,
         );
         const learnRows = clearLearnDatabaseRecords(db, gardenId);
+        updateLearnClearOperation(
+          clearId,
+          "database_committed",
+          publication.previousPreservedAt,
+        );
         return {
           ...semantic,
           ...learnRows,
@@ -7954,6 +10084,7 @@ export async function clearAllLearnData({
             gardenDir,
             previousGardenDir,
             clearId,
+            ownsLease: () => lease.heartbeat(),
           })
         : { restored: false, reason: "atomic promotion did not retain a previous garden" };
       if (!recovery.restored) {
@@ -7962,6 +10093,29 @@ export async function clearAllLearnData({
           `Learn data database cleanup failed (${databaseMessage}), and filesystem recovery failed: ${recovery.reason}`,
         );
       }
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn Clear lost its garden lease after restoring a failed database commit; its journal was retained for recovery.",
+        );
+      }
+      updateLearnClearOperation(clearId, "restored_pending_publication");
+      try {
+        await publishQuartzAfterMutation(
+          `rolled back failed Learn Clear database commit in ${gardenId}`,
+          { requireSuccess: true },
+        );
+      } catch (republishError) {
+        throw new Error(
+          `Learn data database cleanup failed (${errorMessage(error)}). The repository was restored, but republishing that restored garden also failed (${errorMessage(republishError)}).`,
+          { cause: error },
+        );
+      }
+      if (!lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Learn Clear lost its garden lease after republishing the database rollback; its journal was retained for recovery.",
+        );
+      }
+      deleteLearnClearOperation(clearId);
       throw error;
     }
 
@@ -7979,8 +10133,8 @@ export async function clearAllLearnData({
         );
       }
     }
+    deleteLearnClearOperation(clearId);
 
-    await publishQuartzAfterMutation(`cleared Learn data in ${gardenId}`);
     const preservedFileCount = Object.keys(fingerprintsBefore).filter(
       (relativePath) => !pathWithinAllowedMutation(relativePath, allowedMutationRoots),
     ).length;
@@ -8007,8 +10161,555 @@ export async function clearAllLearnData({
       // The clear result is already committed; a locked temp copy can be
       // reclaimed by the operating system later.
     }
-    releaseGardenLearnLock(gardenDir, clearId);
+    lease.release();
   }
+}
+
+export const LEARN_JOB_ABANDONED_AFTER_MS = LOCK_STALE_MS + 60_000;
+
+interface AbandonedLearnJobRow {
+  job_rowid: number;
+  id: string;
+  garden_id: string;
+  mode: LearnMode;
+  status: LearnStatus;
+  current_step: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function recoverableAbandonedJob(job: Pick<AbandonedLearnJobRow, "status" | "current_step">): boolean {
+  return (
+    recoverableLearnStatus(job.status) ||
+    (job.status === "cancelled" &&
+      job.current_step === LEARN_CANCELLATION_REQUESTED_STEP)
+  );
+}
+
+function exactPreviousGardenForOwner(
+  gardenDir: string,
+  ownerId: string,
+): string | null {
+  const parent = path.dirname(gardenDir);
+  const prefix = `.${path.basename(gardenDir)}.previous-`;
+  const ownerSuffix = `-${createHash("sha256")
+    .update(ownerId)
+    .digest("hex")
+    .slice(0, 16)}`;
+  try {
+    return (
+      fs
+        .readdirSync(parent, { withFileTypes: true })
+        .filter(
+          (entry) =>
+            entry.isDirectory() &&
+            entry.name.startsWith(prefix) &&
+            entry.name.endsWith(ownerSuffix),
+        )
+        .map((entry) => path.join(parent, entry.name))
+        .sort()
+        .at(-1) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function previousGardenForClearOperation(
+  gardenDir: string,
+  operation: LearnClearOperationRow,
+): string | null {
+  if (operation.previous_garden_dir) {
+    const candidate = path.resolve(operation.previous_garden_dir);
+    const expectedParent = path.dirname(path.resolve(gardenDir));
+    const expectedSuffix = `-${createHash("sha256")
+      .update(operation.id)
+      .digest("hex")
+      .slice(0, 16)}`;
+    if (
+      path.dirname(candidate) === expectedParent &&
+      path.basename(candidate).startsWith(`.${path.basename(gardenDir)}.previous-`) &&
+      path.basename(candidate).endsWith(expectedSuffix) &&
+      fs.existsSync(candidate)
+    ) {
+      return candidate;
+    }
+  }
+  return exactPreviousGardenForOwner(gardenDir, operation.id);
+}
+
+async function recoverInterruptedLearnClears(contentPath: string): Promise<void> {
+  const operations = db
+    .prepare(
+      `SELECT id, garden_id, phase, previous_garden_dir, pre_clear_fingerprint, created_at, updated_at
+       FROM learn_clear_operations
+       ORDER BY created_at ASC`,
+    )
+    .all() as LearnClearOperationRow[];
+  for (const operation of operations) {
+    const gardenDir = clusterPath(contentPath, operation.garden_id);
+    const leaseResult = acquireGardenLearnLease(gardenDir, {
+      gardenSlug: operation.garden_id,
+      jobId: operation.id,
+      buildId: `clear-recovery:${operation.id}`,
+    });
+    if (!leaseResult.acquired) continue;
+    try {
+      const current = db
+        .prepare(
+          `SELECT id, garden_id, phase, previous_garden_dir, pre_clear_fingerprint, created_at, updated_at
+           FROM learn_clear_operations WHERE id = ?`,
+        )
+        .get(operation.id) as LearnClearOperationRow | undefined;
+      if (!current) continue;
+      if (!leaseResult.lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Interrupted Clear recovery lost its garden lease.",
+        );
+      }
+      const previousGarden = previousGardenForClearOperation(gardenDir, current);
+
+      if (current.phase === "database_committed") {
+        if (previousGarden) {
+          fs.rmSync(previousGarden, { recursive: true, force: true });
+        }
+        deleteLearnClearOperation(current.id);
+        continue;
+      }
+
+      if (current.phase === "restored_pending_publication") {
+        await publishQuartzAfterMutation(
+          `resumed restored Learn Clear publication in ${current.garden_id}`,
+          { requireSuccess: true },
+        );
+        if (!leaseResult.lease.heartbeat()) {
+          throw new LearnPipelineConflictError(
+            "Clear recovery lost its lease after restored publication.",
+          );
+        }
+        deleteLearnClearOperation(current.id);
+        continue;
+      }
+
+      if (!previousGarden) {
+        const liveMatchesPreClear = Boolean(
+          current.pre_clear_fingerprint &&
+          fs.existsSync(gardenDir) &&
+          clearRecoveryFingerprint(fingerprintGardenFiles(gardenDir)) ===
+            current.pre_clear_fingerprint,
+        );
+        if (current.phase === "filesystem_promoted" && liveMatchesPreClear) {
+          updateLearnClearOperation(current.id, "restored_pending_publication");
+          await publishQuartzAfterMutation(
+            `completed restored Learn Clear publication in ${current.garden_id}`,
+            { requireSuccess: true },
+          );
+          if (!leaseResult.lease.heartbeat()) {
+            throw new LearnPipelineConflictError(
+              "Clear recovery lost its lease after restored publication.",
+            );
+          }
+          deleteLearnClearOperation(current.id);
+          continue;
+        }
+        if (current.phase === "filesystem_promoted") {
+          throw new Error(
+            "The Clear journal says the filesystem was promoted, but its exact retained garden is missing.",
+          );
+        }
+        // Prepared with no owner-tagged backup means the process stopped before
+        // the destination swap only when the full pre-clear fingerprint proves
+        // the live tree is unchanged. Missing recovery evidence fails closed.
+        if (liveMatchesPreClear) {
+          deleteLearnClearOperation(current.id);
+          continue;
+        }
+        throw new Error(
+          "Prepared Clear has neither an exact retained garden nor a live pre-clear fingerprint match.",
+        );
+      }
+
+      const recovery = await restoreGardenAfterClearDatabaseFailure({
+        gardenDir,
+        previousGardenDir: previousGarden,
+        clearId: current.id,
+        ownsLease: () => leaseResult.lease.heartbeat(),
+      });
+      if (!recovery.restored) throw new Error(recovery.reason);
+      if (!leaseResult.lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Clear recovery lost its lease after restoring the retained garden.",
+        );
+      }
+      updateLearnClearOperation(current.id, "restored_pending_publication");
+      await publishQuartzAfterMutation(
+        `recovered interrupted Learn Clear in ${current.garden_id}`,
+        { requireSuccess: true },
+      );
+      if (!leaseResult.lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Clear recovery lost its lease after restored publication.",
+        );
+      }
+      deleteLearnClearOperation(current.id);
+    } catch (error) {
+      console.error(
+        `[learn] Could not recover interrupted Clear ${operation.id}:`,
+        error,
+      );
+    } finally {
+      leaseResult.lease.release();
+    }
+  }
+}
+
+interface LearnPublicationRetryRow {
+  garden_id: string;
+  reason: string;
+  last_error: string | null;
+  requested_at: string;
+  updated_at: string;
+}
+
+async function recoverPendingLearnPublications(contentPath: string): Promise<void> {
+  const pending = db
+    .prepare(
+      `SELECT garden_id, reason, last_error, requested_at, updated_at
+       FROM learn_publication_retries ORDER BY requested_at ASC`,
+    )
+    .all() as LearnPublicationRetryRow[];
+  for (const publication of pending) {
+    if (pendingLearnClearOperation(publication.garden_id)) continue;
+    const gardenDir = clusterPath(contentPath, publication.garden_id);
+    const retryId = `learn_publish_${createHash("sha256")
+      .update(`${publication.garden_id}:${publication.updated_at}`)
+      .digest("hex")
+      .slice(0, 16)}`;
+    const leaseResult = acquireGardenLearnLease(gardenDir, {
+      gardenSlug: publication.garden_id,
+      jobId: retryId,
+      buildId: `publication-retry:${retryId}`,
+    });
+    if (!leaseResult.acquired) continue;
+    try {
+      reconcileSupersededAwaitingLearnJobs(publication.garden_id);
+      if (
+        pendingLearnClearOperation(publication.garden_id) ||
+        unresolvedLearnJob(publication.garden_id)
+      ) {
+        continue;
+      }
+      await publishQuartzAfterMutation(
+        `retrying ${publication.reason} in ${publication.garden_id}`,
+        { requireSuccess: true },
+      );
+      if (!leaseResult.lease.heartbeat()) {
+        throw new LearnPipelineConflictError(
+          "Publication retry lost its garden lease before acknowledging success.",
+        );
+      }
+      db.prepare(
+        `DELETE FROM learn_publication_retries
+         WHERE garden_id = ? AND updated_at = ?`,
+      ).run(publication.garden_id, publication.updated_at);
+    } catch (error) {
+      db.prepare(
+        `UPDATE learn_publication_retries
+         SET last_error = ?, updated_at = ?
+         WHERE garden_id = ? AND updated_at = ?`,
+      ).run(
+        errorMessage(error),
+        nowIso(),
+        publication.garden_id,
+        publication.updated_at,
+      );
+    } finally {
+      leaseResult.lease.release();
+    }
+  }
+}
+
+function previousGardenForAbandonedJob(
+  gardenDir: string,
+  job: Pick<AbandonedLearnJobRow, "id">,
+): string | null {
+  const parent = path.dirname(gardenDir);
+  const prefix = `.${path.basename(gardenDir)}.previous-`;
+  let candidates: Array<{ path: string; name: string; promotedAt: number }> = [];
+  try {
+    candidates = fs
+      .readdirSync(parent, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))
+      .map((entry) => ({
+        path: path.join(parent, entry.name),
+        name: entry.name,
+        promotedAt: Number.parseInt(entry.name.slice(prefix.length), 36),
+      }))
+      .filter((candidate) => Number.isFinite(candidate.promotedAt))
+      .sort((left, right) => right.promotedAt - left.promotedAt);
+  } catch {
+    return null;
+  }
+  const exactOwnerSuffix = `-${createHash("sha256")
+    .update(job.id)
+    .digest("hex")
+    .slice(0, 16)}`;
+  const exactOwned = candidates.find((candidate) =>
+    candidate.name.endsWith(exactOwnerSuffix),
+  );
+  if (exactOwned) return exactOwned.path;
+
+  const snapshotted = candidates.find((candidate) =>
+    fs.existsSync(learnRunSnapshotDir(candidate.path, job.id)),
+  );
+  if (snapshotted) return snapshotted.path;
+  return null;
+}
+
+/**
+ * Recover work whose process disappeared. This is intentionally run by the
+ * Node startup sweeper, never by a GET/status request: status remains a pure
+ * read, while a stale job still becomes retryable after a restart. A recovery
+ * must own the same fenced garden lease before touching either SQLite or files.
+ */
+export async function recoverAbandonedLearnJobs({
+  contentPath,
+  nowMs = Date.now(),
+}: {
+  contentPath: string;
+  nowMs?: number;
+}): Promise<{ recoveredJobIds: string[]; skippedJobIds: string[] }> {
+  ensureLearnTables();
+  await recoverInterruptedLearnClears(contentPath);
+  const cutoff = new Date(nowMs - LEARN_JOB_ABANDONED_AFTER_MS).toISOString();
+  const candidates = db
+    .prepare(
+      `SELECT rowid AS job_rowid, id, garden_id, mode, status, current_step, created_at, updated_at
+       FROM learn_jobs
+       WHERE updated_at <= ?
+         AND (
+           status IN (
+             'idle', 'planning', 'analyzing_issues', 'repairing', 'revalidating',
+             'publishing_repair', 'generating_learning_pages',
+             'generating_textbook', 'generating_visuals', 'writing_quartz',
+             'building_navigation'
+           )
+           OR (status = 'cancelled' AND current_step = ?)
+         )
+       ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(cutoff, LEARN_CANCELLATION_REQUESTED_STEP) as AbandonedLearnJobRow[];
+  const recoveredJobIds: string[] = [];
+  const skippedJobIds: string[] = [];
+
+  for (const candidate of candidates) {
+    try {
+      if (!recoverableAbandonedJob(candidate)) continue;
+      if (pendingLearnClearOperation(candidate.garden_id)) {
+        skippedJobIds.push(candidate.id);
+        continue;
+      }
+      const gardenDir = clusterPath(contentPath, candidate.garden_id);
+      const leaseResult = acquireGardenLearnLease(gardenDir, {
+        gardenSlug: candidate.garden_id,
+        jobId: candidate.id,
+        buildId: `recovery:${candidate.id}`,
+      });
+      if (!leaseResult.acquired) {
+        skippedJobIds.push(candidate.id);
+        continue;
+      }
+      const lease = leaseResult.lease;
+      try {
+        const current = db
+          .prepare("SELECT rowid AS job_rowid, id, garden_id, mode, status, current_step, created_at, updated_at FROM learn_jobs WHERE id = ?")
+          .get(candidate.id) as AbandonedLearnJobRow | undefined;
+        if (
+          !current ||
+          !recoverableAbandonedJob(current) ||
+          Date.parse(current.updated_at) > Date.parse(cutoff)
+        ) {
+          skippedJobIds.push(candidate.id);
+          continue;
+        }
+
+        const newerJob = db
+          .prepare(
+            `SELECT rowid AS job_rowid, id, garden_id, mode, status, current_step, created_at, updated_at
+             FROM learn_jobs
+             WHERE garden_id = ?
+               AND (created_at > ? OR (created_at = ? AND rowid > ?))
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT 1`,
+          )
+          .get(
+            current.garden_id,
+            current.created_at,
+            current.created_at,
+            current.job_rowid,
+          ) as AbandonedLearnJobRow | undefined;
+        if (newerJob) {
+          const newerVersionCommitted = Boolean(
+            db.prepare(
+              "SELECT 1 FROM learn_versions WHERE garden_id = ? AND job_id = ? LIMIT 1",
+            ).get(current.garden_id, newerJob.id),
+          );
+          const newerGardenStateCommitted =
+            newerJob.status === "awaiting_confirmation" ||
+            (newerJob.status === "complete" &&
+              (newerJob.mode === "repair" || newerVersionCommitted));
+          if (newerGardenStateCommitted) {
+            if (!lease.heartbeat()) {
+              throw new LearnPipelineConflictError(
+                "Abandoned-job recovery lost its lease before recording a superseded job.",
+              );
+            }
+            const wasCancellation = current.status === "cancelled";
+            updateLearnJobExpectStatus(
+              current.id,
+              wasCancellation
+                ? {
+                    status: "cancelled",
+                    currentStep: `Cancelled operation superseded by newer Learn job ${newerJob.id}; no rollback applied`,
+                    error: undefined,
+                  }
+                : {
+                    status: "failed",
+                    currentStep: `Interrupted operation superseded by newer Learn job ${newerJob.id}; no rollback applied`,
+                    error:
+                      "A newer Learn result was committed, so recovery preserved that newer garden instead of restoring this older snapshot.",
+                  },
+            );
+            appendLearnEvent(
+              contentPath,
+              current.garden_id,
+              "learn_abandoned_job_superseded",
+              { jobId: current.id, newerJobId: newerJob.id },
+            );
+            recoveredJobIds.push(current.id);
+            continue;
+          }
+          if (learnJobNeedsExclusiveResolution(newerJob)) {
+            skippedJobIds.push(current.id);
+            continue;
+          }
+        }
+
+        const previousGarden = previousGardenForAbandonedJob(gardenDir, current);
+        if (previousGarden) {
+          await restorePreviousPromotedGarden(
+            gardenDir,
+            previousGarden,
+            () => lease.heartbeat(),
+          );
+        }
+        const hasRollbackSnapshot = Boolean(
+          resolveLearnRunSnapshot(gardenDir, candidate.id),
+        );
+        if (
+          !previousGarden &&
+          !hasRollbackSnapshot &&
+          current.status !== "idle"
+        ) {
+          throw new Error(
+            "No exact retained garden or Learn snapshot exists; automatic recovery refused to guess.",
+          );
+        }
+        const rollback = await rollbackLearnRun({
+          gardenId: candidate.garden_id,
+          contentPath,
+          jobId: candidate.id,
+          lease,
+        });
+        const publicationToken = queueLearnPublicationRetry(
+          candidate.garden_id,
+          "abandoned Learn job recovery",
+          new Error("Publication pending"),
+        );
+        const cancellationRecovery = current.status === "cancelled";
+        updateLearnJobExpectStatus(candidate.id, cancellationRecovery
+          ? {
+              status: "cancelled",
+              currentStep: "Cancelled; latest Learn changes rolled back",
+              error: undefined,
+            }
+          : {
+              status: "failed",
+              currentStep: "Interrupted by an app restart; prior Learn state restored",
+              error: "The Learn worker stopped without completing. The garden was restored and this operation is safe to retry.",
+            });
+        discardLearnRunSnapshot({
+          gardenId: candidate.garden_id,
+          contentPath,
+          jobId: candidate.id,
+        });
+        appendLearnEvent(contentPath, candidate.garden_id, "learn_abandoned_job_recovered", {
+          jobId: candidate.id,
+          restoredPromotedGarden: Boolean(previousGarden),
+          removedPathCount: rollback.removedPaths.length,
+          restoredPathCount: rollback.restoredPaths.length,
+          deletedMaps: rollback.deletedMaps,
+          deletedVersions: rollback.deletedVersions,
+        });
+        try {
+          await publishQuartzAfterMutation(
+            `recovered abandoned Learn operation in ${candidate.garden_id}`,
+            { requireSuccess: true },
+          );
+          clearLearnPublicationRetry(candidate.garden_id, publicationToken);
+        } catch (error) {
+          queueLearnPublicationRetry(
+            candidate.garden_id,
+            "abandoned Learn job recovery",
+            error,
+          );
+          appendLearnEvent(
+            contentPath,
+            candidate.garden_id,
+            "learn_abandoned_job_republish_failed",
+            { jobId: candidate.id, error: errorMessage(error) },
+          );
+        }
+        const abandonedWorkspace = defaultWorkspaceRoot(
+          candidate.garden_id,
+          candidate.id,
+        );
+        try {
+          fs.rmSync(abandonedWorkspace, { recursive: true, force: true });
+        } catch (cleanupError) {
+          console.warn(
+            `[learn] Abandoned workspace remains at ${abandonedWorkspace}:`,
+            cleanupError,
+          );
+        }
+        recoveredJobIds.push(candidate.id);
+      } finally {
+        lease.release();
+      }
+    } catch (error) {
+      if (!skippedJobIds.includes(candidate.id)) skippedJobIds.push(candidate.id);
+      console.error(
+        `[learn] Could not recover abandoned job ${candidate.id}; continuing sweep:`,
+        error,
+      );
+      try {
+        appendLearnEvent(
+          contentPath,
+          candidate.garden_id,
+          "learn_abandoned_job_recovery_failed",
+          { jobId: candidate.id, error: errorMessage(error) },
+        );
+      } catch {
+        // A corrupt/unreadable garden must not prevent later candidates from
+        // being recovered by this sweep.
+      }
+    }
+  }
+
+  // Publication retries run only after abandoned filesystem/database work has
+  // been reconciled. Publishing first could expose an uncommitted promoted tree.
+  await recoverPendingLearnPublications(contentPath);
+  return { recoveredJobIds, skippedJobIds };
 }
 
 function activeStatus(status: LearnStatus): boolean {
@@ -8024,6 +10725,10 @@ function activeStatus(status: LearnStatus): boolean {
     "writing_quartz",
     "building_navigation",
   ].includes(status);
+}
+
+function recoverableLearnStatus(status: LearnStatus): boolean {
+  return status === "idle" || activeStatus(status);
 }
 
 function buttonLabelForSnapshot({
@@ -8049,6 +10754,36 @@ function buttonLabelForSnapshot({
   return "Learn";
 }
 
+const LEARN_STATUS_CONTEXT_CACHE_TTL_MS = 5_000;
+const learnStatusContextCache = new Map<
+  string,
+  { context: LearnSourceContext; expiresAt: number }
+>();
+
+function collectLearnStatusContext(
+  contentPath: string,
+  gardenId: string,
+): LearnSourceContext {
+  const key = `${path.resolve(contentPath)}\0${gardenId}`;
+  const now = Date.now();
+  const cached = learnStatusContextCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.context;
+  const context = collectLearnSourceContext(contentPath, gardenId);
+  learnStatusContextCache.delete(key);
+  learnStatusContextCache.set(key, {
+    context,
+    expiresAt: now + LEARN_STATUS_CONTEXT_CACHE_TTL_MS,
+  });
+  while (learnStatusContextCache.size > 64) {
+    const oldestKey = learnStatusContextCache.keys().next().value as
+      | string
+      | undefined;
+    if (!oldestKey) break;
+    learnStatusContextCache.delete(oldestKey);
+  }
+  return context;
+}
+
 export function getLearnStatusSnapshot({
   gardenId,
   contentPath,
@@ -8057,10 +10792,10 @@ export function getLearnStatusSnapshot({
   contentPath: string;
 }): LearnStatusSnapshot {
   ensureLearnTables();
-  const context = collectLearnSourceContext(contentPath, gardenId);
+  const context = collectLearnStatusContext(contentPath, gardenId);
   const latestJob = getLatestLearnJob(gardenId);
   const latestProposed = latestJob?.proposedLearningMapId
-    ? getLearnMapById(latestJob.proposedLearningMapId)
+    ? getLearnMapById(latestJob.proposedLearningMapId, gardenId)
     : getLatestProposedLearnMap(gardenId);
   const contractProposed = isContractBackedLearningMap(latestProposed) ? latestProposed : null;
   const visibleJob =
@@ -8079,8 +10814,7 @@ export function getLearnStatusSnapshot({
   const latestConfirmed = getLatestConfirmedLearnMap(gardenId);
   const confirmedMap = isContractBackedLearningMap(latestConfirmed) ? latestConfirmed : null;
   const latestVersion = getLatestLearnVersion(gardenId);
-  const knowledge = scanClusterKnowledge(contentPath, gardenId);
-  const hasTextbook = knowledge.stats.textbookPages > 0;
+  const hasTextbook = context.existingTextbookPages.length > 0;
   const availableSourceIdSet = new Set(context.sources.map((source) => source.slug));
   const persistedSelectedSourceIds =
     (visibleJob?.sourceIds.length ? visibleJob.sourceIds : undefined) ??
@@ -8089,17 +10823,48 @@ export function getLearnStatusSnapshot({
   const selectedSourceIds = persistedSelectedSourceIds
     ? persistedSelectedSourceIds.filter((sourceId) => availableSourceIdSet.has(sourceId))
     : context.sources.map((source) => source.slug);
+  const persistedSyllabusSourceId =
+    visibleJob?.syllabusSourceId ??
+    contractProposed?.syllabusSourceId ??
+    confirmedMap?.syllabusSourceId ??
+    null;
+  // A syllabus the user has since deleted is reported as none, so the panel
+  // never shows a designation that no longer resolves to a document.
+  const syllabusSourceId =
+    persistedSyllabusSourceId && availableSourceIdSet.has(persistedSyllabusSourceId)
+      ? persistedSyllabusSourceId
+      : null;
+  const persistedCoverage =
+    contractProposed?.syllabusCoverage ?? confirmedMap?.syllabusCoverage ?? null;
+  const syllabusCoverage =
+    syllabusSourceId && persistedCoverage
+      ? {
+          ...summarizeSyllabusCoverage(persistedCoverage),
+          missingCitations: persistedCoverage.missingCitations,
+        }
+      : null;
 
   let sourceSetChanged = false;
   if (latestVersion) {
-    const versionMap = getLearnMapById(latestVersion.learning_map_id);
+    const versionMap = getLearnMapById(latestVersion.learning_map_id, gardenId);
     try {
-      const comparableContext = collectLearnSourceContext(
-        contentPath,
-        gardenId,
+      const selectedSources = selectLearnSources(
+        context.sources,
         versionMap?.sourceIds.length ? versionMap.sourceIds : undefined,
       );
-      sourceSetChanged = latestVersion.source_set_hash !== comparableContext.sourceSetHash;
+      const syllabus = selectLearnSyllabus(
+        context.sources,
+        versionMap?.syllabusSourceId,
+      );
+      const teachingSources = excludeSyllabusFromSources(selectedSources, syllabus);
+      if (syllabus && teachingSources.length === 0) {
+        throw new Error("The saved source selection no longer contains teaching material.");
+      }
+      const currentHash = sourceSetHashWithSyllabus(
+        sourceSetHashForSources(teachingSources),
+        syllabus,
+      );
+      sourceSetChanged = latestVersion.source_set_hash !== currentHash;
     } catch {
       // A selected source was removed after the last Learn version.
       sourceSetChanged = true;
@@ -8118,6 +10883,8 @@ export function getLearnStatusSnapshot({
     sourceCount: context.sources.length,
     selectedSourceIds,
     selectedSourceCount: selectedSourceIds.length,
+    syllabusSourceId,
+    syllabusCoverage,
     hasTextbook,
     sourceSetChanged,
     buttonLabel: buttonLabelForSnapshot({

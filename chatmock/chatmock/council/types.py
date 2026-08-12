@@ -77,6 +77,11 @@ class CouncilInput:
     page_id: Optional[str] = None
     source_context: Any = None
     include_diagnostics: bool = False
+    # Exact model id supplied by the client, including the `default` sentinel.
+    requested_model_alias: Optional[str] = None
+    # Public model selected when the request entered ChatMock.
+    resolved_model: Optional[str] = None
+    # Model used to route Council calls. Unlike the alias, this is expanded.
     requested_model: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
@@ -169,6 +174,8 @@ class CouncilRun:
     user_prompt: str
     messages: List[ChatMessage]
     council_mode: str
+    requested_model: Optional[str] = None
+    resolved_model: Optional[str] = None
     final_answer: str = ""
     reasoning_summary: str = ""
     garden_id: Optional[str] = None
@@ -188,6 +195,18 @@ class CouncilRun:
         compare=False,
     )
     _token_usage_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _model_attempts: List[Dict[str, Any]] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _model_attempts_lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
         repr=False,
@@ -222,6 +241,17 @@ class CouncilRun:
         with self._token_usage_lock:
             return self._token_usage
 
+    def record_model_attempts(self, attempts: List[Dict[str, Any]]) -> None:
+        """Retain the exact provider/upstream route for every attempted call."""
+        if not attempts:
+            return
+        with self._model_attempts_lock:
+            self._model_attempts.extend(dict(attempt) for attempt in attempts)
+
+    def model_attempts_snapshot(self) -> List[Dict[str, Any]]:
+        with self._model_attempts_lock:
+            return [dict(attempt) for attempt in self._model_attempts]
+
     def to_dict(self) -> Dict[str, Any]:
         usage = self.token_usage_snapshot()
         return {
@@ -232,6 +262,9 @@ class CouncilRun:
             "messages": self.messages,
             "taskType": self.task_type,
             "councilMode": self.council_mode,
+            "requestedModel": self.requested_model,
+            "resolvedModel": self.resolved_model,
+            "modelRouting": self.model_attempts_snapshot(),
             "sourceContext": self.source_context,
             "candidates": [c.to_dict() for c in self.candidates],
             "reviews": [r.to_dict() for r in self.reviews],
@@ -260,6 +293,9 @@ class CouncilRun:
             "aggregateRanking": self.aggregate_ranking.to_dict() if self.aggregate_ranking else None,
             "finalAnswer": self.final_answer,
             "reasoningSummary": self.reasoning_summary or None,
+            "requestedModel": self.requested_model,
+            "resolvedModel": self.resolved_model,
+            "modelRouting": self.model_attempts_snapshot(),
         }
 
 

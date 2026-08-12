@@ -5,11 +5,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   buildServiceDefinitions,
+  n8nServiceUrl,
+  resolveAgencyAgentsPath,
+  resolveN8nRuntime,
   resolveHermesPython,
+  resolveVoiceboxRuntime,
   serviceUrls,
+  voiceboxServiceUrl,
 } from "../src/main/service-definitions";
 import { resolvePaths, type ResolvedPaths } from "../src/main/path-resolver";
 import { defaultPersistentConfig, type DesktopRuntimeConfig } from "../src/main/runtime-config";
+import { DEFAULT_BREADBOARD_SKILLS_CATALOG_URL } from "../src/main/skills-catalog-config";
 
 function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof defaultPersistentConfig>> = {}) {
   const paths = resolvePaths({
@@ -24,10 +30,13 @@ function fixture(mode: "dev" | "packaged", overrides: Partial<ReturnType<typeof 
     ports: {
       dashboard: 4300,
       chatmock: 4301,
-      openharness: 4302,
       hermes: 4305,
+      postiz: 4306,
+      postizSupervisor: 4307,
       quartz: 4303,
       quartzWs: 4304,
+      voicebox: 4310,
+      n8n: 4311,
     },
   };
   const binaries = {
@@ -54,20 +63,180 @@ test("dashboard env propagates dynamic ports, secrets and data locations", () =>
   assert.equal(dashboard.env["NEXTAUTH_URL"], "http://127.0.0.1:4300");
   assert.equal(dashboard.env["NEXTAUTH_SECRET"], config.persistent.nextAuthSecret);
   assert.equal(dashboard.env["CHATMOCK_BASE_URL"], "http://127.0.0.1:4301/v1");
-  assert.equal(dashboard.env["OPENHARNESS_BASE_URL"], "http://127.0.0.1:4302");
-  assert.equal(dashboard.env["AGENT_RUNTIME"], "hermes");
+  assert.equal(dashboard.env["HERMES_MODE"], "required");
+  assert.equal(dashboard.env["CODEX_BIN"], path.join(paths.binDir, "codex.exe"));
+  assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
+  assert.equal(
+    dashboard.env["ARIS_ROOT"],
+    path.join(paths.appRoot, "auto-claude-code-research-in-sleep"),
+  );
   assert.equal(dashboard.env["HERMES_BASE_URL"], "http://127.0.0.1:4305");
   assert.equal(
     dashboard.env["HERMES_DASHBOARD_SESSION_TOKEN"],
     config.persistent.hermesSessionToken,
   );
   assert.equal(dashboard.env["NEXT_PUBLIC_QUARTZ_URL"], "http://127.0.0.1:4303");
+  assert.equal(dashboard.env["VOICEBOX_BASE_URL"], "http://127.0.0.1:4310");
+  assert.equal(dashboard.env["SOCIALS_MANAGER_MODE"], "stack");
+  assert.equal(dashboard.env["SOCIALS_MANAGER_URL"], "http://127.0.0.1:4306");
   assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], paths.dataRoot);
   assert.equal(dashboard.env["QUARTZ_CONTENT_PATH"], paths.quartzContent);
   assert.equal(dashboard.env["NODE_ENV"], "production");
+  assert.equal(dashboard.env["VIDEO_TRANSCRIPTION_ENABLED"], "true");
+  assert.equal(dashboard.env["SCRIBERR_USERNAME"], config.persistent.scriberrUsername);
+  assert.equal(dashboard.env["SCRIBERR_PASSWORD"], config.persistent.scriberrPassword);
+  assert.equal(dashboard.env["FFMPEG_PATH"], path.join(paths.binDir, "ffmpeg.exe"));
+  assert.equal(dashboard.env["BREADBOARD_WATCH_PYTHON"], "C:/rt/python.exe");
+  assert.equal(dashboard.env["HERMES_ROOT"], paths.hermesWorkspaceRoot);
+  assert.equal(
+    dashboard.env["HERMES_FIRST_PARTY_SKILLS_ROOT"],
+    path.join(paths.appRoot, "hermes-skills", "prebuilt"),
+  );
+  assert.equal(
+    dashboard.env["HERMES_CAPABILITY_SECRET"],
+    config.persistent.hermesCapabilitySecret,
+  );
+  assert.equal(
+    dashboard.env["BREADBOARD_SKILLS_CATALOG_URL"],
+    DEFAULT_BREADBOARD_SKILLS_CATALOG_URL,
+  );
   // No default/dev secrets.
-  assert.notEqual(dashboard.env["OPENHARNESS_PASSWORD"], "breadboard-local-dev");
   assert.notEqual(dashboard.env["NEXTAUTH_SECRET"], "change-me");
+});
+
+test("Voicebox is supervised from its dev environment and remains server-only", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-voicebox-"));
+  const savedPython = process.env["VOICEBOX_PYTHON"];
+  try {
+    const backend = path.join(root, "voicebox", "backend");
+    fs.mkdirSync(backend, { recursive: true });
+    fs.writeFileSync(path.join(backend, "main.py"), "");
+    const python = path.join(root, "voicebox-python.exe");
+    fs.writeFileSync(python, "");
+    process.env["VOICEBOX_PYTHON"] = python;
+
+    const base = fixture("packaged");
+    const paths = { ...base.paths, mode: "dev" as const, appRoot: root };
+    const runtime = resolveVoiceboxRuntime(paths);
+    assert.ok(runtime);
+    assert.equal(runtime.command, python);
+    assert.deepEqual(runtime.argsPrefix, ["-m", "backend.main"]);
+    assert.equal(voiceboxServiceUrl(base.config), "http://127.0.0.1:4310");
+
+    const launcher = path.join(root, "scripts", "start-voicebox.mjs");
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(launcher, "");
+    const definitions = buildServiceDefinitions({ paths, config: base.config, binaries: base.binaries });
+    const voicebox = definitions.find((definition) => definition.id === "voicebox");
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.ok(voicebox && dashboard);
+    assert.equal(voicebox.required, false);
+    assert.equal(voicebox.startInBackground, true);
+    assert.equal(voicebox.command, base.binaries.node);
+    assert.deepEqual(voicebox.args, [launcher]);
+    assert.equal(voicebox.env["VOICEBOX_AUTOINSTALL"], "true");
+    assert.equal(voicebox.env["VOICEBOX_PORT"], "4310");
+    const statusPath = voicebox.env["VOICEBOX_STATUS_PATH"] ?? "";
+    assert.match(statusPath, /startup-status\.json$/);
+    // Voicebox is supervised for liveness only: a readiness deadline would
+    // terminate its multi-gigabyte first-run install mid-download, so Settings
+    // reports readiness from /health and the status file instead.
+    assert.equal(voicebox.healthCheck, undefined);
+    assert.equal(dashboard.env["VOICEBOX_BASE_URL"], "http://127.0.0.1:4310");
+    assert.equal(dashboard.env["VOICEBOX_STATUS_PATH"], statusPath);
+    assert.ok(!Object.values(serviceUrls(base.config)).includes(voiceboxServiceUrl(base.config)));
+  } finally {
+    if (savedPython === undefined) delete process.env["VOICEBOX_PYTHON"];
+    else process.env["VOICEBOX_PYTHON"] = savedPython;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dashboard account switching and ChatMock requests share one credential home", () => {
+  const { definitions, paths } = fixture("packaged");
+  const dashboard = definitions.find((definition) => definition.id === "dashboard");
+  const chatmock = definitions.find((definition) => definition.id === "chatmock");
+  assert.ok(dashboard && chatmock);
+  assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
+  assert.equal(chatmock.env["CODEX_HOME"], paths.codexHome);
+  assert.equal(chatmock.env["CODEX_HOME"], dashboard.env["CODEX_HOME"]);
+  assert.equal(chatmock.restartOnChange, undefined);
+});
+
+test("n8n is supervised from the cloned checkout and stays out of public endpoints", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-n8n-"));
+  try {
+    const source = path.join(root, "n8n");
+    const launcher = path.join(root, "scripts", "start-n8n.mjs");
+    fs.mkdirSync(source, { recursive: true });
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(path.join(source, "package.json"), "{}");
+    fs.writeFileSync(launcher, "");
+    const base = fixture("packaged");
+    const paths = { ...base.paths, mode: "dev" as const, appRoot: root };
+    const runtime = resolveN8nRuntime(paths, base.binaries);
+    assert.ok(runtime);
+    assert.equal(runtime.command, base.binaries.node);
+    assert.deepEqual(runtime.args, [launcher]);
+    assert.equal(n8nServiceUrl(base.config), "http://127.0.0.1:4311");
+
+    const definitions = buildServiceDefinitions({ paths, config: base.config, binaries: base.binaries });
+    const n8n = definitions.find((definition) => definition.id === "n8n");
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.ok(n8n && dashboard);
+    assert.equal(n8n.required, false);
+    assert.equal(n8n.startInBackground, true);
+    assert.equal(n8n.healthCheck, undefined);
+    assert.equal(n8n.env["N8N_PORT"], "4311");
+    assert.equal(n8n.env["N8N_DASHBOARD_URL"], "http://127.0.0.1:4300");
+    assert.equal(n8n.env["N8N_SOURCE_DIR"], source);
+    assert.equal(n8n.env["N8N_RUNTIME_ENTRY"], undefined);
+    assert.equal(dashboard.env["N8N_BASE_URL"], "http://127.0.0.1:4311");
+    assert.equal(dashboard.env["N8N_STATUS_PATH"], n8n.env["N8N_STATUS_PATH"]);
+    assert.equal(dashboard.env["N8N_CREDENTIALS_PATH"], n8n.env["N8N_CREDENTIALS_PATH"]);
+    assert.ok(!Object.values(serviceUrls(base.config)).includes(n8nServiceUrl(base.config)));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("packaged startup supervises the prebuilt n8n runtime", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bb-n8n-packaged-"));
+  try {
+    const launcher = path.join(root, "scripts", "start-n8n.mjs");
+    const runtimeEntry = path.join(root, "n8n-runtime", "bin", "n8n");
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.mkdirSync(path.dirname(runtimeEntry), { recursive: true });
+    fs.writeFileSync(launcher, "");
+    fs.writeFileSync(runtimeEntry, "");
+    const base = fixture("packaged");
+    const paths = { ...base.paths, appRoot: root };
+    const runtime = resolveN8nRuntime(paths, base.binaries);
+    assert.ok(runtime);
+    assert.equal(runtime.runtimeEntry, runtimeEntry);
+    const definitions = buildServiceDefinitions({ paths, config: base.config, binaries: base.binaries });
+    const n8n = definitions.find((definition) => definition.id === "n8n");
+    assert.ok(n8n);
+    assert.equal(n8n.startInBackground, true);
+    assert.equal(n8n.env["N8N_RUNTIME_ENTRY"], runtimeEntry);
+    assert.equal(n8n.env["N8N_SOURCE_DIR"], undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dashboard catalog proxy URL honors a server-side environment override", () => {
+  const previous = process.env["BREADBOARD_SKILLS_CATALOG_URL"];
+  process.env["BREADBOARD_SKILLS_CATALOG_URL"] = "http://127.0.0.1:4545/api/v1";
+  try {
+    const { definitions } = fixture("packaged");
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.equal(dashboard?.env["BREADBOARD_SKILLS_CATALOG_URL"], "http://127.0.0.1:4545/api/v1");
+    assert.ok(!(dashboard?.dependsOn ?? []).includes("skills-catalog-proxy"));
+  } finally {
+    if (previous === undefined) delete process.env["BREADBOARD_SKILLS_CATALOG_URL"];
+    else process.env["BREADBOARD_SKILLS_CATALOG_URL"] = previous;
+  }
 });
 
 test("dev dashboard retains the historical dashboard/db data layout", () => {
@@ -86,11 +255,52 @@ test("dev dashboard retains the historical dashboard/db data layout", () => {
   assert.ok(dashboard);
   assert.equal(dashboard.env["BREADBOARD_DATA_DIR"], "");
   assert.equal(dashboard.env["NODE_ENV"], "development");
+  assert.ok(dashboard.args.includes("--webpack"));
+  assert.ok(!dashboard.args.includes("--turbopack"));
+});
+
+test("fast dev dashboard uses an existing standalone build", () => {
+  const base = fixture("packaged");
+  const dashboardRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-fast-dashboard-"));
+  const server = path.join(
+    dashboardRoot,
+    ".next-desktop",
+    "standalone",
+    "dashboard",
+    "server.js",
+  );
+  fs.mkdirSync(path.dirname(server), { recursive: true });
+  fs.writeFileSync(server, "");
+  const previous = process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+  process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"] = "standalone";
+  try {
+    const paths: ResolvedPaths = {
+      ...base.paths,
+      mode: "dev",
+      appRoot: path.dirname(dashboardRoot),
+      dashboardServerDir: dashboardRoot,
+    };
+    const definitions = buildServiceDefinitions({
+      paths,
+      config: base.config,
+      binaries: base.binaries,
+    });
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.deepEqual(dashboard?.args, [server]);
+    assert.equal(dashboard?.cwd, path.dirname(server));
+    assert.equal(dashboard?.env["NODE_ENV"], "production");
+  } finally {
+    if (previous === undefined) delete process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"];
+    else process.env["BREADBOARD_DESKTOP_DASHBOARD_MODE"] = previous;
+    fs.rmSync(dashboardRoot, { recursive: true, force: true });
+  }
 });
 
 test("dashboard explicitly receives a configured Agency Agents checkout", () => {
   const previous = process.env["AGENCY_AGENTS_PATH"];
-  process.env["AGENCY_AGENTS_PATH"] = path.join("C:\\", "catalogs", "agency-agents");
+  const catalog = fs.mkdtempSync(path.join(os.tmpdir(), "bb-agency-override-"));
+  fs.writeFileSync(path.join(catalog, "divisions.json"), "{}");
+  process.env["AGENCY_AGENTS_PATH"] = catalog;
   try {
     const { definitions } = fixture("packaged");
     const dashboard = definitions.find((definition) => definition.id === "dashboard");
@@ -101,32 +311,23 @@ test("dashboard explicitly receives a configured Agency Agents checkout", () => 
   } finally {
     if (previous === undefined) delete process.env["AGENCY_AGENTS_PATH"];
     else process.env["AGENCY_AGENTS_PATH"] = previous;
+    fs.rmSync(catalog, { recursive: true, force: true });
   }
 });
 
-test("OpenHarness rollback mode registers it with the preserved readiness contract", () => {
-  const { definitions } = fixture("packaged", { agentRuntime: "openharness" });
-  const openharness = definitions.find((d) => d.id === "openharness");
-  assert.ok(openharness);
-  assert.equal(openharness.required, true);
-  assert.deepEqual(openharness.dependsOn, ["chatmock"]);
-  assert.ok((openharness.env["OPENCODE_SERVER_PASSWORD"] ?? "").length >= 24);
-  const health = openharness.healthCheck;
-  assert.ok(health && health.type === "http");
-  assert.match(health.url, /\/config\/providers$/);
-  assert.equal(health.expectBodyIncludes, "chatmock");
-});
-
-test("legacy mode omits OpenHarness entirely and dashboard adapts", () => {
-  const { definitions } = fixture("packaged", {
-    agentRuntime: "openharness",
-    openharnessMode: "legacy",
-  });
-  assert.ok(!definitions.some((d) => d.id === "openharness"));
-  const dashboard = definitions.find((d) => d.id === "dashboard");
-  assert.ok(dashboard);
-  assert.equal(dashboard.env["OPENHARNESS_ENABLED"], "false");
-  assert.deepEqual(dashboard.dependsOn, ["chatmock", "quartz"]);
+test("a stale Agency Agents override falls back to the managed catalog", () => {
+  const previous = process.env["AGENCY_AGENTS_PATH"];
+  process.env["AGENCY_AGENTS_PATH"] = path.join(os.tmpdir(), "agency-agents-checkout-that-moved");
+  try {
+    const { definitions, paths } = fixture("packaged");
+    const managed = path.join(paths.appRoot, "agency-agents");
+    assert.equal(resolveAgencyAgentsPath(paths), managed);
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.equal(dashboard?.env["AGENCY_AGENTS_PATH"], managed);
+  } finally {
+    if (previous === undefined) delete process.env["AGENCY_AGENTS_PATH"];
+    else process.env["AGENCY_AGENTS_PATH"] = previous;
+  }
 });
 
 test("dev Hermes runs on the checkout virtualenv, packaged on the bundled runtime", () => {
@@ -196,22 +397,74 @@ test("Hermes is a hidden-loopback supervised runtime and its endpoint is not pub
     Object.prototype.hasOwnProperty.call(serviceUrls(config), "hermes"),
     false,
   );
+  assert.equal(hermes.restartOnChange, undefined);
 });
 
-test("scriberr stays optional and only appears when enabled without external URL", () => {
-  assert.ok(!fixture("packaged").definitions.some((d) => d.id === "scriberr"));
-  const withScriberr = fixture("packaged", { scriberrEnabled: true });
+test("dev Hermes reloads when its Breadboard integration changes", () => {
+  const packaged = fixture("packaged");
+  const paths = { ...packaged.paths, mode: "dev" as const };
+  const definitions = buildServiceDefinitions({
+    paths,
+    config: packaged.config,
+    binaries: packaged.binaries,
+  });
+  const hermes = definitions.find((definition) => definition.id === "hermes");
+  assert.deepEqual(hermes?.restartOnChange, [
+    path.join(paths.hermesAppDir, "plugins", "breadboard", "__init__.py"),
+  ]);
+});
+
+test("dashboard receives an explicit ARIS clone override", () => {
+  const previous = process.env["ARIS_ROOT"];
+  process.env["ARIS_ROOT"] = path.join("C:\\", "research", "aris");
+  try {
+    const { definitions } = fixture("packaged");
+    const dashboard = definitions.find((definition) => definition.id === "dashboard");
+    assert.equal(dashboard?.env["ARIS_ROOT"], path.resolve(process.env["ARIS_ROOT"]));
+  } finally {
+    if (previous === undefined) delete process.env["ARIS_ROOT"];
+    else process.env["ARIS_ROOT"] = previous;
+  }
+});
+
+test("dev ChatMock reloads when its provider integration changes", () => {
+  const packaged = fixture("packaged");
+  const paths = { ...packaged.paths, mode: "dev" as const };
+  const definitions = buildServiceDefinitions({
+    paths,
+    config: packaged.config,
+    binaries: packaged.binaries,
+  });
+  const chatmock = definitions.find((definition) => definition.id === "chatmock");
+  assert.deepEqual(chatmock?.restartOnChange, [
+    path.join(paths.appRoot, "chatmock", "chatmock", "providers", "catalog.py"),
+    path.join(paths.appRoot, "chatmock", "chatmock", "providers", "dispatch.py"),
+    path.join(paths.appRoot, "chatmock", "chatmock", "providers", "registry.py"),
+    path.join(paths.appRoot, "chatmock", "chatmock", "providers", "store.py"),
+  ]);
+});
+
+test("native Scriberr is enabled by default, optional, and bypassed for an external URL", () => {
+  const withScriberr = fixture("packaged");
   const scriberr = withScriberr.definitions.find((d) => d.id === "scriberr");
   assert.ok(scriberr);
   assert.equal(scriberr.required, false);
-  assert.equal(scriberr.restartPolicy, "never");
+  assert.equal(scriberr.restartPolicy, "on-failure");
+  assert.equal(scriberr.command, path.join(withScriberr.paths.binDir, "scriberr.exe"));
+  assert.deepEqual(scriberr.args, []);
+  assert.equal(scriberr.healthCheck, undefined);
+  assert.equal(scriberr.env["HOST"], "127.0.0.1");
+  assert.equal(scriberr.env["PORT"], "8091");
+  assert.equal(scriberr.env["SCRIBERR_LAZY_MODEL_INIT"], "true");
+  assert.match(scriberr.env["PATH"] ?? "", /bin/);
+  assert.ok(!scriberr.command.toLowerCase().includes("docker"));
   const external = fixture("packaged", { scriberrEnabled: true, scriberrBaseUrl: "http://127.0.0.1:9999" });
   assert.ok(!external.definitions.some((d) => d.id === "scriberr"));
   const dashboard = external.definitions.find((d) => d.id === "dashboard");
   assert.equal(dashboard?.env["SCRIBERR_BASE_URL"], "http://127.0.0.1:9999");
 });
 
-test("quartz receives both its site port and an allocated hot-reload ws port", () => {
+test("quartz receives allocated ports and uses its early readiness endpoint", () => {
   // The Quartz CLI always opens a websocket listener; leaving it on the
   // default 3001 made startup fail with EADDRINUSE next to any other Quartz.
   const { definitions } = fixture("packaged");
@@ -222,12 +475,18 @@ test("quartz receives both its site port and an allocated hot-reload ws port", (
   assert.ok(portIndex >= 0 && wsIndex >= 0, "both --port and --wsPort must be passed");
   assert.equal(quartz.args[portIndex + 1], "4303");
   assert.equal(quartz.args[wsIndex + 1], "4304");
+  assert.deepEqual(quartz.healthCheck, {
+    type: "http",
+    url: "http://127.0.0.1:4303/__health",
+    expectBodyIncludes: '"ready":true',
+    timeoutMs: 3_000,
+    intervalMs: 1_000,
+  });
 });
 
 test("packaged services never rely on PATH lookups for runtimes", () => {
   const { definitions } = fixture("packaged");
   for (const definition of definitions) {
-    if (definition.id === "scriberr") continue; // docker is inherently external
     assert.ok(
       path.isAbsolute(definition.command),
       `${definition.id} must use an absolute runtime path, got ${definition.command}`,
@@ -239,7 +498,7 @@ test("no secret values leak into non-secret env keys or args", () => {
   const { config, definitions } = fixture("packaged");
   const secrets = [
     config.persistent.nextAuthSecret,
-    config.persistent.openharnessCapabilitySecret,
+    config.persistent.hermesCapabilitySecret,
     config.persistent.hermesSessionToken,
     config.persistent.hermesToolSecret,
   ];
@@ -321,4 +580,136 @@ test("ui-tars disabled mode removes the service and its adapter secret from dash
   assert.ok(dashboard);
   assert.equal(dashboard.env["UI_TARS_MODE"], "disabled");
   assert.equal(dashboard.env["UI_TARS_ADAPTER_SECRET"], undefined);
+});
+
+/**
+ * Subscription proxy (CLIProxyAPI).
+ *
+ * These pin the property that was actually broken: the desktop app supervised
+ * every other service but not this one, so the Subscriptions panel could sign
+ * an account in and sync its models into ChatMock while nothing was listening
+ * to serve them.
+ */
+function withCliproxyHome<T>(install: boolean, run: (home: string) => T): T {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bb-cliproxy-"));
+  const previous = process.env["CLIPROXY_HOME"];
+  process.env["CLIPROXY_HOME"] = home;
+  try {
+    if (install) {
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(
+        path.join(bin, process.platform === "win32" ? "cli-proxy-api.exe" : "cli-proxy-api"),
+        "",
+      );
+    }
+    return run(home);
+  } finally {
+    if (previous === undefined) delete process.env["CLIPROXY_HOME"];
+    else process.env["CLIPROXY_HOME"] = previous;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test("cliproxy is supervised when installed, loopback-only and never required", () => {
+  withCliproxyHome(true, (home) => {
+    const { definitions } = fixture("packaged");
+    const cliproxy = definitions.find((d) => d.id === "cliproxy");
+    if (!cliproxy) throw new Error("cliproxy should be registered when the binary is present");
+    assert.equal(cliproxy.required, false, "subscriptions must never block startup");
+    assert.equal(cliproxy.command, path.join(home, "bin", process.platform === "win32" ? "cli-proxy-api.exe" : "cli-proxy-api"));
+    assert.deepEqual(cliproxy.args, ["--config", path.join(home, "config.yaml")]);
+    if (!cliproxy.healthCheck || cliproxy.healthCheck.type !== "http") {
+      throw new Error("cliproxy should use an HTTP health check");
+    }
+    // Authenticated probe: /v1/models 401s without the bearer, so an
+    // unauthenticated check would never go healthy.
+    assert.match(cliproxy.healthCheck.url, /^http:\/\/127\.0\.0\.1:\d+\/v1\/models$/);
+    assert.match(cliproxy.healthCheck.headers?.["Authorization"] ?? "", /^Bearer .+/);
+  });
+});
+
+test("Codex is a dashboard-launched coding agent, not a supervised chat runtime", () => {
+  const { definitions, paths } = fixture("packaged");
+  const codex = definitions.find((definition) => definition.id === "codex");
+  assert.equal(codex, undefined);
+  const dashboard = definitions.find((definition) => definition.id === "dashboard");
+  if (!dashboard) throw new Error("Dashboard service should be registered");
+  assert.equal(dashboard.env["CODEX_BIN"], path.join(paths.binDir, "codex.exe"));
+  assert.equal(dashboard.env["CODEX_HOME"], paths.codexHome);
+});
+
+test("Postiz starts silently in the background and never blocks the workspace", () => {
+  const { definitions, paths } = fixture("packaged");
+  const postiz = definitions.find((definition) => definition.id === "postiz");
+  const dashboard = definitions.find((definition) => definition.id === "dashboard");
+  assert.ok(postiz && dashboard);
+  assert.equal(postiz.required, false);
+  assert.equal(postiz.startInBackground, true);
+  assert.equal(postiz.command, "C:/rt/node.exe");
+  assert.deepEqual(postiz.args, [
+    "--experimental-strip-types",
+    path.join(paths.appRoot, "scripts", "start-postiz-supervisor.mjs"),
+  ]);
+  assert.equal(postiz.env["SOCIALS_MANAGER_MODE"], "stack");
+  assert.equal(postiz.env["SOCIALS_MANAGER_URL"], "http://127.0.0.1:4306");
+  assert.equal(postiz.env["SOCIALS_MANAGER_ROOT"], path.join(paths.appRoot, "postiz-app"));
+  assert.equal(postiz.env["SOCIALS_MANAGER_SUPPRESS_DOCKER_UI"], "true");
+  if (!postiz.healthCheck || postiz.healthCheck.type !== "http") {
+    throw new Error("Postiz should use the supervisor readiness endpoint");
+  }
+  assert.equal(postiz.healthCheck.url, "http://127.0.0.1:4307/health");
+  assert.equal(postiz.healthCheck.expectBodyIncludes, '"ready":true');
+  assert.ok(!(dashboard.dependsOn ?? []).includes("postiz"));
+  assert.equal(dashboard.env["SOCIALS_MANAGER_SUPPRESS_DOCKER_UI"], "true");
+});
+
+test("cliproxy is not registered when the binary has not been downloaded yet", () => {
+  withCliproxyHome(false, () => {
+    const { definitions } = fixture("packaged");
+    assert.equal(definitions.find((d) => d.id === "cliproxy"), undefined);
+    // No half-configured wiring either: a dashboard pointed at a proxy that is
+    // not running would report subscriptions as available.
+    const dashboard = definitions.find((d) => d.id === "dashboard");
+    assert.ok(dashboard);
+    assert.equal(dashboard.env["CLIPROXY_BASE_URL"], undefined);
+    assert.equal(dashboard.env["CLIPROXY_API_KEY"], undefined);
+  });
+});
+
+test("cliproxy disabled mode removes the service even when the binary exists", () => {
+  withCliproxyHome(true, () => {
+    const { definitions } = fixture("packaged", { cliproxyMode: "disabled" });
+    assert.equal(definitions.find((d) => d.id === "cliproxy"), undefined);
+    const dashboard = definitions.find((d) => d.id === "dashboard");
+    assert.ok(dashboard);
+    assert.equal(dashboard.env["CLIPROXY_MODE"], "disabled");
+    assert.equal(dashboard.env["CLIPROXY_BASE_URL"], undefined);
+  });
+});
+
+test("dashboard and ChatMock are told the same proxy the supervisor starts", () => {
+  withCliproxyHome(true, (home) => {
+    const { definitions } = fixture("packaged");
+    const cliproxy = definitions.find((d) => d.id === "cliproxy");
+    const dashboard = definitions.find((d) => d.id === "dashboard");
+    const chatmock = definitions.find((d) => d.id === "chatmock");
+    assert.ok(cliproxy && dashboard && chatmock);
+    if (!cliproxy.healthCheck || cliproxy.healthCheck.type !== "http") {
+      throw new Error("cliproxy should use an HTTP health check");
+    }
+    // The port the proxy actually serves on is the one both clients are given:
+    // a disagreement here is invisible until a model call 401s or times out.
+    const servedOrigin = new URL(cliproxy.healthCheck.url).origin;
+    assert.equal(dashboard.env["CLIPROXY_BASE_URL"], `${servedOrigin}/v1`);
+    assert.equal(chatmock.env["CLIPROXY_BASE_URL"], `${servedOrigin}/v1`);
+    assert.equal(dashboard.env["CLIPROXY_API_KEY"], chatmock.env["CLIPROXY_API_KEY"]);
+    assert.equal(
+      `Bearer ${dashboard.env["CLIPROXY_API_KEY"]}`,
+      cliproxy.healthCheck.headers?.["Authorization"],
+    );
+    assert.equal(dashboard.env["CLIPROXY_HOME"], home);
+    // Secrets travel by env, never argv (process-listing safety).
+    assert.ok(!cliproxy.args.some((a) => a.includes(dashboard.env["CLIPROXY_API_KEY"] ?? "\u0000")));
+  });
 });

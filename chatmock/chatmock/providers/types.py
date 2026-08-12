@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 ChatMessage = Dict[str, Any]
@@ -9,7 +9,16 @@ ChatMessage = Dict[str, Any]
 class ProviderError(RuntimeError):
     """Raised when a model call fails. The message must stay safe to log; raw
     provider payloads (which may echo API keys or internal URLs) must not be
-    embedded verbatim."""
+    embedded verbatim.
+
+    ``status_code`` carries the upstream's own HTTP status when the raise site
+    knew it. Health tracking reads it first and only falls back to matching the
+    prose, because a status is unambiguous and a message never quite is.
+    """
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -40,6 +49,14 @@ class ModelCall:
     # Out-param populated from response.completed.response.usage when the
     # upstream reports authoritative Responses API token accounting.
     usage_out: Optional[ModelTokenUsage] = None
+    # The outer client model id before `default` expansion. Council calls may
+    # have their own requested seat model, so keep both identities.
+    client_requested_model: Optional[str] = None
+    # Correlates every upstream attempt made for this logical call.
+    request_id: Optional[str] = None
+    # Out-param populated by ProviderRouter. Each row names the actual upstream
+    # model and whether it was a failover attempt.
+    model_attempts_out: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class ModelProvider(Protocol):

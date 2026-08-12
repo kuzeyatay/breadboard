@@ -1,9 +1,15 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { LEARN_MODEL, rebuildEntireGarden } from "@/lib/learn";
+import {
+  getLearnStatusSnapshot,
+  LearnPipelineConflictError,
+  rebuildEntireGarden,
+} from "@/lib/learn";
 import { InvalidLearnOperationRequestError, isFullRebuildRequest, parseStartLearnOperationRequest } from "@/lib/learn-operation-mode";
 import { createChatmockClient } from "@/lib/knowledge";
+import { handOffLearnTask } from "@/lib/learn-background";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
+import { selectedModelForUser } from "@/lib/selected-model";
 
 export const dynamic = "force-dynamic";
 
@@ -30,17 +36,39 @@ export async function POST(
     const includedSourceIds = Array.isArray(body.includedSourceIds)
       ? body.includedSourceIds.filter((entry: unknown): entry is string => typeof entry === "string")
       : undefined;
+    const syllabusSourceId =
+      typeof body.syllabusSourceId === "string" && body.syllabusSourceId.trim()
+        ? body.syllabusSourceId.trim()
+        : undefined;
     const { baseURL } = resolveChatmockBaseUrl(request);
     const client = createChatmockClient(baseURL);
-    const job = await rebuildEntireGarden(cluster.slug, {
-      userId, client, contentPath, includedSourceIds,
-      model: LEARN_MODEL,
+    const execution = await handOffLearnTask(rebuildEntireGarden(cluster.slug, {
+      userId, client, contentPath, includedSourceIds, syllabusSourceId,
+      model: selectedModelForUser(userId),
       sourceOnly: body.sourceOnly !== false,
       includeSourceSnapshots: body.includeSourceSnapshots === true,
       forceFullRebuild: true,
+    }), `full rebuild for ${cluster.slug}`);
+    if (execution.accepted) {
+      return NextResponse.json(
+        {
+          success: true,
+          accepted: true,
+          operation: "full_rebuild",
+          job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+        },
+        { status: 202 },
+      );
+    }
+    return NextResponse.json({
+      success: true,
+      operation: "full_rebuild",
+      job: execution.value,
     });
-    return NextResponse.json({ success: true, operation: "full_rebuild", job });
   } catch (error) {
+    if (error instanceof LearnPipelineConflictError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return routeErrorResponse(error);
   }
 }

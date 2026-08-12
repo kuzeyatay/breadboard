@@ -1,9 +1,9 @@
 import type { ChatAttachment } from "../chat-attachments.ts";
-import type { CapabilityDecision } from "../openharness/capability-policy.ts";
-import type { FilesystemAccessMode } from "../openharness/runtime-store.ts";
-import type { NormalizedAgentEvent } from "../openharness/events.ts";
+import type { CapabilityDecision } from "../hermes/capability-policy.ts";
+import type { FilesystemAccessMode } from "../hermes/runtime-store.ts";
+import type { NormalizedAgentEvent } from "../hermes/events.ts";
 
-export const RUNTIME_KINDS = ["openharness", "hermes"] as const;
+export const RUNTIME_KINDS = ["hermes"] as const;
 export type RuntimeKind = (typeof RUNTIME_KINDS)[number];
 
 export const RUNTIME_SURFACES = [
@@ -85,10 +85,18 @@ export interface StartRuntimeRunInput {
   text: string;
   attachments?: ChatAttachment[];
   model?: { providerID: string; modelID: string };
+  /** Public model selected in Breadboard before any runtime routing alias. */
+  modelIdentity?: { modelID: string };
   variant?: string;
   system?: string;
   tools?: Record<string, boolean>;
   messageId?: string;
+  /**
+   * Per-turn approval bypass selected by the user. The runtime applies this to
+   * its live session before submitting the prompt; Breadboard capability and
+   * filesystem policy still run independently.
+   */
+  yoloMode?: boolean;
 }
 
 export interface ResolveRuntimeApprovalInput {
@@ -109,6 +117,8 @@ export interface RuntimeSessionReference {
   messageId?: string;
   /** Exact runtime prompt used to correlate a recovered durable result. */
   instruction?: string;
+  /** The runtime acknowledged prompt submission for this exact turn. */
+  submitted?: boolean;
   /**
    * Resolve a turn that may be created after the event stream connects.
    * Dashboard and Garden streams deliberately connect before submitting the
@@ -117,12 +127,13 @@ export interface RuntimeSessionReference {
   resolveActiveTurn?: () => {
     messageId?: string;
     instruction?: string;
+    submitted?: boolean;
   };
 }
 
 /**
- * Server-only runtime boundary. Existing `/api/openharness/*` routes remain
- * compatibility endpoints and call this interface; renderers never receive a
+ * Server-only runtime boundary. `/api/hermes/*` routes call this interface;
+ * renderers never receive a
  * runtime URL, credential, or provider session id.
  */
 export interface AgentRuntime {
@@ -148,6 +159,9 @@ export interface AgentRuntime {
     signal?: AbortSignal,
     onConnected?: () => void,
   ): AsyncIterable<NormalizedAgentEvent>;
+  setApprovalBypass(
+    input: RuntimeSessionReference & { enabled: boolean },
+  ): Promise<void>;
   resolveApproval(input: ResolveRuntimeApprovalInput): Promise<void>;
   stopRun(input: RuntimeSessionReference): Promise<void>;
   disposeSession(input: RuntimeSessionReference): Promise<void>;

@@ -3,9 +3,13 @@
 Date: 2026-07-19  
 Result: Passed
 
+> Historical evidence: this report predates the standalone Breadboard catalog
+> proxy. Its direct-authentication and command-line download paths have been
+> replaced; see `docs/SKILLS_CATALOG_PROXY.md` for the current architecture.
+
 ## Authentication and secret handling
 
-- The linked Vercel environment successfully authenticated to `https://skills.sh/api/v1` through `VERCEL_OIDC_TOKEN`.
+- The former dashboard deployment successfully authenticated to the upstream catalog with a request-scoped Vercel deployment identity.
 - The token value was never printed, logged, embedded in screenshots, or written into this report.
 - Existing `.env.local` values were left intact.
 
@@ -34,7 +38,7 @@ The opt-in live integration test passed end to end:
 - found `grill-me` through generic API search
 - retrieved the immutable detail hash and published files
 - exercised the upstream audit endpoint, accepting only the documented no-audits 404 as an alternative
-- downloaded through the official Skills CLI in an isolated temporary project
+- downloaded through the former command-line transport in an isolated temporary project (no longer used by Breadboard)
 - completed temporary quarantine, review, promotion, and qualified slash-command resolution for general, PDF, and React-oriented examples
 
 The authenticated browser detail view for `/mattpocock:grill-me` returned two files and five passing upstream audit providers:
@@ -49,8 +53,8 @@ Upstream audits remain supplementary; Breadboard still requires its own inactive
 
 ## Generic lifecycle and UI validation
 
-- Generic lifecycle/routing/catalog UI run: 36 passed, 0 failed, 1 optional live CLI-search test skipped.
-- The separate authenticated live integration covered live API search, detail, audit, and official CLI download.
+- Generic lifecycle/routing/catalog UI run: 36 passed, 0 failed, 1 optional historical live-search test skipped.
+- The separate authenticated live integration covered live API search, detail, audit, and the former download transport.
 - Quarantine limits, traversal rejection, hash pinning, tamper rejection, conditional coding storage, collision-safe slash commands, update review, rejection, removal, and permission recording all passed.
 
 ## UI screenshots

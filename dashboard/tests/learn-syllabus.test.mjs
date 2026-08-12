@@ -1,0 +1,318 @@
+import test, { describe } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import {
+  excludeSyllabusFromSources,
+  selectLearnSources,
+  selectLearnSyllabus,
+  sourceSetHashForSources,
+  sourceSetHashWithSyllabus,
+} from "../src/lib/learn-utils.ts";
+
+const learnSource = fs.readFileSync(
+  new URL("../src/lib/learn.ts", import.meta.url),
+  "utf8",
+);
+const workspaceSource = fs.readFileSync(
+  new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
+  "utf8",
+);
+const planRouteSource = fs.readFileSync(
+  new URL("../src/app/api/gardens/[gardenId]/learn/plan/route.ts", import.meta.url),
+  "utf8",
+);
+const rebuildRouteSource = fs.readFileSync(
+  new URL("../src/app/api/gardens/[gardenId]/learn/rebuild/route.ts", import.meta.url),
+  "utf8",
+);
+
+/** Count regex hits without letting a failure dump the whole 8k-line file. */
+function countMatches(haystack, pattern) {
+  return (haystack.match(pattern) ?? []).length;
+}
+
+function sourceDoc(slug, body = `Body of ${slug}`) {
+  return {
+    id: slug,
+    slug,
+    title: slug.replace(/-/g, " "),
+    relPath: `sources/${slug}.md`,
+    body,
+  };
+}
+
+describe("Learn syllabus selection", () => {
+  const documents = [
+    sourceDoc("course-syllabus", "Week 1: forces. Week 2: energy."),
+    sourceDoc("lecture-1"),
+    sourceDoc("lecture-2"),
+  ];
+
+  test("no syllabus id leaves the run untouched", () => {
+    assert.equal(selectLearnSyllabus(documents, undefined), null);
+    assert.equal(selectLearnSyllabus(documents, null), null);
+    assert.equal(selectLearnSyllabus(documents, "  "), null);
+    assert.deepEqual(excludeSyllabusFromSources(documents, null), documents);
+  });
+
+  test("resolves the designated study guide by slug", () => {
+    const syllabus = selectLearnSyllabus(documents, "course-syllabus");
+    assert.equal(syllabus?.slug, "course-syllabus");
+    assert.equal(syllabus?.body, "Week 1: forces. Week 2: energy.");
+  });
+
+  test("a deleted syllabus fails loudly instead of silently planning without it", () => {
+    assert.throws(
+      () => selectLearnSyllabus(documents, "removed-guide"),
+      /no longer available: removed-guide/,
+    );
+  });
+
+  test("the syllabus resolves even when it is not one of the selected documents", () => {
+    // A study guide can steer a run without being taught as source material.
+    const selected = selectLearnSources(documents, ["lecture-1", "lecture-2"]);
+    const syllabus = selectLearnSyllabus(documents, "course-syllabus");
+    assert.equal(syllabus?.slug, "course-syllabus");
+    assert.deepEqual(
+      excludeSyllabusFromSources(selected, syllabus).map((s) => s.slug),
+      ["lecture-1", "lecture-2"],
+    );
+  });
+
+  test("the syllabus is dropped from the teaching sources when it is also selected", () => {
+    const selected = selectLearnSources(documents, [
+      "course-syllabus",
+      "lecture-1",
+    ]);
+    const syllabus = selectLearnSyllabus(documents, "course-syllabus");
+    assert.deepEqual(
+      excludeSyllabusFromSources(selected, syllabus).map((s) => s.slug),
+      ["lecture-1"],
+    );
+  });
+});
+
+describe("Learn syllabus source-set hash", () => {
+  const sources = [sourceDoc("lecture-1"), sourceDoc("lecture-2")];
+  const base = sourceSetHashForSources(sources);
+
+  test("a run without a syllabus keeps its existing hash", () => {
+    // Existing gardens must not be reported as changed just because the
+    // syllabus feature exists.
+    assert.equal(sourceSetHashWithSyllabus(base, null), base);
+  });
+
+  test("designating a syllabus changes the hash", () => {
+    const syllabus = sourceDoc("course-syllabus", "Week 1: forces.");
+    assert.notEqual(sourceSetHashWithSyllabus(base, syllabus), base);
+  });
+
+  test("editing the syllabus body changes the hash", () => {
+    const before = sourceSetHashWithSyllabus(
+      base,
+      sourceDoc("course-syllabus", "Week 1: forces."),
+    );
+    const after = sourceSetHashWithSyllabus(
+      base,
+      sourceDoc("course-syllabus", "Week 1: forces. Week 2: energy."),
+    );
+    assert.notEqual(before, after);
+  });
+
+  test("swapping which document is the syllabus changes the hash", () => {
+    const body = "Week 1: forces.";
+    assert.notEqual(
+      sourceSetHashWithSyllabus(base, sourceDoc("guide-a", body)),
+      sourceSetHashWithSyllabus(base, sourceDoc("guide-b", body)),
+    );
+  });
+});
+
+describe("Learn pipeline wiring", () => {
+  test("the syllabus is split out of the teaching sources in the one shared context builder", () => {
+    assert.match(learnSource, /const syllabus = selectLearnSyllabus\(availableSources, syllabusSourceId\)/);
+    assert.match(learnSource, /const sources = excludeSyllabusFromSources\(selectedSources, syllabus\)/);
+    assert.match(learnSource, /sourceSetHashWithSyllabus\(/);
+  });
+
+  test("a syllabus-only selection is refused with an actionable message", () => {
+    assert.match(learnSource, /is set as the syllabus, so it is not taught as source material/);
+  });
+
+  test("syllabus-derived concepts do not re-enter when no explicit selection was made", () => {
+    assert.match(learnSource, /node\.sourceDocument !== syllabus\?\.slug/);
+  });
+
+  test("the full selection is persisted so a confirmed run reproduces the same split", () => {
+    // Planning's job, stored map, and both generation paths must persist the
+    // user's whole selection — persisting only the teaching sources would drop
+    // the syllabus from the set the next run resolves against.
+    const persistedSelections = countMatches(
+      learnSource,
+      /sourceIds: context\.selectedSourceIds/g,
+    );
+    assert.equal(
+      persistedSelections,
+      4,
+      `expected 4 persisted selections (planning job, stored map, and both generation paths), found ${persistedSelections}`,
+    );
+    const persistedSyllabi = countMatches(
+      learnSource,
+      /syllabusSourceId: context\.syllabus\?\.slug/g,
+    );
+    assert.equal(
+      persistedSyllabi,
+      4,
+      `expected the syllabus persisted alongside each selection, found ${persistedSyllabi}`,
+    );
+  });
+
+  test("page generation re-reads the syllabus the confirmed map was planned against", () => {
+    assert.match(
+      learnSource,
+      /map\.sourceIds\.length > 0 \? map\.sourceIds : undefined,\s*map\.syllabusSourceId,/,
+    );
+    assert.match(learnSource, /syllabus: context\.syllabus,/);
+  });
+
+  test("both learn tables carry the syllabus and migrate existing databases", () => {
+    assert.match(learnSource, /syllabus_source_id\s+TEXT/);
+    assert.match(
+      learnSource,
+      /ALTER TABLE learn_jobs ADD COLUMN syllabus_source_id TEXT/,
+    );
+    assert.match(
+      learnSource,
+      /ALTER TABLE learn_maps ADD COLUMN syllabus_source_id TEXT/,
+    );
+  });
+
+  test("rolling back a run restores its document selection and syllabus", () => {
+    assert.match(learnSource, /row\.source_ids_json \?\? "\[\]"/);
+    assert.match(learnSource, /row\.syllabus_source_id \?\? null/);
+  });
+});
+
+describe("Learn syllabus prompting", () => {
+  test("syllabus rules are appended only when a syllabus is present", () => {
+    assert.match(learnSource, /function withSyllabusRules\(/);
+    assert.match(learnSource, /return hasSyllabus \? `\$\{basePrompt\}\\n\$\{rules\}` : basePrompt;/);
+  });
+
+  test("every planning stage receives the syllabus", () => {
+    assert.match(
+      learnSource,
+      /withSyllabusRules\(SOURCE_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus\)/,
+    );
+    assert.match(
+      learnSource,
+      /withSyllabusRules\(SCOPE_CONTRACT_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus\)/,
+    );
+    assert.match(
+      learnSource,
+      /withSyllabusRules\(TOPIC_MAP_PROMPT, SYLLABUS_PLANNING_RULES, hasSyllabus\)/,
+    );
+    assert.match(learnSource, /syllabus: syllabusPayload,/);
+  });
+
+  test("the syllabus steers scope but never becomes a lesson topic", () => {
+    const rules = SYLLABUS_RULES_TEXT();
+    assert.match(rules, /never write a page about the syllabus/i);
+    assert.match(rules, /never invent a substitute for it/);
+    assert.match(
+      learnSource,
+      /Never mention, quote, cite, or describe the syllabus in the lesson/,
+    );
+  });
+
+  test("a syllabus topic with no material is left uncovered, not filled in", () => {
+    const rules = SYLLABUS_RULES_TEXT();
+    assert.match(rules, /only as far as that material genuinely supports/);
+    assert.match(rules, /leave the topic uncovered and record it in warnings/);
+    assert.match(rules, /Do not create learning units for them/);
+  });
+
+  test("page writing gets the syllabus as orientation only", () => {
+    assert.match(
+      learnSource,
+      /withSyllabusRules\(\s*SUBSECTION_PROMPT,\s*SYLLABUS_PAGE_RULES,/,
+    );
+    assert.match(learnSource, /outline: truncate\(syllabus\.body, MAX_SYLLABUS_DOSSIER_CHARS\)/);
+  });
+});
+
+/** The planning rules block, isolated so assertions read against just that text. */
+function SYLLABUS_RULES_TEXT() {
+  const match = learnSource.match(
+    /const SYLLABUS_PLANNING_RULES = `([\s\S]*?)`;/,
+  );
+  assert.ok(match, "SYLLABUS_PLANNING_RULES should be defined");
+  return match[1];
+}
+
+describe("Learn syllabus API surface", () => {
+  test("plan and rebuild accept a syllabus id", () => {
+    for (const [name, source] of [
+      ["plan", planRouteSource],
+      ["rebuild", rebuildRouteSource],
+    ]) {
+      assert.match(
+        source,
+        /typeof body\.syllabusSourceId === "string" && body\.syllabusSourceId\.trim\(\)/,
+        `${name} route should parse syllabusSourceId`,
+      );
+      assert.match(source, /syllabusSourceId/, `${name} route should forward it`);
+    }
+  });
+
+  test("the status snapshot reports the syllabus and drops a deleted one", () => {
+    assert.match(learnSource, /syllabusSourceId: string \| null;/);
+    assert.match(
+      learnSource,
+      /persistedSyllabusSourceId && availableSourceIdSet\.has\(persistedSyllabusSourceId\)/,
+    );
+  });
+});
+
+describe("Learn panel syllabus controls", () => {
+  test("the panel offers picking an existing document or uploading one", () => {
+    assert.match(workspaceSource, /Syllabus for Learn/);
+    assert.match(workspaceSource, /name="learn-syllabus"/);
+    assert.match(workspaceSource, /No syllabus/);
+    assert.match(workspaceSource, /Upload a syllabus/);
+    assert.match(workspaceSource, /handleSyllabusUpload/);
+  });
+
+  test("an uploaded syllabus reuses the ingest pipeline without map generation", () => {
+    assert.match(
+      workspaceSource,
+      /formData\.append\("sourceLabel", "Syllabus"\)[\s\S]{0,200}formData\.append\("generateMap", "false"\)/,
+    );
+    assert.match(workspaceSource, /setLearnSyllabusSlug\(slug\)/);
+  });
+
+  test("the chosen syllabus is sent with every Learn action", () => {
+    assert.match(
+      workspaceSource,
+      /\.\.\.\(learnSyllabusSlug\s*\?\s*\{ syllabusSourceId: learnSyllabusSlug \}\s*:\s*\{\}\)/,
+    );
+  });
+
+  test("the syllabus does not count as material to teach from", () => {
+    assert.match(
+      workspaceSource,
+      /learnTeachingSourceSlugs = effectiveLearnIncludedSourceSlugs\.filter\(/,
+    );
+    assert.match(
+      workspaceSource,
+      /Only the syllabus is selected; choose at least one of the/,
+    );
+  });
+
+  test("a deleted syllabus reverts to none instead of blocking the run", () => {
+    assert.match(
+      workspaceSource,
+      /current && !availableSourceSlugs\.has\(current\) \? null : current/,
+    );
+  });
+});

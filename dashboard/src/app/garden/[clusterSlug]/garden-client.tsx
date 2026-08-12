@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import GardenAssistantSwitch from '@/app/components/openharness/garden-assistant-switch';
+import GardenAssistantSwitch from '@/app/components/hermes/garden-assistant-switch';
 import { QUARTZ_BASE_URL, quartzUrl } from '@/lib/quartz-url';
 import {
   exportFolderPdf,
@@ -36,6 +36,8 @@ interface QuartzMessage {
   fileName?: string;
   mimeType?: string;
   dataUrl?: string;
+  file?: File;
+  url?: string;
   cluster?: string;
   toFolder?: string;
   folder?: string;
@@ -98,6 +100,24 @@ function quartzUrlWithRefresh(...segments: string[]): string {
   const url = new URL(quartzUrl(...segments));
   url.searchParams.set('refresh', Date.now().toString());
   return url.toString();
+}
+
+// Assigning `iframe.src` navigates the frame *and* stacks an entry on the
+// top-level session history, so every folder edit costs the user another press
+// of Back before they can leave the garden. `location.replace` is allowed
+// cross-origin and reloads the frame in place instead.
+function replaceQuartzLocation(iframe: HTMLIFrameElement | null, url: string): void {
+  if (!iframe) return;
+  try {
+    const frameWindow = iframe.contentWindow;
+    if (frameWindow) {
+      frameWindow.location.replace(url);
+      return;
+    }
+  } catch {
+    // A frame we cannot reach still needs reloading; fall through.
+  }
+  iframe.src = url;
 }
 
 export default function GardenClient({
@@ -178,7 +198,7 @@ export default function GardenClient({
           (typeof data.cluster === 'string' && data.cluster) || clusterSlug;
         const reloadGarden = () => {
           window.setTimeout(() => {
-            if (iframeRef.current) iframeRef.current.src = quartzUrlWithRefresh(folderCluster);
+            replaceQuartzLocation(iframeRef.current, quartzUrlWithRefresh(folderCluster));
           }, 700);
         };
 
@@ -401,6 +421,96 @@ export default function GardenClient({
           });
       }
 
+      // Video uploads stream as a raw body so a large file is never turned into
+      // a data URL (the image path) or buffered as a multipart part. The File
+      // itself crosses the frame boundary by structured clone, so no copy of
+      // the bytes is made on the way here either.
+      if (data.type === 'second-brain:upload-markdown-video') {
+        const file = data.file;
+        if (!(file instanceof File)) {
+          postToQuartz({
+            type: 'second-brain:markdown-video-result',
+            slug: data.slug,
+            ok: false,
+            error: 'Could not read that video file',
+          });
+          return;
+        }
+
+        const uploadUrl =
+          `/api/markdown-videos?clusterSlug=${encodeURIComponent(effectiveCluster)}` +
+          `&noteSlug=${encodeURIComponent(slug)}` +
+          `&fileName=${encodeURIComponent(file.name)}`;
+
+        const request = new XMLHttpRequest();
+        request.open('POST', uploadUrl);
+        request.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+        request.upload.addEventListener('progress', (event) => {
+          if (!event.lengthComputable) return;
+          postToQuartz({
+            type: 'second-brain:markdown-video-progress',
+            slug: data.slug,
+            percent: Math.round((event.loaded / event.total) * 100),
+          });
+        });
+        request.addEventListener('load', () => {
+          let body: { markdown?: string; error?: string } = {};
+          try {
+            body = JSON.parse(request.responseText);
+          } catch {
+            // A non-JSON response is reported as a generic failure below.
+          }
+          postToQuartz({
+            type: 'second-brain:markdown-video-result',
+            slug: data.slug,
+            ok: request.status >= 200 && request.status < 300 && Boolean(body.markdown),
+            markdown: body.markdown ?? '',
+            error: body.error ?? 'Could not add video',
+          });
+        });
+        request.addEventListener('error', () => {
+          postToQuartz({
+            type: 'second-brain:markdown-video-result',
+            slug: data.slug,
+            ok: false,
+            error: 'Could not add video',
+          });
+        });
+        request.send(file);
+        return;
+      }
+
+      if (data.type === 'second-brain:add-markdown-youtube') {
+        fetch('/api/markdown-videos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clusterSlug: effectiveCluster,
+            noteSlug: slug,
+            youtubeUrl: typeof data.url === 'string' ? data.url : '',
+          }),
+        })
+          .then(async (response) => {
+            const body = await response.json().catch(() => ({}));
+            postToQuartz({
+              type: 'second-brain:markdown-video-result',
+              slug: data.slug,
+              ok: response.ok && body.success,
+              markdown: typeof body.markdown === 'string' ? body.markdown : '',
+              error: body.error ?? 'Could not add video',
+            });
+          })
+          .catch(() => {
+            postToQuartz({
+              type: 'second-brain:markdown-video-result',
+              slug: data.slug,
+              ok: false,
+              error: 'Could not add video',
+            });
+          });
+        return;
+      }
+
       if (data.type === 'second-brain:delete-markdown') {
         fetch(`/api/documents/${encodeURIComponent(slug)}?clusterSlug=${encodeURIComponent(effectiveCluster)}`, {
           method: 'DELETE',
@@ -416,7 +526,7 @@ export default function GardenClient({
             });
             if (ok) {
               window.setTimeout(() => {
-                if (iframeRef.current) iframeRef.current.src = quartzUrlWithRefresh(effectiveCluster);
+                replaceQuartzLocation(iframeRef.current, quartzUrlWithRefresh(effectiveCluster));
               }, 700);
             }
           })

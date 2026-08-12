@@ -1,0 +1,884 @@
+"use client";
+
+// Garden chat backed by the Hermes `breadboard-garden` agent.
+//
+// Scoped to a single garden: the agent can only use the curated garden_* tools
+// (search, retrieval, and proposal creation) — no shell, files, or git. Answers
+// stay grounded and cite sources; any change the agent suggests arrives as a
+// typed PROPOSAL the user reviews and applies through Breadboard, never a silent
+// markdown edit. This floating panel embeds the shared runtime panel and gives
+// the surface the same capability set as the dashboard terminal: model and
+// reasoning-effort selection, session history with new-chat, skill review, and
+// the proposals reviewer.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAssistantIntelligence } from "@/app/components/use-assistant-intelligence";
+import { reusableChatAttachments } from "@/lib/chat-attachments";
+import { interactiveVisualizerCommandForArtifact } from "@/lib/hermes/interactive-visualizer-skills";
+import AgentRuntimePanel from "./agent-runtime-panel";
+import ArtifactPanel, {
+  ARTIFACT_REVISE_EVENT,
+  ArtifactArchiveIcon,
+} from "./artifact-panel";
+import SkillReviewPanel from "./skill-review-panel";
+import TerminalScheduledPanel from "./terminal-scheduled-panel";
+import GBrainStatusBadge from "./gbrain-status-badge";
+import { GARDEN_DOCUMENTS_CHANGED_EVENT } from "./artifact-viewer";
+import { GARDEN_PROPOSALS_CHANGED_EVENT } from "./inline-proposal-cards";
+import {
+  ActiveChatIcon,
+  chatSessionIsActive,
+  ChatHistoryLoading,
+  deleteChatSession,
+  TrashIcon,
+} from "./history-client";
+import {
+  invalidateHermesSessionSummaries,
+  HERMES_SESSIONS_CHANGED_EVENT,
+  loadHermesSessionSummaries,
+  type HermesSessionSnapshot,
+} from "@/lib/hermes/session-client";
+import {
+  externalAgentRunInFlight,
+  useAgentSession,
+  type ExternalAgentTurnResult,
+} from "./use-agent-session";
+import { useWorkflowAutomation } from "./use-workflow-automation";
+import { useDeepResearchAgent } from "./use-deep-research-agent";
+import { taskFromDeepResearchCommand } from "@/lib/deep-research/identity.ts";
+import { taskFromOpenCodeCommand } from "@/lib/opencode/identity.ts";
+import { useOpenCodeAgent } from "./use-opencode-agent";
+import { taskFromCodexCommand } from "@/lib/codex/identity.ts";
+import { useCodexAgent } from "./use-codex-agent";
+import { taskFromRufloCommand } from "@/lib/ruflo/identity.ts";
+import { useRufloAgent } from "./use-ruflo-agent";
+import { useAssistantModels } from "../use-assistant-models";
+import type { ChatTextSelectionReference } from "@/lib/chat-text-selection";
+
+interface Props {
+  gardenSlug: string;
+  gardenName?: string;
+  onClose?: () => void;
+}
+
+interface Proposal {
+  id: number;
+  kind: "note" | "page_revision" | "visualization";
+  pageSlug: string | null;
+  rationale: string | null;
+  payload: Record<string, unknown>;
+  status: string;
+  createdAt: string;
+}
+
+interface RuntimeHistorySession {
+  id: string;
+  title: string;
+  updatedAt: string;
+  gardenId: string;
+  active: boolean;
+}
+
+type PanelView =
+  | "chat"
+  | "proposals"
+  | "artifacts"
+  | "recents"
+  | "skills"
+  | "scheduled";
+
+const SUGGESTED_PROMPTS = [
+  "Summarize the main ideas of this garden.",
+  "Quiz me on this garden.",
+  "Find gaps or missing prerequisites in these notes.",
+  "Trace the sources behind a key claim.",
+];
+
+function formatChatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+export default function GardenAgentChat({ gardenSlug, gardenName, onClose }: Props) {
+  const [input, setInput] = useState("");
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [view, setView] = useState<PanelView>("chat");
+  const {
+    model,
+    setModel,
+    reasoningEffort,
+    setReasoningEffort,
+    intelligenceModes,
+    failover: modelFailover,
+  } = useAssistantIntelligence();
+  const { models } = useAssistantModels({ eager: true });
+  const [history, setHistory] = useState<RuntimeHistorySession[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const deepResearchDispatchingRef = useRef(false);
+  const [researchNotice, setResearchNotice] = useState("");
+  const session = useAgentSession("garden_chat", { gardenSlug, title: `${gardenName ?? gardenSlug} chat` });
+  const runWorkflowAutomation = useWorkflowAutomation(session);
+  const finishExternalAgentTurn = session.finishExternalAgentTurn;
+  const deepResearch = useDeepResearchAgent(session, setResearchNotice);
+  const openCode = useOpenCodeAgent(
+    session,
+    model,
+    reasoningEffort,
+    gardenSlug,
+    setResearchNotice,
+  );
+  const codex = useCodexAgent(
+    session,
+    model,
+    reasoningEffort,
+    gardenSlug,
+    setResearchNotice,
+  );
+  const ruflo = useRufloAgent(session, gardenSlug, setResearchNotice);
+  const busy =
+    session.connection === "connecting" ||
+    session.connection === "streaming" ||
+    session.connection === "waiting";
+  // An external agent is dispatching: the run exists on the client but has no
+  // transcript turn yet, so nothing in `session` reflects it.
+  const externalRunLaunching =
+    deepResearch.launching ||
+    codex.launching ||
+    openCode.launching ||
+    ruflo.launching;
+  const currentChatActive =
+    busy ||
+    externalRunLaunching ||
+    chatSessionIsActive(null, session.messages);
+  const externalAgentRunActive = session.messages.some(
+    externalAgentRunInFlight,
+  );
+  const refreshSession = session.refreshSession;
+
+  useEffect(() => {
+    if (!externalAgentRunActive || view !== "chat") return;
+    const reconcile = () => {
+      if (document.visibilityState === "visible") {
+        void refreshSession();
+      }
+    };
+    reconcile();
+    document.addEventListener("visibilitychange", reconcile);
+    window.addEventListener("focus", reconcile);
+    return () => {
+      document.removeEventListener("visibilitychange", reconcile);
+      window.removeEventListener("focus", reconcile);
+    };
+  }, [externalAgentRunActive, refreshSession, view]);
+
+  const handleExternalAgentTerminal = useCallback(
+    (
+      clientMessageId: string,
+      result: Omit<ExternalAgentTurnResult, "clientMessageId">,
+    ) => {
+      void finishExternalAgentTurn({ clientMessageId, ...result }).catch(
+        (cause) => {
+          setResearchNotice(
+            cause instanceof Error
+              ? cause.message
+              : "The external agent result could not be saved.",
+          );
+        },
+      );
+    },
+    [finishExternalAgentTurn],
+  );
+
+  useEffect(() => {
+    const listener = (raw: Event) => {
+      const artifact = (raw as CustomEvent<{ id?: string; title?: string; gardenId?: string | null; renderer?: string; sourceSkill?: string | null }>).detail;
+      if (!artifact?.id || artifact.gardenId !== gardenSlug) return;
+      setView("chat");
+      setInput(`${interactiveVisualizerCommandForArtifact(artifact)}Revise the selected artifact "${artifact.title ?? "artifact"}" (${artifact.id}): `);
+    };
+    window.addEventListener(ARTIFACT_REVISE_EVENT, listener);
+    return () => window.removeEventListener(ARTIFACT_REVISE_EVENT, listener);
+  }, [gardenSlug]);
+
+  const loadProposals = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/gardens/${encodeURIComponent(gardenSlug)}/proposals?status=pending`);
+      if (!response.ok) return;
+      const data = await response.json();
+      // setState after an async fetch is the endorsed "subscribe to external
+      // system" pattern; it is not a synchronous set within the effect body.
+      setProposals(Array.isArray(data.proposals) ? data.proposals : []);
+    } catch {
+      // Non-fatal; proposals just won't refresh.
+    }
+  }, [gardenSlug]);
+
+  // Load once and refresh whenever a turn finishes (the agent may have proposed).
+  // Fetching happens asynchronously; state is only set after the network reply.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (cancelled) return;
+      await loadProposals();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadProposals, session.connection]);
+
+  // The inline reviewer in the transcript decides proposals too; keep the tab
+  // and its badge in step with it.
+  useEffect(() => {
+    const listener = () => void loadProposals();
+    window.addEventListener(GARDEN_PROPOSALS_CHANGED_EVENT, listener);
+    return () => window.removeEventListener(GARDEN_PROPOSALS_CHANGED_EVENT, listener);
+  }, [loadProposals]);
+
+  // Refresh the recents list between turns so past garden sessions can be
+  // reopened, mirroring the terminal's history sidebar.
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+    const refreshHistory = (force = false) => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      void loadHermesSessionSummaries("garden_chat", { force })
+        .then((sessions) => {
+          if (cancelled) return;
+          setHistory(
+            sessions
+              .filter((item): item is HermesSessionSnapshot & { id: string } =>
+                typeof item.id === "string" &&
+                item.id.startsWith("conv_") &&
+                item.gardenId === gardenSlug,
+              )
+              .map((item) => {
+                return {
+                  id: item.id,
+                  title: typeof item.title === "string" ? item.title : "New chat",
+                  updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
+                  gardenId: gardenSlug,
+                  active: Boolean(item.activeRun) || item.externalAgentActive === true,
+                };
+              }),
+          );
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false;
+          if (!cancelled) setHistoryLoading(false);
+        });
+    };
+    setHistoryLoading(true);
+    refreshHistory();
+    const timer = window.setInterval(() => refreshHistory(true), 10_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshHistory(true);
+    };
+    const onSessionsChanged = (event: Event) => {
+      const changedSurface = (event as CustomEvent<{ surface?: string }>).detail?.surface;
+      if (changedSurface === "garden_chat") refreshHistory(true);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener(HERMES_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener(HERMES_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+    };
+  }, [gardenSlug]);
+
+  const decide = useCallback(
+    async (proposalId: number, decision: "apply" | "reject") => {
+      const response = await fetch(
+        `/api/gardens/${encodeURIComponent(gardenSlug)}/proposals/${proposalId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision }),
+        },
+      ).catch(() => null);
+      if (response?.ok && decision === "apply") {
+        const result = (await response.json().catch(() => null)) as {
+          document?: { slug?: string; folder?: string } | null;
+        } | null;
+        if (result?.document?.slug) {
+          window.dispatchEvent(
+            new CustomEvent(GARDEN_DOCUMENTS_CHANGED_EVENT, {
+              detail: {
+                gardenId: gardenSlug,
+                folder: result.document.folder ?? "",
+                slug: result.document.slug,
+              },
+            }),
+          );
+        }
+      }
+      void loadProposals();
+    },
+    [gardenSlug, loadProposals],
+  );
+
+  const routeDeepResearchCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const task = taskFromDeepResearchCommand(text);
+      if (task === null) return false;
+      if (deepResearch.launching || deepResearchDispatchingRef.current) return true;
+      deepResearchDispatchingRef.current = true;
+      setResearchNotice("");
+      codex.clear();
+      openCode.clear();
+      ruflo.clear();
+      void (async () => {
+        try {
+          if (!deepResearch.agent) await deepResearch.select();
+          await deepResearch.launch(task, options);
+        } finally {
+          deepResearchDispatchingRef.current = false;
+        }
+      })();
+      return true;
+    },
+    [codex, deepResearch, openCode, ruflo],
+  );
+
+  const submit = useCallback(() => {
+    const text = input.trim();
+    const codexTask = taskFromCodexCommand(text);
+    if (codexTask !== null) {
+      if (codex.launching) return;
+      setInput("");
+      void (async () => {
+        deepResearch.clear();
+        openCode.clear();
+        ruflo.clear();
+        if (!codex.agent) await codex.select();
+        if (codexTask) await codex.launch(codexTask);
+      })();
+      return;
+    }
+    const rufloTask = taskFromRufloCommand(text);
+    if (rufloTask !== null) {
+      if (ruflo.launching) return;
+      setInput("");
+      void (async () => {
+        deepResearch.clear();
+        codex.clear();
+        openCode.clear();
+        if (!ruflo.agent) await ruflo.select();
+        if (rufloTask) await ruflo.launch(rufloTask);
+      })();
+      return;
+    }
+    const openCodeTask = taskFromOpenCodeCommand(text);
+    if (openCodeTask !== null) {
+      if (openCode.launching) return;
+      setInput("");
+      void (async () => {
+        deepResearch.clear();
+        codex.clear();
+        ruflo.clear();
+        if (!openCode.agent) await openCode.select();
+        if (openCodeTask) await openCode.launch(openCodeTask);
+      })();
+      return;
+    }
+    // Deep Research owns the turn when it is active (or explicitly invoked), the
+    // same contract as in the dashboard terminal.
+    if (routeDeepResearchCommand(text)) {
+      setInput("");
+      return;
+    }
+    if (ruflo.agent) {
+      if (!text || ruflo.launching) return;
+      setInput("");
+      void ruflo.launch(text);
+      return;
+    }
+    if (codex.agent) {
+      if (!text || codex.launching) return;
+      setInput("");
+      void codex.launch(text);
+      return;
+    }
+    if (openCode.agent) {
+      if (!text || openCode.launching) return;
+      setInput("");
+      void openCode.launch(text);
+      return;
+    }
+    if (deepResearch.agent) {
+      if (!text || deepResearch.launching) return;
+      setInput("");
+      void deepResearch.launch(text);
+      return;
+    }
+    if (!text) return;
+    setInput("");
+    void session.send(text, { model, reasoningEffort });
+  }, [
+    deepResearch,
+    codex,
+    input,
+    model,
+    openCode,
+    reasoningEffort,
+    routeDeepResearchCommand,
+    ruflo,
+    session,
+  ]);
+
+  const askSelection = useCallback(
+    async (question: string, selection: ChatTextSelectionReference) => {
+      if (busy) return;
+      await session.send(question, {
+        model,
+        reasoningEffort,
+        textSelection: selection,
+      });
+    },
+    [busy, model, reasoningEffort, session],
+  );
+
+  const steer = useCallback(async (text: string): Promise<boolean> => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    return session.steer(trimmed);
+  }, [session]);
+
+  const sendQueued = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (routeDeepResearchCommand(trimmed)) return;
+    if (deepResearch.agent) {
+      await deepResearch.launch(trimmed);
+      return;
+    }
+    await session.send(trimmed, { model, reasoningEffort });
+  }, [deepResearch, model, reasoningEffort, routeDeepResearchCommand, session]);
+
+  const editMessage = useCallback(
+    (messageIndex: number, text: string, branchGroupId: string) => {
+      if (routeDeepResearchCommand(text, { branchGroupId })) return;
+      void session.send(text, {
+        model,
+        reasoningEffort,
+        historyOverride: session.messages.slice(0, messageIndex),
+        branchGroupId,
+        // An edit rewrites the words, not what they were about: the screenshot
+        // the question referred to has to come with it.
+        attachments: reusableChatAttachments(
+          session.messages[messageIndex]?.attachments,
+        ),
+      });
+    },
+    [model, reasoningEffort, routeDeepResearchCommand, session],
+  );
+
+  const selectBranch = useCallback(
+    (messages: typeof session.messages) => session.setMessages(messages),
+    [session],
+  );
+
+  const sendSuggestedPrompt = useCallback(
+    (text: string) => {
+      if (busy) return;
+      if (routeDeepResearchCommand(text)) return;
+      if (deepResearch.agent) {
+        void deepResearch.launch(text);
+        return;
+      }
+      void session.send(text, { model, reasoningEffort });
+    },
+    [busy, deepResearch, model, reasoningEffort, routeDeepResearchCommand, session],
+  );
+
+  const retryMessage = useCallback(
+    (userMessageIndex: number, branchGroupId: string) => {
+      const previousUser = session.messages[userMessageIndex];
+      if (previousUser) {
+        if (
+          routeDeepResearchCommand(previousUser.content, { branchGroupId })
+        ) {
+          return;
+        }
+        void session.send(previousUser.content, {
+          model,
+          reasoningEffort,
+          historyOverride: session.messages.slice(0, userMessageIndex),
+          branchGroupId,
+          // Regenerating re-asks the same question, and an attached image is
+          // half of it. Without this the retry reached the model as bare text
+          // and it answered that nothing had been attached.
+          attachments: reusableChatAttachments(previousUser.attachments),
+        });
+      }
+    },
+    [model, reasoningEffort, routeDeepResearchCommand, session],
+  );
+
+  function startNewChat() {
+    deepResearch.clear();
+    codex.clear();
+    openCode.clear();
+    ruflo.clear();
+    session.reset();
+    setInput("");
+    setView("chat");
+  }
+
+  function openHistorySession(item: RuntimeHistorySession) {
+    if (item.gardenId !== gardenSlug) return;
+    codex.clear();
+    openCode.clear();
+    ruflo.clear();
+    void session.openSession(item.id);
+    setView("chat");
+  }
+
+  // The route stops whatever the chat still has running before it removes the
+  // rows, so a streaming response is no longer a reason to refuse the delete.
+  async function deleteHistorySession(item: RuntimeHistorySession) {
+    if (
+      !window.confirm(
+        `Delete "${item.title}"? Anything it is still running is stopped, and its messages and any artifacts it produced are removed for good.`,
+      )
+    ) {
+      return;
+    }
+    setHistoryError(null);
+    const result = await deleteChatSession(item.id);
+    if (!result.deleted) {
+      setHistoryError(result.error ?? "This chat could not be deleted.");
+      return;
+    }
+    invalidateHermesSessionSummaries("garden_chat");
+    setHistory((current) => current.filter((entry) => entry.id !== item.id));
+    // The open chat no longer exists; fall back to an empty one.
+    if (item.id === session.sessionId) startNewChat();
+  }
+
+  function toggleView(next: PanelView) {
+    setView((current) => (current === next ? "chat" : next));
+  }
+
+  const headerButton =
+    "neu-button rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-900";
+  const activeHeaderButton =
+    "neu-button neu-selected rounded-md border border-gray-500 bg-gray-800 px-2 py-1 text-[11px] text-white";
+
+  return (
+    <div className="bb-neu-tray neu-surface-raised fixed bottom-4 right-4 z-50 flex h-[76vh] w-[480px] max-w-[95vw] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950">
+      <header
+        className="bb-neu-toolbar flex shrink-0 items-center justify-between gap-2 border-b border-gray-800 px-4 py-2.5"
+      >
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-gray-100">{gardenName ?? gardenSlug}</p>
+          <p className="truncate text-[11px] text-gray-500">
+            Garden agent · grounded, proposal-only · Hermes
+          </p>
+          <div className="mt-1">
+            <GBrainStatusBadge gardenSlug={gardenSlug} canReindex />
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="rounded-full border border-gray-700 px-2 py-0.5 text-[10px] text-gray-400">
+            {session.connection === "idle" ? "ready" : session.connection}
+          </span>
+          <button
+            type="button"
+            onClick={startNewChat}
+            className={`${headerButton} disabled:opacity-50`}
+            title="Start a new chat"
+          >
+            New chat
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("recents")}
+            className={view === "recents" ? activeHeaderButton : headerButton}
+            title="Show past chats in this garden"
+          >
+            Recents
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("skills")}
+            className={view === "skills" ? activeHeaderButton : headerButton}
+            title="Review skills"
+          >
+            Skills
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("scheduled")}
+            className={view === "scheduled" ? activeHeaderButton : headerButton}
+            title="Chats scheduled to open in this garden"
+          >
+            Scheduled
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("proposals")}
+            className={`relative ${view === "proposals" ? activeHeaderButton : headerButton}`}
+          >
+            Proposals
+            {proposals.length > 0 ? (
+              <span className="ml-1 rounded-full bg-amber-600 px-1.5 text-[10px] text-white">{proposals.length}</span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleView("artifacts")}
+            className={`inline-flex items-center gap-1.5 ${
+              view === "artifacts" ? activeHeaderButton : headerButton
+            }`}
+            title="Open conversation artifacts"
+          >
+            <ArtifactArchiveIcon className="h-3.5 w-3.5 shrink-0" />
+            Artifacts
+          </button>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className={headerButton}
+              aria-label="Close garden chat"
+            >
+              ✕
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      {view === "recents" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          <div className="px-1 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-gray-600">
+            Recents
+          </div>
+          {historyError ? (
+            <p className="mb-2 px-1 text-[11px] text-[#a45f56]">{historyError}</p>
+          ) : null}
+          {historyLoading && history.length === 0 ? (
+            <ChatHistoryLoading />
+          ) : history.length === 0 ? (
+            <p className="py-8 text-center text-xs text-gray-500">No chats in this garden yet.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {history.map((item) => (
+                <li
+                  key={item.id}
+                  className={`bb-neu-conversation-row group flex items-center gap-1 rounded-md transition ${
+                    item.id === session.sessionId
+                      ? "bb-neu-conversation-row-selected bg-gray-800 text-white"
+                      : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => openHistorySession(item)}
+                    className="min-w-0 flex-1 rounded-md px-2.5 py-2 text-left"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-xs font-medium">{item.title}</span>
+                      <span className="shrink-0 text-[10px] text-gray-600">
+                        {formatChatTime(item.updatedAt)}
+                      </span>
+                    </div>
+                  </button>
+                  {(item.id === session.sessionId
+                    ? currentChatActive
+                    : item.active) ? (
+                    <ActiveChatIcon
+                      label={`${item.title} is running`}
+                      className="h-3.5 w-3.5"
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void deleteHistorySession(item)}
+                    title="Delete this chat"
+                    aria-label={`Delete chat ${item.title}`}
+                    className="mr-1 shrink-0 rounded p-1 text-gray-600 opacity-0 transition-colors hover:bg-red-950/40 hover:text-red-300 focus-visible:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed"
+                  >
+                    <TrashIcon className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : view === "skills" ? (
+        <SkillReviewPanel
+          runtimeSessionId={session.sessionId}
+          onClose={() => setView("chat")}
+        />
+      ) : view === "scheduled" ? (
+        // Garden chat has no side rail, so scheduling is a view here — the same
+        // panel the Terminal shows, pointed at this garden.
+        <TerminalScheduledPanel surface="garden_chat" gardenSlug={gardenSlug} />
+      ) : view === "artifacts" ? (
+        <ArtifactPanel
+          compact
+          hideHeader
+          gardenSlug={gardenSlug}
+          sourceSurface="garden_chat"
+          creationConversationId={session.sessionId}
+          ensureCreationConversation={session.ensureConversation}
+        />
+      ) : view === "proposals" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          {proposals.length === 0 ? (
+            <p className="py-8 text-center text-xs text-gray-500">No pending proposals.</p>
+          ) : (
+            <ul className="space-y-3">
+              {proposals.map((proposal) => (
+                <li key={proposal.id} className="rounded-lg border border-gray-800 bg-gray-900/50 p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="rounded-full border border-gray-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-400">
+                      {proposal.kind.replace("_", " ")}
+                    </span>
+                    {proposal.pageSlug ? (
+                      <span className="truncate text-[10px] text-gray-500">{proposal.pageSlug}</span>
+                    ) : null}
+                  </div>
+                  {proposal.rationale ? (
+                    <p className="mt-2 text-xs text-gray-300">{proposal.rationale}</p>
+                  ) : null}
+                  <pre className="mt-2 max-h-40 overflow-auto rounded bg-gray-950 p-2 text-[10px] text-gray-400">
+                    {JSON.stringify(proposal.payload, null, 2)}
+                  </pre>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void decide(proposal.id, "apply")}
+                      className="rounded-md border border-emerald-700 bg-emerald-900/40 px-2.5 py-1 text-[11px] text-emerald-200 hover:bg-emerald-900/70"
+                    >
+                      Apply
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void decide(proposal.id, "reject")}
+                      className="rounded-md border border-red-800 bg-red-950/40 px-2.5 py-1 text-[11px] text-red-300 hover:bg-red-950/70"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <AgentRuntimePanel
+          compact
+          sessionId={session.sessionId}
+          surface="garden_chat"
+          gardenSlug={gardenSlug}
+          messages={session.messages}
+          connection={session.connection}
+          runState={session.runState}
+          externalRunLaunching={externalRunLaunching}
+          steerError={session.steerError}
+          error={session.error}
+          pendingPermission={session.pendingPermission}
+          activities={session.activities}
+          input={input}
+          onInputChange={setInput}
+          onSubmit={submit}
+          onRunWorkflow={runWorkflowAutomation}
+          onAskSelection={askSelection}
+          onSteer={steer}
+          onSendQueued={sendQueued}
+          onEditMessage={editMessage}
+          onSelectBranch={selectBranch}
+          onAbort={() => void session.abort()}
+          onPermissionDecision={(decision) => void session.respondToPermission(decision)}
+          onRetryMessage={retryMessage}
+          onExternalAgentTerminal={handleExternalAgentTerminal}
+          placeholder={`Ask about ${gardenName ?? "this garden"}…`}
+          model={model}
+          models={models}
+          onModelChange={setModel}
+          reasoningEffort={reasoningEffort}
+          onReasoningEffortChange={setReasoningEffort}
+          intelligenceModes={intelligenceModes}
+          modelFailover={modelFailover}
+          statusMessage={researchNotice}
+          deepResearchAgent={deepResearch.agent}
+          onSelectDeepResearch={() => {
+            codex.clear();
+            openCode.clear();
+            ruflo.clear();
+            void deepResearch.select();
+          }}
+          onClearDeepResearch={() => {
+            deepResearch.clear();
+            setResearchNotice("");
+          }}
+          openCodeAgent={openCode.agent}
+          onSelectOpenCode={() => {
+            deepResearch.clear();
+            codex.clear();
+            ruflo.clear();
+            void openCode.select();
+          }}
+          onClearOpenCode={() => {
+            openCode.clear();
+            setResearchNotice("");
+          }}
+          codexAgent={codex.agent}
+          onSelectCodex={() => {
+            deepResearch.clear();
+            openCode.clear();
+            ruflo.clear();
+            void codex.select();
+          }}
+          onClearCodex={() => {
+            codex.clear();
+            setResearchNotice("");
+          }}
+          rufloAgent={ruflo.agent}
+          onSelectRuflo={() => {
+            deepResearch.clear();
+            codex.clear();
+            openCode.clear();
+            void ruflo.select();
+          }}
+          onClearRuflo={() => {
+            ruflo.clear();
+            setResearchNotice("");
+          }}
+          loadingTranscript={session.loadingSession}
+          emptyState={
+            <div className="flex flex-col items-center gap-5 py-8 text-center">
+              <div>
+                <p className="text-sm font-medium text-gray-200">Quartz AI</p>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  Grounded answers with citations. Ask it to trace a source, compare sections, find gaps, quiz
+                  you, or propose a correction.
+                </p>
+              </div>
+              <div className="grid w-full max-w-md gap-2">
+                {SUGGESTED_PROMPTS.map((prompt) => (
+                  <button
+                    type="button"
+                    key={prompt}
+                    onClick={() => sendSuggestedPrompt(prompt)}
+                    disabled={busy}
+                    className="neu-button rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-left text-xs text-gray-300 transition hover:border-gray-600 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
+          }
+        />
+      )}
+    </div>
+  );
+}

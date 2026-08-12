@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interactive Visualizer in Chat"
+  short_description: "Build interactive visuals directly inside chat"
+  default_prompt: "Use $interactive-visualizer-in-chat to create a validated interactive visualization that appears in this response and remains available as an artifact."

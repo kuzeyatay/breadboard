@@ -78,7 +78,7 @@ Each **cluster** acts like its own knowledge environment. You can upload source 
 
 Breadboard ships as a native Windows desktop application: an Electron shell
 that starts, supervises, and cleanly shuts down the whole local stack
-(ChatMock → OpenHarness → Quartz → dashboard) with no terminal windows and no
+(ChatMock + Hermes + Postiz + Quartz → dashboard) with no terminal windows and no
 manual `start.bat` or localhost URLs.
 
 - **Develop**: `npm ci --prefix desktop`, then `npm run desktop:dev` from
@@ -100,9 +100,10 @@ manual `start.bat` or localhost URLs.
   existing dev checkout's data can be imported (copied) on first launch —
   see `docs/DESKTOP_ARCHITECTURE.md` (migration) and
   `docs/DESKTOP_TROUBLESHOOTING.md`.
-- **Optional dependencies**: Docker (only for the optional Scriberr
-  transcription mode), ffmpeg/yt-dlp (video ingestion; the app reports the
-  capability unavailable when absent).
+- **Required desktop dependency**: Docker Desktop, Docker Engine, or Podman is
+  required for Postiz social publishing. Desktop startup waits for Postiz's
+  authenticated API and shows a visible failure with `postiz.log` if it cannot
+  become ready. ffmpeg/yt-dlp remain optional for video ingestion.
 - **Signing / updates**: the installer is currently unsigned and auto-update
   is disabled by design — see `docs/DESKTOP_RELEASE_CHECKLIST.md`.
 
@@ -120,7 +121,11 @@ Full docs: `docs/DESKTOP_ARCHITECTURE.md`, `docs/DESKTOP_RUNTIME_AUDIT.md`,
 flowchart LR
     U[User] --> D[Dashboard<br/>Next.js]
     D --> DB[(SQLite)]
-    D --> CM[ChatMock<br/>local OpenAI-compatible backend]
+    D --> H[Hermes<br/>chat runtime]
+    H --> CM[ChatMock<br/>LLM provider]
+    D --> C[Codex<br/>coding agent]
+    C --> CM
+    D --> CM
     D --> Q[Quartz<br/>digital garden]
     D --> KG[Knowledge extraction<br/>and note generation]
 
@@ -362,19 +367,40 @@ This starts:
 - **ChatMock** on port `8765`
 - **Scriberr** on port `8091` (video transcription service; requires Docker)
 - **Quartz** on port `8081`
-- **OpenHarness** on port `4096` (interactive agent runtime; requires Bun)
+- **Hermes** on port `9129` (interactive chat runtime)
 - **Dashboard** on port `3000`
 
-> **OpenHarness** is the interactive AI agent runtime behind the dashboard AI
-> terminal, garden chat, and Quartz page AI. It runs as a separate local service
-> and is required by default. Set `OPENHARNESS_MODE=preferred` for explicit,
-> visible and audited fallback during migration, or `OPENHARNESS_MODE=legacy` to
-> intentionally use the prior terminal/garden path. Generation/learning workflows
-> never route through OpenHarness. See
-> [docs/OPENHARNESS_INTEGRATION.md](docs/OPENHARNESS_INTEGRATION.md).
+> **Hermes remains the conversational runtime.** Codex is a separate coding
+> agent in the composer’s **Agents** tab, alongside OpenCode. It runs only when
+> `/agents:codex` is selected, works in a Garden-connected repository, and uses
+> ChatMock's Responses API. See [docs/CODEX_INTEGRATION.md](docs/CODEX_INTEGRATION.md).
 >
-> Cross-platform: `npm run dev` (root) starts the whole stack; `npm run
-> dev:openharness` starts only OpenHarness.
+> **HyperFrames** makes videos. `/agents:hyperframes <brief>` scaffolds a
+> HyperFrames project, has a Codex process write the composition against the
+> clone's own video skills, renders an MP4 with the local CLI + FFmpeg, and
+> plays it in the chat card. The framework is vendored at `./hyperframes`. See
+> [docs/HYPERFRAMES_INTEGRATION.md](docs/HYPERFRAMES_INTEGRATION.md).
+>
+> **ViMax** makes films. `/agents:vimax <idea>` writes the story and screenplay,
+> casts and draws the characters, storyboards every shot, decomposes each shot
+> into first frame, motion and last frame, and ends in one artifact that plays
+> back as an animatic. The pipeline is ported from the clone at `./vimax` and
+> runs on ChatMock — no image or video API key needed. See
+> [docs/VIMAX_INTEGRATION.md](docs/VIMAX_INTEGRATION.md).
+>
+> **Video Use** edits videos you already have. Attach one — or paste a YouTube
+> link, which is downloaded once and reused for every later mention — to a chat
+> message that asks for it to be changed ("cut the dead air", "trim it to 60
+> seconds", "make it vertical") and the edit runs without selecting an agent
+> first. Ask a question about the same link instead and the Watch skill answers
+> it from the same downloaded copy. The
+> result is a video artifact, and opening it opens a studio where further
+> prompts keep changing the same video: every pass replays the whole edit
+> against the untouched original, so revisions never stack up as re-encodes and
+> any earlier version can be restored. The studio opens for *any* video
+> artifact, whichever agent made it. The clone is at `./video-use` and needs no
+> environment built; an optional ElevenLabs key adds filler-word cuts and burned
+> captions. See [docs/VIDEO_USE_INTEGRATION.md](docs/VIDEO_USE_INTEGRATION.md).
 >
 > **Scriberr** powers Garden Chat's video import: upload a video or paste a
 > YouTube URL and the full transcript becomes a timestamped Markdown source
@@ -382,6 +408,14 @@ This starts:
 > and runs via Docker (`npm run dev:scriberr`); set `SCRIBERR_AUTOSTART=false`
 > to skip it. See [docs/VIDEO_TRANSCRIPTION.md](docs/VIDEO_TRANSCRIPTION.md)
 > for setup, environment variables, and troubleshooting.
+>
+> **Audio analysis** gives Breadboard ears. Attach a song to any chat and ask
+> about it — key, tempo, LUFS loudness, dynamic range, frequency balance, stereo
+> field, section boundaries, or how your mix differs from a reference — and the
+> answer is measured from the waveform rather than recalled about the song. It
+> runs on the pure-Rust `audio-analyzer-rs` clone (no Python, no ffmpeg, nothing
+> uploaded); provision it once with `npm run setup:audio-analyzer`. See
+> [docs/AUDIO_ANALYSIS.md](docs/AUDIO_ANALYSIS.md).
 
 #### Manual Startup
 
@@ -410,6 +444,7 @@ npm run dev
 - Quartz garden: `http://localhost:8081`
 - ChatMock backend: `http://localhost:8765/v1`
 - Scriberr (video transcription): `http://localhost:8091`
+- PenEcho (whiteboard cards): `http://localhost:8092` (started on demand)
 
 ---
 

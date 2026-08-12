@@ -1,49 +1,103 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 
-import { chatTitleFromFirstMessage } from '../src/lib/chat-session-title.ts';
+import {
+  CONVERSATION_TITLE_INSTRUCTION,
+  applyGeneratedConversationTitle,
+  generateConversationTitle,
+  normalizeGeneratedConversationTitle,
+} from '../src/lib/conversations/title-service.ts';
 
-function wordCount(title) {
-  return title.trim().split(/\s+/).length;
-}
+test('title generation sends only the first prompt to a plain LLM', async () => {
+  let capturedUrl = '';
+  let capturedBody;
+  const title = await generateConversationTitle({
+    firstPrompt: 'Can you explain surrogate gradients for spiking neural networks?',
+    model: 'gpt-5.6-terra',
+    baseUrl: 'http://title.test/v1',
+    fetcher: async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'Surrogate Gradient Learning Guide' } }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    },
+  });
 
-test('chat titles describe the first prompt in three to five words', () => {
-  const title = chatTitleFromFirstMessage(
-    'Can you please explain surrogate gradients for SNNs in simple terms?',
+  assert.equal(title, 'Surrogate Gradient Learning Guide');
+  assert.equal(capturedUrl, 'http://title.test/v1/chat/completions');
+  assert.equal(capturedBody.messages.length, 2);
+  assert.deepEqual(capturedBody.messages[0], {
+    role: 'system',
+    content: CONVERSATION_TITLE_INSTRUCTION,
+  });
+  assert.equal(capturedBody.messages[1].role, 'user');
+  assert.match(capturedBody.messages[1].content, /describe it; do not answer it/i);
+  assert.match(
+    capturedBody.messages[1].content,
+    /Can you explain surrogate gradients for spiking neural networks\?/,
   );
-
-  assert.equal(title, 'Surrogate Gradients for SNNs');
-  assert.ok(wordCount(title) >= 3 && wordCount(title) <= 5);
+  assert.equal(capturedBody.messages.some((message) => message.role === 'assistant'), false);
+  assert.equal(capturedBody.model, 'gpt-5.6-terra');
+  assert.equal(capturedBody.stream, false);
+  assert.equal('tools' in capturedBody, false);
+  assert.equal('tool_choice' in capturedBody, false);
 });
 
-test('chat titles discard low-information request filler', () => {
+test('generated titles are cleaned and capped at four words', () => {
   assert.equal(
-    chatTitleFromFirstMessage('Please fix the timeout errors in ChatMock'),
-    'Fix Timeout Errors in ChatMock',
+    normalizeGeneratedConversationTitle('Title: "Fix Chat Renaming Pipeline."'),
+    'Fix Chat Renaming Pipeline',
   );
+  assert.equal(normalizeGeneratedConversationTitle('One Two Three Four Five Six'), null);
+  assert.equal(normalizeGeneratedConversationTitle('Too short'), null);
+  assert.equal(normalizeGeneratedConversationTitle("I'll inspect the chat-renaming"), null);
   assert.equal(
-    chatTitleFromFirstMessage('What is the capital of France?'),
-    'Capital of France',
+    normalizeGeneratedConversationTitle('<think>hidden</think>\nGarden Memory Privacy Rules'),
+    'Garden Memory Privacy Rules',
   );
 });
 
-test('chat titles preserve technical names and pad very short prompts', () => {
-  assert.equal(chatTitleFromFirstMessage('PDF'), 'PDF Chat Overview');
-  assert.equal(chatTitleFromFirstMessage('hello'), 'New Garden Chat');
-  assert.equal(chatTitleFromFirstMessage('compare gpt-5.6 and chatgpt'), 'Compare GPT-5.6 and ChatGPT');
-});
+test('an automatic title updates linked history but never overwrites a manual rename', () => {
+  const database = new Database(':memory:');
+  database.exec(`
+    CREATE TABLE conversations (
+      id INTEGER PRIMARY KEY,
+      title TEXT NOT NULL,
+      legacy_chat_session_id INTEGER
+    );
+    CREATE TABLE chat_sessions (
+      id INTEGER PRIMARY KEY,
+      title TEXT NOT NULL
+    );
+    INSERT INTO chat_sessions(id, title) VALUES (7, 'Assistant conversation');
+    INSERT INTO conversations(id, title, legacy_chat_session_id)
+      VALUES (3, 'Assistant conversation', 7);
+  `);
 
-test('every generated chat title contains three to five words', () => {
-  const prompts = [
-    '',
-    'help',
-    'quantum entanglement',
-    'How do neural networks learn from examples?',
-    'Add a generate button to this state when an error occurs',
-  ];
+  const updated = applyGeneratedConversationTitle({
+    conversationId: 3,
+    expectedTitle: 'Assistant conversation',
+    generatedTitle: 'Repair Chat Rename Flow',
+  }, database);
+  assert.equal(updated.title, 'Repair Chat Rename Flow');
+  assert.equal(
+    database.prepare('SELECT title FROM chat_sessions WHERE id = 7').get().title,
+    'Repair Chat Rename Flow',
+  );
 
-  for (const prompt of prompts) {
-    const title = chatTitleFromFirstMessage(prompt);
-    assert.ok(wordCount(title) >= 3 && wordCount(title) <= 5, `${prompt}: ${title}`);
-  }
+  database.prepare('UPDATE conversations SET title = ? WHERE id = 3')
+    .run('My Manual Name');
+  const skipped = applyGeneratedConversationTitle({
+    conversationId: 3,
+    expectedTitle: 'Repair Chat Rename Flow',
+    generatedTitle: 'Late Automatic Rename',
+  }, database);
+  assert.equal(skipped, null);
+  assert.equal(
+    database.prepare('SELECT title FROM conversations WHERE id = 3').get().title,
+    'My Manual Name',
+  );
+  database.close();
 });

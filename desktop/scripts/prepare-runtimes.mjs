@@ -3,7 +3,7 @@
 //   build-resources/runtimes/node/node.exe    — official Node runtime (copied
 //       from the Node running this script; keeps native-module ABI identical
 //       to the one dashboard/node_modules was installed for)
-//   build-resources/runtimes/bun/bun.exe      — Bun runtime for OpenHarness
+//   build-resources/runtimes/bun/bun.exe      — Bun runtime for optional tools
 //   build-resources/runtimes/python/          — CPython embeddable distribution
 //       matching the local Python's minor version, with ChatMock's pinned
 //       dependencies installed into Lib/site-packages
@@ -22,7 +22,9 @@ const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const repoRoot = path.resolve(desktopRoot, "..");
 const runtimesDir = path.join(desktopRoot, "build-resources", "runtimes");
 const hermesRoot = path.join(repoRoot, "hermes-agent");
+const ifixAiRoot = path.join(repoRoot, "iFixAi");
 const HERMES_UPSTREAM_COMMIT = "55ef425d0c3967022cb54093112e638c5c3f9e01";
+const IFIXAI_UPSTREAM_COMMIT = "4ac9cc1c8765427300d98dc30855c18349610cf1";
 const PYTHON_VERSION = "3.13.9";
 
 const CHATMOCK_PINNED_DEPS = [
@@ -124,7 +126,7 @@ async function prepareNode() {
 
 async function prepareBun() {
   const bunPath = which(process.platform === "win32" ? "bun.exe" : "bun") ?? which("bun");
-  if (!bunPath) fail("Bun is not installed; install from https://bun.sh (OpenHarness requires it).");
+  if (!bunPath) fail("Bun is not installed; install it from https://bun.sh.");
   const version = execFileSync(bunPath, ["--version"], { encoding: "utf8" }).trim();
   const target = path.join(runtimesDir, "bun");
   fs.mkdirSync(target, { recursive: true });
@@ -148,16 +150,30 @@ function requireHermesPin() {
   return actual;
 }
 
+function requireIfixAiPin() {
+  if (!fs.existsSync(path.join(ifixAiRoot, "pyproject.toml"))) {
+    fail(`iFixAi checkout is missing: ${ifixAiRoot}`);
+  }
+  const actual = execFileSync("git", ["-C", ifixAiRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  if (actual !== IFIXAI_UPSTREAM_COMMIT) {
+    fail(`iFixAi checkout is ${actual}; packaging is pinned to ${IFIXAI_UPSTREAM_COMMIT}.`);
+  }
+  return actual;
+}
+
 async function preparePython() {
   if (process.platform !== "win32") fail("Python runtime assembly currently targets Windows x64 only.");
   const uv = which("uv.exe") ?? which("uv");
   if (!uv) fail("uv is required to assemble Hermes's locked Python environment.");
   const hermesCommit = requireHermesPin();
+  const ifixAiCommit = requireIfixAiPin();
   const fullVersion = PYTHON_VERSION;
 
   const target = path.join(runtimesDir, "python");
   const stampFile = path.join(target, ".breadboard-python-version");
-  const expectedStamp = `${fullVersion}\nhermes=${hermesCommit}`;
+  const expectedStamp = `${fullVersion}\nhermes=${hermesCommit}\nifixai=${ifixAiCommit}`;
   if (
     fs.existsSync(stampFile) &&
     fs.readFileSync(stampFile, "utf8").trim() === expectedStamp
@@ -251,10 +267,25 @@ async function preparePython() {
     fail("Hermes dependency install for the bundled Python runtime failed");
   }
 
+  log(`installing iFixAi ${ifixAiCommit.slice(0, 12)} and its dependencies`);
+  const ifixAiInstall = spawnSync(
+    uv,
+    ["pip", "install", "--python", path.join(target, "python.exe"), ifixAiRoot],
+    { encoding: "utf8", stdio: "inherit" },
+  );
+  if (ifixAiInstall.status !== 0) {
+    fail("iFixAi install for the bundled Python runtime failed");
+  }
+
   fs.writeFileSync(stampFile, expectedStamp, "utf8");
   fs.writeFileSync(
     path.join(target, "hermes-upstream-commit.txt"),
     `${hermesCommit}\n`,
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(target, "ifixai-upstream-commit.txt"),
+    `${ifixAiCommit}\n`,
     "utf8",
   );
   ensureChatMockImportPath(target);

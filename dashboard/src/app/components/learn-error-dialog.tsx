@@ -35,13 +35,13 @@ export default function LearnErrorDialog({
   ].filter(Boolean) as [string, string][];
 
   return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm">
+    <div className="bb-modal-backdrop fixed inset-0 z-[120] flex items-center justify-center px-4">
       <div
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="learn-error-title"
         aria-describedby="learn-error-description"
-        className="neu-dialog w-full max-w-2xl rounded-lg border border-red-700 bg-gray-950 p-5 text-gray-100"
+        className="bb-modal-panel neu-dialog w-full max-w-2xl rounded-2xl border border-red-700 p-5 text-[var(--ink)]"
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
@@ -124,7 +124,7 @@ export default function LearnErrorDialog({
                   href={validationReport.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="shrink-0 rounded-md border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-200 transition hover:border-gray-500 hover:text-white"
+                  className="neu-button inline-flex shrink-0 items-center rounded-lg border px-3 py-1.5 text-xs"
                 >
                   Open full report
                 </a>

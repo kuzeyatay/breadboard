@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import OpenAI from 'openai';
 import Database from 'better-sqlite3';
 import db from './db.ts';
+import { embedTexts, embeddingSettings } from './embeddings.ts';
 import type { ClusterKnowledge, KnowledgeNode } from './knowledge.ts';
 import {
   normalizeLookupText,
@@ -14,6 +14,14 @@ import { readGardenSemanticArtifacts } from './garden-semantics.ts';
 const DEFAULT_MAX_CHUNKS = 8;
 const DEFAULT_CONTEXT_BUDGET = 18_000;
 const RRF_K = 60;
+
+// Indexing happens inside a chat request, so it gets a budget rather than as
+// long as it takes. Both bounds are per garden, per call; whatever is left over
+// is picked up by the next question.
+const EMBED_CHUNKS_PER_PASS = 256;
+const EMBED_BUDGET_MS = 20_000;
+// A single batch, not the whole pass: the pass has its own deadline above.
+const EMBED_TIMEOUT_MS = 30_000;
 
 export interface EmbeddingProvider {
   model: string;
@@ -463,26 +471,38 @@ function retrievalChunksForNode(input: {
   });
 }
 
+/**
+ * The embedder this retriever uses when a caller does not supply one.
+ *
+ * This used to require `BREADBOARD_EMBEDDING_MODEL` and a paid key, and
+ * returned null without them — so on a normal install the semantic half of this
+ * "hybrid" retriever never ran and every answer was lexical. It now defaults to
+ * ChatMock's local model, which needs neither. `BREADBOARD_EMBEDDINGS=off`
+ * restores the old behaviour deliberately rather than by omission.
+ */
 export function embeddingProviderFromEnv(): EmbeddingProvider | null {
-  const model = process.env.BREADBOARD_EMBEDDING_MODEL?.trim();
-  const apiKey = process.env.BREADBOARD_EMBEDDING_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim();
-  if (!model || !apiKey) return null;
-  const client = new OpenAI({
-    apiKey,
-    baseURL: process.env.BREADBOARD_EMBEDDING_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim(),
-  });
+  const settings = embeddingSettings();
+  if (!settings.model) return null;
   return {
-    model,
+    model: settings.model,
     async embed(texts: string[]) {
       if (texts.length === 0) return [];
-      const response = await client.embeddings.create({ model, input: texts });
-      return response.data
-        .sort((left, right) => left.index - right.index)
-        .map((item) => item.embedding);
+      const { vectors } = await embedTexts(texts, settings, { timeoutMs: EMBED_TIMEOUT_MS });
+      return vectors;
     },
   };
 }
 
+/**
+ * Fill in the vectors this garden is missing, without holding up the answer.
+ *
+ * Indexing runs inside `retrieveGraphRag`, which runs inside a chat request, so
+ * an unbounded first pass over a large garden would stall a reply for minutes
+ * the first time anyone asked it anything. The budget makes the index warm over
+ * successive questions instead: a chunk with no vector simply scores zero on
+ * the semantic side and is still reachable lexically, so partial coverage
+ * degrades smoothly rather than lying.
+ */
 async function cacheMissingEmbeddings(
   database: SqliteDatabase,
   chunks: RetrievalChunk[],
@@ -491,13 +511,17 @@ async function cacheMissingEmbeddings(
   const existing = database.prepare(
     'SELECT 1 FROM semantic_embedding_cache WHERE content_hash = ? AND model = ?',
   );
-  const missing = chunks.filter((chunk) => !existing.get(chunk.contentHash, provider.model));
+  const missing = chunks
+    .filter((chunk) => !existing.get(chunk.contentHash, provider.model))
+    .slice(0, EMBED_CHUNKS_PER_PASS);
   const insert = database.prepare(`
     INSERT OR REPLACE INTO semantic_embedding_cache
       (content_hash, model, vector_json, dimensions, created_at)
     VALUES (?, ?, ?, ?, ?)
   `);
+  const deadline = Date.now() + EMBED_BUDGET_MS;
   for (let index = 0; index < missing.length; index += 32) {
+    if (Date.now() > deadline) break;
     const batch = missing.slice(index, index + 32);
     const vectors = await provider.embed(batch.map((chunk) => chunk.content));
     const transaction = database.transaction(() => {

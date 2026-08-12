@@ -1,0 +1,88 @@
+{
+  "skills": {
+    "ai-video-generation-b820ac4cbc": {
+      "name": "ai-video-generation-b820ac4cbc",
+      "slug": "ai-video-generation",
+      "upstreamId": "101-skills/skills/ai-video-generation",
+      "slashCommand": "101-skills:ai-video-generation",
+      "package": "101-skills/skills@ai-video-generation",
+      "source": "https://github.com/101-skills/skills",
+      "exactVersion": "5a37fd9c37d13f6768625b35191915cfa5d25a31c4c82540d42d53ddeba383a1",
+      "catalogRevision": "5a37fd9c37d13f6768625b35191915cfa5d25a31c4c82540d42d53ddeba383a1",
+      "localHash": "f3a3cd98003e34135cec239f22a486956425d1864beb56cad8ca249966a22867",
+      "files": [
+        "SKILL.md"
+      ],
+      "fileHashes": {
+        "SKILL.md": "2133bff3a2698f0a1409994a299fd94cf658d56c17322f9a0453ad1ef3cbb531"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "ai-video-generation",
+      "requestedPermissions": [
+        "shell",
+        "network"
+      ],
+      "discoveredScripts": [],
+      "externalNetworkRequirements": [
+        "https://inference.sh",
+        "https://cloud.inference.sh/app/files/u/4mg21r6ta37mpaz6ktzwtt8krr/01kg2c0egyg243mnyth4y6g51q.jpeg",
+        "https://raw.githubusercontent.com/inference-sh/skills/refs/heads/main/cli-install.md",
+        "https://your-image.jpg",
+        "https://portrait.jpg",
+        "https://speech.mp3",
+        "https://face.jpg",
+        "https://audio.mp3",
+        "https://your-video.mp4",
+        "https://...",
+        "https://silent-video.mp4",
+        "https://clip1.mp4",
+        "https://clip2.mp4",
+        "https://inference.sh/docs/apps/running",
+        "https://inference.sh/docs/api/sdk/streaming",
+        "https://inference.sh/docs/examples/content-pipeline"
+      ],
+      "installedAt": "2026-07-29T14:20:19.261Z",
+      "nameCollision": true,
+      "integrityVerified": true,
+      "risks": [
+        "References external network locations.",
+        "A skill with this name is already approved (name collision)."
+      ],
+      "riskSummary": "2 risk signal(s) require review.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-garden"
+      ],
+      "classification": {
+        "classification": "eligible_coding_conditional",
+        "category": "Implementation",
+        "reasons": [
+          "The primary purpose is software implementation or repository engineering and must run through OpenCode."
+        ],
+        "evidenceFields": [
+          "name",
+          "SKILL.md",
+          "requested_permissions"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden"
+        ],
+        "classifiedAt": "2026-07-29T14:20:30.083Z"
+      },
+      "reviewOverride": "eligible_coding_conditional",
+      "reviewer": 1,
+      "reviewedAt": "2026-07-29T14:20:30.093Z",
+      "approvedPermissions": [
+        "shell",
+        "network"
+      ],
+      "approvedAt": "2026-07-29T14:20:30.097Z"
+    }
+  }
+}

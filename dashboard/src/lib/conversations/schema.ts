@@ -53,6 +53,8 @@ export function ensureConversationSchema(database: Database.Database): void {
       ON conversation_messages(conversation_id, order_index DESC);
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_pending
       ON conversation_messages(conversation_id, status, role);
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_profile_evidence
+      ON conversation_messages(conversation_id, role, status, id);
 
     CREATE TABLE IF NOT EXISTS conversation_memory_state (
       conversation_id          INTEGER PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
@@ -88,6 +90,54 @@ export function ensureConversationSchema(database: Database.Database): void {
       ON durable_memories(user_id, scope, COALESCE(scope_id, ''), memory_key)
       WHERE memory_key IS NOT NULL AND state <> 'superseded';
 
+    -- A compact, editable portrait synthesized from eligible chats. Atomic
+    -- durable_memories remain canonical facts; this is deliberately a weaker
+    -- personalization layer with its own generation and recall controls.
+    CREATE TABLE IF NOT EXISTS memory_profiles (
+      user_id                INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      summary                TEXT NOT NULL DEFAULT '',
+      generation_enabled     INTEGER NOT NULL DEFAULT 1 CHECK (generation_enabled IN (0, 1)),
+      use_in_chats           INTEGER NOT NULL DEFAULT 1 CHECK (use_in_chats IN (0, 1)),
+      status                 TEXT NOT NULL DEFAULT 'idle'
+                             CHECK (status IN ('idle','generating','ready','error')),
+      source_kind            TEXT NOT NULL DEFAULT 'generated'
+                             CHECK (source_kind IN ('generated','edited')),
+      source_message_id      INTEGER NOT NULL DEFAULT 0,
+      evidence_message_count INTEGER NOT NULL DEFAULT 0,
+      version                INTEGER NOT NULL DEFAULT 0,
+      last_error             TEXT,
+      generated_at           TEXT,
+      updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_profiles_status
+      ON memory_profiles(status, updated_at);
+
+    UPDATE memory_profiles
+    SET generation_enabled = 1, use_in_chats = 1
+    WHERE generation_enabled = 0 OR use_in_chats = 0;
+
+    -- Bookkeeping for the bytes of an attached 3D model, which are the one
+    -- attachment payload kept on disk rather than in the message (a mesh has
+    -- nothing to extract and is far too large to inline).
+    --
+    -- This is not an uploads table: the attachment still belongs to the message
+    -- that carries it, and this row only answers "whose file is this, and where
+    -- does it live" — the question the message cannot answer while the user is
+    -- still composing, and the one a download has to answer before serving.
+    CREATE TABLE IF NOT EXISTS chat_model_blobs (
+      blob_id    TEXT PRIMARY KEY,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      format     TEXT NOT NULL,
+      filename   TEXT NOT NULL,
+      byte_size  INTEGER NOT NULL,
+      sha256     TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_model_blobs_user
+      ON chat_model_blobs(user_id, created_at);
+
     CREATE TABLE IF NOT EXISTS conversation_schema_migrations (
       version    INTEGER PRIMARY KEY,
       applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -107,10 +157,15 @@ export function ensureConversationSchema(database: Database.Database): void {
     "active_agency_agent_slug",
     "active_agency_agent_slug TEXT",
   );
-  ensureColumn(database, "openharness_runtime_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
-  ensureColumn(database, "openharness_runtime_sessions", "allowed_garden_ids", "allowed_garden_ids TEXT NOT NULL DEFAULT '[]'");
+  // A pinned chat keeps its place in the sidebar independently of activity, so
+  // pinning deliberately does not touch updated_at. A highlight is a marker on
+  // the row rather than a place in the list, and is not activity either.
+  ensureColumn(database, "conversations", "pinned_at", "pinned_at TEXT");
+  ensureColumn(database, "conversations", "highlight", "highlight TEXT");
+  ensureColumn(database, "hermes_runtime_sessions", "conversation_id", "conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL");
+  ensureColumn(database, "hermes_runtime_sessions", "allowed_garden_ids", "allowed_garden_ids TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(database, "chat_messages", "canonical_message_id", "canonical_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL");
-  ensureColumn(database, "openharness_messages", "canonical_message_id", "canonical_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL");
+  ensureColumn(database, "hermes_messages", "canonical_message_id", "canonical_message_id INTEGER REFERENCES conversation_messages(id) ON DELETE SET NULL");
 
   backfillLegacyConversations(database);
 
@@ -121,7 +176,7 @@ export function ensureConversationSchema(database: Database.Database): void {
   database.exec(`
     UPDATE conversations
     SET surface = COALESCE(
-      (SELECT ors.surface FROM openharness_runtime_sessions ors
+      (SELECT ors.surface FROM hermes_runtime_sessions ors
        WHERE ors.conversation_id = conversations.id
        ORDER BY ors.updated_at DESC, ors.id DESC LIMIT 1),
       (SELECT cm.surface FROM conversation_messages cm
@@ -132,7 +187,7 @@ export function ensureConversationSchema(database: Database.Database): void {
   `);
 
   database.exec(`
-    UPDATE openharness_runtime_sessions
+    UPDATE hermes_runtime_sessions
     SET allowed_garden_ids = '[' || cluster_id || ']'
     WHERE cluster_id IS NOT NULL
       AND (allowed_garden_ids IS NULL OR allowed_garden_ids = '' OR allowed_garden_ids = '[]');
@@ -141,12 +196,12 @@ export function ensureConversationSchema(database: Database.Database): void {
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_sessions_conversation
       ON chat_sessions(conversation_id) WHERE conversation_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_openharness_runtime_conversation
-      ON openharness_runtime_sessions(conversation_id) WHERE conversation_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_runtime_conversation
+      ON hermes_runtime_sessions(conversation_id) WHERE conversation_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_canonical
       ON chat_messages(canonical_message_id) WHERE canonical_message_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_openharness_messages_canonical
-      ON openharness_messages(canonical_message_id) WHERE canonical_message_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_messages_canonical
+      ON hermes_messages(canonical_message_id) WHERE canonical_message_id IS NOT NULL;
     INSERT OR IGNORE INTO conversation_schema_migrations(version) VALUES (1);
   `);
 }
@@ -221,7 +276,7 @@ function backfillLegacyConversations(database: Database.Database): void {
     const runtimes = database.prepare(`
       SELECT id, user_id, chat_session_id, surface, garden_id, cluster_id, runtime_metadata,
              created_at, updated_at, conversation_id
-      FROM openharness_runtime_sessions
+      FROM hermes_runtime_sessions
       ORDER BY updated_at DESC, id DESC
     `).all() as Array<{
       id: number;
@@ -271,7 +326,7 @@ function backfillLegacyConversations(database: Database.Database): void {
         const messages = database.prepare(`
           SELECT id, role, content, sources, token_usage, order_index, created_at,
                  tool_calls, permission_decisions, runtime_error, runtime_status, proposal
-          FROM openharness_messages
+          FROM hermes_messages
           WHERE runtime_session_id = ?
           ORDER BY order_index, id
         `).all(runtime.id) as Array<Record<string, unknown>>;
@@ -281,11 +336,11 @@ function backfillLegacyConversations(database: Database.Database): void {
       // Old data can contain more than one runtime for a chat. The most recent
       // one wins; the others remain as audit/history rows without ownership.
       if (!claimed.has(conversationId)) {
-        database.prepare("UPDATE openharness_runtime_sessions SET conversation_id = ? WHERE id = ?")
+        database.prepare("UPDATE hermes_runtime_sessions SET conversation_id = ? WHERE id = ?")
           .run(conversationId, runtime.id);
         claimed.add(conversationId);
       } else if (runtime.conversation_id === conversationId) {
-        database.prepare("UPDATE openharness_runtime_sessions SET conversation_id = NULL WHERE id = ?")
+        database.prepare("UPDATE hermes_runtime_sessions SET conversation_id = NULL WHERE id = ?")
           .run(runtime.id);
       }
     }
@@ -343,7 +398,7 @@ function copyLegacyMessages(
       database.prepare("UPDATE chat_messages SET canonical_message_id = ? WHERE id = ?")
         .run(canonical.id, message.id);
     } else {
-      database.prepare("UPDATE openharness_messages SET canonical_message_id = ? WHERE id = ?")
+      database.prepare("UPDATE hermes_messages SET canonical_message_id = ? WHERE id = ?")
         .run(canonical.id, message.id);
     }
     if (result.changes > 0) nextOrder += 1;

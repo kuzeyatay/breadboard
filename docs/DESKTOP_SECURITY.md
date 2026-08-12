@@ -21,12 +21,12 @@
 
 ## Local services
 
-- Every service binds `127.0.0.1` explicitly (Next `HOSTNAME`, OpenHarness
-  `--hostname`, ChatMock loopback serve, Quartz local serve). Nothing binds
+- Every service binds `127.0.0.1` explicitly (Next `HOSTNAME`, Hermes
+  `--host`, ChatMock loopback serve, Quartz local serve). Nothing binds
   `0.0.0.0` or the LAN.
-- Ports are allocated per launch: the familiar defaults (3000/8765/4096/8081)
+- Ports are allocated per launch: the familiar defaults (3000/8765/9119/8081)
   are used when free, otherwise OS-assigned free ports; all internal URLs
-  (NEXTAUTH_URL, CHATMOCK_BASE_URL, OPENHARNESS_BASE_URL,
+  (NEXTAUTH_URL, CHATMOCK_BASE_URL, HERMES_BASE_URL,
   NEXT_PUBLIC_QUARTZ_URL, BREADBOARD_INTERNAL_URL) are derived from the
   actual allocation, so there is no fixed-port cross-application trust.
 - Packaged services receive a **controlled environment**: OS essentials plus
@@ -39,9 +39,8 @@ Generated once per install into `Data/config/desktop-config.json` (written
 atomically, mode 0600 where the OS honors it):
 
 - `NEXTAUTH_SECRET` (32 random bytes, base64url)
-- OpenHarness server password (24 random bytes) — replaces the dev default
-  `breadboard-local-dev`
-- `OPENHARNESS_TOOL_SECRET` and `OPENHARNESS_CAPABILITY_SECRET`
+- `HERMES_DASHBOARD_SESSION_TOKEN`, `BREADBOARD_HERMES_TOOL_SECRET`, and
+  `HERMES_CAPABILITY_SECRET`
 - `gbrainAdapterSecret` (24 random bytes) — bearer secret for the loopback GBrain
   adapter; only allocated/used when `gbrainMode !== "disabled"`, and redacted from
   logs like the others.
@@ -60,16 +59,16 @@ which NextAuth treats as a non-HTTPS host, so cookies are issued without the
 `Secure` attribute and work in the Electron-embedded page. Authentication is
 NOT disabled for the desktop build.
 
-## OpenHarness
+## Hermes
 
-- Basic-auth protected with the per-install password; the credential lives in
+- Bearer-auth protected with a per-install gateway token; the credential lives in
   the main process and the dashboard **server** only — it is never sent to
-  renderer/browser code (the dashboard proxies OpenHarness through its own
+  renderer/browser code (the dashboard proxies Hermes through its own
   authenticated API routes, unchanged).
 - The capability model, permission prompts, audits, task-gated coding
   capabilities, and skill quarantine flow are untouched. The desktop shell
-  starts OpenHarness with the same `openharness-config/` the repo uses.
-- Session workspaces live under `Data/runtime/openharness` (canonicalized,
+  starts Hermes with the same `hermes-config/` the repo uses.
+- Session workspaces live under `Data/runtime/hermes-workspaces` (canonicalized,
   symlink-escape-checked by the existing `workspace.ts` logic, which now also
   honors `BREADBOARD_REPO_ROOT`).
 

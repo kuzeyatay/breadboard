@@ -15,23 +15,32 @@ import {
   chatTokenUsageEventFromResponse,
   type ChatTokenUsageStreamEvent,
 } from '@/lib/chat-token-usage';
+import type { ChatAttachment } from '@/lib/chat-attachments';
+import { modelAttachmentPromptText } from '@/lib/model-attachments';
 import { buildUrlLinkContext } from '@/lib/url-link-context';
 import { scanClusterKnowledge, type KnowledgeNode } from '@/lib/knowledge';
 import { retrieveGraphRag } from '@/lib/semantic-retrieval';
 import { resolveChatmockBaseUrl } from '@/lib/chatmock-server';
 import { withCouncil } from '@/lib/council';
 import { requireReadableClusterFromSlug, routeErrorResponse } from '@/lib/server-auth';
-import { readOpenHarnessConfig } from '@/lib/openharness/config.ts';
-import { openGardenAgentChat } from '@/lib/openharness/garden-chat-adapter.ts';
-import { apiErrorResponse } from '@/lib/openharness/route-helpers.ts';
-import { recordAuditEvent } from '@/lib/openharness/runtime-store.ts';
+import { readHermesConfig } from '@/lib/hermes/config.ts';
+import { openGardenAgentChat } from '@/lib/hermes/garden-chat-adapter.ts';
+import { apiErrorResponse } from '@/lib/hermes/route-helpers.ts';
+import { recordAuditEvent } from '@/lib/hermes/runtime-store.ts';
+import { directModeSection } from '@/lib/hermes/direct-mode.ts';
+import { responseStylePrompt } from '@/lib/hermes/system-prompts.ts';
+import { createEmDashFilter } from '@/lib/prose-punctuation.ts';
+import {
+  assistantTextFromOutputItem,
+  createResponseTextRecovery,
+  reasoningTextFromOutputItem,
+} from '@/lib/responses-stream-text.ts';
 
 export const dynamic = 'force-dynamic';
 
 type JsonRecord = Record<string, unknown>;
-type Attachment =
-  | { type: 'text'; text: string; name: string }
-  | { type: 'image'; dataUrl: string; name: string };
+/** One definition of what an attachment is, shared with the composer. */
+type Attachment = ChatAttachment;
 type ChatRequestMessage = { role: 'user' | 'assistant'; content: string };
 type ActiveMarkdownContext = {
   slug: string;
@@ -146,21 +155,31 @@ function buildResponsesInput(
           };
     }
 
+    // A document's `text` is its structured reading, so it belongs in the
+    // same block as a plain text file rather than in one of its own.
     const textAttachments = attachments.filter(
-      (attachment): attachment is Extract<Attachment, { type: 'text' }> =>
-        attachment.type === 'text',
+      (attachment): attachment is Extract<Attachment, { type: 'text' | 'document' }> =>
+        attachment.type === 'text' || attachment.type === 'document',
     );
     const imageAttachments = attachments.filter(
       (attachment): attachment is Extract<Attachment, { type: 'image' }> =>
         attachment.type === 'image',
     );
 
-    const attachedText =
-      textAttachments.length > 0
-        ? textAttachments
-            .map((attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`)
-            .join('\n\n')
-        : '';
+    // A mesh has no text of its own, so what was measured from it stands in.
+    const modelAttachments = attachments.filter(
+      (attachment): attachment is Extract<Attachment, { type: 'model' }> =>
+        attachment.type === 'model',
+    );
+    const attachedText = [
+      ...textAttachments.map(
+        (attachment) => `--- Attached file: ${attachment.name} ---\n${attachment.text}`,
+      ),
+      ...modelAttachments.map(
+        (attachment) =>
+          `--- Attached file: ${attachment.name} ---\n${modelAttachmentPromptText(attachment)}`,
+      ),
+    ].join('\n\n');
 
     const contentParts: Array<
       { type: 'input_text'; text: string } | { type: 'input_image'; image_url: string; detail: 'auto' }
@@ -237,7 +256,7 @@ function parseActiveMarkdownContext(value: unknown): ActiveMarkdownContext | nul
 export async function POST(request: Request) {
   try {
     const payload = await request.json() as JsonRecord;
-    const runtime = readOpenHarnessConfig();
+    const runtime = readHermesConfig();
     let legacyFallback = false;
     if (runtime.mode !== 'legacy') {
       try {
@@ -247,7 +266,7 @@ export async function POST(request: Request) {
         legacyFallback = true;
         recordAuditEvent({
           eventType: 'fallback.used',
-          payload: { surface: 'garden_chat', mode: runtime.mode, reason: 'openharness_runtime_failure' },
+          payload: { surface: 'garden_chat', mode: runtime.mode, reason: 'hermes_runtime_failure' },
         });
       }
     }
@@ -353,6 +372,12 @@ export async function POST(request: Request) {
       : '';
 
     let systemPrompt =
+      // Same prose-first voice and minimal-background rule the Hermes surfaces
+      // get, so an answer does not change shape with the runtime behind it.
+      `${responseStylePrompt()}\n\n` +
+      // Direct mode shapes an answer wherever it is answered, so the
+      // legacy fallback carries it too rather than silently reverting the voice.
+      (payload.adhdMode === true ? `${directModeSection()}\n\n` : '') +
       `You are a helpful assistant for the user's second brain garden '${cluster.name}'. ` +
       'Use the learning relationships and markdown pages as grounded context. ' +
       'You can answer questions about the Learning Map itself, including source documents, textbook pages, locations, page references, tags, and relationships. ' +
@@ -466,11 +491,16 @@ export async function POST(request: Request) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
         }
 
+        // Assistant prose carries no em dashes; the reasoning stream is left as
+        // the model wrote it.
+        const emDash = createEmDashFilter();
+
         function emitText(type: 'delta' | 'thinking', text: string) {
-          if (!text) return;
+          const filtered = type === 'delta' ? emDash.push(text) : text;
+          if (!filtered) return;
           const chunkSize = 24000;
-          for (let index = 0; index < text.length; index += chunkSize) {
-            emit({ type, text: text.slice(index, index + chunkSize) });
+          for (let index = 0; index < filtered.length; index += chunkSize) {
+            emit({ type, text: filtered.slice(index, index + chunkSize) });
           }
         }
 
@@ -493,17 +523,34 @@ export async function POST(request: Request) {
         emit({ type: 'runtime', backend: 'legacy-chatmock', fallback: legacyFallback, mode: runtime.mode });
         emit({ type: 'sources', sources: sourceNames });
 
+        // Images were already recovered from the finished item; the answer text
+        // beside them was not. See lib/responses-stream-text.ts.
+        const answerRecovery = createResponseTextRecovery();
+        const thinkingRecovery = createResponseTextRecovery();
+
         try {
           for await (const event of stream as AsyncIterable<ResponseStreamEvent>) {
             if (event.type === 'response.output_text.delta') {
+              answerRecovery.recordStreamed(event.output_index, event.delta);
               emitText('delta', event.delta);
             } else if (
               event.type === 'response.reasoning_summary_text.delta' ||
               event.type === 'response.reasoning_text.delta'
             ) {
+              thinkingRecovery.recordStreamed(event.output_index, event.delta);
               emitText('thinking', event.delta);
             } else if (event.type === 'response.output_item.done') {
               emitImagesFromUnknown([event.item]);
+              const missingThinking = thinkingRecovery.missingFrom(
+                event.output_index,
+                reasoningTextFromOutputItem(event.item),
+              );
+              if (missingThinking) emitText('thinking', missingThinking);
+              const missingAnswer = answerRecovery.missingFrom(
+                event.output_index,
+                assistantTextFromOutputItem(event.item),
+              );
+              if (missingAnswer) emitText('delta', missingAnswer);
             } else if (event.type === 'response.completed') {
               emitImagesFromUnknown(event.response.output);
               emitUsageFromResponse(event.response);
@@ -523,6 +570,8 @@ export async function POST(request: Request) {
             error instanceof Error ? error.message : 'Something went wrong while streaming the response.';
           emitText('delta', `\n\n${message}`);
         } finally {
+          const held = emDash.flush();
+          if (held) emit({ type: 'delta', text: held });
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
         }

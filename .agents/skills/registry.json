@@ -1,3 +1,120 @@
 {
-  "skills": {}
+  "skills": {
+    "premortem": {
+      "name": "premortem",
+      "slug": "premortem",
+      "slashCommand": "premortem",
+      "upstreamId": "breadboard:premortem",
+      "package": "breadboard/premortem",
+      "source": "Breadboard",
+      "exactVersion": "1.0.0",
+      "localHash": "4866385d9613da75c6f10513b63c8e076d994c4776b5e455dd861868301a6149",
+      "files": [
+        "SKILL.md"
+      ],
+      "fileHashes": {
+        "SKILL.md": "4866385d9613da75c6f10513b63c8e076d994c4776b5e455dd861868301a6149"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "premortem",
+      "requestedPermissions": [],
+      "discoveredScripts": [],
+      "externalNetworkRequirements": [],
+      "installedAt": "2026-08-05T00:00:00.000Z",
+      "nameCollision": false,
+      "integrityVerified": true,
+      "risks": [],
+      "riskSummary": "First-party Breadboard guidance for the bounded premortem_run CLI allowlist; no scripts and no external network requirements.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-garden"
+      ],
+      "approvedPermissions": [],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "Facilitates a structured risk-analysis exercise and publishes a Markdown report; it performs no repository engineering."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "SKILL.md"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden"
+        ],
+        "classifiedAt": "2026-08-05T00:00:00.000Z"
+      },
+      "reviewedAt": "2026-08-05T00:00:00.000Z",
+      "approvedAt": "2026-08-05T00:00:00.000Z"
+    },
+    "agent-loop-engineering": {
+      "name": "agent-loop-engineering",
+      "slug": "agent-loop-engineering",
+      "slashCommand": "agent-loop-engineering",
+      "upstreamId": "breadboard:agent-loop-engineering",
+      "package": "breadboard/agent-loop-engineering",
+      "source": "Breadboard (adapted from AlekseiUL/agent-loop-engineering-kit)",
+      "exactVersion": "0.1.0",
+      "localHash": "c366491c3c5bd95023bc3c4fda6281621047091503923cdbddbe6fb8e0823a40",
+      "files": [
+        "SKILL.md"
+      ],
+      "fileHashes": {
+        "SKILL.md": "b1d8bcdd3f745f0fb0986af65518e8b4cc70c71e4a5d85239580a0c75e7dc0c6"
+      },
+      "hasSkillMd": true,
+      "frontmatterName": "agent-loop-engineering",
+      "requestedPermissions": [],
+      "discoveredScripts": [],
+      "externalNetworkRequirements": [
+        "https://github.com/AlekseiUL/agent-loop-engineering-kit"
+      ],
+      "installedAt": "2026-08-05T00:00:00.000Z",
+      "nameCollision": false,
+      "integrityVerified": true,
+      "risks": [],
+      "riskSummary": "First-party Breadboard guidance for the bounded agent_loop_run command allowlist; no scripts and no runtime network access. The upstream URL is provenance only.",
+      "reviewState": "approved",
+      "approvedAgents": [
+        "breadboard-assistant",
+        "breadboard-garden"
+      ],
+      "approvedPermissions": [],
+      "classification": {
+        "classification": "eligible_general",
+        "category": "Knowledge work",
+        "reasons": [
+          "Designs and audits an agent workflow contract and publishes a Markdown receipt; it performs no repository engineering and executes no loop task."
+        ],
+        "evidenceFields": [
+          "name",
+          "description",
+          "SKILL.md"
+        ],
+        "classifierVersion": "breadboard-skill-policy-v2",
+        "compatibleModes": [
+          "knowledge",
+          "technical_read",
+          "scoped_implementation"
+        ],
+        "compatibleSurfaces": [
+          "assistant",
+          "garden"
+        ],
+        "classifiedAt": "2026-08-05T00:00:00.000Z"
+      },
+      "reviewedAt": "2026-08-05T00:00:00.000Z",
+      "approvedAt": "2026-08-05T00:00:00.000Z"
+    }
+  }
 }

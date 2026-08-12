@@ -10,6 +10,7 @@ import {
 const base = {
   operator: "browser",
   browserStrategy: "dom",
+  desktopCoordinateSpace: "screen_pixels",
   provider: "openai",
   model: "gpt-x",
   maxSteps: 25,
@@ -27,10 +28,37 @@ test("valid configuration passes and normalizes domains", () => {
   assert.deepEqual(r.value?.allowedDomains, ["example.com"]);
 });
 
-test("computer operator is rejected", () => {
+test("computer operator is accepted explicitly", () => {
   const r = validateAgentConfiguration({ ...base, operator: "computer" });
+  assert.equal(r.ok, true);
+  assert.equal(r.value?.operator, "computer");
+});
+
+test("unknown operator is rejected", () => {
+  const r = validateAgentConfiguration({ ...base, operator: "phone" });
   assert.equal(r.ok, false);
-  assert.ok(r.errors.includes("operator_must_be_browser"));
+  assert.ok(r.errors.includes("invalid_operator"));
+});
+
+test("desktop coordinate protocols are explicit and legacy configs migrate to pixels", () => {
+  const normalized = validateAgentConfiguration({
+    ...base,
+    desktopCoordinateSpace: "normalized_1000",
+  });
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.value?.desktopCoordinateSpace, "normalized_1000");
+
+  const { desktopCoordinateSpace: _legacyField, ...legacy } = base;
+  const migrated = validateAgentConfiguration(legacy);
+  assert.equal(migrated.ok, true);
+  assert.equal(migrated.value?.desktopCoordinateSpace, "screen_pixels");
+
+  const invalid = validateAgentConfiguration({
+    ...base,
+    desktopCoordinateSpace: "screen_percent",
+  });
+  assert.equal(invalid.ok, false);
+  assert.ok(invalid.errors.includes("invalid_desktop_coordinate_space"));
 });
 
 test("invalid strategy / approval mode rejected", () => {
@@ -61,7 +89,8 @@ test("default configuration is valid and safe", () => {
   const def = defaultAgentConfiguration();
   assert.equal(def.approvalMode, "sensitive_actions");
   assert.equal(def.browserStrategy, "dom");
-  assert.equal(def.allowDownloads, false);
+  assert.equal(def.desktopCoordinateSpace, "screen_pixels");
+  assert.equal(def.allowDownloads, true);
 });
 
 test("resolveConfig rejects non-loopback host", () => {

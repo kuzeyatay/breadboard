@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-import { submitPermissionDecision } from "../src/app/components/openharness/permission-client.ts";
+import { submitPermissionDecision } from "../src/app/components/hermes/permission-client.ts";
 
 const source = (relativePath) =>
   fs.readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -10,20 +10,39 @@ const source = (relativePath) =>
 const composer = source("../src/app/components/assistant-composer.tsx");
 const yoloMode = source("../src/app/components/use-yolo-mode.ts");
 const agentSession = source(
-  "../src/app/components/openharness/use-agent-session.ts",
+  "../src/app/components/hermes/use-agent-session.ts",
 );
 const legacyActivity = source(
-  "../src/app/components/openharness/use-legacy-agent-activity.ts",
+  "../src/app/components/hermes/use-legacy-agent-activity.ts",
+);
+const agentBrowserCard = source(
+  "../src/app/components/hermes/inline-agent-browser-run.tsx",
+);
+const agentTarsCard = source(
+  "../src/app/components/hermes/inline-browser-run.tsx",
+);
+const inlineGadget = source(
+  "../src/app/components/hermes/inline-gadget.tsx",
+);
+const messagesRoute = source(
+  "../src/app/api/hermes/sessions/[sessionId]/messages/route.ts",
+);
+const yoloRoute = source(
+  "../src/app/api/hermes/sessions/[sessionId]/yolo/route.ts",
+);
+const turnService = source("../src/lib/conversations/turn-service.ts");
+const hermesAdapter = source(
+  "../src/lib/agent-runtime/adapters/hermes.ts",
 );
 
 test("the Intelligence menu contains an accessible YOLO mode switch", () => {
   const start = composer.indexOf('role="switch"');
-  const block = composer.slice(start, start + 1_400);
+  const block = composer.slice(start, start + 2_000);
   assert.ok(start >= 0);
   assert.match(block, /aria-checked=\{yoloMode\}/);
   assert.match(block, /YOLO mode/);
   assert.match(block, /Bypass permission prompts/);
-  assert.doesNotMatch(block, /OpenHarness/);
+  assert.doesNotMatch(block, /Hermes/);
   assert.match(block, /translate-x-5/);
 });
 
@@ -39,16 +58,44 @@ test("both permission clients auto-approve without opening a prompt", () => {
   for (const client of [agentSession, legacyActivity]) {
     assert.match(
       client,
-      /if \(isYoloModeEnabled\(\)\)[\s\S]*?submitPermissionDecision\([\s\S]*?"always"/,
+      /if \(isYoloModeEnabled\(\)\)[\s\S]*?submitPermissionDecision\([\s\S]*?"once"/,
     );
     assert.match(
       client,
-      /if \(!yoloMode \|\| !pendingPermission\) return;[\s\S]*?respondToPermission\("always"\)/,
+      /if \(!yoloMode \|\| !pendingPermission\) return;[\s\S]*?respondToPermission\("once"\)/,
     );
   }
 });
 
-test("automatic approval posts the session-scoped always decision", async () => {
+test("the switch configures Hermes's real session-scoped YOLO mode", () => {
+  assert.match(agentSession, /yoloMode: isYoloModeEnabled\(\)/);
+  assert.match(agentSession, /\/yolo`[\s\S]*?enabled: yoloMode/);
+  assert.match(messagesRoute, /yoloMode: body\.yoloMode === true/);
+  assert.match(yoloRoute, /authorizeRuntimeReference\(userId, sessionId\)/);
+  assert.match(yoloRoute, /setApprovalBypass\(/);
+  assert.match(turnService, /yoloMode: input\.yoloMode === true/);
+  assert.match(
+    hermesAdapter,
+    /key: "yolo",\s*value: input\.enabled \? "1" : "0"/,
+  );
+});
+
+test("YOLO also auto-approves permission surfaces inside agent cards and gadgets", () => {
+  for (const card of [agentBrowserCard, agentTarsCard]) {
+    assert.match(card, /const \[yoloMode\] = useYoloMode\(\)/);
+    assert.match(
+      card,
+      /if \(!yoloMode \|\| !pending \|\| deciding\) return;[\s\S]*?decide\("approve"\)/,
+    );
+  }
+  assert.match(inlineGadget, /const \[yoloMode\] = useYoloMode\(\)/);
+  assert.match(
+    inlineGadget,
+    /if \(!yoloMode \|\| !nextPendingActionId[\s\S]*?decide\(nextPendingActionId, "approve"\)/,
+  );
+});
+
+test("automatic approval posts a one-turn decision instead of a lasting grant", async () => {
   const originalFetch = globalThis.fetch;
   let request;
   globalThis.fetch = async (url, init) => {
@@ -56,18 +103,18 @@ test("automatic approval posts the session-scoped always decision", async () => 
     return new Response(null, { status: 200 });
   };
   try {
-    await submitPermissionDecision("permission/1", 42, "always");
+    await submitPermissionDecision("permission/1", 42, "once");
   } finally {
     globalThis.fetch = originalFetch;
   }
 
   assert.equal(
     request.url,
-    "/api/openharness/permissions/permission%2F1",
+    "/api/hermes/permissions/permission%2F1",
   );
   assert.equal(request.init.method, "POST");
   assert.deepEqual(JSON.parse(request.init.body), {
     sessionId: 42,
-    decision: "always",
+    decision: "once",
   });
 });

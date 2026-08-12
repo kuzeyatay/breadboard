@@ -1,36 +1,26 @@
 #!/usr/bin/env node
-// Cross-platform launcher for the local Scriberr transcription service.
-//
-// Scriberr lives in ./scriberr and runs through Docker locally (its native
-// binaries are not built for Windows). This launcher:
-//   1. exits quietly when Scriberr is already healthy at SCRIBERR_BASE_URL;
-//   2. otherwise starts it via `docker compose`, remapping the container port
-//      to SCRIBERR_PORT (default 8091 — port 8080 is taken by Reader locally)
-//      using a generated override file so the vendored scriberr/ checkout is
-//      never modified;
-//   3. prints actionable guidance when Docker is unavailable instead of
-//      failing the rest of the stack.
+// Start Breadboard's private native Scriberr sidecar. It is prepared from an
+// official checksum-pinned Windows release and runs entirely on loopback; no
+// Docker daemon or separate Scriberr UI is required.
 
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "./load-root-env.mjs";
+import { prepareScriberrRuntime } from "./prepare-scriberr-runtime.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv(repoRoot);
 
-const scriberrDir = path.join(repoRoot, "scriberr");
 const port = /^\d+$/.test(process.env.SCRIBERR_PORT ?? "")
   ? process.env.SCRIBERR_PORT
   : "8091";
 const baseUrl = (process.env.SCRIBERR_BASE_URL || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
-
-if (!existsSync(scriberrDir)) {
-  console.error(`Scriberr directory not found at ${scriberrDir}`);
-  console.error("Clone/restore the vendored scriberr/ checkout at the repo root.");
-  process.exit(1);
-}
+const parsedBaseUrl = new URL(baseUrl);
+const runtimeDir = path.join(repoRoot, ".runtime", "scriberr");
+const dataDir = path.join(runtimeDir, "data");
+const binDir = path.join(repoRoot, "desktop", "resources", "bin");
 
 async function isHealthy() {
   try {
@@ -43,66 +33,70 @@ async function isHealthy() {
   }
 }
 
-function dockerAvailable() {
-  const result = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
-    encoding: "utf8",
-    shell: false,
-    windowsHide: true,
-  });
-  return result.status === 0;
+function nativeEnvironment() {
+  const existingPath = process.env.PATH ?? process.env.Path ?? "";
+  return {
+    ...process.env,
+    HOST: "127.0.0.1",
+    PORT: parsedBaseUrl.port || port,
+    APP_ENV: "production",
+    SCRIBERR_LAZY_MODEL_INIT: "true",
+    SECURE_COOKIES: "false",
+    ALLOWED_ORIGINS:
+      process.env.SCRIBERR_ALLOWED_ORIGINS ||
+      process.env.BREADBOARD_DASHBOARD_URL ||
+      "http://localhost:3000,http://127.0.0.1:3000",
+    DATABASE_PATH: path.join(dataDir, "scriberr.db"),
+    JWT_SECRET_FILE: path.join(dataDir, "jwt_secret"),
+    UPLOAD_DIR: path.join(dataDir, "uploads"),
+    TRANSCRIPTS_DIR: path.join(dataDir, "transcripts"),
+    TEMP_DIR: path.join(dataDir, "temp"),
+    WHISPERX_ENV: path.join(dataDir, "models"),
+    FFMPEG_PATH: path.join(binDir, "ffmpeg.exe"),
+    FFPROBE_PATH: path.join(binDir, "ffprobe.exe"),
+    YTDLP_PATH: path.join(binDir, "yt-dlp.exe"),
+    PATH: [binDir, existingPath].filter(Boolean).join(path.delimiter),
+  };
 }
 
 async function main() {
   if (await isHealthy()) {
-    console.log(`[scriberr] Already running at ${baseUrl}`);
+    process.stdout.write(`[scriberr] Already running at ${baseUrl}\n`);
     return;
   }
-
-  if (!dockerAvailable()) {
-    console.error("[scriberr] Docker is not available (is Docker Desktop running?).");
-    console.error(`[scriberr] Start Scriberr manually, then verify ${baseUrl}/health.`);
-    console.error("[scriberr] Video transcription in Breadboard will report 'Scriberr unavailable' until it is up.");
-    process.exit(1);
+  if (parsedBaseUrl.hostname !== "127.0.0.1" && parsedBaseUrl.hostname !== "localhost") {
+    throw new Error(
+      `SCRIBERR_BASE_URL points to ${baseUrl}; Breadboard only auto-starts its native loopback service`,
+    );
   }
 
-  // Override the compose port mapping without touching scriberr/'s own files.
-  const runtimeDir = path.join(repoRoot, ".runtime");
-  mkdirSync(runtimeDir, { recursive: true });
-  const overridePath = path.join(runtimeDir, "scriberr-compose.override.yml");
-  writeFileSync(
-    overridePath,
-    `services:\n  scriberr:\n    ports: !override\n      - "${port}:8080"\n`,
-    "utf8",
+  await prepareScriberrRuntime({ outputDir: binDir });
+  fs.mkdirSync(dataDir, { recursive: true });
+  const executable = path.join(binDir, "scriberr.exe");
+  process.stdout.write(
+    `[scriberr] Starting native transcription service at ${baseUrl}. First-run model setup continues in the background.\n`,
   );
-
-  const args = [
-    "compose",
-    "-f",
-    path.join(scriberrDir, "docker-compose.yml"),
-    "-f",
-    overridePath,
-    "up",
-  ];
-  console.log(`[scriberr] Starting via docker ${args.join(" ")}`);
-  const child = spawn("docker", args, {
-    cwd: scriberrDir,
+  const child = spawn(executable, [], {
+    cwd: dataDir,
+    env: nativeEnvironment(),
     stdio: "inherit",
     shell: false,
     windowsHide: true,
   });
 
-  child.on("error", (error) => {
-    console.error(`[scriberr] Failed to start: ${error.message}`);
-    process.exit(1);
+  child.once("error", (error) => {
+    process.stderr.write(`[scriberr] Failed to start: ${error.message}\n`);
+    process.exitCode = 1;
   });
-
   for (const signal of ["SIGINT", "SIGTERM"]) {
-    process.on(signal, () => child.kill(signal));
+    process.once(signal, () => child.kill(signal));
   }
-  child.on("exit", (code) => process.exit(code ?? 0));
+  child.once("exit", (code) => {
+    process.exitCode = code ?? 0;
+  });
 }
 
 main().catch((error) => {
-  console.error(`[scriberr] ${error instanceof Error ? error.message : error}`);
-  process.exit(1);
+  process.stderr.write(`[scriberr] ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
 });

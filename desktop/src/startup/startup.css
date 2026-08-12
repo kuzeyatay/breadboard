@@ -11,6 +11,25 @@
   --glow: rgba(63, 103, 83, 0.66);
   --glow-soft: rgba(121, 166, 143, 0.2);
   --danger: #a45151;
+  /* The dashboard's own page background. The dissolve lands on it so the
+     handoff from this window to the app is one continuous surface. */
+  --app-background: #e6f0e6;
+  --welcome-size: clamp(2.5rem, 7.6vw, 5rem);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #18181a;
+  --ink: #e6ebe5;
+  --ink-muted: #9da8a1;
+  --leaf-light: #53645b;
+  --leaf-mid: #34433b;
+  --leaf-edge: #1c2923;
+  --leaf-shadow: rgba(0, 0, 0, 0.52);
+  --glow: rgba(145, 183, 161, 0.58);
+  --glow-soft: rgba(145, 183, 161, 0.15);
+  --danger: #c98282;
+  --app-background: #18181a;
 }
 
 * {
@@ -55,6 +74,8 @@ body {
 
 .shell {
   height: calc(100vh - var(--titlebar-height));
+  background-color: transparent;
+  transition: background-color 820ms ease;
 }
 
 .loader {
@@ -75,6 +96,20 @@ body {
     radial-gradient(circle at 50% 44%, rgba(255, 255, 255, 0.94) 0 15%, transparent 55%),
     radial-gradient(ellipse at center, rgba(104, 141, 122, 0.11), transparent 68%);
   filter: blur(10px);
+  opacity: 1;
+  transition: opacity 620ms ease;
+}
+
+:root[data-theme="dark"] .loader::before {
+  background:
+    radial-gradient(circle at 50% 44%, rgba(145, 183, 161, 0.12) 0 15%, transparent 55%),
+    radial-gradient(ellipse at center, rgba(80, 117, 98, 0.1), transparent 68%);
+}
+
+/* The startup chime is audio only and draws nothing. It sits in the loader for
+   the same reason everything else does — so it lives and dies with the screen. */
+#intro-sound {
+  display: none;
 }
 
 .kinetic-stage {
@@ -85,6 +120,9 @@ body {
   place-items: center;
   perspective: 1100px;
   perspective-origin: 50% 34%;
+  transition:
+    opacity 900ms ease,
+    transform 1.2s cubic-bezier(0.22, 0.68, 0.24, 1);
 }
 
 .stage-halo {
@@ -223,6 +261,25 @@ body {
   backface-visibility: visible;
 }
 
+:root[data-theme="dark"] .kinetic-scale::before {
+  border-color: rgba(145, 183, 161, 0.2);
+  background:
+    linear-gradient(180deg, #527260, #294638 62%, #14271e),
+    radial-gradient(circle at 50% 78%, var(--glow), transparent 68%);
+  box-shadow: 0 8px 17px rgba(0, 0, 0, 0.48);
+}
+
+:root[data-theme="dark"] .kinetic-scale::after {
+  border-color: rgba(168, 196, 187, 0.24);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.24), transparent 42%),
+    linear-gradient(180deg, var(--leaf-light) 0 58%, var(--leaf-mid) 82%, var(--leaf-edge) 100%);
+  box-shadow:
+    0 12px 20px var(--leaf-shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -3px 5px rgba(0, 0, 0, 0.24);
+}
+
 body[data-phase="ready"] .kinetic-scale::after {
   animation-duration: 0.72s;
 }
@@ -281,6 +338,262 @@ body[data-phase="failed"] .stage-halo {
   }
 }
 
+/* ── Welcome ────────────────────────────────────────────────────────────────
+   Once every service is healthy the leaf field settles into a faint texture and
+   the greeting takes the window, cycling through languages until the person
+   clicks it away. */
+
+.welcome {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  inset: 0;
+  opacity: 0;
+  place-items: center;
+  transition: opacity 760ms ease;
+}
+
+.welcome.is-visible {
+  opacity: 1;
+}
+
+.welcome-stage {
+  display: grid;
+  width: min(88vw, 900px);
+  place-items: center;
+  transition:
+    opacity 620ms ease,
+    filter 620ms ease,
+    transform 760ms cubic-bezier(0.3, 0, 0.2, 1);
+}
+
+.welcome-word {
+  --word-scale: 1;
+  grid-area: 1 / 1;
+  margin: 0;
+  color: var(--ink);
+  font-family:
+    "Segoe UI Variable Display", "Segoe UI", "Yu Gothic UI", "Malgun Gothic",
+    "Microsoft YaHei UI", "Nirmala UI", "Leelawadee UI", system-ui, sans-serif;
+  font-size: calc(var(--welcome-size) * var(--word-scale));
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.14;
+  opacity: 0;
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.92),
+    0 3px 14px rgba(45, 68, 57, 0.09);
+  white-space: nowrap;
+}
+
+:root[data-theme="dark"] .welcome-word {
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.06),
+    0 4px 18px rgba(0, 0, 0, 0.42);
+}
+
+.welcome-word.is-entering {
+  animation: word-enter 620ms cubic-bezier(0.22, 0.68, 0.24, 1) forwards;
+}
+
+.welcome-word.is-leaving {
+  animation: word-leave 540ms cubic-bezier(0.4, 0, 0.66, 1) forwards;
+}
+
+@keyframes word-enter {
+  from {
+    opacity: 0;
+    filter: blur(7px);
+    transform: translateY(0.24em) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: none;
+  }
+}
+
+@keyframes word-leave {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: none;
+  }
+
+  to {
+    opacity: 0;
+    filter: blur(7px);
+    transform: translateY(-0.2em) scale(1.02);
+  }
+}
+
+/* The whole scene is the button; the label only says so. */
+.welcome-continue {
+  position: absolute;
+  display: grid;
+  inset: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  place-items: center;
+}
+
+.welcome-hint {
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+  letter-spacing: 0.19em;
+  opacity: 0;
+  text-transform: uppercase;
+  /* Far enough below the greeting to read as a separate invitation, close
+     enough to belong to it. `translate` keeps the offset out of `transform`,
+     which the arrive animation owns. */
+  translate: 0 clamp(6rem, 12vh, 8.5rem);
+  animation:
+    hint-arrive 760ms ease 1.25s both,
+    hint-breathe 3.6s ease-in-out 2.1s infinite;
+  transition: color 220ms ease;
+}
+
+.welcome-continue:hover .welcome-hint {
+  color: var(--ink);
+}
+
+.welcome-continue:focus-visible {
+  outline: none;
+}
+
+.welcome-continue:focus-visible .welcome-hint {
+  border-radius: 999px;
+  outline: 2px solid rgba(73, 109, 94, 0.55);
+  outline-offset: 12px;
+}
+
+@keyframes hint-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+
+  to {
+    opacity: 0.62;
+    transform: none;
+  }
+}
+
+@keyframes hint-breathe {
+  0%,
+  100% {
+    opacity: 0.58;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ── Dissolve ─────────────────────────────────────────────────────────────── */
+
+.dissolve-bloom {
+  --bloom-x: 50%;
+  --bloom-y: 50%;
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  background: radial-gradient(
+    circle 44vmax at var(--bloom-x) var(--bloom-y),
+    rgba(255, 255, 255, 0.96) 0 5%,
+    rgba(236, 243, 234, 0.7) 27%,
+    rgba(214, 231, 214, 0) 63%
+  );
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: var(--bloom-x) var(--bloom-y);
+}
+
+:root[data-theme="dark"] .dissolve-bloom {
+  background: radial-gradient(
+    circle 44vmax at var(--bloom-x) var(--bloom-y),
+    rgba(52, 67, 59, 0.94) 0 5%,
+    rgba(31, 37, 33, 0.74) 27%,
+    rgba(24, 24, 26, 0) 63%
+  );
+}
+
+body[data-stage="welcome"] .kinetic-stage {
+  opacity: 0.22;
+  transform: scale(0.97);
+}
+
+/* The field stops the moment the app is ready. It is scenery behind the
+   greeting from here on, and a still one reads as finished — motion would
+   keep promising that something is still loading. */
+body[data-stage="welcome"] .kinetic-scale::after,
+body[data-stage="welcome"] .kinetic-scale::before,
+body[data-stage="welcome"] .stage-halo,
+body[data-stage="dissolving"] .kinetic-scale::after,
+body[data-stage="dissolving"] .kinetic-scale::before,
+body[data-stage="dissolving"] .stage-halo {
+  animation: none;
+}
+
+body[data-stage="dissolving"] .kinetic-stage {
+  opacity: 0;
+  transform: scale(1.06) translateY(-2%);
+  transition:
+    opacity 700ms ease,
+    transform 820ms cubic-bezier(0.3, 0, 0.2, 1);
+}
+
+body[data-stage="dissolving"] .stage-halo {
+  opacity: 0;
+  transition: opacity 520ms ease;
+}
+
+/* The white key light behind the scene goes too, or the dashboard arrives
+   into a lit stage instead of onto its own flat background. */
+body[data-stage="dissolving"] .loader::before {
+  opacity: 0;
+}
+
+body[data-stage="dissolving"] .welcome-stage {
+  opacity: 0;
+  filter: blur(12px);
+  transform: scale(1.07);
+}
+
+body[data-stage="dissolving"] .welcome-hint {
+  opacity: 0;
+  animation: none;
+  transition: opacity 240ms ease;
+}
+
+body[data-stage="dissolving"] .dissolve-bloom {
+  animation: bloom-out 900ms cubic-bezier(0.22, 0.68, 0.24, 1) forwards;
+}
+
+body[data-stage="dissolving"] .shell {
+  background-color: var(--app-background);
+}
+
+@keyframes bloom-out {
+  0% {
+    opacity: 0;
+    transform: scale(0.32);
+  }
+
+  36% {
+    opacity: 0.92;
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+}
+
 .visually-hidden {
   position: fixed !important;
   width: 1px !important;
@@ -293,6 +606,7 @@ body[data-phase="failed"] .stage-halo {
 
 .failure {
   position: absolute;
+  z-index: 4;
   right: 24px;
   bottom: 24px;
   width: min(520px, calc(100vw - 48px));
@@ -304,6 +618,16 @@ body[data-phase="failed"] .stage-halo {
   box-shadow: 0 18px 50px rgba(66, 47, 42, 0.17);
   padding: 18px 20px;
   backdrop-filter: blur(18px);
+}
+
+:root[data-theme="dark"] .failure {
+  border-color: rgba(201, 130, 130, 0.32);
+  background: rgba(32, 33, 31, 0.95);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.46);
+}
+
+:root[data-theme="dark"] .diagnostics pre {
+  background: rgba(0, 0, 0, 0.24);
 }
 
 .failure h2 {
@@ -378,6 +702,12 @@ button:hover {
   }
 }
 
+@media (max-width: 700px), (max-height: 560px) {
+  :root {
+    --welcome-size: clamp(2rem, 8.4vw, 3.4rem);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .kinetic-scale::after,
   .kinetic-scale::before,
@@ -387,5 +717,52 @@ button:hover {
 
   .kinetic-scale:nth-child(3n)::after {
     transform: rotateX(-18deg) translateY(-2px) translateZ(7px);
+  }
+
+  /* The greeting still cycles and still dissolves — it just cross-fades in
+     place instead of drifting and blurring. */
+  .welcome-word.is-entering {
+    animation-duration: 240ms;
+    animation-name: word-enter-plain;
+  }
+
+  .welcome-word.is-leaving {
+    animation-duration: 240ms;
+    animation-name: word-leave-plain;
+  }
+
+  .welcome-hint {
+    animation: hint-arrive 240ms ease 600ms both;
+  }
+
+  body[data-stage="dissolving"] .welcome-stage,
+  body[data-stage="dissolving"] .kinetic-stage {
+    filter: none;
+    transform: none;
+    transition: opacity 220ms ease;
+  }
+
+  body[data-stage="dissolving"] .dissolve-bloom {
+    animation: none;
+  }
+}
+
+@keyframes word-enter-plain {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes word-leave-plain {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
   }
 }

@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
+import { isChatHighlight } from "./highlights.ts";
+import { removeConversationModelBlobs } from "./model-uploads.ts";
+import { removeConversationVideoBlobs } from "./video-uploads.ts";
+import { removeConversationAudioBlobs } from "./audio-uploads.ts";
 import db from "../db.ts";
-import type { OpenHarnessSurface } from "../openharness/config.ts";
+import type { HermesSurface } from "../hermes/config.ts";
 
 export type ConversationScopeKind = "global" | "garden" | "page";
 export type ConversationMessageStatus = "pending" | "complete" | "failed" | "aborted";
@@ -11,13 +15,15 @@ export interface ConversationRow {
   public_id: string;
   user_id: number;
   title: string;
-  surface: OpenHarnessSurface;
+  surface: HermesSurface;
   scope_kind: ConversationScopeKind;
   default_garden_id: number | null;
   active_agency_agent_slug: string | null;
   legacy_chat_session_id: number | null;
   legacy_runtime_session_id: number | null;
   next_order_index: number;
+  pinned_at: string | null;
+  highlight: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -27,7 +33,7 @@ export interface ConversationMessageRow {
   conversation_id: number;
   client_message_id: string;
   role: "user" | "assistant";
-  surface: OpenHarnessSurface;
+  surface: HermesSurface;
   content: string;
   status: ConversationMessageStatus;
   order_index: number;
@@ -42,7 +48,7 @@ export interface PresentedConversationMessage {
   id: string;
   clientMessageId: string;
   role: "user" | "assistant";
-  surface: OpenHarnessSurface;
+  surface: HermesSurface;
   content: string;
   status: ConversationMessageStatus;
   orderIndex: number;
@@ -72,7 +78,7 @@ export class ConversationStoreError extends Error {
 export function createConversation(input: {
   userId: number;
   title?: string;
-  surface?: OpenHarnessSurface;
+  surface?: HermesSurface;
   scopeKind?: ConversationScopeKind;
   defaultGardenId?: number | null;
 }, database: Database.Database = db): ConversationRow {
@@ -129,16 +135,158 @@ export function getConversationForLegacyChatSession(
   return row;
 }
 
+/**
+ * Bind the legacy Garden workspace chat row to the canonical conversation
+ * store at creation/use time. Process-start backfills remain useful for old
+ * data, but a newly created chat must never depend on a later module reload
+ * before its first turn can run.
+ */
+export function ensureConversationForLegacyChatSession(
+  chatSessionId: number,
+  userId: number,
+  database: Database.Database = db,
+): ConversationRow {
+  const ensure = database.transaction(() => {
+    const session = database.prepare(`
+      SELECT id, user_id, cluster_id, title, conversation_id, created_at, updated_at
+      FROM chat_sessions
+      WHERE id = ? AND user_id = ?
+    `).get(chatSessionId, userId) as {
+      id: number;
+      user_id: number;
+      cluster_id: number;
+      title: string;
+      conversation_id: number | null;
+      created_at: string;
+      updated_at: string;
+    } | undefined;
+    if (!session) {
+      throw new ConversationStoreError(
+        404,
+        "conversation_not_found",
+        "Conversation not found.",
+      );
+    }
+
+    if (session.conversation_id !== null) {
+      const linked = getConversationById(session.conversation_id, database);
+      if (
+        linked &&
+        linked.user_id === userId &&
+        linked.surface === "garden_chat"
+      ) {
+        return linked;
+      }
+      throw new ConversationStoreError(
+        409,
+        "conversation_scope_mismatch",
+        "The Garden conversation link is invalid.",
+      );
+    }
+
+    const existing = database.prepare(`
+      SELECT * FROM conversations
+      WHERE legacy_chat_session_id = ? AND user_id = ? AND surface = 'garden_chat'
+    `).get(chatSessionId, userId) as ConversationRow | undefined;
+    if (existing) {
+      database.prepare(
+        "UPDATE chat_sessions SET conversation_id = ? WHERE id = ?",
+      ).run(existing.id, chatSessionId);
+      database.prepare(
+        "INSERT OR IGNORE INTO conversation_memory_state(conversation_id) VALUES (?)",
+      ).run(existing.id);
+      return existing;
+    }
+
+    const publicId = `conv_${crypto.randomBytes(18).toString("base64url")}`;
+    const result = database.prepare(`
+      INSERT INTO conversations
+        (public_id, user_id, title, surface, scope_kind, default_garden_id,
+         legacy_chat_session_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'garden_chat', 'garden', ?, ?, ?, ?)
+    `).run(
+      publicId,
+      userId,
+      normalizeTitle(session.title),
+      session.cluster_id,
+      session.id,
+      session.created_at,
+      session.updated_at,
+    );
+    const conversationId = Number(result.lastInsertRowid);
+    database.prepare(
+      "UPDATE chat_sessions SET conversation_id = ? WHERE id = ?",
+    ).run(conversationId, session.id);
+    database.prepare(
+      "INSERT INTO conversation_memory_state(conversation_id) VALUES (?)",
+    ).run(conversationId);
+    return getConversationById(conversationId, database)!;
+  });
+
+  return ensure();
+}
+
 export function listConversationsForUser(
   userId: number,
   database: Database.Database = db,
 ): ConversationRow[] {
+  // Pinned chats sort first so an old-but-pinned conversation survives the
+  // limit. The sidebar re-groups them; this only guarantees they are present.
   return database.prepare(`
     SELECT * FROM conversations
     WHERE user_id = ?
-    ORDER BY updated_at DESC, id DESC
+    ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC, id DESC
     LIMIT 100
   `).all(userId) as ConversationRow[];
+}
+
+/**
+ * Rename without bumping updated_at: renaming a chat is not activity, and
+ * Recents is ordered by activity.
+ */
+export function renameConversation(
+  conversation: ConversationRow,
+  title: string,
+  database: Database.Database = db,
+): ConversationRow {
+  const next = normalizeTitle(title);
+  database.prepare("UPDATE conversations SET title = ? WHERE id = ?")
+    .run(next, conversation.id);
+  if (conversation.legacy_chat_session_id !== null) {
+    database.prepare("UPDATE chat_sessions SET title = ? WHERE id = ?")
+      .run(next, conversation.legacy_chat_session_id);
+  }
+  return getConversationById(conversation.id, database)!;
+}
+
+export function setConversationPinned(
+  conversation: ConversationRow,
+  pinned: boolean,
+  database: Database.Database = db,
+): ConversationRow {
+  database.prepare(`
+    UPDATE conversations
+    SET pinned_at = CASE WHEN ? = 1 THEN COALESCE(pinned_at, datetime('now')) ELSE NULL END
+    WHERE id = ?
+  `).run(pinned ? 1 : 0, conversation.id);
+  return getConversationById(conversation.id, database)!;
+}
+
+/**
+ * Mark a chat with one of the palette colors, or clear it with null.
+ *
+ * Like pinning, this is a sidebar affordance rather than activity, so it leaves
+ * updated_at alone: highlighting a months-old chat must not drag it back to the
+ * top of Recents.
+ */
+export function setConversationHighlight(
+  conversation: ConversationRow,
+  highlight: string | null,
+  database: Database.Database = db,
+): ConversationRow {
+  database.prepare("UPDATE conversations SET highlight = ? WHERE id = ?")
+    .run(highlight, conversation.id);
+  return getConversationById(conversation.id, database)!;
 }
 
 export function updateConversation(
@@ -151,20 +299,34 @@ export function updateConversation(
   },
   database: Database.Database = db,
 ): ConversationRow {
+  // Callers hold their row across awaits, so its fields can predate a rename
+  // (or any other edit) that landed mid-turn. Unspecified columns default to
+  // the live row rather than the snapshot: this writes only what the caller
+  // means to change instead of quietly restoring what it happened to see.
+  const current = getConversationById(conversation.id, database) ?? conversation;
+  const title =
+    input.title === undefined ? current.title : normalizeTitle(input.title);
   database.prepare(`
     UPDATE conversations
     SET title = ?, scope_kind = ?, default_garden_id = ?,
         active_agency_agent_slug = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(
-    input.title === undefined ? conversation.title : normalizeTitle(input.title),
-    input.scopeKind ?? conversation.scope_kind,
-    input.defaultGardenId === undefined ? conversation.default_garden_id : input.defaultGardenId,
+    title,
+    input.scopeKind ?? current.scope_kind,
+    input.defaultGardenId === undefined ? current.default_garden_id : input.defaultGardenId,
     input.activeAgencyAgentSlug === undefined
-      ? conversation.active_agency_agent_slug
+      ? current.active_agency_agent_slug
       : input.activeAgencyAgentSlug,
     conversation.id,
   );
+  if (input.title !== undefined && conversation.legacy_chat_session_id !== null) {
+    database.prepare(`
+      UPDATE chat_sessions
+      SET title = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(title, conversation.legacy_chat_session_id);
+  }
   return getConversationById(conversation.id, database)!;
 }
 
@@ -172,6 +334,12 @@ export function deleteConversation(
   conversation: ConversationRow,
   database: Database.Database = db,
 ): void {
+  // The attachment payloads kept outside the message. Their blobs are read out
+  // of the messages that reference them, so this has to happen while those rows
+  // still exist — a cascade would take the references with it.
+  removeConversationModelBlobs(conversation.id, database);
+  removeConversationVideoBlobs(conversation.id, conversation.user_id, database);
+  removeConversationAudioBlobs(conversation.id, conversation.user_id, database);
   database.prepare("DELETE FROM conversations WHERE id = ?").run(conversation.id);
 }
 
@@ -189,6 +357,45 @@ export function listConversationMessages(
     ORDER BY order_index ASC
     LIMIT ?
   `).all(conversationId, after, limit) as ConversationMessageRow[];
+}
+
+export interface ConversationMessageSummary {
+  messageCount: number;
+  externalAgentActive: boolean;
+}
+
+/** One aggregate query for history rows, avoiding a transcript read per chat. */
+export function summarizeConversationMessages(
+  conversationIds: number[],
+  database: Database.Database = db,
+): Map<number, ConversationMessageSummary> {
+  const ids = [...new Set(conversationIds.filter(Number.isSafeInteger))];
+  if (ids.length === 0) return new Map();
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = database.prepare(`
+    SELECT conversation_id,
+           COUNT(*) AS message_count,
+           MAX(CASE
+             WHEN role = 'assistant'
+              AND metadata IS NOT NULL
+              AND json_valid(metadata)
+              AND json_extract(metadata, '$.externalAgentOutcome') = 'running'
+             THEN 1 ELSE 0 END) AS external_agent_active
+    FROM conversation_messages
+    WHERE conversation_id IN (${placeholders})
+    GROUP BY conversation_id
+  `).all(...ids) as Array<{
+    conversation_id: number;
+    message_count: number;
+    external_agent_active: number;
+  }>;
+  return new Map(rows.map((row) => [
+    row.conversation_id,
+    {
+      messageCount: row.message_count,
+      externalAgentActive: row.external_agent_active === 1,
+    },
+  ]));
 }
 
 export function listRecentConversationMessages(
@@ -221,7 +428,7 @@ export interface ReservedConversationTurn {
 export function reserveConversationTurn(input: {
   conversation: ConversationRow;
   clientMessageId: string;
-  surface: OpenHarnessSurface;
+  surface: HermesSurface;
   content: string;
   metadata?: Record<string, unknown>;
 }, database: Database.Database = db): ReservedConversationTurn {
@@ -374,11 +581,36 @@ export function retryAssistantMessage(
 export function appendConversationSteerMessage(input: {
   conversationId: number;
   clientMessageId: string;
-  surface: OpenHarnessSurface;
+  surface: HermesSurface;
   content: string;
+  targetClientMessageId?: string;
+  assistantContentOffset?: number;
 }, database: Database.Database = db): ConversationMessageRow {
   const clientMessageId = normalizeClientMessageId(input.clientMessageId);
   const content = normalizeMessageContent(input.content);
+  const targetClientMessageId = input.targetClientMessageId
+    ? normalizeClientMessageId(input.targetClientMessageId)
+    : undefined;
+  if (
+    input.assistantContentOffset !== undefined &&
+    (!Number.isSafeInteger(input.assistantContentOffset) ||
+      input.assistantContentOffset < 0)
+  ) {
+    throw new ConversationStoreError(
+      400,
+      "invalid_course_correction_offset",
+      "The course-correction response offset is invalid.",
+    );
+  }
+  const metadata = JSON.stringify({
+    courseCorrection: true,
+    ...(targetClientMessageId
+      ? { courseCorrectionTargetClientMessageId: targetClientMessageId }
+      : {}),
+    ...(input.assistantContentOffset !== undefined
+      ? { courseCorrectionOffset: input.assistantContentOffset }
+      : {}),
+  });
   const append = database.transaction(() => {
     const existing = getMessageByClientRole(input.conversationId, clientMessageId, "user", database);
     if (existing) {
@@ -404,13 +636,14 @@ export function appendConversationSteerMessage(input: {
       INSERT INTO conversation_messages
         (conversation_id, client_message_id, role, surface, content, status,
          order_index, metadata)
-      VALUES (?, ?, 'user', ?, ?, 'complete', ?, '{"courseCorrection":true}')
+      VALUES (?, ?, 'user', ?, ?, 'complete', ?, ?)
     `).run(
       input.conversationId,
       clientMessageId,
       input.surface,
       content,
       pending.order_index,
+      metadata,
     );
     database.prepare(`
       UPDATE conversation_messages SET order_index = order_index - 999999
@@ -511,6 +744,9 @@ export function presentConversation(row: ConversationRow): {
   scopeKind: ConversationScopeKind;
   defaultGardenId: number | null;
   activeAgencyAgentSlug: string | null;
+  pinned: boolean;
+  pinnedAt: string | null;
+  highlight: string | null;
   createdAt: string;
   updatedAt: string;
 } {
@@ -520,6 +756,11 @@ export function presentConversation(row: ConversationRow): {
     scopeKind: row.scope_kind,
     defaultGardenId: row.default_garden_id,
     activeAgencyAgentSlug: row.active_agency_agent_slug,
+    pinned: row.pinned_at !== null,
+    pinnedAt: row.pinned_at ?? null,
+    // An unknown slug (an older palette, a hand-edited row) presents as no
+    // highlight rather than as a color the rail cannot paint.
+    highlight: isChatHighlight(row.highlight) ? row.highlight : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -548,9 +789,15 @@ function dualWriteUserMessage(
     `).get(conversation.legacy_chat_session_id) as { value: number };
     database.prepare(`
       INSERT OR IGNORE INTO chat_messages
-        (session_id, role, content, order_index, canonical_message_id, runtime_status)
-      VALUES (?, 'user', ?, ?, ?, 'complete')
-    `).run(conversation.legacy_chat_session_id, message.content, order.value, message.id);
+        (session_id, role, content, order_index, canonical_message_id, runtime_status, tool_calls)
+      VALUES (?, 'user', ?, ?, ?, 'complete', ?)
+    `).run(
+      conversation.legacy_chat_session_id,
+      message.content,
+      order.value,
+      message.id,
+      message.metadata,
+    );
     database.prepare("UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?")
       .run(conversation.legacy_chat_session_id);
   }

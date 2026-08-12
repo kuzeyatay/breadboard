@@ -3,6 +3,7 @@
 // Endpoints used (Scriberr API v1, verified against the local checkout):
 //   GET  /health                                  — no-auth liveness probe
 //   POST /api/v1/auth/login                       — JWT login (optional auth mode)
+//   POST /api/v1/transcription/upload             — multipart audio upload
 //   POST /api/v1/transcription/upload-video       — multipart video upload
 //   POST /api/v1/transcription/youtube            — server-side yt-dlp ingestion
 //   POST /api/v1/transcription/:id/start          — start transcription (params)
@@ -20,11 +21,13 @@ import { openAsBlob } from "fs";
 import path from "path";
 
 import { VideoTranscriptionError } from "./errors.ts";
+import { getVideoTranscriptionConfig } from "./config.ts";
 import type {
   ScriberrJobSnapshot,
   ScriberrJobStatus,
   ScriberrTranscript,
   ScriberrTranscriptSegment,
+  ScriberrTranscriptWord,
 } from "./types.ts";
 
 type FetchLike = typeof fetch;
@@ -116,10 +119,33 @@ export function normalizeScriberrTranscriptPayload(raw: unknown): {
           : null,
     });
   }
+  // `word_segments` is WhisperX's aligned word list, passed through by Scriberr
+  // untouched. A backend without word timings simply omits it, so an absent or
+  // malformed list is an empty one rather than an error.
+  const rawWords = Array.isArray(data.word_segments) ? data.word_segments : [];
+  const words: ScriberrTranscriptWord[] = [];
+  for (const entry of rawWords) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as Record<string, unknown>;
+    const text = typeof raw.word === "string" ? raw.word.trim() : "";
+    const start = Number(raw.start);
+    const end = Number(raw.end);
+    if (!text || !Number.isFinite(start) || !Number.isFinite(end)) continue;
+    words.push({
+      start,
+      end,
+      word: text,
+      speaker:
+        typeof raw.speaker === "string" && raw.speaker.trim()
+          ? raw.speaker.trim()
+          : null,
+    });
+  }
   return {
     available: true,
     transcript: {
       segments,
+      words,
       text: typeof data.text === "string" ? data.text : null,
       language:
         typeof data.language === "string" && data.language.trim()
@@ -168,14 +194,47 @@ export class ScriberrClient {
         detail: "no API token and no username/password configured",
       });
     }
-    const response = await this.rawRequest("POST", "/api/v1/auth/login", {
+    let response = await this.rawRequest("POST", "/api/v1/auth/login", {
       json: { username: this.username, password: this.password },
       auth: false,
     });
     if (!response.ok) {
-      throw new VideoTranscriptionError("scriberr_auth_failed", {
-        detail: `login returned HTTP ${response.status}`,
-      });
+      // Breadboard owns a private Scriberr database. On its very first launch
+      // there is no account yet, so register the per-install credentials
+      // automatically instead of sending the user through Scriberr's UI.
+      const statusResponse = await this.rawRequest(
+        "GET",
+        "/api/v1/auth/registration-status",
+        { auth: false },
+      );
+      const status = statusResponse.ok
+        ? ((await statusResponse.json().catch(() => null)) as
+            | { registration_enabled?: unknown }
+            | null)
+        : null;
+      if (status?.registration_enabled === true) {
+        response = await this.rawRequest("POST", "/api/v1/auth/register", {
+          json: {
+            username: this.username,
+            password: this.password,
+            confirmPassword: this.password,
+          },
+          auth: false,
+        });
+      }
+      // A concurrent request may have completed registration first. Retry the
+      // normal login exactly once in that race.
+      if (!response.ok && response.status === 409) {
+        response = await this.rawRequest("POST", "/api/v1/auth/login", {
+          json: { username: this.username, password: this.password },
+          auth: false,
+        });
+      }
+      if (!response.ok) {
+        throw new VideoTranscriptionError("scriberr_auth_failed", {
+          detail: `login/registration returned HTTP ${response.status}`,
+        });
+      }
     }
     const data = (await response.json().catch(() => null)) as
       | { token?: unknown }
@@ -317,6 +376,39 @@ export class ScriberrClient {
     return normalizeScriberrJob(await this.expectJson(response, "upload-video"));
   }
 
+  /**
+   * Upload an audio file. The video editor uses this instead of `uploadVideo`:
+   * it has already extracted 16kHz mono from the source for its own silence
+   * analysis, and posting that is a tenth of the bytes of the video with none
+   * of the decoding repeated on Scriberr's side.
+   */
+  async uploadAudio({
+    filePath,
+    filename,
+    title,
+    timeoutMs,
+  }: {
+    filePath: string;
+    /** Display filename (sanitized) sent to Scriberr; not a disk path. */
+    filename: string;
+    title?: string | null;
+    timeoutMs?: number;
+  }): Promise<ScriberrJobSnapshot> {
+    if (!fs.existsSync(filePath)) {
+      throw new VideoTranscriptionError("media_missing");
+    }
+    const blob = await openAsBlob(filePath);
+    const form = new FormData();
+    form.append("audio", blob, filename || `audio${path.extname(filePath)}`);
+    if (title) form.append("title", title);
+
+    const response = await this.rawRequest("POST", "/api/v1/transcription/upload", {
+      body: form,
+      timeoutMs: timeoutMs ?? Math.max(this.requestTimeoutMs, 600_000),
+    });
+    return normalizeScriberrJob(await this.expectJson(response, "upload"));
+  }
+
   async downloadYouTube({
     url,
     title,
@@ -402,4 +494,22 @@ export class ScriberrClient {
     if (response.ok || response.status === 404) return;
     await this.expectJson(response, "delete");
   }
+}
+
+/**
+ * A client built from the validated environment config.
+ *
+ * It lives here rather than in `instance.ts` so that callers who only need to
+ * talk to Scriberr — the video editor, for one — do not drag the job store and
+ * the app database in with it.
+ */
+export function scriberrClientFromConfig(): ScriberrClient {
+  const config = getVideoTranscriptionConfig();
+  return new ScriberrClient({
+    baseUrl: config.scriberrBaseUrl,
+    apiToken: config.scriberrApiToken,
+    username: config.scriberrUsername,
+    password: config.scriberrPassword,
+    requestTimeoutMs: config.requestTimeoutMs,
+  });
 }

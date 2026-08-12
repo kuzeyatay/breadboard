@@ -1,4 +1,4 @@
-import { app, clipboard, dialog, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { LogManager } from "./log-manager";
@@ -6,6 +6,7 @@ import { ServiceManager, type ServiceStatus } from "./service-manager";
 import {
   buildServiceDefinitions,
   missingRuntimes,
+  n8nServiceUrl,
   resolveRuntimeBinaries,
   serviceUrls,
 } from "./service-definitions";
@@ -15,6 +16,7 @@ import {
   repoRootFromModuleDir,
   type ResolvedPaths,
 } from "./path-resolver";
+import { repairWhisperXFfmpeg } from "./whisperx-ffmpeg-repair";
 import {
   atomicWriteFile,
   loadOrCreatePersistentConfig,
@@ -25,6 +27,13 @@ import {
 } from "./runtime-config";
 import { allocatePort } from "./ports";
 import {
+  CLIPROXY_DEFAULT_PORT,
+  cliproxyHome,
+  isCliproxyInstalled,
+  provisionCliproxyBinary,
+  writeCliproxyConfig,
+} from "./cliproxy";
+import {
   detectDevInstallation,
   executeMigration,
   looksLikeSqliteDatabase,
@@ -32,15 +41,25 @@ import {
   MIGRATION_VERSION,
 } from "./migration";
 import {
-  needsOpenHarnessProvisioning,
   needsQuartzProvisioning,
-  provisionOpenHarnessRuntime,
   provisionQuartzWorkspace,
-  writeScriberrComposeOverride,
 } from "./provisioning";
 import { WindowManager, defaultPreloadPath, defaultStartupHtmlPath } from "./window-manager";
-import { allowedOriginsFor, installGlobalSecurity } from "./security";
+import {
+  allowThemeLocationFor,
+  allowedOriginsFor,
+  installGlobalSecurity,
+  revokeThemeLocationFor,
+} from "./security";
 import { IPC_CHANNELS } from "../shared/ipc-contract";
+import {
+  backgroundColorForSurface,
+  isWindowSurface,
+  titleBarForSurface,
+} from "./window-options";
+import { openMicrophoneSettings } from "./microphone-settings";
+import { stopRecallEngine } from "./recall";
+import { readLastWindowTheme, writeLastWindowTheme } from "./theme-state";
 
 export interface StartupFailure {
   serviceId: string;
@@ -98,6 +117,7 @@ export class AppLifecycle {
       const window = this.windows?.window;
       if (window) {
         if (window.isMinimized()) window.restore();
+        if (!window.isVisible()) window.show();
         window.focus();
       }
     });
@@ -120,14 +140,26 @@ export class AppLifecycle {
       ports: {
         dashboard: await allocatePort(3000, taken),
         chatmock: await allocatePort(8765, taken),
-        openharness: await allocatePort(4096, taken),
         hermes: await allocatePort(9119, taken),
+        postiz: await allocatePort(4007, taken),
+        postizSupervisor: await allocatePort(7721, taken),
         quartz: await allocatePort(8081, taken),
         quartzWs: await allocatePort(3001, taken),
+        voicebox: await allocatePort(17493, taken),
+        n8n: await allocatePort(5678, taken),
         // GBrain adapter port is only allocated when GBrain is enabled.
         ...(persistent.gbrainMode !== "disabled" ? { gbrain: await allocatePort(7717, taken) } : {}),
         // UI-TARS adapter port is only allocated when UI-TARS is not disabled.
         ...(persistent.uiTarsMode !== "disabled" ? { uiTars: await allocatePort(7719, taken) } : {}),
+        // Parametric CAD service. Allocated only when enabled; the definition
+        // is registered only when its Python environment actually exists.
+        ...(persistent.cadMode !== "disabled" ? { cad: await allocatePort(7731, taken) } : {}),
+        // Subscription proxy port, allocated before the binary is known to
+        // exist: provisioning happens later, and re-allocating afterwards would
+        // mean the port could differ from the one already handed to ChatMock.
+        ...(persistent.cliproxyMode !== "disabled"
+          ? { cliproxy: await allocatePort(CLIPROXY_DEFAULT_PORT, taken) }
+          : {}),
       },
     };
 
@@ -153,7 +185,7 @@ export class AppLifecycle {
 
     this.services = new ServiceManager(this.logs);
     const urls = serviceUrls(this.config);
-    const allowed = allowedOriginsFor([urls.dashboard, urls.quartz]);
+    const allowed = allowedOriginsFor([urls.dashboard, urls.quartz, n8nServiceUrl(this.config)]);
     installGlobalSecurity(allowed);
 
     this.windows = new WindowManager({
@@ -161,6 +193,7 @@ export class AppLifecycle {
       startupHtmlPath: defaultStartupHtmlPath(this.moduleDir),
       preloadPath: defaultPreloadPath(this.moduleDir),
       iconPath: this.iconPath(),
+      initialTheme: readLastWindowTheme(this.paths.configDir),
     });
 
     this.registerIpcHandlers();
@@ -203,6 +236,9 @@ export class AppLifecycle {
 
   private async prepareDataLayer(): Promise<void> {
     this.writeHermesRuntimeConfig();
+    // Before the dev early-return: dev runs the same supervised proxy, and its
+    // config must be regenerated for this launch's port either way.
+    await this.prepareCliproxy();
     if (this.paths.mode === "dev") return;
 
     // 1. Refresh the Quartz workspace program files when needed.
@@ -217,33 +253,7 @@ export class AppLifecycle {
       );
     }
 
-    // 2. Provision the OpenHarness runtime workspace (first run / app update).
-    if (
-      this.config.persistent.openharnessMode !== "legacy" &&
-      needsOpenHarnessProvisioning(this.paths, app.getVersion())
-    ) {
-      this.setStartupState({
-        ...this.startupState,
-        phase: "preparing",
-        message: "Preparing the agent runtime (first run)",
-      });
-      const bun = resolveRuntimeBinaries(this.paths).bun;
-      await new Promise<void>((resolve, reject) => {
-        // spawnSync inside; run on a fresh tick so the startup screen paints.
-        setImmediate(() => {
-          try {
-            provisionOpenHarnessRuntime(this.paths, app.getVersion(), bun, (message) =>
-              this.logs.forService("desktop").write(`[provision] ${message}`),
-            );
-            resolve();
-          } catch (error) {
-            reject(error instanceof Error ? error : new Error(String(error)));
-          }
-        });
-      });
-    }
-
-    // 3. One-time migration from a detected dev checkout (copy, never delete).
+    // 2. One-time migration from a detected dev checkout (copy, never delete).
     const persistent = this.config.persistent;
     if (persistent.migrationVersion < MIGRATION_VERSION) {
       const candidates = [
@@ -288,18 +298,51 @@ export class AppLifecycle {
       persistent.migrationVersion = MIGRATION_VERSION;
       savePersistentConfig(this.paths.configDir, persistent);
     }
+  }
 
-    // 4. Optional Scriberr Docker compose override.
-    if (persistent.scriberrEnabled && persistent.scriberrBaseUrl === null) {
-      writeScriberrComposeOverride(this.paths, 8091);
+  /**
+   * Get the subscription proxy ready to be supervised: download it on first
+   * use, then regenerate its config for this launch's port.
+   *
+   * Every failure here is swallowed. Subscriptions are optional, the download
+   * needs the network, and `buildServiceDefinitions` simply omits the service
+   * when the binary is absent — so the worst case is that the Subscriptions
+   * panel reports it as unavailable while the rest of Breadboard starts
+   * normally. Blocking startup on a GitHub release download would be the wrong
+   * trade for a capability most launches never touch.
+   */
+  private async prepareCliproxy(): Promise<void> {
+    const { cliproxyMode } = this.config.persistent;
+    if (cliproxyMode === "disabled") return;
+    const home = cliproxyHome(this.paths);
+    const log = (message: string) =>
+      this.logs.forService("desktop").write(`[cliproxy] ${message}`);
+
+    if (!isCliproxyInstalled(home)) {
+      this.setStartupState({
+        ...this.startupState,
+        phase: "preparing",
+        message: "Preparing subscription models",
+      });
+      try {
+        await provisionCliproxyBinary(home, log);
+      } catch (error) {
+        log(
+          `not installed: ${error instanceof Error ? error.message : String(error)}. ` +
+            "Subscription models stay unavailable until the next launch.",
+        );
+        return;
+      }
+    }
+
+    try {
+      writeCliproxyConfig(home, this.config.ports.cliproxy ?? CLIPROXY_DEFAULT_PORT);
+    } catch (error) {
+      log(`could not write its config: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   private writeHermesRuntimeConfig(): void {
-    const enabled =
-      this.config.persistent.agentRuntime === "hermes" ||
-      this.config.persistent.agentRuntimeFallback === "hermes";
-    if (!enabled) return;
     fs.mkdirSync(this.paths.hermesHome, { recursive: true, mode: 0o700 });
     try {
       fs.chmodSync(this.paths.hermesHome, 0o700);
@@ -307,15 +350,47 @@ export class AppLifecycle {
       // Windows ACLs are inherited from Electron's per-user data directory.
     }
     const chatmock = `http://127.0.0.1:${this.config.ports.chatmock}/v1`;
-    const model = process.env["CHATMOCK_MODEL"]?.trim() || "gpt-5.6-sol";
+    const model = process.env["CHATMOCK_MODEL"]?.trim() || "default";
     const yaml = [
       "# Generated by Breadboard. Hermes state is disposable and non-canonical.",
       "model:",
       `  default: ${JSON.stringify(model)}`,
       "  provider: custom",
       `  base_url: ${JSON.stringify(chatmock)}`,
+      // image_input_mode: native (below) governs the attach step, but a second
+      // capability gate runs when the API request is built
+      // (run_agent._prepare_messages_for_non_vision_model), and it treats
+      // unknown vision capability as "no vision" — custom providers are never
+      // in models.dev, so it stripped the just-attached pixels on every turn.
+      // Declaring the capability satisfies that gate; it is honest because
+      // every route ChatMock serves can carry images (Gemini/OpenAI-compat
+      // pass-through, Claude via the CLI Read-file bridge).
+      "  supports_vision: true",
       "toolsets:",
       "  - breadboard",
+      "  - web",
+      "web:",
+      "  search_backend: ddgs",
+      // Hermes ships a Mixture-of-Agents preset named "default" and, when no
+      // provider is given, a plain model switch to a name matching an enabled
+      // preset pivots the session onto the MoA virtual provider. Breadboard
+      // sends exactly that string: every provider-prefixed model
+      // (`cliproxy/gemini-…`, `anthropic/claude-…`) is addressed through
+      // ChatMock's `default` sentinel, so picking one silently rerouted the turn
+      // to MoA's own reference models — OpenRouter and Codex, neither of which
+      // has credentials here — and the turn died with "HTTP 401: Missing
+      // Authentication header". Breadboard does its own multi-model work inside
+      // ChatMock's council, so MoA is off.
+      //
+      // The per-preset flag is the one that matters: `load_config()` merges
+      // Hermes's defaults, which already define `moa.presets.default`, and
+      // `normalize_moa_config` reads the top-level `enabled` only when no
+      // `presets` map exists. Setting just the top-level flag is a no-op here.
+      "moa:",
+      "  enabled: false",
+      "  presets:",
+      "    default:",
+      "      enabled: false",
       "memory:",
       "  memory_enabled: false",
       "  user_profile_enabled: false",
@@ -324,8 +399,25 @@ export class AppLifecycle {
       "  busy_input_mode: steer",
       "  busy_steer_ack_enabled: false",
       "  memory_notifications: off",
+      // Breadboard exposes dozens of capability-checked plugin tools. Sending
+      // every schema on every turn makes Google's subscription gateway answer
+      // RESOURCE_EXHAUSTED even while the same Gemini account accepts compact
+      // requests. Hermes' built-in progressive-disclosure bridge keeps every
+      // tool available while sending only search/describe/call up front.
+      "tools:",
+      "  tool_search:",
+      "    enabled: on",
       "agent:",
       "  coding_context: off",
+      // An attached image must reach the model as pixels. Hermes' "auto" image
+      // routing asks models.dev whether the active model has vision, and every
+      // Breadboard model is addressed as provider `custom` — a name models.dev
+      // has never heard of — so auto always resolved to "text": the image was
+      // replaced by a `vision_analyze` summary, and when that side call failed
+      // the model was told to call `vision_analyze` itself, which no Breadboard
+      // session enables. Attaching natively is also the honest route, since the
+      // summary loses exactly what an image is usually attached for.
+      "  image_input_mode: native",
       "",
     ].join("\n");
     atomicWriteFile(path.join(this.paths.hermesHome, "config.yaml"), yaml);
@@ -360,6 +452,16 @@ export class AppLifecycle {
       });
       return;
     }
+
+    // Without this, WhisperX decodes silence and every transcript comes back
+    // empty while the job still reports success. Cheap, idempotent, and a no-op
+    // until Scriberr has provisioned its speech environment.
+    const whisperxRepair = repairWhisperXFfmpeg(path.join(this.paths.runtimeDir, "scriberr"));
+    this.logs
+      .forService("desktop")
+      .write(
+        `[whisperx] ffmpeg repair: ${whisperxRepair.reason} (linked ${whisperxRepair.linked})`,
+      );
 
     for (const definition of buildServiceDefinitions({
       paths: this.paths,
@@ -438,9 +540,10 @@ export class AppLifecycle {
     switch (starting.id) {
       case "chatmock":
         return "Starting local AI";
-      case "openharness":
       case "hermes":
         return "Starting agent runtime";
+      case "postiz":
+        return "Starting social publishing (first launch can take several minutes)";
       case "quartz":
         return "Starting garden";
       case "dashboard":
@@ -529,6 +632,12 @@ export class AppLifecycle {
     ipcMain.handle(IPC_CHANNELS.quit, () => {
       app.quit();
     });
+    ipcMain.handle(IPC_CHANNELS.startupContinue, () => {
+      this.windows.markStartupContinued();
+    });
+    ipcMain.handle(IPC_CHANNELS.startupAwaitDashboard, async () => {
+      await this.windows.waitForDashboardPaint();
+    });
     ipcMain.handle(IPC_CHANNELS.pickFolder, async () => {
       const window = this.windows.window;
       if (!window) return null;
@@ -545,6 +654,43 @@ export class AppLifecycle {
       } catch {
         return null;
       }
+    });
+    ipcMain.handle(IPC_CHANNELS.openMicrophoneSettings, async (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window || window.isDestroyed()) return false;
+      return openMicrophoneSettings();
+    });
+    ipcMain.handle(IPC_CHANNELS.allowThemeLocation, (event) => {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window || window.isDestroyed()) return false;
+      const webContentsId = event.sender.id;
+      if (allowThemeLocationFor(webContentsId)) {
+        event.sender.once("destroyed", () => {
+          revokeThemeLocationFor(webContentsId);
+        });
+      }
+      return true;
+    });
+    ipcMain.handle(IPC_CHANNELS.setTheme, (event, surface: unknown) => {
+      if (!isWindowSurface(surface)) return false;
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (!window || window.isDestroyed()) return false;
+      window.setBackgroundColor(backgroundColorForSurface(surface));
+      if (process.platform === "win32") {
+        window.setTitleBarOverlay(titleBarForSurface(surface));
+      }
+      if (surface === "light" || surface === "dark") {
+        this.windows.rememberTheme(surface);
+        try {
+          writeLastWindowTheme(this.paths.configDir, surface);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          this.logs
+            .forService("desktop")
+            .write(`[desktop] could not persist window theme: ${reason}`);
+        }
+      }
+      return true;
     });
   }
 
@@ -579,7 +725,15 @@ export class AppLifecycle {
           { role: "zoomOut" },
           { role: "resetZoom" },
           { type: "separator" },
-          { role: "togglefullscreen" },
+          {
+            label: "Toggle full screen",
+            accelerator: "CmdOrCtrl+Shift+F",
+            click: (_menuItem, focusedWindow) => {
+              const window = focusedWindow ?? this.windows.window;
+              if (!window || window.isDestroyed()) return;
+              window.setFullScreen(!window.isFullScreen());
+            },
+          },
           ...(this.paths.mode === "dev"
             ? ([{ role: "toggleDevTools" }] as Electron.MenuItemConstructorOptions[])
             : []),
@@ -656,6 +810,20 @@ export class AppLifecycle {
   private async shutdownServices(): Promise<void> {
     try {
       this.logs?.forService("desktop").write("[desktop] shutting down services");
+      // Recall's capture engine is started by the dashboard, not the supervisor
+      // (see main/recall.ts), so stopping it is not covered by stopAll(). It
+      // goes first: a screen recorder must never outlive Breadboard.
+      try {
+        if (await stopRecallEngine(this.paths)) {
+          this.logs?.forService("desktop").write("[desktop] recall capture engine stopped");
+        }
+      } catch (error) {
+        this.logs
+          ?.forService("desktop")
+          .write(
+            `[desktop] recall shutdown error: ${error instanceof Error ? error.message : String(error)}`,
+          );
+      }
       await this.services?.stopAll();
       this.logs?.forService("desktop").write("[desktop] all services stopped");
     } catch (error) {

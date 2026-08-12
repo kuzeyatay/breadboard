@@ -8,6 +8,11 @@ export const PRELOAD_IPC_CHANNELS = {
   copyDiagnostics: "breadboard:copy-diagnostics",
   quit: "breadboard:quit",
   pickFolder: "breadboard:pick-folder",
+  openMicrophoneSettings: "breadboard:open-microphone-settings",
+  allowThemeLocation: "breadboard:allow-theme-location",
+  setTheme: "breadboard:set-theme",
+  startupContinue: "breadboard:startup-continue",
+  startupAwaitDashboard: "breadboard:startup-await-dashboard",
   startupState: "breadboard:startup-state",
 } as const;
 
@@ -62,8 +67,29 @@ export function createDesktopApi(ipcRenderer: IpcRendererLike) {
     copyDiagnostics: (): Promise<void> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.copyDiagnostics) as Promise<void>,
     quit: (): Promise<void> => ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.quit) as Promise<void>,
+    // The startup screen ends on a welcome the person dismisses themselves; this
+    // is the renderer telling the shell its dissolve has finished and the
+    // dashboard may take the window.
+    continueToDashboard: (): Promise<void> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.startupContinue) as Promise<void>,
+    // Resolves when the dashboard loading behind the startup screen has
+    // painted, so the welcome is not offered until a click on it would open a
+    // finished app. Always resolves — the shell caps the wait rather than
+    // reporting failure.
+    awaitDashboardReady: (): Promise<void> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.startupAwaitDashboard) as Promise<void>,
     pickFolder: (): Promise<string | null> =>
       ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.pickFolder) as Promise<string | null>,
+    openMicrophoneSettings: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.openMicrophoneSettings) as Promise<boolean>,
+    // The Profile switch is the explicit user gesture that opens this narrow
+    // permission. No other renderer receives geolocation by default.
+    allowThemeLocation: (): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.allowThemeLocation) as Promise<boolean>,
+    // "voice" is not a theme but a full-screen surface that owns the window
+    // chrome while it is open; the window goes back to its theme on close.
+    setTheme: (surface: "light" | "dark" | "voice"): Promise<boolean> =>
+      ipcRenderer.invoke(PRELOAD_IPC_CHANNELS.setTheme, surface) as Promise<boolean>,
   };
 }
 

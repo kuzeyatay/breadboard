@@ -21,7 +21,12 @@ test(
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bb-electron-integration-"));
     const resultFile = path.join(fixture, "result.json");
     const htmlFile = path.join(fixture, "index.html");
+    const dashboardFile = path.join(fixture, "dashboard.html");
     fs.writeFileSync(htmlFile, "<!doctype html><html><body>bridge fixture</body></html>");
+    fs.writeFileSync(
+      dashboardFile,
+      "<!doctype html><html><head><title>fixture dashboard</title></head><body>dashboard</body></html>",
+    );
     fs.writeFileSync(path.join(fixture, "package.json"), JSON.stringify({ main: "main.cjs" }));
     fs.writeFileSync(
       path.join(fixture, "main.cjs"),
@@ -33,29 +38,93 @@ const resultFile = ${JSON.stringify(resultFile)};
 app.whenReady().then(async () => {
   ipcMain.handle(IPC_CHANNELS.getVersions, () => ({ app: "0.1.0", electron: process.versions.electron }));
   ipcMain.handle(IPC_CHANNELS.getStartupState, () => ({ phase: "preparing", message: "Preparing", services: [] }));
+  ipcMain.handle(IPC_CHANNELS.setTheme, () => true);
   const manager = new WindowManager({
     allowed: { origins: new Set() },
     startupHtmlPath: ${JSON.stringify(htmlFile)},
     preloadPath: ${JSON.stringify(preload)},
+    initialTheme: "dark",
   });
   await manager.showStartupScreen();
   const window = manager.window;
   const sameWindow = manager.createMainWindow() === window;
+  const visible = window.isVisible();
+  const startupThemeQuery = new URL(window.webContents.getURL()).searchParams.get("theme");
   const keys = await window.webContents.executeJavaScript("Object.keys(window.breadboardDesktop).sort()");
   const versions = await window.webContents.executeJavaScript("window.breadboardDesktop.getVersions()");
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode: "F11" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const f11EnteredFullScreen = window.isFullScreen();
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode: "F11" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const f11ExitedFullScreen = !window.isFullScreen();
   await window.webContents.executeJavaScript(
     "window.__breadboardStatePromise = new Promise((resolve) => { const off = window.breadboardDesktop.onStartupState((state) => { off(); resolve(state); }); }); true",
   );
   manager.sendToRenderer(IPC_CHANNELS.startupState, { phase: "ready", message: "Ready", services: [] });
   const state = await window.webContents.executeJavaScript("window.__breadboardStatePromise");
+  const preferences = window.webContents.getLastWebPreferences();
+
+  // The dashboard is rendered out of sight while the welcome is up, then takes
+  // the startup window's place instead of navigating it.
+  const startupBounds = window.getBounds();
+  const dashboardUrl = require("node:url").pathToFileURL(${JSON.stringify(dashboardFile)}).toString();
+  // Start the handoff but leave the welcome standing, so the preloading window
+  // can be inspected in the state it spends the whole startup screen in.
+  const swapped = manager.showDashboard(dashboardUrl);
+  const preload = await new Promise((resolve) => {
+    const poll = () => (manager.dashboardPreload ? resolve(manager.dashboardPreload) : setTimeout(poll, 20));
+    poll();
+  });
+  await preload.settled;
+  const preloadWindow = preload.window;
+  const preloading = {
+    isTheMainWindow: preloadWindow === manager.window,
+    opacity: preloadWindow.getOpacity(),
+    offScreen: preloadWindow.getPosition()[0] < -10000,
+    startupBounds,
+    preloadBounds: preloadWindow.getBounds(),
+    // Within a pixel: bounds round-trip through the display's scale factor, so
+    // an exact match is not available on every machine. What matters is that
+    // the page is not laid out at one size and revealed at another.
+    sizedLikeTheStartupWindow:
+      Math.abs(preloadWindow.getBounds().width - startupBounds.width) <= 2 &&
+      Math.abs(preloadWindow.getBounds().height - startupBounds.height) <= 2,
+    // The whole point of the arrangement: a window that is merely hidden runs
+    // its scripts and its animation frames but is never rasterized, so the swap
+    // would reveal a window with nothing painted in it.
+    paints: await preloadWindow.webContents.executeJavaScript(
+      "performance.getEntriesByType('paint').map((entry) => entry.name)",
+    ),
+  };
+  manager.markStartupContinued();
+  await swapped;
+  const dashboardWindow = manager.window;
+  const swap = {
+    replacedTheStartupWindow: dashboardWindow !== window && window.isDestroyed(),
+    visible: dashboardWindow.isVisible(),
+    opacity: dashboardWindow.getOpacity(),
+    onScreen: dashboardWindow.getPosition()[0] > -10000,
+    keptBounds: JSON.stringify(dashboardWindow.getBounds()) === JSON.stringify(startupBounds),
+    title: await dashboardWindow.webContents.executeJavaScript("document.title"),
+    url: dashboardWindow.webContents.getURL(),
+    windowCount: require("electron").BrowserWindow.getAllWindows().length,
+  };
+
   fs.writeFileSync(resultFile, JSON.stringify({
     keys,
     versions,
     state,
     sameWindow,
-    preferences: window.webContents.getLastWebPreferences(),
+    visible,
+    startupThemeQuery,
+    f11EnteredFullScreen,
+    f11ExitedFullScreen,
+    preferences,
+    preloading,
+    swap,
   }));
-  window.destroy();
+  dashboardWindow.destroy();
   app.quit();
 }).catch((error) => {
   fs.writeFileSync(resultFile, JSON.stringify({ error: error.stack || String(error) }));
@@ -82,24 +151,84 @@ app.whenReady().then(async () => {
       versions: { app: string; electron: string };
       state: { phase: string; message: string };
       sameWindow: boolean;
+      visible: boolean;
+      startupThemeQuery: string | null;
+      f11EnteredFullScreen: boolean;
+      f11ExitedFullScreen: boolean;
       preferences: Record<string, unknown>;
+      preloading: {
+        isTheMainWindow: boolean;
+        opacity: number;
+        offScreen: boolean;
+        sizedLikeTheStartupWindow: boolean;
+        startupBounds: Record<string, number>;
+        preloadBounds: Record<string, number>;
+        paints: string[];
+      };
+      swap: {
+        replacedTheStartupWindow: boolean;
+        visible: boolean;
+        opacity: number;
+        onScreen: boolean;
+        keptBounds: boolean;
+        title: string;
+        url: string;
+        windowCount: number;
+      };
     };
     assert.equal(result.error, undefined, result.error);
     assert.deepEqual(result.keys, [
+      "allowThemeLocation",
+      "awaitDashboardReady",
+      "continueToDashboard",
       "copyDiagnostics",
       "getStartupState",
       "getVersions",
       "onStartupState",
       "openLogsFolder",
+      "openMicrophoneSettings",
       "pickFolder",
       "quit",
       "retryService",
+      "setTheme",
     ]);
     assert.equal(result.versions.app, "0.1.0");
     assert.equal(result.state.phase, "ready");
     assert.equal(result.sameWindow, true);
+    assert.equal(result.visible, true);
+    assert.equal(result.startupThemeQuery, "dark");
+    assert.equal(result.f11EnteredFullScreen, true);
+    assert.equal(result.f11ExitedFullScreen, true);
     assert.equal(result.preferences["contextIsolation"], true);
     assert.equal(result.preferences["nodeIntegration"], false);
     assert.equal(result.preferences["sandbox"], true);
+
+    // While the welcome is up the dashboard is out of sight but genuinely
+    // rendering. A merely hidden window would report no paint entries at all —
+    // it runs its scripts and never rasterizes — and revealing that is what
+    // leaves the app showing a flat sheet of its background colour.
+    assert.deepEqual(result.preloading.paints, ["first-paint", "first-contentful-paint"]);
+    assert.equal(result.preloading.isTheMainWindow, false);
+    assert.equal(result.preloading.opacity, 0);
+    assert.equal(result.preloading.offScreen, true);
+    // Painted at the size it will be revealed at, or the swap is a full relayout.
+    assert.equal(
+      result.preloading.sizedLikeTheStartupWindow,
+      true,
+      `preload ${JSON.stringify(result.preloading.preloadBounds)} vs startup ${JSON.stringify(result.preloading.startupBounds)}`,
+    );
+
+    // The dashboard was already rendered when the welcome was dismissed, so the
+    // click swapped windows rather than starting a page load.
+    assert.equal(result.swap.replacedTheStartupWindow, true);
+    assert.equal(result.swap.visible, true);
+    assert.equal(result.swap.opacity, 1);
+    assert.equal(result.swap.onScreen, true);
+    assert.equal(result.swap.keptBounds, true);
+    assert.equal(result.swap.title, "fixture dashboard");
+    assert.match(result.swap.url, /dashboard\.html$/);
+    // Exactly one window survives the swap; a hidden leftover would keep the
+    // app alive after the last visible window closed.
+    assert.equal(result.swap.windowCount, 1);
   },
 );

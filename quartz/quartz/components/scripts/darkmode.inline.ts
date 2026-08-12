@@ -9,20 +9,34 @@ const emitThemeChangeEvent = (theme: "light" | "dark") => {
   document.dispatchEvent(event)
 }
 
+const applyTheme = (theme: "light" | "dark") => {
+  document.documentElement.setAttribute("saved-theme", theme)
+  localStorage.setItem("theme", theme)
+  emitThemeChangeEvent(theme)
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent) return
+  const message = event.data as { type?: unknown; theme?: unknown } | null
+  if (
+    message?.type !== "breadboard:theme" ||
+    (message.theme !== "light" && message.theme !== "dark")
+  ) {
+    return
+  }
+  applyTheme(message.theme)
+})
+
 document.addEventListener("nav", () => {
   const switchTheme = () => {
     const newTheme =
       document.documentElement.getAttribute("saved-theme") === "dark" ? "light" : "dark"
-    document.documentElement.setAttribute("saved-theme", newTheme)
-    localStorage.setItem("theme", newTheme)
-    emitThemeChangeEvent(newTheme)
+    applyTheme(newTheme)
   }
 
   const themeChange = (e: MediaQueryListEvent) => {
     const newTheme = e.matches ? "dark" : "light"
-    document.documentElement.setAttribute("saved-theme", newTheme)
-    localStorage.setItem("theme", newTheme)
-    emitThemeChangeEvent(newTheme)
+    applyTheme(newTheme)
   }
 
   for (const darkmodeButton of document.getElementsByClassName("darkmode")) {

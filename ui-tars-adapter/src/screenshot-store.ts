@@ -1,8 +1,9 @@
 // Screenshot storage on the filesystem (never in a relational DB).
 //
 // Screenshots are associated to a run + sequence number, size/format checked,
-// and served ONLY through authenticated Breadboard routes. Path traversal is
-// rejected at every boundary. A retention sweep bounds disk usage.
+// and served ONLY through authenticated Breadboard routes. Run ownership is
+// stored beside the PNGs so historical screenshots remain authorized after an
+// adapter restart. Path traversal is rejected at every boundary.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -10,6 +11,7 @@ import path from "node:path";
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024; // 5 MB hard cap
 const SAFE_RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const OWNERSHIP_FILE = ".ownership.json";
 
 export interface StoredScreenshot {
   screenshotId: string;
@@ -27,6 +29,12 @@ export class ScreenshotStoreError extends Error {
 
 function assertSafeRunId(runId: string): void {
   if (!SAFE_RUN_ID.test(runId)) throw new ScreenshotStoreError("invalid_run_id");
+}
+
+function assertOwnerUserId(ownerUserId: number): void {
+  if (!Number.isSafeInteger(ownerUserId) || ownerUserId <= 0) {
+    throw new ScreenshotStoreError("invalid_owner_user_id");
+  }
 }
 
 /** screenshotId is the sequence number; reject anything non-numeric. */
@@ -50,6 +58,86 @@ export class ScreenshotStore {
       throw new ScreenshotStoreError("path_escape");
     }
     return resolved;
+  }
+
+  private ownershipPath(runId: string): string {
+    return path.join(this.runDir(runId), OWNERSHIP_FILE);
+  }
+
+  /**
+   * Return the durable owner of a screenshot run, or null for pre-manifest
+   * legacy folders. Invalid metadata is never treated as unowned.
+   */
+  ownerOf(runId: string): number | null {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.ownershipPath(runId), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw new ScreenshotStoreError("ownership_read_failed");
+    }
+    try {
+      const parsed = JSON.parse(raw) as { version?: unknown; ownerUserId?: unknown };
+      if (parsed.version !== 1 || !Number.isSafeInteger(parsed.ownerUserId) || Number(parsed.ownerUserId) <= 0) {
+        throw new ScreenshotStoreError("invalid_ownership_metadata");
+      }
+      return Number(parsed.ownerUserId);
+    } catch (error) {
+      if (error instanceof ScreenshotStoreError) throw error;
+      throw new ScreenshotStoreError("invalid_ownership_metadata");
+    }
+  }
+
+  /** Register ownership before a run can emit screenshots. Safe to replay. */
+  registerRun(runId: string, ownerUserId: number): void {
+    assertOwnerUserId(ownerUserId);
+    const existingOwner = this.ownerOf(runId);
+    if (existingOwner !== null) {
+      if (existingOwner !== ownerUserId) throw new ScreenshotStoreError("forbidden");
+      return;
+    }
+
+    fs.mkdirSync(this.runDir(runId), { recursive: true });
+    try {
+      fs.writeFileSync(
+        this.ownershipPath(runId),
+        JSON.stringify({ version: 1, ownerUserId }),
+        { encoding: "utf8", flag: "wx" },
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new ScreenshotStoreError("ownership_write_failed");
+      }
+      const racedOwner = this.ownerOf(runId);
+      if (racedOwner !== ownerUserId) throw new ScreenshotStoreError("forbidden");
+    }
+  }
+
+  /**
+   * Attach durable ownership to a pre-manifest run. The secret-authenticated
+   * dashboard calls this only after its database has verified run ownership.
+   */
+  claimHistoricalRun(runId: string, ownerUserId: number): void {
+    assertOwnerUserId(ownerUserId);
+    const existingOwner = this.ownerOf(runId);
+    if (existingOwner !== null) {
+      if (existingOwner !== ownerUserId) throw new ScreenshotStoreError("forbidden");
+      return;
+    }
+
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(this.runDir(runId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new ScreenshotStoreError("not_found");
+      }
+      throw new ScreenshotStoreError("ownership_read_failed");
+    }
+    if (!entries.some((entry) => /^[0-9]{1,12}\.png$/.test(entry))) {
+      throw new ScreenshotStoreError("not_found");
+    }
+    this.registerRun(runId, ownerUserId);
   }
 
   /** Persist a base64 PNG for a run+sequence. Validates format and size. */

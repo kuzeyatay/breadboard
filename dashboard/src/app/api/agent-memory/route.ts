@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     const userId = await requireUserId();
     const includeSuperseded =
       new URL(request.url).searchParams.get("includeForgotten") === "1";
-    return NextResponse.json(loadAgentMemoryOverview(userId, { includeSuperseded }), {
+    return NextResponse.json(await loadAgentMemoryOverview(userId, { includeSuperseded }), {
       headers: NO_STORE_HEADERS,
     });
   } catch (error) {

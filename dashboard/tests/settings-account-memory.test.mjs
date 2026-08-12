@@ -19,12 +19,18 @@ const source = (relativePath) =>
 
 const composer = source("../src/app/components/assistant-composer.tsx");
 const dialog = source("../src/app/components/settings-dialog.tsx");
-const accountPanel = source("../src/app/components/settings-chatgpt-account.tsx");
+const accountPanel = source("../src/app/components/settings-accounts.tsx");
 const memoryPanel = source("../src/app/components/settings-agent-memory.tsx");
+const agentSession = source("../src/app/components/hermes/use-agent-session.ts");
+const eventStream = source("../src/lib/hermes/event-stream.ts");
+const directTurns = source("../src/lib/conversations/direct-turn-service.ts");
+const externalTurns = source("../src/lib/conversations/external-agent-turns.ts");
+const turnService = source("../src/lib/conversations/turn-service.ts");
 const accountRoute = source("../src/app/api/chatmock/account/route.ts");
 const loginRoute = source("../src/app/api/chatmock/account/login/route.ts");
 const memoryRoute = source("../src/app/api/agent-memory/route.ts");
 const durableRoute = source("../src/app/api/agent-memory/durable/[memoryId]/route.ts");
+const profileRoute = source("../src/app/api/agent-memory/profile/route.ts");
 const conversationRoute = source(
   "../src/app/api/agent-memory/conversations/[conversationId]/route.ts",
 );
@@ -254,7 +260,7 @@ function remember(userId, content, overrides = {}) {
   });
 }
 
-test("the overview lists a user's memories with their source chat and garden name", () => {
+test("the overview lists a user's memories with their source chat and garden name", async () => {
   const conversation = store.createConversation({ userId: 1, title: "Aurora planning" });
   remember(1, "The lab report is due in week 6", {
     sourceConversationId: conversation.id,
@@ -263,7 +269,7 @@ test("the overview lists a user's memories with their source chat and garden nam
   });
   remember(1, "Prefers short answers", { kind: "preference", state: "candidate", confidence: 0.4 });
 
-  const overview = inspection.loadAgentMemoryOverview(1);
+  const overview = await inspection.loadAgentMemoryOverview(1);
   assert.equal(overview.durable.length, 2);
   assert.equal(overview.counts.confirmed, 1);
   assert.equal(overview.counts.candidate, 1);
@@ -342,6 +348,58 @@ test("confirming a candidate raises it to full retrieval weight", () => {
   assert.equal(inspection.confirmDurableMemory(1, saved.id), false);
 });
 
+test("editing changes only an active memory owned by the current user", () => {
+  const saved = remember(1, "The user's name is Kuzey");
+  assert.deepEqual(
+    inspection.updateDurableMemoryContent(
+      1,
+      saved.id,
+      "  The user's name is Kuzey Atay.  ",
+    ),
+    { status: "updated", content: "The user's name is Kuzey Atay." },
+  );
+  assert.equal(
+    inspection.listDurableMemories(1)[0].content,
+    "The user's name is Kuzey Atay.",
+  );
+  assert.equal(
+    memory.saveDurableMemory({
+      userId: 1,
+      content: "The user's name is Kuzey Atay.",
+      kind: "project_fact",
+      scope: "global",
+      state: "confirmed",
+      confidence: 0.9,
+      salience: 0.8,
+    }).id,
+    saved.id,
+    "editing must update the deduplication key instead of creating a duplicate",
+  );
+  const duplicate = remember(1, "The user's preferred name is Kuzey");
+  assert.deepEqual(
+    inspection.updateDurableMemoryContent(
+      1,
+      saved.id,
+      "The user's preferred name is Kuzey",
+    ),
+    { status: "conflict" },
+  );
+  assert.equal(duplicate.id !== saved.id, true);
+  assert.deepEqual(
+    inspection.updateDurableMemoryContent(2, saved.id, "Not allowed"),
+    { status: "not_found" },
+  );
+  assert.deepEqual(
+    inspection.updateDurableMemoryContent(1, saved.id, "password: hunter2"),
+    { status: "rejected" },
+  );
+  inspection.forgetDurableMemory(1, saved.id);
+  assert.deepEqual(
+    inspection.updateDurableMemoryContent(1, saved.id, "Bring it back"),
+    { status: "not_found" },
+  );
+});
+
 test("chats appear in the working-memory list only once they hold compacted state", () => {
   const conversation = store.createConversation({ userId: 1, title: "Long thread" });
   memory.loadConversationMemoryState(conversation.id);
@@ -417,7 +475,7 @@ test("settings supports both a focus-trapped modal and an inline popover", () =>
   assert.match(dialog, /event\.key === "Escape"/);
   assert.match(dialog, /document\.body\.style\.overflow = "hidden"/);
   assert.match(dialog, /previouslyFocused\?\.focus\(\)/);
-  assert.match(dialog, /<SettingsChatgptAccount \/>/);
+  assert.match(dialog, /<SettingsAccounts onOpenProviders=/);
   assert.match(dialog, /<SettingsAgentMemory \/>/);
   assert.match(dialog, /role="tablist"/);
   // Shares the application's surface tokens rather than ad-hoc colors.
@@ -435,13 +493,46 @@ test("the account panel drives ChatMock's own login flow and polls for completio
   assert.match(accountPanel, /private window/);
 });
 
-test("the memory panel reads the overview and offers keep, forget, and delete", () => {
+test("the memory panel reads the overview and offers edit, keep, forget, and delete", () => {
   assert.match(memoryPanel, /\/api\/agent-memory\?includeForgotten=1/);
+  assert.match(memoryPanel, />\s*Edit\s*</);
+  assert.match(memoryPanel, /JSON\.stringify\(\{ content \}\)/);
+  assert.match(memoryPanel, /maxLength=\{1000\}/);
   assert.match(memoryPanel, /\/api\/agent-memory\/durable\/\$\{memory\.id\}`, \{ method: "PATCH" \}/);
   assert.match(memoryPanel, /\/api\/agent-memory\/durable\/\$\{memory\.id\}`, \{ method: "DELETE" \}/);
   assert.match(memoryPanel, /permanent=1/);
   assert.match(memoryPanel, /\/api\/agent-memory\/conversations\/\$\{conversation\.conversationId\}/);
   assert.match(memoryPanel, /neu-surface-subtle/);
+  assert.match(memoryPanel, />\s*Memory\s*</);
+  assert.match(memoryPanel, /fetch\("\/api\/agent-memory\/profile"/);
+  assert.match(memoryPanel, /HERMES_SESSIONS_CHANGED_EVENT/);
+  assert.match(memoryPanel, /handleMessageActivity/);
+  assert.match(agentSession, /notifyHermesSessionsChanged\(surface\)/);
+  assert.doesNotMatch(memoryPanel, />\s*Saved details\s*</);
+  assert.doesNotMatch(memoryPanel, />\s*Build summary\s*</);
+  assert.doesNotMatch(memoryPanel, />\s*Update now\s*</);
+  assert.doesNotMatch(memoryPanel, />\s*Build from eligible chats\s*</);
+  assert.doesNotMatch(memoryPanel, />\s*Use summary in chats\s*</);
+  assert.doesNotMatch(profileRoute, /updateMemoryProfileSettings/);
+});
+
+test("every completed message path schedules and announces memory activity", () => {
+  for (const [name, implementation] of [
+    ["agent runtime", eventStream],
+    ["direct provider", directTurns],
+    ["external agent", externalTurns],
+    ["clarification", turnService],
+  ]) {
+    assert.match(
+      implementation,
+      /scheduleMemoryProfileSynthesisForConversation\(/,
+      `${name} must schedule profile regeneration`,
+    );
+  }
+  assert.ok(
+    agentSession.match(/notifyHermesSessionsChanged\(surface\)/g)?.length >= 3,
+    "live agent, direct-provider, and external-agent completions must refresh an open Memory tab",
+  );
 });
 
 test("every settings route authenticates before touching credentials or memory", () => {
@@ -450,6 +541,7 @@ test("every settings route authenticates before touching credentials or memory",
     ["login", loginRoute],
     ["memory overview", memoryRoute],
     ["durable memory", durableRoute],
+    ["memory profile", profileRoute],
     ["conversation memory", conversationRoute],
   ]) {
     assert.match(route, /requireUserId\(\)/, `${name} route must require a user`);
@@ -458,5 +550,9 @@ test("every settings route authenticates before touching credentials or memory",
   // Memory mutations are scoped by the caller's own id, never a client-supplied one.
   assert.match(durableRoute, /forgetDurableMemory\(userId, memoryId\)/);
   assert.match(durableRoute, /deleteDurableMemory\(userId, memoryId\)/);
+  assert.match(
+    durableRoute,
+    /updateDurableMemoryContent\(\s*userId,\s*memoryId,\s*body\.content/,
+  );
   assert.match(conversationRoute, /clearConversationMemoryState\(userId, conversationId\)/);
 });

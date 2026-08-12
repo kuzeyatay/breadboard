@@ -1,7 +1,7 @@
 // Citation normalization + authorization validation.
 //
 // GBrain returns citations keyed on internal source ids. Before ANY citation
-// crosses back to OpenHarness we (1) map its source id to a garden the caller is
+// crosses back to Hermes we (1) map its source id to a garden the caller is
 // authorized for, and (2) drop it if it cannot be mapped. A synthesized textual
 // citation can never establish authorization — only the server-owned mapping can.
 

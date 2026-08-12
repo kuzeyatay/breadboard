@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
+import { watch, type FSWatcher } from "node:fs";
+import * as path from "node:path";
 import { waitForHealthy, delay, type HealthCheckSpec } from "./health-checker";
 import { killProcessTree } from "./process-tree";
 import type { LogManager } from "./log-manager";
@@ -8,6 +10,11 @@ export interface DesktopServiceDefinition {
   id: string;
   displayName: string;
   required: boolean;
+  /**
+   * Start the service without holding the startup screen open. Intended for
+   * optional leaf integrations whose readiness can take minutes.
+   */
+  startInBackground?: boolean;
   command: string;
   args: string[];
   cwd: string;
@@ -17,6 +24,8 @@ export interface DesktopServiceDefinition {
   startupTimeoutMs: number;
   gracefulShutdownMs: number;
   restartPolicy: "never" | "on-failure";
+  /** Development source files that require a clean service reload on change. */
+  restartOnChange?: string[];
 }
 
 export type ServiceState =
@@ -46,6 +55,9 @@ interface ManagedService {
   restarts: number;
   restartTimestamps: number[];
   stopRequested: boolean;
+  changeWatchers: FSWatcher[];
+  sourceRestartTimer: ReturnType<typeof setTimeout> | null;
+  sourceRestartInProgress: boolean;
 }
 
 export interface ServiceManagerEvents {
@@ -85,6 +97,9 @@ export class ServiceManager extends EventEmitter {
       restarts: 0,
       restartTimestamps: [],
       stopRequested: false,
+      changeWatchers: [],
+      sourceRestartTimer: null,
+      sourceRestartInProgress: false,
     });
   }
 
@@ -137,14 +152,24 @@ export class ServiceManager extends EventEmitter {
   /**
    * Start all registered services in dependency order. Resolves when every
    * required service is healthy. Optional-service failures mark the service
-   * "failed" and continue. A required-service failure rejects after cleanup
-   * of everything already started.
+   * "failed" and continue; background optional services are allowed to keep
+   * starting after this resolves. A required-service failure rejects after
+   * cleanup of everything already started.
    */
   async startAll(): Promise<void> {
     const waves = this.startPlan();
     for (const wave of waves) {
       const results = await Promise.all(
-        wave.map(async (id) => ({ id, ok: await this.startService(id) })),
+        wave.map(async (id) => {
+          const managed = this.requireService(id);
+          if (managed.definition.startInBackground && !managed.definition.required) {
+            void this.startService(id).catch((error) => {
+              this.setState(managed, "failed", `background start error: ${message(error)}`);
+            });
+            return { id, ok: true };
+          }
+          return { id, ok: await this.startService(id) };
+        }),
       );
       for (const result of results) {
         const managed = this.requireService(result.id);
@@ -225,6 +250,7 @@ export class ServiceManager extends EventEmitter {
         return false;
       }
       this.setState(managed, "healthy", null);
+      this.ensureChangeWatchers(managed);
       return true;
     }
 
@@ -240,7 +266,76 @@ export class ServiceManager extends EventEmitter {
       return false;
     }
     this.setState(managed, "healthy", null);
+    this.ensureChangeWatchers(managed);
     return true;
+  }
+
+  /**
+   * Watch parent directories rather than file handles so editors that replace
+   * a file atomically do not detach the watcher after the first save.
+   */
+  private ensureChangeWatchers(managed: ManagedService): void {
+    const targets = managed.definition.restartOnChange ?? [];
+    if (!targets.length || managed.changeWatchers.length) return;
+
+    const namesByDirectory = new Map<string, Set<string>>();
+    for (const target of targets) {
+      const absolute = path.resolve(target);
+      const directory = path.dirname(absolute);
+      const name = normalizedFilename(path.basename(absolute));
+      const names = namesByDirectory.get(directory) ?? new Set<string>();
+      names.add(name);
+      namesByDirectory.set(directory, names);
+    }
+
+    const log = this.logs.forService(managed.definition.id);
+    for (const [directory, names] of namesByDirectory) {
+      try {
+        const watcher = watch(directory, (_event, filename) => {
+          if (this.shuttingDown) return;
+          const changed = filename ? normalizedFilename(filename.toString()) : null;
+          if (changed !== null && !names.has(changed)) return;
+          this.scheduleSourceRestart(managed);
+        });
+        watcher.on("error", (error) => {
+          log.write(`[supervisor] source watcher error: ${message(error)}`);
+        });
+        managed.changeWatchers.push(watcher);
+      } catch (error) {
+        log.write(`[supervisor] could not watch ${directory}: ${message(error)}`);
+      }
+    }
+  }
+
+  private scheduleSourceRestart(managed: ManagedService): void {
+    if (managed.sourceRestartTimer) clearTimeout(managed.sourceRestartTimer);
+    managed.sourceRestartTimer = setTimeout(() => {
+      managed.sourceRestartTimer = null;
+      void this.restartForSourceChange(managed);
+    }, 250);
+  }
+
+  private async restartForSourceChange(managed: ManagedService): Promise<void> {
+    if (this.shuttingDown || managed.stopRequested) return;
+    if (managed.sourceRestartInProgress) {
+      this.scheduleSourceRestart(managed);
+      return;
+    }
+    if (!managed.child || !["healthy", "degraded"].includes(managed.state)) return;
+
+    managed.sourceRestartInProgress = true;
+    const log = this.logs.forService(managed.definition.id);
+    log.write("[supervisor] integration source changed; restarting service");
+    managed.restarts += 1;
+    this.setState(managed, "degraded", "integration source changed; restarting");
+    try {
+      await this.stopService(managed.definition.id);
+      if (this.shuttingDown) return;
+      this.setState(managed, "pending", managed.lastError);
+      await this.startService(managed.definition.id);
+    } finally {
+      managed.sourceRestartInProgress = false;
+    }
   }
 
   private handleExit(id: string): void {
@@ -312,6 +407,7 @@ export class ServiceManager extends EventEmitter {
   /** Reverse-dependency-order shutdown of everything. */
   async stopAll(): Promise<void> {
     this.shuttingDown = true;
+    for (const managed of this.services.values()) this.closeChangeWatchers(managed);
     const waves = this.startPlan().reverse();
     for (const wave of waves) {
       await Promise.all(
@@ -332,6 +428,7 @@ export class ServiceManager extends EventEmitter {
   killAllNow(): void {
     this.shuttingDown = true;
     for (const managed of this.services.values()) {
+      this.closeChangeWatchers(managed);
       const pid = managed.child?.pid;
       if (typeof pid === "number") {
         void killProcessTree(pid, true);
@@ -376,6 +473,15 @@ export class ServiceManager extends EventEmitter {
     this.emit("state-changed", toStatus(managed));
   }
 
+  private closeChangeWatchers(managed: ManagedService): void {
+    if (managed.sourceRestartTimer) {
+      clearTimeout(managed.sourceRestartTimer);
+      managed.sourceRestartTimer = null;
+    }
+    for (const watcher of managed.changeWatchers) watcher.close();
+    managed.changeWatchers = [];
+  }
+
   private requireService(id: string): ManagedService {
     const managed = this.services.get(id);
     if (!managed) throw new Error(`Unknown service "${id}"`);
@@ -397,4 +503,8 @@ function toStatus(managed: ManagedService): ServiceStatus {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizedFilename(value: string): string {
+  return process.platform === "win32" ? value.toLowerCase() : value;
 }

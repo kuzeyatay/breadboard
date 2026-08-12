@@ -6,7 +6,27 @@ import {
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
 import db from "@/lib/db";
-import type { VerificationSummary } from "@/lib/openharness/evidence";
+import type { VerificationSummary } from "@/lib/hermes/evidence";
+import {
+  normalizeChatMessageAttachments,
+  type ChatMessageAttachment,
+} from "@/lib/chat-attachments";
+import {
+  EXTERNAL_AGENT_RUN_FIELD_BY_KIND,
+  EXTERNAL_AGENT_RUN_KINDS,
+  parseExternalAgentActivity,
+  parseExternalAgentEdits,
+  parseExternalAgentState,
+  parseExternalAgentOutcome,
+  parseExternalAgentRun,
+  type ExternalAgentActivityEntry,
+  type ExternalAgentEdits,
+  type ExternalAgentOutcome,
+  type ExternalAgentRun,
+} from "@/lib/conversations/external-agent-runs";
+import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel";
+import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel";
+import { listRuntimeSessionsForChatSession } from "@/lib/hermes/runtime-store";
 
 export const dynamic = "force-dynamic";
 
@@ -15,10 +35,23 @@ type ChatRole = "user" | "assistant";
 interface ChatMessage {
   role: ChatRole;
   content: string;
+  internalAgentContinuation?: boolean;
+  createdAt?: string;
   sources?: string[];
+  attachmentNames?: string[];
+  attachments?: ChatMessageAttachment[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
+  externalAgentRun?: ExternalAgentRun;
+  externalAgentOutcome?: ExternalAgentOutcome;
+  externalAgentActivity?: ExternalAgentActivityEntry[];
+  externalAgentEdits?: ExternalAgentEdits;
+  externalAgentState?: Record<string, unknown>;
+  delegatedAgentRun?: boolean;
+  delegatedAgentPreamble?: string;
+  externalAgentResult?: string;
+  externalAgentName?: string;
 }
 
 function normalizeVerification(value: unknown): VerificationSummary | undefined {
@@ -54,10 +87,100 @@ function mergeRuntimeMetadata(
     metadata = {};
   }
   if (message.verification) metadata.verification = message.verification;
+  if (message.attachmentNames?.length) {
+    metadata.attachmentNames = message.attachmentNames;
+  }
+  if (message.attachments?.length) metadata.attachments = message.attachments;
   if (message.responseDurationMs !== undefined) {
     metadata.responseDurationMs = message.responseDurationMs;
   }
+  if (message.internalAgentContinuation === true) {
+    metadata.internalAgentContinuation = true;
+  }
+  if (message.externalAgentRun) {
+    metadata.externalAgent = true;
+    metadata.externalAgentRun = message.externalAgentRun;
+    metadata.externalAgentOutcome =
+      message.externalAgentOutcome ?? "running";
+  }
+  if (message.delegatedAgentRun === true) {
+    metadata.delegatedAgentRun = true;
+    if (message.delegatedAgentPreamble?.trim()) {
+      metadata.delegatedAgentPreamble = message.delegatedAgentPreamble;
+    }
+    if (message.externalAgentResult !== undefined) {
+      metadata.externalAgentResult = message.externalAgentResult;
+    }
+  }
+  // Keep whatever the run already stored when the browser has nothing newer,
+  // so saving a chat never erases the record of what the agent did.
+  const activity = message.externalAgentActivity?.length
+    ? message.externalAgentActivity
+    : parseExternalAgentActivity(metadata.externalAgentActivity);
+  if (activity.length) metadata.externalAgentActivity = activity;
+  const edits =
+    parseExternalAgentEdits(message.externalAgentEdits) ??
+    parseExternalAgentEdits(metadata.externalAgentEdits);
+  if (edits) metadata.externalAgentEdits = edits;
+  const state =
+    parseExternalAgentState(message.externalAgentState) ??
+    parseExternalAgentState(metadata.externalAgentState);
+  if (state) metadata.externalAgentState = state;
   return Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
+}
+
+function normalizeExternalAgent(
+  record: Record<string, unknown>,
+  role: ChatRole,
+): Pick<
+  ChatMessage,
+  | "externalAgentRun"
+  | "externalAgentOutcome"
+  | "externalAgentActivity"
+  | "externalAgentEdits"
+  | "externalAgentState"
+  | "delegatedAgentRun"
+  | "delegatedAgentPreamble"
+  | "externalAgentResult"
+  | "externalAgentName"
+> {
+  if (role !== "assistant") return {};
+  // Every kind is read from the shared field table rather than a list kept by
+  // hand here. Agent TARS and Parametric CAD were both missing from that list,
+  // so a chat that contained one lost its run card on the next reload.
+  const candidates = EXTERNAL_AGENT_RUN_KINDS.map((kind) => {
+    const value = record[EXTERNAL_AGENT_RUN_FIELD_BY_KIND[kind]];
+    return value ? { kind, ...(value as Record<string, unknown>) } : null;
+  });
+  const externalAgentRun = candidates
+    .map((candidate) => parseExternalAgentRun(candidate))
+    .find((candidate) => candidate !== null);
+  const activity = parseExternalAgentActivity(record.externalAgentActivity);
+  const edits = parseExternalAgentEdits(record.externalAgentEdits);
+  const state = parseExternalAgentState(record.externalAgentState);
+  const runRecord = {
+    ...(activity.length ? { externalAgentActivity: activity } : {}),
+    ...(edits ? { externalAgentEdits: edits } : {}),
+    ...(state ? { externalAgentState: state } : {}),
+    ...(record.delegatedAgentRun === true ? { delegatedAgentRun: true } : {}),
+    ...(typeof record.delegatedAgentPreamble === "string" &&
+    record.delegatedAgentPreamble.trim()
+      ? { delegatedAgentPreamble: record.delegatedAgentPreamble }
+      : {}),
+    ...(typeof record.externalAgentResult === "string"
+      ? { externalAgentResult: record.externalAgentResult }
+      : {}),
+    ...(typeof record.externalAgentName === "string" && record.externalAgentName.trim()
+      ? { externalAgentName: record.externalAgentName }
+      : {}),
+  };
+  if (!externalAgentRun) return runRecord;
+  return {
+    externalAgentRun,
+    externalAgentOutcome:
+      parseExternalAgentOutcome(record.externalAgentOutcome) ?? "running",
+    ...runRecord,
+  };
 }
 
 function cleanTitle(value: unknown): string | null {
@@ -98,13 +221,35 @@ function normalizeMessages(value: unknown): ChatMessage[] | null {
         : undefined;
     const verification =
       role === "assistant" ? normalizeVerification(record.verification) : undefined;
+    const externalAgent = normalizeExternalAgent(record, role);
+    const attachmentNames = role === "user" && Array.isArray(record.attachmentNames)
+      ? record.attachmentNames
+          .filter((name): name is string => typeof name === "string" && Boolean(name.trim()))
+          .map((name) => name.trim().slice(0, 240))
+          .slice(0, 12)
+      : [];
+    const attachments = role === "user"
+      ? normalizeChatMessageAttachments(record.attachments)
+      : [];
+    const createdAt =
+      typeof record.createdAt === "string" &&
+      Number.isFinite(Date.parse(record.createdAt))
+        ? record.createdAt
+        : undefined;
     messages.push({
       role,
       content,
+      ...(role === "user" && record.internalAgentContinuation === true
+        ? { internalAgentContinuation: true }
+        : {}),
+      ...(createdAt ? { createdAt } : {}),
       sources,
+      ...(attachmentNames.length ? { attachmentNames } : {}),
+      ...(attachments.length ? { attachments } : {}),
       ...(usage ? { usage } : {}),
       ...(responseDurationMs !== undefined ? { responseDurationMs } : {}),
       ...(verification ? { verification } : {}),
+      ...externalAgent,
     });
   }
 
@@ -183,15 +328,17 @@ export async function PATCH(
 
     if (messages) {
       const runtimeMetadata = db.prepare(
-        `SELECT role, content, tool_calls, permission_decisions, runtime_error, runtime_status
-         FROM chat_messages WHERE session_id = ? AND (tool_calls IS NOT NULL OR permission_decisions IS NOT NULL OR runtime_status IS NOT NULL) ORDER BY order_index`,
+        `SELECT role, content, canonical_message_id, tool_calls, permission_decisions, runtime_error, runtime_status, created_at
+         FROM chat_messages WHERE session_id = ? ORDER BY order_index`,
       ).all(sessionAccess.id) as Array<{
         role: string;
         content: string;
+        canonical_message_id: number | null;
         tool_calls: string | null;
         permission_decisions: string | null;
         runtime_error: string | null;
         runtime_status: string | null;
+        created_at: string;
       }>;
       const metadataByMessage = new Map<string, typeof runtimeMetadata>();
       for (const metadata of runtimeMetadata) {
@@ -203,8 +350,8 @@ export async function PATCH(
       );
       const insert = db.prepare(
         `INSERT INTO chat_messages
-           (session_id, role, content, sources, token_usage, tool_calls, permission_decisions, runtime_error, runtime_status, order_index)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (session_id, role, content, sources, token_usage, tool_calls, permission_decisions, runtime_error, runtime_status, order_index, created_at, canonical_message_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       messages.forEach((message, index) => {
         const key = `${message.role}\u0000${message.content}`;
@@ -222,6 +369,8 @@ export async function PATCH(
           prior?.runtime_error ?? null,
           prior?.runtime_status ?? null,
           index,
+          message.createdAt ?? prior?.created_at ?? new Date().toISOString(),
+          prior?.canonical_message_id ?? null,
         );
       });
     }
@@ -231,6 +380,15 @@ export async function PATCH(
   return NextResponse.json({ success: true });
 }
 
+/**
+ * DELETE: remove one Garden chat.
+ *
+ * The runtime sessions cascade from the `chat_sessions` row, so whatever this
+ * chat still has running has to be stopped first — after the cascade there is
+ * no row left that names the turn, the terminal child process or the agent run,
+ * and they would keep going with nothing able to reach them. The canonical
+ * delete does the same thing for the same reason.
+ */
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
@@ -252,6 +410,16 @@ export async function DELETE(
       sessionAccess.clusterOwnerId !== userId)
   ) {
     return NextResponse.json({ error: "Chat not found" }, { status: 404 });
+  }
+
+  const linked = db
+    .prepare("SELECT conversation_id FROM chat_sessions WHERE id = ?")
+    .get(sessionAccess.id) as { conversation_id: number | null } | undefined;
+  if (linked?.conversation_id) {
+    await cancelRunningExternalAgentRuns(userId, linked.conversation_id);
+  }
+  for (const runtimeSession of listRuntimeSessionsForChatSession(sessionAccess.id)) {
+    await cancelRuntimeSessionWork(userId, runtimeSession);
   }
 
   db.prepare("DELETE FROM chat_sessions WHERE id = ?").run(sessionAccess.id);

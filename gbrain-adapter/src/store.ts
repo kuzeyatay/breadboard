@@ -38,6 +38,10 @@ const VECTOR_SCAN_CAP = 4000;
 export interface StoreOptions {
   pgDir: string;
   embeddingProvider?: string;
+  /** Where a remote embedder lives, when the provider is one. */
+  embeddingBaseUrl?: string;
+  embeddingModel?: string;
+  embeddingApiKey?: string;
 }
 
 function chunkContent(content: string): string[] {
@@ -79,7 +83,11 @@ export class GBrainStore implements RetrievalBackend {
   private ready = false;
 
   constructor(private options: StoreOptions) {
-    this.provider = resolveProvider(options.embeddingProvider ?? "none");
+    this.provider = resolveProvider(options.embeddingProvider ?? "chatmock", {
+      baseUrl: options.embeddingBaseUrl,
+      model: options.embeddingModel,
+      apiKey: options.embeddingApiKey,
+    });
   }
 
   get embeddingsAvailable(): boolean {
@@ -96,6 +104,10 @@ export class GBrainStore implements RetrievalBackend {
 
   async init(): Promise<void> {
     if (this.ready) return;
+    // A remote embedder is asked to prove itself before the store reports
+    // hybrid: a configured endpoint that is not running would otherwise claim a
+    // retrieval mode it cannot deliver.
+    if (this.provider.probe) await this.provider.probe();
     if (this.options.pgDir !== ":memory:") {
       fs.mkdirSync(path.dirname(this.options.pgDir), { recursive: true });
     }
@@ -286,6 +298,10 @@ export class GBrainStore implements RetrievalBackend {
         content: row.content,
         sim: cosine(qvec, JSON.parse(row.embedding as string) as number[]),
       }))
+      // A vector stored under a previous embedding model has a different width
+      // and scores 0; dropping those rows keeps them from padding the result
+      // list ahead of chunks that genuinely matched.
+      .filter((row) => row.sim > 0)
       .sort((a, b) => b.sim - a.sim)
       .slice(0, limit * 3);
   }

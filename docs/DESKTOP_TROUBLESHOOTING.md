@@ -3,7 +3,7 @@
 ## Where things are
 
 - **Logs**: `%APPDATA%/breadboard-desktop/Data/logs/` — one bounded file per
-  service (`chatmock.log`, `openharness.log`, `quartz.log`, `dashboard.log`,
+  service (`chatmock.log`, `hermes.log`, `postiz.log`, `quartz.log`, `dashboard.log`,
   `desktop.log`). The startup screen's "Open logs" button opens this folder.
 - **User data**: `%APPDATA%/breadboard-desktop/Data/` (databases, gardens,
   config, backups). Uninstalling never deletes it.
@@ -20,14 +20,16 @@ causes:
   ChatGPT session; run its login once (see chatmock/README.md) — the auth
   state lives in ChatMock's own home directory and is shared with the desktop
   app. Check `chatmock.log` for the exact error.
-- **Agent runtime (OpenHarness)**: see `openharness.log`. The app refuses to
-  silently fall back when the mode is `required` (Breadboard's contract).
-  The mode can be changed in `Data/config/desktop-config.json`
-  (`openharnessMode`: `required` | `preferred` | `legacy`) while the app is
-  closed.
+- **Agent runtime (Hermes)**: see `hermes.log`. Breadboard keeps non-agent
+  features available while agent routes report a sanitized unavailable state;
+  use Retry after resolving the logged Python, provider, or port error.
 - **Garden site (Quartz)**: the first build of a large garden can take
   minutes; the health check waits up to 5. If it fails, `quartz.log` has the
   build error (usually a malformed markdown file; remove/fix it and Retry).
+- **Social publishing (Postiz)**: `postiz.log` records Docker/Podman discovery,
+  Compose startup, web readiness, and API bootstrap. A first image pull can take
+  several minutes. Install and start Docker Desktop, Docker Engine, or Podman,
+  then use Retry; the workspace intentionally remains gated until Postiz is ready.
 - **Breadboard workspace (dashboard)**: `dashboard.log`; a corrupted
   database shows here — restore from `Data/backups/` if migration created
   one.
@@ -41,7 +43,7 @@ an existing Scriberr instance. The rest of Breadboard works without it.
 
 ## Ports
 
-Everything runs on `127.0.0.1` with per-launch ports (3000/8765/4096/8081
+Everything runs on `127.0.0.1` with per-launch ports (3000/8765/9119/8081
 preferred, otherwise free ports). Another app holding a preferred port is
 fine — Breadboard moves; nothing needs configuring.
 
@@ -95,15 +97,6 @@ retain each isolated `user-data/Data` tree by design and can eventually make
 NSIS fail or crash during extraction. Preserve `installed-smoke-summary.json`,
 `app-smoke-results.json`, and `app-smoke.log`, then remove only old evidence
 directories' `user-data` subdirectories if space is needed.
-
-## OpenHarness lock install cannot reach `pkg.pr.new`
-
-The full upstream OpenHarness workspace has pinned preview packages hosted at
-`pkg.pr.new`. `bun install --frozen-lockfile` requires that host and can fail
-with `FailedToOpenSocket` on a restricted or transient network. Retry from a
-network that can reach `https://pkg.pr.new/`. The packaged desktop closure is
-validated separately by `npm run desktop:prepare`, which builds the bundled
-Bun cache and must complete successfully before release.
 
 ## GBrain (knowledge retrieval)
 

@@ -4,10 +4,11 @@
 // deliberately kept out of this file so no Breadboard code depends on upstream
 // churn — the only place upstream types appear is agent-tars-runtime.ts.
 
-/** The MVP operator is browser-only. `computer` is intentionally unsupported. */
-export type OperatorType = "browser";
+/** Explicit control target. Browser stays isolated; computer is the real desktop. */
+export type OperatorType = "browser" | "computer";
 
 export type BrowserStrategy = "gui" | "dom" | "hybrid";
+export type DesktopCoordinateSpace = "screen_pixels" | "normalized_1000";
 
 export type ApprovalMode = "every_action" | "sensitive_actions";
 
@@ -18,6 +19,7 @@ export type ApprovalMode = "every_action" | "sensitive_actions";
 export interface UITarsAgentConfiguration {
   operator: OperatorType;
   browserStrategy: BrowserStrategy;
+  desktopCoordinateSpace: DesktopCoordinateSpace;
 
   provider: string;
   model: string;
@@ -57,6 +59,8 @@ export type NormalizedEventType =
   | "run.queued"
   | "run.started"
   | "run.status"
+  | "agent.thinking"
+  | "agent.usage"
   | "observation.screenshot"
   | "observation.page"
   | "action.proposed"
@@ -85,9 +89,27 @@ export interface NormalizedEvent {
   payload: Record<string, unknown>;
 }
 
+/** Safe, user-facing progress only. Raw model reasoning is never emitted. */
+export interface AgentThinkingUpdate {
+  state: "started" | "active" | "completed";
+  summary?: string;
+  durationMs?: number;
+}
+
+/** Cumulative token accounting for the current run. */
+export interface AgentTokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens: number;
+  calls: number;
+  /** True when the provider did not return usage and counts were estimated. */
+  estimated?: boolean;
+}
+
 export type RiskLevel = "low" | "medium" | "high";
 
 export type ApprovalActionType =
+  | "desktop_control"
   | "click"
   | "type"
   | "submit"

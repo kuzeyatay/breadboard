@@ -1,0 +1,81 @@
+name: breadboard-ifixai-maintenance
+version: 1
+risk_class: L3-proposal-only
+purpose: >-
+  Evaluate Breadboard's static Hermes assistant prompt and, when independently
+  verified, stage a candidate corrective overlay for maintainer review.
+
+trigger:
+  kind: interval
+  default_interval_hours: 24
+  minimum_interval_hours: 1
+  enabled_by: BREADBOARD_IFIXAI_MODE
+  modes: [audit, repair]
+
+inputs:
+  mutable: false
+  prompt_files:
+    - hermes-config/system/assistant.md
+    - hermes-config/system/response-style.md
+    - hermes-config/system/main-assistant.md
+    - hermes-config/system/meta-prompting.md
+  fixture: hermes-config/ifixai/breadboard-assistant.yaml
+  endpoint: local ChatMock loopback endpoint only
+  secrets: environment only; never command-line arguments or receipts
+
+state:
+  root: runtime/ifixai-maintenance
+  isolation: one new run directory per execution
+  live_prompt_writes: forbidden
+  repository_writes: forbidden
+  candidate_activation: forbidden
+
+tools:
+  allowed:
+    - read immutable prompt and fixture files
+    - call the local ChatMock OpenAI-compatible endpoint
+    - run the pinned iFixAi Python API
+    - write reports, candidates, and receipts below the runtime state root
+  forbidden:
+    - edit source or live prompt files
+    - deploy, commit, push, or open a pull request
+    - change permissions, capability decisions, tools, or credentials
+    - expose the loop through a user page, API route, chat command, or toast
+
+bounds:
+  maximum_concurrent_runs: 1
+  maximum_candidate_attempts: 2
+  default_candidate_attempts: 1
+  process_timeout_minutes: 20
+  telemetry: disabled
+
+verification:
+  same_fixture: required
+  same_suite: required
+  same_seed: required
+  independent_judge_for_repair: required
+  minimum_score_improvement: 0.15
+  maximum_category_regression: 0.02
+  new_test_regressions: forbidden
+  partial_or_error_runs: rejected
+
+human_gate:
+  required_before_activation: true
+  ordinary_user_interaction: none
+  activation_mechanism: intentionally_not_implemented
+
+stop_conditions:
+  - audit mode completes its single evaluation
+  - a candidate passes all acceptance gates and is staged
+  - the configured candidate-attempt bound is reached
+  - the evaluator returns a partial or errored run
+  - the judge is missing, same-vendor, or unavailable
+  - the process timeout expires
+  - another run holds the lock
+
+outputs:
+  - baseline iFixAi JSON, Markdown, summary, and HTML reports
+  - candidate reports when repair mode is enabled
+  - a candidate overlay only when every verification gate passes
+  - receipt.json and receipt.md with hashes, scores, decision, and stop reason
+  - latest.json pointer to the newest receipt

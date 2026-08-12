@@ -1,7 +1,17 @@
 import type {
   NormalizedAgentEvent,
   PermissionRisk,
-} from "../openharness/events.ts";
+} from "../hermes/events.ts";
+import {
+  createEmDashFilter,
+  stripEmDashes,
+  type EmDashFilter,
+} from "../prose-punctuation.ts";
+import {
+  humanizeProviderError,
+  isProviderErrorText,
+  providerErrorResponse,
+} from "../provider-error.ts";
 
 export interface RawHermesEvent {
   type: string;
@@ -11,10 +21,16 @@ export interface RawHermesEvent {
 
 export interface HermesEventNormalizationState {
   assistantText: string;
+  /**
+   * Assistant prose is em-dash-free by policy. Filtering here rather than in
+   * the browser keeps the streamed text and the persisted message identical:
+   * `assistantText` is what the conversation store writes.
+   */
+  emDash: EmDashFilter;
 }
 
 export function createHermesEventNormalizationState(): HermesEventNormalizationState {
-  return { assistantText: "" };
+  return { assistantText: "", emDash: createEmDashFilter() };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -23,6 +39,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** The persona tag an orchestrator prepends to a delegated task's goal text. */
+const DELEGATION_PERSONA_TAG = /^\s*\[persona:\s*([a-z0-9][a-z0-9-]*)\]\s*/i;
+
+function parsePersonaSlug(goal: string | undefined): string | undefined {
+  if (!goal) return undefined;
+  const match = goal.match(DELEGATION_PERSONA_TAG);
+  return match ? match[1].toLowerCase() : undefined;
 }
 
 function now(): string {
@@ -68,12 +97,24 @@ function resultRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function toolSucceeded(payload: Record<string, unknown>): boolean {
+  if (
+    payload.timedOut === true ||
+    (typeof payload.exitCode === "number" && payload.exitCode !== 0)
+  ) {
+    return false;
+  }
   if (typeof payload.success === "boolean") return payload.success;
   if (typeof payload.is_error === "boolean") return !payload.is_error;
   if (asString(payload.error)?.trim()) return false;
   for (const candidate of [payload.result, payload.output, payload.content]) {
     const record = resultRecord(candidate);
     if (!record) continue;
+    if (
+      record.timedOut === true ||
+      (typeof record.exitCode === "number" && record.exitCode !== 0)
+    ) {
+      return false;
+    }
     if (typeof record.success === "boolean") return record.success;
     if (typeof record.ok === "boolean") return record.ok;
     if (asString(record.error)?.trim()) return false;
@@ -115,9 +156,43 @@ export function normalizeHermesEvent(
   const timestamp = now();
   const messageId = asString(payload.turn_id);
 
+  // Seal the streamed text accumulated so far as a narration segment. An
+  // agentic turn interleaves commentary with tool calls; without sealing,
+  // every consumer gluing assistant.delta text ends up presenting the whole
+  // run's narration as one repetitive answer. Returns the events to emit
+  // before whatever triggered the seal (a held em-dash chunk first, so the
+  // sealed segment is byte-identical to what consumers accumulated).
+  const sealStreamedSegment = (): NormalizedAgentEvent[] => {
+    const events: NormalizedAgentEvent[] = [];
+    const held = state.emDash.flush();
+    if (held) {
+      state.assistantText += held;
+      events.push({
+        type: "assistant.delta",
+        sessionId: publicSessionId,
+        ...(messageId ? { messageId } : {}),
+        timestamp,
+        payload: { text: held },
+      });
+    }
+    if (state.assistantText.trim()) {
+      events.push({
+        type: "assistant.segment",
+        sessionId: publicSessionId,
+        ...(messageId ? { messageId } : {}),
+        timestamp,
+        payload: { text: state.assistantText, streamed: true },
+      });
+    }
+    state.assistantText = "";
+    state.emDash = createEmDashFilter();
+    return events;
+  };
+
   switch (raw.type) {
     case "message.start":
       state.assistantText = "";
+      state.emDash = createEmDashFilter();
       return [{
         type: "session.status",
         sessionId: publicSessionId,
@@ -126,7 +201,11 @@ export function normalizeHermesEvent(
       }];
 
     case "message.delta": {
-      const text = asString(payload.text) ?? "";
+      const raw = asString(payload.text) ?? "";
+      if (!raw) return [];
+      // A held-back chunk is not lost: it is emitted once the next delta (or
+      // the completion flush) settles what follows the dash.
+      const text = state.emDash.push(raw);
       if (!text) return [];
       state.assistantText += text;
       return [{
@@ -157,8 +236,14 @@ export function normalizeHermesEvent(
     }
 
     case "status.update": {
-      const detail = asString(payload.text)?.trim();
-      if (!detail) return [];
+      const raw = asString(payload.text)?.trim();
+      if (!raw) return [];
+      // Runtime status lines carry the same wrapped upstream errors as a failed
+      // completion ("❌ Non-retryable error (HTTP 400): … returned HTTP 400: …"),
+      // and they are read as a progress label, so they get the same treatment.
+      const detail = isProviderErrorText(raw)
+        ? humanizeProviderError(raw) || raw
+        : raw;
       return [{
         type: "reasoning.status",
         sessionId: publicSessionId,
@@ -172,7 +257,11 @@ export function normalizeHermesEvent(
 
     case "tool.start": {
       const toolName = asString(payload.name) ?? "tool";
-      return [{
+      // Text streamed before a tool call is by definition commentary about the
+      // work, not the final answer — seal it so the answer buffer starts fresh.
+      // Usually a no-op: the loop emits `message.interim` for the same text
+      // before its tool calls, and that seal already drained the buffer.
+      return [...sealStreamedSegment(), {
         type: "tool.started",
         sessionId: publicSessionId,
         timestamp,
@@ -186,6 +275,24 @@ export function normalizeHermesEvent(
             safeSingleLine(payload.args_text),
           location: safeSingleLine(payload.context),
         },
+      }];
+    }
+
+    case "message.interim": {
+      // The loop announces each mid-turn assistant commentary message (tool
+      // narration, acknowledgements, an attempted answer before a
+      // verify-on-stop nudge) the moment it is appended, before its tool
+      // calls execute. `already_streamed` says whether the same text already
+      // went out via message.delta — then the streamed buffer IS the segment.
+      if (payload.already_streamed === true) return sealStreamedSegment();
+      const text = stripEmDashes(asString(payload.text) ?? "").trim();
+      if (!text) return [];
+      return [{
+        type: "assistant.segment",
+        sessionId: publicSessionId,
+        ...(messageId ? { messageId } : {}),
+        timestamp,
+        payload: { text, streamed: false },
       }];
     }
 
@@ -204,6 +311,44 @@ export function normalizeHermesEvent(
           summary:
             safeSingleLine(payload.summary) ??
             safeSingleLine(payload.error),
+        },
+      }];
+    }
+
+    case "subagent.start":
+    case "subagent.complete":
+    case "subagent.thinking": {
+      const subagentId =
+        asString(payload.subagent_id) ?? asString(payload.subagentId);
+      if (!subagentId) return [];
+      const goal = asString(payload.goal);
+      const status: "running" | "thinking" | "done" | "failed" =
+        raw.type === "subagent.thinking"
+          ? "thinking"
+          : raw.type === "subagent.start"
+            ? "running"
+            : toolSucceeded(payload)
+              ? "done"
+              : "failed";
+      const parentId =
+        asString(payload.parent_id) ?? asString(payload.parentId);
+      return [{
+        type: "subagent.update",
+        sessionId: publicSessionId,
+        timestamp,
+        payload: {
+          subagentId,
+          ...(parentId ? { parentId } : {}),
+          ...(asNumber(payload.depth) !== undefined
+            ? { depth: asNumber(payload.depth) }
+            : {}),
+          ...(goal ? { goal } : {}),
+          ...(parsePersonaSlug(goal)
+            ? { personaSlug: parsePersonaSlug(goal) }
+            : {}),
+          status,
+          summary: safeSingleLine(payload.preview) ?? safeSingleLine(payload.summary),
+          ...(asString(payload.model) ? { model: asString(payload.model) } : {}),
         },
       }];
     }
@@ -234,21 +379,48 @@ export function normalizeHermesEvent(
           affectedPaths: [],
           ...(command ? { command } : {}),
           allowSession:
-            choices.length === 0 ||
-            choices.includes("session") ||
-            choices.includes("always"),
+            !["overwrite", "delete", "sensitive"].includes(risk) &&
+            (choices.length === 0 ||
+              choices.includes("session") ||
+              choices.includes("always")),
         },
       }];
     }
 
     case "message.complete": {
-      const fullText = asString(payload.text) ?? "";
+      const status = terminalStatus(payload.status);
+      const rawText = asString(payload.text) ?? "";
+      // A failed turn's "text" is the upstream's refusal, not an answer. Show
+      // that sentence — it is what tells the user what to do — rather than the
+      // stack of wrappers each layer added on the way here.
+      const fullText = stripEmDashes(
+        status === "failed" && rawText ? providerErrorResponse(rawText) : rawText,
+      );
       const events: NormalizedAgentEvent[] = [];
+      // Settle anything the streaming filter was still holding, so the
+      // accumulated text can be compared against the completion on equal terms.
+      const held = state.emDash.flush();
+      if (held) {
+        state.assistantText += held;
+        events.push({
+          type: "assistant.delta",
+          sessionId: publicSessionId,
+          ...(messageId ? { messageId } : {}),
+          timestamp,
+          payload: { text: held },
+        });
+      }
       if (fullText && fullText !== state.assistantText) {
         const residual = fullText.startsWith(state.assistantText)
           ? fullText.slice(state.assistantText.length)
           : state.assistantText
-            ? ""
+            ? // Normally a rewritten completion means the stream already said
+              // it. A failure is the exception: the refusal replaces the text
+              // rather than continuing it, so append it to whatever streamed
+              // instead of dropping the only explanation the user gets.
+              status === "failed" && !state.assistantText.includes(fullText)
+              ? `\n\n${fullText}`
+              : ""
             : fullText;
         if (residual) {
           state.assistantText += residual;
@@ -277,15 +449,16 @@ export function normalizeHermesEvent(
         type: "session.status",
         sessionId: publicSessionId,
         timestamp,
-        payload: { status: terminalStatus(payload.status) },
+        payload: { status },
       });
       return events;
     }
 
     case "error": {
-      const message =
-        asString(payload.message)?.trim() ||
-        "The Hermes agent runtime reported an error.";
+      const message = providerErrorResponse(
+        payload.message,
+        "The Hermes agent runtime reported an error.",
+      );
       return [
         {
           type: "error",

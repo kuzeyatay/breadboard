@@ -2,8 +2,8 @@
 
 import {
   type ChangeEvent,
-  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -11,28 +11,36 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
-import ChatMarkdown from '@/app/components/chat-markdown';
-import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
-import { UserMessageText } from '@/app/components/openharness/command-text';
+import AssistantMessageActions from '@/app/components/assistant-message-actions';
+import AssistantResponseMeta from '@/app/components/assistant-response-meta';
+import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
 import {
-  DEFAULT_ASSISTANT_MODELS,
-  mergeAssistantModels,
-} from '@/lib/ai-models';
+  chatAutoScrollContentKey,
+  chatAutoScrollResponseKey,
+  useChatAutoScroll,
+} from '@/app/components/use-chat-auto-scroll';
+import ChatMarkdown from '@/app/components/chat-markdown';
+import ChatTimeSeparator from '@/app/components/chat-time-separator';
+import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
+import { useAssistantModels } from '@/app/components/use-assistant-models';
+import { UserMessageText } from '@/app/components/hermes/command-text';
 import {
   CHAT_ATTACHMENT_ACCEPT,
   extractChatAttachments,
   type ChatAttachment,
 } from '@/lib/chat-attachments';
+import { distillAttachments } from '@/lib/document-skills/client';
 import {
-  formatResponseDuration,
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from '@/lib/chat-token-usage';
-import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
+import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
+import { requestChatTitleFromFirstMessage } from '@/lib/chat-session-title';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  createdAt?: string;
   sources?: string[];
   attachmentNames?: string[];
   usage?: ChatTokenUsage;
@@ -60,6 +68,7 @@ const MAX_SESSIONS = 40;
 // the same way garden cards are resized.
 const COLLAPSED_HEIGHT = 48;
 const MIN_HEIGHT = COLLAPSED_HEIGHT;
+const MIN_DEFAULT_OPEN_HEIGHT = 360;
 
 const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
   mine: [
@@ -78,10 +87,14 @@ const SUGGESTED_PROMPTS: Record<TerminalScope, string[]> = {
 
 // Bottom edge of the breadboard navbar, so a fully opened terminal stops right
 // below the main header instead of covering it.
+// Clamped because the navbar scrolls with the page: a negative bottom would
+// make the dock taller than the viewport and hide its header off the top edge.
 function navOffset(): number {
   if (typeof document === 'undefined') return 64;
   const nav = document.querySelector('nav');
-  return nav ? Math.ceil(nav.getBoundingClientRect().bottom) : 64;
+  if (!nav) return 64;
+  const bottom = Math.ceil(nav.getBoundingClientRect().bottom);
+  return Math.min(Math.max(0, bottom), window.innerHeight);
 }
 
 function maxHeight(): number {
@@ -91,6 +104,12 @@ function maxHeight(): number {
 
 function clampHeight(height: number): number {
   return Math.min(maxHeight(), Math.max(MIN_HEIGHT, Math.round(height)));
+}
+
+function defaultOpenHeight(): number {
+  return clampHeight(
+    Math.max(MIN_DEFAULT_OPEN_HEIGHT, Math.round(maxHeight() * 0.68)),
+  );
 }
 
 function formatChatTime(value: string): string {
@@ -140,8 +159,8 @@ function persistSessions(scope: TerminalScope, sessions: ChatSession[]) {
 }
 
 export default function KnowledgeTerminal({ scope }: Props) {
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const resizeStartRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const preferredOpenHeightRef = useRef<number | null>(null);
 
   const [height, setHeight] = useState(COLLAPSED_HEIGHT);
   const [isResizing, setIsResizing] = useState(false);
@@ -188,15 +207,24 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const timeSeparators = useMemo(
+    () => chatTimeSeparatorLabels(messages),
+    [messages],
+  );
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
-  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
-  const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const {
+    model,
+    setModel,
+    reasoningEffort,
+    setReasoningEffort,
+    intelligenceModes,
+    failover: modelFailover,
+  } = useAssistantIntelligence();
+  const { models, modelsLoading, loadModels } = useAssistantModels();
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState('');
@@ -208,7 +236,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
   useEffect(() => {
     const savedHeight = Number(window.localStorage.getItem(HEIGHT_KEY));
-    if (Number.isFinite(savedHeight) && savedHeight > 0) setHeight(clampHeight(savedHeight));
+    if (Number.isFinite(savedHeight) && savedHeight > COLLAPSED_HEIGHT + 8) {
+      preferredOpenHeightRef.current = clampHeight(savedHeight);
+    }
 
     const onResize = () => setHeight((current) => clampHeight(current));
     window.addEventListener('resize', onResize);
@@ -226,32 +256,18 @@ export default function KnowledgeTerminal({ scope }: Props) {
   }, [scope]);
 
   useEffect(() => {
-    window.localStorage.setItem(HEIGHT_KEY, String(height));
+    if (height <= COLLAPSED_HEIGHT + 8) return;
+    const preferredHeight = clampHeight(height);
+    preferredOpenHeightRef.current = preferredHeight;
+    window.localStorage.setItem(HEIGHT_KEY, String(preferredHeight));
   }, [height]);
 
-  useEffect(() => {
-    if (isOpen) messagesEndRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages, isStreaming, isOpen]);
-
-  const loadModels = useCallback(async () => {
-    if (modelsLoading || modelsLoaded) return;
-    setModelsLoading(true);
-    try {
-      const response = await fetch('/api/models');
-      const data = await response.json().catch(() => ({}));
-      const ids = Array.isArray(data.data)
-        ? data.data
-            .map((item: { id?: unknown }) => (typeof item?.id === 'string' ? item.id : null))
-            .filter((id: string | null): id is string => Boolean(id))
-        : [];
-      if (ids.length > 0) setModels(mergeAssistantModels(ids));
-      setModelsLoaded(true);
-    } catch {
-      // Keep local defaults when the endpoint is unavailable.
-    } finally {
-      setModelsLoading(false);
-    }
-  }, [modelsLoaded, modelsLoading]);
+  const transcriptScrollRef = useChatAutoScroll<HTMLDivElement>({
+    isResponding: isStreaming,
+    responseKey: chatAutoScrollResponseKey(messages),
+    contentKey: chatAutoScrollContentKey(messages),
+    enabled: isOpen,
+  });
 
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
     setSessions((previous) => {
@@ -267,6 +283,16 @@ export default function KnowledgeTerminal({ scope }: Props) {
             : session,
         )
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      persistSessions(scope, next);
+      return next;
+    });
+  }
+
+  function updateSessionTitle(sessionId: number, title: string) {
+    setSessions((previous) => {
+      const next = previous.map((session) =>
+        session.id === sessionId ? { ...session, title } : session,
+      );
       persistSessions(scope, next);
       return next;
     });
@@ -320,33 +346,46 @@ export default function KnowledgeTerminal({ scope }: Props) {
     });
   }
 
-  async function sendMessage(textOverride?: string) {
+  async function sendMessage(
+    textOverride?: string,
+    historyOverride?: ChatMessage[],
+  ) {
     const text = (textOverride ?? input).trim();
-    if ((!text && chatAttachments.length === 0) || isStreaming) return;
+    const pendingAttachments = historyOverride ? [] : chatAttachments;
+    if ((!text && pendingAttachments.length === 0) || isStreaming) return;
 
-    const pendingAttachments = chatAttachments;
+    const history = historyOverride ?? messages;
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
     const displayText = text || 'Please review the attached document(s).';
-    const firstMessageTitle = chatTitleFromFirstMessage(
-      text || attachmentNames[0] || 'Document review',
-    );
-
     let session = activeSession;
-    let sessionTitle: string | undefined;
     if (!session) {
-      sessionTitle = firstMessageTitle;
-      session = createSession(sessionTitle);
-    } else if (session.messages.length === 0) {
-      sessionTitle = firstMessageTitle;
+      session = createSession();
+    }
+    const sessionId = session.id;
+    const isFirstPrompt = session.messages.length === 0;
+    if (isFirstPrompt) {
+      void requestChatTitleFromFirstMessage(
+        text || attachmentNames[0] || 'Document review',
+        model,
+      ).then((title) => {
+        if (title) updateSessionTitle(sessionId, title);
+      });
     }
 
+    const turnCreatedAt = new Date().toISOString();
     const userMessage: ChatMessage = {
       role: 'user',
       content: displayText,
+      createdAt: turnCreatedAt,
       attachmentNames,
     };
-    const nextMessages = [...messages, userMessage];
-    let assistantMessage: ChatMessage = { role: 'assistant', content: '', sources: [] };
+    const nextMessages = [...history, userMessage];
+    let assistantMessage: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      createdAt: turnCreatedAt,
+      sources: [],
+    };
     const responseStartedAt = performance.now();
 
     setInput('');
@@ -365,6 +404,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
           reasoningEffort,
           attachments: pendingAttachments,
           scope,
+          adhdMode: isDirectModeEnabled(),
         }),
       });
 
@@ -417,6 +457,10 @@ export default function KnowledgeTerminal({ scope }: Props) {
               };
               updateAssistant();
             }
+            if (event.type === 'replace' && typeof event.text === 'string') {
+              assistantMessage = { ...assistantMessage, content: event.text };
+              updateAssistant();
+            }
             if (event.type === 'usage') {
               const usage = normalizeChatTokenUsage(event.usage);
               if (usage) {
@@ -441,7 +485,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
       };
       const finalMessages = [...nextMessages, assistantMessage];
       setMessages(finalMessages);
-      updateSessionMessages(session.id, finalMessages, sessionTitle);
+      updateSessionMessages(session.id, finalMessages);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Assistant could not answer right now';
       const finalMessages: ChatMessage[] = [
@@ -449,15 +493,31 @@ export default function KnowledgeTerminal({ scope }: Props) {
         {
           role: 'assistant',
           content: `I could not reach the knowledge base assistant yet. ${message}`,
+          createdAt: turnCreatedAt,
           sources: [],
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
         },
       ];
       setMessages(finalMessages);
-      updateSessionMessages(session.id, finalMessages, sessionTitle);
+      updateSessionMessages(session.id, finalMessages);
     } finally {
       setIsStreaming(false);
     }
+  }
+
+  function retryAssistantMessage(messageIndex: number) {
+    if (isStreaming) return;
+    let userIndex = messageIndex - 1;
+    while (userIndex >= 0 && messages[userIndex]?.role !== 'user') {
+      userIndex -= 1;
+    }
+    const previousUser = messages[userIndex];
+    if (!previousUser || previousUser.role !== 'user') return;
+    if (previousUser.attachmentNames?.length) {
+      setAttachmentStatus('Reattach the original document before trying this response again.');
+      return;
+    }
+    void sendMessage(previousUser.content, messages.slice(0, userIndex));
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -467,16 +527,32 @@ export default function KnowledgeTerminal({ scope }: Props) {
     }
   }
 
-  async function handleAttachmentInput(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = '';
+  async function addAttachmentFiles(files: File[]) {
     if (files.length === 0) return;
     setExtractingAttachments(true);
-    setAttachmentStatus('Reading documents…');
-    const result = await extractChatAttachments(files);
-    setChatAttachments((current) => [...current, ...result.attachments]);
-    setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
-    setExtractingAttachments(false);
+    // The add-documents button spins while the read runs, so a status line
+    // saying the same thing only adds noise under the composer. Clear it so a
+    // message from an earlier attachment does not sit there stale.
+    setAttachmentStatus('');
+    try {
+      const result = await extractChatAttachments(files);
+      setChatAttachments((current) => [...current, ...result.attachments]);
+      setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
+      // Distil now, while the user is still typing, so the answer comes from a
+      // structured document rather than a dumped one.
+      const distillErrors = await distillAttachments(result.attachments, {
+        onStatus: setAttachmentStatus,
+      });
+      if (distillErrors.length > 0) setAttachmentStatus(distillErrors.join(' · '));
+    } finally {
+      setExtractingAttachments(false);
+    }
+  }
+
+  function handleAttachmentInput(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    void addAttachmentFiles(files);
   }
 
   function handleResizeStart(event: ReactPointerEvent<HTMLElement>) {
@@ -495,6 +571,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
   }
 
   function handleResizeEnd(event: ReactPointerEvent<HTMLElement>) {
+    const start = resizeStartRef.current;
+    if (!start) return;
+    const moved = Math.abs(start.startY - event.clientY) >= 4;
     resizeStartRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -502,11 +581,14 @@ export default function KnowledgeTerminal({ scope }: Props) {
     setIsResizing(false);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    if (!moved && event.type !== 'pointercancel' && !isOpen) {
+      setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
+    }
   }
 
   const terminalStyle: CSSProperties = {
     height,
-    background: isOpen ? 'var(--paper-surface)' : '#EFE8D6',
+    background: isOpen ? 'var(--paper-surface)' : 'var(--terminal-bar)',
     borderTopColor: 'rgba(169, 193, 177, 0.7)',
   };
 
@@ -515,7 +597,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
     : 'terminal-boot-reveal';
 
   const terminalClassName =
-    'neu-surface-raised fixed inset-x-0 bottom-0 z-50 flex flex-col overflow-hidden border-t text-gray-100';
+    'neu-surface-raised fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-hidden border-t text-gray-100';
 
   return (
     <>
@@ -543,7 +625,21 @@ export default function KnowledgeTerminal({ scope }: Props) {
         onPointerMove={handleResizeMove}
         onPointerUp={handleResizeEnd}
         onPointerCancel={handleResizeEnd}
-        style={{ background: '#EFE8D6' }}
+        role={isOpen ? undefined : 'button'}
+        tabIndex={isOpen ? undefined : 0}
+        aria-expanded={isOpen ? undefined : false}
+        aria-label={isOpen ? undefined : 'Open terminal'}
+        title={isOpen ? 'Drag to resize the terminal' : 'Click or drag up to open the terminal'}
+        onKeyDown={(event) => {
+          if (
+            !isOpen &&
+            (event.key === 'Enter' || event.key === ' ')
+          ) {
+            event.preventDefault();
+            setHeight(preferredOpenHeightRef.current ?? defaultOpenHeight());
+          }
+        }}
+        style={{ background: 'var(--terminal-bar)' }}
         className={`flex shrink-0 cursor-row-resize touch-none select-none items-center gap-3 border-b border-[rgba(169,193,177,0.55)] px-4 ${
           headerMounted ? 'py-2.5' : 'h-full justify-center py-0'
         }`}
@@ -680,7 +776,7 @@ export default function KnowledgeTerminal({ scope }: Props) {
 
         {/* Chat column */}
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-3xl px-4 py-5">
               {messages.length === 0 ? (
                 <div className="flex flex-col items-center gap-5 py-8 text-center">
@@ -711,8 +807,18 @@ export default function KnowledgeTerminal({ scope }: Props) {
               ) : (
                 <div className="space-y-5">
                   {messages.map((message, index) => (
-                    <div key={`${message.role}-${index}`} className={message.role === 'user' ? 'flex justify-end' : ''}>
-                      <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
+                    <div
+                      key={`${message.role}-${index}`}
+                      className={timeSeparators[index] ? 'space-y-3' : undefined}
+                    >
+                      {timeSeparators[index] ? (
+                        <ChatTimeSeparator
+                          label={timeSeparators[index]}
+                          dateTime={message.createdAt}
+                        />
+                      ) : null}
+                      <div className={message.role === 'user' ? 'flex justify-end' : ''}>
+                        <div className={message.role === 'user' ? 'max-w-[80%]' : 'w-full'}>
                         {message.role === 'user' ? (
                           <div className="neu-chat-message neu-chat-message-user rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-6">
                             <UserMessageText content={message.content} />
@@ -724,34 +830,32 @@ export default function KnowledgeTerminal({ scope }: Props) {
                           </div>
                         ) : (
                           <div className="text-sm leading-7 text-gray-200">
-                            {message.responseDurationMs !== undefined ? (
-                              <p className="mb-1 text-sm text-[var(--ink-muted)]">
-                                Thinking ({formatResponseDuration(message.responseDurationMs)})
-                              </p>
-                            ) : null}
+                            <AssistantResponseMeta
+                              active={isStreaming && index === messages.length - 1}
+                              usage={message.usage}
+                              responseDurationMs={message.responseDurationMs}
+                            />
                             {message.content ? (
                               <ChatMarkdown content={message.content} compact />
                             ) : (
                               <span className="text-gray-500">Reading across your gardens...</span>
                             )}
-                            {message.sources && message.sources.length > 0 ? (
-                              <div className="mt-3 flex flex-wrap gap-1.5">
-                                {message.sources.map((source) => (
-                                  <span
-                                    key={source}
-                                    className="rounded-full border border-gray-800 bg-gray-900/60 px-2 py-0.5 text-[10px] text-gray-500"
-                                  >
-                                    {source}
-                                  </span>
-                                ))}
-                              </div>
+                            {!(isStreaming && index === messages.length - 1) ? (
+                              <AssistantMessageActions
+                                content={message.content || 'Response unavailable'}
+                                onRetry={
+                                  index === messages.length - 1
+                                    ? () => retryAssistantMessage(index)
+                                    : undefined
+                                }
+                              />
                             ) : null}
                           </div>
                         )}
+                        </div>
                       </div>
                     </div>
                   ))}
-                  <div ref={messagesEndRef} />
                 </div>
               )}
             </div>
@@ -784,13 +888,17 @@ export default function KnowledgeTerminal({ scope }: Props) {
               onModelChange={setModel}
               reasoningEffort={reasoningEffort}
               onReasoningEffortChange={setReasoningEffort}
+          intelligenceModes={intelligenceModes}
+          modelFailover={modelFailover}
               onAddDocuments={() => attachmentInputRef.current?.click()}
+              onPasteFiles={addAttachmentFiles}
               isAddingDocuments={extractingAttachments}
               attachments={chatAttachments}
               onRemoveAttachment={(index) =>
                 setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
               }
               statusMessage={attachmentStatus}
+              voiceMessages={messages}
             />
           </div>
         </div>

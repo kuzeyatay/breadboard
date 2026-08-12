@@ -7,7 +7,7 @@ const source = (relativePath) =>
 
 const composer = source("../src/app/components/assistant-composer.tsx");
 const runtime = source(
-  "../src/app/components/openharness/agent-runtime-panel.tsx",
+  "../src/app/components/hermes/agent-runtime-panel.tsx",
 );
 const workspace = source(
   "../src/app/gardens/[clusterSlug]/workspace-client.tsx",
@@ -27,10 +27,21 @@ test("the shared composer sends on Enter without breaking commands or multiline 
   assert.match(block, /event\.key !== 'Enter'/);
   assert.match(block, /event\.shiftKey/);
   assert.match(block, /event\.nativeEvent\.isComposing/);
-  assert.match(block, /if \(activeRun\)/);
+  assert.match(block, /if \(runInFlight\)/);
   assert.match(block, /queueSteer\(\)/);
   assert.match(block, /!canSubmit \|\| isSending \|\| disabled/);
   assert.match(block, /onSubmit\(\)/);
+});
+
+test("Enter queues behind an external agent run, not only a chat turn", () => {
+  // A blueprint/research/coding run lives in its own inline card and leaves
+  // runState "idle", so gating on activeRun alone sent the next message
+  // straight past the working agent.
+  assert.match(composer, /const runInFlight = activeRun \|\| externalRunActive/);
+  assert.match(composer, /externalRunActive = false,/);
+  assert.match(runtime, /externalRunLaunching \|\| messages\.some\(externalAgentRunInFlight\)/);
+  assert.match(runtime, /const runInFlight = activeRun \|\| externalRunActive/);
+  assert.match(runtime, /externalRunActive=\{externalRunActive\}/);
 });
 
 test("terminal and garden chats use the shared Enter behavior", () => {
@@ -39,6 +50,25 @@ test("terminal and garden chats use the shared Enter behavior", () => {
   assert.match(garden, /<AssistantComposer/);
   assert.doesNotMatch(workspace, /onKeyDown=\{handleKeyDown\}/);
   assert.doesNotMatch(garden, /onKeyDown=\{handleInputKeyDown\}/);
+});
+
+test("the shared send button does not forward its click event as message text", () => {
+  // The handler is an arrow, so the click event is never forwarded as an
+  // argument. An agent that takes a form runs its typed request instead of the
+  // draft; everything else still queues or sends the message.
+  const clicks = composer.replace(/\s+/g, " ");
+  assert.match(
+    clicks,
+    /onClick=\{\(\) => formAgent \? submitFormAgent\(\) : externalRunActive \? queueSteer\(\) : onSubmit\(\) \}/,
+  );
+  // …and the shared submit dispatches to the agent that is selected.
+  assert.match(
+    clicks,
+    /if \(tradingAgentsAgent\) submitTradingAgents\(\); else if \(shortsAgent\) submitShorts\(\);/,
+  );
+  assert.doesNotMatch(composer, /onClick=\{onSubmit\}/);
+  assert.doesNotMatch(composer, /onClick=\{submitShorts\}/);
+  assert.doesNotMatch(composer, /onClick=\{submitTradingAgents\}/);
 });
 
 test("Quartz sends on Enter only when idle and composition is complete", () => {

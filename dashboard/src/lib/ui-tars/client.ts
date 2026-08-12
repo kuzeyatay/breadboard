@@ -12,12 +12,14 @@ export interface AdapterHealth {
   runtime: "fake" | "agent-tars" | null;
   realBrowser: boolean;
   operator: "browser" | null;
+  operators?: Array<"browser" | "computer">;
   version: string | null;
 }
 
 export interface AdapterCapabilities {
   runtime: "fake" | "agent-tars";
   operator: "browser";
+  operators: Array<"browser" | "computer">;
   strategies: Array<"gui" | "dom" | "hybrid">;
   realBrowser: boolean;
   version: string;
@@ -28,7 +30,7 @@ export interface AdapterRunSummary {
   ownerUserId: number;
   status: string;
   task: string;
-  operatorType: "browser";
+  operatorType: "browser" | "computer";
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -113,6 +115,9 @@ export class UITarsClient {
         runtime: data.runtime === "fake" || data.runtime === "agent-tars" ? data.runtime : null,
         realBrowser: Boolean(data.realBrowser),
         operator: data.operator === "browser" ? "browser" : null,
+        ...(Array.isArray(data.operators)
+          ? { operators: data.operators.filter((operator): operator is "browser" | "computer" => operator === "browser" || operator === "computer") }
+          : {}),
         version: typeof data.version === "string" ? data.version : null,
       };
     } catch {
@@ -157,6 +162,14 @@ export class UITarsClient {
 
   abort(runId: string, userId: number): Promise<void> {
     return this.call<void>("POST", `/runs/${encodeURIComponent(runId)}/abort`, { userId });
+  }
+
+  restoreScreenshotHistory(runId: string, userId: number): Promise<void> {
+    return this.call<void>(
+      "POST",
+      `/runs/${encodeURIComponent(runId)}/screenshots/restore`,
+      { userId },
+    );
   }
 
   /** Fetch a screenshot's PNG bytes (server-side; served to browser via our route). */

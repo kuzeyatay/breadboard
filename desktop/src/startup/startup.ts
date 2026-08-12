@@ -30,6 +30,14 @@ interface BreadboardDesktopApiLocal {
   openLogsFolder(): Promise<void>;
   copyDiagnostics(): Promise<void>;
   quit(): Promise<void>;
+  continueToDashboard(): Promise<void>;
+  awaitDashboardReady(): Promise<void>;
+}
+
+interface WelcomeGreeting {
+  text: string;
+  lang: string;
+  dir?: "rtl";
 }
 
 const api = (window as unknown as { breadboardDesktop: BreadboardDesktopApiLocal })
@@ -49,8 +57,218 @@ const copyDiagnosticsButton = document.getElementById(
 ) as HTMLButtonElement;
 const quitButton = document.getElementById("quit-button") as HTMLButtonElement;
 const versionLabel = document.getElementById("version-label") as HTMLSpanElement;
+const introSound = document.getElementById("intro-sound") as HTMLAudioElement;
+const welcomeSection = document.getElementById("welcome") as HTMLElement;
+const welcomeContinue = document.getElementById("welcome-continue") as HTMLButtonElement;
+const dissolveBloom = document.getElementById("dissolve-bloom") as HTMLDivElement;
+const welcomeWords = Array.from(
+  document.querySelectorAll<HTMLParagraphElement>(".welcome-word"),
+);
+
+/** English first — the rest cycle in the order below until they run out. */
+const WELCOME_GREETINGS: WelcomeGreeting[] = [
+  { text: "Welcome", lang: "en" },
+  { text: "Hoş geldin", lang: "tr" },
+  { text: "Bienvenue", lang: "fr" },
+  { text: "Bienvenido", lang: "es" },
+  { text: "Willkommen", lang: "de" },
+  { text: "ようこそ", lang: "ja" },
+  { text: "Benvenuto", lang: "it" },
+  { text: "환영합니다", lang: "ko" },
+  { text: "Bem-vindo", lang: "pt" },
+  { text: "Добро пожаловать", lang: "ru" },
+  { text: "欢迎", lang: "zh" },
+  { text: "أهلا بك", lang: "ar", dir: "rtl" },
+  { text: "Welkom", lang: "nl" },
+  { text: "स्वागत है", lang: "hi" },
+  { text: "Καλώς ορίσατε", lang: "el" },
+  { text: "ברוך הבא", lang: "he", dir: "rtl" },
+  { text: "Välkommen", lang: "sv" },
+  { text: "Witamy", lang: "pl" },
+  { text: "ยินดีต้อนรับ", lang: "th" },
+  { text: "Chào mừng", lang: "vi" },
+];
+
+const GREETING_HOLD_MS = 2_600;
+const WELCOME_REVEAL_DELAY_MS = 420;
+/** With the chime leading it in, the greeting waits a beat longer so the sound
+ *  starts first and the word lands into it. It costs nothing in real
+ *  time-to-app: the screen is waiting on a click either way. */
+const INTRO_WELCOME_REVEAL_DELAY_MS = 1_200;
+const DISSOLVE_MS = 860;
+const REDUCED_DISSOLVE_MS = 240;
 
 let failedServiceId: string | null = null;
+let stage: "loading" | "preparing" | "welcome" | "dissolving" = "loading";
+let introPlaying = false;
+/** Bumped whenever the screen leaves the pre-welcome wait, so a dashboard that
+ *  finishes painting after a service died cannot open the greeting anyway. */
+let gateToken = 0;
+let greetingTimer: number | null = null;
+let greetingIndex = 0;
+let activeWordSlot = 0;
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * "Добро пожаловать" cannot wear the same type size as "欢迎". Shrink long
+ * greetings first by character count, then measure and shrink again if the
+ * window is narrow enough that they would still run off the edge.
+ */
+function fitGreeting(element: HTMLParagraphElement, text: string): void {
+  const length = [...text].length;
+  const scale = length <= 9 ? 1 : Math.max(0.5, Math.sqrt(9 / length));
+  element.style.setProperty("--word-scale", scale.toFixed(3));
+  const available = element.parentElement?.clientWidth ?? 0;
+  const measured = element.scrollWidth;
+  if (available > 0 && measured > available) {
+    element.style.setProperty("--word-scale", (scale * (available / measured) * 0.98).toFixed(3));
+  }
+}
+
+function showGreeting(greeting: WelcomeGreeting): void {
+  const outgoing = welcomeWords[activeWordSlot];
+  activeWordSlot = activeWordSlot === 0 ? 1 : 0;
+  const incoming = welcomeWords[activeWordSlot];
+  if (!incoming) return;
+  incoming.textContent = greeting.text;
+  incoming.lang = greeting.lang;
+  incoming.dir = greeting.dir ?? "ltr";
+  incoming.classList.remove("is-entering", "is-leaving");
+  fitGreeting(incoming, greeting.text);
+  // Re-adding the class in the same frame would not restart the animation.
+  void incoming.offsetWidth;
+  incoming.classList.add("is-entering");
+  if (outgoing && outgoing !== incoming && outgoing.textContent) {
+    outgoing.classList.remove("is-entering");
+    outgoing.classList.add("is-leaving");
+  }
+}
+
+/**
+ * The chime the greeting arrives over. It plays once, unprompted — the only
+ * thing that can refuse it is an autoplay policy, and a silent start is a
+ * complete outcome, so a rejection is simply noted and dropped.
+ *
+ * `introPlaying` records that it was started rather than that it is still
+ * sounding: what the rest of the screen needs to know is whether a chime is
+ * leading the greeting in, which stays true for the beat after it ends.
+ */
+function startIntro(): void {
+  if (introPlaying) return;
+  introPlaying = true;
+  void introSound.play().catch(() => {
+    introPlaying = false;
+  });
+}
+
+function stopIntro(): void {
+  if (!introPlaying) return;
+  introPlaying = false;
+  introSound.pause();
+  introSound.currentTime = 0;
+}
+
+function stopGreetings(): void {
+  if (greetingTimer !== null) {
+    window.clearInterval(greetingTimer);
+    greetingTimer = null;
+  }
+}
+
+/**
+ * Every service is healthy, but the dashboard is only now being rendered into a
+ * hidden window behind this screen. Stay on the loading field until it has
+ * actually painted. The greeting is the last thing before the handoff, so
+ * holding it back until there is a finished page to hand off to is what makes
+ * the click open the app instantly instead of opening a wait.
+ */
+function beginWelcomeGate(): void {
+  if (stage !== "loading") return;
+  stage = "preparing";
+  document.body.dataset["stage"] = "preparing";
+  const token = gateToken;
+  const open = () => {
+    if (token === gateToken) enterWelcome();
+  };
+  // Both arms: the shell caps this wait rather than reporting failure, so a
+  // rejection means the channel itself is gone — and never showing the welcome
+  // would be a worse outcome than showing it over a dashboard still painting.
+  void api.awaitDashboardReady().then(open, open);
+}
+
+function enterWelcome(): void {
+  if (stage !== "preparing") return;
+  stage = "welcome";
+  document.body.dataset["stage"] = "welcome";
+  phaseMessage.textContent = "Ready";
+  // Loading ends here, not when the services went healthy: this is the frame
+  // the leaf field stops being a progress indicator on. The chime sounds on it,
+  // and the greeting follows a beat later — so however long the dashboard took
+  // to paint behind this screen, the sound still lands on the finish.
+  startIntro();
+  window.setTimeout(() => {
+    if (stage !== "welcome") return;
+    welcomeSection.hidden = false;
+    requestAnimationFrame(() => welcomeSection.classList.add("is-visible"));
+    greetingIndex = 0;
+    const first = WELCOME_GREETINGS[0];
+    if (first) showGreeting(first);
+    greetingTimer = window.setInterval(() => {
+      greetingIndex = (greetingIndex + 1) % WELCOME_GREETINGS.length;
+      const greeting = WELCOME_GREETINGS[greetingIndex];
+      if (greeting) showGreeting(greeting);
+    }, GREETING_HOLD_MS);
+  }, introPlaying ? INTRO_WELCOME_REVEAL_DELAY_MS : WELCOME_REVEAL_DELAY_MS);
+}
+
+/** A service died after everything looked healthy: the failure card outranks
+ *  the greeting, and its buttons must not sit under a full-screen click target.
+ *  It also outranks a dashboard that is still loading towards one. */
+function abandonWelcome(): void {
+  if (stage !== "welcome" && stage !== "preparing") return;
+  stopGreetings();
+  // The failure card outranks the chime too — a startup sound under "a service
+  // could not start" says the opposite of what the card says.
+  stopIntro();
+  // Retires any dashboard wait still outstanding, and any that a later retry
+  // starts is a new one — the old preload was discarded with the failure.
+  gateToken += 1;
+  stage = "loading";
+  document.body.dataset["stage"] = "loading";
+  welcomeSection.classList.remove("is-visible");
+  welcomeSection.hidden = true;
+}
+
+/**
+ * The click. The dissolve hands the window to the dashboard, and the greeting
+ * was not shown until that dashboard had finished painting behind this screen —
+ * so there is nothing left to wait for and the bloom starts on this frame.
+ *
+ * `viewportX`/`viewportY` are where the click landed; the light blooms from
+ * there. A keyboard press has no point, so it blooms from the middle.
+ */
+function dissolve(viewportX: number | null, viewportY: number | null): void {
+  if (stage !== "welcome") return;
+  stage = "dissolving";
+  stopGreetings();
+  // Silence it on the click: a chime still inside its three seconds would
+  // otherwise carry on over the dashboard it was announcing.
+  introSound.pause();
+  welcomeContinue.disabled = true;
+  const bounds = dissolveBloom.getBoundingClientRect();
+  const originX = viewportX === null ? bounds.width / 2 : viewportX - bounds.left;
+  const originY = viewportY === null ? bounds.height / 2 : viewportY - bounds.top;
+  dissolveBloom.style.setProperty("--bloom-x", `${originX}px`);
+  dissolveBloom.style.setProperty("--bloom-y", `${originY}px`);
+  document.body.dataset["stage"] = "dissolving";
+  window.setTimeout(
+    () => void api.continueToDashboard(),
+    prefersReducedMotion() ? REDUCED_DISSOLVE_MS : DISSOLVE_MS,
+  );
+}
 
 function createKineticField(): void {
   const rowSizes = [5, 7, 8, 7, 5];
@@ -87,7 +305,12 @@ function stateLabel(state: string): string {
 
 function renderStartupState(state: StartupStateViewLocal): void {
   document.body.dataset["phase"] = state.phase;
-  phaseMessage.textContent = state.message;
+  if (state.phase === "ready") beginWelcomeGate();
+  else if (state.phase === "failed") abandonWelcome();
+  // The shell calls itself ready as soon as the services are, which is a whole
+  // dashboard render before this screen is done. Announce what is happening.
+  phaseMessage.textContent =
+    stage === "preparing" ? "Opening your workspace" : state.message;
   serviceList.replaceChildren(
     ...state.services.map((service) => {
       const item = document.createElement("li");
@@ -118,6 +341,13 @@ function renderStartupState(state: StartupStateViewLocal): void {
 }
 
 createKineticField();
+welcomeContinue.addEventListener("click", (event) => {
+  const keyboardActivated = event.detail === 0;
+  dissolve(
+    keyboardActivated ? null : event.clientX,
+    keyboardActivated ? null : event.clientY,
+  );
+});
 retryButton.addEventListener("click", () => {
   if (failedServiceId !== null) void api.retryService(failedServiceId);
 });

@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
-import { LEARN_MODEL, LearnRepairPendingMapError, runLearnRepairOperation } from "@/lib/learn";
+import {
+  getLearnStatusSnapshot,
+  LearnPipelineConflictError,
+  LearnRepairPendingMapError,
+  runLearnRepairOperation,
+} from "@/lib/learn";
 import { InvalidLearnOperationRequestError, parseStartLearnOperationRequest } from "@/lib/learn-operation-mode";
 import { createChatmockClient } from "@/lib/knowledge";
+import { handOffLearnTask } from "@/lib/learn-background";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
+import { selectedModelForUser } from "@/lib/selected-model";
 
 export const dynamic = "force-dynamic";
 
@@ -32,13 +39,32 @@ export async function POST(
     }
     const { baseURL } = resolveChatmockBaseUrl(request);
     const client = createChatmockClient(baseURL);
-    const model = LEARN_MODEL;
-    const result = await runLearnRepairOperation({
+    const model = selectedModelForUser(userId);
+    const execution = await handOffLearnTask(runLearnRepairOperation({
       gardenId: cluster.slug, userId, client, model, contentPath, request: operation,
+    }), `scoped repair for ${cluster.slug}`);
+    if (execution.accepted) {
+      return NextResponse.json(
+        {
+          success: true,
+          accepted: true,
+          operation: "repair",
+          job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+        },
+        { status: 202 },
+      );
+    }
+    return NextResponse.json({
+      success: true,
+      operation: "repair",
+      repair: execution.value.repair,
+      job: execution.value.job,
     });
-    return NextResponse.json({ success: true, operation: "repair", repair: result.repair, job: result.job });
   } catch (error) {
-    if (error instanceof LearnRepairPendingMapError) {
+    if (
+      error instanceof LearnRepairPendingMapError ||
+      error instanceof LearnPipelineConflictError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return routeErrorResponse(error);

@@ -18,7 +18,8 @@ The monorepo is treated as an **upstream development/reference source only**. It
 **official published npm packages** pinned to the versions that correspond to this
 SHA (verified present on npm): `@agent-tars/core@0.3.0`, `@tarko/agent@0.3.0`,
 `@agent-infra/browser@0.2.2`, `@tarko/model-provider@0.3.0`,
-`@tarko/agent-interface@0.3.0`. Breadboard code touches **only** the adapter's
+`@tarko/agent-interface@0.3.0`, `@ui-tars/sdk@1.2.3`, and
+`@ui-tars/operator-nut-js@1.2.3`. Breadboard code touches **only** the adapter's
 `RuntimeClient` boundary — never these packages directly.
 
 ## Packages found (smallest responsible units)
@@ -30,6 +31,8 @@ SHA (verified present on npm): `@agent-tars/core@0.3.0`, `@tarko/agent@0.3.0`,
 | Event/type contracts | `@tarko/agent-interface` | `src/{agent,agent-event-stream}.ts` |
 | Browser operation | `@agent-tars/core` browser env + tools | `environments/local/browser/` (tools `browser_navigate`, `browser_click`, `browser_form_input_fill`, `browser_screenshot`, `browser_press_key`, `browser_vision_control`, …) |
 | Browser process lifecycle + isolation | `@agent-infra/browser` (`LocalBrowser`) | `packages/agent-infra/browser/src/{local-browser,base-browser,types}.ts` — Puppeteer-based |
+| Actual desktop agent loop | `@ui-tars/sdk` (`GUIAgent`) | `packages/ui-tars/sdk/src/GUIAgent.ts` — screenshot/model/action loop with abort signal |
+| Actual desktop screen/mouse/keyboard | `@ui-tars/operator-nut-js` (`NutJSOperator`) | `packages/ui-tars/operators/nut-js/src/index.ts` — `@computer-use/nut-js` native operator |
 | Model-provider config (provider-agnostic) | `@tarko/model-provider` | `src/types.ts` — `Model { provider, baseURL?, apiKey?, id }` |
 | (Not used for MVP) headless HTTP server + sessions | `@tarko/agent-server` | `src/server.ts` |
 

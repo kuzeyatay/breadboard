@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getLearnStatusSnapshot } from "@/lib/learn";
-import { requireReadableClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
+import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,7 @@ export async function GET(
 ) {
   try {
     const { gardenId } = await params;
-    const { cluster } = await requireReadableClusterFromSlug(gardenId);
+    const { cluster } = await requireOwnedClusterFromSlug(gardenId);
     const contentPath = process.env.QUARTZ_CONTENT_PATH;
     if (!contentPath) {
       return NextResponse.json(

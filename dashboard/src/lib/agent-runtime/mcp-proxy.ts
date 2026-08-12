@@ -7,7 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { RuntimeMcpConfig } from "../openharness/mcp-connections.ts";
+import type { RuntimeMcpConfig } from "../hermes/mcp-connections.ts";
 import type {
   RuntimeCapabilities,
   RuntimeMcpStatus,
@@ -56,9 +56,21 @@ function safeSlug(value: string): string {
 }
 
 function configSignature(config: RuntimeMcpConfig): string {
+  const signable =
+    config.type === "remote"
+      ? {
+          type: config.type,
+          url: config.url,
+          headers: config.headers,
+          oauth: config.oauth !== false,
+          oauthRevision: config.oauthRevision,
+          enabled: config.enabled,
+          timeout: config.timeout,
+        }
+      : config;
   return crypto
     .createHash("sha256")
-    .update(JSON.stringify(config))
+    .update(JSON.stringify(signable))
     .digest("hex");
 }
 
@@ -99,6 +111,7 @@ function createTransport(config: RuntimeMcpConfig): Transport {
   const url = new URL(config.url);
   return new StreamableHTTPClientTransport(url, {
     requestInit: remoteHeaders(config),
+    authProvider: config.authProvider,
     reconnectionOptions: {
       initialReconnectionDelay: 500,
       maxReconnectionDelay: 3_000,
@@ -143,6 +156,7 @@ async function connect(
     );
     const legacy = new SSEClientTransport(new URL(config.url), {
       requestInit: remoteHeaders(config),
+      authProvider: config.authProvider,
     });
     await legacyClient.connect(legacy, { timeout: config.timeout });
     const listed = await legacyClient.listTools(

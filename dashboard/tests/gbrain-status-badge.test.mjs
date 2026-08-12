@@ -3,15 +3,15 @@ import fs from "node:fs";
 import test from "node:test";
 
 const badge = fs.readFileSync(
-  new URL("../src/app/components/openharness/gbrain-status-badge.tsx", import.meta.url),
+  new URL("../src/app/components/hermes/gbrain-status-badge.tsx", import.meta.url),
   "utf8",
 );
 const chat = fs.readFileSync(
-  new URL("../src/app/components/openharness/garden-agent-chat.tsx", import.meta.url),
+  new URL("../src/app/components/hermes/garden-agent-chat.tsx", import.meta.url),
   "utf8",
 );
 const terminal = fs.readFileSync(
-  new URL("../src/app/components/openharness/dashboard-agent-terminal.tsx", import.meta.url),
+  new URL("../src/app/components/hermes/dashboard-agent-terminal.tsx", import.meta.url),
   "utf8",
 );
 

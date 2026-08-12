@@ -33,7 +33,10 @@ function defaultDataDir(): string {
 export function resolveConfig(env: NodeJS.ProcessEnv = process.env): AdapterConfig {
   const dataDir = defaultDataDir();
   const secret = env.GBRAIN_ADAPTER_SECRET?.trim() || "";
-  const provider = (env.GBRAIN_EMBEDDING_PROVIDER?.trim() || "none").toLowerCase();
+  // Defaults to the local ChatMock gateway rather than "none": it serves
+  // `/v1/embeddings` from an ONNX model on the CPU, so real vectors need no key.
+  // `GBRAIN_EMBEDDING_PROVIDER=none` is still how embeddings are turned off.
+  const provider = (env.GBRAIN_EMBEDDING_PROVIDER?.trim() || "chatmock").toLowerCase();
   return {
     host: env.GBRAIN_ADAPTER_HOST?.trim() || "127.0.0.1",
     port: Number(env.GBRAIN_ADAPTER_PORT) || 7717,

@@ -119,7 +119,7 @@ GBRAIN_MODE=preferred npm run dev
 GBRAIN_MODE=preferred npm run dev:gbrain
 ```
 
-`scripts/dev-all.mjs` starts the adapter **after ChatMock, before OpenHarness**,
+`scripts/dev-all.mjs` starts the adapter **after ChatMock, before Hermes**,
 generates a shared per-launch secret, polls `/health` with a bounded timeout, and
 surfaces the reason on failure (fatal in `required`, non-fatal in `preferred`).
 
@@ -168,7 +168,7 @@ labeled hybrid.
 
 ## Adapted skills
 
-`openharness-skills/breadboard-gbrain/` — eight **general-knowledge** skills, all
+`hermes-skills/breadboard-gbrain/` — eight **general-knowledge** skills, all
 read-only or proposal-only, none activating coding mode or GBrain writes. Only
 three are **user-visible** in the palette (garden-research, capture-to-garden,
 knowledge-health); the other five are **internal** routing skills
@@ -179,9 +179,9 @@ upstream GBrain skillpack (cron, daily-task, dream cycle, skill-creator, gstack
 coding, schema mutation, direct capture/enrich/publish) is deliberately **not**
 installed — see the manifest's `excludedUpstreamSkills`.
 
-## Tools exposed to OpenHarness
+## Tools exposed to Hermes
 
-`openharness-config/tool/gbrain.ts` (Garden Chat + Terminal only, never Quartz):
+`hermes-config/tool/gbrain.ts` (Garden Chat + Terminal only, never Quartz):
 
 | Tool | Internal op | Purpose |
 |---|---|---|
@@ -212,7 +212,7 @@ source ids and retrieval internals never appear.
 
 * The adapter binds only to `127.0.0.1` and requires a bearer secret ≥ 8 chars; it
   refuses to start without one.
-* The internal route (`/api/openharness/tools/gbrain`) authenticates with the same
+* The internal route (`/api/hermes/tools/gbrain`) authenticates with the same
   short-lived HMAC capability token as the garden tools; there is no browser API.
 * GBrain results/skills/citations can never widen scope, grant filesystem/shell
   access, activate `scoped_implementation`, or authorize writes.

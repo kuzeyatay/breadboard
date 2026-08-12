@@ -12,33 +12,43 @@ import {
 } from 'react';
 import AssistantComposer from '@/app/components/assistant-composer';
 import AssistantMessageActions from '@/app/components/assistant-message-actions';
-import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
-import ActivityPanel from '@/app/components/openharness/activity-panel';
-import { UserMessageText } from '@/app/components/openharness/command-text';
-import { useLegacyAgentActivity } from '@/app/components/openharness/use-legacy-agent-activity';
-import ChatMarkdown from '@/app/components/chat-markdown';
+import { isDirectModeEnabled } from '@/app/components/use-direct-mode';
 import {
-  DEFAULT_ASSISTANT_MODELS,
-  mergeAssistantModels,
-} from '@/lib/ai-models';
+  chatAutoScrollContentKey,
+  chatAutoScrollResponseKey,
+  useChatAutoScroll,
+} from '@/app/components/use-chat-auto-scroll';
+import ChatTimeSeparator from '@/app/components/chat-time-separator';
+import { useAssistantIntelligence } from '@/app/components/use-assistant-intelligence';
+import ActivityPanel from '@/app/components/hermes/activity-panel';
+import { UserMessageText } from '@/app/components/hermes/command-text';
+import { useLegacyAgentActivity } from '@/app/components/hermes/use-legacy-agent-activity';
+import ChatMarkdown from '@/app/components/chat-markdown';
+import { useAssistantModels } from '@/app/components/use-assistant-models';
 import {
   CHAT_ATTACHMENT_ACCEPT,
+  chatMessageAttachments,
   extractChatAttachments,
+  reusableChatAttachments,
   type ChatAttachment,
+  type ChatMessageAttachment,
 } from '@/lib/chat-attachments';
+import { distillAttachments } from '@/lib/document-skills/client';
 import {
   type ChatTokenUsage,
   normalizeChatTokenUsage,
 } from '@/lib/chat-token-usage';
-import { chatTitleFromFirstMessage } from '@/lib/chat-session-title';
-import type { VerificationSummary } from '@/lib/openharness/evidence';
+import { chatTimeSeparatorLabels } from '@/lib/chat-time-separators';
+import type { VerificationSummary } from '@/lib/hermes/evidence';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  createdAt?: string;
   sources?: string[];
   thinking?: string;
   attachmentNames?: string[];
+  attachments?: ChatMessageAttachment[];
   usage?: ChatTokenUsage;
   responseDurationMs?: number;
   verification?: VerificationSummary;
@@ -110,14 +120,6 @@ interface AssistantLearnState {
   selectedSourceIds?: string[];
   hasTextbook?: boolean;
   buttonLabel?: string;
-  validationReport?: {
-    relativePath?: string;
-    url?: string;
-    markdown?: string;
-    truncated?: boolean;
-    accepted?: boolean;
-    generatedAt?: string;
-  } | null;
 }
 
 interface SavedPrompt {
@@ -367,12 +369,15 @@ export default function GardenAssistant({
   activeMarkdown,
   initialOpen = false,
 }: Props) {
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const resizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const previousClusterRef = useRef<string | null>(activeClusterSlug);
   const [chatOpen, setChatOpen] = useState(initialOpen);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const timeSeparators = useMemo(
+    () => chatTimeSeparatorLabels(messages),
+    [messages],
+  );
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -383,10 +388,15 @@ export default function GardenAssistant({
   const [isResizing, setIsResizing] = useState(false);
   const [stats, setStats] = useState<GraphStats>(EMPTY_STATS);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
-  const { model, setModel, reasoningEffort, setReasoningEffort } = useAssistantIntelligence();
-  const [models, setModels] = useState<string[]>([...DEFAULT_ASSISTANT_MODELS]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const {
+    model,
+    setModel,
+    reasoningEffort,
+    setReasoningEffort,
+    intelligenceModes,
+    failover: modelFailover,
+  } = useAssistantIntelligence();
+  const { models, modelsLoading, loadModels } = useAssistantModels();
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [extractingAttachments, setExtractingAttachments] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState('');
@@ -423,7 +433,7 @@ export default function GardenAssistant({
     // The local cache is a fast first paint only. Server-side chat sessions are
     // authoritative: a cached entry whose id no longer exists (notably the
     // legacy `Date.now()` ids this component used to mint) can never be
-    // addressed by the OpenHarness runtime, so it is dropped on reconcile.
+    // addressed by the Hermes runtime, so it is dropped on reconcile.
     const cached = loadQuartzChatSessions(activeClusterSlug);
     setChatSessions(cached);
     setActiveChatId(cached[0]?.id ?? null);
@@ -472,28 +482,6 @@ export default function GardenAssistant({
   useEffect(() => {
     setMessages(activeChat?.messages ?? []);
   }, [activeChat?.id, activeChat?.messages]);
-
-  const loadModels = useCallback(async () => {
-    if (modelsLoading || modelsLoaded) return;
-    setModelsLoading(true);
-    try {
-      const response = await fetch('/api/models');
-      const data = await response.json().catch(() => ({}));
-      const ids = Array.isArray(data.data)
-        ? data.data
-            .map((item: { id?: unknown }) => (typeof item?.id === 'string' ? item.id : null))
-            .filter((id: string | null): id is string => Boolean(id))
-        : [];
-      if (ids.length > 0) {
-        setModels(mergeAssistantModels(ids));
-      }
-      setModelsLoaded(true);
-    } catch {
-      // Keep local defaults when the endpoint is unavailable.
-    } finally {
-      setModelsLoading(false);
-    }
-  }, [modelsLoaded, modelsLoading]);
 
   const fetchLearnStatus = useCallback(async () => {
     if (!activeClusterSlug) {
@@ -581,9 +569,12 @@ export default function GardenAssistant({
     };
   }, [activeClusterSlug]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages, isStreaming]);
+  const transcriptScrollRef = useChatAutoScroll<HTMLDivElement>({
+    isResponding: isStreaming,
+    responseKey: chatAutoScrollResponseKey(messages),
+    contentKey: chatAutoScrollContentKey(messages),
+    enabled: chatOpen,
+  });
 
   function updateSessionMessages(sessionId: number, nextMessages: ChatMessage[], title?: string) {
     setChatSessions((previous) => {
@@ -608,7 +599,7 @@ export default function GardenAssistant({
    * Create a real server-side chat session.
    *
    * This previously minted a local `Date.now()` id and stored it only in
-   * localStorage. The OpenHarness garden adapter authorizes the incoming
+   * localStorage. The Hermes garden adapter authorizes the incoming
    * `chatSessionId` against `chat_sessions` for (id, user_id, cluster_id), so a
    * timestamp id could never match a row and every turn failed with
    * `chat_session_not_found` before reaching the runtime. The id must be
@@ -677,38 +668,62 @@ export default function GardenAssistant({
     });
   }
 
-  async function sendMessage(textOverride?: string, historyOverride?: ChatMessage[]) {
+  async function sendMessage(
+    textOverride?: string,
+    historyOverride?: ChatMessage[],
+    attachmentOverride?: readonly ChatAttachment[],
+  ) {
     const text = (textOverride ?? input).trim();
-    const pendingAttachments = textOverride === undefined ? chatAttachments : [];
+    const pendingAttachments: ChatAttachment[] = attachmentOverride
+      ? [...attachmentOverride]
+      : textOverride === undefined
+        ? chatAttachments
+        : [];
     if ((!text && pendingAttachments.length === 0) || isStreaming || !activeClusterSlug) return;
 
     const history = historyOverride ?? messages;
     const attachmentNames = pendingAttachments.map((attachment) => attachment.name);
     const displayText = text || 'Please review the attached document(s).';
-    const firstMessageTitle = chatTitleFromFirstMessage(
-      text || attachmentNames[0] || 'Document review',
-    );
-
+    const turnCreatedAt = new Date().toISOString();
     let session = activeChat;
     let sessionTitle: string | undefined;
     if (!session || session.isOwn === false) {
-      sessionTitle = firstMessageTitle;
-      session = await createChatSession(sessionTitle);
+      session = await createChatSession();
       if (!session) {
         setMessages([
           ...messages,
-          { role: 'user', content: displayText, attachmentNames },
-          { role: 'assistant', content: 'I could not create a chat history entry yet.', sources: [] },
+          {
+            role: 'user',
+            content: displayText,
+            createdAt: turnCreatedAt,
+            attachmentNames,
+            attachments: chatMessageAttachments(pendingAttachments),
+          },
+          {
+            role: 'assistant',
+            content: 'I could not create a chat history entry yet.',
+            createdAt: turnCreatedAt,
+            sources: [],
+          },
         ]);
         return;
       }
-    } else if (history.length === 0) {
-      sessionTitle = firstMessageTitle;
     }
 
-    const userMessage: ChatMessage = { role: 'user', content: displayText, attachmentNames };
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: displayText,
+      createdAt: turnCreatedAt,
+      attachmentNames,
+      attachments: chatMessageAttachments(pendingAttachments),
+    };
     const nextMessages = [...history, userMessage];
-    let assistantMessage: ChatMessage = { role: 'assistant', content: '', sources: [] };
+    let assistantMessage: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      createdAt: turnCreatedAt,
+      sources: [],
+    };
     const responseStartedAt = performance.now();
 
     setInput('');
@@ -764,6 +779,7 @@ export default function GardenAssistant({
           : null;
         assistantMessage = {
           role: 'assistant',
+          createdAt: turnCreatedAt,
           content: [
             `${summary}`,
             '',
@@ -807,6 +823,7 @@ export default function GardenAssistant({
           reasoningEffort,
           attachments: pendingAttachments,
           activeMarkdown: activeMarkdownContext,
+          adhdMode: isDirectModeEnabled(),
         }),
         signal,
       });
@@ -820,7 +837,7 @@ export default function GardenAssistant({
         assistantMessage = {
           ...assistantMessage,
           thinking:
-            'OpenHarness failed at runtime. OPENHARNESS_MODE=preferred allowed this visible legacy ChatMock fallback.\n',
+            'Hermes failed at runtime. HERMES_MODE=preferred allowed this visible legacy ChatMock fallback.\n',
         };
       }
 
@@ -865,14 +882,14 @@ export default function GardenAssistant({
             if (event.type === 'error') {
               assistantMessage = {
                 ...assistantMessage,
-                content: `${assistantMessage.content}\n\n${event.error ?? 'OpenHarness reported an error.'}`,
+                content: `${assistantMessage.content}\n\n${event.error ?? 'Hermes reported an error.'}`,
               };
               updateAssistant();
             }
             if (event.type === 'runtime' && event.fallback) {
               assistantMessage = {
                 ...assistantMessage,
-                thinking: `${assistantMessage.thinking ?? ''}\nOpenHarness unavailable — using the visible preferred-mode ChatMock fallback.`,
+                thinking: `${assistantMessage.thinking ?? ''}\nHermes unavailable — using the visible preferred-mode ChatMock fallback.`,
               };
               updateAssistant();
             }
@@ -880,6 +897,21 @@ export default function GardenAssistant({
               assistantMessage = {
                 ...assistantMessage,
                 content: `${assistantMessage.content}${event.text}`,
+              };
+              updateAssistant();
+            }
+            if (event.type === 'replace' && typeof event.text === 'string') {
+              assistantMessage = { ...assistantMessage, content: event.text };
+              updateAssistant();
+            }
+            if (event.type === 'segment' && typeof event.text === 'string') {
+              // The streamed text so far was tool-call narration, not the
+              // answer. Move it into the thinking strip and let the bubble
+              // restart with the next segment.
+              assistantMessage = {
+                ...assistantMessage,
+                thinking: `${assistantMessage.thinking ?? ''}\n${event.text}`.trim(),
+                ...(event.streamed ? { content: '' } : {}),
               };
               updateAssistant();
             }
@@ -952,6 +984,7 @@ export default function GardenAssistant({
         ...nextMessages,
         {
           role: 'assistant',
+          createdAt: turnCreatedAt,
           content: `I could not reach the assistant for this garden yet. ${message}`,
           sources: [],
           responseDurationMs: Math.round(performance.now() - responseStartedAt),
@@ -980,7 +1013,7 @@ export default function GardenAssistant({
       const permissions = Object.fromEntries(
         request.operations.map((operation) => [operation, true]),
       );
-      const response = await fetch('/api/openharness/filesystem-grants', {
+      const response = await fetch('/api/hermes/filesystem-grants', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: request.path, permissions, scope }),
@@ -1008,16 +1041,32 @@ export default function GardenAssistant({
     }
   }
 
-  async function handleAttachmentInput(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = '';
+  async function addAttachmentFiles(files: File[]) {
     if (files.length === 0) return;
     setExtractingAttachments(true);
-    setAttachmentStatus('Reading documents…');
-    const result = await extractChatAttachments(files);
-    setChatAttachments((current) => [...current, ...result.attachments]);
-    setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
-    setExtractingAttachments(false);
+    // The add-documents button spins while the read runs, so a status line
+    // saying the same thing only adds noise under the composer. Clear it so a
+    // message from an earlier attachment does not sit there stale.
+    setAttachmentStatus('');
+    try {
+      const result = await extractChatAttachments(files);
+      setChatAttachments((current) => [...current, ...result.attachments]);
+      setAttachmentStatus([...result.errors, ...result.warnings].join(' · '));
+      // Distil now, while the user is still typing, so the answer comes from a
+      // structured document rather than a dumped one.
+      const distillErrors = await distillAttachments(result.attachments, {
+        onStatus: setAttachmentStatus,
+      });
+      if (distillErrors.length > 0) setAttachmentStatus(distillErrors.join(' · '));
+    } finally {
+      setExtractingAttachments(false);
+    }
+  }
+
+  function handleAttachmentInput(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    void addAttachmentFiles(files);
   }
 
   function retryAssistantMessage(messageIndex: number) {
@@ -1026,11 +1075,11 @@ export default function GardenAssistant({
     while (userIndex >= 0 && messages[userIndex]?.role !== 'user') userIndex -= 1;
     const previousUser = messages[userIndex];
     if (!previousUser || previousUser.role !== 'user') return;
-    if (previousUser.attachmentNames?.length) {
-      setAttachmentStatus('Add the original attachments again before regenerating.');
-      return;
-    }
-    void sendMessage(previousUser.content, messages.slice(0, userIndex));
+    void sendMessage(
+      previousUser.content,
+      messages.slice(0, userIndex),
+      reusableChatAttachments(previousUser.attachments),
+    );
   }
 
   function handlePanelResizeStart(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -1101,11 +1150,16 @@ export default function GardenAssistant({
     if (!session && activeClusterSlug) {
       session = await createChatSession('Learn');
     }
+    const notice: ChatMessage = {
+      role: 'assistant',
+      content,
+      createdAt: new Date().toISOString(),
+    };
     if (!session) {
-      setMessages((previous) => [...previous, { role: 'assistant', content }]);
+      setMessages((previous) => [...previous, notice]);
       return;
     }
-    const nextMessages = [...session.messages, { role: 'assistant' as const, content }];
+    const nextMessages = [...session.messages, notice];
     updateSessionMessages(session.id, nextMessages);
     setMessages(nextMessages);
   }
@@ -1116,7 +1170,7 @@ export default function GardenAssistant({
       await appendAssistantNotice('Upload source documents before running Learn.');
       return;
     }
-    if (learnState?.job?.status === 'awaiting_confirmation') {
+    if (learnState.job?.status === 'awaiting_confirmation') {
       await appendAssistantNotice(
         `A learning map is ready for confirmation. Open the garden dashboard to review the section order: [${clusterLabel}](/gardens/${activeClusterSlug}).`,
       );
@@ -1126,29 +1180,32 @@ export default function GardenAssistant({
     setLearnBusy(true);
     try {
       const hasExistingLearnContent = Boolean(
-        learnState?.latestTextbookVersionId || learnState?.hasTextbook,
+        learnState.latestTextbookVersionId || learnState.hasTextbook,
       );
       const endpoint = hasExistingLearnContent
         ? 'regenerate'
-        : learnState?.confirmedLearningMapId
+        : learnState.confirmedLearningMapId
           ? 'generate'
           : 'plan';
-      const response = await fetch(`/api/gardens/${encodeURIComponent(activeClusterSlug)}/learn/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          ...(endpoint === 'regenerate' ? { mode: 'repair' } : {}),
-          ...(endpoint === 'generate'
-            ? { confirmedLearningMapId: learnState?.confirmedLearningMapId }
-            : {}),
-          sourceOnly: true,
-          ...(Array.isArray(learnState?.selectedSourceIds)
-            ? { includedSourceIds: learnState.selectedSourceIds }
-            : {}),
-          includeSourceSnapshots: false,
-        }),
-      });
+      const response = await fetch(
+        `/api/gardens/${encodeURIComponent(activeClusterSlug)}/learn/${endpoint}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            ...(endpoint === 'regenerate' ? { mode: 'repair' } : {}),
+            ...(endpoint === 'generate'
+              ? { confirmedLearningMapId: learnState.confirmedLearningMapId }
+              : {}),
+            sourceOnly: true,
+            ...(Array.isArray(learnState.selectedSourceIds)
+              ? { includedSourceIds: learnState.selectedSourceIds }
+              : {}),
+            includeSourceSnapshots: false,
+          }),
+        },
+      );
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) throw new Error(data.error ?? 'Learn action failed');
       await fetchLearnStatus();
@@ -1181,7 +1238,7 @@ export default function GardenAssistant({
       <div className="border-b border-gray-800 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-white">Assistant</p>
+            <p className="truncate text-sm font-medium text-white">Quartz AI</p>
             <p className="truncate text-xs text-gray-400">
               {hasActiveCluster ? `${clusterLabel} Learning Map` : 'Open a garden or page to ask its map'}
             </p>
@@ -1269,7 +1326,7 @@ export default function GardenAssistant({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div ref={transcriptScrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
           <div className="space-y-4">
             <div>
@@ -1304,38 +1361,37 @@ export default function GardenAssistant({
             {messages.map((message, index) => (
               <div
                 key={`${message.role}-${index}`}
-                className={message.role === 'user' ? 'ml-6' : 'mr-2'}
+                className={timeSeparators[index] ? 'space-y-3' : undefined}
               >
-                <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
-                  {message.role === 'user' ? 'You' : 'Assistant'}
-                </div>
-                <div
-                  className={
-                    message.role === 'user'
-                      ? 'neu-chat-message neu-chat-message-user rounded-xl rounded-tr-sm px-3 py-2 text-sm leading-6'
-                      : 'text-sm leading-6 text-gray-200'
-                  }
-                >
+                {timeSeparators[index] ? (
+                  <ChatTimeSeparator
+                    label={timeSeparators[index]}
+                    dateTime={message.createdAt}
+                  />
+                ) : null}
+                <div className={message.role === 'user' ? 'ml-6' : 'mr-2'}>
+                  <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-gray-500">
+                    {message.role === 'user' ? 'You' : 'Assistant'}
+                  </div>
+                  <div
+                    className={
+                      message.role === 'user'
+                        ? 'neu-chat-message neu-chat-message-user rounded-xl rounded-tr-sm px-3 py-2 text-sm leading-6'
+                        : 'text-sm leading-6 text-gray-200'
+                    }
+                  >
                   {message.role === 'assistant' ? (
                     <>
-                      {message.responseDurationMs !== undefined ||
-                      message.usage ||
-                      (index === messages.length - 1 &&
-                        (isStreaming ||
-                          agentActivity.pendingPermission ||
-                          agentActivity.activities.length > 0)) ? (
-                        <ActivityPanel
-                          activities={index === messages.length - 1 ? agentActivity.activities : []}
-                          connection={index === messages.length - 1 ? agentActivity.connection : 'idle'}
-                          pendingPermission={index === messages.length - 1 ? agentActivity.pendingPermission : null}
-                          usage={message.usage}
-                          responseDurationMs={message.responseDurationMs}
-                          onAbort={agentActivity.abort}
-                          onPermissionDecision={(decision) =>
-                            void agentActivity.respondToPermission(decision)
-                          }
-                        />
-                      ) : null}
+                      <ActivityPanel
+                        activities={index === messages.length - 1 ? agentActivity.activities : []}
+                        connection={index === messages.length - 1 ? agentActivity.connection : 'idle'}
+                        pendingPermission={index === messages.length - 1 ? agentActivity.pendingPermission : null}
+                        usage={message.usage}
+                        responseDurationMs={message.responseDurationMs}
+                        onPermissionDecision={(decision) =>
+                          void agentActivity.respondToPermission(decision)
+                        }
+                      />
                       {message.content ? <ChatMarkdown content={message.content} compact /> : null}
                     </>
                   ) : (
@@ -1346,23 +1402,22 @@ export default function GardenAssistant({
                       {message.attachmentNames.join(' · ')}
                     </p>
                   ) : null}
+                  </div>
+                  {message.role === 'assistant' &&
+                  !(isStreaming && index === messages.length - 1) ? (
+                    <AssistantMessageActions
+                      content={message.content || 'Response unavailable'}
+                      verification={message.verification}
+                      onRetry={
+                        index === messages.length - 1
+                          ? () => retryAssistantMessage(index)
+                          : undefined
+                      }
+                    />
+                  ) : null}
                 </div>
-                {message.role === 'assistant' &&
-                message.content &&
-                !(isStreaming && index === messages.length - 1) ? (
-                  <AssistantMessageActions
-                    content={message.content}
-                    verification={message.verification}
-                    onRetry={
-                      index === messages.length - 1
-                        ? () => retryAssistantMessage(index)
-                        : undefined
-                    }
-                  />
-                ) : null}
               </div>
             ))}
-            <div ref={messagesEndRef} />
           </div>
         )}
       </div>
@@ -1417,6 +1472,7 @@ export default function GardenAssistant({
         />
         <AssistantComposer
           capabilitySurface="garden_chat"
+          capabilityGardenSlug={activeClusterSlug}
           compact
           value={input}
           onChange={setInput}
@@ -1432,13 +1488,17 @@ export default function GardenAssistant({
           onModelChange={setModel}
           reasoningEffort={reasoningEffort}
           onReasoningEffortChange={setReasoningEffort}
+          intelligenceModes={intelligenceModes}
+          modelFailover={modelFailover}
           onAddDocuments={() => attachmentInputRef.current?.click()}
+          onPasteFiles={addAttachmentFiles}
           isAddingDocuments={extractingAttachments}
           attachments={chatAttachments}
           onRemoveAttachment={(index) =>
             setChatAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))
           }
           statusMessage={attachmentStatus}
+          voiceMessages={messages}
         />
       </div>
 
@@ -1447,15 +1507,15 @@ export default function GardenAssistant({
 
   const historyPanel = showHistory ? (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      className="bb-modal-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) setShowHistory(false);
       }}
     >
-      <div className="neu-dialog flex max-h-[78vh] w-full max-w-lg flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 sm:rounded-md">
+      <div className="bb-modal-panel neu-dialog flex max-h-[78vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl border sm:rounded-2xl">
         <div className="flex items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
           <div>
-            <h2 className="text-sm font-semibold text-white">Quartz AI history</h2>
+            <h2 className="text-sm font-semibold text-white">Chat history</h2>
             <p className="text-xs text-gray-500">{chatSessions.length} chats for {clusterLabel}</p>
           </div>
           <div className="flex items-center gap-2">
@@ -1478,7 +1538,7 @@ export default function GardenAssistant({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {chatSessions.length === 0 ? (
-            <div className="px-4 py-10 text-center text-sm text-gray-500">No Quartz AI chats yet.</div>
+            <div className="px-4 py-10 text-center text-sm text-gray-500">No chats yet.</div>
           ) : (
             <ul className="space-y-1">
               {chatSessions.map((session) => {
@@ -1508,7 +1568,7 @@ export default function GardenAssistant({
                       type="button"
                       onClick={() => deleteChatSession(session.id)}
                       disabled={isStreaming}
-                      className="mr-1 mt-2 rounded p-1 text-gray-600 opacity-0 transition hover:bg-gray-900 hover:text-red-300 group-hover:opacity-100 disabled:opacity-30"
+                      className="neu-button-icon mr-1 mt-2 rounded-full p-1 text-red-300 opacity-0 group-hover:opacity-100 disabled:opacity-30"
                       aria-label="Delete chat"
                       title="Delete chat"
                     >
@@ -1528,12 +1588,12 @@ export default function GardenAssistant({
 
   const promptsPanel = showPrompts ? (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      className="bb-modal-backdrop fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) setShowPrompts(false);
       }}
     >
-      <div className="neu-dialog flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-md border border-gray-700 bg-gray-900 sm:rounded-md">
+      <div className="bb-modal-panel neu-dialog flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl border sm:rounded-2xl">
         <div className="flex items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold text-white">Prompt library</h2>
@@ -1596,7 +1656,7 @@ export default function GardenAssistant({
                     <button
                       type="button"
                       onClick={() => openEditPrompt(prompt)}
-                      className="rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 hover:text-white"
+                      className="neu-button px-2.5 py-1 text-xs"
                     >
                       Edit
                     </button>
@@ -1604,7 +1664,7 @@ export default function GardenAssistant({
                       <button
                         type="button"
                         onClick={() => deletePrompt(prompt.id)}
-                        className="rounded-md border border-gray-800 px-2 py-1 text-xs text-red-300"
+                        className="neu-button-destructive px-2.5 py-1 text-xs"
                       >
                         Delete
                       </button>
@@ -1612,7 +1672,7 @@ export default function GardenAssistant({
                     <button
                       type="button"
                       onClick={() => applyPrompt(prompt)}
-                      className="rounded-md bg-white px-3 py-1 text-xs font-medium text-gray-950"
+                      className="neu-button-primary px-3 py-1 text-xs"
                     >
                       Use
                     </button>
@@ -1628,7 +1688,7 @@ export default function GardenAssistant({
 
   const promptEditor = editingPrompt ? (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
       onClick={(event) => {
         if (event.target === event.currentTarget) setEditingPrompt(null);
       }}
@@ -1638,7 +1698,7 @@ export default function GardenAssistant({
           event.preventDefault();
           if (editingPrompt.title.trim() && editingPrompt.content.trim()) savePrompt(editingPrompt);
         }}
-        className="neu-dialog w-full max-w-lg rounded-md border border-gray-800 bg-gray-900 p-5"
+        className="bb-modal-panel neu-dialog w-full max-w-lg rounded-2xl border p-5"
       >
         <h2 className="mb-4 text-lg font-semibold text-white">
           {editingPrompt.id ? 'Edit prompt' : 'New prompt'}
@@ -1734,7 +1794,7 @@ export default function GardenAssistant({
         onClick={() => setChatOpen(true)}
         className="neu-button fixed bottom-5 right-5 z-[70] rounded-md border border-gray-700 bg-gray-950 px-4 py-2 text-sm font-medium text-gray-100 transition hover:border-gray-500 hover:bg-gray-900"
       >
-        Ask map
+        Quartz AI
       </button>
       {historyPanel}
       {promptsPanel}

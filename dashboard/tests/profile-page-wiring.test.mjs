@@ -1,0 +1,169 @@
+// The profile page's wiring: the navbar chip that reaches it, the auth gate on
+// the route, and the two account actions that used to live in the navbar.
+
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+
+const root = path.resolve(import.meta.dirname, "..");
+const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8");
+
+const navbar = read("src/app/components/navbar.tsx");
+const workTimer = read("src/app/components/work-timer-shortcut.tsx");
+const page = read("src/app/profile/page.tsx");
+const client = read("src/app/profile/profile-client.tsx");
+const navHistory = read("src/lib/nav-history.ts");
+const invitesRoute = read("src/app/api/invites/route.ts");
+const shortcutsRoute = read("src/app/api/profile/navbar-shortcuts/route.ts");
+const dashboardPage = read("src/app/dashboard/page.tsx");
+const dashboardShell = read("src/app/dashboard/dashboard-page-shell.tsx");
+const dashboardClient = read("src/app/dashboard/dashboard-client.tsx");
+
+test("the profile chip is the way in, and it is a link rather than a label", () => {
+  assert.match(navbar, /href="\/profile"/);
+  assert.match(navbar, /\{username \|\| email\}/, "it still shows who you are");
+  assert.match(navbar, /<Link[\s\S]*?href="\/profile"/, "so it can be opened");
+});
+
+test("the navbar no longer carries the account actions", () => {
+  assert.doesNotMatch(navbar, /signOut/, "signing out moved to the profile page");
+  assert.doesNotMatch(navbar, /\/api\/invites/, "so did inviting");
+  assert.doesNotMatch(navbar, /useState/, "which leaves the navbar stateless");
+});
+
+test("the page is behind auth and comes back to itself after signing in", () => {
+  assert.match(page, /getServerSession\(authOptions\)/);
+  assert.match(page, /redirect\("\/auth\/login\?callbackUrl=\/profile"\)/);
+  assert.match(page, /readProfileStats\(db, userId\)/, "stats are read for the session's user");
+  assert.doesNotMatch(client, /from "@\/lib\/db"/, "and never from the browser");
+});
+
+test("the page offers a back link, signing out, and inviting", () => {
+  assert.match(client, /<BackLink[\s\S]*?fallbackHref="\/dashboard"/);
+  assert.match(client, /signOut\(\{ callbackUrl: "\/auth\/login" \}\)/);
+  assert.match(client, /fetch\("\/api\/invites", \{ method: "POST" \}\)/);
+  assert.match(client, /fetch\("\/api\/invites"\)/, "and lists the codes already handed out");
+  assert.match(navHistory, /\\\/profile\(\?:\\\/\|\$\)/, "and names itself as a back target");
+});
+
+test("both invite calls the page makes exist on the route", () => {
+  assert.match(invitesRoute, /export async function GET/);
+  assert.match(invitesRoute, /export async function POST/);
+  assert.match(invitesRoute, /requireUserId/, "scoped to the caller");
+});
+
+test("the optional navbar entries obey their settings", () => {
+  // The work timer seat is a component that opens in place rather than a link;
+  // the /pomodoro link now lives inside the panel it opens.
+  assert.ok(
+    navbar.includes("{shortcuts.workTimer && <WorkTimerShortcut />}"),
+    "the work timer sits behind its guard",
+  );
+  assert.equal(
+    navbar.indexOf("<WorkTimerShortcut"),
+    navbar.lastIndexOf("<WorkTimerShortcut"),
+    "and only once",
+  );
+  assert.doesNotMatch(navbar, /href="\/pomodoro"/, "the navbar itself no longer links out");
+  assert.match(workTimer, /href="\/pomodoro"/, "the panel still reaches the full page");
+
+  // World monitor is still a guarded link, rendered exactly once.
+  const guardIndex = navbar.indexOf("{shortcuts.worldMonitor && (");
+  const linkIndex = navbar.indexOf('href="/worldmonitor"');
+  assert.ok(guardIndex > 0, "the world monitor is guarded");
+  assert.ok(linkIndex > guardIndex, "and sits inside its guard");
+  assert.equal(navbar.indexOf('href="/worldmonitor"', linkIndex + 1), -1, "and appears once");
+
+  const planGuardIndex = navbar.indexOf("{shortcuts.plan && (");
+  const planLinkIndex = navbar.indexOf('href="/plan"');
+  assert.ok(planGuardIndex > 0, "Plan is configurable too");
+  assert.ok(planLinkIndex > planGuardIndex, "and its link sits inside the guard");
+
+  assert.match(
+    navbar,
+    /shortcuts = DEFAULT_NAVBAR_SHORTCUTS/,
+    "missing settings fall back to the defaults",
+  );
+
+  // Read on the server, so the navbar is right on first paint.
+  assert.match(dashboardPage, /<DashboardPageShell/);
+  assert.match(dashboardShell, /getNavbarShortcuts\(userId\)/);
+  assert.match(dashboardClient, /shortcuts=\{navbarShortcuts\}/);
+});
+
+test("the profile page owns the switches and reaches its own route", () => {
+  assert.match(client, /NAVBAR_SHORTCUTS\.map/, "one catalog drives both sides");
+  assert.match(client, /role="switch"/);
+  assert.match(client, /fetch\("\/api\/profile\/navbar-shortcuts", \{/);
+  assert.match(client, /method: "PATCH"/);
+  assert.match(client, /router\.refresh\(\)/, "so the dashboard is re-rendered, not cached");
+  assert.match(shortcutsRoute, /export async function GET/);
+  assert.match(shortcutsRoute, /export async function PATCH/);
+  assert.match(shortcutsRoute, /requireUserId/, "scoped to the caller");
+});
+
+test("the profile exposes current-location availability without folding it into theme consent", () => {
+  assert.match(client, /function LocationPanel\(\)/);
+  assert.match(client, /title="Location"/);
+  for (const state of [
+    "Off",
+    "Checking",
+    "Available",
+    "Stale",
+    "Blocked",
+    "Location unavailable",
+  ]) {
+    assert.ok(client.includes(state), `the Location card can show ${state}`);
+  }
+  assert.match(client, /role="status"/);
+  assert.match(client, /aria-live="polite"/);
+  assert.match(client, /aria-busy=\{checking\}/);
+  assert.match(client, />\s*Enable\s*<\/button>/);
+  assert.match(client, /checking \? "Checking[^\"]*" : "Refresh"/);
+  assert.match(client, />\s*Turn off\s*<\/button>/);
+  assert.match(client, /navigator\.geolocation\.getCurrentPosition/);
+  assert.match(client, /allowThemeLocation/);
+  assert.match(client, /enableHighAccuracy: false/);
+  assert.match(client, /clearStoredCurrentLocationPreference/);
+  assert.match(client, /rememberAppThemeLocation/);
+  assert.match(client, /selected AI or search[\s\S]*?provider only for relevant answers/);
+  assert.match(client, /not saved as a personal memory/);
+  assert.ok(
+    client.indexOf("applyAppThemeMode(\"sun\")") < client.indexOf("function LocationPanel()"),
+    "the existing theme control remains separate from answer-location consent",
+  );
+  assert.match(client, /writeStoredCurrentLocationPreference\([\s\S]*?useForAnswers/);
+});
+
+test("the identity card carries no monogram tile", () => {
+  assert.doesNotMatch(client, /monogram/i);
+  assert.match(client, /\{account\.username\}/, "the name itself is what identifies you");
+});
+
+test("the stats shown are ones no other surface already answers", () => {
+  // The dashboard lists chats, the garden library lists gardens, and settings
+  // shows what the agent remembers. The profile earns its place on the shape of
+  // the use, so those are the things asserted here.
+  for (const marker of [
+    "Last ${stats.activityWeeks} weeks",
+    "When you work",
+    "Where you work",
+    "What came out of it",
+    "What it cost to answer you",
+  ]) {
+    assert.ok(client.includes(marker), `the page shows "${marker}"`);
+  }
+  assert.match(client, /Busiest gardens/);
+  assert.match(client, /Settings → Memory/, "durable memory is pointed at, not duplicated");
+});
+
+test("activity charts are inspectable controls rather than decorative placeholders", () => {
+  assert.match(client, /aria-label=\{`Prompt activity over the last/);
+  assert.match(client, /aria-pressed=\{selected\}/, "selected chart values have real control state");
+  assert.match(client, /selectedDay\.conversations/, "a selected date reveals its source chats");
+  assert.match(client, /Select an hour for its exact count/);
+  assert.match(client, /Select a day for its exact count/);
+  assert.match(client, /No prompt activity in this period/);
+  assert.match(client, /No work rhythm yet/);
+});

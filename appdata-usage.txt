@@ -1,0 +1,28 @@
+﻿== AppData\Local (>=500 MB) ==
+     694 MB  balena_etcher
+   29876 MB  breadboard-desktop-build
+   13648 MB  breadboard-desktop-smoke
+     723 MB  breadboard-desktop-updater
+    5240 MB  CapCut
+     868 MB  Discord
+   13334 MB  Docker
+    1782 MB  GitHubDesktop
+    1303 MB  MathWorks
+    8428 MB  Microsoft
+     799 MB  Mozilla
+    1609 MB  npm-cache
+   10697 MB  Packages
+    3585 MB  pip
+    7981 MB  Programs
+    2142 MB  Temp
+   10888 MB  uv
+    1559 MB  Vivaldi
+
+== AppData\Roaming (>=500 MB) ==
+    6048 MB  BambuStudio
+    4055 MB  breadboard-desktop
+    2059 MB  Code
+    2709 MB  Mozilla
+    2119 MB  SPB_Data
+     858 MB  Zoom
+DONE

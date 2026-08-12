@@ -14,6 +14,7 @@ const OTHER_USER = 99;
 const cfg = {
   operator: "browser",
   browserStrategy: "dom",
+  desktopCoordinateSpace: "screen_pixels",
   provider: "openai",
   model: "gpt-x",
   maxSteps: 25,
@@ -118,6 +119,96 @@ test("create run, stream events, resume by sequence, screenshots", async () => {
   });
 });
 
+test("durable screenshot ownership survives an adapter restart", async () => {
+  const dataDir = path.join(os.tmpdir(), `ui-tars-restart-test-${crypto.randomUUID()}`);
+  let runId = "";
+  let screenshotId = "";
+  const first = await startAdapter({ secret: SECRET, dataDir, port: 0, host: "127.0.0.1", runtime: "fake" });
+  try {
+    const base = `http://127.0.0.1:${first.port}`;
+    runId = await createRun(base, "Open http://127.0.0.1/index.html");
+    const evs = await waitForEvent(base, runId, (event) => event.type === "observation.screenshot");
+    const screenshot = evs.find((event) => event.type === "observation.screenshot");
+    screenshotId = String(screenshot?.payload.screenshotId ?? "");
+    assert.ok(screenshotId);
+  } finally {
+    await first.stop();
+  }
+
+  const restarted = await startAdapter({ secret: SECRET, dataDir, port: 0, host: "127.0.0.1", runtime: "fake" });
+  try {
+    const base = `http://127.0.0.1:${restarted.port}`;
+    const restored = await fetch(
+      `${base}/runs/${runId}/screenshots/${screenshotId}?userId=${USER}`,
+      { headers: auth },
+    );
+    assert.equal(restored.status, 200);
+    assert.equal(restored.headers.get("content-type"), "image/png");
+
+    const otherUser = await fetch(
+      `${base}/runs/${runId}/screenshots/${screenshotId}?userId=${OTHER_USER}`,
+      { headers: auth },
+    );
+    assert.equal(otherUser.status, 403);
+  } finally {
+    await restarted.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("legacy screenshot folders can be safely restored for their dashboard owner", async () => {
+  const dataDir = path.join(os.tmpdir(), `ui-tars-legacy-test-${crypto.randomUUID()}`);
+  let runId = "";
+  let screenshotId = "";
+  const first = await startAdapter({ secret: SECRET, dataDir, port: 0, host: "127.0.0.1", runtime: "fake" });
+  try {
+    const base = `http://127.0.0.1:${first.port}`;
+    runId = await createRun(base, "Open http://127.0.0.1/index.html");
+    const evs = await waitForEvent(base, runId, (event) => event.type === "observation.screenshot");
+    const screenshot = evs.find((event) => event.type === "observation.screenshot");
+    screenshotId = String(screenshot?.payload.screenshotId ?? "");
+    assert.ok(screenshotId);
+  } finally {
+    await first.stop();
+  }
+
+  // Simulate a run created before durable ownership manifests existed.
+  fs.rmSync(path.join(dataDir, "screenshots", runId, ".ownership.json"));
+
+  const restarted = await startAdapter({ secret: SECRET, dataDir, port: 0, host: "127.0.0.1", runtime: "fake" });
+  try {
+    const base = `http://127.0.0.1:${restarted.port}`;
+    const beforeRestore = await fetch(
+      `${base}/runs/${runId}/screenshots/${screenshotId}?userId=${USER}`,
+      { headers: auth },
+    );
+    assert.equal(beforeRestore.status, 404);
+
+    const restore = await fetch(`${base}/runs/${runId}/screenshots/restore`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ userId: USER }),
+    });
+    assert.equal(restore.status, 200);
+
+    const restored = await fetch(
+      `${base}/runs/${runId}/screenshots/${screenshotId}?userId=${USER}`,
+      { headers: auth },
+    );
+    assert.equal(restored.status, 200);
+
+    const wrongOwner = await fetch(`${base}/runs/${runId}/screenshots/restore`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ userId: OTHER_USER }),
+    });
+    assert.equal(wrongOwner.status, 403);
+  } finally {
+    await restarted.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("rejection prevents the submit and aborts the run", async () => {
   await withServer(async (_s, base) => {
     const runId = await createRun(base, "http://127.0.0.1/form");
@@ -191,7 +282,7 @@ test("invalid configuration is rejected", async () => {
   await withServer(async (_s, base) => {
     const res = await fetch(`${base}/runs`, {
       method: "POST", headers: auth,
-      body: JSON.stringify({ ownerUserId: USER, task: "x", config: { ...cfg, operator: "computer" } }),
+      body: JSON.stringify({ ownerUserId: USER, task: "x", config: { ...cfg, operator: "phone" } }),
     });
     assert.equal(res.status, 400);
   });

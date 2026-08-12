@@ -6,18 +6,19 @@ import {
   readJsonBody,
   requireEnabled,
   requireString,
-} from "@/lib/openharness/route-helpers.ts";
+} from "@/lib/hermes/route-helpers.ts";
 import {
   createSessionForSurface,
   authorizeQuartzRuntimeSession,
   markStatus,
-} from "@/lib/openharness/session-service.ts";
+} from "@/lib/hermes/session-service.ts";
 import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
 import {
   appendRuntimeMessage,
+  listRuntimeMessages,
   persistCapabilityDecision,
   recordAuditEvent,
-} from "@/lib/openharness/runtime-store.ts";
+} from "@/lib/hermes/runtime-store.ts";
 import {
   authorizeQuartzAccess,
   assembleQuartzContext,
@@ -27,20 +28,20 @@ import {
   newClientToken,
   quartzSystemContext,
   type QuartzGraphInput,
-} from "@/lib/openharness/quartz-support.ts";
-import { resolveCommandMessage } from "@/lib/openharness/commands.ts";
-import { resolveOpenHarnessEngine } from "@/lib/openharness/model-selection.ts";
-import { prepareTurn, mergeSelectedTools } from "@/lib/openharness/dispatch-core.ts";
-import { listFilesystemGrants } from "@/lib/openharness/filesystem-grant-store.ts";
-import { composeOpenHarnessSystemPrompt } from "@/lib/openharness/system-prompts.ts";
+} from "@/lib/hermes/quartz-support.ts";
+import { resolveCommandMessage } from "@/lib/hermes/commands.ts";
+import { resolveHermesEngine } from "@/lib/hermes/model-selection.ts";
+import { prepareTurn, mergeSelectedTools } from "@/lib/hermes/dispatch-core.ts";
+import { listFilesystemGrants } from "@/lib/hermes/filesystem-grant-store.ts";
+import { composeHermesSystemPrompt } from "@/lib/hermes/system-prompts.ts";
 import {
   createConversation,
   getConversationById,
   getConversationForUser,
 } from "@/lib/conversations/store.ts";
 import { startConversationTurn } from "@/lib/conversations/turn-service.ts";
-import { getRuntimeSessionById } from "@/lib/openharness/runtime-store.ts";
-import { resolveConversationRuntime } from "@/lib/openharness/session-service.ts";
+import { getRuntimeSessionById } from "@/lib/hermes/runtime-store.ts";
+import { resolveConversationRuntime } from "@/lib/hermes/session-service.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -58,7 +59,7 @@ export async function OPTIONS(request: Request) {
 }
 
 // POST: send a message from the Quartz page AI panel. The browser talks only to
-// this dashboard endpoint (never OpenHarness). On the first turn it creates a
+// this dashboard endpoint (never Hermes). On the first turn it creates a
 // page-scoped quartz_ai runtime session (anonymous readers get a client token
 // that binds the session to their browser) and enriches it with authorized page
 // context. Read-only by default; any write is a proposal via garden tools.
@@ -84,7 +85,7 @@ export async function POST(request: Request) {
     const prepareOnly = body.prepareOnly === true;
     // Same server-owned engine resolution as the terminal: the provider is
     // fixed and unknown model/effort values are rejected with a 400.
-    const engine = resolveOpenHarnessEngine(body.model, body.reasoningEffort);
+    const engine = resolveHermesEngine(body.model, body.reasoningEffort);
 
     // Access control + rate limiting (public readers).
     const { cluster } = authorizeQuartzAccess(gardenId, userId);
@@ -188,8 +189,13 @@ export async function POST(request: Request) {
           { headers: cors },
         );
       }
+      const priorRequests = listRuntimeMessages(session.row.id)
+        .filter((message) => message.role === "user")
+        .slice(-8)
+        .map((message) => message.content);
       const prepared = prepareTurn({
         request: text,
+        priorRequests,
         surface: "quartz_ai",
         userId,
         // Anonymous readers have no grants and are isolated; an authenticated
@@ -263,12 +269,14 @@ export async function POST(request: Request) {
         text: resolved.text,
         // The brokered map is authoritative; a selector may only narrow it.
         tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
-        system: composeOpenHarnessSystemPrompt({
+        system: composeHermesSystemPrompt({
           surface: "quartz_ai",
           decision,
+          userText: resolved.userText || text,
           additional: systemContext,
         }),
         model: engine.model,
+        modelIdentity: { modelID: engine.selectedModelID },
         variant: engine.variant,
       });
       return NextResponse.json(
@@ -374,12 +382,14 @@ export async function POST(request: Request) {
       text: resolved.text,
       // The brokered map is authoritative; a selector may only narrow it.
         tools: mergeSelectedTools(prepared.grant.allowedTools, resolved.tools),
-      system: composeOpenHarnessSystemPrompt({
+      system: composeHermesSystemPrompt({
         surface: "quartz_ai",
         decision,
+        userText: resolved.userText || text,
         additional: systemContext,
       }),
       model: engine.model,
+      modelIdentity: { modelID: engine.selectedModelID },
       variant: engine.variant,
     });
 

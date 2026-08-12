@@ -7,7 +7,7 @@ import type OpenAI from "openai";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import { withCouncil } from "@/lib/council";
 import {
-  DEFAULT_MODEL,
+  cleanGeneratedText,
   createChatmockClient,
   extractDocumentKnowledge,
   normalizeSourceFileIdentity,
@@ -18,10 +18,21 @@ import {
   type KnowledgeExtraction,
 } from "@/lib/knowledge";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
+import { selectedModelForUser } from "@/lib/selected-model";
 import {
   attachIngestTokenUsageTracking,
   emptyIngestTokenUsage,
 } from "@/lib/ingest-token-usage";
+import { ANYDOC_VERSION, convertWithAnydoc } from "@/lib/anydoc/convert";
+import type { AnydocImageSaver } from "@/lib/anydoc/convert";
+import { anydocFormatForExtension, anydocPageLabel } from "@/lib/anydoc/formats";
+import { getVlmOcrConfig } from "@/lib/vlm-ocr/config";
+import { VlmOcrDisabledError, VlmOcrUnavailableError } from "@/lib/vlm-ocr/errors";
+import { parsePagesWithVlm } from "@/lib/vlm-ocr/parse";
+import type { FigureSaver } from "@/lib/vlm-ocr/figures";
+import { DEFAULT_VLM_OCR_TASK, isVlmOcrTask } from "@/lib/vlm-ocr/prompts";
+import type { VlmOcrTask } from "@/lib/vlm-ocr/prompts";
+import { toBreadboardMarkdown } from "@/lib/vlm-ocr/quartz-safe";
 
 export const dynamic = "force-dynamic";
 
@@ -578,12 +589,14 @@ function chunkLabel(chunk: MarkdownChunk): string {
 
 async function formatPdfPagesAsMarkdown({
   client,
+  model,
   title,
   pages,
   signal,
   onProgress,
 }: {
   client: OpenAI;
+  model: string;
   title: string;
   pages: DocumentPage[];
   signal?: AbortSignal;
@@ -606,7 +619,7 @@ async function formatPdfPagesAsMarkdown({
 
     try {
       const response = await client.chat.completions.create(withCouncil({
-        model: DEFAULT_MODEL,
+        model,
         messages: [
           {
             role: "system",
@@ -740,6 +753,77 @@ function saveUploadedPdfAsset({
   };
 }
 
+/**
+ * Persist a figure the VLM located on a page. Crops live beside the page
+ * snapshots so a deleted document takes its figures with it.
+ */
+function vlmFigureSaver({
+  contentPath,
+  clusterSlug,
+  baseName,
+  createdFilePaths,
+}: {
+  contentPath: string;
+  clusterSlug: string;
+  baseName: string;
+  createdFilePaths: string[];
+}): FigureSaver {
+  return ({ png, pageNumber, index, caption }) => {
+    try {
+      const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
+      fs.mkdirSync(assetDir, { recursive: true });
+      const label = caption
+        ? `page-${String(pageNumber).padStart(3, "0")}-${caption.slice(0, 48)}`
+        : `page-${String(pageNumber).padStart(3, "0")}-figure-${index}`;
+      const filePath = uniqueAssetPath(assetDir, slugify(`${baseName}-${label}`), "png");
+      fs.writeFileSync(filePath, png);
+      createdFilePaths.push(filePath);
+      return { path: `/${clusterSlug.trim()}/assets/${path.basename(filePath)}` };
+    } catch {
+      // A figure that cannot be written is reported as skipped, not fatal.
+      return null;
+    }
+  };
+}
+
+/**
+ * Persist an image anydoc pulled out of a document package. Markdown cannot
+ * embed bytes, so anydoc leaves an embedded picture as its alt text and keeps
+ * the bytes on the document model; these land beside the page snapshots so a
+ * deleted document takes them with it.
+ */
+function anydocImageSaver({
+  contentPath,
+  clusterSlug,
+  baseName,
+  createdFilePaths,
+}: {
+  contentPath: string;
+  clusterSlug: string;
+  baseName: string;
+  createdFilePaths: string[];
+}): AnydocImageSaver {
+  return ({ index, mediaType, data }) => {
+    try {
+      const assetDir = path.join(contentPath, clusterSlug.trim(), "assets");
+      fs.mkdirSync(assetDir, { recursive: true });
+      const ext = mediaType.split("/")[1]?.split("+")[0]?.toLowerCase() || "png";
+      const label = `image-${String(index).padStart(3, "0")}`;
+      const filePath = uniqueAssetPath(
+        assetDir,
+        slugify(`${baseName}-${label}`),
+        ext.replace(/[^a-z0-9]/g, "") || "png",
+      );
+      fs.writeFileSync(filePath, data);
+      createdFilePaths.push(filePath);
+      return `/${clusterSlug.trim()}/assets/${path.basename(filePath)}`;
+    } catch {
+      // An image that cannot be written is reported as skipped, not fatal.
+      return null;
+    }
+  };
+}
+
 function pageNumberFromLabel(label: string): number | undefined {
   const cleanLabel = label.trim();
   const prefixed = [
@@ -863,17 +947,19 @@ function ocrUnavailableMarkdown(
 
 async function transcribePageImage({
   client,
+  model,
   dataUrl,
   label,
   isHandwriting,
 }: {
   client: OpenAI;
+  model: string;
   dataUrl: string;
   label: string;
   isHandwriting: boolean;
 }): Promise<string> {
   const response = await client.chat.completions.create(withCouncil({
-    model: DEFAULT_MODEL,
+    model,
     messages: [
       {
         role: "user",
@@ -1000,6 +1086,7 @@ async function getPdfTextPages(
 
 async function transcribePdfPages(
   client: OpenAI,
+  model: string,
   screenshots: PdfScreenshotPage[],
   signal?: AbortSignal,
   onProgress?: (step: string) => void,
@@ -1022,6 +1109,7 @@ async function transcribePdfPages(
           label,
           text: await transcribePageImage({
             client,
+            model,
             dataUrl: page.dataUrl,
             label,
             isHandwriting: true,
@@ -1065,6 +1153,31 @@ async function transcribePdfPages(
         ? `Handwriting OCR failed for ${warnings.length} page${warnings.length === 1 ? "" : "s"}: ${warnings.join("; ")}`
         : "",
   };
+}
+
+/**
+ * `writeDocumentKnowledge` runs `cleanGeneratedText` over whatever markdown it
+ * is given, so run it here first and re-check the result: that way the markdown
+ * whose math and HTML we verified is byte-identical to the markdown on disk
+ * (both passes are idempotent).
+ */
+function finalizeVlmMarkdown(markdown: string): {
+  markdown: string;
+  warnings: string[];
+} {
+  const result = toBreadboardMarkdown(cleanGeneratedText(markdown));
+  return { markdown: result.markdown, warnings: result.warnings };
+}
+
+function joinWarnings(existing: string, addition: string): string {
+  if (!addition.trim()) return existing;
+  return existing ? `${existing} ${addition}` : addition;
+}
+
+function isVlmSetupError(error: unknown): boolean {
+  return (
+    error instanceof VlmOcrUnavailableError || error instanceof VlmOcrDisabledError
+  );
 }
 
 function stripXml(xml: string): string {
@@ -1181,7 +1294,11 @@ async function runIngest({
   ext,
   nameWithoutExt,
   source,
+  model,
   isHandwriting,
+  parseWithVlm,
+  parseWithAnydoc,
+  vlmTask,
   generateMap,
   createdFilePaths,
   createdMarkdownPaths,
@@ -1196,7 +1313,12 @@ async function runIngest({
   ext: string;
   nameWithoutExt: string;
   source: string;
+  /** The model the signed-in user currently has selected. */
+  model: string;
   isHandwriting: boolean;
+  parseWithVlm: boolean;
+  parseWithAnydoc: boolean;
+  vlmTask: VlmOcrTask;
   generateMap: boolean;
   createdFilePaths: string[];
   createdMarkdownPaths: string[];
@@ -1235,18 +1357,111 @@ async function runIngest({
   let visionError = "";
   let sourcePdfPath: string | undefined;
   let skipKnowledgeExtraction = false;
+  // Pictures pulled out of the document: figures the VLM cropped off a page, or
+  // images anydoc lifted out of a document package.
+  let figureCount = 0;
 
-  if (isImageExt(ext)) {
+  // The VLM reads pixels, so it only applies to formats that rasterize.
+  const useVlm = parseWithVlm && (isImageExt(ext) || ext === "pdf");
+  if (parseWithVlm && !useVlm) {
+    screenshotWarning = joinWarnings(
+      screenshotWarning,
+      `${filename} is not a page-based file, so it was read directly instead of with the VLM.`,
+    );
+  }
+
+  // anydoc reads document packages, so it applies to everything the VLM does
+  // not — and to PDFs with a text layer, where the VLM still wins if both were
+  // asked for (it is the one that can read a page the text layer lies about).
+  const anydocFormat = parseWithAnydoc ? anydocFormatForExtension(ext) : null;
+  const useAnydoc = Boolean(anydocFormat) && !useVlm;
+  if (parseWithAnydoc && !anydocFormat) {
+    screenshotWarning = joinWarnings(
+      screenshotWarning,
+      `${filename} is not a format anydoc converts, so it was read directly instead.`,
+    );
+  }
+
+  if (useAnydoc) {
+    throwIfRequestAborted(request.signal);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    // A PDF keeps its original beside the note: anydoc reads the text layer,
+    // not the rendered page, so the source is the only way back to the layout.
+    if (ext === "pdf") {
+      sourcePdfPath = saveUploadedPdfAsset({
+        contentPath,
+        clusterSlug: normalizedClusterSlug,
+        baseName: nameWithoutExt,
+        buffer,
+        createdFilePaths,
+      }).relativePath;
+    }
+
+    const conversion = await convertWithAnydoc({
+      bytes: buffer,
+      ext,
+      saveImage: anydocImageSaver({
+        contentPath,
+        clusterSlug: normalizedClusterSlug,
+        baseName: nameWithoutExt,
+        createdFilePaths,
+      }),
+      onProgress: emit,
+    });
+    throwIfRequestAborted(request.signal);
+
+    pages =
+      conversion.sections.length > 0
+        ? conversion.sections.map((section) => ({
+            label: section.label,
+            text: section.text,
+          }))
+        : [{ label: anydocPageLabel(conversion.format), text: "" }];
+    plainText = pagePlainText(pages);
+    markdownText = sourcePdfPath
+      ? `${conversion.markdown}\n\n## Source\n\n[${nameWithoutExt}](${sourcePdfPath})`
+      : conversion.markdown;
+    figureCount = conversion.imagePaths.length;
+    screenshotWarning = joinWarnings(
+      screenshotWarning,
+      conversion.warnings.join(" "),
+    );
+  } else if (isImageExt(ext)) {
     throwIfRequestAborted(request.signal);
     const arrayBuffer = await file.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
     const dataUrl = `${mimeToBase64Prefix(file.type, ext)}${base64}`;
 
-    if (generateMap) emit("Transcribing the image with vision…");
-    if (generateMap) {
+    let vlmImageMarkdown = "";
+    if (useVlm) {
+      emit("Parsing the image with the VLM…");
+      const vlm = await parsePagesWithVlm({
+        config: getVlmOcrConfig(),
+        pages: [{ label: "Image", pageNumber: 1, dataUrl }],
+        task: vlmTask,
+        signal: request.signal,
+        onProgress: emit,
+        saveFigure: vlmFigureSaver({
+          contentPath,
+          clusterSlug: normalizedClusterSlug,
+          baseName: nameWithoutExt,
+          createdFilePaths,
+        }),
+      });
+      plainText = vlm.pages[0]?.text ?? "";
+      figureCount = vlm.figureCount;
+      vlmImageMarkdown = vlm.markdown;
+      screenshotWarning = joinWarnings(
+        screenshotWarning,
+        vlm.warnings.join(" "),
+      );
+      if (vlm.failedPages > 0) skipKnowledgeExtraction = true;
+    } else if (generateMap) {
+      emit("Transcribing the image with vision…");
       try {
         plainText = await transcribePageImage({
           client: client!,
+          model,
           dataUrl,
           label: "Image",
           isHandwriting,
@@ -1276,7 +1491,20 @@ async function runIngest({
         imageAlt: nameWithoutExt,
       },
     ];
-    markdownText = pageMarkdown(pages);
+    if (vlmImageMarkdown) {
+      // The VLM already emits the `## Image` heading, so only the source
+      // snapshot needs adding on top of its markdown.
+      const finalized = finalizeVlmMarkdown(
+        `![${nameWithoutExt}](${imageAsset.relativePath})\n\n${vlmImageMarkdown}`,
+      );
+      markdownText = finalized.markdown;
+      screenshotWarning = joinWarnings(
+        screenshotWarning,
+        finalized.warnings.join(" "),
+      );
+    } else {
+      markdownText = pageMarkdown(pages);
+    }
   } else if (ext === "pdf") {
     throwIfRequestAborted(request.signal);
     const arrayBuffer = await file.arrayBuffer();
@@ -1289,7 +1517,74 @@ async function runIngest({
       createdFilePaths,
     }).relativePath;
     try {
-      if (!generateMap) {
+      if (useVlm) {
+        const vlmConfig = getVlmOcrConfig();
+        emit("Rendering PDF pages for the VLM…");
+        const screenshots = await getPdfScreenshotPages(buffer, {
+          desiredWidth: vlmConfig.pageImageWidth,
+        });
+        if (screenshots.length === 0) {
+          throw new Error(
+            "The PDF produced no page images, so the VLM had nothing to read.",
+          );
+        }
+
+        const vlm = await parsePagesWithVlm({
+          config: vlmConfig,
+          pages: screenshots.map((screenshot) => ({
+            label: `Page ${screenshot.pageNumber}`,
+            pageNumber: screenshot.pageNumber,
+            dataUrl: screenshot.dataUrl,
+          })),
+          task: vlmTask,
+          signal: request.signal,
+          onProgress: emit,
+          saveFigure: vlmFigureSaver({
+            contentPath,
+            clusterSlug: normalizedClusterSlug,
+            baseName: nameWithoutExt,
+            createdFilePaths,
+          }),
+        });
+
+        pages = vlm.pages.map((page) => ({
+          label: page.label,
+          text: page.text,
+        }));
+        plainText = pagePlainText(pages);
+        figureCount = vlm.figureCount;
+        screenshotWarning = joinWarnings(
+          screenshotWarning,
+          vlm.warnings.join(" "),
+        );
+        if (vlm.pages.length > 0 && vlm.failedPages === vlm.pages.length) {
+          skipKnowledgeExtraction = true;
+        }
+
+        throwIfRequestAborted(request.signal);
+        const snapshotPages = screenshots.slice(0, PDF_SOURCE_SNAPSHOT_LIMIT);
+        pages = attachPdfScreenshotAssets({
+          pages,
+          screenshots: snapshotPages,
+          contentPath,
+          clusterSlug: normalizedClusterSlug,
+          sourceTitle: nameWithoutExt,
+          createdFilePaths,
+        });
+        if (screenshots.length > snapshotPages.length) {
+          screenshotWarning = joinWarnings(
+            screenshotWarning,
+            `Saved source snapshots for the first ${snapshotPages.length} page${snapshotPages.length === 1 ? "" : "s"} to keep the upload stable. The VLM still parsed ${screenshots.length} pages.`,
+          );
+        }
+
+        const finalized = finalizeVlmMarkdown(vlm.markdown);
+        screenshotWarning = joinWarnings(
+          screenshotWarning,
+          finalized.warnings.join(" "),
+        );
+        markdownText = appendSnapshots(finalized.markdown, pages);
+      } else if (!generateMap) {
         emit("Extracting text from the PDF…");
         const extractedPdf = await getPdfTextPages(buffer);
         plainText = extractedPdf.text;
@@ -1314,6 +1609,7 @@ async function runIngest({
           emit(`Reading handwriting with OCR (0/${screenshots.length} pages)…`);
           const transcription = await transcribePdfPages(
             client!,
+            model,
             screenshots,
             request.signal,
             emit,
@@ -1426,6 +1722,7 @@ async function runIngest({
           });
           const formattedPdf = await formatPdfPagesAsMarkdown({
             client: client!,
+            model,
             title: nameWithoutExt,
             pages,
             signal: request.signal,
@@ -1448,6 +1745,10 @@ async function runIngest({
       ) {
         throw error;
       }
+      // A missing or unstartable model server is a setup problem, not a
+      // problem with this document — surface it instead of quietly saving a
+      // stub note the user would have to notice on their own.
+      if (isVlmSetupError(error)) throw error;
       const reason =
         error instanceof Error ? error.message : "PDF extraction failed.";
       skipKnowledgeExtraction = true;
@@ -1497,6 +1798,7 @@ async function runIngest({
     try {
       extraction = await extractDocumentKnowledge({
         client: client!,
+        model,
         title: nameWithoutExt,
         sourceType: ext || "text",
         sourceLabel: source,
@@ -1539,6 +1841,7 @@ async function runIngest({
   emit("Saving notes to your garden…");
   const saved = await writeDocumentKnowledge({
     client,
+    model,
     contentPath,
     clusterSlug: normalizedClusterSlug,
     sourceTitle: nameWithoutExt,
@@ -1551,6 +1854,19 @@ async function runIngest({
     plainText,
     pages,
     extraction,
+    sourceMetadata: useVlm
+      ? {
+          extraction_method: "hunyuan-ocr-gguf",
+          parse_mode: "vlm",
+          vlm_task: vlmTask,
+        }
+      : useAnydoc
+        ? {
+            extraction_method: `anydoc-${ANYDOC_VERSION}`,
+            parse_mode: "anydoc",
+            anydoc_format: anydocFormat ?? ext,
+          }
+        : undefined,
     abortSignal: request.signal,
     createdFilePaths: createdMarkdownPaths,
     onProgress: emit,
@@ -1566,6 +1882,7 @@ async function runIngest({
     wordCount: saved.wordCount,
     topicCount: saved.topics.length,
     imageCount,
+    figureCount,
     visionError: visionError || undefined,
     screenshotWarning: screenshotWarning || undefined,
     mapGenerationWarning: mapGenerationWarning || undefined,
@@ -1597,6 +1914,20 @@ export async function POST(request: Request) {
   const sourceLabel = formData.get("sourceLabel");
   const isHandwriting = formData.get("isHandwriting") === "true";
   const generateMap = formData.get("generateMap") !== "false"; // default true
+  // "Parse using VLM": read the pages with the local HunyuanOCR GGUF instead of
+  // pdf-parse or ChatMock vision. Orthogonal to map generation.
+  const parseWithVlm =
+    formData.get("parseWithVlm") === "true" ||
+    formData.get("parseMode") === "vlm";
+  // "Parse with anydoc": convert the document package to Markdown with the
+  // anydoc bindings instead of the hand-rolled per-format text extractors.
+  const parseWithAnydoc =
+    formData.get("parseWithAnydoc") === "true" ||
+    formData.get("parseMode") === "anydoc";
+  const rawVlmTask = formData.get("vlmTask");
+  const vlmTask: VlmOcrTask = isVlmOcrTask(rawVlmTask)
+    ? rawVlmTask
+    : DEFAULT_VLM_OCR_TASK;
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "file is required" }, { status: 400 });
@@ -1609,11 +1940,15 @@ export async function POST(request: Request) {
   }
 
   let cluster;
+  let userId: number;
   try {
-    ({ cluster } = await requireOwnedClusterFromSlug(clusterSlug));
+    ({ cluster, userId } = await requireOwnedClusterFromSlug(clusterSlug));
   } catch (err) {
     return routeErrorResponse(err);
   }
+  // Every ChatMock call in this pipeline runs on whatever the user picked in
+  // the Intelligence menu, not on a constant baked into the route.
+  const model = selectedModelForUser(userId);
 
   const contentPath = process.env.QUARTZ_CONTENT_PATH;
   if (!contentPath) {
@@ -1675,7 +2010,11 @@ export async function POST(request: Request) {
           ext,
           nameWithoutExt,
           source,
+          model,
           isHandwriting,
+          parseWithVlm,
+          parseWithAnydoc,
+          vlmTask,
           generateMap,
           createdFilePaths,
           createdMarkdownPaths,

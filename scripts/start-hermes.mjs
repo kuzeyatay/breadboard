@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Cross-platform launcher for the Hermes agent runtime (development stack).
 //
-// Hermes is the runtime-neutral replacement for OpenHarness behind Breadboard's
-// AgentRuntime abstraction (see docs/HERMES_RUNTIME_MIGRATION.md). It binds to
+// Hermes is Breadboard's conversational runtime behind the AgentRuntime
+// abstraction. It binds to
 // 127.0.0.1 only and authenticates every dashboard request with a bearer
 // session token. The packaged desktop app supervises its own bundled Hermes;
 // this launcher is the equivalent for `npm run dev` against the repo checkout.
@@ -54,7 +54,7 @@ const hermesHome =
 mkdirSync(hermesHome, { recursive: true });
 
 const chatmockBaseUrl = process.env.CHATMOCK_BASE_URL || "http://127.0.0.1:8765/v1";
-const chatmockModel = process.env.CHATMOCK_MODEL || "gpt-5.6-sol";
+const chatmockModel = process.env.CHATMOCK_MODEL || "default";
 
 // Hermes reads its provider/toolset/memory profile from HERMES_HOME/config.yaml;
 // the env vars alone leave it with "No LLM provider configured". This mirrors
@@ -68,8 +68,39 @@ writeFileSync(
     `  default: ${JSON.stringify(chatmockModel)}`,
     "  provider: custom",
     `  base_url: ${JSON.stringify(chatmockBaseUrl)}`,
+    // image_input_mode: native (below) governs the attach step, but a second
+    // capability gate runs when the API request is built
+    // (run_agent._prepare_messages_for_non_vision_model), and it treats
+    // unknown vision capability as "no vision" — custom providers are never
+    // in models.dev, so it stripped the just-attached pixels on every turn.
+    // Declaring the capability satisfies that gate; it is honest because
+    // every route ChatMock serves can carry images (Gemini/OpenAI-compat
+    // pass-through, Claude via the CLI Read-file bridge).
+    "  supports_vision: true",
     "toolsets:",
     "  - breadboard",
+    "  - web",
+    "web:",
+    "  search_backend: ddgs",
+    // Hermes ships a Mixture-of-Agents preset named "default" and, when no
+    // provider is given, a plain model switch to a name matching an enabled
+    // preset pivots the session onto the MoA virtual provider. Breadboard sends
+    // exactly that string: every provider-prefixed model (`cliproxy/gemini-…`,
+    // `anthropic/claude-…`) is addressed through ChatMock's `default` sentinel,
+    // so picking one silently rerouted the turn to MoA's own reference models —
+    // OpenRouter and Codex, neither of which has credentials here — and the
+    // turn died with "HTTP 401: Missing Authentication header". Breadboard does
+    // its own multi-model work inside ChatMock's council, so MoA is off.
+    //
+    // The per-preset flag is the one that matters: `load_config()` merges
+    // Hermes's defaults, which already define `moa.presets.default`, and
+    // `normalize_moa_config` reads the top-level `enabled` only when no
+    // `presets` map exists. Setting just the top-level flag is a no-op here.
+    "moa:",
+    "  enabled: false",
+    "  presets:",
+    "    default:",
+    "      enabled: false",
     "memory:",
     "  memory_enabled: false",
     "  user_profile_enabled: false",
@@ -78,8 +109,23 @@ writeFileSync(
     "  busy_input_mode: steer",
     "  busy_steer_ack_enabled: false",
     "  memory_notifications: off",
+    // Keep the full Breadboard tool catalog reachable without attaching all
+    // of its schemas to every model request. This is required for Google
+    // subscription models, whose gateway rejects the otherwise healthy turn
+    // with RESOURCE_EXHAUSTED.
+    "tools:",
+    "  tool_search:",
+    "    enabled: on",
     "agent:",
     "  coding_context: off",
+    // An attached image must reach the model as pixels. Hermes' "auto" image
+    // routing asks models.dev whether the active model has vision, and every
+    // Breadboard model is addressed as provider `custom` — a name models.dev
+    // has never heard of — so auto always resolved to "text": the image was
+    // replaced by a `vision_analyze` summary, and when that side call failed
+    // the model was told to call `vision_analyze` itself, which no Breadboard
+    // session enables.
+    "  image_input_mode: native",
     "",
   ].join("\n"),
   { encoding: "utf8" },
@@ -99,11 +145,11 @@ const env = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || chatmockBaseUrl,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || "local",
   CHATMOCK_BASE_URL: chatmockBaseUrl,
-  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "gpt-5.6-sol",
+  CHATMOCK_MODEL: process.env.CHATMOCK_MODEL || "default",
 };
 
 // Reuse an already-running instance instead of failing to bind the port
-// (mirrors the OpenHarness and Scriberr launchers).
+// (mirrors the Scriberr launcher).
 async function probeExistingServer() {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/status`, {

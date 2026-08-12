@@ -198,6 +198,18 @@
       white-space: pre-wrap;
       line-height: 1.5;
       font-size: 0.85rem;
+
+      // Links read blue and underlined in both user and assistant messages.
+      a {
+        color: #93c5fd;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        overflow-wrap: anywhere;
+
+        &:hover {
+          color: #bfdbfe;
+        }
+      }
     }
     .breadboard-ai-user {
       align-self: flex-end;

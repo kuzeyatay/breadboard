@@ -17,16 +17,16 @@ test("defaults generate strong distinct secrets", () => {
   const a = defaultPersistentConfig();
   const b = defaultPersistentConfig();
   assert.ok(a.nextAuthSecret.length >= 32);
-  assert.ok(a.openharnessPassword.length >= 24);
   assert.notEqual(a.nextAuthSecret, b.nextAuthSecret);
-  assert.notEqual(a.nextAuthSecret, a.openharnessPassword);
-  assert.equal(a.openharnessMode, "required");
-  assert.equal(a.agentRuntime, "hermes");
-  assert.equal(a.agentRuntimeFallback, null);
   assert.ok(a.hermesSessionToken.length >= 32);
   assert.ok(a.hermesToolSecret.length >= 32);
+  assert.ok(a.hermesCapabilitySecret.length >= 32);
   assert.notEqual(a.hermesSessionToken, b.hermesSessionToken);
-  assert.equal(a.scriberrEnabled, false);
+  assert.notEqual(a.hermesCapabilitySecret, b.hermesCapabilitySecret);
+  assert.equal(a.scriberrEnabled, true);
+  assert.equal(a.scriberrUsername, "breadboard");
+  assert.ok(a.scriberrPassword.length >= 24);
+  assert.notEqual(a.scriberrPassword, b.scriberrPassword);
 });
 
 test("load-or-create persists and reloads the same config", () => {
@@ -36,25 +36,31 @@ test("load-or-create persists and reloads the same config", () => {
   assert.deepEqual(created, reloaded);
 });
 
-test("validation rejects missing secrets and bad modes", () => {
+test("validation rejects missing secrets and unsupported versions", () => {
   assert.throws(() => validatePersistentConfig(null));
-  assert.throws(() => validatePersistentConfig({ version: 1 }));
+  assert.throws(() => validatePersistentConfig({ version: 2 }));
   const valid = defaultPersistentConfig();
-  assert.throws(() =>
-    validatePersistentConfig({ ...valid, openharnessMode: "sometimes" }),
-  );
-  assert.throws(() =>
-    validatePersistentConfig({ ...valid, agentRuntime: "something-else" }),
-  );
-  assert.throws(() =>
-    validatePersistentConfig({
-      ...valid,
-      agentRuntime: "hermes",
-      agentRuntimeFallback: "hermes",
-    }),
-  );
-  assert.throws(() => validatePersistentConfig({ ...valid, version: 2 }));
+  assert.throws(() => validatePersistentConfig({ ...valid, version: 3 }));
   assert.deepEqual(validatePersistentConfig({ ...valid }), valid);
+});
+
+test("version 1 configs migrate their runtime secrets to Hermes", () => {
+  const current = defaultPersistentConfig();
+  const legacyPrefix = ["open", "harness"].join("");
+  const legacyToolSecret = "t".repeat(48);
+  const legacyCapabilitySecret = "c".repeat(48);
+  const legacy = {
+    ...current,
+    version: 1,
+    hermesToolSecret: undefined,
+    hermesCapabilitySecret: undefined,
+    [`${legacyPrefix}ToolSecret`]: legacyToolSecret,
+    [`${legacyPrefix}CapabilitySecret`]: legacyCapabilitySecret,
+  };
+  const migrated = validatePersistentConfig(legacy);
+  assert.equal(migrated.version, 2);
+  assert.equal(migrated.hermesToolSecret, legacyToolSecret);
+  assert.equal(migrated.hermesCapabilitySecret, legacyCapabilitySecret);
 });
 
 test("save uses atomic replace and keeps file valid", () => {
@@ -79,14 +85,13 @@ test("atomicWriteFile replaces content wholly", () => {
 
 test("log redaction removes every secret", () => {
   const config = defaultPersistentConfig();
-  const line = `auth=${config.openharnessPassword} token=${config.openharnessToolSecret} n=${config.nextAuthSecret} c=${config.openharnessCapabilitySecret} hs=${config.hermesSessionToken} ht=${config.hermesToolSecret}`;
+  const line = `n=${config.nextAuthSecret} c=${config.hermesCapabilitySecret} hs=${config.hermesSessionToken} ht=${config.hermesToolSecret} scriberr=${config.scriberrPassword}`;
   const clean = redactSecrets(line, config);
-  assert.ok(!clean.includes(config.openharnessPassword));
-  assert.ok(!clean.includes(config.openharnessToolSecret));
   assert.ok(!clean.includes(config.nextAuthSecret));
-  assert.ok(!clean.includes(config.openharnessCapabilitySecret));
+  assert.ok(!clean.includes(config.hermesCapabilitySecret));
   assert.ok(!clean.includes(config.hermesSessionToken));
   assert.ok(!clean.includes(config.hermesToolSecret));
+  assert.ok(!clean.includes(config.scriberrPassword));
   assert.ok(clean.includes("[redacted]"));
 });
 
@@ -98,18 +103,18 @@ test("diagnostics summary exposes no secret values", () => {
       ports: {
         dashboard: 3000,
         chatmock: 8765,
-        openharness: 4096,
         hermes: 9119,
+        postiz: 4007,
+        postizSupervisor: 7721,
         quartz: 8081,
         quartzWs: 3001,
       },
     }),
   );
   assert.ok(!summary.includes(persistent.nextAuthSecret));
-  assert.ok(!summary.includes(persistent.openharnessPassword));
-  assert.ok(!summary.includes(persistent.openharnessToolSecret));
-  assert.ok(!summary.includes(persistent.openharnessCapabilitySecret));
+  assert.ok(!summary.includes(persistent.hermesCapabilitySecret));
   assert.ok(!summary.includes(persistent.hermesSessionToken));
   assert.ok(!summary.includes(persistent.hermesToolSecret));
+  assert.ok(!summary.includes(persistent.scriberrPassword));
   assert.ok(!summary.includes('"hermes":9119'));
 });

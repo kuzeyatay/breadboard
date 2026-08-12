@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Schibsted_Grotesk, Source_Sans_3 } from "next/font/google";
 import { Suspense } from "react";
+import AppThemeRuntime from "@/app/components/app-theme-runtime";
 import DesktopTitleBar from "@/app/components/desktop-title-bar";
 import NavigationProgress from "@/app/components/navigation-progress";
+import NavigationTrail from "@/app/components/navigation-trail";
+import RecallAutoStart from "@/app/components/recall-autostart";
 import "./globals.css";
 import "katex/dist/katex.min.css";
 
@@ -21,6 +24,8 @@ const ibmPlexMono = IBM_Plex_Mono({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
 });
+
+const themeInitializationScript = `try{const theme=localStorage.getItem("breadboard:theme");if(theme==="dark")document.documentElement.dataset.theme="dark"}catch{}`;
 
 export const metadata: Metadata = {
   title: "breadboard",
@@ -49,11 +54,18 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${sourceSans.variable} ${schibsted.variable} ${ibmPlexMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitializationScript }} />
+      </head>
       <body className="min-h-full flex flex-col">
+        <AppThemeRuntime />
+        <RecallAutoStart />
         <DesktopTitleBar />
         <Suspense fallback={null}>
           <NavigationProgress />
+          <NavigationTrail />
         </Suspense>
         {children}
       </body>

@@ -1,32 +1,222 @@
-# Breadboard Council run ledgers (JSONL/JSON, dev persistence)
-.breadboard/
+# ---------------------------------------------------------------------------
+# Secrets and machine-local configuration
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env*.example
+*.pem
+recall/api-key
 
-# OpenHarness runtime workspaces + skill quarantine (server-controlled, transient)
-.runtime/
-openharness-skills/quarantine/
-openharness-skills/approved/
+# ---------------------------------------------------------------------------
+# OS and editor clutter
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+
+# ---------------------------------------------------------------------------
+# Dependencies — never commit, reinstall via npm/bun/uv install
+# ---------------------------------------------------------------------------
+node_modules/
+.pnp
+.pnp.*
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ---------------------------------------------------------------------------
+# Tool caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.turbo/
+.quartz-cache/
+.vercel/
+
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+.next/
+.next-*/
+out/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+*.log
+
+# App Router route segments are directories, and some of them are named after
+# build output ("…/api/document-skills/build"). Those are source, so the rules
+# above must not reach inside the dashboard's source tree.
+!dashboard/src/**/out/
+!dashboard/src/**/dist/
+!dashboard/src/**/build/
+!dashboard/src/**/coverage/
 
 # Desktop shell build artifacts
 desktop/node_modules/
 desktop/dist/
 desktop/dist-tests/
 desktop/build-resources/
+desktop/resources/bin/
 desktop/release/
 
-# Desktop-mode Next build output
-dashboard/.next-desktop/
+# Playwright/vitest output (screenshots, traces, HTML reports)
+dashboard/test-results/
+dashboard/playwright-report/
 
-# GBrain adapter dependencies
-gbrain-adapter/node_modules/
-gbrain/node_modules/
-
-# Dependencies — never commit, reinstall via npm/bun install
-node_modules/
-
-# Databases — generated at runtime / by sync-skills-catalog.ts
+# ---------------------------------------------------------------------------
+# Databases and runtime state
+# ---------------------------------------------------------------------------
 *.db
 *.db-wal
 *.db-shm
 
-# Quartz build cache
-.quartz-cache/
+# Breadboard Council run ledgers (JSONL/JSON, dev persistence)
+.breadboard/
+
+# Hermes runtime workspaces + skill quarantine (server-controlled, transient)
+.runtime/
+hermes-skills/quarantine/
+hermes-skills/approved/
+.agents/skills-quarantine/
+
+# screenpipe install: its binary, capture data, minted bearer key and log.
+# Everything under here is installed or written at runtime. Anchored, so the
+# dashboard's own recall API routes are untouched.
+/recall/
+
+# Ruflo swarm state written into whichever repository a swarm runs in
+.hive-mind/
+.swarm/
+.claude-flow/
+
+# ---------------------------------------------------------------------------
+# Vendored upstream clones that carry their own .git
+#
+# These are checkouts of other projects, not submodules. Committing them would
+# either embed a bare gitlink or duplicate someone else's history here, so the
+# whole directory stays out of this repository. Vendored trees WITHOUT their
+# own .git (quartz/, gbrain/, openharness/, reader/, scriberr/, OfficeCLI/, …)
+# are deliberately committed and are not listed here.
+# ---------------------------------------------------------------------------
+/AI-Youtube-Shorts-Generator/
+/DeepTutor/
+/MoneyPrinterTurbo/
+/OpenMontage/
+/OpenPlanter/
+/ShapeR/
+/Vibe-Trading/
+/agent-loop-engineering-kit/
+/agent-reach/
+/agent-skills/
+/anydoc/
+/audio-analyzer-rs/
+/auto-claude-code-research-in-sleep/
+/book-to-skill/
+/career-ops/
+/codex/
+/comfyui/
+/daily_stock_analysis/
+/deep-research/
+/deer-flow/
+/emilkowalski-skills/
+/hallmark/
+/harvey-labs/
+/hermes-agent/
+/hyperframes/
+/iFixAi/
+/inbox-zero/
+/loopx/
+/manim/
+/mem0/
+/meta-prompting/
+/n8n/
+/nango/
+/oh-my-hermes/
+/open-alpha-arena/
+/opencode/
+/openscience/
+/openwork/
+/penecho/
+/postiz-app/
+/premortem/
+/prompt-engineering-guide/
+/reverse-skill/
+/ruflo/
+/scientific-agent-skills/
+/screenpipe/
+/stable-fast-3d/
+/subsai/
+/tradingagents/
+/unslop/
+/video-use/
+/vimax/
+/voicebox/
+/watch/
+
+# ---------------------------------------------------------------------------
+# Per-agent generated workspaces, runs and installs
+#
+# Each of these is either something Breadboard installs for itself, a durable
+# workspace an agent works inside, or the deliverables of a run. None of it is
+# source, and some of it is large.
+# ---------------------------------------------------------------------------
+
+# Parametric CAD: the pinned Python environment lives under .runtime/ (already
+# ignored above); these are the generated project files.
+dashboard/cad-projects/
+
+# HyperFrames: the scaffolded video projects (with their renders) and the
+# HyperFrames CLI Breadboard installs into its own npm prefix.
+dashboard/hyperframes-runs/
+dashboard/hyperframes-cli/
+
+# OpenMontage productions are deliverables and are never pruned.
+dashboard/openmontage-runs/
+
+# OpenWork: the server Breadboard prepares out of the clone (source copy plus
+# its npm install), the durable workspace the agent works inside, and the
+# server's own config/tokens. All three are generated or user data.
+dashboard/openwork-runtime/
+dashboard/openwork-workspace/
+dashboard/openwork-state/
+
+# OpenScience: the pinned CLI Breadboard installs into its own npm prefix, the
+# durable research workspace the agent works inside (its own git root, so its
+# runs never treat this repository as their project), and the server's config,
+# sessions and logs. All three are generated or user data.
+dashboard/openscience-cli/
+dashboard/openscience-workspace/
+dashboard/openscience-state/
+
+# Shorts: the videos a person picks in the composer before a run exists, and
+# the downloads and cached transcripts a run reuses. Both are user data.
+dashboard/shorts-uploads/
+dashboard/shorts-work/
+
+# Video Use: the retained originals and per-artifact edit workspaces.
+dashboard/video-use/
+
+# Socials Manager: the Postiz credentials and the compose file Breadboard
+# writes for the stack it launches.
+dashboard/postiz/
+
+dashboard/loopx-goals/
+
+# ---------------------------------------------------------------------------
+# Chat and garden user data
+#
+# The databases, the artifacts a garden produced and the media a person
+# attached to a chat. All of it belongs to the running instance, not the repo.
+# The tracked screenshots and reports directly under dashboard/artifacts/ stay;
+# only the per-garden directories are ignored.
+# ---------------------------------------------------------------------------
+dashboard/db/
+dashboard/database/
+dashboard/artifacts/[0-9]*/
+dashboard/chat-videos/

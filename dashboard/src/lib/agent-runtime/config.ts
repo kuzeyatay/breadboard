@@ -5,6 +5,7 @@ export interface AgentRuntimeConfig {
   fallback: RuntimeKind | null;
   hermes: {
     baseUrl: string;
+    chatmockBaseUrl: string;
     sessionToken: string;
     requestTimeoutMs: number;
   };
@@ -12,24 +13,6 @@ export interface AgentRuntimeConfig {
 
 export class AgentRuntimeConfigError extends Error {
   readonly code = "invalid_agent_runtime_config";
-}
-
-function runtimeKind(
-  value: string | undefined,
-  fallback: RuntimeKind,
-): RuntimeKind {
-  const normalized = value?.trim().toLowerCase() || fallback;
-  if ((RUNTIME_KINDS as readonly string[]).includes(normalized)) {
-    return normalized as RuntimeKind;
-  }
-  throw new AgentRuntimeConfigError(
-    `Unsupported AGENT_RUNTIME value "${normalized}".`,
-  );
-}
-
-function optionalRuntimeKind(value: string | undefined): RuntimeKind | null {
-  if (!value?.trim() || value.trim().toLowerCase() === "none") return null;
-  return runtimeKind(value, "openharness");
 }
 
 function loopbackUrl(value: string): string {
@@ -58,19 +41,17 @@ function loopbackUrl(value: string): string {
 }
 
 export function readAgentRuntimeConfig(): AgentRuntimeConfig {
-  const runtime = runtimeKind(process.env.AGENT_RUNTIME, "openharness");
-  const fallback = optionalRuntimeKind(process.env.AGENT_RUNTIME_FALLBACK);
-  if (fallback === runtime) {
-    throw new AgentRuntimeConfigError(
-      "AGENT_RUNTIME_FALLBACK must differ from AGENT_RUNTIME.",
-    );
-  }
   return {
-    runtime,
-    fallback,
+    runtime: RUNTIME_KINDS[0],
+    fallback: null,
     hermes: {
       baseUrl: loopbackUrl(
         process.env.HERMES_BASE_URL?.trim() || "http://127.0.0.1:9119",
+      ),
+      chatmockBaseUrl: loopbackUrl(
+        process.env.CHATMOCK_BASE_URL?.trim() ||
+          process.env.OPENAI_LOCAL_BASE_URL?.trim() ||
+          "http://127.0.0.1:8765/v1",
       ),
       sessionToken: process.env.HERMES_DASHBOARD_SESSION_TOKEN ?? "",
       requestTimeoutMs:
@@ -79,4 +60,3 @@ export function readAgentRuntimeConfig(): AgentRuntimeConfig {
     },
   };
 }
-

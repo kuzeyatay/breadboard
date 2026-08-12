@@ -10,8 +10,11 @@ import requests
 from flask import Response, current_app, jsonify, make_response
 
 from .config import CHATGPT_RESPONSES_URL
+from .limits import parse_rate_limit_headers
 from .http import build_cors_headers
 from .model_registry import normalize_model_name
+from .accounts import note_account_exhausted, select_account
+from .failover import is_quota_error
 from .session import ensure_session_id
 from flask import request as flask_request
 from .utils import get_effective_chatgpt_auth
@@ -81,7 +84,10 @@ def start_upstream_request(
     reasoning_param: Dict[str, Any] | None = None,
     service_tier: str | None = None,
 ):
-    access_token, account_id = get_effective_chatgpt_auth()
+    account = select_account()
+    access_token, account_id = get_effective_chatgpt_auth(
+        (account.auth, account.path) if account is not None else None
+    )
     if not access_token or not account_id:
         resp = make_response(
             jsonify(
@@ -161,7 +167,10 @@ def start_upstream_raw_request(
     session_id: str | None = None,
     stream: bool = True,
 ):
-    access_token, account_id = get_effective_chatgpt_auth()
+    account = select_account()
+    access_token, account_id = get_effective_chatgpt_auth(
+        (account.auth, account.path) if account is not None else None
+    )
     if not access_token or not account_id:
         resp = make_response(
             jsonify(
@@ -265,9 +274,104 @@ def start_upstream_raw_request(
             if delay > 0:
                 time.sleep(delay)
             continue
+
+        # A 429 is not a transient failure to retry — this account's plan window
+        # is spent, possibly for days. Record that so the next request selects a
+        # different account, and hand the caller a sibling's answer instead of
+        # the rejection when one is available.
+        if status_code == 429 and account is not None:
+            detail = _quota_detail(upstream)
+            note_account_exhausted(account.key, reason=detail)
+            if verbose:
+                print(f"[ChatMock] account {account.label} is out of quota; trying the next one")
+            retry = _retry_with_next_account(
+                responses_payload,
+                effective_session_id,
+                stream=stream,
+                exhausted=account.key,
+            )
+            if retry is not None:
+                _close_quietly(upstream)
+                return retry, None
+
         return upstream, None
 
     raise AssertionError("upstream retry loop ended unexpectedly")
+
+
+def _quota_detail(upstream: Any) -> str:
+    """The upstream's own explanation of a 429, when it gives one."""
+    try:
+        body = upstream.json()
+        error = body.get("error") if isinstance(body, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:300]
+    except Exception:
+        pass
+    reset = None
+    try:
+        snapshot = parse_rate_limit_headers(upstream.headers)
+        if snapshot is not None and snapshot.primary is not None:
+            reset = snapshot.primary.resets_in_seconds
+    except Exception:
+        reset = None
+    return (
+        f"the plan's usage window is spent; it resets in about {int(reset) // 3600}h"
+        if isinstance(reset, (int, float)) and reset > 0
+        else "the plan's usage window is spent"
+    )
+
+
+def _retry_with_next_account(
+    responses_payload: Dict[str, Any],
+    session_id: str,
+    *,
+    stream: bool,
+    exhausted: str,
+):
+    """One attempt on the next healthy account. Returns None when there is none.
+
+    Deliberately not recursive: a second account that is also out records its
+    own cooldown through the normal path on the following request, rather than
+    walking every account inside a single call and stalling the caller.
+    """
+    replacement = select_account()
+    if replacement is None or replacement.key == exhausted:
+        return None
+
+    access_token, account_id = get_effective_chatgpt_auth((replacement.auth, replacement.path))
+    if not access_token or not account_id:
+        return None
+
+    headers = build_upstream_headers(
+        access_token,
+        account_id,
+        session_id,
+        accept=("text/event-stream" if stream else "application/json"),
+    )
+    connect_timeout = _env_float(
+        "CHATMOCK_UPSTREAM_CONNECT_TIMEOUT", _DEFAULT_CONNECT_TIMEOUT_SECONDS, minimum=1.0, maximum=300.0
+    )
+    read_timeout = _env_float(
+        "CHATMOCK_UPSTREAM_READ_TIMEOUT", _DEFAULT_READ_TIMEOUT_SECONDS, minimum=5.0, maximum=1800.0
+    )
+    try:
+        upstream = requests.post(
+            CHATGPT_RESPONSES_URL,
+            headers=headers,
+            json=responses_payload,
+            stream=stream,
+            timeout=(connect_timeout, read_timeout),
+        )
+    except requests.RequestException:
+        return None
+
+    if getattr(upstream, "status_code", None) == 429:
+        note_account_exhausted(replacement.key, reason=_quota_detail(upstream))
+        _close_quietly(upstream)
+        return None
+    return upstream
 
 
 def build_upstream_websocket_url() -> str:

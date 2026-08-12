@@ -1534,6 +1534,9 @@ export async function reviewAmbiguousVisualNecessityDecisions(input: {
   units: LearningUnitContract[];
   decisions: VisualNecessityDecision[];
   reviewer: (packet: VisualNecessityReviewPacket) => Promise<VisualNecessityReviewResponse>;
+  /** Lets orchestration propagate cancellation while ordinary reviewer/model
+   * failures remain explicit unresolved decisions. */
+  shouldRethrowError?: (error: unknown) => boolean;
   maxReviews?: number;
   supportedVisualTypes?: string[];
 }): Promise<{
@@ -1571,6 +1574,7 @@ export async function reviewAmbiguousVisualNecessityDecisions(input: {
         supportedVisualTypes: input.supportedVisualTypes,
       });
     } catch (error) {
+      if (input.shouldRethrowError?.(error)) throw error;
       resolution = resolveVisualNecessityReview({ packet, error, supportedVisualTypes: input.supportedVisualTypes });
     }
     next[index] = resolution.decision;

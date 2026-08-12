@@ -110,6 +110,21 @@ class StubRouter:
 
 
 class ChatGptUpstreamProviderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.telemetry = tempfile.TemporaryDirectory()
+        self.addCleanup(self.telemetry.cleanup)
+        patcher = patch.dict(
+            os.environ,
+            {
+                "CHATMOCK_MODEL_TELEMETRY_FILE": os.path.join(
+                    self.telemetry.name, "model-routing.jsonl"
+                )
+            },
+            clear=False,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @patch("chatmock.providers.chatgpt_upstream.record_rate_limits_from_response")
     @patch("chatmock.providers.chatgpt_upstream.start_upstream_request")
     def test_request_reasoning_overrides_server_defaults(self, mock_start, _mock_record) -> None:
@@ -271,6 +286,8 @@ class ChatGptUpstreamProviderTests(unittest.TestCase):
         self.assertEqual(router.call_model(call), "answer")
         self.assertEqual(call.reasoning_out, "checked")
         self.assertEqual(call.usage_out, usage)
+        self.assertEqual(call.model_attempts_out[0]["upstreamModel"], "gpt-5.4")
+        self.assertEqual(call.model_attempts_out[0]["outcome"], "succeeded")
         self.assertEqual(routed_calls[0].reasoning_effort, "high")
         self.assertEqual(routed_calls[0].reasoning_summary, "detailed")
 
@@ -488,6 +505,9 @@ class CouncilRuntimeTests(unittest.TestCase):
         run_file = base / f"{run.id}.json"
         self.assertTrue(run_file.exists())
         saved = json.loads(run_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved["requestedModel"], "gpt-test")
+        self.assertEqual(saved["resolvedModel"], "gpt-test")
+        self.assertEqual(saved["modelRouting"], [])
         self.assertEqual(
             saved["usage"],
             {
@@ -510,6 +530,47 @@ class CouncilRuntimeTests(unittest.TestCase):
         self.assertIn("council_run_created", event_types)
         self.assertIn("council_candidate_generated", event_types)
         self.assertIn("council_final_synthesized", event_types)
+
+    def test_council_run_persists_requested_resolved_and_served_models(self) -> None:
+        class TraceRouter(StubRouter):
+            def call_model(self, call: ModelCall) -> str:
+                result = super().call_model(call)
+                call.model_attempts_out.append(
+                    {
+                        "requestId": call.request_id,
+                        "requestedModel": call.client_requested_model,
+                        "callModel": call.model,
+                        "resolvedModel": "cliproxy/claude-opus-5",
+                        "upstreamModel": "claude-opus-5",
+                        "provider": "cliproxy",
+                        "outcome": "succeeded",
+                        "fallback": False,
+                    }
+                )
+                return result
+
+        runtime = CouncilRuntime(
+            config=self.config,
+            router=TraceRouter(),
+            ledger=JsonlCouncilLedger(self.tmp.name),
+        )
+        run = runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "hi"}],
+                requested_model_alias="default",
+                resolved_model="cliproxy/claude-opus-5",
+                requested_model="cliproxy/claude-opus-5",
+            )
+        )
+
+        saved = json.loads(
+            (Path(self.tmp.name) / f"{run.id}.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(saved["requestedModel"], "default")
+        self.assertEqual(saved["resolvedModel"], "cliproxy/claude-opus-5")
+        self.assertEqual(saved["modelRouting"][0]["upstreamModel"], "claude-opus-5")
+        self.assertEqual(saved["modelRouting"][0]["provider"], "cliproxy")
+        self.assertFalse(saved["modelRouting"][0]["fallback"])
 
     def test_evolution_council_creates_versioned_nodes(self) -> None:
         runtime, _ = self._runtime()
@@ -623,6 +684,18 @@ class CouncilRouteTests(unittest.TestCase):
         self.addCleanup(lambda: os.environ.pop("ENABLE_COUNCIL", None))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        routing_env = patch.dict(
+            os.environ,
+            {
+                "CHATMOCK_DEFAULT_MODEL": "gpt-5.6-sol",
+                "CHATMOCK_PROVIDERS_FILE": os.path.join(self.tmp.name, "providers.json"),
+                "CHATMOCK_FAILOVER_FILE": os.path.join(self.tmp.name, "failover.json"),
+                "CHATMOCK_MODEL_TELEMETRY_FILE": os.path.join(self.tmp.name, "model-routing.jsonl"),
+            },
+            clear=False,
+        )
+        routing_env.start()
+        self.addCleanup(routing_env.stop)
         self.router = StubRouter()
         runtime = CouncilRuntime(
             config=CouncilConfig(
@@ -801,6 +874,27 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertIn("gpt-5.4", body["error"]["message"])
         self.assertNotIn("chatgpt upstream returned", body["error"]["message"])
 
+    def test_account_refusal_names_the_account_not_the_candidates(self) -> None:
+        # Every candidate fails identically when the signed-in ChatGPT account
+        # has no Codex access, and "all candidate models failed" sends the
+        # reader looking at models instead of at the account.
+        self.router.fail_models = {"gpt-test-a", "gpt-test-b", "gpt-test-c", "gpt-5.4"}
+        self.router.fail_messages = {
+            "gpt-5.4": (
+                "HTTP 400: The 'gpt-5.4' model is not supported when using Codex "
+                "with a ChatGPT account."
+            ),
+        }
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        body = response.get_json()
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("account", body["error"]["message"])
+        self.assertIn("Settings", body["error"]["message"])
+        self.assertNotIn("all candidate models failed", body["error"]["message"])
+
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_tool_requests_bypass_council(self, mock_start) -> None:
         mock_start.return_value = (
@@ -829,6 +923,48 @@ class CouncilRouteTests(unittest.TestCase):
         mock_start.assert_called_once()
         body = response.get_json()
         self.assertNotIn("councilRunId", body)
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_image_parts_bypass_council(self, mock_start) -> None:
+        """An attached image has to reach the model, and the council flattens
+        content to text — so the whole request goes upstream verbatim."""
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "a word grid"},
+                    {"type": "response.completed", "response": {"id": "resp-image"}},
+                ]
+            ),
+            None,
+        )
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is in this picture?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            },
+                        ],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        mock_start.assert_called_once()
+        body = response.get_json()
+        self.assertNotIn("councilRunId", body)
+        self.assertEqual(body["choices"][0]["message"]["content"], "a word grid")
+        # The image survives the chat -> responses conversion as a real image
+        # part rather than the council's "[image attachment]" placeholder.
+        outbound = mock_start.call_args.args[1]
+        parts = [part for item in outbound for part in item.get("content", [])]
+        self.assertIn("input_image", [part.get("type") for part in parts])
 
     @patch("chatmock.routes_openai.start_upstream_request")
     def test_enable_council_false_bypasses_council(self, mock_start) -> None:
@@ -908,6 +1044,31 @@ class CouncilRouteTests(unittest.TestCase):
         self.assertEqual(council_input.reasoning_effort, "high")
         self.assertEqual(council_input.reasoning_summary, "detailed")
 
+    def test_top_level_reasoning_effort_reaches_council_input(self) -> None:
+        """A council-mediated request must read the Chat Completions field too.
+
+        It is the form every OpenAI SDK client sends, so reading only the
+        Responses-shaped object left the seats running at the server default.
+        """
+        canned = CouncilRun(
+            id="crun_effort",
+            user_prompt="write it",
+            messages=[{"role": "user", "content": "write it"}],
+            council_mode="full_council",
+            final_answer="ok",
+        )
+        with patch("chatmock.council.gateway.chatmock_ask", return_value=canned) as mock_ask:
+            response = self.client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-5.4",
+                    "messages": [{"role": "user", "content": "write it"}],
+                    "reasoning_effort": "high",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_ask.call_args.args[0].reasoning_effort, "high")
+
     def test_task_type_subsection_generation_selects_full_council(self) -> None:
         response = self.client.post(
             "/v1/chat/completions",
@@ -956,6 +1117,18 @@ class CouncilResponsesRouteTests(unittest.TestCase):
         self.addCleanup(lambda: os.environ.pop("ENABLE_COUNCIL", None))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        routing_env = patch.dict(
+            os.environ,
+            {
+                "CHATMOCK_DEFAULT_MODEL": "gpt-5.6-sol",
+                "CHATMOCK_PROVIDERS_FILE": os.path.join(self.tmp.name, "providers.json"),
+                "CHATMOCK_FAILOVER_FILE": os.path.join(self.tmp.name, "failover.json"),
+                "CHATMOCK_MODEL_TELEMETRY_FILE": os.path.join(self.tmp.name, "model-routing.jsonl"),
+            },
+            clear=False,
+        )
+        routing_env.start()
+        self.addCleanup(routing_env.stop)
         self.router = StubRouter()
         runtime = CouncilRuntime(
             config=CouncilConfig(
@@ -985,6 +1158,29 @@ class CouncilResponsesRouteTests(unittest.TestCase):
         self.assertTrue(body["usageEstimated"])
         text = body["output"][0]["content"][0]["text"]
         self.assertTrue(text.startswith("CANDIDATE ANSWER"))
+
+    def test_default_alias_and_resolved_model_are_persisted_separately(self) -> None:
+        response = self.client.post(
+            "/v1/responses",
+            json={"model": "default", "input": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["model"], "gpt-5.6-sol")
+        routing = body["metadata"]["chatmockModelRouting"]
+        self.assertEqual(routing["requestedModel"], "default")
+        self.assertEqual(routing["resolvedModel"], "gpt-5.6-sol")
+        self.assertEqual(response.headers["X-ChatMock-Requested-Model"], "default")
+        self.assertEqual(response.headers["X-ChatMock-Resolved-Model"], "gpt-5.6-sol")
+
+        saved = json.loads(
+            (Path(self.tmp.name) / f"{body['councilRunId']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(saved["requestedModel"], "default")
+        self.assertEqual(saved["resolvedModel"], "gpt-5.6-sol")
 
     def test_task_type_and_source_context_select_lite_council(self) -> None:
         response = self.client.post(
@@ -1235,6 +1431,109 @@ class CouncilDebugRouteTests(unittest.TestCase):
         os.environ["ENABLE_COUNCIL_DEBUG"] = "true"
         response = self.client.get("/debug/council-runs/crun_missing")
         self.assertEqual(response.status_code, 404)
+
+
+class UnslopIntegrationTests(unittest.TestCase):
+    """The unslop skill humanizes only the final, UI-facing prose answer, never
+    intermediate council calls or structured/machine output."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = CouncilConfig(
+            council_models=["gpt-test-a", "gpt-test-b", "gpt-test-c"],
+            chairman_model="gpt-test-chairman",
+        )
+        # A self-contained fake unslop repo so the test never depends on a clone
+        # being present, and a known marker to assert on.
+        self.skill_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.skill_dir.cleanup)
+        (Path(self.skill_dir.name) / "SKILL.md").write_text(
+            "# Unslop\nUNSLOP_SKILL_MARKER: remove signs of AI writing.",
+            encoding="utf-8",
+        )
+        refs = Path(self.skill_dir.name) / "references"
+        refs.mkdir()
+        (refs / "blacklist.md").write_text("BLACKLIST_MARKER", encoding="utf-8")
+        self._reset_unslop_cache()
+        self._env = patch.dict(
+            os.environ,
+            {"ENABLE_UNSLOP": "true", "UNSLOP_SKILL_DIR": self.skill_dir.name},
+        )
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        self.addCleanup(self._reset_unslop_cache)
+
+    @staticmethod
+    def _reset_unslop_cache() -> None:
+        from chatmock.council import unslop as unslop_module
+
+        unslop_module._cached_directive = None
+        unslop_module._cache_key = None
+
+    def _runtime(self) -> tuple[CouncilRuntime, StubRouter]:
+        router = StubRouter()
+        runtime = CouncilRuntime(
+            config=self.config,
+            router=router,
+            ledger=JsonlCouncilLedger(self.tmp.name),
+        )
+        return runtime, router
+
+    def _systems(self, router: StubRouter) -> list[str]:
+        return [call.system or "" for call in router.calls]
+
+    def test_interactive_chat_answer_is_unslopped(self) -> None:
+        runtime, router = self._runtime()
+        runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "explain entropy"}],
+                requested_model="gpt-test",
+            )
+        )
+        # Direct council: exactly one final-answer call, and it carries the skill.
+        self.assertEqual(len(router.calls), 1)
+        self.assertIn("UNSLOP_SKILL_MARKER", router.calls[0].system or "")
+
+    def test_learning_page_prose_synthesis_is_unslopped(self) -> None:
+        runtime, router = self._runtime()
+        runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "write the section"}],
+                task_type="subsection_generation",
+            )
+        )
+        chair_systems = [s for s in self._systems(router) if "Chair Synthesizer" in s]
+        self.assertTrue(chair_systems, "expected a chair synthesis call")
+        self.assertTrue(all("UNSLOP_SKILL_MARKER" in s for s in chair_systems))
+        # Candidates and critics (non-final calls) must NOT carry the skill.
+        non_final = [s for s in self._systems(router) if "Chair Synthesizer" not in s]
+        self.assertTrue(non_final)
+        self.assertTrue(all("UNSLOP_SKILL_MARKER" not in s for s in non_final))
+
+    def test_structured_task_type_is_never_unslopped(self) -> None:
+        runtime, router = self._runtime()
+        runtime.run(
+            CouncilInput(
+                messages=[{"role": "user", "content": "build the map"}],
+                task_type="source_map",
+            )
+        )
+        self.assertTrue(router.calls)
+        self.assertFalse(any("UNSLOP_SKILL_MARKER" in (c.system or "") for c in router.calls))
+
+    def test_disabling_unslop_removes_it_from_prose(self) -> None:
+        with patch.dict(os.environ, {"ENABLE_UNSLOP": "false"}):
+            self._reset_unslop_cache()
+            runtime, router = self._runtime()
+            runtime.run(
+                CouncilInput(
+                    messages=[{"role": "user", "content": "hi"}],
+                    requested_model="gpt-test",
+                )
+            )
+            self.assertTrue(router.calls)
+            self.assertFalse(any("UNSLOP_SKILL_MARKER" in (c.system or "") for c in router.calls))
 
 
 if __name__ == "__main__":

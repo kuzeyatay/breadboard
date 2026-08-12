@@ -1,40 +1,67 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { composeOpenHarnessSystemPrompt } from "../src/lib/openharness/system-prompts.ts";
+import { composeHermesSystemPrompt } from "../src/lib/hermes/system-prompts.ts";
 
 function source(relativePath) {
   return fs.readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 }
 
-test("CommandHub exposes Agents as the fourth keyboard-accessible tab with collision-safe history", () => {
-  const hub = source("src/app/components/openharness/command-hub.tsx");
+test("CommandHub keeps setup-free capability tabs with collision-safe history", () => {
+  const hub = source("src/app/components/hermes/command-hub.tsx");
   const skill = hub.indexOf('{ id: "skill", label: "Skills" }');
-  const connections = hub.indexOf('{ id: "mcp", label: "Connections" }');
-  const prompts = hub.indexOf('{ id: "prompt", label: "Prompts" }');
+  const workflows = hub.indexOf('{ id: "workflow", label: "Workflows" }');
   const agents = hub.indexOf('{ id: "agent", label: "Agents" }');
-  assert.ok(skill < connections && connections < prompts && prompts < agents);
+  const prompts = hub.indexOf('{ id: "prompt", label: "Prompts" }');
+  assert.ok(skill < workflows && workflows < agents && agents < prompts);
+  assert.doesNotMatch(hub, /\{ id: "mcp", label: "MCP" \}/);
   assert.match(hub, /agents: CommandHubItem\[\]/);
   assert.match(hub, /itemIdentity\(item\)/);
   assert.match(hub, /`\$\{item\.kind\}:\$\{item\.id\}`/);
   assert.match(hub, /ArrowLeft.*ArrowRight/s);
-  assert.match(hub, /item\.services\.slice\(0, 3\)/);
-  assert.match(hub, /item\.divisionColor/);
+  assert.match(hub, /tab === "agent"[\s\S]*?data\.groups\.agents/);
   assert.match(hub, /data\?\.notices\?\.agents/);
 });
 
-test("Agents open through a described Agency agents directory and adjacent browser", () => {
-  const hub = source("src/app/components/openharness/command-hub.tsx");
+test("Agency agents toggle beside the Agents page and render as skill-style rows without logos", () => {
+  const hub = source("src/app/components/hermes/command-hub.tsx");
+  const agencyPanel = hub.slice(
+    hub.indexOf('id="agency-agents-directory-panel"'),
+    hub.indexOf("</aside>", hub.indexOf('id="agency-agents-directory-panel"')),
+  );
+  const agencyRows = agencyPanel.slice(agencyPanel.indexOf("{agencyDirectoryGroups.flatMap"));
   assert.match(hub, /id="agency-agents-directory"/);
   assert.match(hub, />\s*Agency agents\s*</);
-  assert.match(
-    hub,
-    /Browse specialist personas for design, engineering, marketing, strategy, and more\./,
-  );
-  assert.match(hub, /aria-labelledby="agency-agents-directory-title"/);
+  assert.match(hub, /onClick=\{\(\) => void toggleAgentDirectory\(\)\}/);
+  assert.match(hub, /loadAgencyAgentsClientCatalog\(\{ force \}\)/);
+  assert.match(hub, /aria-expanded=\{agentDirectoryOpen\}/);
+  assert.match(hub, /aria-controls="agency-agents-directory-panel"/);
+  assert.match(hub, /agentDirectoryOpen && tab === "agent" && !detail/);
   assert.match(hub, /sm:left-\[calc\(min\(600px,calc\(100vw-2rem\)\)\+0\.5rem\)\]/);
+  assert.doesNotMatch(hub, /Back to agents/);
+  assert.match(hub, /aria-label="Agency agents" className="divide-y divide-\[var\(--line\)\]"/);
   assert.match(hub, /placeholder="Search Agency agents"/);
+  assert.doesNotMatch(hub, /Agent catalog summary|Agency specialists/);
+  assert.doesNotMatch(
+    hub,
+    /function AgentSectionHeading[\s\S]*?uppercase tracking-[\s\S]*?function SettingsSlidersIcon/,
+  );
+  // The Agents tab is one alphabetical list. It used to be grouped under
+  // classifier headings ("Research & browse", "Work & creation", …), which put
+  // the burden of guessing Breadboard's taxonomy on the person before they
+  // could find an agent they already knew the name of. Every row now carries a
+  // sort name and the list orders itself, so there is nowhere for a heading to
+  // live and no group for a new agent to be filed into wrongly.
+  assert.doesNotMatch(hub, /Research & browse|Work & creation|Specialist teams & studios|Code & software/);
+  assert.doesNotMatch(hub, /function AgentSectionHeading/);
+  assert.match(hub, /\.sort\(\(left, right\) => left\.name\.localeCompare\(right\.name\)\)/);
+  assert.match(hub, /agencyDirectoryGroups\.flatMap/);
+  assert.match(hub, /Loading Agency agents/);
+  assert.doesNotMatch(hub, /agencyAgentsLoading \? "…" : agencyAgents\.length/);
   assert.match(hub, /Selecting an agent applies its persona to this conversation/);
+  assert.match(agencyRows, /font-mono text-sm font-medium/);
+  assert.doesNotMatch(agencyRows, /item\.emoji|item\.divisionIcon|CapabilityIcon/);
+  assert.doesNotMatch(hub, /\{ id: "agency", label: "Agency agents" \}/);
 });
 
 test("active agent UI is server-backed, compact, clearable, and excluded from Quartz", () => {
@@ -45,7 +72,7 @@ test("active agent UI is server-backed, compact, clearable, and excluded from Qu
   assert.match(composer, /Clear active agent/);
   assert.match(composer, /divisionLabel/);
 
-  const endpoint = source("src/app/api/openharness/sessions/[sessionId]/agency-agent/route.ts");
+  const endpoint = source("src/app/api/hermes/sessions/[sessionId]/agency-agent/route.ts");
   assert.match(endpoint, /requireUserId\(\)/);
   assert.match(endpoint, /authorizeRuntimeReference/);
   assert.match(endpoint, /activeAgencyAgentSlug: null/);
@@ -53,25 +80,32 @@ test("active agent UI is server-backed, compact, clearable, and excluded from Qu
 });
 
 test("catalog endpoints are authenticated and never serialize persona instructions", () => {
-  const catalogRoute = source("src/app/api/openharness/agency-agents/route.ts");
-  const commandsRoute = source("src/app/api/openharness/commands/route.ts");
+  const catalogRoute = source("src/app/api/hermes/agency-agents/route.ts");
+  const commandsRoute = source("src/app/api/hermes/commands/route.ts");
   assert.match(catalogRoute, /requireUserId\(\)/);
   assert.match(catalogRoute, /presentAgencyAgent/);
   assert.doesNotMatch(catalogRoute, /\.instructions/);
   assert.match(catalogRoute, /status: catalog\.status === "ready" \? 200 : 503/);
   assert.match(
     commandsRoute,
-    /agents:\s*\[[\s\S]*items\.filter\([\s\S]*item\.kind === "agent"/,
+    /agents:\s*items\.filter\([\s\S]*item\.kind === "agent"/,
   );
-  assert.match(commandsRoute, /\.\.\.uiTarsItems/);
-  assert.match(commandsRoute, /agents: agencyCatalog\?\.message/);
+  const commandsLibrary = source("src/lib/hermes/commands.ts");
+  // The primary palette excludes the large roster. Its dedicated authenticated
+  // endpoint is loaded only when the directory is opened.
+  assert.match(
+    commandsLibrary,
+    /options\.includeAgencyAgents === false[\s\S]*loadAgencyAgentsCatalog\(\)\.agents/,
+  );
+  assert.match(commandsRoute, /includeAgencyAgents: false/);
+  assert.doesNotMatch(commandsRoute, /loadAgencyAgentsCatalog/);
 
   const quartzRoute = source("src/app/api/quartz-ai/commands/route.ts");
   assert.doesNotMatch(quartzRoute, /groups:\s*\{[\s\S]*agents:/);
 });
 
 test("persona overlay follows server capability and authorized context without changing it", () => {
-  const prompt = composeOpenHarnessSystemPrompt({
+  const prompt = composeHermesSystemPrompt({
     surface: "dashboard_terminal",
     decision: {
       mode: "knowledge",
@@ -103,11 +137,17 @@ test("persona overlay follows server capability and authorized context without c
   assert.match(prompt, /Authorized roots: none/);
 });
 
-test("turn dispatch applies selection to the conversation while tool maps remain brokered", () => {
+test("turn dispatch applies selection and delegates first-prompt naming to the LLM", () => {
   const turnService = source("src/lib/conversations/turn-service.ts");
+  const conversationStore = source("src/lib/conversations/store.ts");
   assert.match(turnService, /activeAgencyAgentSlug: resolved\.agencyAgentSelection\.slug/);
   assert.match(turnService, /renderAgencyAgentPersona\(activeAgencyAgent\)/);
-  assert.match(turnService, /mergeSelectedTools\(prepared\.grant\.allowedTools, resolved\.tools\)/);
+  assert.match(
+    turnService,
+    /mergeSelectedTools\(prepared\.grant\.allowedTools, \{\s*\.\.\.resolved\.tools,\s*\.\.\.connectedApps\.tools,/,
+  );
   assert.match(turnService, /content: resolved\.userText/);
-  assert.match(turnService, /titleFromMessage\(resolved\.userText\)/);
+  assert.match(turnService, /generateAndApplyConversationTitle\(\{/);
+  assert.match(turnService, /reservation\.userMessage\.order_index === 0/);
+  assert.doesNotMatch(conversationStore, /chatTitleFromFirstMessage/);
 });

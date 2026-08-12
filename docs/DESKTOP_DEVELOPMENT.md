@@ -13,7 +13,7 @@ Install dependencies from the repository root:
 npm ci --prefix dashboard
 npm ci --prefix quartz
 npm ci --prefix desktop
-cd openharness && bun install && cd ..
+cd hermes && bun install && cd ..
 ```
 
 ChatMock is source-only Python; its dependencies are assembled into the
@@ -28,7 +28,7 @@ npm run desktop:dev
 compiles the shell (`tsc`) and launches Electron with `--breadboard-dev`:
 
 - services run from the repo exactly like `scripts/dev-all.mjs` does
-  (system node/bun/python, Next dev server with webpack, dev data layout);
+  (system node/bun/python, Next dev server with Webpack, dev data layout);
 - the startup screen, supervisor, health checks, log capture and process-tree
   cleanup are the same code paths as the packaged app;
 - logs: `.runtime/desktop-logs/*.log`;
@@ -36,6 +36,16 @@ compiles the shell (`tsc`) and launches Electron with `--breadboard-dev`:
 
 The existing workflows are untouched: `start.bat`, `npm run dev`,
 `npm run dev:dashboard`, etc. keep working without Electron.
+
+For production-like dashboard speed without per-route compilation, run:
+
+```bat
+npm run desktop:dev:fast
+```
+
+This builds the standalone dashboard once and launches the same desktop
+supervisor against it. Re-run the command after changing dashboard code. It
+keeps using the normal development database and content paths.
 
 ## Mode separation
 
@@ -90,11 +100,12 @@ After edits: `npm run build` inside `desktop/` (or just re-run
 ## Environment and launch overrides
 
 - `BREADBOARD_DESKTOP_RELEASE_DIR`: overrides the installer output directory.
+- `BREADBOARD_DESKTOP_DASHBOARD_MODE=standalone`: uses an existing `.next-desktop` standalone build (normally set by `desktop:dev:fast`).
 - `BREADBOARD_MIGRATE_FROM`: explicit dev checkout to offer for first-run copy migration.
 - `CHATMOCK_MODEL`: overrides the default local ChatMock model passed to services.
 - `--breadboard-dev`: forces repository-backed development mode.
 - `--breadboard-user-data-dir=<absolute-path>`: isolates Electron data for automated installed testing; filesystem roots and relative paths are rejected.
 
-`NEXTAUTH_SECRET`, service ports, OpenHarness credentials/capability secrets,
+`NEXTAUTH_SECRET`, service ports, Hermes credentials/capability secrets,
 data paths, and internal URLs are generated or resolved by the Electron main
 process. They should not be hard-coded in a packaged launch.

@@ -7,6 +7,8 @@ import { UITarsClient, UITarsAdapterError, type AdapterRunSummary } from "./clie
 import { uiTarsMode, resolveUITarsConfig, type UITarsMode } from "./adapter-config.ts";
 import * as store from "./store.ts";
 import { validateAgentConfiguration, type UITarsAgentConfiguration } from "./config.ts";
+import { providerRequiresStoredKey, resolveRunModel } from "./model-provider.ts";
+import { configurationForAgentTarsTask } from "./operator-routing.ts";
 
 export class UITarsServiceError extends Error {
   status: number;
@@ -22,6 +24,10 @@ export type RuntimeState = "available" | "starting" | "unavailable" | "misconfig
 
 // --- lightweight in-memory rate limiting (per user, per action) ---
 const buckets = new Map<string, { count: number; resetAt: number }>();
+const failedRunSyncs = new Map<string, { count: number; firstFailureAt: number }>();
+const ACTIVE_RUN_STATES = new Set(["queued", "starting", "running", "awaiting_approval"]);
+const RUNTIME_LOST_FAILURE_COUNT = 3;
+const RUNTIME_LOST_GRACE_MS = 8_000;
 function rateLimit(key: string, max: number, windowMs: number): void {
   const now = Date.now();
   const b = buckets.get(key);
@@ -58,12 +64,20 @@ export async function health(): Promise<{ mode: UITarsMode; runtimeState: Runtim
 function agentRuntimeState(
   agent: store.PresentedAgent,
   m: UITarsMode,
-  adapterHealthy: boolean,
+  adapter: Awaited<ReturnType<UITarsClient["health"]>>,
 ): RuntimeState {
   if (m === "disabled" || !agent.enabled) return "disabled";
   const cfgValid = validateAgentConfiguration(agent.configuration).ok && agent.configuration.model.trim().length > 0;
-  if (!cfgValid || (!agent.secretConfigured && adapterHealthy)) return "misconfigured";
-  return adapterHealthy ? "available" : "unavailable";
+  if (!cfgValid) return "misconfigured";
+  // ChatMock's credential comes from the server environment, so only agents
+  // pointed at a third-party provider need a user-stored key.
+  const keyMissing = providerRequiresStoredKey(agent.configuration) && !agent.secretConfigured;
+  if (keyMissing && adapter.status === "healthy") return "misconfigured";
+  if (adapter.status !== "healthy") return "unavailable";
+  if (agent.configuration.operator === "computer" && !adapter.operators?.includes("computer")) {
+    return "unavailable";
+  }
+  return "available";
 }
 
 export async function agentsPage(userId: number): Promise<{
@@ -76,14 +90,13 @@ export async function agentsPage(userId: number): Promise<{
     m === "disabled"
       ? { status: "unavailable" as const, runtime: null, realBrowser: false, operator: null, version: null }
       : await client().health();
-  const adapterHealthy = adapter.status === "healthy";
   const agents = store.listAgents(userId).map((row) => {
     const presented = store.presentAgent(row);
     const runs = store.listRuns(userId, row.id, 1);
     const lastRun = runs[0];
     return {
       ...presented,
-      runtimeState: agentRuntimeState(presented, m, adapterHealthy),
+      runtimeState: agentRuntimeState(presented, m, adapter),
       ...(lastRun ? { lastRun: { id: lastRun.id, status: lastRun.status, createdAt: lastRun.created_at } } : {}),
     };
   });
@@ -136,7 +149,13 @@ export async function startRun(userId: number, agentId: string, task: string): P
   if (t.length > 8000) throw new UITarsServiceError(400, "task_too_long");
 
   const runId = store.publicId("run");
-  const providerApiKey = store.getSecret(agentId) ?? undefined; // server-only injection
+  // Server-only injection: a stored key when the user supplied one, otherwise
+  // ChatMock's endpoint + local credential from the environment.
+  const { configuration: modelConfiguration, providerApiKey } = resolveRunModel(
+    parsed.value,
+    store.getSecret(agentId) ?? undefined,
+  );
+  const configuration = configurationForAgentTarsTask(modelConfiguration, t);
 
   let summary: AdapterRunSummary;
   try {
@@ -144,7 +163,7 @@ export async function startRun(userId: number, agentId: string, task: string): P
       runId,
       ownerUserId: userId,
       task: t,
-      config: parsed.value,
+      config: configuration,
       ...(providerApiKey ? { providerApiKey } : {}),
     });
   } catch (err) {
@@ -154,7 +173,14 @@ export async function startRun(userId: number, agentId: string, task: string): P
     throw new UITarsServiceError(502, err instanceof UITarsAdapterError ? err.code : "adapter_error");
   }
 
-  store.createRunRecord({ id: runId, agentId, userId, task: t, runtimeSessionId: summary.runId });
+  store.createRunRecord({
+    id: runId,
+    agentId,
+    userId,
+    task: t,
+    operatorType: summary.operatorType,
+    runtimeSessionId: summary.runId,
+  });
   await syncRun(userId, runId);
   return summary;
 }
@@ -168,9 +194,31 @@ export async function syncRun(userId: number, runId: string): Promise<AdapterRun
     const since = store.lastSequence(runId);
     const events = await client().eventsSince(runId, userId, since);
     if (events.length > 0) store.persistEvents(runId, events);
-    return await client().getRun(runId, userId);
-  } catch {
-    // Adapter unreachable — the persisted state is still authoritative for the UI.
+    const summary = await client().getRun(runId, userId);
+    failedRunSyncs.delete(runId);
+    return summary;
+  } catch (error) {
+    const current = store.getRun(userId, runId);
+    if (current && ACTIVE_RUN_STATES.has(current.status)) {
+      const code = error instanceof UITarsAdapterError ? error.code : "adapter_error";
+      const now = Date.now();
+      const prior = failedRunSyncs.get(runId);
+      const failure = prior
+        ? { count: prior.count + 1, firstFailureAt: prior.firstFailureAt }
+        : { count: 1, firstFailureAt: now };
+      failedRunSyncs.set(runId, failure);
+      const adapterForgotRun = code === "run_not_found";
+      const runtimeStayedGone =
+        failure.count >= RUNTIME_LOST_FAILURE_COUNT && now - failure.firstFailureAt >= RUNTIME_LOST_GRACE_MS;
+      if (adapterForgotRun || runtimeStayedGone) {
+        store.markRunRuntimeLost(runId);
+        failedRunSyncs.delete(runId);
+      }
+    } else {
+      failedRunSyncs.delete(runId);
+    }
+    // The persisted event stream remains authoritative while a transient
+    // adapter interruption is inside the grace period.
     return null;
   }
 }
@@ -223,5 +271,17 @@ export async function screenshot(userId: number, runId: string, screenshotId: st
   const run = store.getRun(userId, runId);
   if (!run) throw new UITarsServiceError(404, "run_not_found");
   if (!/^[0-9]{1,12}$/.test(screenshotId)) throw new UITarsServiceError(400, "invalid_screenshot_id");
-  return client().screenshot(runId, userId, screenshotId);
+  const adapter = client();
+  const current = await adapter.screenshot(runId, userId, screenshotId);
+  if (current) return current;
+
+  // Runs created before durable screenshot ownership was introduced still
+  // have valid PNGs on disk. The dashboard DB is the authorization source, so
+  // it can safely migrate that run folder and retry without run-specific data.
+  try {
+    await adapter.restoreScreenshotHistory(runId, userId);
+    return await adapter.screenshot(runId, userId, screenshotId);
+  } catch {
+    return null;
+  }
 }

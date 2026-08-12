@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interactive Visualizer"
+  short_description: "Build safe interactive 2D and 3D mini-app artifacts"
+  default_prompt: "Use $interactive-visualizer to plan, generate, validate, and publish a conversation-scoped interactive visualization artifact."

@@ -19,9 +19,32 @@ interface Plant {
   flowerCenter?: string;
 }
 
+interface Star {
+  left: string;
+  top: string;
+  size: string;
+  delay: string;
+  duration: string;
+  drift: string;
+  color: string;
+}
+
+interface Comet {
+  left: string;
+  top: string;
+  length: string;
+  angle: string;
+  travelY: string;
+  delay: string;
+  duration: string;
+}
+
 const PLANT_COUNT = 24;
 const FLOWER_COUNT = 6;
+const STAR_COUNT = 56;
+const COMET_COUNT = 3;
 const FLOWER_COLORS = ["#F2C94C", "#E88CA5", "#7FADE8", "#B99AE8"] as const;
+const STAR_COLORS = ["#d6ddd5", "#9fb5c4", "#b2a6c4", "#a8c4bb"] as const;
 const DEFAULT_CENTER = "#F2C94C";
 const YELLOW_CENTER = "#FFF2A8";
 
@@ -129,6 +152,33 @@ function createPlants(random: RandomSource): Plant[] {
 }
 
 const INITIAL_PLANTS = createPlants(seededRandom(1224));
+
+function createStars(random: RandomSource): Star[] {
+  return Array.from({ length: STAR_COUNT }, (_, index) => ({
+    left: `${toFixedNumber(between(random, 1, 99))}%`,
+    top: `${toFixedNumber(between(random, 8, 88))}%`,
+    size: `${toFixedNumber(between(random, 1, index % 7 === 0 ? 3 : 2.2))}px`,
+    delay: `-${toFixedNumber(between(random, 0.1, 7.5))}s`,
+    duration: `${toFixedNumber(between(random, 3.8, 8.2))}s`,
+    drift: `${toFixedNumber(between(random, -3, 3))}px`,
+    color: STAR_COLORS[index % STAR_COLORS.length],
+  }));
+}
+
+function createComets(random: RandomSource): Comet[] {
+  return Array.from({ length: COMET_COUNT }, () => ({
+    left: `${toFixedNumber(between(random, -24, 24))}%`,
+    top: `${toFixedNumber(between(random, 8, 58))}%`,
+    length: `${toFixedNumber(between(random, 42, 78))}px`,
+    angle: `${toFixedNumber(between(random, 7, 15))}deg`,
+    travelY: `${toFixedNumber(between(random, 26, 72))}px`,
+    delay: `-${toFixedNumber(between(random, 0, 22))}s`,
+    duration: `${toFixedNumber(between(random, 15, 26))}s`,
+  }));
+}
+
+const INITIAL_STARS = createStars(seededRandom(7319));
+const INITIAL_COMETS = createComets(seededRandom(9021));
 
 function plantStyle(plant: Plant): CSSProperties {
   const sway = Number.parseFloat(plant.sway);
@@ -256,29 +306,75 @@ function PlantSprite({ variant }: { variant: PlantVariant }) {
 
 export default function NavbarFlowerWind() {
   const [plants, setPlants] = useState(INITIAL_PLANTS);
+  const [stars, setStars] = useState(INITIAL_STARS);
+  const [comets, setComets] = useState(INITIAL_COMETS);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       setPlants(createPlants(Math.random));
+      setStars(createStars(Math.random));
+      setComets(createComets(Math.random));
     });
 
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
   return (
-    <div className={styles.wind} aria-hidden="true">
-      <div className={styles.grassBed} />
-      {plants.map((plant, index) => (
-        <span
-          key={`${plant.variant}-${index}`}
-          className={styles.plant}
-          style={plantStyle(plant)}
-        >
-          <span className={styles.plantSprite}>
-            <PlantSprite variant={plant.variant} />
-          </span>
-        </span>
-      ))}
-    </div>
+    <>
+      <div className={styles.plantAnimation} aria-hidden="true">
+        <div className={styles.wind}>
+          <div className={styles.grassBed} />
+          {plants.map((plant, index) => (
+            <span
+              key={`${plant.variant}-${index}`}
+              className={styles.plant}
+              style={plantStyle(plant)}
+            >
+              <span className={styles.plantSprite}>
+                <PlantSprite variant={plant.variant} />
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className={styles.skyAnimation} aria-hidden="true">
+        <div className={styles.starField}>
+          {stars.map((star, index) => (
+            <span
+              key={index}
+              className={styles.star}
+              style={
+                {
+                  "--star-left": star.left,
+                  "--star-top": star.top,
+                  "--star-size": star.size,
+                  "--star-delay": star.delay,
+                  "--star-duration": star.duration,
+                  "--star-drift": star.drift,
+                  "--star-color": star.color,
+                } as CSSProperties
+              }
+            />
+          ))}
+          {comets.map((comet, index) => (
+            <span
+              key={`comet-${index}`}
+              className={styles.comet}
+              style={
+                {
+                  "--comet-left": comet.left,
+                  "--comet-top": comet.top,
+                  "--comet-length": comet.length,
+                  "--comet-angle": comet.angle,
+                  "--comet-travel-y": comet.travelY,
+                  "--comet-delay": comet.delay,
+                  "--comet-duration": comet.duration,
+                } as CSSProperties
+              }
+            />
+          ))}
+        </div>
+      </div>
+    </>
   );
 }

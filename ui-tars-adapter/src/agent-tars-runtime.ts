@@ -31,6 +31,10 @@ import type { ProposedAction } from "./approval-policy.ts";
 import { hostAllowed } from "./approval-policy.ts";
 import { attachSubmissionGate } from "./browser-gate.ts";
 import type { BrowserStrategy } from "./types.ts";
+import {
+  runDesktopTask,
+  type DesktopAgentHandle,
+} from "./desktop-runtime.ts";
 
 export interface AgentTarsRuntimeOptions {
   dataDir: string;
@@ -42,9 +46,216 @@ function mapStrategy(s: BrowserStrategy): "dom" | "visual-grounding" | "hybrid" 
   return s === "gui" ? "visual-grounding" : s;
 }
 
+// Provider names AgentTARS's bundled TokenJS client recognizes as first-class.
+// Anything else must be routed through its "openai-compatible" handler (which
+// accepts an arbitrary model id + baseURL). Passing an unrecognized provider —
+// e.g. "chatmock" — makes TokenJS dereference an undefined provider entry during
+// model registration ("Cannot read properties of undefined (reading 'models')"),
+// which aborts the run before the browser ever launches.
+const TOKENJS_NATIVE_PROVIDERS = new Set([
+  "openai",
+  "anthropic",
+  "gemini",
+  "mistral",
+  "groq",
+  "ai21",
+  "perplexity",
+  "openrouter",
+  "openai-compatible",
+  "azure-openai",
+  "bedrock",
+  "cohere",
+]);
+
+/**
+ * Resolve the provider string handed to AgentTARS. ChatMock and any other
+ * OpenAI-compatible custom endpoint are sent as "openai-compatible" so the
+ * runtime talks to them through the generic handler with our baseURL + apiKey.
+ * Known providers pass through unchanged.
+ */
+function resolveModelProvider(provider: string, hasEndpoint: boolean): string {
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === "chatmock") return "openai-compatible";
+  if (!TOKENJS_NATIVE_PROVIDERS.has(normalized) && hasEndpoint) return "openai-compatible";
+  return provider;
+}
+
+function tokenCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : undefined;
+}
+
+function estimateTokens(value: unknown): number {
+  let serialized = "";
+  try {
+    serialized = JSON.stringify(value, (_key, item) => {
+      if (typeof item === "string" && /^data:image\//i.test(item)) return "[image]";
+      return item;
+    });
+  } catch {
+    serialized = String(value ?? "");
+  }
+  return serialized.length === 0 ? 0 : Math.max(1, Math.ceil(serialized.length / 4));
+}
+
+function streamedOutput(chunks: unknown[]): string {
+  const parts: string[] = [];
+  for (const item of chunks) {
+    const chunk = item as any;
+    for (const choice of Array.isArray(chunk?.choices) ? chunk.choices : []) {
+      const delta = choice?.delta ?? {};
+      for (const value of [delta.content, delta.reasoning_content, delta.reasoning]) {
+        if (typeof value === "string") parts.push(value);
+      }
+      for (const call of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
+        if (typeof call?.function?.name === "string") parts.push(call.function.name);
+        if (typeof call?.function?.arguments === "string") parts.push(call.function.arguments);
+      }
+    }
+  }
+  return parts.join("");
+}
+
+/** Normalize a provider usage chunk, falling back to a clearly marked estimate. */
+export function browserCallTokenUsage(
+  request: unknown,
+  chunks: unknown[],
+): { inputTokens: number; outputTokens: number; totalTokens: number; estimated: boolean } {
+  const providerUsage = [...chunks]
+    .reverse()
+    .map((chunk) => (chunk as any)?.usage)
+    .find((usage) => usage && typeof usage === "object") as Record<string, unknown> | undefined;
+  if (providerUsage) {
+    const inputTokens = tokenCount(providerUsage.input_tokens ?? providerUsage.prompt_tokens);
+    const outputTokens = tokenCount(providerUsage.output_tokens ?? providerUsage.completion_tokens);
+    const totalTokens = tokenCount(providerUsage.total_tokens);
+    if (totalTokens !== undefined || inputTokens !== undefined || outputTokens !== undefined) {
+      const input = inputTokens ?? 0;
+      const output = outputTokens ?? 0;
+      return {
+        inputTokens: input,
+        outputTokens: output,
+        totalTokens: totalTokens ?? input + output,
+        estimated: false,
+      };
+    }
+  }
+
+  const inputTokens = estimateTokens(request);
+  const outputText = streamedOutput(chunks);
+  const outputTokens = outputText.length === 0 ? 0 : Math.max(1, Math.ceil(outputText.length / 4));
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, estimated: true };
+}
+
+const UPSTREAM_RUN_ERROR = /^Sorry, an error occurred while processing your request:/i;
+
+/**
+ * AgentTARS currently catches some model-provider exceptions and returns them
+ * as an assistant message instead of rejecting `run()`. Normalize that known
+ * error envelope here so the control plane emits run.failed rather than a
+ * misleading green run.completed event.
+ */
+export function normalizeAgentResult(
+  result: any,
+  redact: (line: string) => string = (line) => line,
+): RunOutcome {
+  const summary =
+    typeof result === "string"
+      ? result
+      : typeof result?.content === "string"
+        ? result.content
+        : undefined;
+
+  if (summary && UPSTREAM_RUN_ERROR.test(summary.trim())) {
+    const connectionFailure = /\bconnection error\b/i.test(summary);
+    return {
+      status: "failed",
+      failure: {
+        code: connectionFailure ? "model_connection_error" : "agent_error",
+        message: connectionFailure
+          ? "Agent TARS could not connect to the configured model endpoint"
+          : "Agent TARS could not complete the model request",
+      },
+    };
+  }
+
+  return {
+    status: "completed",
+    summary: summary ? redact(summary) : undefined,
+  };
+}
+
+/**
+ * Capture the page without leaking AgentTARS/browser-use targeting overlays
+ * into Breadboard's user-facing preview. The markers are hidden only for the
+ * duration of the PNG capture and restored immediately so agent control state
+ * is left untouched.
+ */
+export async function captureCleanPagePng(page: any): Promise<string> {
+  const overlayState = await page.evaluate(() => {
+    const doc = (globalThis as any).document;
+    const selectors = [
+      "#playwright-highlight-container",
+      "#gui-agent-clickable-legend",
+    ];
+    return selectors.flatMap((selector: string) =>
+      Array.from(doc.querySelectorAll(selector)).map((element: any, index: number) => {
+        const marker = `breadboard-screenshot-${Date.now()}-${index}-${Math.random()}`;
+        const visibility = element.style.getPropertyValue("visibility");
+        const priority = element.style.getPropertyPriority("visibility");
+        element.setAttribute("data-breadboard-screenshot-marker", marker);
+        element.style.setProperty("visibility", "hidden", "important");
+        return { marker, visibility, priority };
+      }),
+    );
+  });
+
+  try {
+    const png = await page.screenshot({ encoding: "base64", type: "png" });
+    return typeof png === "string" ? png : Buffer.from(png).toString("base64");
+  } finally {
+    if (overlayState.length > 0) {
+      try {
+        await page.evaluate((states: Array<{ marker: string; visibility: string; priority: string }>) => {
+          const doc = (globalThis as any).document;
+          for (const state of states) {
+            const elements = Array.from(doc.querySelectorAll("[data-breadboard-screenshot-marker]"));
+            const element = elements.find(
+              (candidate: any) => candidate.getAttribute("data-breadboard-screenshot-marker") === state.marker,
+            ) as any;
+            if (!element) continue;
+            element.removeAttribute("data-breadboard-screenshot-marker");
+            if (state.visibility) {
+              element.style.setProperty("visibility", state.visibility, state.priority);
+            } else {
+              element.style.removeProperty("visibility");
+            }
+          }
+        }, overlayState);
+      } catch {
+        // The page may navigate immediately after capture; the old document and
+        // its temporary inline style are discarded with it.
+      }
+    }
+  }
+}
+
 /** Best-effort structured classification of an upstream browser tool call. */
-function classifyToolCall(name: string, args: any): ProposedAction {
-  const target = String(args?.url ?? args?.selector ?? args?.element ?? args?.index ?? name);
+export function classifyToolCall(name: string, args: any): ProposedAction {
+  const target = String(
+    args?.__downloadTarget ?? args?.url ?? args?.path ?? args?.filename ?? args?.selector ?? args?.element ?? args?.index ?? name,
+  );
+  const actionHint = String(args?.action ?? args?.type ?? "");
+  if (
+    /download/i.test(name) ||
+    /\bdownload\b/i.test(actionHint) ||
+    args?.__downloadIntent === true ||
+    args?.isDownload === true ||
+    args?.download === true
+  ) {
+    return { toolName: name, action: "download", target, isDownload: true };
+  }
   if (name === "browser_navigate") {
     return { toolName: name, action: "navigate", target, targetUrl: String(args?.url ?? "") };
   }
@@ -56,7 +267,11 @@ function classifyToolCall(name: string, args: any): ProposedAction {
     const submitIntent = key === "enter" || key === "return";
     return { toolName: name, action: submitIntent ? "submit" : "type", target, submitIntent };
   }
-  if (name === "browser_click" || name === "browser_vision_control") {
+  if (
+    name === "browser_click" ||
+    name === "browser_vision_control" ||
+    /browser_vision.*click/i.test(name)
+  ) {
     // Submit-intent when the resolved element is a submit/button (set by the
     // pre-classify DOM probe). Conservative default keeps harmless clicks open.
     const submitIntent = Boolean(args?.__submitIntent);
@@ -69,10 +284,73 @@ function classifyToolCall(name: string, args: any): ProposedAction {
   return { toolName: name, action: "click", target };
 }
 
+/**
+ * Inspect the currently targeted DOM element before a click executes. Agent
+ * TARS represents ordinary downloads as generic clicks, so tool-name-only
+ * classification would otherwise miss an `<a download>` or Download button.
+ */
+async function enrichClickIntent(browser: any, name: string, args: any): Promise<any> {
+  const clickTool = name === "browser_click" || /browser_vision.*click/i.test(name);
+  if (!clickTool || !browser || typeof browser.pages !== "function") return args;
+  try {
+    const pages = await browser.pages();
+    const page = pages[pages.length - 1];
+    if (!page) return args;
+    const intent = await page.evaluate(
+      ({ index, x, y }: { index?: number; x?: number; y?: number }) => {
+        const doc = (globalThis as any).document;
+        let element: any = null;
+        if (Number.isFinite(index)) {
+          element = doc.querySelector(
+            `[browser-user-highlight-id="playwright-highlight-${index}"]`,
+          );
+        } else if (Number.isFinite(x) && Number.isFinite(y)) {
+          const px = Math.abs(x!) <= 1 ? x! * (globalThis as any).innerWidth : x!;
+          const py = Math.abs(y!) <= 1 ? y! * (globalThis as any).innerHeight : y!;
+          element = doc.elementFromPoint(px, py);
+        }
+        const actionable = element?.closest?.("a, button, input, [role='button'], [role='link']") ?? element;
+        const anchor = actionable?.closest?.("a[href]");
+        const label = [
+          actionable?.textContent,
+          actionable?.getAttribute?.("aria-label"),
+          actionable?.getAttribute?.("title"),
+          actionable?.getAttribute?.("data-action"),
+        ].filter(Boolean).join(" ");
+        const download = Boolean(
+          anchor?.hasAttribute?.("download") || /\bdownload\b/i.test(label),
+        );
+        const submit = Boolean(
+          actionable?.matches?.("button[type='submit'], input[type='submit'], input[type='image']") ||
+          actionable?.closest?.("form") && /\b(submit|send|sign in|log in|purchase|pay)\b/i.test(label),
+        );
+        return {
+          download,
+          submit,
+          target: download ? String(anchor?.href ?? label).slice(0, 1_000) : undefined,
+        };
+      },
+      {
+        index: Number.isFinite(args?.index) ? Number(args.index) : undefined,
+        x: Number.isFinite(args?.x) ? Number(args.x) : undefined,
+        y: Number.isFinite(args?.y) ? Number(args.y) : undefined,
+      },
+    );
+    return {
+      ...args,
+      ...(intent?.download ? { __downloadIntent: true, __downloadTarget: intent.target } : {}),
+      ...(intent?.submit ? { __submitIntent: true } : {}),
+    };
+  } catch {
+    return args;
+  }
+}
+
 export class AgentTarsRuntimeClient implements RuntimeClient {
   readonly kind = "agent-tars" as const;
   private opts: AgentTarsRuntimeOptions;
   private activeBrowsers = new Set<{ close: () => Promise<void> }>();
+  private activeDesktopAgents = new Set<DesktopAgentHandle>();
 
   constructor(opts: AgentTarsRuntimeOptions) {
     this.opts = opts;
@@ -82,6 +360,7 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
     return {
       runtime: "agent-tars",
       operator: "browser",
+      operators: ["browser", "computer"],
       strategies: ["dom", "gui", "hybrid"],
       realBrowser: true,
       version: this.opts.version,
@@ -90,6 +369,14 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
 
   async run(params: StartRunParams, host: RuntimeHost): Promise<RunOutcome> {
     const { redact } = this.opts;
+    if (params.config.operator === "computer") {
+      return runDesktopTask(params, host, {
+        redact,
+        onAgentStart: (agent) => this.activeDesktopAgents.add(agent),
+        onAgentStop: (agent) => this.activeDesktopAgents.delete(agent),
+      });
+    }
+
     // Dynamic imports so this module can be present without deps installed until
     // the runtime is actually selected + installed.
     const { AgentTARS } = (await import("@agent-tars/core")) as any;
@@ -105,7 +392,7 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
     //    process + attach the gate to AgentTARS's browser once it launches.
     const agent = new AgentTARS({
       model: {
-        provider: params.config.provider,
+        provider: resolveModelProvider(params.config.provider, Boolean(params.config.endpoint)),
         id: params.config.model,
         ...(params.config.endpoint ? { baseURL: params.config.endpoint } : {}),
         ...(params.providerApiKey ? { apiKey: params.providerApiKey } : {}),
@@ -118,6 +405,42 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
       maxIterations: params.config.maxSteps,
     });
 
+    // Agent TARS exposes complete request/stream hooks even though its public
+    // event stream has no usage event. Prefer the provider's final usage chunk;
+    // otherwise publish a text-only estimate and label it as estimated.
+    let currentRequest: unknown = null;
+    let cumulativeInputTokens = 0;
+    let cumulativeOutputTokens = 0;
+    let cumulativeTotalTokens = 0;
+    let modelCalls = 0;
+    let anyEstimatedUsage = false;
+    const originalLLMRequest = agent.onLLMRequest?.bind(agent);
+    agent.onLLMRequest = (sessionId: string, payload: any) => {
+      currentRequest = payload?.request ?? null;
+      return originalLLMRequest?.(sessionId, payload);
+    };
+    const originalStreamingResponse = agent.onLLMStreamingResponse?.bind(agent);
+    agent.onLLMStreamingResponse = (sessionId: string, payload: any) => {
+      originalStreamingResponse?.(sessionId, payload);
+      const usage = browserCallTokenUsage(
+        currentRequest,
+        Array.isArray(payload?.chunks) ? payload.chunks : [],
+      );
+      cumulativeInputTokens += usage.inputTokens;
+      cumulativeOutputTokens += usage.outputTokens;
+      cumulativeTotalTokens += usage.totalTokens;
+      modelCalls += 1;
+      anyEstimatedUsage ||= usage.estimated;
+      host.usage?.({
+        inputTokens: cumulativeInputTokens,
+        outputTokens: cumulativeOutputTokens,
+        totalTokens: cumulativeTotalTokens,
+        calls: modelCalls,
+        ...(anyEstimatedUsage ? { estimated: true } : {}),
+      });
+      currentRequest = null;
+    };
+
     // Attach ownership + the DOM-layer submission gate + periodic screenshots once
     // AgentTARS's browser launches (lazily, on first browser tool). The gate pauses
     // the actual form POST / off-allowlist navigation BEFORE it leaves the browser.
@@ -126,6 +449,24 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
     let detachGate: () => void = () => {};
     let attached: any = null;
     let shotTimer: ReturnType<typeof setInterval> | null = null;
+    let stopped = false;
+    let screenshotQueue: Promise<void> = Promise.resolve();
+    const captureScreenshot = (caption?: string): Promise<void> => {
+      const capture = screenshotQueue.then(async () => {
+        if (!attached) return;
+        try {
+          const pages = await attached.pages();
+          const page = pages[pages.length - 1];
+          if (!page) return;
+          const base64 = await captureCleanPagePng(page);
+          if (base64) await host.screenshot({ base64, ...(caption ? { caption } : {}) });
+        } catch {
+          /* transient navigation or browser shutdown */
+        }
+      });
+      screenshotQueue = capture.catch(() => {});
+      return capture;
+    };
     const tryAttach = (): void => {
       if (attached) return;
       let pptr: any = null;
@@ -153,23 +494,14 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
             ...(a.submitIntent ? { submitIntent: true } : {}),
           }),
       });
-      // Periodic screenshots (works in dom mode, which emits none on its own).
-      shotTimer = setInterval(async () => {
-        try {
-          const pages = await pptr.pages();
-          const page = pages[pages.length - 1];
-          if (!page) return;
-          const b64 = await page.screenshot({ encoding: "base64" });
-          const s = typeof b64 === "string" ? b64 : Buffer.from(b64).toString("base64");
-          if (s) host.screenshot({ base64: s });
-        } catch {
-          /* transient navigation */
-        }
-      }, 2500);
+      // Capture immediately, then periodically. DOM mode does not emit a PNG
+      // screenshot event of its own, and short tasks may finish before 2.5s.
+      void captureScreenshot("Browser ready");
+      shotTimer = setInterval(() => void captureScreenshot(), 2500);
       shotTimer.unref?.();
     };
-    void (async () => {
-      for (let i = 0; i < 60 && !attached && !host.signal.aborted; i++) {
+    const attachTask = (async () => {
+      for (let i = 0; i < 60 && !attached && !stopped && !host.signal.aborted; i++) {
         tryAttach();
         await new Promise((r) => setTimeout(r, 250));
       }
@@ -212,6 +544,7 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
           /* keep args */
         }
       }
+      args = await enrichClickIntent(attached, toolCall.name, args);
       const action = classifyToolCall(toolCall.name, args);
       const ok = await host.requestApproval(action);
       if (!ok) {
@@ -223,7 +556,7 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
     };
 
     // 4) Normalize the event stream into host observations.
-    const unsubscribe = this.wireEvents(agent, host, redact);
+    const unsubscribe = this.wireEvents(agent, host, redact, captureScreenshot);
 
     // 5) Abort wiring.
     const onAbort = () => {
@@ -233,17 +566,28 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
 
     // 6) Run.
     let outcome: RunOutcome;
+    const thinkingStartedAt = Date.now();
+    host.thinking?.({ state: "started", summary: "Analyzing the task" });
     try {
-      const result = await agent.run({ input: params.task });
+      const result = await agent.run(params.task);
       if (host.signal.aborted) outcome = { status: "aborted" };
-      else outcome = { status: "completed", summary: typeof result === "string" ? redact(result) : undefined };
+      else outcome = normalizeAgentResult(result, redact);
     } catch (err) {
       outcome = host.signal.aborted
         ? { status: "aborted" }
         : { status: "failed", failure: { code: "agent_error", message: "Agent run failed" } };
     } finally {
+      host.thinking?.({
+        state: "completed",
+        summary: host.signal.aborted ? "Browser task stopped" : "Browser analysis complete",
+        durationMs: Date.now() - thinkingStartedAt,
+      });
       host.signal.removeEventListener("abort", onAbort);
+      stopped = true;
       if (shotTimer) clearInterval(shotTimer);
+      tryAttach();
+      await captureScreenshot("Final browser state");
+      await attachTask;
       detachGate();
       unsubscribe();
       await closeBrowser.close();
@@ -252,16 +596,42 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
     return outcome;
   }
 
-  private wireEvents(agent: any, host: RuntimeHost, redact: (l: string) => string): () => void {
+  private wireEvents(
+    agent: any,
+    host: RuntimeHost,
+    redact: (l: string) => string,
+    captureScreenshot: (caption?: string) => Promise<void>,
+  ): () => void {
     const stream = agent.getEventStream?.();
     if (!stream || typeof stream.subscribe !== "function") return () => {};
+    let streamingThought = false;
     return stream.subscribe((event: any) => {
       try {
         switch (event?.type) {
+          case "assistant_streaming_thinking_message":
+            if (!streamingThought) {
+              streamingThought = true;
+              host.thinking?.({ state: "active", summary: "Analyzing the current browser state" });
+            }
+            break;
+          case "assistant_thinking_message":
+            streamingThought = false;
+            host.thinking?.({
+              state: "active",
+              summary: "Analysis step complete",
+              ...(Number.isFinite(event.thinkingDurationMs)
+                ? { durationMs: Math.max(0, Math.trunc(event.thinkingDurationMs)) }
+                : {}),
+            });
+            break;
           case "assistant_message":
             if (event.content) host.status(redact(String(event.content)).slice(0, 500));
             break;
           case "tool_call":
+            host.thinking?.({
+              state: "active",
+              summary: `Preparing ${redact(String(event.name ?? "browser action")).replaceAll("_", " ")}`,
+            });
             host.actionStarted({
               actionId: String(event.toolCallId ?? ""),
               action: "click",
@@ -275,15 +645,13 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
               host.page({ url: url ? redact(String(url)) : undefined });
             }
             if (name === "browser_screenshot") {
-              const b64 = extractBase64Png(event?.content);
-              if (b64) host.screenshot({ base64: b64, caption: "screenshot" });
+              void captureScreenshot("Browser screenshot");
             }
             host.actionCompleted({ actionId: String(event.toolCallId ?? "") });
             break;
           }
           case "environment_input": {
-            const b64 = extractBase64Png(event?.content);
-            if (b64) host.screenshot({ base64: b64 });
+            void captureScreenshot();
             break;
           }
           default:
@@ -296,29 +664,9 @@ export class AgentTarsRuntimeClient implements RuntimeClient {
   }
 
   async shutdown(): Promise<void> {
+    for (const agent of [...this.activeDesktopAgents]) agent.stop();
+    this.activeDesktopAgents.clear();
     for (const b of [...this.activeBrowsers]) await b.close();
     this.activeBrowsers.clear();
   }
-}
-
-/** Extract a base64 PNG payload from various upstream content shapes. */
-function extractBase64Png(content: any): string | null {
-  if (!content) return null;
-  const scan = (v: any): string | null => {
-    if (typeof v === "string") {
-      const m = /data:image\/png;base64,([A-Za-z0-9+/=]+)/.exec(v);
-      if (m) return m[1];
-      if (/^[A-Za-z0-9+/=]{100,}$/.test(v)) return v;
-      return null;
-    }
-    if (Array.isArray(v)) {
-      for (const item of v) {
-        const r = scan(item?.image_url?.url ?? item?.data ?? item);
-        if (r) return r;
-      }
-    }
-    if (typeof v === "object") return scan(v.image ?? v.data ?? v.url ?? null);
-    return null;
-  };
-  return scan(content);
 }

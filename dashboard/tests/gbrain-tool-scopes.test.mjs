@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   GBRAIN_TOOLS,
   allowedToolsForSurface,
-} from "../src/lib/openharness/tool-scopes.ts";
+} from "../src/lib/hermes/tool-scopes.ts";
 
 test("GBrain tools expose no write, admin, capture, delete, cron, or shell operation", () => {
   const forbidden = [

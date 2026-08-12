@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId } from "@/lib/server-auth";
-import { apiErrorResponse, readJsonBody, ApiError } from "@/lib/openharness/route-helpers.ts";
-import { authorizeGardenAccess } from "@/lib/openharness/session-service.ts";
+import { apiErrorResponse, readJsonBody, ApiError } from "@/lib/hermes/route-helpers.ts";
+import { authorizeGardenAccess } from "@/lib/hermes/session-service.ts";
 import { syncGarden, drainSyncJobs } from "@/lib/gbrain/sync.ts";
 import { loadClusterBySlug } from "@/lib/gbrain/mapping.ts";
 import { ensureSyncWorkerStarted } from "@/lib/gbrain/sync-worker.ts";

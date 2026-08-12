@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   clearAllLearnData,
   LearnClearConflictError,
+  LearnPipelineConflictError,
 } from "@/lib/learn";
 import {
   requireOwnedClusterFromSlug,
@@ -45,7 +46,10 @@ export async function POST(
     });
     return NextResponse.json({ success: true, result });
   } catch (error) {
-    if (error instanceof LearnClearConflictError) {
+    if (
+      error instanceof LearnClearConflictError ||
+      error instanceof LearnPipelineConflictError
+    ) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
     return routeErrorResponse(error);

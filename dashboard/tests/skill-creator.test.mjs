@@ -9,7 +9,7 @@ import {
   normalizeSkillName,
   parseSkillDraftResponse,
   validateSkillDraft,
-} from "../src/lib/openharness/skill-authoring.ts";
+} from "../src/lib/hermes/skill-authoring.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
@@ -83,7 +83,7 @@ test("model drafts parse from fenced JSON and normalize the name", () => {
 });
 
 test("the create route stages quarantine only and never promotes", () => {
-  const route = read("src/app/api/openharness/skills/create/route.ts");
+  const route = read("src/app/api/hermes/skills/create/route.ts");
   assert.match(route, /requireUserId/);
   assert.match(route, /requireEnabled/);
   assert.match(route, /quarantineSkill/);
@@ -92,14 +92,14 @@ test("the create route stages quarantine only and never promotes", () => {
 });
 
 test("the creator UI stages, reviews, and reuses the human promotion boundary", () => {
-  const creator = read("src/app/components/openharness/skill-creator-panel.tsx");
-  assert.match(creator, /\/api\/openharness\/skills\/create/);
-  assert.match(creator, /\/api\/openharness\/skills\/promote/);
+  const creator = read("src/app/components/hermes/skill-creator-panel.tsx");
+  assert.match(creator, /\/api\/hermes\/skills\/create/);
+  assert.match(creator, /\/api\/hermes\/skills\/promote/);
   assert.match(creator, /Stage for review/);
   assert.match(creator, /Approve and install/);
   assert.match(creator, /Discard/);
   assert.match(creator, /Draft with AI/);
   assert.match(creator, /skill-creator/);
-  const catalog = read("src/app/components/openharness/skills-catalog-panel.tsx");
+  const catalog = read("src/app/components/hermes/skills-catalog-panel.tsx");
   assert.match(catalog, /SkillCreatorPanel/);
 });

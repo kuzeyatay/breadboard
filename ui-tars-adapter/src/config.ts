@@ -7,6 +7,8 @@
 import type {
   ApprovalMode,
   BrowserStrategy,
+  DesktopCoordinateSpace,
+  OperatorType,
   UITarsAgentConfiguration,
 } from "./types.ts";
 
@@ -65,6 +67,11 @@ export interface ValidationResult {
 
 const STRATEGIES: ReadonlySet<BrowserStrategy> = new Set(["gui", "dom", "hybrid"]);
 const APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set(["every_action", "sensitive_actions"]);
+const OPERATORS: ReadonlySet<OperatorType> = new Set(["browser", "computer"]);
+const DESKTOP_COORDINATE_SPACES: ReadonlySet<DesktopCoordinateSpace> = new Set([
+  "screen_pixels",
+  "normalized_1000",
+]);
 
 const MAX_STEPS_CEIL = 200;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000; // 30 min hard ceiling
@@ -82,14 +89,25 @@ export function validateAgentConfiguration(input: unknown): ValidationResult {
     return { ok: false, errors: ["configuration_must_be_object"] };
   }
 
-  // operator — browser only for MVP; `computer` explicitly rejected.
-  if (input["operator"] !== "browser") {
-    errors.push("operator_must_be_browser");
+  const operator = input["operator"];
+  if (typeof operator !== "string" || !OPERATORS.has(operator as OperatorType)) {
+    errors.push("invalid_operator");
   }
 
   const browserStrategy = input["browserStrategy"];
   if (typeof browserStrategy !== "string" || !STRATEGIES.has(browserStrategy as BrowserStrategy)) {
     errors.push("invalid_browser_strategy");
+  }
+
+  // Backward-compatible default for agents saved before coordinate protocols
+  // became explicit. General vision models (including Breadboard's local
+  // gateway) report screenshot pixels.
+  const desktopCoordinateSpace = input["desktopCoordinateSpace"] ?? "screen_pixels";
+  if (
+    typeof desktopCoordinateSpace !== "string" ||
+    !DESKTOP_COORDINATE_SPACES.has(desktopCoordinateSpace as DesktopCoordinateSpace)
+  ) {
+    errors.push("invalid_desktop_coordinate_space");
   }
 
   const provider = input["provider"];
@@ -144,8 +162,9 @@ export function validateAgentConfiguration(input: unknown): ValidationResult {
   if (errors.length > 0) return { ok: false, errors };
 
   const value: UITarsAgentConfiguration = {
-    operator: "browser",
+    operator: operator as OperatorType,
     browserStrategy: browserStrategy as BrowserStrategy,
+    desktopCoordinateSpace: desktopCoordinateSpace as DesktopCoordinateSpace,
     provider: (provider as string).trim(),
     model: (model as string).trim(),
     ...(typeof endpoint === "string" ? { endpoint } : {}),
@@ -165,13 +184,14 @@ export function defaultAgentConfiguration(): UITarsAgentConfiguration {
   return {
     operator: "browser",
     browserStrategy: "dom", // safe bring-up strategy; no vision model required
+    desktopCoordinateSpace: "screen_pixels",
     provider: "openai",
     model: "",
     maxSteps: 25,
     timeoutMs: 5 * 60 * 1000,
     approvalMode: "sensitive_actions",
     allowedDomains: [],
-    allowDownloads: false,
+    allowDownloads: true,
     allowClipboard: false,
     allowFileUpload: false,
   };

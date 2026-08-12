@@ -55,6 +55,8 @@ export default async function WorkspacePage({
         created_at: fullRow.created_at as string,
         noteCount: 0,
         isOwner: false,
+        repo_connected: false,
+        repo_name: null,
       };
     }
     isOwner = false;

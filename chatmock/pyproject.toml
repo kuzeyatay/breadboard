@@ -23,6 +23,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Local, keyless embeddings for /v1/embeddings. An extra rather than a core
+# dependency because it pulls ONNX Runtime and tokenizers — a lot of megabytes
+# for an install that only wants chat. Everything else degrades to a 503 that
+# names this install.
+embeddings = [
+    "fastembed>=0.7,<1.0",
+]
 gui = [
     "Pillow==11.3.0",
     "PyInstaller==6.16.0",

@@ -54,8 +54,8 @@ test("end-to-end: canonical markdown -> durable index -> scoped query -> mapped 
     const db = dbMod.default;
     const { getOrCreateSourceMapping } = await import("../src/lib/gbrain/mapping.ts");
     const { GBrainClient } = await import("../src/lib/gbrain/client.ts");
-    const { issueCapabilityToken } = await import("../src/lib/openharness/capability-token.ts");
-    const { executeGBrainTool, GBRAIN_TOOLS } = await import("../src/lib/openharness/gbrain-tools.ts");
+    const { issueCapabilityToken } = await import("../src/lib/hermes/capability-token.ts");
+    const { executeGBrainTool, GBRAIN_TOOLS } = await import("../src/lib/hermes/gbrain-tools.ts");
 
     const suffix = crypto.randomBytes(3).toString("hex");
     const slug = `gbrain-e2e-${suffix}`;
@@ -86,7 +86,7 @@ test("end-to-end: canonical markdown -> durable index -> scoped query -> mapped 
       const token = issueCapabilityToken({
         userId,
         surface: "garden_chat",
-        openHarnessSessionId: `oh-${suffix}`,
+        hermesSessionId: `oh-${suffix}`,
         allowedGardenIds: [clusterId],
         activeGardenId: clusterId,
         allowedTools: [...GBRAIN_TOOLS],

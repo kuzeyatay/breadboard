@@ -35,6 +35,9 @@ export interface LearnBuildWorkspace {
 
   contractFingerprint: string;
   sourceSetFingerprint: string;
+  /** Fingerprint of every durable input copied from the repository. Promotion
+   * is refused when it changes while generation is running. */
+  durableInputFingerprint: string;
 
   createdAt: string;
 }
@@ -56,7 +59,65 @@ const DISPOSABLE_TOP_LEVEL = new Set([
 const DURABLE_BREADBOARD_ENTRIES = new Set([
   "source-visuals.json", // canonical source extraction ledger
   "sources", // extracted per-source markdown, if present here
+  "events.jsonl", // append-only operational history; merged before promotion
 ]);
+
+/** Known Learn projections that must be rebuilt from scratch. Unknown
+ * `.breadboard` entries are preserved because they may belong to another
+ * subsystem and atomic promotion must never erase them. */
+const DISPOSABLE_BREADBOARD_ENTRIES = new Set([
+  "internal",
+  "backups",
+  "build-workspace.json",
+  "canonical-shadow",
+  "debug",
+  "learn-run-snapshots",
+  "planning",
+  "quarantine",
+  "source-snapshots",
+  "acceptance-status.json",
+  "active-build-manifest.json",
+  "anchor-critic-decisions.json",
+  "anchor-replacement-plan.json",
+  "anchor-replacement-plan.md",
+  "claims.json",
+  "claims-history.json",
+  "concept-registry.json",
+  "concept-registry-history.json",
+  "critic-issues.json",
+  "critic-loop.json",
+  "critic-report.md",
+  "formula-assignment-plan.json",
+  "formula-identities.json",
+  "learn-build.lock.json",
+  "learning-unit-contract.json",
+  "repair-log.json",
+  "repair-report.md",
+  "render-manifest.json",
+  "scoped-repair.json",
+  "scoped-repair.md",
+  "semantic-migration.json",
+  "source-anchor-evidence.json",
+  "source-anchor-evidence.md",
+  "source-anchor-migration.json",
+  "source-anchor-migration.md",
+  "source-anchors.json",
+  "validation-report.md",
+  "visual-index.json",
+  "visualization-coverage.json",
+  "visualization-coverage.md",
+  "visualization-events.json",
+  "visualization-plan.json",
+  "visualization-report.md",
+  "visuals",
+  "weak-anchor-self-healing.json",
+  "weak-anchor-self-healing.md",
+]);
+
+/** Windows paths are case-insensitive, so exclusion policy must be too. */
+function normalizedEntryName(value: string): string {
+  return value.toLowerCase();
+}
 
 function shortHash(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, 12);
@@ -83,17 +144,15 @@ function copyFileResilient(src: string, dest: string): void {
 function copyTree(srcDir: string, destDir: string, filter?: (rel: string) => boolean): void {
   const walk = (rel: string) => {
     const absSrc = path.join(srcDir, rel);
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(absSrc, { withFileTypes: true });
-    } catch {
-      return;
-    }
+    const entries = fs.readdirSync(absSrc, { withFileTypes: true });
     for (const entry of entries) {
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (filter && !filter(childRel)) continue;
       if (entry.isDirectory()) walk(childRel);
       else if (entry.isFile()) copyFileResilient(path.join(srcDir, childRel), path.join(destDir, childRel));
+      else if (entry.isSymbolicLink()) {
+        throw new Error(`Learn durable input contains unsupported symbolic link: ${childRel}`);
+      }
     }
   };
   walk("");
@@ -114,18 +173,44 @@ export function createLearnBuildWorkspace(input: {
   sourceSetFingerprint: string;
   workspaceRoot?: string;
   previousPublishedGardenDir?: string;
+  /** Defaults to `staging`. Production uses the real garden slug so helpers
+   * receiving a content root continue to resolve `<root>/<gardenSlug>`. */
+  stagingDirectoryName?: string;
 }): LearnBuildWorkspace {
   const buildId = `build_${Date.now().toString(36)}_${shortHash(`${input.gardenSlug}:${input.jobId}:${input.sourceSetFingerprint}`)}`;
   const workspaceRoot = input.workspaceRoot ?? defaultWorkspaceRoot(input.gardenSlug, input.jobId);
-  const stagingGardenDir = path.join(workspaceRoot, "staging");
+  const stagingGardenDir = path.join(
+    workspaceRoot,
+    input.stagingDirectoryName?.trim() || "staging",
+  );
   const stagingLearningDir = path.join(stagingGardenDir, "learning");
+  const durableInputFingerprint = fingerprintDurableGardenState(
+    input.repositoryGardenDir,
+  );
 
   // Start from a clean staging garden. A stale workspace directory from a
   // previous crashed run of the same job id is removed first.
   fs.rmSync(workspaceRoot, { recursive: true, force: true });
   fs.mkdirSync(stagingGardenDir, { recursive: true });
 
-  seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+  try {
+    seedDurableInputs(input.repositoryGardenDir, stagingGardenDir);
+    const copiedInputFingerprint = fingerprintDurableGardenState(stagingGardenDir);
+    const currentInputFingerprint = fingerprintDurableGardenState(
+      input.repositoryGardenDir,
+    );
+    if (
+      durableInputFingerprint !== currentInputFingerprint ||
+      durableInputFingerprint !== copiedInputFingerprint
+    ) {
+      throw new Error(
+        "Garden inputs changed while Learn was creating its isolated workspace. No published files were changed; retry the operation.",
+      );
+    }
+  } catch (error) {
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    throw error;
+  }
 
   const workspace: LearnBuildWorkspace = {
     buildId,
@@ -139,6 +224,7 @@ export function createLearnBuildWorkspace(input: {
     stagingLearningDir,
     contractFingerprint: input.contractFingerprint,
     sourceSetFingerprint: input.sourceSetFingerprint,
+    durableInputFingerprint,
     createdAt: new Date().toISOString(),
   };
   writeWorkspaceDescriptor(workspace);
@@ -154,23 +240,26 @@ export function seedDurableInputs(repositoryGardenDir: string, stagingGardenDir:
 } {
   const seeded: string[] = [];
   const skipped: string[] = [];
-  let topLevel: fs.Dirent[];
-  try {
-    topLevel = fs.readdirSync(repositoryGardenDir, { withFileTypes: true });
-  } catch {
-    return { seeded, skipped };
-  }
+  const topLevel = fs.readdirSync(repositoryGardenDir, { withFileTypes: true });
   for (const entry of topLevel) {
-    if (entry.name === ".breadboard") {
+    const normalizedName = normalizedEntryName(entry.name);
+    if (normalizedName === ".breadboard") {
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Learn durable input contains unsupported symbolic link: ${entry.name}`);
+      }
+      if (!entry.isDirectory()) {
+        skipped.push(entry.name);
+        continue;
+      }
       seedDurableBreadboardEntries(
-        path.join(repositoryGardenDir, ".breadboard"),
+        path.join(repositoryGardenDir, entry.name),
         path.join(stagingGardenDir, ".breadboard"),
         seeded,
         skipped,
       );
       continue;
     }
-    if (DISPOSABLE_TOP_LEVEL.has(entry.name)) {
+    if (DISPOSABLE_TOP_LEVEL.has(normalizedName)) {
       skipped.push(entry.name);
       continue;
     }
@@ -178,6 +267,9 @@ export function seedDurableInputs(repositoryGardenDir: string, stagingGardenDir:
     const dest = path.join(stagingGardenDir, entry.name);
     if (entry.isDirectory()) copyTree(src, dest);
     else if (entry.isFile()) copyFileResilient(src, dest);
+    else if (entry.isSymbolicLink()) {
+      throw new Error(`Learn durable input contains unsupported symbolic link: ${entry.name}`);
+    }
     seeded.push(entry.name);
   }
   return { seeded, skipped };
@@ -189,14 +281,13 @@ function seedDurableBreadboardEntries(
   seeded: string[],
   skipped: string[],
 ): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(srcBreadboard, { withFileTypes: true });
-  } catch {
-    return;
-  }
+  const entries = fs.readdirSync(srcBreadboard, { withFileTypes: true });
   for (const entry of entries) {
-    if (!DURABLE_BREADBOARD_ENTRIES.has(entry.name)) {
+    const normalizedName = normalizedEntryName(entry.name);
+    if (
+      !DURABLE_BREADBOARD_ENTRIES.has(normalizedName) &&
+      DISPOSABLE_BREADBOARD_ENTRIES.has(normalizedName)
+    ) {
       skipped.push(`.breadboard/${entry.name}`);
       continue;
     }
@@ -204,14 +295,69 @@ function seedDurableBreadboardEntries(
     const dest = path.join(destBreadboard, entry.name);
     if (entry.isDirectory()) copyTree(src, dest);
     else if (entry.isFile()) copyFileResilient(src, dest);
+    else if (entry.isSymbolicLink()) {
+      throw new Error(
+        `Learn durable input contains unsupported symbolic link: .breadboard/${entry.name}`,
+      );
+    }
     seeded.push(`.breadboard/${entry.name}`);
   }
 }
 
-const WORKSPACE_DESCRIPTOR = ".breadboard/build-workspace.json";
+function durableFingerprintIncludes(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, "/");
+  const [top, second] = normalized.split("/");
+  if (!top) return false;
+  const normalizedTop = normalizedEntryName(top);
+  if (normalizedTop !== ".breadboard") return !DISPOSABLE_TOP_LEVEL.has(normalizedTop);
+  if (!second) return true;
+  const normalizedSecond = normalizedEntryName(second);
+  if (normalizedSecond === "events.jsonl" || normalizedSecond === "learn-build.lock.json") {
+    return false;
+  }
+  return !DISPOSABLE_BREADBOARD_ENTRIES.has(normalizedSecond);
+}
+
+function durableFingerprintRecordPath(relPath: string): string {
+  const segments = relPath.replace(/\\/g, "/").split("/");
+  if (segments[0] && normalizedEntryName(segments[0]) === ".breadboard") {
+    // Seeding canonicalizes the container directory to `.breadboard`; its
+    // spelling must not make the source and staging fingerprints diverge.
+    segments[0] = ".breadboard";
+  }
+  return segments.join("/");
+}
+
+/** Stable content fingerprint used as the optimistic publication boundary. */
+export function fingerprintDurableGardenState(gardenDir: string): string {
+  const records: string[] = [];
+  const visit = (directory: string, relative = ""): void => {
+    const entries = fs.readdirSync(directory, { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const relPath = relative ? `${relative}/${entry.name}` : entry.name;
+      if (!durableFingerprintIncludes(relPath)) continue;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolute, relPath);
+      } else if (entry.isFile()) {
+        const digest = crypto.createHash("sha256").update(fs.readFileSync(absolute)).digest("hex");
+        records.push(`${durableFingerprintRecordPath(relPath)}\0${digest}`);
+      } else if (entry.isSymbolicLink()) {
+        throw new Error(`Learn durable input contains unsupported symbolic link: ${relPath}`);
+      }
+    }
+  };
+  visit(gardenDir);
+  return crypto.createHash("sha256").update(records.sort().join("\n")).digest("hex");
+}
+
+const WORKSPACE_DESCRIPTOR = "build-workspace.json";
 
 function writeWorkspaceDescriptor(workspace: LearnBuildWorkspace): void {
-  const abs = path.join(workspace.stagingGardenDir, WORKSPACE_DESCRIPTOR);
+  // This descriptor contains local repository/workspace paths and is useful
+  // only while diagnosing the isolated build. Keep it beside the staging
+  // garden so atomic publication can never expose host filesystem details.
+  const abs = path.join(workspace.workspaceRoot, WORKSPACE_DESCRIPTOR);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, `${JSON.stringify(workspace, null, 2)}\n`);
 }

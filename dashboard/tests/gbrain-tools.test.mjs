@@ -10,8 +10,8 @@ process.env.QUARTZ_CONTENT_PATH = process.env.QUARTZ_CONTENT_PATH || path.join(o
 
 const dbMod = await import("../src/lib/db.ts");
 const db = dbMod.default;
-const { issueCapabilityToken } = await import("../src/lib/openharness/capability-token.ts");
-const { executeGBrainTool, GBRAIN_TOOLS } = await import("../src/lib/openharness/gbrain-tools.ts");
+const { issueCapabilityToken } = await import("../src/lib/hermes/capability-token.ts");
+const { executeGBrainTool, GBRAIN_TOOLS } = await import("../src/lib/hermes/gbrain-tools.ts");
 
 const SUFFIX = Math.random().toString(36).slice(2, 8);
 const slugA = `gbrain-test-alice-${SUFFIX}`;
@@ -39,7 +39,7 @@ function tokenFor(userId, clusterId, tools = GBRAIN_TOOLS) {
   return issueCapabilityToken({
     userId,
     surface: "garden_chat",
-    openHarnessSessionId: `oh-${SUFFIX}`,
+    hermesSessionId: `oh-${SUFFIX}`,
     allowedGardenIds: [clusterId],
     activeGardenId: clusterId,
     allowedTools: [...tools],
@@ -110,7 +110,7 @@ test("a token referencing only non-existent gardens gets no scope", async () => 
     const token = issueCapabilityToken({
       userId: userA,
       surface: "garden_chat",
-      openHarnessSessionId: `oh-${SUFFIX}`,
+      hermesSessionId: `oh-${SUFFIX}`,
       allowedGardenIds: [99999999],
       allowedTools: [...GBRAIN_TOOLS],
     });

@@ -59,10 +59,41 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
             multiple
             hidden
           />
+          {/* Kept in step with MARKDOWN_VIDEO_EXTENSIONS in the dashboard's
+              garden-video-embed module: only containers a browser can play. */}
+          <input
+            class="markdown-editor-video-input"
+            type="file"
+            accept=".mp4,.m4v,.webm,.ogv,.mov"
+            hidden
+          />
+          <div class="markdown-editor-youtube-row" hidden>
+            <input
+              class="markdown-editor-youtube-url"
+              type="url"
+              placeholder="https://www.youtube.com/watch?v=…"
+              aria-label="YouTube URL"
+            />
+            <button class="markdown-editor-youtube-insert" type="button">
+              Insert
+            </button>
+            <button class="markdown-editor-youtube-cancel" type="button">
+              Cancel
+            </button>
+          </div>
           <div class="markdown-editor-footer">
             <div class="markdown-editor-insert-tools">
               <button class="markdown-editor-image" type="button">
                 Add images
+              </button>
+              <button class="markdown-editor-whiteboard" type="button">
+                Add whiteboard
+              </button>
+              <button class="markdown-editor-video" type="button">
+                Add video
+              </button>
+              <button class="markdown-editor-youtube" type="button">
+                YouTube
               </button>
               <label class="markdown-editor-placement-label">
                 Place
@@ -74,6 +105,9 @@ const MarkdownActions: QuartzComponent = ({ fileData, displayClass }: QuartzComp
               </label>
             </div>
             <div class="markdown-editor-footer-actions">
+              {/* The page's own status line sits behind the modal, so progress
+                  and errors raised while editing need somewhere visible. */}
+              <span class="markdown-editor-status" aria-live="polite" />
               <button class="markdown-editor-cancel" type="button">
                 Cancel
               </button>
@@ -101,6 +135,11 @@ MarkdownActions.css = `
 .markdown-action-button,
 .markdown-editor-close,
 .markdown-editor-image,
+.markdown-editor-video,
+.markdown-editor-whiteboard,
+.markdown-editor-youtube,
+.markdown-editor-youtube-insert,
+.markdown-editor-youtube-cancel,
 .markdown-editor-cancel,
 .markdown-editor-save {
   border: 1px solid var(--lightgray);
@@ -118,14 +157,57 @@ MarkdownActions.css = `
 .markdown-action-button:hover,
 .markdown-editor-close:hover,
 .markdown-editor-image:hover,
+.markdown-editor-video:hover,
+.markdown-editor-whiteboard:hover,
+.markdown-editor-youtube:hover,
+.markdown-editor-youtube-insert:hover,
+.markdown-editor-youtube-cancel:hover,
 .markdown-editor-cancel:hover {
   color: var(--tertiary);
   border-color: var(--secondary);
 }
 
-.markdown-editor-image:disabled {
+.markdown-editor-image:disabled,
+.markdown-editor-video:disabled,
+.markdown-editor-youtube-insert:disabled {
   cursor: wait;
   opacity: 0.62;
+}
+
+.markdown-editor-youtube-row[hidden] {
+  display: none;
+}
+
+.markdown-editor-youtube-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1rem;
+  border-top: 1px solid var(--lightgray);
+}
+
+.markdown-editor-youtube-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--lightgray);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--light) 88%, transparent);
+  color: var(--dark);
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.45rem 0.6rem;
+}
+
+.markdown-editor-youtube-url:focus {
+  outline: none;
+  border-color: var(--secondary);
+}
+
+.markdown-editor-status {
+  color: var(--gray);
+  font-size: 0.82rem;
+  margin-right: 0.35rem;
 }
 
 .markdown-action-button.danger {
@@ -390,6 +472,45 @@ function sbParseTags(value) {
 function sbFormatTags(tags) {
   return (Array.isArray(tags) ? tags : []).map(function (tag) { return "#" + tag }).join(" ")
 }
+// Put a block into the note at the chosen place: the cursor, the top, or the
+// bottom. Shared by everything the editor can insert.
+function sbInsertSnippet(textarea, placement, snippet) {
+  if (!textarea) return
+  var mode = placement && placement.value ? placement.value : "cursor"
+  if (mode === "top") {
+    var rest = textarea.value.replace(/^\\s+/, "")
+    textarea.value = snippet + (rest ? "\\n\\n" + rest : "")
+    textarea.focus()
+    textarea.setSelectionRange(snippet.length, snippet.length)
+    return
+  }
+  if (mode === "bottom") {
+    var head = textarea.value.replace(/\\s+$/, "")
+    textarea.value = (head ? head + "\\n\\n" : "") + snippet
+    textarea.focus()
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+    return
+  }
+  var start = textarea.selectionStart == null ? textarea.value.length : textarea.selectionStart
+  var end = textarea.selectionEnd == null ? start : textarea.selectionEnd
+  var before = textarea.value.slice(0, start)
+  var after = textarea.value.slice(end)
+  var prefix = before && !before.endsWith("\\n") ? "\\n\\n" : ""
+  var suffix = after && !after.startsWith("\\n") ? "\\n\\n" : ""
+  textarea.value = before + prefix + snippet + suffix + after
+  var nextCursor = (before + prefix + snippet).length
+  textarea.focus()
+  textarea.setSelectionRange(nextCursor, nextCursor)
+}
+// A whiteboard block is a reference, not content: the id names one board in the
+// canvas server, which is what lets the board keep its drawing and its position
+// between visits. It has to match the id shape that server accepts.
+function sbWhiteboardSnippet() {
+  var random = crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "").slice(0, 16) : ""
+  while (random.length < 16) random += Math.random().toString(36).slice(2)
+  var id = Date.now() + "-" + random.slice(0, 16)
+  return "\`\`\`penecho\\nid: " + id + "\\ntitle: Whiteboard\\nheight: 520\\n\`\`\`"
+}
 // Chip-style tag input: finished tags (space/comma/Enter) render as bubbles
 // ahead of the text input; Backspace on an empty input removes the last one.
 function sbCreateTagField(box, input) {
@@ -482,12 +603,25 @@ document.addEventListener("nav", () => {
     const tagField = tagsInput && tagsBox ? sbCreateTagField(tagsBox, tagsInput) : null
     const imageInput = actions.querySelector(".markdown-editor-image-input")
     const addImage = actions.querySelector(".markdown-editor-image")
+    const videoInput = actions.querySelector(".markdown-editor-video-input")
+    const addVideo = actions.querySelector(".markdown-editor-video")
+    const addWhiteboard = actions.querySelector(".markdown-editor-whiteboard")
+    const placementSelect = actions.querySelector(".markdown-editor-placement")
+    const youtubeToggle = actions.querySelector(".markdown-editor-youtube")
+    const youtubeRow = actions.querySelector(".markdown-editor-youtube-row")
+    const youtubeUrl = actions.querySelector(".markdown-editor-youtube-url")
+    const youtubeInsert = actions.querySelector(".markdown-editor-youtube-insert")
+    const youtubeCancel = actions.querySelector(".markdown-editor-youtube-cancel")
+    const editorStatus = actions.querySelector(".markdown-editor-status")
     const close = actions.querySelector(".markdown-editor-close")
     const cancel = actions.querySelector(".markdown-editor-cancel")
     const save = actions.querySelector(".markdown-editor-save")
 
+    // The modal covers the page, so anything said while editing has to appear
+    // in both places to be seen at all.
     const setStatus = (message) => {
       if (status) status.textContent = message
+      if (editorStatus) editorStatus.textContent = message
     }
     const editorDraft = () => ({
       title: titleInput ? titleInput.value : "",
@@ -660,6 +794,16 @@ document.addEventListener("nav", () => {
       imageInput?.click()
     })
 
+    // A whiteboard needs no upload and no round trip: the block is written
+    // straight into the draft, and the board it names is created the first time
+    // anything is drawn on it.
+    addWhiteboard?.addEventListener("click", () => {
+      if (!textarea) return
+      sbInsertSnippet(textarea, placementSelect, sbWhiteboardSnippet())
+      saveDraft()
+      setStatus("Whiteboard added. Click Save to publish.")
+    })
+
     const allowedImageTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"]
     const readImage = (file) =>
       new Promise((resolve, reject) => {
@@ -718,6 +862,81 @@ document.addEventListener("nav", () => {
       uploadImages(files)
     })
 
+    // Videos: the File itself is handed to the dashboard frame, which streams it
+    // to the server. Nothing is read into memory here, so the size of the clip
+    // does not matter to this page.
+    const allowedVideoExtensions = [".mp4", ".m4v", ".webm", ".ogv", ".mov"]
+    const maxVideoBytes = 256 * 1024 * 1024
+
+    addVideo?.addEventListener("click", () => {
+      if (requireDashboardFrame()) return
+      if (addVideo.disabled) return
+      videoInput?.click()
+    })
+
+    videoInput?.addEventListener("change", () => {
+      const file = (videoInput.files || [])[0]
+      videoInput.value = ""
+      if (!file) return
+      const name = String(file.name || "").toLowerCase()
+      if (!allowedVideoExtensions.some((ext) => name.endsWith(ext))) {
+        setStatus("Use " + allowedVideoExtensions.join(" "))
+        return
+      }
+      if (file.size <= 0) {
+        setStatus("That video file is empty")
+        return
+      }
+      if (file.size > maxVideoBytes) {
+        setStatus("Videos must be 256 MB or smaller")
+        return
+      }
+      setStatus("Uploading video... 0%")
+      if (addVideo) addVideo.disabled = true
+      window.parent?.postMessage({
+        type: "second-brain:upload-markdown-video",
+        slug,
+        file,
+      }, "*")
+    })
+
+    const closeYouTubeRow = () => {
+      if (youtubeRow) youtubeRow.hidden = true
+      if (youtubeUrl) youtubeUrl.value = ""
+    }
+
+    youtubeToggle?.addEventListener("click", () => {
+      if (requireDashboardFrame()) return
+      if (!youtubeRow) return
+      youtubeRow.hidden = !youtubeRow.hidden
+      if (!youtubeRow.hidden) youtubeUrl?.focus()
+    })
+
+    const submitYouTube = () => {
+      if (requireDashboardFrame()) return
+      const url = youtubeUrl ? youtubeUrl.value.trim() : ""
+      if (!url) {
+        setStatus("Enter a YouTube URL")
+        return
+      }
+      setStatus("Adding video...")
+      if (youtubeInsert) youtubeInsert.disabled = true
+      window.parent?.postMessage({
+        type: "second-brain:add-markdown-youtube",
+        slug,
+        url,
+      }, "*")
+    }
+
+    youtubeInsert?.addEventListener("click", submitYouTube)
+    youtubeUrl?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault()
+        submitYouTube()
+      }
+    })
+    youtubeCancel?.addEventListener("click", closeYouTubeRow)
+
     // Paste a screenshot or copied image straight into the note (Ctrl/Cmd+V).
     textarea?.addEventListener("paste", (event) => {
       const items = Array.from((event.clipboardData && event.clipboardData.items) || [])
@@ -744,10 +963,15 @@ document.addEventListener("nav", () => {
       uploadImages(files)
     })
 
-    close?.addEventListener("click", closeEditor)
-    cancel?.addEventListener("click", closeEditor)
+    const dismissEditor = () => {
+      closeYouTubeRow()
+      closeEditor()
+    }
+
+    close?.addEventListener("click", dismissEditor)
+    cancel?.addEventListener("click", dismissEditor)
     modal?.addEventListener("click", (event) => {
-      if (event.target === modal) closeEditor()
+      if (event.target === modal) dismissEditor()
     })
   }
 })
@@ -768,6 +992,11 @@ window.addEventListener("message", (event) => {
   const tagField = tagsInput ? tagsInput._sbTagField : null
   const placement = actions.querySelector(".markdown-editor-placement")
   const addImage = actions.querySelector(".markdown-editor-image")
+  const addVideo = actions.querySelector(".markdown-editor-video")
+  const youtubeRow = actions.querySelector(".markdown-editor-youtube-row")
+  const youtubeUrl = actions.querySelector(".markdown-editor-youtube-url")
+  const youtubeInsert = actions.querySelector(".markdown-editor-youtube-insert")
+  const editorStatus = actions.querySelector(".markdown-editor-status")
   const currentDraft = () => ({
     title: titleInput ? titleInput.value : "",
     tags: tagField ? tagField.getValue() : tagsInput ? tagsInput.value : "",
@@ -775,36 +1004,9 @@ window.addEventListener("message", (event) => {
   })
   const setStatus = (message) => {
     if (status) status.textContent = message
+    if (editorStatus) editorStatus.textContent = message
   }
-  const insertSnippet = (snippet) => {
-    if (!textarea) return
-    const mode = placement?.value || "cursor"
-    if (mode === "top") {
-      const rest = textarea.value.replace(/^\\s+/, "")
-      textarea.value = snippet + (rest ? "\\n\\n" + rest : "")
-      textarea.focus()
-      textarea.setSelectionRange(snippet.length, snippet.length)
-      return
-    }
-    if (mode === "bottom") {
-      const before = textarea.value.replace(/\\s+$/, "")
-      const prefix = before ? before + "\\n\\n" : ""
-      textarea.value = prefix + snippet
-      textarea.focus()
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
-      return
-    }
-    const start = textarea.selectionStart ?? textarea.value.length
-    const end = textarea.selectionEnd ?? start
-    const before = textarea.value.slice(0, start)
-    const after = textarea.value.slice(end)
-    const prefix = before && !before.endsWith("\\n") ? "\\n\\n" : ""
-    const suffix = after && !after.startsWith("\\n") ? "\\n\\n" : ""
-    textarea.value = before + prefix + snippet + suffix + after
-    const nextCursor = (before + prefix + snippet).length
-    textarea.focus()
-    textarea.setSelectionRange(nextCursor, nextCursor)
-  }
+  const insertSnippet = (snippet) => sbInsertSnippet(textarea, placement, snippet)
 
   if (data.type === "second-brain:markdown-content-result") {
     if (data.ok && (typeof data.body === "string" || typeof data.content === "string")) {
@@ -843,6 +1045,27 @@ window.addEventListener("message", (event) => {
       setStatus(snippetCount === 1 ? "Image inserted in editor. Click Save to publish." : "Images inserted in editor. Click Save to publish.")
     } else {
       setStatus(data.error || "Could not add image")
+      window.setTimeout(() => { setStatus("") }, 3000)
+    }
+  }
+
+  if (data.type === "second-brain:markdown-video-progress") {
+    const percent = typeof data.percent === "number" ? data.percent : 0
+    // 100% of the bytes sent still means the server is finishing the write.
+    setStatus(percent >= 100 ? "Finishing upload..." : "Uploading video... " + percent + "%")
+  }
+
+  if (data.type === "second-brain:markdown-video-result") {
+    if (addVideo) addVideo.disabled = false
+    if (youtubeInsert) youtubeInsert.disabled = false
+    if (data.ok && typeof data.markdown === "string" && data.markdown) {
+      insertSnippet(data.markdown)
+      if (textarea) sbWriteEditorDraft(data.slug, currentDraft())
+      if (youtubeRow) youtubeRow.hidden = true
+      if (youtubeUrl) youtubeUrl.value = ""
+      setStatus("Video inserted in editor. Click Save to publish.")
+    } else {
+      setStatus(data.error || "Could not add video")
       window.setTimeout(() => { setStatus("") }, 3000)
     }
   }

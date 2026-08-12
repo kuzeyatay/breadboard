@@ -1,9 +1,9 @@
 import { getServerSession } from "next-auth/next";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth-options";
-import { registryItemsForUser } from "@/lib/openharness/commands.ts";
-import { corsHeaders } from "@/lib/openharness/quartz-support.ts";
-import { apiErrorResponse, requireEnabled } from "@/lib/openharness/route-helpers.ts";
+import { registryItemsForUser } from "@/lib/hermes/commands.ts";
+import { corsHeaders } from "@/lib/hermes/quartz-support.ts";
+import { apiErrorResponse, requireEnabled } from "@/lib/hermes/route-helpers.ts";
 
 export const dynamic = "force-dynamic";
 

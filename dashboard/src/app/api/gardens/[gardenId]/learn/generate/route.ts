@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { resolveChatmockBaseUrl } from "@/lib/chatmock-server";
 import {
   getLearnStatusSnapshot,
-  LEARN_MODEL,
+  LearnPipelineConflictError,
   runTextbookGeneration,
 } from "@/lib/learn";
 import { createChatmockClient } from "@/lib/knowledge";
+import { handOffLearnTask } from "@/lib/learn-background";
 import { requireOwnedClusterFromSlug, routeErrorResponse } from "@/lib/server-auth";
+import { selectedModelForUser } from "@/lib/selected-model";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +30,7 @@ export async function POST(
     const body = await request.json().catch(() => ({}));
     const { baseURL } = resolveChatmockBaseUrl(request);
     const client = createChatmockClient(baseURL);
-    const model = LEARN_MODEL;
+    const model = selectedModelForUser(userId);
     const sourceOnly = body.sourceOnly !== false;
     const includeSourceSnapshots = body.includeSourceSnapshots === true;
     const includedSourceIds = Array.isArray(body.includedSourceIds)
@@ -77,7 +79,7 @@ export async function POST(
         { status: 409 },
       );
     }
-    const generation = await runTextbookGeneration({
+    const execution = await handOffLearnTask(runTextbookGeneration({
       gardenId: cluster.slug,
       userId,
       client,
@@ -86,10 +88,24 @@ export async function POST(
       model,
       sourceOnly,
       includeSourceSnapshots,
-    });
+    }), `generation for ${cluster.slug}`);
 
-    return NextResponse.json({ success: true, generation });
+    if (execution.accepted) {
+      return NextResponse.json(
+        {
+          success: true,
+          accepted: true,
+          job: getLearnStatusSnapshot({ gardenId: cluster.slug, contentPath }).job,
+        },
+        { status: 202 },
+      );
+    }
+
+    return NextResponse.json({ success: true, generation: execution.value });
   } catch (error) {
+    if (error instanceof LearnPipelineConflictError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return routeErrorResponse(error);
   }
 }

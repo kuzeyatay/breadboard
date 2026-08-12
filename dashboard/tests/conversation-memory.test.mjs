@@ -12,10 +12,10 @@ const { default: db } = await import("../src/lib/db.ts");
 const schema = await import("../src/lib/conversations/schema.ts");
 const store = await import("../src/lib/conversations/store.ts");
 const memory = await import("../src/lib/conversations/memory.ts");
-const runtime = await import("../src/lib/openharness/runtime-store.ts");
-const capability = await import("../src/lib/openharness/capability-token.ts");
-const gardenTools = await import("../src/lib/openharness/garden-tools.ts");
-const toolScopes = await import("../src/lib/openharness/tool-scopes.ts");
+const runtime = await import("../src/lib/hermes/runtime-store.ts");
+const capability = await import("../src/lib/hermes/capability-token.ts");
+const gardenTools = await import("../src/lib/hermes/garden-tools.ts");
+const toolScopes = await import("../src/lib/hermes/tool-scopes.ts");
 
 after(() => {
   db.close();
@@ -24,7 +24,7 @@ after(() => {
 
 beforeEach(() => {
   db.exec(`
-    DELETE FROM openharness_runtime_sessions;
+    DELETE FROM hermes_runtime_sessions;
     DELETE FROM durable_memories;
     DELETE FROM conversations;
     DELETE FROM clusters;
@@ -39,6 +39,26 @@ beforeEach(() => {
 function conversation(userId = 1, title = "New chat") {
   return store.createConversation({ userId, title });
 }
+
+test("new legacy Garden chats receive a canonical conversation immediately", () => {
+  const result = db.prepare(
+    "INSERT INTO chat_sessions(cluster_id, user_id, title) VALUES (10, 1, 'Garden question')",
+  ).run();
+  const chatSessionId = Number(result.lastInsertRowid);
+  const first = store.ensureConversationForLegacyChatSession(chatSessionId, 1);
+  const second = store.ensureConversationForLegacyChatSession(chatSessionId, 1);
+  const linked = db.prepare(
+    "SELECT conversation_id FROM chat_sessions WHERE id = ?",
+  ).get(chatSessionId);
+
+  assert.equal(first.id, second.id, "the binding must be idempotent");
+  assert.equal(first.surface, "garden_chat");
+  assert.equal(first.scope_kind, "garden");
+  assert.equal(first.default_garden_id, 10);
+  assert.equal(first.legacy_chat_session_id, chatSessionId);
+  assert.equal(linked.conversation_id, first.id);
+  assert.ok(memory.loadConversationMemoryState(first.id));
+});
 
 test("active Agency Agent selection is isolated per conversation and can be cleared", () => {
   const first = conversation(1, "First");
@@ -133,6 +153,72 @@ test("an explicit previous-chat reference loads one bounded same-user transcript
   assert.match(memory.composeMemoryContext(bundle), /explicitly_requested_cross_chat_context/);
 });
 
+test("last chat follows chronology instead of an older incidental keyword match", () => {
+  const older = conversation(1, "Make Me Kindle Clone");
+  finishTurn(
+    older,
+    "older-next-quarter-001",
+    "dashboard_terminal",
+    "Write a social post.",
+    "We will publish it next quarter.",
+  );
+  const actualLast = conversation(1, "What Elective Should I Pick");
+  finishTurn(
+    actualLast,
+    "latest-elective-001",
+    "dashboard_terminal",
+    "I take 5ECE0 and 5EPF0. Recommend an elective for Q1.",
+    "Approve the Deep Research run before I recommend one elective.",
+  );
+  const current = conversation(1, "Current");
+
+  const bundle = memory.loadConversationMemoryBundle({
+    conversation: current,
+    query: "Can you tell me the result my last chat produced about class selection for next quarter?",
+    projectScopeId: "breadboard",
+  });
+
+  assert.equal(bundle.crossConversation?.conversationId, actualLast.id);
+  assert.match(
+    bundle.crossConversation.messages.map((message) => message.content).join("\n"),
+    /5ECE0.*5EPF0/,
+  );
+});
+
+test("subject-based recall searches beyond the 20 most recent chats", () => {
+  const source = conversation(1, "Cryogenic routing decision");
+  finishTurn(
+    source,
+    "old-source-001",
+    "garden_chat",
+    "How should cryogenic narwhal routing work?",
+    "Use the cobalt relay for cryogenic narwhal routing.",
+  );
+  for (let index = 0; index < 21; index += 1) {
+    const distractor = conversation(1, `Distractor ${index}`);
+    finishTurn(
+      distractor,
+      `distractor-${String(index).padStart(3, "0")}`,
+      "dashboard_terminal",
+      `Unrelated conversation ${index}.`,
+      "No related decision here.",
+    );
+  }
+  const current = conversation(1, "Current");
+
+  const bundle = memory.loadConversationMemoryBundle({
+    conversation: current,
+    query: "What did we decide about cryogenic narwhal routing in an earlier chat?",
+    projectScopeId: "breadboard",
+  });
+
+  assert.equal(bundle.crossConversation?.conversationId, source.id);
+  assert.match(
+    bundle.crossConversation.messages.map((message) => message.content).join("\n"),
+    /cobalt relay/,
+  );
+});
+
 test("ambiguous or foreign-user cross-chat history is not loaded", () => {
   const first = conversation(1, "First matching chat");
   finishTurn(first, "same-subject-0001", "dashboard_terminal", "Discuss Falcon.", "Falcon notes.");
@@ -183,6 +269,87 @@ test("durable memory is weak, selective, and current-chat text wins", () => {
   assert.match(context, /current user instruction > current conversation exact messages/);
 });
 
+test("a confirmed global name is retrieved inside a Garden conversation", () => {
+  const source = conversation(1, "Profile");
+  memory.saveDurableMemory({
+    userId: 1,
+    content: "The user's name is Kuzey.",
+    kind: "project_fact",
+    scope: "global",
+    sourceConversationId: source.id,
+    state: "confirmed",
+    confidence: 0.9,
+    salience: 0.85,
+    memoryKey: "user-name",
+  });
+  const garden = store.createConversation({
+    userId: 1,
+    title: "Garden chat",
+    surface: "garden_chat",
+    scopeKind: "garden",
+    defaultGardenId: 10,
+  });
+  const bundle = memory.loadConversationMemoryBundle({
+    conversation: garden,
+    query: "What's my name?",
+    activeGardenId: 10,
+    projectScopeId: "breadboard",
+  });
+
+  assert.equal(bundle.durableMemories.length, 1);
+  assert.match(bundle.durableMemories[0].content, /Kuzey/);
+  assert.match(memory.composeMemoryContext(bundle), /The user's name is Kuzey/);
+});
+
+test("branch context uses only the selected exact transcript and omits stale rolling state", () => {
+  const bundle = {
+    summary: "The PDF backend is missing.",
+    workingState: {
+      knownFacts: ["mcpServer is required"],
+      decisions: [],
+      completedActions: [],
+      openQuestions: [],
+      referencedGardenIds: [],
+      referencedPages: [],
+      referencedFiles: [],
+      temporaryPreferences: [],
+    },
+    recentMessages: [
+      {
+        role: "assistant",
+        surface: "dashboard_terminal",
+        content: "No PDF was created because mcpServer is required.",
+      },
+    ],
+    durableMemories: [],
+    crossConversation: null,
+  };
+  const context = memory.composeMemoryContext(bundle, {
+    recentMessages: [
+      {
+        role: "user",
+        surface: "dashboard_terminal",
+        content: "Create the PDF again.",
+      },
+    ],
+    includeConversationState: false,
+  });
+
+  assert.match(context, /Create the PDF again/);
+  assert.doesNotMatch(context, /mcpServer|PDF backend is missing/);
+  assert.doesNotMatch(
+    context,
+    /rolling_conversation_summary|structured_working_state/,
+  );
+});
+
+test("save_memory is authorized only on authenticated conversational surfaces", () => {
+  assert.ok(toolScopes.allowedToolsForSurface("garden_chat").includes("save_memory"));
+  assert.ok(toolScopes.allowedToolsForSurface("dashboard_terminal").includes("save_memory"));
+  // Anonymous Quartz AI must never be able to write a user's durable memory.
+  assert.ok(!toolScopes.allowedToolsForSurface("quartz_ai").includes("save_memory"));
+});
+
 test("explicit remember promotes, secrets never do, and changed keys supersede", () => {
   const chat = conversation();
   const first = memory.maintainDurableMemoryFromUserTurn({
@@ -222,6 +389,49 @@ test("explicit remember promotes, secrets never do, and changed keys supersede",
     memoryKey: "framework",
   });
   assert.equal(db.prepare("SELECT state FROM durable_memories WHERE id = ?").get(old.id).state, "superseded");
+});
+
+test("opted-out and unresolved personal deliberations never become durable memory", () => {
+  const chat = conversation();
+  const privatePrompt =
+    "If I should quit collage or not (dont stire this in memory).";
+
+  assert.equal(
+    memory.durableMemoryExclusionReason(privatePrompt),
+    "user_opt_out",
+  );
+  assert.equal(
+    memory.durableMemoryExclusionReason("Should I quit college or not?"),
+    "temporary_deliberation",
+  );
+  assert.equal(
+    memory.durableMemoryExclusionReason("We decided to use SQLite."),
+    null,
+  );
+
+  assert.equal(
+    memory.saveDurableMemory({
+      userId: 1,
+      content: "The user is considering whether to quit college.",
+      kind: "decision",
+      scope: "global",
+      state: "candidate",
+      confidence: 0.4,
+      salience: 0.5,
+    }),
+    null,
+  );
+  assert.equal(
+    memory.maintainDurableMemoryFromUserTurn({
+      conversation: chat,
+      content: `Remember globally: ${privatePrompt}`,
+    }),
+    null,
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS total FROM durable_memories").get().total,
+    0,
+  );
 });
 
 test("client retries deduplicate and simultaneous turns are serialized", () => {
@@ -278,6 +488,8 @@ test("course correction is inserted before the pending assistant deterministical
     clientMessageId: "steer:request-0001",
     surface: "dashboard_terminal",
     content: "Use the newer file instead.",
+    targetClientMessageId: "original-message-01",
+    assistantContentOffset: 24,
   });
   const rows = store.listConversationMessages(chat.id);
   assert.deepEqual(rows.map((row) => [row.role, row.order_index]), [
@@ -285,6 +497,11 @@ test("course correction is inserted before the pending assistant deterministical
     ["user", 1],
     ["assistant", 2],
   ]);
+  assert.deepEqual(store.presentConversationMessage(rows[1]).metadata, {
+    courseCorrection: true,
+    courseCorrectionTargetClientMessageId: "original-message-01",
+    courseCorrectionOffset: 24,
+  });
 });
 
 test("one runtime is bound per conversation and active context is replaced", () => {
@@ -303,7 +520,7 @@ test("one runtime is bound per conversation and active context is replaced", () 
     workspaceKey: "conversations/a",
     activeDirectory: dataRoot,
     filesystemMode: "restricted",
-    openHarnessSessionId: "oh-a",
+    hermesSessionId: "oh-a",
   });
   const runtimeB = runtime.createRuntimeSession({
     conversationId: second.id,
@@ -318,10 +535,10 @@ test("one runtime is bound per conversation and active context is replaced", () 
     workspaceKey: "conversations/b",
     activeDirectory: dataRoot,
     filesystemMode: "restricted",
-    openHarnessSessionId: "oh-b",
+    hermesSessionId: "oh-b",
   });
   assert.equal(runtime.getRuntimeSessionByConversation(first.id).id, runtimeA.id);
-  assert.notEqual(runtimeA.openharness_session_id, runtimeB.openharness_session_id);
+  assert.notEqual(runtimeA.hermes_session_id, runtimeB.hermes_session_id);
   const terminal = runtime.updateRuntimeActiveContext({
     runtimeSessionId: runtimeA.id,
     surface: "dashboard_terminal",
@@ -349,7 +566,7 @@ test("exact delete targets survive capability-decision persistence", () => {
     workspaceKey: "conversations/delete-scope",
     activeDirectory: dataRoot,
     filesystemMode: "restricted",
-    openHarnessSessionId: "oh-delete-scope",
+    hermesSessionId: "oh-delete-scope",
   });
   const target = path.join(dataRoot, "target.txt");
   const stored = runtime.persistCapabilityDecision(session.id, {
@@ -391,7 +608,7 @@ test("workspace tools expose only the signed server-authorized garden set", asyn
     userId: 1,
     conversationId: conversation().id,
     surface: "dashboard_terminal",
-    openHarnessSessionId: "oh-authorized-set",
+    hermesSessionId: "oh-authorized-set",
     allowedGardenIds: [10],
     activeGardenId: 10,
     allowedTools: [...toolScopes.GARDEN_TOOLS],
@@ -421,6 +638,8 @@ test("rolling compaction advances once and retains recent exact messages", () =>
         ? "We decided to keep the canonical server transcript."
         : index === 5
           ? "Open question: Which database should own future migrations?"
+          : index === 2
+            ? "Should I quit college or not? Do not store this in memory."
           : `Question ${index}?`,
       index === 1 ? "Implemented the transcript store." : `Answer ${index}.`,
     );
@@ -429,6 +648,7 @@ test("rolling compaction advances once and retains recent exact messages", () =>
   const state = memory.loadConversationMemoryState(chat.id);
   assert.ok(state.summarizedThroughOrder >= 0);
   assert.match(state.summary, /canonical server transcript/);
+  assert.doesNotMatch(state.summary, /quit college|store this in memory/i);
   assert.ok(state.workingState.openQuestions.some((question) => /future migrations/i.test(question)));
   assert.equal(memory.compactConversationMemoryIfNeeded(chat.id), false);
   const recent = memory.loadConversationMemoryBundle({ conversation: chat, query: "latest" }).recentMessages;
@@ -467,14 +687,14 @@ function seedLegacySchema(database) {
       token_usage TEXT, order_index INTEGER, created_at TEXT, tool_calls TEXT,
       permission_decisions TEXT, runtime_error TEXT, runtime_status TEXT, proposal TEXT
     );
-    CREATE TABLE openharness_runtime_sessions(
+    CREATE TABLE hermes_runtime_sessions(
       id INTEGER PRIMARY KEY, surface TEXT, user_id INTEGER, chat_session_id INTEGER,
-      openharness_session_id TEXT, agent_name TEXT, cluster_id INTEGER, garden_id TEXT,
+      hermes_session_id TEXT, agent_name TEXT, cluster_id INTEGER, garden_id TEXT,
       page_slug TEXT, workspace_key TEXT, active_directory TEXT, filesystem_mode TEXT,
       capability_mode TEXT, capability_decision_id INTEGER, runtime_metadata TEXT,
       last_runtime_status TEXT, created_at TEXT, updated_at TEXT
     );
-    CREATE TABLE openharness_messages(
+    CREATE TABLE hermes_messages(
       id INTEGER PRIMARY KEY, runtime_session_id INTEGER, role TEXT, content TEXT,
       sources TEXT, token_usage TEXT, tool_calls TEXT, permission_decisions TEXT,
       runtime_error TEXT, runtime_status TEXT, proposal TEXT, order_index INTEGER, created_at TEXT

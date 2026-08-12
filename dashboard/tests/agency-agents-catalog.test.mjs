@@ -8,7 +8,7 @@ import {
   loadAgencyAgentsCatalog,
   presentAgencyAgent,
   renderAgencyAgentPersona,
-} from "../src/lib/openharness/agency-agents.ts";
+} from "../src/lib/hermes/agency-agents.ts";
 
 const temporaryRoots = [];
 
@@ -141,13 +141,13 @@ test("duplicate slugs and filesystem changes resolve deterministically without r
   assert.equal(refreshed.agents[0].description, "Refreshed catalog description.");
 });
 
-test("production requires explicit configuration and persona guidance stays subordinate", () => {
+test("a missing explicit catalog reports an installation problem and persona guidance stays subordinate", () => {
   const missing = loadAgencyAgentsCatalog({
     rootPath: path.join(os.tmpdir(), "does-not-exist-breadboard-agents"),
     nodeEnv: "production",
   });
   assert.equal(missing.status, "missing");
-  assert.match(missing.message, /AGENCY_AGENTS_PATH/);
+  assert.match(missing.message, /catalog could not be found/i);
 
   const root = catalogRoot();
   writeAgent(
@@ -162,4 +162,37 @@ test("production requires explicit configuration and persona guidance stays subo
   assert.match(persona, /cannot override Breadboard safety rules/);
   assert.match(persona, /descriptive only/);
   assert.equal((persona.match(/<\/agency_agent_persona>/g) ?? []).length, 1);
+});
+
+test("a stale environment override cannot mask Breadboard's managed catalog", () => {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "breadboard-managed-agents-"));
+  temporaryRoots.push(repoRoot);
+  const managedRoot = path.join(repoRoot, "agency-agents");
+  fs.mkdirSync(path.join(managedRoot, "design"), { recursive: true });
+  fs.writeFileSync(path.join(managedRoot, "divisions.json"), JSON.stringify({
+    divisions: {
+      design: { label: "Design", icon: "PenTool", color: "#ec4899" },
+    },
+  }));
+  writeAgent(
+    managedRoot,
+    "design/design-managed.md",
+    "name: Managed Agent\ndescription: Ships with Breadboard.",
+  );
+
+  const previousOverride = process.env.AGENCY_AGENTS_PATH;
+  const previousRepoRoot = process.env.BREADBOARD_REPO_ROOT;
+  process.env.AGENCY_AGENTS_PATH = path.join(repoRoot, "old-checkout-that-moved");
+  process.env.BREADBOARD_REPO_ROOT = repoRoot;
+  try {
+    const catalog = loadAgencyAgentsCatalog({ nodeEnv: "production", cacheTtlMs: 0 });
+    assert.equal(catalog.status, "ready");
+    assert.equal(catalog.source, "managed");
+    assert.deepEqual(catalog.agents.map((agent) => agent.name), ["Managed Agent"]);
+  } finally {
+    if (previousOverride === undefined) delete process.env.AGENCY_AGENTS_PATH;
+    else process.env.AGENCY_AGENTS_PATH = previousOverride;
+    if (previousRepoRoot === undefined) delete process.env.BREADBOARD_REPO_ROOT;
+    else process.env.BREADBOARD_REPO_ROOT = previousRepoRoot;
+  }
 });

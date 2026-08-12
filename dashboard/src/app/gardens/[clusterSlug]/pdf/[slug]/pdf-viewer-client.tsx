@@ -2,8 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import FastReadReader from "@/app/components/fastread-reader";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { startNavigationProgress } from "@/app/components/navigation-progress";
+import {
+  fetchFastReadNote,
+  pdfTextToMarkdown,
+  type FastReadNote,
+  type PdfTextPageLike,
+} from "@/lib/fastread-source";
 import {
   useCallback,
   useEffect,
@@ -88,10 +95,12 @@ const PDFJS_WORKER_URL = "/api/pdfjs/pdf.worker.mjs";
 const PDFJS_IMAGE_RESOURCES_PATH = "/api/pdfjs/images/";
 
 interface Props {
-  clusterSlug: string;
-  documentSlug: string;
+  clusterSlug?: string;
+  documentSlug?: string;
   title: string;
   browserTitle?: string;
+  sourceUrl?: string;
+  readOnly?: boolean;
 }
 
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {
@@ -249,7 +258,14 @@ function OutlineItem({
   );
 }
 
-export default function PdfViewerClient({ clusterSlug, documentSlug, title, browserTitle }: Props) {
+export default function PdfViewerClient({
+  clusterSlug = "",
+  documentSlug = "",
+  title,
+  browserTitle,
+  sourceUrl,
+  readOnly = false,
+}: Props) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -285,26 +301,33 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState(title);
   const [savingTitle, setSavingTitle] = useState(false);
+  const [fastReadNote, setFastReadNote] = useState<FastReadNote | null>(null);
+  const [fastReadLoading, setFastReadLoading] = useState(false);
 
   const pdfUrl = useMemo(() => {
+    if (sourceUrl) return sourceUrl;
     const params = new URLSearchParams({ clusterSlug });
     return `/api/documents/${encodeURIComponent(documentSlug)}/source-pdf?${params.toString()}`;
-  }, [clusterSlug, documentSlug]);
+  }, [clusterSlug, documentSlug, sourceUrl]);
 
   const historyUrl = useMemo(() => {
+    if (readOnly || sourceUrl) return null;
     const params = new URLSearchParams({ clusterSlug });
     return `/api/documents/${encodeURIComponent(documentSlug)}/source-pdf/history?${params.toString()}`;
-  }, [clusterSlug, documentSlug]);
+  }, [clusterSlug, documentSlug, readOnly, sourceUrl]);
 
   const editedFileName = useMemo(
-    () => fileNameFromTitle(documentTitle || documentSlug),
-    [documentSlug, documentTitle],
+    () =>
+      readOnly && browserTitle?.trim()
+        ? browserTitle.trim()
+        : fileNameFromTitle(documentTitle || documentSlug),
+    [browserTitle, documentSlug, documentTitle, readOnly],
   );
 
   // Remember the last viewed page per document so it reopens where you left off.
   const pageStorageKey = useMemo(
-    () => `sb:pdf-last-page:${clusterSlug}:${documentSlug}`,
-    [clusterSlug, documentSlug],
+    () => `sb:pdf-last-page:${clusterSlug || "artifact"}:${documentSlug || browserTitle || title}`,
+    [browserTitle, clusterSlug, documentSlug, title],
   );
   const readSavedPage = useCallback((): number | null => {
     try {
@@ -347,6 +370,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
   }, []);
 
   const saveEditedPdfToServer = useCallback(async (): Promise<boolean> => {
+    if (readOnly) return true;
     const pdfDocument = pdfDocumentRef.current;
     if (!pdfDocument) return true;
 
@@ -407,19 +431,20 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         }, 0);
       }
     }
-  }, [clearScheduledSave, pdfUrl]);
+  }, [clearScheduledSave, pdfUrl, readOnly]);
 
   useEffect(() => {
     saveEditedPdfRef.current = saveEditedPdfToServer;
   }, [saveEditedPdfToServer]);
 
   const scheduleAutoSave = useCallback(() => {
+    if (readOnly) return;
     clearScheduledSave();
     setSaveState("dirty");
     saveTimeoutRef.current = setTimeout(() => {
       void saveEditedPdfRef.current();
     }, 0);
-  }, [clearScheduledSave]);
+  }, [clearScheduledSave, readOnly]);
 
   const wireDocument = useCallback(
     (pdfDocument: PDFDocumentProxy) => {
@@ -474,9 +499,9 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
 
       try {
         const loadingTask = pdfjs.getDocument({ data: bytes });
-        const newDoc = await loadingTask.promise;
-        pdfDocumentRef.current = newDoc;
-        wireDocument(newDoc);
+      const newDoc = await loadingTask.promise;
+      pdfDocumentRef.current = newDoc;
+        if (!readOnly) wireDocument(newDoc);
         linkService.setDocument(newDoc, null);
         findController.setDocument(newDoc);
         restoredPageRef.current = false;
@@ -489,11 +514,11 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         setError(loadError instanceof Error ? loadError.message : "Could not reload PDF.");
       }
     },
-    [clearScheduledSave, loadOutline, readSavedPage, wireDocument],
+    [clearScheduledSave, loadOutline, readOnly, readSavedPage, wireDocument],
   );
 
   const serverUndo = useCallback(async () => {
-    if (serverHistoryCount <= 0) return;
+    if (!historyUrl || serverHistoryCount <= 0) return;
     setSaveState("saving");
     try {
       const response = await fetch(historyUrl, { method: "DELETE" });
@@ -535,6 +560,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
   }, [documentTitle]);
 
   const saveDocumentTitle = useCallback(async () => {
+    if (readOnly || !clusterSlug || !documentSlug) return;
     const nextTitle = draftTitle.trim().replace(/\s+/g, " ");
     if (!nextTitle) {
       setError("PDF name cannot be empty.");
@@ -584,9 +610,10 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
     } finally {
       setSavingTitle(false);
     }
-  }, [clusterSlug, documentSlug, documentTitle, draftTitle, router]);
+  }, [clusterSlug, documentSlug, documentTitle, draftTitle, readOnly, router]);
 
   useEffect(() => {
+    if (readOnly) return;
     const hasPendingSave = saveState === "dirty" || saveState === "saving";
     if (!hasPendingSave) return;
 
@@ -599,7 +626,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
-  }, [saveState]);
+  }, [readOnly, saveState]);
 
   useEffect(() => {
     if (!containerRef.current || !viewerRef.current) return;
@@ -718,8 +745,10 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         });
         eventBus.on("annotationeditorstateschanged", (event) => {
           hasInMemoryUndoRef.current = Boolean(event.hasSomethingToUndo);
-          // Always schedule save — covers any undo-stack change PDF.js fires this for
-          scheduleAutoSave();
+          if (!readOnly) {
+            // Always schedule save — covers any undo-stack change PDF.js fires this for
+            scheduleAutoSave();
+          }
         });
 
         loadingTask = pdfjs.getDocument({
@@ -733,7 +762,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         }
 
         pdfDocumentRef.current = pdfDocument;
-        wireDocument(pdfDocument);
+        if (!readOnly) wireDocument(pdfDocument);
         linkService.setDocument(pdfDocument, null);
         findController.setDocument(pdfDocument);
         pdfViewer.setDocument(pdfDocument);
@@ -746,10 +775,12 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
         await loadOutline(pdfDocument);
 
         // Fetch server history count so Ctrl+Z can fall back to it
-        const histResp = await fetch(historyUrl).catch(() => null);
-        if (!cancelled && histResp?.ok) {
-          const histData = await histResp.json().catch(() => ({ count: 0 }));
-          setServerHistoryCount(typeof histData.count === "number" ? histData.count : 0);
+        if (historyUrl) {
+          const histResp = await fetch(historyUrl).catch(() => null);
+          if (!cancelled && histResp?.ok) {
+            const histData = await histResp.json().catch(() => ({ count: 0 }));
+            setServerHistoryCount(typeof histData.count === "number" ? histData.count : 0);
+          }
         }
       } catch (loadError: unknown) {
         if (cancelled) return;
@@ -776,12 +807,12 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
     const inContainer = (event: Event) =>
       container != null && event.composedPath().includes(container);
     const onPointerUp = (event: PointerEvent) => {
-      if (inContainer(event)) {
+      if (!readOnly && inContainer(event)) {
         setTimeout(() => { void saveEditedPdfRef.current(); }, 50);
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
-      if (inContainer(event)) {
+      if (!readOnly && inContainer(event)) {
         void saveEditedPdfRef.current();
       }
     };
@@ -809,6 +840,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
     historyUrl,
     loadOutline,
     pdfUrl,
+    readOnly,
     readSavedPage,
     scheduleAutoSave,
     wireDocument,
@@ -816,6 +848,11 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
   ]);
 
   const goBack = useCallback(async () => {
+    if (readOnly) {
+      startNavigationProgress();
+      router.back();
+      return;
+    }
     if (saveState === "saving") {
       setError("Please wait for the PDF save to finish before leaving.");
       return;
@@ -828,7 +865,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
 
     startNavigationProgress();
     router.push(`/gardens/${clusterSlug}`);
-  }, [clusterSlug, router, saveEditedPdfToServer, saveState]);
+  }, [clusterSlug, readOnly, router, saveEditedPdfToServer, saveState]);
 
   const goToPreviousPage = useCallback(() => {
     pdfViewerRef.current?.previousPage();
@@ -847,6 +884,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
   }, []);
 
   const setEditorMode = useCallback((nextMode: PdfViewerMode) => {
+    if (readOnly) return;
     const pdfViewer = pdfViewerRef.current;
     const pdfjs = pdfjsRef.current;
     if (!pdfViewer || !pdfjs) return;
@@ -862,7 +900,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
 
     pdfViewer.annotationEditorMode = { mode: type };
     setMode(nextMode);
-  }, []);
+  }, [readOnly]);
 
   const toggleOutlineItem = useCallback((key: string) => {
     setCollapsedOutlineKeys((current) => {
@@ -884,6 +922,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (readOnly) return;
       const eventBus = eventBusRef.current;
       if (!eventBus) return;
       const isInput =
@@ -907,7 +946,7 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [readOnly]);
 
   const runFind = useCallback(
     (type: "again" | "" = "", findPrevious = false) => {
@@ -949,6 +988,52 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
     }
   }, [editedFileName, saveEditedPdfToServer, saveState]);
 
+  // Ingest writes the PDF's text into a markdown note beside the file, so that
+  // note is what Fast-read reads: it keeps the headings, figures, and equations
+  // the reader stops on. A PDF with no note behind it — a chat artifact, or one
+  // whose note was deleted — falls back to the file's own text layer.
+  const openFastRead = useCallback(async () => {
+    if (fastReadLoading) return;
+    setFastReadLoading(true);
+    setError("");
+
+    try {
+      if (clusterSlug && documentSlug) {
+        try {
+          setFastReadNote(await fetchFastReadNote(clusterSlug, documentSlug));
+          return;
+        } catch {
+          // Fall through to the PDF itself.
+        }
+      }
+
+      const pdfDocument = pdfDocumentRef.current;
+      if (!pdfDocument) throw new Error("The PDF is still opening.");
+
+      const pages: PdfTextPageLike[] = [];
+      for (let page = 1; page <= pdfDocument.numPages; page += 1) {
+        const loadedPage = await pdfDocument.getPage(page);
+        pages.push(await loadedPage.getTextContent());
+      }
+
+      const content = pdfTextToMarkdown(pages);
+      if (!content) {
+        throw new Error(
+          "This PDF has no text layer to read — it is scanned images only.",
+        );
+      }
+      setFastReadNote({ title: documentTitle || title, content });
+    } catch (fastReadError) {
+      setError(
+        fastReadError instanceof Error
+          ? fastReadError.message
+          : "Could not open Fast-read.",
+      );
+    } finally {
+      setFastReadLoading(false);
+    }
+  }, [clusterSlug, documentSlug, documentTitle, fastReadLoading, title]);
+
   return (
     <main className="flex min-h-0 flex-1 flex-col">
       <link rel="stylesheet" href={PDFJS_VIEWER_CSS_URL} />
@@ -980,9 +1065,9 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
           </button>
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-wider text-gray-600">
-              PDF source
+              {readOnly ? "PDF artifact" : "PDF source"}
             </p>
-            {editingTitle ? (
+            {!readOnly && editingTitle ? (
               <form
                 className="flex min-w-0 items-center gap-1.5"
                 onSubmit={(event) => {
@@ -1056,47 +1141,51 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
                 <h1 className="truncate text-sm font-semibold text-white">
                   {documentTitle}
                 </h1>
-                <button
-                  type="button"
-                  onClick={startRenameTitle}
-                  className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-900 hover:text-white"
-                  title="Rename PDF"
-                  aria-label="Rename PDF"
-                >
-                  <svg
-                    className="h-3.5 w-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.8}
+                {!readOnly ? (
+                  <button
+                    type="button"
+                    onClick={startRenameTitle}
+                    className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-900 hover:text-white"
+                    title="Rename PDF"
+                    aria-label="Rename PDF"
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
-                    />
-                  </svg>
-                </button>
+                    <svg
+                      className="h-3.5 w-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.8}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.862 4.487Z"
+                      />
+                    </svg>
+                  </button>
+                ) : null}
               </div>
             )}
           </div>
         </div>
         <div className="relative z-10 flex flex-wrap items-center gap-2">
-          <span
-            aria-live="polite"
-            className={`px-1 text-xs ${
-              saveState === "error"
-                ? "text-red-300"
-                : saveState === "dirty"
-                  ? "text-yellow-300"
-                  : saveState === "saving"
-                    ? "text-gray-300"
-                    : "text-gray-500"
-            }`}
-          >
-            {saveStatusText}
-          </span>
-          {serverHistoryCount > 0 && (
+          {!readOnly ? (
+            <span
+              aria-live="polite"
+              className={`px-1 text-xs ${
+                saveState === "error"
+                  ? "text-red-300"
+                  : saveState === "dirty"
+                    ? "text-yellow-300"
+                    : saveState === "saving"
+                      ? "text-gray-300"
+                      : "text-gray-500"
+              }`}
+            >
+              {saveStatusText}
+            </span>
+          ) : null}
+          {!readOnly && serverHistoryCount > 0 && (
             <button
               type="button"
               onClick={() => void serverUndo()}
@@ -1107,37 +1196,41 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
               Undo
             </button>
           )}
-          <Link
-            href={`/garden/${clusterSlug}?note=${encodeURIComponent(documentSlug)}`}
-            className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
-          >
-            Source note
-          </Link>
+          {!readOnly && clusterSlug && documentSlug ? (
+            <Link
+              href={`/garden/${clusterSlug}?note=${encodeURIComponent(documentSlug)}`}
+              className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
+            >
+              Source note
+            </Link>
+          ) : null}
           <a
             href={pdfUrl}
             className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
           >
             Open PDF
           </a>
-          <button
-            type="button"
-            onClick={() => {
-              void saveEditedPdfToServer();
-            }}
-            disabled={
-              loading ||
-              saveState === "saving" ||
-              saveState === "saved" ||
-              !pdfDocumentRef.current
-            }
-            className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {saveState === "saving"
-              ? "Saving"
-              : saveState === "saved"
-                ? "Saved"
-                : "Save"}
-          </button>
+          {!readOnly ? (
+            <button
+              type="button"
+              onClick={() => {
+                void saveEditedPdfToServer();
+              }}
+              disabled={
+                loading ||
+                saveState === "saving" ||
+                saveState === "saved" ||
+                !pdfDocumentRef.current
+              }
+              className="rounded-md border border-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {saveState === "saving"
+                ? "Saving"
+                : saveState === "saved"
+                  ? "Saved"
+                  : "Save"}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={downloadEdited}
@@ -1170,6 +1263,25 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
             aria-controls="pdf-document-outline"
           >
             Outline
+          </button>
+          <button
+            type="button"
+            onClick={() => void openFastRead()}
+            disabled={loading || fastReadLoading}
+            title="Speed-read this PDF one word at a time"
+            className="flex items-center gap-1.5 rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 4 6 13h5l-1 7 7-9h-5z" />
+            </svg>
+            {fastReadLoading ? "Opening..." : "Fast-read"}
           </button>
           <button
             type="button"
@@ -1261,32 +1373,34 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
             }
             className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {exporting ? "Preparing" : "Save PDF"}
+            {exporting ? "Preparing" : readOnly ? "Download PDF" : "Save PDF"}
           </button>
-          <div className="flex rounded-md border border-gray-800 bg-gray-950 p-0.5">
-            {(["select", "highlight", "text", "draw"] as const).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setEditorMode(item)}
-                disabled={loading}
-                aria-pressed={mode === item}
-                className={`rounded px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                  mode === item
-                    ? "bg-gray-800 text-white shadow-sm"
-                    : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
-                }`}
-              >
-                {item === "select"
-                  ? "Select"
-                  : item === "highlight"
-                    ? "Highlight"
-                    : item === "text"
-                      ? "Text"
-                      : "Draw"}
-              </button>
-            ))}
-          </div>
+          {!readOnly ? (
+            <div className="flex rounded-md border border-gray-800 bg-gray-950 p-0.5">
+              {(["select", "highlight", "text", "draw"] as const).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setEditorMode(item)}
+                  disabled={loading}
+                  aria-pressed={mode === item}
+                  className={`rounded px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                    mode === item
+                      ? "bg-gray-800 text-white shadow-sm"
+                      : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
+                  }`}
+                >
+                  {item === "select"
+                    ? "Select"
+                    : item === "highlight"
+                      ? "Highlight"
+                      : item === "text"
+                        ? "Text"
+                        : "Draw"}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1374,6 +1488,14 @@ export default function PdfViewerClient({ clusterSlug, documentSlug, title, brow
           </div>
         </div>
       </section>
+
+      {fastReadNote && (
+        <FastReadReader
+          title={fastReadNote.title}
+          content={fastReadNote.content}
+          onClose={() => setFastReadNote(null)}
+        />
+      )}
     </main>
   );
 }

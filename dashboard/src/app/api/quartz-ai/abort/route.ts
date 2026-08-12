@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth-options";
-import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/openharness/route-helpers.ts";
-import { authorizeQuartzRuntimeSession, authorizeRuntimeReference, markStatus } from "@/lib/openharness/session-service.ts";
+import { apiErrorResponse, readJsonBody, requireEnabled, ApiError } from "@/lib/hermes/route-helpers.ts";
+import { authorizeQuartzRuntimeSession, authorizeRuntimeReference, markStatus } from "@/lib/hermes/session-service.ts";
 import { getAgentRuntimeByKind } from "@/lib/agent-runtime/runtime.ts";
-import { corsHeaders } from "@/lib/openharness/quartz-support.ts";
-import { recordAuditEvent } from "@/lib/openharness/runtime-store.ts";
-import { finishRuntimeRun, getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/openharness/run-store.ts";
+import { corsHeaders } from "@/lib/hermes/quartz-support.ts";
+import { recordAuditEvent } from "@/lib/hermes/runtime-store.ts";
+import { finishRuntimeRun, getActiveRuntimeRun, parseRuntimeRunDispatch } from "@/lib/hermes/run-store.ts";
 import { failAssistantMessage } from "@/lib/conversations/store.ts";
 
 export const dynamic = "force-dynamic";

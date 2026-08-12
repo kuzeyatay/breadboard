@@ -19,6 +19,9 @@ class FakeIpcRenderer implements IpcRendererLike {
       return { phase: "preparing", message: "Preparing", services: [] };
     }
     if (channel === IPC_CHANNELS.retryService) return true;
+    if (channel === IPC_CHANNELS.openMicrophoneSettings) return true;
+    if (channel === IPC_CHANNELS.allowThemeLocation) return true;
+    if (channel === IPC_CHANNELS.setTheme) return true;
     return undefined;
   }
 
@@ -39,6 +42,10 @@ test("preload API invokes only the declared IPC contract", async () => {
   await api.copyDiagnostics();
   await api.quit();
   await api.pickFolder();
+  assert.equal(await api.openMicrophoneSettings(), true);
+  assert.equal(await api.allowThemeLocation(), true);
+  assert.equal(await api.setTheme("dark"), true);
+  await api.continueToDashboard();
 
   assert.deepEqual(
     ipc.calls.map((call) => call.channel),
@@ -50,9 +57,14 @@ test("preload API invokes only the declared IPC contract", async () => {
       IPC_CHANNELS.copyDiagnostics,
       IPC_CHANNELS.quit,
       IPC_CHANNELS.pickFolder,
+      IPC_CHANNELS.openMicrophoneSettings,
+      IPC_CHANNELS.allowThemeLocation,
+      IPC_CHANNELS.setTheme,
+      IPC_CHANNELS.startupContinue,
     ],
   );
   assert.deepEqual(ipc.calls[2]?.args, ["dashboard"]);
+  assert.deepEqual(ipc.calls.at(-2)?.args, ["dark"]);
 });
 
 test("startup subscriptions receive state and unsubscribe cleanly", () => {

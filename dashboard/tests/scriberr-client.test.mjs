@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   ScriberrClient,
   normalizeScriberrJob,
@@ -54,6 +57,38 @@ test("transcript payload normalization keeps segments and language", () => {
   assert.equal(payload.transcript.segments.length, 2);
   assert.equal(payload.transcript.segments[0].speaker, "SPEAKER_00");
   assert.equal(payload.transcript.segments[1].speaker, null);
+});
+
+test("word_segments survive normalization, because cuts are made on them", () => {
+  // The video editor plans filler-word cuts and burned captions from these; the
+  // phrase-level segments beside them are too coarse to cut on.
+  const payload = normalizeScriberrTranscriptPayload({
+    available: true,
+    transcript: {
+      language: "en",
+      segments: [{ start: 0, end: 1.2, text: "so anyway" }],
+      word_segments: [
+        { start: 0.1, end: 0.4, word: "so", score: 0.9, speaker: "SPEAKER_00" },
+        { start: 0.5, end: 1.2, word: "anyway", score: 0.8 },
+        { start: "nonsense", end: 2, word: "dropped" },
+        { start: 2, end: 2.4, word: "   " },
+      ],
+    },
+  });
+  assert.deepEqual(
+    payload.transcript.words.map((word) => word.word),
+    ["so", "anyway"],
+  );
+  assert.equal(payload.transcript.words[0].speaker, "SPEAKER_00");
+  assert.equal(payload.transcript.words[1].speaker, null);
+});
+
+test("a backend without word timings normalizes to an empty word list", () => {
+  const payload = normalizeScriberrTranscriptPayload({
+    available: true,
+    transcript: { segments: [{ start: 0, end: 1, text: "hello" }] },
+  });
+  assert.deepEqual(payload.transcript.words, []);
 });
 
 test("transcript payload reports unavailable transcripts without throwing", () => {
@@ -115,6 +150,43 @@ test("client logs in with username/password and retries once on 401", async () =
   const job = await client.getJobStatus("j1");
   assert.equal(job.status, "completed");
   assert.equal(issuedTokens, 2);
+});
+
+test("client bootstraps the private local Scriberr account on first use", async () => {
+  const calls = [];
+  const client = new ScriberrClient({
+    baseUrl: "http://scriberr.local",
+    username: "breadboard",
+    password: "a-stable-private-password-123",
+    fetchImpl: async (url, init) => {
+      const target = String(url);
+      calls.push({ target, method: init.method, body: init.body });
+      if (target.endsWith("/api/v1/auth/login")) {
+        return jsonResponse({ error: "invalid credentials" }, 401);
+      }
+      if (target.endsWith("/api/v1/auth/registration-status")) {
+        return jsonResponse({ registration_enabled: true });
+      }
+      if (target.endsWith("/api/v1/auth/register")) {
+        return jsonResponse({ token: "new-local-token", user: { id: 1 } }, 201);
+      }
+      assert.equal(init.headers.Authorization, "Bearer new-local-token");
+      return jsonResponse({ id: "j1", status: "completed" });
+    },
+  });
+
+  const job = await client.getJobStatus("j1");
+  assert.equal(job.status, "completed");
+  assert.deepEqual(
+    calls.map((call) => call.target.replace("http://scriberr.local", "")),
+    [
+      "/api/v1/auth/login",
+      "/api/v1/auth/registration-status",
+      "/api/v1/auth/register",
+      "/api/v1/transcription/j1/status",
+    ],
+  );
+  assert.match(calls[2].body, /"confirmPassword":"a-stable-private-password-123"/);
 });
 
 test("client maps network failure to scriberr_unavailable", async () => {
@@ -237,5 +309,51 @@ test("probe policy rejects missing audio and over-duration media", () => {
   assert.throws(
     () => assertProbeAcceptable(tooLong, { maxDurationSeconds: 3600 }),
     (err) => err.code === "media_too_long",
+  );
+});
+
+// ── Audio upload (the video editor's entry point) ────────────────────────────
+
+test("uploadAudio posts to the audio endpoint, not the video one", async () => {
+  // The video editor has already extracted 16kHz mono for its silence map, so
+  // it hands Scriberr the audio rather than re-uploading the whole video.
+  const scratch = path.join(os.tmpdir(), `scriberr-upload-${process.pid}.wav`);
+  fs.writeFileSync(scratch, Buffer.from("RIFF----WAVE"));
+  try {
+    const calls = [];
+    const client = new ScriberrClient({
+      baseUrl: "http://scriberr.local",
+      apiToken: "secret-key",
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), body: init.body });
+        return jsonResponse({ id: "j9", status: "uploaded" });
+      },
+    });
+    const job = await client.uploadAudio({
+      filePath: scratch,
+      filename: "source.wav",
+      title: "Video Use edit",
+    });
+    assert.equal(job.id, "j9");
+    assert.equal(calls[0].url, "http://scriberr.local/api/v1/transcription/upload");
+    assert.ok(calls[0].body instanceof FormData);
+    assert.ok(calls[0].body.get("audio"), "the field Scriberr reads is `audio`");
+    assert.equal(calls[0].body.get("title"), "Video Use edit");
+  } finally {
+    fs.rmSync(scratch, { force: true });
+  }
+});
+
+test("uploading media that is not there fails before any request", async () => {
+  const client = new ScriberrClient({
+    baseUrl: "http://scriberr.local",
+    apiToken: "secret-key",
+    fetchImpl: async () => {
+      throw new Error("no request should have been made");
+    },
+  });
+  await assert.rejects(
+    () => client.uploadAudio({ filePath: path.join(os.tmpdir(), "absent.wav"), filename: "a.wav" }),
+    (error) => error.code === "media_missing",
   );
 });

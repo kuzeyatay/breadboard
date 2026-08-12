@@ -4,20 +4,46 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'"
     />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <title>Breadboard</title>
+    <script src="./theme.js"></script>
     <link rel="stylesheet" href="./startup.css" />
   </head>
   <body>
     <header class="desktop-titlebar" aria-label="Window controls"></header>
     <main class="shell">
       <section class="loader" aria-label="Loading Breadboard">
+        <!-- The startup chime. It begins the moment the screen stops loading
+             and starts waiting on the dashboard, so it is already sounding by
+             the time the welcome word arrives. Nothing to see: the loading
+             field and the greeting are the whole picture. -->
+        <audio id="intro-sound" preload="auto" disableremoteplayback>
+          <source src="./intro.m4a" type="audio/mp4" />
+        </audio>
+
         <div class="kinetic-stage" aria-hidden="true">
           <div class="stage-halo"></div>
           <div id="kinetic-field" class="kinetic-field"></div>
         </div>
+
+        <section id="welcome" class="welcome" hidden>
+          <div class="welcome-stage" aria-hidden="true">
+            <p class="welcome-word"></p>
+            <p class="welcome-word"></p>
+          </div>
+          <button
+            id="welcome-continue"
+            class="welcome-continue"
+            type="button"
+            aria-label="Welcome to Breadboard. Click to continue."
+          >
+            <span class="welcome-hint">Click to continue</span>
+          </button>
+        </section>
+
+        <div id="dissolve-bloom" class="dissolve-bloom" aria-hidden="true"></div>
 
         <p id="phase-message" class="visually-hidden" aria-live="polite">
           Preparing Breadboard

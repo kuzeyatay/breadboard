@@ -9,6 +9,10 @@ html {
   text-size-adjust: none;
   overflow-x: hidden;
   width: 100vw;
+  // Embedded in the dashboard the garden is an iframe, and a horizontal
+  // overscroll here still reaches Chromium's back/forward gesture, which paints
+  // a floating arrow badge and navigates the surrounding shell away.
+  overscroll-behavior-x: none;
 
   @media all and ($mobile) {
     scroll-padding-top: 4rem;

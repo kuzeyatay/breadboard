@@ -128,6 +128,66 @@ def write_auth_file(auth: Dict[str, Any], auth_path: str | None = None) -> bool:
         return False
 
 
+#: Long enough for any real upstream sentence, short enough that a stray HTML
+#: error page never becomes the chat's answer.
+UPSTREAM_ERROR_MESSAGE_LIMIT = 500
+
+
+def upstream_error_message(err_body: Any, default: str = "Upstream error") -> str:
+    """Best readable sentence from an upstream error body.
+
+    The ChatGPT backend does not use one error shape. A rate limit arrives as
+    ``{"error": {"message": ...}}``, but a refusal — the most actionable kind,
+    naming the model or the account — arrives as ``{"detail": "The 'x' model is
+    not supported when using Codex with a ChatGPT account."}``. Reading only the
+    first shape replaced those sentences with the words "Upstream error", which
+    told the person nothing they could act on and cost a long debugging session.
+    """
+
+    def _clean(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        return text[:UPSTREAM_ERROR_MESSAGE_LIMIT]
+
+    if isinstance(err_body, str):
+        return _clean(err_body) or default
+    if not isinstance(err_body, dict):
+        return default
+
+    error = err_body.get("error")
+    if isinstance(error, dict):
+        message = _clean(error.get("message"))
+        if message:
+            return message
+    message = _clean(error)
+    if message:
+        return message
+
+    detail = err_body.get("detail")
+    message = _clean(detail)
+    if message:
+        return message
+    if isinstance(detail, list):
+        # Validation-style bodies report a list of problems.
+        parts = [
+            _clean(item.get("msg") if isinstance(item, dict) else item)
+            for item in detail
+        ]
+        joined = "; ".join(part for part in parts if part)
+        message = _clean(joined)
+        if message:
+            return message
+
+    for key in ("message", "raw", "text"):
+        message = _clean(err_body.get(key))
+        if message:
+            return message
+    return default
+
+
 def parse_jwt_claims(token: str) -> Dict[str, Any] | None:
     if not token or token.count(".") != 2:
         return None
@@ -254,6 +314,30 @@ def convert_chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> 
     return input_items
 
 
+def convert_tool_choice_chat_to_responses(tool_choice: Any) -> Any:
+    """Translate a Chat Completions `tool_choice` into Responses API shape.
+
+    Chat clients force a specific function with the nested
+    ``{"type": "function", "function": {"name": ...}}`` form, while the Responses
+    API expects the name at the top level. Passing the chat form through makes
+    upstream reject the request with "Missing required parameter:
+    'tool_choice.name'", which breaks every client that relies on forced tool
+    calls (for example the Vercel AI SDK's structured-object mode).
+    """
+
+    if isinstance(tool_choice, str):
+        return tool_choice if tool_choice in ("auto", "none", "required") else "auto"
+    if isinstance(tool_choice, dict):
+        if isinstance(tool_choice.get("name"), str) and tool_choice.get("name"):
+            return tool_choice
+        fn = tool_choice.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else None
+        if isinstance(name, str) and name:
+            return {"type": "function", "name": name}
+        return "auto"
+    return "auto"
+
+
 def convert_tools_chat_to_responses(tools: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not isinstance(tools, list):
@@ -283,8 +367,18 @@ def convert_tools_chat_to_responses(tools: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, str | None, str | None]:
-    selected = _read_auth_file_with_path()
+def load_chatgpt_tokens(
+    ensure_fresh: bool = True,
+    selected: tuple[Dict[str, Any], str] | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Tokens for one account, refreshing them when they are close to expiry.
+
+    `selected` names the (auth, path) pair to use — the account layer picks it,
+    stepping over any account whose quota is exhausted. Passing a dict rather
+    than an account object keeps this module free of that dependency, which
+    would otherwise close an import cycle back through the provider package.
+    """
+    selected = selected or _read_auth_file_with_path()
     if selected is None:
         return None, None, None
     auth, auth_path = selected
@@ -436,8 +530,10 @@ def _now_iso8601() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:
-    access_token, account_id, id_token = load_chatgpt_tokens()
+def get_effective_chatgpt_auth(
+    selected: tuple[Dict[str, Any], str] | None = None,
+) -> tuple[str | None, str | None]:
+    access_token, account_id, id_token = load_chatgpt_tokens(selected=selected)
     if not account_id:
         account_id = _derive_account_id(id_token)
     return access_token, account_id
