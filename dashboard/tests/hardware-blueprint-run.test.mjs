@@ -153,6 +153,8 @@ test("the acceptance run compiles a complete blueprint", async () => {
       "run.started",
       "interpret.started",
       "interpret.completed",
+      "component-discovery.started",
+      "component-discovery.completed",
       "compile.started",
       "compile.completed",
       "validation.completed",

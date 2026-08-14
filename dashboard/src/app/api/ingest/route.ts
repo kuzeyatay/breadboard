@@ -65,7 +65,10 @@ const PDF_MARKDOWN_PAGE_PART_MAX_CHARS = 7_500;
 const PDF_OUTLINE_SCAN_PAGES = 12;
 const PDF_OUTLINE_SCAN_LINES = 18;
 const PDF_OUTLINE_MAX_ENTRIES = 36;
-const PDF_SOURCE_SNAPSHOT_LIMIT = 24;
+// Upload keeps a small eager cache so a large textbook does not create hundreds
+// of PNGs up front. This is not a source-page limit: Learn renders any later
+// syllabus/contract page from the preserved source_pdf on demand.
+const PDF_EAGER_SNAPSHOT_CACHE_PAGES = 24;
 
 class UploadAbortedError extends Error {
   constructor() {
@@ -1562,7 +1565,7 @@ async function runIngest({
         }
 
         throwIfRequestAborted(request.signal);
-        const snapshotPages = screenshots.slice(0, PDF_SOURCE_SNAPSHOT_LIMIT);
+        const snapshotPages = screenshots.slice(0, PDF_EAGER_SNAPSHOT_CACHE_PAGES);
         pages = attachPdfScreenshotAssets({
           pages,
           screenshots: snapshotPages,
@@ -1574,7 +1577,7 @@ async function runIngest({
         if (screenshots.length > snapshotPages.length) {
           screenshotWarning = joinWarnings(
             screenshotWarning,
-            `Saved source snapshots for the first ${snapshotPages.length} page${snapshotPages.length === 1 ? "" : "s"} to keep the upload stable. The VLM still parsed ${screenshots.length} pages.`,
+            `Cached the first ${snapshotPages.length} source page${snapshotPages.length === 1 ? "" : "s"}; later pages remain available from the full PDF and are rendered when Learn needs them. The VLM parsed ${screenshots.length} pages.`,
           );
         }
 
@@ -1640,7 +1643,7 @@ async function runIngest({
             throwIfRequestAborted(request.signal);
             const snapshotPages = screenshots.slice(
               0,
-              PDF_SOURCE_SNAPSHOT_LIMIT,
+              PDF_EAGER_SNAPSHOT_CACHE_PAGES,
             );
             pages = attachPdfScreenshotAssets({
               pages,
@@ -1651,7 +1654,7 @@ async function runIngest({
               createdFilePaths,
             });
             if (screenshots.length > snapshotPages.length) {
-              const limitWarning = `Saved source snapshots for the first ${snapshotPages.length} page${snapshotPages.length === 1 ? "" : "s"} to keep the upload stable. OCR still processed ${screenshots.length} pages.`;
+              const limitWarning = `Cached the first ${snapshotPages.length} source page${snapshotPages.length === 1 ? "" : "s"}; later pages remain available from the full PDF and are rendered when Learn needs them. OCR still processed ${screenshots.length} pages.`;
               screenshotWarning = screenshotWarning
                 ? `${screenshotWarning} ${limitWarning}`
                 : limitWarning;
@@ -1699,7 +1702,7 @@ async function runIngest({
           let screenshots: PdfScreenshotPage[] = [];
           try {
             screenshots = await getPdfScreenshotPages(buffer, {
-              maxPages: PDF_SOURCE_SNAPSHOT_LIMIT,
+              maxPages: PDF_EAGER_SNAPSHOT_CACHE_PAGES,
               desiredWidth: 900,
             });
           } catch (error) {
@@ -1995,7 +1998,7 @@ export async function POST(request: Request) {
       const trackedClient = client
         ? attachIngestTokenUsageTracking(client, (nextUsage) => {
             tokenUsage = nextUsage;
-            send({ type: "usage", tokenUsage });
+            send({ type: "usage", tokenUsage: { ...tokenUsage, model } });
           })
         : undefined;
 
@@ -2024,7 +2027,7 @@ export async function POST(request: Request) {
           type: "result",
           ...result,
           durationMs: Date.now() - startedAt,
-          tokenUsage,
+          tokenUsage: { ...tokenUsage, model },
         });
       } catch (err) {
         if (
@@ -2037,7 +2040,7 @@ export async function POST(request: Request) {
             type: "error",
             error: "Upload canceled",
             canceled: true,
-            tokenUsage,
+            tokenUsage: { ...tokenUsage, model },
           });
         } else {
           if (createdMarkdownPaths.length === 0) {
@@ -2049,7 +2052,7 @@ export async function POST(request: Request) {
             visionError:
               err instanceof ChatmockVisionError ? err.message : undefined,
             durationMs: Date.now() - startedAt,
-            tokenUsage,
+            tokenUsage: { ...tokenUsage, model },
           });
         }
       } finally {

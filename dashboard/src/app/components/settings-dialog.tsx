@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 import SettingsAgentMemory from "@/app/components/settings-agent-memory";
 import SettingsAccounts from "@/app/components/settings-accounts";
 import SettingsConnections from "@/app/components/settings-connections";
@@ -86,14 +86,6 @@ export default function SettingsDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
-  /**
-   * Accounts and providers were two tabs, which is one click between "the
-   * accounts I have" and "how I get another" — the same subject, split. They
-   * are one page now, so the two buttons that used to switch tabs scroll to the
-   * section they name instead.
-   */
-  const accountsRef = useRef<HTMLDivElement>(null);
-  const providersRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -142,10 +134,6 @@ export default function SettingsDialog({
   }, [open, presentation]);
 
   const activeTab = TABS.find((item) => item.value === tab) ?? TABS[0];
-
-  const scrollTo = (section: RefObject<HTMLDivElement | null>) => {
-    section.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
 
   const selectTab = (next: SettingsTab) => {
     setTab(next);
@@ -231,16 +219,17 @@ export default function SettingsDialog({
               aria-labelledby="settings-tab-account"
               hidden={tab !== "account"}
             >
+              {/* One list of accounts, with its own add picker, above the
+                  services that back them. Neither section sends the reader to
+                  the other any more: the two buttons that did were a round
+                  trip that signed nothing in. */}
+              {/* The rule between the two halves belongs to the providers
+                  half, which draws it itself. Held here, it was a line hanging
+                  over an empty space for as long as that half was still
+                  loading. */}
               <div className="space-y-5">
-                <div ref={accountsRef}>
-                  <SettingsAccounts onOpenProviders={() => scrollTo(providersRef)} />
-                </div>
-                <div
-                  ref={providersRef}
-                  className="border-t border-[var(--line)] pt-5"
-                >
-                  <SettingsProviders onOpenAccount={() => scrollTo(accountsRef)} />
-                </div>
+                <SettingsAccounts />
+                <SettingsProviders />
               </div>
             </div>
           ) : null}

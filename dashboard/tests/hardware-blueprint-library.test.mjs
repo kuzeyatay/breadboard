@@ -263,6 +263,76 @@ test("an AR concept with active reference parts cannot report itself build-ready
   assert.ok(placeholders.every((entry) => /real electrically specified part/.test(entry.message)));
 });
 
+test("AR placeholders fail firmware explicitly while passive optics never pretend to initialise", () => {
+  const { design, circuit } = buildDesign({
+    request: request({
+      purpose: "A clip-on augmented-reality display for eyeglasses",
+      outputs: [
+        { type: "0.49-inch micro-OLED display module", quantity: 1 },
+        { type: "Transparent optical waveguide combiner", quantity: 1 },
+        { type: "Near-eye focusing lens assembly", quantity: 1 },
+        { type: "Adjustable eyeglass temple clip", quantity: 1 },
+      ],
+      prototypeType: "pcb",
+    }),
+    designId: "hwd_ar_firmware_truth_test",
+  });
+
+  const main = design.firmware.files.find((file) => file.path === "src/main.cpp").content;
+  const readme = design.firmware.files.find((file) => file.path === "README.md").content;
+  const microdisplay = design.components.find(
+    (component) => component.definitionId === "micro-oled-display",
+  );
+  assert.ok(microdisplay);
+  assert.match(main, new RegExp(`UNRESOLVED ${microdisplay.reference}`));
+  assert.match(main, new RegExp(`FAIL ${microdisplay.reference}`));
+  assert.match(main, /ok = false;/);
+  assert.doesNotMatch(main, /All parts initialised/);
+  assert.doesNotMatch(design.firmware.expectedSerialOutput, /All parts initialised/);
+  assert.match(design.firmware.expectedSerialOutput, /FAIL/);
+  for (const passiveName of [
+    "Transparent optical waveguide combiner",
+    "Near-eye focusing lens assembly",
+    "Adjustable eyeglass temple clip",
+  ]) {
+    assert.doesNotMatch(main, new RegExp(passiveName));
+  }
+  assert.match(readme, /UNRESOLVED: no verified firmware driver\/electrical definition/);
+  assert.ok(circuit.currentEstimate.unknownComponentIds.includes(microdisplay.id));
+  assert.match(design.summary, /at least .*known typical load/);
+  assert.match(
+    design.decisions.find((decision) => decision.category === "Power").rationale,
+    /lower bounds/,
+  );
+});
+
+test("a built-in bus module without an exact driver is blocked instead of generically initialised", () => {
+  const { design } = buildDesign({
+    request: request({
+      purpose: "Measure temperature and humidity",
+      controller: "ESP32",
+      inputs: [{ type: "SHT31", quantity: 1 }],
+      communication: ["i2c"],
+    }),
+    designId: "hwd_sht31_driver_truth_test",
+  });
+
+  const finding = design.validationResults.find(
+    (entry) => entry.rule === "RESEARCHED_FIRMWARE_DRIVER_MISSING",
+  );
+  assert.ok(finding);
+  assert.equal(finding.severity, "error");
+  assert.match(finding.title, /has no verified firmware driver/);
+  assert.equal(design.status, "needs-changes");
+
+  const main = design.firmware.files.find((file) => file.path === "src/main.cpp").content;
+  assert.match(main, /FAIL .*SHT31.*no verified firmware driver/);
+  assert.match(main, /ok = false;/);
+  assert.doesNotMatch(main, /SHT31.*pins configured/);
+  assert.doesNotMatch(main, /All parts initialised/);
+  assert.doesNotMatch(design.firmware.expectedSerialOutput, /All parts initialised/);
+});
+
 test("an electrically valid board is not mistaken for complete AR glasses", () => {
   const { design } = buildDesign({
     request: request({

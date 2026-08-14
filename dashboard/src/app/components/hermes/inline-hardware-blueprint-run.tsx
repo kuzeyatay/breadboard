@@ -36,6 +36,7 @@ interface RunEvent {
 
 const STAGES = [
   { key: "interpret", label: "Reading the request" },
+  { key: "research", label: "Researching missing parts" },
   { key: "compile", label: "Compiling the circuit" },
   { key: "validation", label: "Validating electrically" },
   { key: "firmware", label: "Generating firmware" },
@@ -53,6 +54,8 @@ const STREAMED_EVENT_TYPES = [
   "safety.limited",
   "interpret.started",
   "interpret.completed",
+  "component-discovery.started",
+  "component-discovery.completed",
   "compile.started",
   "compile.completed",
   "validation.completed",
@@ -211,6 +214,7 @@ export default function InlineHardwareBlueprintRun({
   );
   const [stages, setStages] = useState<Record<StageKey, StageState>>({
     interpret: "pending",
+    research: "pending",
     compile: "pending",
     validation: "pending",
     firmware: "pending",
@@ -290,6 +294,12 @@ export default function InlineHardwareBlueprintRun({
           );
           break;
         }
+        case "component-discovery.started":
+          advance("research", "active");
+          break;
+        case "component-discovery.completed":
+          advance("research", "done");
+          break;
         case "compile.started":
           advance("compile", "active");
           break;
@@ -459,9 +469,15 @@ export default function InlineHardwareBlueprintRun({
   }, [brief, completedAt, counts, designSummary, designTitle, enclosureNotice, enclosureTitle, failure, findings, firmwareFiles, firmwareNotice, note, pins, result, safetyNotice, specs, startedAt, status]);
 
   const running = !TERMINAL.has(status);
+  // `completed` is the transport lifecycle (the worker reached a terminal
+  // result), not an engineering verdict.  Showing a green "Completed" badge
+  // beside a blueprint with blocking findings made an invalid circuit look
+  // build-ready.  Keep the durable terminal outcome unchanged, but make the
+  // card report the design verdict people actually need to act on.
+  const needsChanges = !running && status === "completed" && counts.errors > 0;
   const statusDot = running
     ? "animate-pulse bg-[var(--botanical-2)]"
-    : status === "completed"
+    : status === "completed" && !needsChanges
       ? "bg-[var(--botanical)]"
       : "bg-[var(--danger)]";
   // A restored transcript has no run events, so the design's name comes back out
@@ -491,7 +507,7 @@ export default function InlineHardwareBlueprintRun({
     <>
     <AssistantResponseMeta
       active={running}
-      failed={!running && status !== "completed"}
+      failed={!running && (status !== "completed" || needsChanges)}
       agentName="Hardware Blueprint"
       usage={usage}
       startedAt={startedAt}
@@ -506,7 +522,7 @@ export default function InlineHardwareBlueprintRun({
         <div className="flex shrink-0 items-center gap-[8px]">
           <span className="bb-agent-run-label inline-flex items-center gap-1.5 capitalize">
             <span className={`bb-agent-run-led h-1.5 w-1.5 ${statusDot}`} />
-            {running ? "compiling" : status}
+            {running ? "compiling" : needsChanges ? "needs changes" : status}
           </span>
           {running ? (
             <button

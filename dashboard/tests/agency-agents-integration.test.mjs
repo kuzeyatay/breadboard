@@ -31,6 +31,9 @@ test("Agency agents toggle beside the Agents page and render as skill-style rows
   );
   const agencyRows = agencyPanel.slice(agencyPanel.indexOf("{agencyDirectoryGroups.flatMap"));
   assert.match(hub, /id="agency-agents-directory"/);
+  assert.match(hub, /AGENCY_AGENTS_DIRECTORY_COMMAND/);
+  assert.match(hub, />\/\{item\.token\}</);
+  assert.doesNotMatch(hub, /agencyAgents\.length\.toLocaleString\(\)/);
   assert.match(hub, />\s*Agency agents\s*</);
   assert.match(hub, /onClick=\{\(\) => void toggleAgentDirectory\(\)\}/);
   assert.match(hub, /loadAgencyAgentsClientCatalog\(\{ force \}\)/);

@@ -21,6 +21,7 @@ import {
   interactiveVisualGroundingProblems,
   semanticConceptsForUnit,
   knowledgeClaimsForUnit,
+  reconcileLearningUnitSourceArtifacts,
 } from "../src/lib/learning-unit-contract.ts";
 import { sanitizeLearnerTitle } from "../src/lib/learn-utils.ts";
 import { isValidPublicConceptSlug } from "../src/lib/semantic-core.ts";
@@ -268,6 +269,29 @@ describe("Learning Unit Contract — visual/unit compatibility (Fix 5)", () => {
     assert.notEqual(training.interactiveVisual.visualType, "tradeoff_explorer");
   });
 
+  test("does not route generic electromagnetics energy formulas to the SNN metric calculator", () => {
+    const [unit] = normalizeLearningUnits([{
+      id: "EM",
+      role: "formula",
+      title: "Electric Potential, Gradient, and Energy Density",
+      learningQuestion: "How does potential encode a field and how is its energy distributed?",
+      newConcepts: ["electric potential", "gradient", "electric energy density"],
+      interactiveVisual: {
+        visualType: "metric_calculator",
+        uniqueConcept: "electric potential and field energy",
+        whyStaticSourceFigureIsNotEnough: "The learner changes field parameters and observes stored energy.",
+        learnerManipulates: ["field strength"],
+        expectedInsight: "field strength changes electric energy density",
+        sourceAnchors: [],
+      },
+    }]);
+
+    assert.equal(visualTypeCompatibleWithUnit("metric_calculator", unit).ok, false);
+    const { units, dropped } = dropIncompatibleInteractiveVisuals([unit]);
+    assert.equal(units[0].interactiveVisual, undefined);
+    assert.match(dropped.join("\n"), /metric_calculator/);
+  });
+
   test("an unknown visual type with a complete learning intent is routed to generation", () => {
     const [withJustification] = normalizeLearningUnits([
       { id: "A", role: "mechanism", title: "Custom", interactiveVisual: { visualType: "custom_widget", uniqueConcept: "a real thing", whyStaticSourceFigureIsNotEnough: "because interaction is required", learnerManipulates: ["k"], expectedInsight: "z", sourceAnchors: [] } },
@@ -307,6 +331,78 @@ describe("Learning Unit Contract — visual/unit compatibility (Fix 5)", () => {
 });
 
 describe("Learning Unit Contract — source artifact assignment (Fix 3/8)", () => {
+  test("reconciles every projection and assignment against registered source artifacts", () => {
+    const knownId = "S1.P24.F1";
+    const bogusId = "S1.P197.F1";
+    const units = normalizeLearningUnits([{
+      id: "U1",
+      role: "mechanism",
+      title: "How the field changes",
+      learningQuestion: "How does the field change?",
+      sourceAnchors: [knownId, bogusId, "S1.P24"],
+      sourceFigures: [
+        {
+          id: knownId,
+          placement: "inside_concept_explanation",
+          mustBeDiscussedWith: "the field mechanism",
+          interpretationGoal: "Read the registered field diagram",
+        },
+        {
+          id: bogusId,
+          placement: "inside_concept_explanation",
+          mustBeDiscussedWith: "the field mechanism",
+          interpretationGoal: "Read a figure that was never registered",
+        },
+      ],
+      semanticConcepts: [{
+        slug: "field-change",
+        preferredLabel: "Field change",
+        role: "primary",
+        aliases: [],
+        evidenceAnchors: [knownId, bogusId, "S1.P24"],
+      }],
+      interactiveVisual: {
+        id: "field-visual",
+        visualType: "custom_type",
+        uniqueConcept: "field change",
+        whyStaticSourceFigureIsNotEnough: "The learner changes the source and observes the field.",
+        learnerManipulates: ["source strength"],
+        expectedInsight: "how source strength changes the field",
+        sourceAnchors: [knownId, bogusId, "S1.P24"],
+      },
+    }]);
+    const assignments = [
+      {
+        sourceArtifactId: knownId,
+        assignedLearningUnitId: "U1",
+        placement: "inside_concept_explanation",
+        reason: "Teach the registered diagram here",
+        requiredInterpretation: "Explain the field direction",
+      },
+      {
+        sourceArtifactId: bogusId,
+        assignedLearningUnitId: "U1",
+        placement: "inside_concept_explanation",
+        reason: "Stale planner assignment",
+        requiredInterpretation: "Explain an unregistered figure",
+      },
+    ];
+
+    const result = reconcileLearningUnitSourceArtifacts(
+      units,
+      assignments,
+      [{ id: knownId, kind: "figure" }],
+    );
+    const [unit] = result.units;
+
+    assert.deepEqual(unit.sourceFigures.map((figure) => figure.id), [knownId]);
+    assert.deepEqual(unit.sourceAnchors, [knownId, "S1.P24"]);
+    assert.deepEqual(unit.semanticConcepts[0].evidenceAnchors, [knownId, "S1.P24"]);
+    assert.deepEqual(unit.interactiveVisual.sourceAnchors, [knownId, "S1.P24"]);
+    assert.deepEqual(result.assignments.map((assignment) => assignment.sourceArtifactId), [knownId]);
+    assert.deepEqual(result.removedArtifactIds, [bogusId]);
+  });
+
   test("assigns artifacts to their exact units with placement + interpretation", () => {
     const assignments = assignSourceArtifacts(snnUnits());
     const byId = new Map(assignments.map((a) => [a.sourceArtifactId, a]));

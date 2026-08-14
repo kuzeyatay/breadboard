@@ -1,4 +1,4 @@
-import { componentDefinition } from "./components/index.ts";
+import { componentDefinitionForDesign } from "./components/index.ts";
 import type { HardwareDesign, ValidationResult } from "./types.ts";
 import { countBySeverity } from "./validation.ts";
 
@@ -74,7 +74,7 @@ function recoveredPins(
     (component) => component.reference === "U1",
   );
   if (!controller) return [];
-  const definition = componentDefinition(controller.definitionId);
+  const definition = componentDefinitionForDesign(design, controller.definitionId);
   const labelsById = new Map(
     definition?.pins.map((pin) => [pin.id, pin.label]) ?? [],
   );

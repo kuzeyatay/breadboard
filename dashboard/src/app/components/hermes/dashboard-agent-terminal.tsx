@@ -172,6 +172,10 @@ import {
   hyperframesUserMessage,
 } from "@/lib/hyperframes/identity.ts";
 import {
+  briefFromResource2SkillCommand,
+  resource2SkillUserMessage,
+} from "@/lib/resource2skill/identity.ts";
+import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
 } from "@/lib/openmontage/identity.ts";
@@ -542,6 +546,7 @@ function RuntimeTerminal({
   const [launchingLegalRun, setLaunchingLegalRun] = useState(false);
   const [launchingCadRun, setLaunchingCadRun] = useState(false);
   const [launchingHyperframesRun, setLaunchingHyperframesRun] = useState(false);
+  const [launchingResource2SkillRun, setLaunchingResource2SkillRun] = useState(false);
   const [launchingOpenMontageRun, setLaunchingOpenMontageRun] = useState(false);
   const [launchingOpenworkRun, setLaunchingOpenworkRun] = useState(false);
   const [launchingOpenscienceRun, setLaunchingOpenscienceRun] = useState(false);
@@ -554,6 +559,7 @@ function RuntimeTerminal({
   const hardwareDispatchingRef = useRef(false);
   const cadDispatchingRef = useRef(false);
   const hyperframesDispatchingRef = useRef(false);
+  const resource2SkillDispatchingRef = useRef(false);
   const openMontageDispatchingRef = useRef(false);
   const openworkDispatchingRef = useRef(false);
   const openscienceDispatchingRef = useRef(false);
@@ -669,6 +675,7 @@ function RuntimeTerminal({
     launchingLegalRun ||
     launchingCadRun ||
     launchingHyperframesRun ||
+    launchingResource2SkillRun ||
     launchingOpenMontageRun ||
     launchingOpenworkRun ||
     launchingOpenscienceRun ||
@@ -3186,6 +3193,73 @@ function RuntimeTerminal({
     [launchHyperframesRun],
   );
 
+  const launchResource2SkillRun = useCallback(
+    async (brief: string, options: { branchGroupId?: string } = {}) => {
+      if (resource2SkillDispatchingRef.current) return;
+      resource2SkillDispatchingRef.current = true;
+      setLaunchingResource2SkillRun(true);
+      let clientMessageId = crypto.randomUUID();
+      const userContent = resource2SkillUserMessage(brief);
+      clientMessageId = session.previewExternalAgentTurn({
+        clientMessageId,
+        userContent,
+        branchGroupId: options.branchGroupId,
+      });
+      let runStarted = false;
+      try {
+        await session.ensureConversation(clientMessageId);
+        const response = await fetch("/api/resource2skill/runs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ brief, model, reasoningEffort }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.run?.runId) {
+          throw new Error(
+            typeof data?.message === "string"
+              ? data.message
+              : typeof data?.error === "string"
+                ? data.error
+                : "The Resource2Skill run could not start.",
+          );
+        }
+        runStarted = true;
+        await session.appendExternalAgentTurn({
+          clientMessageId,
+          userContent,
+          run: { kind: "resource2skill", runId: String(data.run.runId), brief },
+          branchGroupId: options.branchGroupId,
+        });
+      } catch (cause) {
+        if (runStarted) {
+          setAttachmentStatus(cause instanceof Error ? cause.message : "The run started, but its chat turn could not be saved.");
+          return;
+        }
+        const assistantContent = `The Resource2Skill run could not start: ${cause instanceof Error ? cause.message : "unknown error"}`;
+        try {
+          await session.appendExternalAgentTurn({ clientMessageId, userContent, assistantContent, outcome: "failed", branchGroupId: options.branchGroupId });
+        } catch (persistenceError) {
+          setAttachmentStatus(persistenceError instanceof Error ? persistenceError.message : "The Resource2Skill turn could not be saved.");
+        }
+      } finally {
+        resource2SkillDispatchingRef.current = false;
+        setLaunchingResource2SkillRun(false);
+      }
+    },
+    [model, reasoningEffort, session],
+  );
+
+  const routeResource2SkillCommand = useCallback(
+    (text: string, options: { branchGroupId?: string } = {}): boolean => {
+      const brief = briefFromResource2SkillCommand(text);
+      if (brief === null) return false;
+      setAttachmentStatus("");
+      if (brief && !resource2SkillDispatchingRef.current) void launchResource2SkillRun(brief, options);
+      return true;
+    },
+    [launchResource2SkillRun],
+  );
+
   /**
    * OpenMontage carries its whole production brief in the command. A production
    * is the longest run in the palette — it plans, generates, edits and renders —
@@ -4236,6 +4310,7 @@ function RuntimeTerminal({
       routeHardwareBlueprintCommand(text) ||
       routeParametricCadCommand(text) ||
       routeHyperframesCommand(text) ||
+      routeResource2SkillCommand(text) ||
       routeOpenMontageCommand(text) ||
       routeOpenworkCommand(text) ||
       routeOpenscienceCommand(text) ||
@@ -4496,6 +4571,7 @@ function RuntimeTerminal({
     routeHardwareBlueprintCommand,
     routeParametricCadCommand,
     routeHyperframesCommand,
+    routeResource2SkillCommand,
     routeOpenMontageCommand,
     routeOpenworkCommand,
     routeOpenscienceCommand,
@@ -4631,6 +4707,9 @@ function RuntimeTerminal({
           return;
         case "hyperframes":
           await launchHyperframesRun(request.brief);
+          return;
+        case "resource2skill":
+          await launchResource2SkillRun(request.brief);
           return;
         case "openmontage":
           await launchOpenMontageRun(request.brief);
@@ -4823,6 +4902,7 @@ function RuntimeTerminal({
       routeHardwareBlueprintCommand(trimmed) ||
       routeParametricCadCommand(trimmed) ||
       routeHyperframesCommand(trimmed) ||
+      routeResource2SkillCommand(trimmed) ||
       routeOpenMontageCommand(trimmed) ||
       routeOpenworkCommand(trimmed) ||
       routeOpenscienceCommand(trimmed) ||
@@ -4848,6 +4928,7 @@ function RuntimeTerminal({
     routeHardwareBlueprintCommand,
     routeParametricCadCommand,
     routeHyperframesCommand,
+    routeResource2SkillCommand,
     routeOpenMontageCommand,
     routeOpenworkCommand,
     routeOpenscienceCommand,
@@ -4906,6 +4987,7 @@ function RuntimeTerminal({
         routeHardwareBlueprintCommand(text, { branchGroupId }) ||
         routeParametricCadCommand(text, { branchGroupId }) ||
         routeHyperframesCommand(text, { branchGroupId }) ||
+        routeResource2SkillCommand(text, { branchGroupId }) ||
         routeOpenMontageCommand(text, { branchGroupId }) ||
         routeOpenworkCommand(text, { branchGroupId }) ||
         routeOpenscienceCommand(text, { branchGroupId }) ||
@@ -4937,6 +5019,7 @@ function RuntimeTerminal({
     routeHardwareBlueprintCommand,
     routeParametricCadCommand,
     routeHyperframesCommand,
+    routeResource2SkillCommand,
     routeOpenMontageCommand,
     routeOpenworkCommand,
     routeOpenscienceCommand,
@@ -5000,6 +5083,7 @@ function RuntimeTerminal({
         routeHardwareBlueprintCommand(text) ||
         routeParametricCadCommand(text) ||
         routeHyperframesCommand(text) ||
+        routeResource2SkillCommand(text) ||
       routeOpenMontageCommand(text) ||
         routeOpenworkCommand(text) ||
         routeOpenscienceCommand(text) ||
@@ -5027,6 +5111,7 @@ function RuntimeTerminal({
     routeHardwareBlueprintCommand,
     routeParametricCadCommand,
     routeHyperframesCommand,
+    routeResource2SkillCommand,
     routeOpenMontageCommand,
     routeOpenworkCommand,
     routeOpenscienceCommand,
@@ -5049,6 +5134,7 @@ function RuntimeTerminal({
           routeHardwareBlueprintCommand(previousUser.content, { branchGroupId }) ||
           routeParametricCadCommand(previousUser.content, { branchGroupId }) ||
           routeHyperframesCommand(previousUser.content, { branchGroupId }) ||
+          routeResource2SkillCommand(previousUser.content, { branchGroupId }) ||
           routeOpenMontageCommand(previousUser.content, { branchGroupId }) ||
           routeOpenworkCommand(previousUser.content, { branchGroupId }) ||
           routeOpenscienceCommand(previousUser.content, { branchGroupId }) ||
@@ -5096,7 +5182,8 @@ function RuntimeTerminal({
       routeSocialsManagerCommand,
     routeHardwareBlueprintCommand,
     routeParametricCadCommand,
-    routeHyperframesCommand,
+      routeHyperframesCommand,
+      routeResource2SkillCommand,
     routeOpenMontageCommand,
     routeOpenworkCommand,
     routeOpenscienceCommand,
@@ -5394,6 +5481,9 @@ function RuntimeTerminal({
   return (
     <section
       ref={dockRef}
+      // Positioned against the viewport, so page padding cannot move it: the
+      // artifact dock shortens its right edge through this attribute instead.
+      data-terminal-dock
       style={terminalStyle}
       className={`bb-neu-tray neu-surface-raised fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-hidden text-gray-100 ${
         glassActive ? "rounded-t-[22px]" : "border-t"
@@ -5689,6 +5779,7 @@ function RuntimeTerminal({
                 onSelectHardwareBlueprint={() => {}}
                 onSelectParametricCad={() => {}}
                 onSelectHyperframes={() => {}}
+                onSelectResource2Skill={() => {}}
                 onSelectOpenMontage={() => {}}
                 onSelectOpenwork={() => {}}
                 onSelectOpenscience={() => {}}

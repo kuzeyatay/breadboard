@@ -157,6 +157,10 @@ export function saveDocumentArtifact(input: {
       filePath: stagedFile,
       metadata: documentMetadata(input.document, input.finalUrl),
       sourceHermesTool: GET_DOC_DOWNLOAD_TOOL,
+      // Breadboard fetched this paper, it did not write it. Its XMP carries the
+      // authors, the DOI and the license, and stripping that would destroy
+      // somebody else's bibliographic record rather than clean up our own.
+      scrubProvenance: false,
     });
   } finally {
     fs.rmSync(stagingRoot, { recursive: true, force: true });

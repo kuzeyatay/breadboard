@@ -17,10 +17,14 @@ import {
   withTransportRetry,
 } from "../model-transport.ts";
 import { humanizeProviderError } from "../provider-error.ts";
-import { CAD_TOOL_DEFINITIONS, runCadTool, type CadToolContext } from "./tools.ts";
+import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
+import { cadToolDefinitions, runCadTool, type CadToolContext } from "./tools.ts";
+import { SUPPORTED_OPERATIONS } from "./solidworks/operations.ts";
+import type { CadProjectRow } from "./project-store.ts";
+import type { CADDesignSpec, CADValidationIssue } from "./types.ts";
 
 // Complex parametric parts can legitimately take several minutes on reasoning
-// models. Callers with a deterministic fallback may choose a shorter deadline.
+// models. A timeout is an honest no-result: callers never substitute canned CAD.
 const DEFAULT_REQUEST_TIMEOUT_MS = 600_000;
 const MAX_TOOL_RESULT_CHARS = 12_000;
 
@@ -123,6 +127,12 @@ function unreachable(
 async function completion(
   target: CadModelTarget,
   messages: ChatMessage[],
+  options: {
+    allowedToolNames?: readonly string[];
+    forcedToolName?: string;
+    /** The backend whose tool contracts the model is shown. */
+    engine?: CadEngineId;
+  } = {},
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
   const controller = new AbortController();
   const timeoutMs = Math.max(15_000, target.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
@@ -135,6 +145,10 @@ async function completion(
     // calls over several minutes, and losing all of it to one dropped
     // connection — a local gateway restarting is enough — is the difference
     // between a part and an apology.
+    const definitions = cadToolDefinitions(options.engine);
+    const allowed = options.allowedToolNames
+      ? definitions.filter((tool) => options.allowedToolNames!.includes(tool.name))
+      : definitions;
     const response = await withTransportRetry(
       () =>
         fetch(completionsUrl(target.baseUrl), {
@@ -146,8 +160,11 @@ async function completion(
           body: JSON.stringify({
             model: target.model,
             messages,
-            tools: CAD_TOOL_DEFINITIONS.map((tool) => ({ type: "function", function: tool })),
-            tool_choice: "auto",
+            tools: allowed.map((tool) => ({ type: "function", function: tool })),
+            tool_choice: options.forcedToolName
+              ? { type: "function", function: { name: options.forcedToolName } }
+              : "auto",
+            parallel_tool_calls: false,
             ...(target.reasoningEffort ? { reasoning_effort: target.reasoningEffort } : {}),
           }),
           signal: controller.signal,
@@ -202,6 +219,10 @@ export interface CadAgentLoopInput extends CadModelTarget {
   toolContext: CadToolContext;
   /** Hard ceiling on model turns. The build budget is enforced separately. */
   maxSteps?: number;
+  /** Staged runs can expose only the tool appropriate to the current phase. */
+  allowedToolNames?: readonly string[];
+  /** Force the phase's one required tool instead of waiting for model prose. */
+  forcedToolName?: string;
 }
 
 export interface CadAgentLoopResult {
@@ -252,7 +273,11 @@ export async function runCadAgentLoop(input: CadAgentLoopInput): Promise<CadAgen
     if (input.signal?.aborted) {
       return { answer, projectId: input.toolContext.projectId ?? null, toolCalls, stoppedBecause: "aborted" };
     }
-    const { content, toolCalls: proposed } = await completion(input, messages);
+    const { content, toolCalls: proposed } = await completion(input, messages, {
+      ...(input.allowedToolNames ? { allowedToolNames: input.allowedToolNames } : {}),
+      ...(input.forcedToolName ? { forcedToolName: input.forcedToolName } : {}),
+      engine: input.toolContext.engine ?? DEFAULT_CAD_ENGINE,
+    });
     if (content) answer = content;
     messages.push({
       role: "assistant",
@@ -322,6 +347,203 @@ export async function runCadAgentLoop(input: CadAgentLoopInput): Promise<CadAgen
   return {
     answer,
     projectId: input.toolContext.projectId ?? null,
+    toolCalls,
+    stoppedBecause: "step_limit",
+  };
+}
+
+/**
+ * Build phase for a project whose structured specification already exists.
+ *
+ * Keeping this separate from planning fixes a costly failure mode: after
+ * `cad_create_project`, the ordinary agent loop used to send the enormous
+ * planning turn back to the model and could sit there until the whole request
+ * deadline expired. This phase gives the model one job and one tool, then
+ * executes the proposed source immediately. A valid build is a terminal
+ * result; it never waits for a cosmetic prose completion.
+ */
+export async function runCadProjectBuildPhase(input: CadModelTarget & {
+  project: CadProjectRow;
+  toolContext: CadToolContext;
+  /** Test seam; production executes Breadboard's local typed CAD tool. */
+  runTool?: typeof runCadTool;
+  maxBuildSteps?: number;
+  /**
+   * Requirements the kernel cannot check, evaluated against the design that was
+   * just built. A valid solid that misses one of them is not finished, and the
+   * repair the model can make is the one it is told about — so the unmet
+   * requirements go back into this conversation rather than being discovered
+   * after the run has ended.
+   */
+  acceptance?: (projectId: string) => CADValidationIssue[];
+}): Promise<CadAgentLoopResult> {
+  const spec = JSON.parse(input.project.design_spec_json) as CADDesignSpec;
+  const parameters = Object.fromEntries(
+    spec.parameters.map((parameter) => [parameter.id, parameter.value]),
+  );
+  const execute = input.runTool ?? runCadTool;
+  const maxBuildSteps = Math.max(
+    1,
+    Math.min(input.maxBuildSteps ?? 2, input.toolContext.attemptsRemaining),
+  );
+  const engine: CadEngineId = input.toolContext.engine ?? DEFAULT_CAD_ENGINE;
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content: [
+        "You are the source-generation phase of Breadboard's Parametric CAD agent.",
+        "The project and its structured design specification already exist. Do not plan it again and do not create another project.",
+        ...(engine === "solidworks"
+          ? [
+              "Call cad_generate_model now with one complete SolidWorks operation program as JSON.",
+              `The only operations are ${SUPPORTED_OPERATIONS.join(", ")}; there is no chamfer, Hole Wizard, revolve, sweep, loft or pattern.`,
+              "Build the outer body first with a closed sketch and an extrude, then remove material with sketch-and-cut. A hole is a circle cut deeper than the body is thick.",
+              "Every coordinate, radius and depth is in millimetres.",
+            ]
+          : [
+              "Call cad_generate_model now with one complete, deterministic CadQuery program.",
+              "Use DEFAULT_PARAMS plus build_model(params), keep all geometry in millimetres, and return a dict of named solids.",
+            ]),
+        "Implement every non-reference component as the requested number of named printable solids.",
+        "Implement the specification's fit, retention, clearance, alignment and serviceability constraints in actual geometry.",
+        "Read every editable parameter from the parameter map and use it in its named geometry; remove no-op parameters instead of exposing fake controls.",
+        "Returned printable bodies must not overlap by positive volume in assembled coordinates. Model mating clearances and aligned joint features explicitly.",
+        "If a required feature has no constraint carrying its exact id, send that constraint in the same call's `constraints`.",
+        "If the specification has no `assembly` and this design has more than one body or any bought part, send `assembly` too: overview, hardware with real sizes and quantities, and ordered steps naming the component ids each step joins.",
+        "Prefer robust primitives and booleans over fragile decorative fillets. Never return prose instead of the tool call.",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: [
+        `Build existing project ${input.project.id}.`,
+        "Its validated design specification follows:",
+        JSON.stringify(spec),
+      ].join("\n"),
+    },
+  ];
+  const toolCalls: CadAgentLoopResult["toolCalls"] = [];
+  let answer = "";
+
+  for (let step = 0; step < maxBuildSteps; step += 1) {
+    if (input.signal?.aborted) {
+      return {
+        answer,
+        projectId: input.project.id,
+        toolCalls,
+        stoppedBecause: "aborted",
+      };
+    }
+    const buildTarget: CadModelTarget = {
+      ...input,
+      // High reasoning on a large source payload can spend the full request
+      // deadline without yielding a tool call. The structured plan is already
+      // done, so medium is the reliable ceiling for this synthesis phase.
+      reasoningEffort: ["none", "minimal", "low", "medium"].includes(
+        input.reasoningEffort ?? "",
+      )
+        ? input.reasoningEffort
+        : "medium",
+      requestTimeoutMs: Math.min(input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, 240_000),
+    };
+    const completed = await completion(buildTarget, messages, {
+      allowedToolNames: ["cad_generate_model"],
+      forcedToolName: "cad_generate_model",
+      engine,
+    });
+    if (completed.content) answer = completed.content;
+    const proposed = completed.toolCalls.find(
+      (call) => call.function.name === "cad_generate_model",
+    );
+    if (!proposed) {
+      answer = answer || "The model returned no CAD source for the existing project.";
+      break;
+    }
+    messages.push({
+      role: "assistant",
+      content: completed.content,
+      tool_calls: [proposed],
+    });
+
+    let rawArguments: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(proposed.function.arguments || "{}") as unknown;
+      rawArguments =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : {};
+    } catch {
+      rawArguments = {};
+    }
+    // The model writes geometry; Breadboard owns identity, parameter values,
+    // and execution limits. Never let a generated tool payload switch project
+    // or silently discard the values the planning phase exposed to the user.
+    const toolArguments = {
+      ...rawArguments,
+      projectId: input.project.id,
+      parameters,
+      timeoutMs: 120_000,
+      note:
+        typeof rawArguments.note === "string" && rawArguments.note.trim()
+          ? rawArguments.note
+          : step === 0
+            ? "Generate the first model from the saved design specification."
+            : "Repair the previous model from its CAD build diagnostics.",
+    };
+    let result: Record<string, unknown>;
+    try {
+      result = await execute("cad_generate_model", toolArguments, input.toolContext);
+    } catch (error) {
+      result = {
+        ok: false,
+        error: "tool_error",
+        message: error instanceof Error ? error.message : "The CAD build failed.",
+      };
+    }
+    const summary = summariseToolResult("cad_generate_model", result);
+    toolCalls.push({ name: "cad_generate_model", ok: result.ok !== false, summary });
+    messages.push({
+      role: "tool",
+      tool_call_id: proposed.id,
+      content: JSON.stringify(result).slice(0, MAX_TOOL_RESULT_CHARS),
+    });
+    if (result.ok !== false && result.validationPassed === true) {
+      const unmet = input.acceptance?.(input.project.id) ?? [];
+      if (!unmet.length) {
+        return {
+          answer: "The CAD source was generated, built, and geometrically validated.",
+          projectId: input.project.id,
+          toolCalls,
+          stoppedBecause: "answered",
+        };
+      }
+      answer =
+        `The geometry is valid, but ${unmet.length} required product feature` +
+        `${unmet.length === 1 ? " is" : "s are"} still missing: ` +
+        unmet.map((issue) => issue.feature ?? issue.code).join(", ");
+      if (step + 1 >= maxBuildSteps) break;
+      messages.push({
+        role: "user",
+        content: [
+          "The solid is geometrically valid, but it does not yet satisfy the product's acceptance",
+          "requirements. Each one below is missing either the geometry itself or a design-spec",
+          "constraint carrying its exact id. Rewrite the program so the feature really exists —",
+          "do not merely rename a body or repeat the requirement in prose — and call",
+          "cad_generate_model again, sending the missing ids in that call's `constraints`.",
+          ...unmet.map(
+            (issue) =>
+              `- ${issue.feature ?? issue.code}: ${issue.message}${
+                issue.repairHint ? ` ${issue.repairHint}` : ""
+              }`,
+          ),
+        ].join("\n"),
+      });
+    }
+  }
+
+  return {
+    answer,
+    projectId: input.project.id,
     toolCalls,
     stoppedBecause: "step_limit",
   };

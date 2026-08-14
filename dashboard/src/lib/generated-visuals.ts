@@ -1508,6 +1508,229 @@ export default defineVisualization({
   };
 }
 
+/** Score groups a rubric-shaped approval must fill in. Each group is one
+ * dimension, listed with every spelling the critic is known to use. */
+const DETAILED_CRITIC_SCORE_GROUPS: readonly (readonly string[])[] = [
+  ["interactionImprovesUnderstanding"],
+  ["subsectionFit"],
+  ["controlMeaningfulness", "meaningfulControls"],
+  ["defaultStateUsefulness", "usefulDefaultState"],
+  ["variableIntroduction"],
+  [
+    "sourceClaimsAndUnits",
+    "sourceClaimsAndUnitsPreserved",
+    "sourceClaimAndUnitPreservation",
+    "sourceClaimPreservation",
+  ],
+  ["avoidsDuplication"],
+  ["complexityDiscipline", "avoidsUnnecessaryComplexity", "complexityRestraint"],
+  ["accessibility"],
+];
+
+/** The spelling of each dimension the critic is asked for, so the prompt, the
+ * response schema, and the normalizer cannot drift apart. */
+const CRITIC_RUBRIC_KEYS: readonly string[] = DETAILED_CRITIC_SCORE_GROUPS.map((keys) => keys[0]);
+
+/** Names every rubric dimension the critic left unscored. */
+function unscoredDetailedCriticDimensions(scores: Record<string, unknown>): string[] {
+  return DETAILED_CRITIC_SCORE_GROUPS
+    .filter((keys) => !keys.some((key) => asFiniteNumber(scores[key]) !== undefined))
+    .map((keys) => keys[0]);
+}
+
+/** Why a rubric-shaped critic reply could not be normalized, so the caller can
+ * tell the critic what to fix instead of retrying the identical prompt. */
+export interface DetailedGeneratedVisualCriticDiagnostics {
+  /** The reply carries rubric scores, so the detailed path owns the failure. */
+  detailed?: boolean;
+  reason?: string;
+}
+
+export function normalizeDetailedGeneratedVisualCriticRecord(
+  parsed: unknown,
+  tokenUsage?: GeneratedVisualTokenUsage,
+  expectedOpportunityId?: string,
+  diagnostics?: DetailedGeneratedVisualCriticDiagnostics,
+): GeneratedVisualCriticRecord | null {
+  const reject = (reason: string): null => {
+    if (diagnostics) diagnostics.reason = reason;
+    return null;
+  };
+  if (!isRecord(parsed) || !isRecord(parsed.scores)) return reject("the reply carries no scores object");
+
+  const visualScores = parsed.scores;
+  // `accessibility` is scored by the legacy rubric too, so it cannot identify the shape.
+  const detailedScoreKeys = DETAILED_CRITIC_SCORE_GROUPS.flat().filter((key) => key !== "accessibility");
+  if (!detailedScoreKeys.some((key) => asFiniteNumber(visualScores[key]) !== undefined)) {
+    return reject("the reply carries no recognized rubric scores");
+  }
+  if (diagnostics) diagnostics.detailed = true;
+  if (
+    expectedOpportunityId &&
+    typeof parsed.opportunityId === "string" &&
+    parsed.opportunityId !== expectedOpportunityId
+  ) {
+    return reject(`the reply scored a different opportunity (${parsed.opportunityId})`);
+  }
+
+  const normalizedDecision = typeof parsed.decision === "string"
+    ? parsed.decision.trim().toLowerCase().replace(/[\s_-]+/g, "")
+    : "";
+  const decisionApproved = ["approve", "approved", "accept", "accepted", "pass", "passed"].includes(normalizedDecision)
+    ? true
+    : [
+        "reject",
+        "rejected",
+        "revise",
+        "revision",
+        "needsrevision",
+        "needschanges",
+        "changesrequested",
+        "fail",
+        "failed",
+      ].includes(normalizedDecision)
+      ? false
+      : undefined;
+  if (
+    typeof parsed.approved === "boolean" &&
+    decisionApproved !== undefined &&
+    parsed.approved !== decisionApproved
+  ) {
+    return reject(`"approved" (${parsed.approved}) contradicts "decision" (${parsed.decision})`);
+  }
+  const providerApproved = typeof parsed.approved === "boolean" ? parsed.approved : decisionApproved;
+  if (providerApproved === undefined) {
+    return reject('the reply carries no boolean "approved" and no recognized "decision"');
+  }
+
+  const optionalScore = (key: string): number | undefined => {
+    const value = asFiniteNumber(visualScores[key]);
+    return value === undefined ? undefined : Math.max(0, Math.min(1, value));
+  };
+  const topLevelOverall = asFiniteNumber(parsed.overallScore ?? parsed.overall);
+  const overall = optionalScore("overall")
+    ?? (topLevelOverall === undefined ? 0 : Math.max(0, Math.min(1, topLevelOverall)));
+  const firstReported = (keys: string[], fallback = overall) => {
+    for (const key of keys) {
+      const value = optionalScore(key);
+      if (value !== undefined) return value;
+    }
+    return fallback;
+  };
+  const minimumReported = (keys: string[], fallback = overall) => {
+    const values = keys.map(optionalScore).filter((value): value is number => value !== undefined);
+    return values.length ? Math.min(...values) : fallback;
+  };
+  const controlMeaningfulness = firstReported(["controlMeaningfulness", "meaningfulControls"]);
+  const defaultStateUsefulness = firstReported(["defaultStateUsefulness", "usefulDefaultState"]);
+  const variableIntroduction = optionalScore("variableIntroduction");
+  const sourceFidelity = firstReported([
+    "sourceClaimsAndUnits",
+    "sourceClaimsAndUnitsPreserved",
+    "sourceClaimAndUnitPreservation",
+    "sourceClaimPreservation",
+  ]);
+  if (providerApproved) {
+    // An approval is only trustworthy when every dimension was actually scored.
+    const unscored = unscoredDetailedCriticDimensions(visualScores);
+    if (unscored.length) {
+      return reject(`the reply approved the visual without scoring ${unscored.join(", ")}`);
+    }
+  }
+  const scores = {
+    pedagogicalValue: minimumReported([
+      "interactionImprovesUnderstanding",
+      "subsectionFit",
+      "controlMeaningfulness",
+      "meaningfulControls",
+      "defaultStateUsefulness",
+      "usefulDefaultState",
+    ]),
+    sourceFidelity,
+    usability: minimumReported([
+      "controlMeaningfulness",
+      "meaningfulControls",
+      "defaultStateUsefulness",
+      "usefulDefaultState",
+      "variableIntroduction",
+      "complexityDiscipline",
+      "avoidsUnnecessaryComplexity",
+      "complexityRestraint",
+      "avoidsDuplication",
+    ]),
+    accessibility: optionalScore("accessibility") ?? overall,
+  };
+
+  const requestedChanges: string[] = [];
+  const addChange = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const normalized = value.trim();
+    if (normalized && !requestedChanges.includes(normalized) && requestedChanges.length < 12) {
+      requestedChanges.push(normalized);
+    }
+  };
+  for (const key of ["requestedChanges", "requiredChanges", "recommendations", "issues"] as const) {
+    if (Array.isArray(parsed[key])) parsed[key].forEach(addChange);
+  }
+  if ((optionalScore("interactionImprovesUnderstanding") ?? overall) < 0.75) {
+    addChange("Make the interaction teach the stated learning objective more directly.");
+  }
+  if ((optionalScore("subsectionFit") ?? overall) < 0.75) {
+    addChange("Align the visual and its controls with this subsection instead of adjacent material.");
+  }
+  if (controlMeaningfulness < 0.65) {
+    addChange("Replace generic controls with variables that directly change the taught relationship, and explain each control's effect.");
+  }
+  if (defaultStateUsefulness < 0.65) {
+    addChange("Choose a default state that immediately demonstrates the intended relationship.");
+  }
+  if (variableIntroduction !== undefined && variableIntroduction < 0.65) {
+    addChange("Introduce and label every variable and unit before the learner manipulates it.");
+  }
+  if (sourceFidelity < 0.75) {
+    addChange("Ground every relationship, claim, and unit in the supplied source evidence.");
+  }
+  if ((optionalScore("avoidsDuplication") ?? 1) < 0.75) {
+    addChange("Remove duplicated explanation or interaction and keep only the distinct learning contribution.");
+  }
+  if (firstReported(["complexityDiscipline", "avoidsUnnecessaryComplexity", "complexityRestraint"], 1) < 0.65) {
+    addChange("Reduce unnecessary complexity while preserving the interaction required by the learning objective.");
+  }
+  if (scores.accessibility < 0.65) {
+    addChange("Add a complete non-visual explanation and ensure every control, output, diagram, and state is keyboard-readable and explicitly labelled.");
+  }
+
+  const reason = [parsed.reason, parsed.rationale, parsed.summary]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0)
+    ?.trim()
+    ?? `Visualization critic overall score ${overall.toFixed(2)}.`;
+  if (!providerApproved && requestedChanges.length === 0) {
+    addChange("Revise the visual to address the critic's rationale before requesting another review.");
+  }
+  const providerScores = Object.fromEntries([
+    ...Object.entries(visualScores),
+    ["overallScore", parsed.overallScore],
+  ].flatMap(([key, value]) => {
+    const numeric = asFiniteNumber(value);
+    return numeric === undefined ? [] : [[key, Math.max(0, Math.min(1, numeric))]];
+  }));
+  return {
+    approved:
+      providerApproved &&
+      scores.pedagogicalValue >= 0.75 &&
+      scores.sourceFidelity >= 0.75 &&
+      scores.usability >= 0.65 &&
+      scores.accessibility >= 0.65,
+    checkedAt: nowIso(),
+    reason,
+    requestedChanges,
+    scores,
+    providerApproved,
+    providerScores,
+    ...(tokenUsage ? { tokenUsage } : {}),
+  };
+}
+
 async function reviewGeneratedVisualization(input: {
   client: OpenAI;
   model: string;
@@ -1519,6 +1742,9 @@ async function reviewGeneratedVisualization(input: {
   formulaDefinitions?: unknown[];
   previewPath?: string;
   tests?: GeneratedVisualTestsRecord;
+  /** Why the previous critic reply was unusable, quoted back so a retry
+   * corrects the shape instead of repeating the identical prompt. */
+  priorCriticFailure?: string;
   signal?: AbortSignal;
 }): Promise<GeneratedVisualCriticRecord> {
   const evidence = {
@@ -1558,8 +1784,15 @@ async function reviewGeneratedVisualization(input: {
         messages: [
           {
             role: "system",
+            // Council-routed requests drop `response_format`, so the required
+            // shape is spelled out here as well as in the schema below.
             content:
-              "Review one already validated Breadboard interactive visualization. Return the strict JSON object requested by the response schema, with every score expressed as a number from 0 to 1. Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, avoids duplication and unnecessary complexity, and is accessible. Do not mutate the artifact.",
+              "Review one already validated Breadboard interactive visualization. Do not mutate the artifact.\n" +
+              "Reply with one JSON object and nothing else:\n" +
+              `{"approved": <boolean>, "reason": <string>, "requestedChanges": [<string>, ...], "scores": {${CRITIC_RUBRIC_KEYS.map((key) => `"${key}": <0-1 number>`).join(", ")}}}\n` +
+              "Score every one of those dimensions as a number from 0 to 1 — an approval that leaves any dimension unscored is discarded. " +
+              "Leave requestedChanges empty when you approve; otherwise list the specific revisions. " +
+              "Approve only if interaction improves understanding, belongs in this subsection, uses meaningful controls, has a useful default state, introduces every variable, preserves source claims and units, avoids duplication and unnecessary complexity, and is accessible.",
           },
           {
             role: "user",
@@ -1570,6 +1803,17 @@ async function reviewGeneratedVisualization(input: {
                 ]
               : JSON.stringify(evidence),
           },
+          ...(input.priorCriticFailure
+            ? [
+                {
+                  role: "user" as const,
+                  content:
+                    `Your previous review was discarded because ${input.priorCriticFailure}. ` +
+                    "Review the same artifact again and reply with the exact JSON object described above, " +
+                    `including a 0-1 number for every one of: ${CRITIC_RUBRIC_KEYS.join(", ")}.`,
+                },
+              ]
+            : []),
         ],
         response_format: {
           type: "json_schema",
@@ -1587,13 +1831,10 @@ async function reviewGeneratedVisualization(input: {
                 scores: {
                   type: "object",
                   additionalProperties: false,
-                  required: ["pedagogicalValue", "sourceFidelity", "usability", "accessibility"],
-                  properties: {
-                    pedagogicalValue: { type: "number" },
-                    sourceFidelity: { type: "number" },
-                    usability: { type: "number" },
-                    accessibility: { type: "number" },
-                  },
+                  required: [...CRITIC_RUBRIC_KEYS],
+                  properties: Object.fromEntries(
+                    CRITIC_RUBRIC_KEYS.map((key) => [key, { type: "number" }]),
+                  ),
                 },
               },
             },
@@ -1622,80 +1863,18 @@ async function reviewGeneratedVisualization(input: {
   } catch {
     throw new Error(`critic returned invalid JSON: ${content.slice(0, 500) || "(empty response)"}`);
   }
-  if (
-    isRecord(parsed) &&
-    isRecord(parsed.scores) &&
-    typeof parsed.approved === "boolean" &&
-    typeof parsed.scores.interactionImprovesUnderstanding === "number"
-  ) {
-    const visualScores = parsed.scores;
-    const optionalScore = (key: string): number | undefined => {
-      const value = Number(visualScores[key]);
-      return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : undefined;
-    };
-    const overall = optionalScore("overall") ?? 0;
-    const firstReported = (keys: string[], fallback = overall) => {
-      for (const key of keys) {
-        const value = optionalScore(key);
-        if (value !== undefined) return value;
-      }
-      return fallback;
-    };
-    const minimumReported = (keys: string[], fallback = overall) => {
-      const values = keys.map(optionalScore).filter((value): value is number => value !== undefined);
-      return values.length ? Math.min(...values) : fallback;
-    };
-    const scores = {
-      pedagogicalValue: minimumReported([
-        "interactionImprovesUnderstanding",
-        "subsectionFit",
-        "controlMeaningfulness",
-        "defaultStateUsefulness",
-      ]),
-      sourceFidelity: firstReported([
-        "sourceClaimsAndUnits",
-        "sourceClaimsAndUnitsPreserved",
-        "sourceClaimAndUnitPreservation",
-        "sourceClaimPreservation",
-      ]),
-      usability: minimumReported([
-        "controlMeaningfulness",
-        "defaultStateUsefulness",
-        "complexityDiscipline",
-        "avoidsUnnecessaryComplexity",
-        "complexityRestraint",
-      ]),
-      accessibility: optionalScore("accessibility") ?? overall,
-    };
-    const requestedChanges = [
-      ...(Array.isArray(parsed.requestedChanges) ? parsed.requestedChanges : []),
-      ...(Array.isArray(parsed.requiredChanges) ? parsed.requiredChanges : []),
-      ...(Array.isArray(parsed.recommendations) ? parsed.recommendations : []),
-      ...(Array.isArray(parsed.issues) ? parsed.issues : []),
-    ].filter((item): item is string => typeof item === "string").slice(0, 12);
-    if (scores.accessibility < 0.65 && requestedChanges.length === 0) {
-      requestedChanges.push("Add a complete non-visual explanation and ensure every control, output, diagram, and state is keyboard-readable and explicitly labelled.");
-    }
-    return {
-      approved:
-        parsed.approved === true &&
-        scores.pedagogicalValue >= 0.75 &&
-        scores.sourceFidelity >= 0.75 &&
-        scores.usability >= 0.65 &&
-        scores.accessibility >= 0.65,
-      checkedAt: nowIso(),
-      reason: typeof parsed.summary === "string"
-        ? parsed.summary
-        : `ChatMock visualization critic overall score ${overall.toFixed(2)}.`,
-      requestedChanges,
-      scores,
-      providerApproved: parsed.approved,
-      providerScores: Object.fromEntries(
-        Object.entries(visualScores).flatMap(([key, value]) =>
-          typeof value === "number" && Number.isFinite(value) ? [[key, value]] : []),
-      ),
-      ...(tokenUsage ? { tokenUsage } : {}),
-    };
+  const criticDiagnostics: DetailedGeneratedVisualCriticDiagnostics = {};
+  const detailedCritic = normalizeDetailedGeneratedVisualCriticRecord(
+    parsed,
+    tokenUsage,
+    input.opportunity.id,
+    criticDiagnostics,
+  );
+  if (detailedCritic) return detailedCritic;
+  // A rubric-shaped reply that will not normalize is the detailed path's failure
+  // to explain — say what is wrong so the retry can ask the critic to fix it.
+  if (criticDiagnostics.detailed && criticDiagnostics.reason) {
+    throw new Error(`critic returned an unusable rubric verdict: ${criticDiagnostics.reason}`);
   }
   if (isRecord(parsed) && isRecord(parsed.scores) && typeof parsed.scores.pedagogy === "number") {
     const legacy = parsed.scores;
@@ -1729,12 +1908,15 @@ async function reviewGeneratedVisualization(input: {
       ...(tokenUsage ? { tokenUsage } : {}),
     };
   }
+  // `reason` and `requestedChanges` are both defaulted below, so a verdict that
+  // carries a decision and at least one recognized score is usable without them.
   if (
     !isRecord(parsed) ||
     !isRecord(parsed.scores) ||
     typeof parsed.approved !== "boolean" ||
-    typeof parsed.reason !== "string" ||
-    !Array.isArray(parsed.requestedChanges)
+    !["pedagogicalValue", "sourceFidelity", "usability", "accessibility"].some(
+      (key) => asFiniteNumber((parsed.scores as Record<string, unknown>)[key]) !== undefined,
+    )
   ) {
     throw new Error(`critic returned an invalid record: ${content.slice(0, 500) || "(empty response)"}`);
   }
@@ -1839,6 +2021,7 @@ export type CreateGeneratedVisualizationInput = {
   candidateProvider?: typeof generateVisualizationCandidate;
   criticProvider?: typeof reviewGeneratedVisualization;
   maxAttempts?: number;
+  criticMaxAttempts?: number;
   runBrowserTests?: boolean;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
@@ -2084,9 +2267,14 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
     let criticFailure = "critic failed";
     const criticAttempts = Math.max(
       1,
-      Math.min(3, Number(process.env.LEARN_GENERATED_VISUAL_CRITIC_ATTEMPTS ?? 2) || 2),
+      Math.min(
+        3,
+        input.criticMaxAttempts
+          ?? (Number(process.env.LEARN_GENERATED_VISUAL_CRITIC_ATTEMPTS ?? 2) || 2),
+      ),
     );
     const criticStartedAt = Date.now();
+    let priorCriticFailure: string | undefined;
     for (let criticAttempt = 1; criticAttempt <= criticAttempts; criticAttempt += 1) {
       try {
         critic = await withGeneratedVisualTimeout({
@@ -2103,12 +2291,16 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
             formulaDefinitions: input.formulaDefinitions,
             previewPath: browser.browser?.screenshotCreated ? path.join(stagingDir, "preview.png") : undefined,
             tests: deterministicTests,
+            priorCriticFailure,
             signal,
           }),
         });
         break;
       } catch (error) {
+        if (input.abortSignal?.aborted) throw error;
+        input.checkCancelled?.();
         criticFailure = error instanceof Error ? error.message : "critic failed";
+        priorCriticFailure = criticFailure;
         if (criticAttempt < criticAttempts) {
           emit(input.onEvent, "visual_critic_retry", {
             visualizationId: id,
@@ -2119,13 +2311,25 @@ async function createGeneratedVisualizationWithSlot(input: CreateGeneratedVisual
         }
       }
     }
-    critic ??= {
-      approved: false,
-      checkedAt: nowIso(),
-      reason: criticFailure,
-      requestedChanges: ["Retry critic review with the validated artifact."],
-      scores: { pedagogicalValue: 0, sourceFidelity: 0, usability: 0, accessibility: 0 },
-    };
+    if (!critic) {
+      lastFailure = "critic";
+      repairErrors = [
+        `Critic review could not complete after ${criticAttempts} attempt${criticAttempts === 1 ? "" : "s"}: ${criticFailure}`,
+      ];
+      writeRejectedAttempt(input.gardenDir, id, runId, attempt, candidate, "critic", repairErrors, lifecycle, {
+        validation: compilation.validation,
+        tests: deterministicTests,
+      });
+      emit(input.onEvent, "visual_critic_failed", {
+        visualizationId: id,
+        attempt,
+        criticAttempts,
+        failureCategory: "critic",
+        reason: criticFailure,
+        durationMs: Date.now() - criticStartedAt,
+      });
+      break;
+    }
     emit(input.onEvent, "visual_critic_completed", {
       visualizationId: id,
       attempt,

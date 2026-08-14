@@ -78,6 +78,10 @@ import {
   reconstructableFromAttachments,
   renderImageTo3dContext,
 } from "../sf3d/images.ts";
+import {
+  resolveSmallTalkReply,
+  smallTalkEventStream,
+} from "../chat-small-talk.ts";
 
 type GardenChatPayload = {
   clusterSlug?: unknown;
@@ -139,15 +143,32 @@ export async function openGardenAgentChat(
     parseChatAttachments(payload.attachments),
   );
   const selectedSlugs = parseSelectedDocumentSlugs(payload.selectedDocumentSlugs);
+  let conversation = ensureConversationForLegacyChatSession(
+    chatSessionId,
+    userId,
+  );
+  // A greeting does not need a 600k-word garden, memories, tools, or an agent
+  // run. Keep this intentionally narrow and fail closed for attachments,
+  // task-bearing text, and active personas, all of which need the full path.
+  const smallTalkReply =
+    attachments.length === 0 && !conversation.active_agency_agent_slug
+      ? resolveSmallTalkReply(text)
+      : null;
+  if (smallTalkReply) {
+    recordAuditEvent({
+      eventType: "small_talk.fast_path",
+      userId,
+      gardenId: clusterSlug,
+      payload: { intent: smallTalkReply.intent, chatSessionId },
+    });
+    return smallTalkEventStream(smallTalkReply);
+  }
+
   const engine = resolveHermesEngine(
     payload.model,
     payload.reasoningEffort,
   );
   const existing = getRuntimeSessionByChatSession(chatSessionId);
-  let conversation = ensureConversationForLegacyChatSession(
-    chatSessionId,
-    userId,
-  );
   const session = existing
     ? authorizeRuntimeSession(userId, existing.id)
     : await resolveConversationRuntime({

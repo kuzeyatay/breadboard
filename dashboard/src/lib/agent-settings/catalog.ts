@@ -29,6 +29,15 @@ interface FieldBase {
   help: string;
   /** The inline flag that overrides this field for a single message. */
   flag?: string;
+  /**
+   * A named backend probe whose current state is shown under the control.
+   *
+   * Only for options whose usefulness depends on something outside Breadboard —
+   * an application installed on this machine, say. The settings panel maps the
+   * name to one read of an existing status endpoint when the panel opens; there
+   * is no polling.
+   */
+  statusProbe?: "solidworks";
 }
 
 export type AgentSettingField =
@@ -367,6 +376,28 @@ export const CONFIGURABLE_AGENTS: ConfigurableAgent[] = [
           { value: "auto", label: "Only when the brief asks" },
           { value: "always", label: "Always design one" },
           { value: "never", label: "Never, unless I type --enclosure" },
+        ],
+        default: "auto",
+      },
+      {
+        key: "cadBackend",
+        kind: "select",
+        label: "CAD backend",
+        help: "Which CAD engine is used when a run needs mechanical CAD.",
+        flag: "--cad solidworks",
+        statusProbe: "solidworks",
+        options: [
+          {
+            value: "auto",
+            label: "Let the design decide",
+            help: "Parametric CAD, unless a design says otherwise.",
+          },
+          { value: "cadquery", label: "Parametric CAD (CadQuery)" },
+          {
+            value: "solidworks",
+            label: "SolidWorks",
+            help: "Windows only, and SolidWorks must be installed.",
+          },
         ],
         default: "auto",
       },

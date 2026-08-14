@@ -1,3 +1,5 @@
+import BreadboardLoader from "@/app/components/breadboard-loader";
+
 // Chat-history controls shared by the surfaces that render a Recents list
 // (garden chat and the dashboard terminal). Breadboard owns the durable
 // transcript, so deleting is a plain server call — the browser never addresses
@@ -57,29 +59,7 @@ export function SpinnerIcon({
 }: {
   className?: string;
 }) {
-  return (
-    <svg
-      className={`animate-spin ${className}`}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      <circle
-        cx="12"
-        cy="12"
-        r="8.5"
-        stroke="currentColor"
-        strokeWidth="2.25"
-        opacity="0.22"
-      />
-      <path
-        d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5"
-        stroke="currentColor"
-        strokeWidth="2.25"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
+  return <BreadboardLoader className={className} />;
 }
 
 export function ActiveChatIcon({
@@ -109,10 +89,9 @@ export function ChatHistoryLoading({ label = "Loading chats" }: { label?: string
     <div
       role="status"
       aria-label={label}
-      className="flex items-center justify-center gap-2 px-2 py-6 text-xs text-gray-600"
+      className="flex items-center justify-center px-2 py-6 text-gray-600"
     >
       <SpinnerIcon className="h-3.5 w-3.5" />
-      <span>{label}</span>
     </div>
   );
 }

@@ -50,6 +50,7 @@ const RUN_ROUTES = {
   "hardware-blueprint": ["hardware-blueprint", "runs"],
   "parametric-cad": ["cad", "runs"],
   hyperframes: ["hyperframes", "runs"],
+  resource2skill: ["resource2skill", "runs"],
   openmontage: ["openmontage", "runs"],
   vimax: ["vimax", "runs"],
   shorts: ["shorts", "runs"],
@@ -129,13 +130,13 @@ test("acceptsAttachments matches which run routes actually take files", () => {
 
 test("the leading token grammar separates agents, personas, and capabilities", () => {
   const parsed = leadingCapabilityTokens(
-    "/study-guide /agent:ux-researcher /agents:codex /agents:nope fix the parser",
+    "/study-guide /agents:agency-agents:ux-researcher /agents:codex /agents:nope fix the parser",
   );
   assert.deepEqual(
     parsed.tokens.map((item) => [item.token, item.kind]),
     [
       ["study-guide", "capability"],
-      ["agent:ux-researcher", "persona"],
+      ["agents:agency-agents:ux-researcher", "persona"],
       ["agents:codex", "runtime_agent"],
       ["agents:nope", "unknown_runtime_agent"],
     ],
@@ -255,12 +256,12 @@ test("an agent selected in the palette is held to the same rules as a typed toke
 test("an Agency persona never rides along with a runtime agent", () => {
   for (const activeRuntimeAgentId of ["codex", "deep-research"]) {
     const conflict = findCapabilityConflict({
-      text: "/agent:ux-researcher review the flow",
+      text: "/agents:agency-agents:ux-researcher review the flow",
       surface: "dashboard_terminal",
       activeRuntimeAgentId,
     });
     assert.equal(conflict?.code, "runtime_agent_persona_conflict");
-    assert.match(conflict.message, /\/agent:ux-researcher/);
+    assert.match(conflict.message, /\/agents:agency-agents:ux-researcher/);
   }
   // Without a runtime agent a persona is ordinary.
   assert.equal(

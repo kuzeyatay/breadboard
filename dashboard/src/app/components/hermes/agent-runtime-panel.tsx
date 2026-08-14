@@ -57,6 +57,7 @@ import InlineSocialsManagerRun from "./inline-socials-manager-run";
 import InlineHardwareBlueprintRun from "./inline-hardware-blueprint-run";
 import InlineParametricCadRun from "./inline-parametric-cad-run";
 import InlineHyperframesRun from "./inline-hyperframes-run";
+import InlineResource2SkillRun from "./inline-resource2skill-run";
 import InlineOpenMontageRun from "./inline-openmontage-run";
 import InlineOpenworkRun from "./inline-openwork-run";
 import InlineOpenscienceRun from "./inline-openscience-run";
@@ -245,6 +246,7 @@ interface Props {
   onSelectHardwareBlueprint?: () => void;
   onSelectParametricCad?: () => void;
   onSelectHyperframes?: () => void;
+  onSelectResource2Skill?: () => void;
   onSelectOpenMontage?: () => void;
   onSelectOpenwork?: () => void;
   onSelectOpenscience?: () => void;
@@ -507,6 +509,7 @@ export default function AgentRuntimePanel({
   onSelectHardwareBlueprint,
   onSelectParametricCad,
   onSelectHyperframes,
+  onSelectResource2Skill,
   onSelectOpenMontage,
   onSelectOpenwork,
   onSelectOpenscience,
@@ -1174,7 +1177,7 @@ export default function AgentRuntimePanel({
             // transcript that is still arriving reads as "this chat is empty".
             loadingTranscript ? (
               <div className="flex items-center justify-center py-12">
-                <BreadboardLoader label="Loading this chat" className="h-2 w-16" />
+                <BreadboardLoader label="Loading this chat" />
               </div>
             ) : (
               emptyState ?? (
@@ -1212,12 +1215,27 @@ export default function AgentRuntimePanel({
                     !activeRun &&
                     !disabled,
                 );
+                const delegatedTurnHasContinuation = Boolean(
+                  message.delegatedAgentRun === true &&
+                    messages[index + 1]?.internalAgentContinuation === true,
+                );
+                const isAgentContinuationResponse = Boolean(
+                  message.role === "assistant" &&
+                    messages[index - 1]?.internalAgentContinuation === true,
+                );
                 return message.internalAgentContinuation === true ||
                 message.textSelection?.mode === "inline" ||
                 inlinedCourseCorrections.hiddenMessageIndices.has(index) ? null : (
                 <div
                   key={message.id ?? `${message.role}-${index}`}
-                  className={timeSeparators[index] ? "space-y-3" : undefined}
+                  className={
+                    delegatedTurnHasContinuation
+                      ? "hidden"
+                      : timeSeparators[index]
+                        ? "space-y-3"
+                        : undefined
+                  }
+                  aria-hidden={delegatedTurnHasContinuation || undefined}
                 >
                   {timeSeparators[index] ? (
                     <ChatTimeSeparator
@@ -1229,7 +1247,9 @@ export default function AgentRuntimePanel({
                     className={message.role === "user" ? "group flex justify-end" : ""}
                   >
                     <div className={message.role === "user" ? "flex w-fit max-w-[75%] flex-col items-end gap-1" : "w-full"}>
-                    <MessageActionsSlot>
+                    <MessageActionsSlot
+                      suppressActions={message.delegatedAgentRun === true}
+                    >
                     {message.role === "user" ? (
                       <ChatMessageAttachments
                         attachments={message.attachments}
@@ -1237,7 +1257,8 @@ export default function AgentRuntimePanel({
                       />
                     ) : null}
                     {message.role === "assistant" &&
-                    message.delegatedAgentPreamble ? (
+                    message.delegatedAgentPreamble &&
+                    !delegatedTurnHasContinuation ? (
                       <div className="mb-3 text-sm leading-7 text-gray-200">
                         <SelectableAssistantMarkdown
                           content={message.delegatedAgentPreamble}
@@ -1817,6 +1838,28 @@ export default function AgentRuntimePanel({
                           }}
                         />
                       </div>
+                    ) : message.resource2SkillRun ? (
+                      <div className="text-sm leading-7 text-gray-200">
+                        <InlineResource2SkillRun
+                          runId={message.resource2SkillRun.runId}
+                          brief={message.resource2SkillRun.brief}
+                          persistedContent={message.content}
+                          persistedOutcome={message.externalAgentOutcome}
+                          persistedUsage={message.usage}
+                          onRetry={
+                            onRetryMessage &&
+                            !activeRun &&
+                            (message.interrupted || index === lastAssistantIndex)
+                              ? () => retryAssistantAsBranch(index)
+                              : undefined
+                          }
+                          onTerminal={(result) => {
+                            if (message.clientMessageId) {
+                              onExternalAgentTerminal?.(message.clientMessageId, result);
+                            }
+                          }}
+                        />
+                      </div>
                     ) : message.openworkRun ? (
                       <div className="text-sm leading-7 text-gray-200">
                         <InlineOpenworkRun
@@ -2106,7 +2149,15 @@ export default function AgentRuntimePanel({
                           usage={message.usage}
                           responseDurationMs={message.responseDurationMs}
                           onPermissionDecision={onPermissionDecision}
-                          stateLabel={responseInterrupted ? "Interrupted" : undefined}
+                          stateLabel={
+                            responseInterrupted
+                              ? "Interrupted"
+                              : isAgentContinuationResponse
+                                ? index === lastAssistantIndex && streaming
+                                  ? "Synthesizing research"
+                                  : "Research synthesized"
+                                : undefined
+                          }
                           stateFailed={responseInterrupted}
                           stateAction={
                             canRetryResponseState ? (
@@ -2371,6 +2422,7 @@ export default function AgentRuntimePanel({
           onSelectHardwareBlueprint={onSelectHardwareBlueprint}
           onSelectParametricCad={onSelectParametricCad}
           onSelectHyperframes={onSelectHyperframes}
+          onSelectResource2Skill={onSelectResource2Skill}
           onSelectOpenMontage={onSelectOpenMontage}
           onSelectOpenwork={onSelectOpenwork}
           onSelectOpenscience={onSelectOpenscience}

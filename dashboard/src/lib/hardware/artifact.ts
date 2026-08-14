@@ -237,7 +237,9 @@ export function summariseDesignForModel(design: HardwareDesign): string {
           instance.value ? ` ${instance.value}` : ""
         }${instance.automaticallyAdded ? " [added automatically by the compiler]" : ""} — library id ${instance.definitionId}`,
     ),
-    `Power: ${design.request.power.source}`,
+    `Power: ${design.request.power.source}${
+      design.request.power.part ? ` (${design.request.power.part})` : ""
+    }`,
     `Prototype: ${design.request.prototypeType}`,
     `Purpose: ${design.request.purpose}`,
   ].join("\n");

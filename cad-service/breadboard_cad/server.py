@@ -131,7 +131,11 @@ class _Handler(BaseHTTPRequestHandler):
             ocpVersion=probe.get("ocp", ""),
             exportFormats=["step", "stl", "glb", "3mf"] if healthy else [],
             importFormats=list(IMPORT_FORMATS) if healthy else [],
-            engines=["cadquery"],
+            # This service has exactly one engine, and it is only usable when
+            # the probe found the kernel. Backends that live outside this
+            # process — SolidWorks, driven from Breadboard itself — are reported
+            # by Breadboard's own /api/cad/health, not claimed here.
+            engines=["cadquery"] if healthy else [],
             detail=probe.get("error", ""),
         )
         self._send(200, response.model_dump(by_alias=True, mode="json"))

@@ -841,7 +841,13 @@ export async function startConversationTurn(
   // is judged against an obligation it could not talk itself out of. See
   // lib/map/grounding.ts.
   const geographicGrounding =
-    tools.map_search === true
+    input.internalAgentContinuation
+      ? {
+          required: false,
+          asks: [],
+          reason: "trusted model-to-model continuation, not a user location request",
+        }
+      : tools.map_search === true
       ? requiresGeographicGroundingInContext(
           resolved.userText || input.text,
           readGeographicContext({
@@ -989,7 +995,8 @@ export async function startConversationTurn(
             },
           }
         : {}),
-      ...(prepared.plan.requiredCapabilities.includes("web_research")
+      ...(!input.internalAgentContinuation &&
+      prepared.plan.requiredCapabilities.includes("web_research")
         ? {
             webGrounding: {
               required: true,

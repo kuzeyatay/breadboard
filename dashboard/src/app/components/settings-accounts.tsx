@@ -12,17 +12,25 @@ import {
 } from "@/lib/settings-client-cache";
 
 /**
- * Every account Breadboard is signed in to, in one list.
+ * Every account Breadboard is signed in to, and the only place one is added.
  *
  * ChatGPT and the subscription plans used to be two panels with two headings,
  * which read as two different kinds of thing. They are not: each row is an
  * account, named after the vendor whose models it unlocks — the same naming the
  * model picker uses, so "Claude" and "Anthropic" cannot look like two entries.
  *
- * ChatGPT authenticates through ChatMock's own OAuth (this panel drives it);
- * the rest authenticate through the subscription proxy and are connected from
- * the providers section further down the same page, beside the models each one
- * unlocks.
+ * Adding one used to be somewhere else again: this list had a button that
+ * scrolled down to a vendor card, and that card had a ChatGPT button that
+ * scrolled back up to this list. Neither actually signed anything in, and a
+ * second ChatGPT account was impossible to reach even though ChatMock has
+ * carried several for a long time. The picker below replaces both: it starts
+ * the real flow for whichever vendor you press, in place, and it offers "Add
+ * another" only where a second account is genuinely possible.
+ *
+ * ChatGPT authenticates through ChatMock's own OAuth (this panel drives it, and
+ * preserves the current credential first so a sign-in adds rather than
+ * replaces); the rest authenticate through the local subscription proxy, which
+ * stores one credential file per account.
  */
 
 interface ChatmockAccount {
@@ -34,6 +42,18 @@ interface ChatmockAccount {
   authPath: string | null;
   profile: "configured" | "chatmock" | "codex" | null;
   fallbackProfiles: string[];
+}
+
+/** One ChatGPT account as ChatMock reports it, including its quota cooldown. */
+interface ChatgptAccountRow {
+  key: string;
+  email: string | null;
+  plan: string | null;
+  /** The account in `auth.json`, which the login flow keeps writing to. */
+  primary: boolean;
+  available: boolean;
+  cooldownSeconds: number;
+  cooldownReason: string | null;
 }
 
 interface ChatmockLoginState {
@@ -50,11 +70,6 @@ interface AccountPayload {
   error?: string;
   archivedPath?: string | null;
   detail?: string;
-}
-
-interface Props {
-  /** Scrolls to the providers section, which connects a new subscription. */
-  onOpenProviders?: () => void;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -87,24 +102,41 @@ function ConnectionDot({ connected }: { connected: boolean }) {
   );
 }
 
-export default function SettingsAccounts({ onOpenProviders }: Props) {
+/** Coarse, because a cooldown counted to the second would need a live clock. */
+function formatDuration(seconds: number): string {
+  if (seconds >= 86_400) {
+    const days = Math.round(seconds / 86_400);
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  if (seconds >= 3_600) {
+    const hours = Math.round(seconds / 3_600);
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+/**
+ * Why an account is signed in but not answering. ChatMock steps over an
+ * exhausted account rather than failing, so this is the difference between
+ * "your second account is pointless" and "your second account is the one
+ * working right now".
+ */
+function restingLabel(row: ChatgptAccountRow): string | null {
+  if (row.available) return null;
+  const when =
+    row.cooldownSeconds > 0
+      ? `for about ${formatDuration(row.cooldownSeconds)}`
+      : "until its quota resets";
+  return row.cooldownReason ? `Resting ${when} — ${row.cooldownReason}` : `Resting ${when}`;
+}
+
+export default function SettingsAccounts() {
   const [account, setAccount] = useState<ChatmockAccount | null>(null);
   const [login, setLogin] = useState<ChatmockLoginState | null>(null);
   const [subscriptions, setSubscriptions] = useState<CliproxyStatus | null>(null);
-  const [chatgptAccounts, setChatgptAccounts] = useState<
-    Array<{
-      key: string;
-      email: string | null;
-      plan: string | null;
-      primary: boolean;
-      available: boolean;
-      cooldownSeconds: number;
-      cooldownReason: string | null;
-    }>
-  >([]);
+  const [chatgptAccounts, setChatgptAccounts] = useState<ChatgptAccountRow[]>([]);
   const [loading, setLoading] = useState(true);
-  // `add` and `forget:<key>` belong to the multi-ChatGPT-account helpers below,
-  // which are wired but not yet rendered anywhere in this panel.
   const [busy, setBusy] = useState<
     | "login"
     | "cancel"
@@ -115,6 +147,8 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
     | `drop:${string}`
     | null
   >(null);
+  /** Whether the vendor picker is open. Closed by default: it is an action. */
+  const [adding, setAdding] = useState(false);
   /**
    * A subscription sign-in opened in another tab.
    *
@@ -135,11 +169,21 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
     replacing: string | null;
     before: string[];
   } | null>(null);
-  /** The credential a Sign out click is waiting for confirmation on. */
+  /** The account a Sign out click is waiting for confirmation on. */
   const [confirmingSignOut, setConfirmingSignOut] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
+  /**
+   * How many ChatGPT accounts existed when the current sign-in started. The
+   * OAuth page reuses whatever ChatGPT session the browser already has, so
+   * "add another" quite often lands on the account that was already there —
+   * this is what lets the panel say which of the two happened instead of
+   * claiming an account was added when none was.
+   */
+  const chatgptCountRef = useRef(0);
+  /** Guards the unobserved-sign-in reconcile so it runs at most once per mount. */
+  const reconciledRef = useRef(false);
 
   const applyPayload = useCallback((payload: AccountPayload) => {
     if (payload.account) setAccount(payload.account);
@@ -160,16 +204,24 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
     }
   }, [applyPayload]);
 
-  const refreshChatgptAccounts = useCallback(async (force = false) => {
-    try {
-      const response = await fetchCachedSettings("/api/chatmock/accounts", { force });
-      if (!response.ok) return;
-      const payload = await response.json();
-      if (Array.isArray(payload?.accounts)) setChatgptAccounts(payload.accounts);
-    } catch {
-      // The primary account still renders from /api/chatmock/account.
-    }
-  }, []);
+  const refreshChatgptAccounts = useCallback(
+    async (force = false): Promise<ChatgptAccountRow[]> => {
+      try {
+        const response = await fetchCachedSettings("/api/chatmock/accounts", { force });
+        if (!response.ok) return [];
+        const payload = await response.json();
+        if (!Array.isArray(payload?.accounts)) return [];
+        const accounts = payload.accounts as ChatgptAccountRow[];
+        setChatgptAccounts(accounts);
+        chatgptCountRef.current = accounts.length;
+        return accounts;
+      } catch {
+        // The primary account still renders from /api/chatmock/account.
+        return [];
+      }
+    },
+    [],
+  );
 
   const refreshSubscriptions = useCallback(async (force = false): Promise<CliproxyStatus | null> => {
     try {
@@ -191,21 +243,22 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
   }, [refresh, refreshSubscriptions, refreshChatgptAccounts]);
 
   /**
-   * Pick up an account connected further down the same page.
+   * Pick up an account connected elsewhere on the same page.
    *
    * The providers section below is mounted beside this list rather than on a
-   * tab of its own, so a sign-in finished there no longer remounts this list on
-   * the way back. A connected account announces itself for the model pickers;
-   * the same announcement is what tells this list it has a new row.
+   * tab of its own, so nothing here remounts when something changes down there.
+   * A connected account announces itself for the model pickers; the same
+   * announcement is what tells this list it has a new row.
    */
   useEffect(() => {
     const handler = () => {
       void refresh();
       void refreshSubscriptions();
+      void refreshChatgptAccounts();
     };
     window.addEventListener(ASSISTANT_MODELS_CHANGED_EVENT, handler);
     return () => window.removeEventListener(ASSISTANT_MODELS_CHANGED_EVENT, handler);
-  }, [refresh, refreshSubscriptions]);
+  }, [refresh, refreshSubscriptions, refreshChatgptAccounts]);
 
   // While the browser half of the flow is open, poll until ChatMock's login
   // process exits so the panel reports the new account without a manual reload.
@@ -224,7 +277,14 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
         applyPayload(payload);
         if (payload.login?.status === "completed") {
           invalidateSettingsCache("/api/chatmock/account", "/api/chatmock/accounts");
-          setNotice("Signed in. New requests will use this account.");
+          const before = chatgptCountRef.current;
+          const after = await refreshChatgptAccounts(true);
+          setAdding(false);
+          setNotice(
+            after.length > before
+              ? "Account added. Requests use one account until its quota runs out, then step to the next."
+              : "Signed in. New requests will use this account.",
+          );
         } else if (payload.login?.status === "failed") {
           setError(payload.login.error ?? "The sign-in did not complete.");
         }
@@ -236,33 +296,53 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
         pollRef.current = null;
       }
     };
-  }, [login?.status, applyPayload]);
+  }, [login?.status, applyPayload, refreshChatgptAccounts]);
 
   /**
    * Pull ChatMock's copy of the subscription model list back in line.
    *
    * That catalog is a snapshot taken when an account signs in, so removing or
    * replacing one leaves every model picker offering models the proxy can no
-   * longer serve. Sign-in already syncs in the providers section below;
-   * sign-out and switch have to do the same or they only half-happen.
+   * longer serve. The sign-in poll below already syncs; sign-out and switch
+   * have to do the same or they only half-happen.
    */
   const syncSubscriptionModels = useCallback(async () => {
     try {
       const response = await fetch("/api/cliproxy/sync", { method: "POST" });
       if (response.ok) notifyAssistantModelsChanged();
     } catch {
-      // Not worth surfacing: the providers section keeps a manual Sync models
-      // button.
+      // Not worth surfacing: the reconcile below retries on the next open.
     }
   }, []);
 
   /**
-   * Finish a subscription switch once the new sign-in lands.
+   * Reconcile a sign-in that completed while nobody was watching.
+   *
+   * The poll below only runs while this list is mounted. A sign-in finished
+   * after settings were closed — or in a previous session — leaves the
+   * credential stored in the proxy but its models absent from ChatMock, so the
+   * account reads as connected and nothing works. Syncing once per mount,
+   * whenever the proxy reports both accounts and models, makes that
+   * self-correcting; this used to be the subscription proxy card's only
+   * irreplaceable job.
+   */
+  useEffect(() => {
+    if (reconciledRef.current) return;
+    if (!subscriptions?.running || subscriptions.models.length === 0) return;
+    if (!subscriptions.accounts.length) return;
+
+    reconciledRef.current = true;
+    void syncSubscriptionModels();
+  }, [subscriptions, syncSubscriptionModels]);
+
+  /**
+   * Finish a subscription sign-in, and a switch along with it.
    *
    * The proxy stores one file per account, so signing in again *adds* rather
-   * than replaces. Removing the old credential here — after a different one has
-   * appeared, never before — is what turns the same flow into a switch, without
-   * a window where the reader has no account at all.
+   * than replaces — which is exactly what "Add another" wants. Removing the old
+   * credential here — after a different one has appeared, never before — is
+   * what turns the same flow into a switch, without a window where the reader
+   * has no account at all.
    */
   useEffect(() => {
     if (!subscriptionLogin) return;
@@ -279,6 +359,7 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
 
           const { label, provider, replacing, before } = subscriptionLogin;
           setSubscriptionLogin(null);
+          setAdding(false);
 
           const fresh = await refreshSubscriptions(true);
           const landed = (fresh?.accounts ?? []).some(
@@ -318,7 +399,8 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
    * Start the OAuth flow for a subscription account.
    *
    * `replacing` names the credential this is meant to take the place of; the
-   * effect above removes it only once a different account has landed.
+   * effect above removes it only once a different account has landed. Passing
+   * null is the plain "add" case, which is how a vendor ends up with two.
    */
   async function startSubscriptionLogin(
     providerId: string,
@@ -388,7 +470,7 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
    * the current account. Preserving it first turns the same flow into "add",
    * and requests then step to a sibling when one account's plan window is spent.
    */
-  async function addAccount() {
+  async function addChatgptAccount() {
     setBusy("add");
     setError(null);
     setNotice(null);
@@ -406,9 +488,15 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
     }
   }
 
-  async function forgetAccount(key: string) {
+  /**
+   * Drop one of the additional ChatGPT accounts. The primary is signed out
+   * through the flow below instead, which archives its credential rather than
+   * deleting it.
+   */
+  async function forgetChatgptAccount(key: string, label: string) {
     setBusy(`forget:${key}`);
     setError(null);
+    setNotice(null);
     try {
       const response = await fetch(
         `/api/chatmock/accounts?key=${encodeURIComponent(key)}`,
@@ -416,10 +504,11 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
       );
       if (!response.ok) throw new Error("That account could not be removed.");
       await refreshChatgptAccounts(true);
-      setNotice("Account removed.");
+      setNotice(`${label} signed out.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "That account could not be removed.");
     } finally {
+      setConfirmingSignOut(null);
       setBusy(null);
     }
   }
@@ -428,6 +517,7 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
     setBusy("login");
     setError(null);
     setNotice(null);
+    chatgptCountRef.current = chatgptAccounts.length;
     try {
       const response = await fetch("/api/chatmock/account/login", { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as AccountPayload;
@@ -458,6 +548,7 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
     }
   }
 
+  /** Sign out of the primary ChatGPT account, keeping its credential aside. */
   async function signOut() {
     setBusy("signout");
     setError(null);
@@ -470,20 +561,48 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
         throw new Error(payload.detail ?? payload.error ?? "The account could not be signed out.");
       }
       invalidateSettingsCache("/api/chatmock/account", "/api/chatmock/accounts");
+      const remaining = await refreshChatgptAccounts(true);
       setNotice(
-        payload.archivedPath
-          ? `Signed out. The previous credentials were kept at ${payload.archivedPath}.`
-          : "Signed out.",
+        remaining.length
+          ? "Signed out. Requests now use the next ChatGPT account in the list."
+          : payload.archivedPath
+            ? `Signed out. The previous credentials were kept at ${payload.archivedPath}.`
+            : "Signed out.",
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The account could not be signed out.");
     } finally {
+      setConfirmingSignOut(null);
       setBusy(null);
     }
   }
 
   const awaiting = login?.status === "awaiting_authorization";
   const subscriptionAccounts = subscriptions?.accounts ?? [];
+  const providers = subscriptions?.providers ?? [];
+  const proxyRunning = subscriptions?.running === true;
+  const pendingSignIn = awaiting || subscriptionLogin !== null;
+  /**
+   * ChatMock's own list is authoritative — it is the one that knows about the
+   * additional accounts. `/api/chatmock/account` reads `auth.json` from disk
+   * and is the fallback for the case where ChatMock is not answering, so the
+   * panel never claims you are signed out because a sidecar is down.
+   */
+  const chatgptRows: ChatgptAccountRow[] = chatgptAccounts.length
+    ? chatgptAccounts
+    : account?.signedIn
+      ? [
+          {
+            key: "primary",
+            email: account.email,
+            plan: account.plan,
+            primary: true,
+            available: true,
+            cooldownSeconds: 0,
+            cooldownReason: null,
+          },
+        ]
+      : [];
 
   if (loading) {
     return <p className="text-sm text-[var(--ink-muted)]">Reading your accounts…</p>;
@@ -492,87 +611,116 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
   return (
     <div className="space-y-3">
       <ul className="space-y-2">
-        {/* OpenAI, through ChatMock's own OAuth.
+        {/* Every ChatGPT account, through ChatMock's own OAuth.
             Deliberately the same two-line row as the subscription accounts
             below: every entry in this list is an account, and one of them
             rendering as a taller block with a plan line, a refresh timestamp
             and a file path read as a different kind of thing. The plan is in
             the providers section below, beside the models it unlocks; the
             credential path is a detail of where ChatMock keeps its token, not
-            something the reader is being asked to act on. The buttons stay —
-            the other rows
-            lack a sign-out because their OAuth lives in the proxy, not because
-            signing out is meant to be unavailable. */}
-        <li className="neu-surface-subtle rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+            something the reader is being asked to act on. */}
+        {chatgptRows.map((row) => {
+          const confirmKey = `chatgpt:${row.key}`;
+          const confirming = confirmingSignOut === confirmKey;
+          const dropping = busy === "signout" || busy === `forget:${row.key}`;
+          const resting = restingLabel(row);
+          const label = row.email ?? "ChatGPT";
+          return (
+            <li
+              key={row.key}
+              className="neu-surface-subtle flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-[var(--ink-heading)]">OpenAI</p>
+                <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
+                  {row.email ?? "Signed in with ChatGPT"}
+                </p>
+                {resting ? (
+                  <p className="mt-0.5 truncate text-[11px] text-[var(--ink-muted)]">{resting}</p>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <ConnectionDot connected />
+                {confirming ? (
+                  <>
+                    <span className="text-xs text-[var(--ink-muted)]">Sign out?</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void (row.primary ? signOut() : forgetChatgptAccount(row.key, label))
+                      }
+                      disabled={busy !== null}
+                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--danger)] transition hover:bg-[var(--paper-strong)] disabled:opacity-50"
+                    >
+                      {dropping ? "Signing out…" : "Confirm"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingSignOut(null)}
+                      disabled={busy !== null}
+                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+                    >
+                      Keep
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {/* Switch only on the primary: the login flow writes
+                        `auth.json`, so it can replace that account and no
+                        other. Beside "Add another" in the picker below, the
+                        pair is the whole distinction — replace this one, or
+                        keep it and sign in beside it. */}
+                    {row.primary ? (
+                      <button
+                        type="button"
+                        onClick={() => void startLogin()}
+                        disabled={busy !== null || pendingSignIn}
+                        className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+                      >
+                        {busy === "login" ? "Starting…" : "Switch"}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingSignOut(confirmKey)}
+                      disabled={busy !== null || pendingSignIn}
+                      className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+                    >
+                      Sign out
+                    </button>
+                  </>
+                )}
+              </div>
+            </li>
+          );
+        })}
+
+        {/* Nothing signed in at OpenAI. Still a row rather than an absence: it
+            is the one account Breadboard cannot reach GPT models without. */}
+        {chatgptRows.length === 0 ? (
+          <li className="neu-surface-subtle flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--paper-surface)] p-4">
             <div className="min-w-0">
               <p className="text-sm font-medium text-[var(--ink-heading)]">OpenAI</p>
               <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
-                {account?.signedIn
-                  ? account.email ?? "Signed in with ChatGPT"
-                  : "Not signed in — Breadboard needs this to reach GPT models."}
+                Not signed in — Breadboard needs this to reach GPT models.
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <ConnectionDot connected={account?.signedIn === true} />
+              <ConnectionDot connected={false} />
               <button
                 type="button"
                 onClick={() => void startLogin()}
-                disabled={busy !== null || awaiting}
+                disabled={busy !== null || pendingSignIn}
                 className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
               >
-                {busy === "login" ? "Starting…" : account?.signedIn ? "Switch" : "Sign in"}
+                {busy === "login" ? "Starting…" : "Sign in"}
               </button>
-              {account?.signedIn ? (
-                <button
-                  type="button"
-                  onClick={() => void signOut()}
-                  disabled={busy !== null || awaiting}
-                  className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
-                >
-                  {busy === "signout" ? "Signing out…" : "Sign out"}
-                </button>
-              ) : null}
             </div>
-          </div>
-
-          {awaiting ? (
-            <div className="neu-inset mt-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
-              <p className="text-xs font-medium text-[var(--ink-heading)]">
-                Waiting for authorization
-              </p>
-              <p className="mt-1 text-[11px] leading-5 text-[var(--ink-muted)]">
-                Approve the sign-in in the browser tab that just opened. This updates as soon
-                as it finishes. The page reuses whatever ChatGPT session your browser already
-                has, so to reach a different account, sign out of chatgpt.com first or use a
-                {" private window"}.
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                {login?.authorizationUrl ? (
-                  <a
-                    href={login.authorizationUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs font-medium text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
-                  >
-                    Reopen the authorization page
-                  </a>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => void cancelLogin()}
-                  disabled={busy === "cancel"}
-                  className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
-                >
-                  {busy === "cancel" ? "Cancelling…" : "Cancel"}
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </li>
+          </li>
+        ) : null}
 
         {/* Everything signed in through the subscription proxy.
-            Switch and Sign out mean the same here as they do for OpenAI above,
+            Switch and Sign out mean the same here as they do for ChatGPT above,
             but they are built differently: the proxy keeps one file per
             account, so a switch is "sign the new one in, then drop the old"
             and a sign-out is the removal of a credential that cannot be
@@ -580,7 +728,7 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
         {subscriptionAccounts.map((subscription) => {
           const switching = busy === `switch:${subscription.file}`;
           const dropping = busy === `drop:${subscription.file}`;
-          const confirming = confirmingSignOut === subscription.file;
+          const confirming = confirmingSignOut === `cliproxy:${subscription.file}`;
           return (
             <li
               key={subscription.file}
@@ -629,15 +777,15 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
                           subscription.file,
                         )
                       }
-                      disabled={busy !== null || subscriptionLogin !== null}
+                      disabled={busy !== null || pendingSignIn}
                       className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
                     >
                       {switching ? "Starting…" : "Switch"}
                     </button>
                     <button
                       type="button"
-                      onClick={() => setConfirmingSignOut(subscription.file)}
-                      disabled={busy !== null || subscriptionLogin !== null}
+                      onClick={() => setConfirmingSignOut(`cliproxy:${subscription.file}`)}
+                      disabled={busy !== null || pendingSignIn}
                       className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
                     >
                       Sign out
@@ -649,6 +797,39 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
           );
         })}
       </ul>
+
+      {awaiting ? (
+        <div className="neu-inset rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
+          <p className="text-xs font-medium text-[var(--ink-heading)]">
+            Waiting for authorization
+          </p>
+          <p className="mt-1 text-[11px] leading-5 text-[var(--ink-muted)]">
+            Approve the sign-in in the browser tab that just opened. This updates as soon as it
+            finishes. The page reuses whatever ChatGPT session your browser already has, so to
+            reach a different account, sign out of chatgpt.com first or use a private window.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {login?.authorizationUrl ? (
+              <a
+                href={login.authorizationUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs font-medium text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
+              >
+                Reopen the authorization page
+              </a>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void cancelLogin()}
+              disabled={busy === "cancel"}
+              className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
+            >
+              {busy === "cancel" ? "Cancelling…" : "Cancel"}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {subscriptionLogin ? (
         <div className="neu-inset rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
@@ -691,22 +872,26 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        {/* The place this leads is now the next section of the same page rather
-            than another tab, so it is named after that section's heading. */}
-        {onOpenProviders ? (
-          <button
-            type="button"
-            onClick={onOpenProviders}
-            className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3.5 py-2 text-sm text-[var(--ink)] transition hover:bg-[var(--paper-strong)]"
-          >
-            Add an account
-          </button>
-        ) : null}
+        {/* The picker opens here, under the list it adds to. It used to be a
+            button that scrolled to another card, which is a jump the reader has
+            to undo and which signed nothing in when they got there. */}
+        <button
+          type="button"
+          onClick={() => setAdding((current) => !current)}
+          aria-expanded={adding}
+          // Not disabled while a sign-in is pending: the rows inside are, but
+          // closing a panel is never the thing to block.
+          disabled={busy !== null}
+          className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3.5 py-2 text-sm text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+        >
+          {adding ? "Done adding" : "Add an account"}
+        </button>
         <button
           type="button"
           onClick={() => {
             void refresh(true);
             void refreshSubscriptions(true);
+            void refreshChatgptAccounts(true);
           }}
           disabled={busy !== null}
           className="neu-button rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3.5 py-2 text-sm text-[var(--ink-muted)] transition hover:text-[var(--ink)] disabled:opacity-50"
@@ -714,6 +899,89 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
           Refresh
         </button>
       </div>
+
+      {adding ? (
+        <div className="neu-inset space-y-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3">
+          <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
+            Sign in to a plan you already pay for. Nothing is billed per token, and no key is
+            stored by Breadboard. A vendor can hold several accounts: requests use one until its
+            quota runs out, then step to the next.
+          </p>
+
+          {/* ChatGPT, whose OAuth is ChatMock's rather than the proxy's. */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-sm text-[var(--ink-heading)]">ChatGPT</p>
+              <p className="mt-0.5 text-[11px] leading-5 text-[var(--ink-muted)]">
+                Your ChatGPT plan.
+                {chatgptRows.length
+                  ? " The sign-in page reuses your browser's ChatGPT session, so sign out of chatgpt.com or use a private window to reach a different account."
+                  : ""}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void (chatgptRows.length ? addChatgptAccount() : startLogin())}
+              disabled={busy !== null || pendingSignIn}
+              className="neu-button shrink-0 rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+            >
+              {busy === "add" || busy === "login"
+                ? "Starting…"
+                : chatgptRows.length
+                  ? "Add another"
+                  : "Connect"}
+            </button>
+          </div>
+
+          {/* How to start it is said here, where the disabled buttons are.
+              It used to point at a card further down the page, which is gone —
+              and a pointer to a section is worse than the one sentence it was
+              pointing at. */}
+          {!proxyRunning ? (
+            <p className="text-[11px] leading-5 text-[var(--ink-muted)]">
+              The subscription proxy is{" "}
+              {subscriptions?.installed ? "not running" : "not installed yet"}, so the vendors
+              below cannot be signed in to. It starts with the rest of Breadboard and the first
+              launch downloads it automatically, so restarting the app is usually enough; from a
+              repository checkout you can also start it on its own with{" "}
+              <span className="font-mono">npm run cliproxy</span>.
+            </p>
+          ) : null}
+
+          {providers.map((provider) => {
+            // Claude's credential belongs to the Claude Code CLI, which keeps
+            // one login. Offering "Add another" there would be a button that
+            // replaces the account it claims to add to.
+            const capped = provider.singleAccount && provider.connected;
+            return (
+              <div
+                key={provider.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-raised)] px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm text-[var(--ink-heading)]">{provider.label}</p>
+                  <p className="mt-0.5 text-[11px] leading-5 text-[var(--ink-muted)]">
+                    {provider.description}
+                    {capped
+                      ? " Claude Code holds one login at a time — use Switch on the row above to change it."
+                      : ""}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void startSubscriptionLogin(provider.id, provider.label, null)
+                  }
+                  disabled={!proxyRunning || capped || busy !== null || pendingSignIn}
+                  className="neu-button shrink-0 rounded-lg border border-[var(--line-strong)] bg-[var(--paper-raised)] px-3 py-1.5 text-xs text-[var(--ink)] transition hover:bg-[var(--paper-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {capped ? "Signed in" : provider.connected ? "Add another" : "Connect"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       {notice ? (
         <p className="text-xs leading-5 text-[var(--botanical)]" role="status">
@@ -726,18 +994,16 @@ export default function SettingsAccounts({ onOpenProviders }: Props) {
         </p>
       ) : null}
 
-      <div className="space-y-1.5 border-t border-[var(--line)] pt-3 text-[11px] leading-5 text-[var(--ink-muted)]">
-        <p>
-          The ChatGPT sign-in listens on port 1455, and the running proxy picks up new
-          credentials on its next request — no restart needed.
+      {/* No standing footnote. The port number and "no restart needed" were
+          implementation notes about flows the buttons above already run and
+          finish on their own — true, and never once actionable. What is left
+          appears only when it applies to this machine. */}
+      {account?.fallbackProfiles.length ? (
+        <p className="border-t border-[var(--line)] pt-3 text-[11px] leading-5 text-[var(--ink-muted)]">
+          Signing out of ChatGPT falls back to another profile already on this machine:{" "}
+          <span className="break-all font-mono">{account.fallbackProfiles.join(", ")}</span>
         </p>
-        {account?.fallbackProfiles.length ? (
-          <p>
-            Signing out of ChatGPT falls back to another profile already on this machine:{" "}
-            <span className="break-all font-mono">{account.fallbackProfiles.join(", ")}</span>
-          </p>
-        ) : null}
-      </div>
+      ) : null}
     </div>
   );
 }

@@ -2,10 +2,10 @@
 //
 // The run is a fixed pipeline, not an agent loop:
 //
-//   interpret (model) -> resolve -> compile -> validate -> firmware -> artifact
+//   interpret -> research missing parts -> resolve -> compile -> validate -> firmware -> artifact
 //
-// Only the first and the firmware-logic steps call a model. Everything between
-// them is deterministic TypeScript, so a run either produces a blueprint whose
+// Interpretation, bounded component research, and firmware logic may call the
+// model. Compilation itself is deterministic TypeScript, so a run either produces a blueprint whose
 // wiring, instructions and firmware agree, or it reports exactly where it
 // stopped. Runs are ephemeral: events live here and the SSE route replays them.
 
@@ -36,7 +36,6 @@ import { generateFirmwareLogic, HardwareModelError, interpretTurn } from "./mode
 import { assessSafety } from "./safety.ts";
 import {
   enclosureBriefFromDesign,
-  enclosureFallbackFromDesign,
   enclosureIntent,
   physicalDesignCoverageIssues,
   physicalDesignKind,
@@ -49,6 +48,8 @@ import {
 } from "../cad/artifact.ts";
 import { cadServiceListening } from "../cad/service.ts";
 import { cadDefaults } from "../cad/defaults.ts";
+import { resolveCadEngine } from "../cad/engines.ts";
+import { latestUnbuiltCadProjectForConversation } from "../cad/project-store.ts";
 import { preferPcbForPortableRequest } from "./form-factor.ts";
 import { withRequestDefaults, type HardwareTurn } from "./schemas.ts";
 import { countBySeverity } from "./validation.ts";
@@ -56,7 +57,13 @@ import {
   hardwareBlueprintRunCardState,
   presentHardwareBlueprintFindings,
 } from "./run-card-state.ts";
-import { componentDefinition } from "./components/index.ts";
+import {
+  componentDefinitionForDesign,
+  scopedDefinitionsForDesign,
+} from "./components/index.ts";
+import { resolveComponentPhrase } from "./resolver.ts";
+import { groundHardwareRequest } from "./request-grounding.ts";
+import { discoverRequestComponents } from "./component-discovery.ts";
 import type {
   HardwareDesign,
   HardwareProjectRequest,
@@ -262,7 +269,8 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
   run.status = "running";
   emit(run, "run.started", { brief: run.brief, model: input.model });
 
-  // Only the two model steps spend tokens; the compiler in between is free.
+  // Interpretation, source-backed discovery, CAD and firmware may spend tokens;
+  // the compiler and validators in between are free.
   // Each completion's usage is reported as it lands so the card can count up
   // while the run is still going.
   const spent: ChatTokenUsage[] = [];
@@ -344,6 +352,7 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
 
   request = applyCommandFlags(request, input.parsed);
   if (turn.mode === "new") {
+    request = groundHardwareRequest(request, run.brief);
     request = preferPcbForPortableRequest(request, {
       userBrief: run.brief,
       explicitPrototypeType: input.parsed.prototypeType,
@@ -352,8 +361,33 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
 
   const designId = previousDesign?.id ?? `hwd_${randomUUID().replaceAll("-", "")}`;
 
+  emit(run, "component-discovery.started", {});
+  const discovery = await discoverRequestComponents({
+    request,
+    previous: previousDesign?.componentResearch,
+    baseUrl: input.baseUrl,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    signal: run.controller.signal,
+    onUsage,
+  });
+  if (run.aborted) return;
+  emit(run, "component-discovery.completed", {
+    attempted: discovery.attempted,
+    used: discovery.records.filter((record) => record.status === "used").map((record) => record.requestedAs),
+    unresolved: discovery.records
+      .filter((record) => record.status !== "used")
+      .map((record) => ({ requestedAs: record.requestedAs, status: record.status, note: record.note })),
+  });
+
   emit(run, "compile.started", {});
-  const firstPass = buildDesign({ request, designId, safety, sourceBrief: run.brief });
+  const firstPass = buildDesign({
+    request,
+    designId,
+    safety,
+    sourceBrief: run.brief,
+    componentResearch: discovery.records,
+  });
   if (run.aborted) return;
   emit(run, "compile.completed", {
     controller: firstPass.circuit.controllerDefinition.name,
@@ -382,15 +416,23 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
   ]
     .filter(Boolean)
     .join("\n");
-  const logic = await generateFirmwareLogic({
-    baseUrl: input.baseUrl,
-    model: input.model,
-    reasoningEffort: input.reasoningEffort,
-    signal: run.controller.signal,
-    onUsage,
-    brief: firmwareLogicBrief(firstPass.circuit),
-    behaviour,
-  });
+  // Application code cannot repair a missing electrical definition or driver.
+  // Asking the model to write it anyway wastes a long completion and used to
+  // produce confident-looking logic around parts the circuit never connected.
+  const firmwareBlockedNotice = initialCounts.errors
+    ? "Application logic was not generated because the electrical design has blocking validation errors. The deterministic firmware reports each unresolved part and keeps hardwareReady false."
+    : "";
+  const logic = initialCounts.errors
+    ? null
+    : await generateFirmwareLogic({
+        baseUrl: input.baseUrl,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        signal: run.controller.signal,
+        onUsage,
+        brief: firmwareLogicBrief(firstPass.circuit),
+        behaviour,
+      });
   if (run.aborted) return;
 
   const final = buildDesign({
@@ -399,11 +441,13 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
     safety,
     firmwareLogic: logic,
     sourceBrief: run.brief,
+    componentResearch: discovery.records,
   });
+  const firmwareNotice = final.firmwareNotice ?? firmwareBlockedNotice;
   emit(run, "firmware.completed", {
     files: final.design.firmware?.files.map((file) => file.path) ?? [],
-    generated: Boolean(logic) && !final.firmwareNotice,
-    ...(final.firmwareNotice ? { notice: final.firmwareNotice } : {}),
+    generated: Boolean(logic) && !firmwareNotice,
+    ...(firmwareNotice ? { notice: firmwareNotice } : {}),
   });
 
   // A brief that asks for a case — or a clip, a mount, a strap, anything that
@@ -424,6 +468,14 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
         : detected.wanted || preferredEnclosure === "always"),
     remaining: detected.remaining,
   };
+  // Whether there is a part and which engine builds it are two separate
+  // questions, decided in that order. The `--cad` flag wins over the saved
+  // preference, which wins over the default; nothing here reads the brief's
+  // prose for a backend name, because a mention is not a choice.
+  const cadEngine = resolveCadEngine({
+    flag: input.parsed.cadBackend ?? null,
+    setting: input.preferences?.cadBackend ?? "auto",
+  });
   let enclosureArtifactId: string | null = null;
   let enclosureTitle = "";
   let enclosureNotice = "";
@@ -440,7 +492,7 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
         "A physical part was asked for, but the local CAD service is not running, so only the circuit was produced.";
       emit(run, "enclosure.skipped", { reason: enclosureNotice });
     } else {
-      emit(run, "enclosure.started", {});
+      emit(run, "enclosure.started", { engine: cadEngine.engine, backend: cadEngine.source });
       try {
         const conversation = getConversationForUser(input.conversationPublicId, input.userId);
         const controller = final.design.components.find(
@@ -449,28 +501,43 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
         const process = cadPreferences.process ?? "fdm";
         const processDefaults = cadDefaults(process);
         const printerBed = cadPreferences.printerBed ?? processDefaults.printerBed;
+        const electricalPeripherals = final.design.components
+          .filter((instance) => instance.reference !== "U1")
+          .map((instance) => ({
+            name: instance.name,
+            definitionId: instance.definitionId,
+            category: componentDefinitionForDesign(final.design, instance.definitionId)?.category,
+            mechanical: componentDefinitionForDesign(final.design, instance.definitionId)?.mechanical,
+          }));
+        const physicalPeripherals = (request.physicalParts ?? []).flatMap((part) => {
+          const outcome = resolveComponentPhrase(
+            part.type,
+            scopedDefinitionsForDesign(final.design),
+          );
+          if (outcome.status !== "resolved") return [];
+          return [{
+            name: outcome.definition.name,
+            definitionId: outcome.definition.id,
+            category: outcome.definition.category,
+            mechanical: outcome.definition.mechanical,
+          }];
+        });
         const enclosureInput = {
           userBrief: enclosure.remaining || run.brief,
           designTitle: final.design.title,
           controllerDefinitionId: controller?.definitionId ?? "",
           controllerName: final.circuit.controllerDefinition.name,
-          peripherals: final.design.components
-            .filter((instance) => instance.reference !== "U1")
-            .map((instance) => ({
-              name: instance.name,
-              definitionId: instance.definitionId,
-              category: componentDefinition(instance.definitionId)?.category,
-              mechanical: componentDefinition(instance.definitionId)?.mechanical,
-            })),
+          peripherals: [...electricalPeripherals, ...physicalPeripherals].filter(
+            (part, index, all) =>
+              all.findIndex((candidate) => candidate.definitionId === part.definitionId) === index,
+          ),
           prototypeType: request.prototypeType,
         };
         const physicalKind = physicalDesignKind(enclosureInput.userBrief);
-        const fallback = enclosureFallbackFromDesign({
-          ...enclosureInput,
-          process,
-          wallThickness: processDefaults.defaultWallThickness,
-          clearance: processDefaults.generalClearance,
-          printerBed,
+        const resumableDraft = latestUnbuiltCadProjectForConversation({
+          userId: input.userId,
+          conversationId: conversation.id,
+          name: final.design.title,
         });
         const cad = await designCadPart({
           userId: input.userId,
@@ -485,11 +552,22 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
           // Parametric CAD settings say — same process, same build volume.
           process,
           printerBed,
-          // Product/mechanism CAD needs time to plan and build. A deterministic
-          // fallback exists only for a plain enclosure; unsupported geometry
-          // must fail honestly instead of becoming a successful-looking box.
-          modelRequestTimeoutMs: physicalKind === "simple-enclosure" ? 180_000 : 360_000,
-          ...(fallback ? { fallback } : {}),
+          engine: cadEngine.engine,
+          engineExplicit: cadEngine.explicit,
+          // Planning and source generation are separate bounded requests. CAD
+          // must be authored for this brief and pass both kernel and product
+          // acceptance. There is deliberately no canned geometry fallback: an
+          // honest missing result is better than a plausible-looking wrong part.
+          modelRequestTimeoutMs:
+            physicalKind === "simple-enclosure" ? 180_000 : 360_000,
+          modelBuildRequestTimeoutMs:
+            physicalKind === "simple-enclosure" ? 180_000 : 300_000,
+          maxModelBuildSteps: 2,
+          // The same requirements this run publishes against, given to the
+          // design service so the model is told what is missing while it still
+          // has an attempt left rather than after the run has ended.
+          acceptance: (manifest) => physicalDesignCoverageIssues(enclosureInput, manifest),
+          ...(resumableDraft ? { existingProject: resumableDraft } : {}),
           signal: run.controller.signal,
           onUsage,
           emit: (type, payload) => emit(run, type, payload),
@@ -499,8 +577,9 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
           const kernelIssues = cad.manifest.validation.issues.filter(
             (issue) => issue.severity === "error",
           );
-          const coverageIssues = physicalDesignCoverageIssues(enclosureInput, cad.manifest);
-          const acceptanceIssues = [...kernelIssues, ...coverageIssues];
+          // Already measured against the published manifest inside the design
+          // service, which is where the model repair decisions were made.
+          const acceptanceIssues = [...kernelIssues, ...cad.acceptanceIssues];
           if (!cad.manifest.validation.passed || acceptanceIssues.length) {
             const missing = acceptanceIssues
               .slice(0, 4)
@@ -651,7 +730,7 @@ async function drive(run: RunState, input: StartHardwareRunInput): Promise<void>
         })),
       controllerName: final.circuit.controllerDefinition.name,
       typicalCurrentMa: final.circuit.currentEstimate.totalTypicalMa,
-      firmwareNotice: final.firmwareNotice ?? "",
+      firmwareNotice,
       enclosureTitle,
       enclosureNotice,
       startedAt: run.events.find((event) => event.type === "run.started")?.at,

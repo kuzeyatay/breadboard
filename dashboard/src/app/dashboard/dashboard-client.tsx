@@ -43,6 +43,13 @@ import {
   AnydocParseOption,
   useAnydocAvailability,
 } from "@/app/components/anydoc-parse-option";
+import {
+  TRANSFER_ACCEPT,
+  describeImport,
+  exportClusterFile,
+  exportGardenFile,
+  importTransferFile,
+} from "@/lib/garden-transfer/client";
 import { useToast, Toaster } from "@/app/components/toast";
 import {
   sumIngestTokenUsage,
@@ -266,7 +273,17 @@ export default function DashboardClient({
   const [showBgModal, setShowBgModal] = useState(false);
   const [appTheme, setAppTheme] = useState<AppTheme>("light");
 
+  // Which garden or cluster is being written to a file right now, keyed
+  // "garden:<slug>" / "cluster:<path>"; "import" while one is being read back.
+  const [transferBusy, setTransferBusy] = useState<string | null>(null);
+  // The cluster an import should land in, chosen by which control opened the
+  // picker. Null imports a garden back where it came from, a cluster top-level.
+  const [importTargetFolder, setImportTargetFolder] = useState<string | null>(
+    null,
+  );
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const transferInputRef = useRef<HTMLInputElement>(null);
   const bgFileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
   const resizeSessionRef = useRef<ResizeSession | null>(null);
@@ -451,6 +468,67 @@ export default function DashboardClient({
     }
     return folder;
   };
+
+  /* ---------------------------------------------------------------------- */
+  /* Import and export: a garden travels as .garden, a cluster as .cluster    */
+  /* ---------------------------------------------------------------------- */
+
+  async function runTransfer(key: string, work: () => Promise<void>) {
+    if (transferBusy) return;
+    setTransferBusy(key);
+    try {
+      await work();
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setTransferBusy(null);
+    }
+  }
+
+  function handleExportGarden(cluster: Cluster) {
+    void runTransfer(`garden:${cluster.slug}`, () =>
+      exportGardenFile(cluster.slug, cluster.name),
+    );
+  }
+
+  function handleExportCluster(folder: string) {
+    void runTransfer(`cluster:${folder}`, () =>
+      exportClusterFile(folder, folderLabel(folder)),
+    );
+  }
+
+  /** Open the file picker; whatever is chosen lands in `target`. */
+  function openImportPicker(target: string | null) {
+    if (transferBusy) return;
+    setImportTargetFolder(target);
+    transferInputRef.current?.click();
+  }
+
+  function importTransfer(file: File, target: string | null) {
+    void runTransfer("import", async () => {
+      const result = await importTransferFile(file, target);
+      addToast(describeImport(result));
+      if (result.clusterPath) {
+        setExpandedClusterFolders((prev) =>
+          new Set(prev).add(`folder:${result.clusterPath}`),
+        );
+      }
+      router.refresh();
+    });
+  }
+
+  function handleTransferFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    const target = importTargetFolder;
+    e.target.value = "";
+    setImportTargetFolder(null);
+    if (file) importTransfer(file, target);
+  }
+
+  /** A file dragged from the desktop, as opposed to a card or a cluster row. */
+  function isFileDrag(e: React.DragEvent): boolean {
+    return Array.from(e.dataTransfer.types).includes("Files");
+  }
 
   function toggleClusterFolder(key: string) {
     setExpandedClusterFolders((prev) => {
@@ -674,9 +752,11 @@ export default function DashboardClient({
           }
         }}
         onDragOver={(e) => {
-          if (!canDrop) return;
+          // A .garden or .cluster dragged in from the desktop imports here.
+          const fileDrag = isFileDrag(e);
+          if (!canDrop && !fileDrag) return;
           e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
+          e.dataTransfer.dropEffect = fileDrag ? "copy" : "move";
           if (dragOverFolderKey !== key) setDragOverFolderKey(key);
           // Reveal a collapsed cluster so it's clear where the drop will land.
           if (!expandedClusterFolders.has(key)) {
@@ -690,6 +770,12 @@ export default function DashboardClient({
         }}
         onDrop={(e) => {
           e.preventDefault();
+          setDragOverFolderKey(null);
+          const dropped = e.dataTransfer.files?.[0];
+          if (dropped) {
+            importTransfer(dropped, folder || null);
+            return;
+          }
           if (!canDrop) return;
           if (draggingFolderPath) {
             handleMoveClusterFolder(draggingFolderPath, folder);
@@ -770,6 +856,44 @@ export default function DashboardClient({
                 d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
               />
             </svg>
+          </span>
+        )}
+        {folder && (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleExportCluster(folder);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                handleExportCluster(folder);
+              }
+            }}
+            className="rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white"
+            aria-label={`Export cluster ${folderLabel(folder)}`}
+            title="Export this cluster as a .cluster file"
+          >
+            {transferBusy === `cluster:${folder}` ? (
+              <Spinner className="h-3.5 w-3.5" />
+            ) : (
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.7}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 3v12m0 0 4-4m-4 4-4-4M3.75 16.5v1.875A2.625 2.625 0 0 0 6.375 21h11.25a2.625 2.625 0 0 0 2.625-2.625V16.5"
+                />
+              </svg>
+            )}
           </span>
         )}
         {folder && (
@@ -1607,6 +1731,14 @@ export default function DashboardClient({
         onChange={handleBgFileChange}
       />
 
+      <input
+        ref={transferInputRef}
+        type="file"
+        accept={TRANSFER_ACCEPT}
+        className="hidden"
+        onChange={handleTransferFileChange}
+      />
+
       <div className="max-w-5xl mx-auto w-full px-6 py-12 flex-1">
         <div className="flex flex-col gap-5 mb-10">
           <div className="flex items-center justify-between gap-4">
@@ -1623,14 +1755,8 @@ export default function DashboardClient({
                 href="/garden"
                 className="neu-button px-4 py-2 text-sm font-medium text-gray-300 border border-gray-700 rounded-lg hover:border-gray-500 hover:text-white transition-colors"
               >
-                View garden
+                View gardens
               </Link>
-              <button
-                onClick={openModal}
-                className="neu-button-primary px-4 py-2 bg-white text-gray-950 text-sm font-medium rounded-lg hover:bg-gray-100 transition-colors"
-              >
-                New garden
-              </button>
             </div>
           </div>
 
@@ -1712,6 +1838,73 @@ export default function DashboardClient({
           </div>
         </div>
 
+        <div className="mb-3 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={openModal}
+            className="neu-button-primary inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-gray-950 transition-colors hover:bg-gray-100"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m6-6H6" />
+            </svg>
+            New garden
+          </button>
+          {clusterView === "mine" && (
+            <button
+              type="button"
+              onClick={() => openClusterFolderModal(null)}
+              className="neu-button inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
+            >
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.6}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
+                />
+              </svg>
+              New cluster
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => openImportPicker(null)}
+            disabled={transferBusy !== null}
+            className="neu-button inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white disabled:opacity-40"
+            title="Import a .garden or .cluster file"
+          >
+            {transferBusy === "import" ? (
+              <Spinner className="h-3.5 w-3.5" />
+            ) : (
+              <svg
+                className="h-3.5 w-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.6}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 7.5 12 3m0 0L7.5 7.5M12 3v13.5"
+                />
+              </svg>
+            )}
+            Import
+          </button>
+        </div>
+
         {filteredClusters.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-32 text-gray-600">
             <p className="text-lg">
@@ -1731,30 +1924,6 @@ export default function DashboardClient({
           </div>
         ) : (
           <>
-            {clusterView === "mine" && (
-              <div className="mb-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => openClusterFolderModal(null)}
-                  className="neu-button inline-flex items-center gap-1.5 rounded-lg border border-gray-800 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:border-gray-600 hover:text-white"
-                >
-                  <svg
-                    className="h-3.5 w-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={1.6}
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 10.5v6m3-3h-6M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6A2.25 2.25 0 0 1 6 3.75h3.879a1.5 1.5 0 0 1 1.06.44l2.122 2.12a1.5 1.5 0 0 0 1.061.44H18A2.25 2.25 0 0 1 20.25 9v.776"
-                    />
-                  </svg>
-                  New cluster
-                </button>
-              </div>
-            )}
             {clusterView === "mine" &&
               (draggingClusterId != null || draggingFolderPath != null) && (
                 <div
@@ -2032,6 +2201,33 @@ export default function DashboardClient({
                                   <button
                                     data-card-action="true"
                                     type="button"
+                                    onClick={() => handleExportGarden(cluster)}
+                                    disabled={transferBusy !== null}
+                                    className="p-1 text-gray-500 hover:text-white transition-colors disabled:opacity-40"
+                                    title="Export garden as a .garden file"
+                                    aria-label="Export garden"
+                                  >
+                                    {transferBusy === `garden:${cluster.slug}` ? (
+                                      <Spinner className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <svg
+                                        className="w-3.5 h-3.5"
+                                        fill="none"
+                                        viewBox="0 0 24 24"
+                                        stroke="currentColor"
+                                        strokeWidth={1.8}
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          d="M12 3v12m0 0 4-4m-4 4-4-4M3.75 16.5v1.875A2.625 2.625 0 0 0 6.375 21h11.25a2.625 2.625 0 0 0 2.625-2.625V16.5"
+                                        />
+                                      </svg>
+                                    )}
+                                  </button>
+                                  <button
+                                    data-card-action="true"
+                                    type="button"
                                     onClick={() =>
                                       setConfirmVisibilityId(cluster.id)
                                     }
@@ -2217,23 +2413,23 @@ export default function DashboardClient({
                                   <a
                                     data-card-action="true"
                                     href={`/garden/${cluster.slug}`}
-                                    className="w-full text-center py-1.5 text-sm border border-gray-700 text-gray-300 font-medium rounded-lg hover:border-gray-500 hover:text-white hover:bg-gray-900 transition-colors block"
+                                    className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                   >
                                     Open garden view
                                   </a>
                                   <a
                                     data-card-action="true"
                                     href={`/gardens/${cluster.slug}`}
-                                    className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
+                                    className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                   >
-                                    Open garden chat
+                                    Open garden dashboard
                                   </a>
                                 </>
                               ) : (
                                 <a
                                   data-card-action="true"
                                   href={`/garden/${cluster.slug}`}
-                                  className="w-full text-center py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors block"
+                                  className="bb-garden-card-action block w-full rounded-lg py-2 text-center text-sm font-medium"
                                 >
                                   Open garden view
                                 </a>

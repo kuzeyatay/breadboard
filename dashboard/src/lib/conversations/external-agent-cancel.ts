@@ -89,6 +89,8 @@ const EXTERNAL_AGENT_ABORT_BY_KIND = {
     (await import("../cad/run-manager.ts")).abortRun(userId, runId),
   hyperframes: async (userId, runId) =>
     (await import("../hyperframes/run-manager.ts")).abortRun(userId, runId),
+  resource2skill: async (userId, runId) =>
+    (await import("../resource2skill/run-manager.ts")).abortRun(userId, runId),
   openmontage: async (userId, runId) =>
     (await import("../openmontage/run-manager.ts")).abortRun(userId, runId),
   vimax: async (userId, runId) =>

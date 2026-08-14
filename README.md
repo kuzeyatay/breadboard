@@ -381,6 +381,13 @@ This starts:
 > plays it in the chat card. The framework is vendored at `./hyperframes`. See
 > [docs/HYPERFRAMES_INTEGRATION.md](docs/HYPERFRAMES_INTEGRATION.md).
 >
+> **Resource2Skill** builds polished artifacts from Microsoft’s distilled
+> multimodal skill libraries. `/agents:resource2skill <brief>` routes to Web,
+> PowerPoint, Excel, Blender, or audio automatically; add `--domain <name>` to
+> choose explicitly. Provision its isolated Python 3.11 environment with
+> `npm run setup:resource2skill`. See
+> [docs/RESOURCE2SKILL_INTEGRATION.md](docs/RESOURCE2SKILL_INTEGRATION.md).
+>
 > **ViMax** makes films. `/agents:vimax <idea>` writes the story and screenplay,
 > casts and draws the characters, storyboards every shot, decomposes each shot
 > into first frame, motion and last frame, and ends in one artifact that plays

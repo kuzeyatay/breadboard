@@ -227,6 +227,11 @@ describe("Learn validation, reads, and publication contracts", () => {
       contextSource,
       /scanClusterKnowledge\(contentPath, gardenId, \{\s*migrateSources: false,?\s*\}\)/,
     );
+    assert.match(
+      contextSource,
+      /const existingTextbookPages[\s\S]*?\.filter\(isLearnAuthoredLesson\)/,
+      "document-ingestion learning pages must not make a never-run garden repair-only",
+    );
 
     const cachedContextFunction = namedFunction("collectLearnStatusContext");
     const cachedContextSource = sourceOf(cachedContextFunction);
@@ -304,6 +309,71 @@ describe("Learn validation, reads, and publication contracts", () => {
     assert.match(
       clearSource,
       /verifyCurrentDestination:[\s\S]{0,220}?if \(!lease\.heartbeat\(\)\) return false;/,
+    );
+  });
+
+  test("late source artifacts are materialized from the preserved PDF before contract acceptance", () => {
+    const contextSource = sourceOf(namedFunction("collectLearnSourceContext"));
+    const resolverSource = sourceOf(namedFunction("ensureReferencedSourceArtifactsExtracted"));
+    const markdownDiscoverySource = sourceOf(namedFunction("structuredArtifactIdsMentionedBySources"));
+    const planningSource = sourceOf(namedFunction("runLearnPlanning"));
+    const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
+
+    assert.match(contextSource, /sourcePdf:\s*node\.sourcePdf/);
+    assert.match(resolverSource, /ensureSourcePdfPageSnapshots\(/);
+    assert.match(resolverSource, /extractSourceVisuals\(/);
+    assert.match(resolverSource, /unresolvedIds/);
+    assert.match(markdownDiscoverySource, /source\.body/);
+    assert.match(markdownDiscoverySource, /P\(\\d\+\).*\[FGTE\]/);
+    assert.match(planningSource, /reconcilePlannedSourceArtifacts/);
+    assert.match(
+      planningSource,
+      /structuredArtifactIdsMentionedBySources\(context\)[\s\S]*?candidateArtifactIds:\s*mentionedArtifactIds[\s\S]*?const promptSourceContext/,
+      "source-markdown page hints must be proven before the planner sees extractedSourceArtifacts",
+    );
+    assert.match(generationSource, /ensureReferencedSourceArtifactsExtracted\(/);
+    assert.match(
+      learnSource,
+      /may ONLY be copied verbatim from extractedSourceArtifacts/,
+      "the planner must not promote figure-like prose references into artifact ids",
+    );
+    assert.doesNotMatch(
+      learnSource,
+      /sourceFigures\.slice\(0,\s*40\)/,
+      "planning must not discard registered visuals after the first forty",
+    );
+  });
+
+  test("final repair retries are bounded by progress, rounds, and runtime", () => {
+    const generationSource = sourceOf(namedFunction("runTextbookGeneration"));
+
+    assert.doesNotMatch(generationSource, /MAX_FINALIZE_PASSES\s*=\s*3/);
+    assert.match(
+      learnSource,
+      /LEARN_FINALIZE_MAX_ROUNDS\s*=\s*envClampedPositiveInt\([\s\S]*?"LEARN_FINALIZE_MAX_ROUNDS"[\s\S]*?8[\s\S]*?1[\s\S]*?12/,
+    );
+    assert.match(
+      learnSource,
+      /LEARN_FINALIZE_MAX_RUNTIME_MS\s*=\s*envClampedPositiveInt\([\s\S]*?"LEARN_FINALIZE_MAX_RUNTIME_MS"/,
+    );
+    assert.match(generationSource, /new Set<string>\(\)/);
+    assert.match(
+      generationSource,
+      /auditGardenForFinalization\(clusterDir, gardenId\)[\s\S]*?audit\.stateFingerprint/,
+    );
+    assert.match(
+      generationSource,
+      /failedStateKey[\s\S]*?seenFailedStates\.has\(failedStateKey\)[\s\S]*?"no_progress"/,
+    );
+    assert.match(
+      generationSource,
+      /Date\.now\(\) - finalizeLoopStartedAt >= LEARN_FINALIZE_MAX_RUNTIME_MS/,
+    );
+    assert.match(generationSource, /learn_finalization_retry_scheduled/);
+    assert.match(generationSource, /learn_finalization_loop_(?:completed|stopped)/);
+    assert.ok(
+      callsNamed(namedFunction("runTextbookGeneration"), "throwIfLearnCancelled").length >= 2,
+      "the bounded loop must retain cancellation checks",
     );
   });
 
@@ -782,6 +852,28 @@ describe("cross-process mutation fences", () => {
     assert.match(restoreSource, /if \(ownsLease && !ownsLease\(\)\)/);
     const clearSource = sourceOf(namedFunction("clearAllLearnData"));
     assert.match(clearSource, /ownsLease:\s*\(\) => lease\.heartbeat\(\)/);
+  });
+});
+
+describe("required generated visual failures", () => {
+  test("use the full bounded repair budget and stop before finalization if a required visual remains missing", () => {
+    const reconcileSource = sourceOf(namedFunction("reconcileInteractiveVisuals"));
+    assert.match(
+      reconcileSource,
+      /maxAttempts:\s*opportunity\.requirement === "required" \? 5 : undefined/,
+    );
+    assert.match(
+      reconcileSource,
+      /opportunity\.requirement === "required"[\s\S]*?throw new Error\([\s\S]*?Required interactive visual/,
+    );
+    assert.match(
+      reconcileSource,
+      /Generated visualization garden limit[\s\S]*?opportunity\.requirement === "required"[\s\S]*?throw new Error/,
+    );
+    assert.match(
+      reconcileSource,
+      /Generated visualization page limit[\s\S]*?opportunity\.requirement === "required"[\s\S]*?throw new Error/,
+    );
   });
 });
 

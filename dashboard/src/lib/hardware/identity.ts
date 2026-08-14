@@ -5,6 +5,8 @@
 // reached the same way — pick it from the Agents tab, prompt it in chat, and its
 // own surface appears inline for that turn.
 
+import { isCadBackendPreference, type CadBackendPreference } from "../cad/engines.ts";
+
 export const HARDWARE_BLUEPRINT_COMMAND = "/agents:hardware-blueprint";
 export const HARDWARE_BLUEPRINT_AGENT_ID = "hardware-blueprint";
 export const HARDWARE_BLUEPRINT_AGENT_NAME = "Hardware Blueprint";
@@ -21,6 +23,12 @@ export interface HardwareBlueprintRequest {
    * Parametric CAD agent. Null means the brief's own wording decides.
    */
   enclosure: boolean | null;
+  /**
+   * The CAD backend this one message asks for. Null means the saved preference
+   * decides. Separate from `enclosure`, which decides *whether* there is any
+   * mechanical CAD at all — this only decides which engine builds it.
+   */
+  cadBackend: CadBackendPreference | null;
 }
 
 /**
@@ -57,6 +65,7 @@ export function hardwareBlueprintUserMessage(task: string): string {
  *   `--breadboard|--perfboard|--pcb`  choose the build style
  *   `--arduino`                    generate an Arduino IDE sketch instead of PlatformIO
  *   `--enclosure|--no-enclosure`   design a printable case for it, or do not
+ *   `--cad solidworks`             which CAD backend builds the mechanical part
  * Anything unrecognized stays part of the brief.
  */
 export function parseHardwareBlueprintRequest(task: string): HardwareBlueprintRequest {
@@ -64,8 +73,17 @@ export function parseHardwareBlueprintRequest(task: string): HardwareBlueprintRe
   let prototypeType: HardwareBlueprintRequest["prototypeType"] = null;
   let firmwarePlatform: HardwareBlueprintRequest["firmwarePlatform"] = null;
   let enclosure: HardwareBlueprintRequest["enclosure"] = null;
+  let cadBackend: HardwareBlueprintRequest["cadBackend"] = null;
 
   const brief = task
+    // Before `--no-enclosure`, because a backend name is a value rather than a
+    // switch and must not be left behind in the brief when it is unrecognised.
+    .replace(/(?:^|\s)--cad[= ]("[^"]+"|[^\s]+)/gi, (match, value: string) => {
+      const requested = value.replace(/^"|"$/g, "").trim().toLowerCase();
+      if (!isCadBackendPreference(requested)) return match;
+      cadBackend = requested;
+      return " ";
+    })
     .replace(/(?:^|\s)--no-enclosure\b/gi, () => {
       enclosure = false;
       return " ";
@@ -89,5 +107,5 @@ export function parseHardwareBlueprintRequest(task: string): HardwareBlueprintRe
     .replace(/\s+/g, " ")
     .trim();
 
-  return { brief, board, prototypeType, firmwarePlatform, enclosure };
+  return { brief, board, prototypeType, firmwarePlatform, enclosure, cadBackend };
 }

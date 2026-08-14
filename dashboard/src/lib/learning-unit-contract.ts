@@ -197,6 +197,168 @@ export interface SourceArtifact {
   sourceId?: string;
 }
 
+/** Kinds that can be proven by the persisted SourceVisual ledger. */
+export type RegisteredSourceArtifactKind = "figure" | "graph" | "table" | "formula";
+
+export interface RegisteredSourceArtifact {
+  id: string;
+  kind: RegisteredSourceArtifactKind;
+}
+
+export interface SourceArtifactReconciliationResult {
+  units: LearningUnitContract[];
+  assignments: SourceArtifactAssignment[];
+  /** Structured ids removed because no matching SourceVisual was registered. */
+  removedArtifactIds: string[];
+}
+
+const STRUCTURED_SOURCE_ARTIFACT_ID_RE = /^S\d+\.P\d+\.(?:F|G|T|E)\d+$/i;
+
+/**
+ * Reconcile model-authored contracts against the authoritative SourceVisual
+ * registry. Source prose is allowed to mention a figure-like label, but that
+ * label does not become a figure/table/equation contract until its PDF page has
+ * actually been rendered and scanned.
+ *
+ * This is intentionally projection-wide: an unsupported id is removed from
+ * the unit field, generic/evidence anchors, visual intent, and durable artifact
+ * assignments together. Leaving even one of those projections behind creates
+ * an impossible final-repair loop.
+ */
+export function reconcileLearningUnitSourceArtifacts(
+  units: LearningUnitContract[],
+  assignments: SourceArtifactAssignment[],
+  registeredArtifacts: Iterable<RegisteredSourceArtifact>,
+): SourceArtifactReconciliationResult {
+  const kindById = new Map(
+    [...registeredArtifacts]
+      .map((artifact) => [artifact.id.trim(), artifact.kind] as const)
+      .filter(([id]) => id),
+  );
+  const removed = new Set<string>();
+  const keepStructuredAnchor = (id: string): boolean => {
+    const normalized = id.trim();
+    if (!STRUCTURED_SOURCE_ARTIFACT_ID_RE.test(normalized)) return true;
+    const keep = kindById.has(normalized);
+    if (!keep) removed.add(normalized);
+    return keep;
+  };
+  const keepKind = (
+    id: string,
+    expected: RegisteredSourceArtifactKind | readonly RegisteredSourceArtifactKind[],
+  ): boolean => {
+    const normalized = id.trim();
+    const actual = kindById.get(normalized);
+    const expectedKinds = Array.isArray(expected) ? expected : [expected];
+    const keep = Boolean(actual && expectedKinds.includes(actual));
+    if (!keep && normalized) removed.add(normalized);
+    return keep;
+  };
+  const filterAnchors = (anchors: string[] | undefined): string[] =>
+    (anchors ?? []).filter(keepStructuredAnchor);
+
+  const reconciledUnits = units.map((unit): LearningUnitContract => {
+    const sourceFigures = unit.sourceFigures.filter((figure) =>
+      keepKind(figure.id, ["figure", "graph"]),
+    );
+    const sourceTables = unit.sourceTables.filter((table) => keepKind(table.id, "table"));
+    const sourceFormulas = unit.sourceFormulas.filter((formula) => keepKind(formula.id, "formula"));
+    const interactiveVisual = unit.interactiveVisual
+      ? { ...unit.interactiveVisual, sourceAnchors: filterAnchors(unit.interactiveVisual.sourceAnchors) }
+      : undefined;
+    const interactiveVisualPlan = unit.interactiveVisualPlan
+      ? {
+          ...unit.interactiveVisualPlan,
+          decision: {
+            ...unit.interactiveVisualPlan.decision,
+            evidence: {
+              ...unit.interactiveVisualPlan.decision.evidence,
+              sourceAnchorIds: filterAnchors(
+                unit.interactiveVisualPlan.decision.evidence.sourceAnchorIds,
+              ),
+            },
+          },
+          ...(unit.interactiveVisualPlan.visualIntent
+            ? {
+                visualIntent: {
+                  ...unit.interactiveVisualPlan.visualIntent,
+                  sourceAnchors: filterAnchors(
+                    unit.interactiveVisualPlan.visualIntent.sourceAnchors,
+                  ),
+                },
+              }
+            : {}),
+        }
+      : undefined;
+    const sourceFigureAnchorId = unit.teachingMediumPlan?.sourceFigureAnchorId;
+    const teachingMediumPlan = unit.teachingMediumPlan
+      ? {
+          ...unit.teachingMediumPlan,
+          ...(sourceFigureAnchorId && keepKind(sourceFigureAnchorId, ["figure", "graph"])
+            ? { sourceFigureAnchorId }
+            : { sourceFigureAnchorId: undefined }),
+          ...(unit.teachingMediumPlan.formulaAnchorIds
+            ? {
+                formulaAnchorIds: unit.teachingMediumPlan.formulaAnchorIds.filter((id) =>
+                  keepKind(id, "formula"),
+                ),
+              }
+            : {}),
+        }
+      : undefined;
+
+    return {
+      ...unit,
+      sourceAnchors: filterAnchors(unit.sourceAnchors),
+      sourceFigures,
+      sourceFormulas,
+      sourceTables,
+      interactiveVisual,
+      interactiveVisualPlan,
+      teachingMediumPlan,
+      semanticConcepts: unit.semanticConcepts?.map((concept) => ({
+        ...concept,
+        evidenceAnchors: filterAnchors(concept.evidenceAnchors),
+      })),
+      knowledgeClaims: unit.knowledgeClaims?.map((claim) => ({
+        ...claim,
+        evidenceAnchors: filterAnchors(claim.evidenceAnchors),
+        ...(claim.derivationAnchors
+          ? { derivationAnchors: filterAnchors(claim.derivationAnchors) }
+          : {}),
+      })),
+    };
+  });
+
+  const survivingByUnit = new Map<string, Set<string>>(
+    reconciledUnits.map((unit) => [
+      unit.id,
+      new Set([
+        ...unit.sourceFigures.map((figure) => figure.id),
+        ...unit.sourceFormulas.map((formula) => formula.id),
+        ...unit.sourceTables.map((table) => table.id),
+      ]),
+    ]),
+  );
+  const reconciledAssignments = assignments.filter((assignment) => {
+    const keep = survivingByUnit
+      .get(assignment.assignedLearningUnitId)
+      ?.has(assignment.sourceArtifactId) ?? false;
+    // A registered artifact can still have a stale/wrong-unit assignment. Drop
+    // that projection without misreporting the artifact itself as unregistered.
+    if (!keep && assignment.sourceArtifactId && !kindById.has(assignment.sourceArtifactId)) {
+      removed.add(assignment.sourceArtifactId);
+    }
+    return keep;
+  });
+
+  return {
+    units: reconciledUnits,
+    assignments: dedupeSourceArtifactAssignments(reconciledAssignments, reconciledUnits),
+    removedArtifactIds: [...removed].sort(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -886,7 +1048,10 @@ export interface InteractiveVisualGroundingCheckInput {
 const VISUAL_ANCHOR_REQUIREMENTS: Record<string, RegExp> = {
   lif_neuron: /\blif\b|leaky|membrane potential|threshold|reset|leak|neuron (?:model|dynamics)|integrate[- ]and[- ]fire/i,
   stdp_window: /\bstdp\b|spike[- ]timing|pre.*post|post.*pre|plasticity|local learning|hebbian|timing window/i,
-  metric_calculator: /metric|formula|accuracy|latency|energy|efficien|spike count|convergence|rate|score|normaliz|equation/i,
+  // The trusted calculator is an SNN/ML renderer (accuracy, latency, spike
+  // count, energy per inference). Generic physics words such as "energy" or
+  // "formula" must route to a domain-generated visual instead.
+  metric_calculator: /\b(?:snn|spiking|spike count|energy per (?:spike|inference)|neuromorphic|classification accuracy|inference latency)\b|accuracy.{0,80}latency.{0,80}energy/i,
   training_curve: /loss|accuracy curve|convergence|epoch|target|training|learning curve/i,
   tradeoff_explorer: /trade[- ]?off|compar|versus|vs\b|accuracy|latency|energy|spike count|metric|result|performance|deployment|budget|model/i,
   neural_coding: /spike|spiking|timing|temporal|rate cod|firing rate|encoding|coding|event[- ]driven/i,
@@ -1041,7 +1206,7 @@ const VISUAL_TYPE_REQUIREMENTS: Record<string, VisualTypeRequirement> = {
   },
   metric_calculator: {
     roles: new Set(["metric", "formula"]),
-    concept: /metric|formula|accuracy|latency|energy|efficien|spike count|convergence|rate|score|normaliz/i,
+    concept: /\b(?:snn|spiking|spike count|energy per (?:spike|inference)|neuromorphic|classification accuracy|inference latency)\b|accuracy.{0,80}latency.{0,80}energy/i,
   },
   tradeoff_explorer: {
     // Allowed on metric/comparison/application units, so its vocabulary must

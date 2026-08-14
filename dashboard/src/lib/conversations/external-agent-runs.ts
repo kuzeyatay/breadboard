@@ -23,6 +23,7 @@ export const EXTERNAL_AGENT_RUN_KINDS = [
   "hardware_blueprint",
   "parametric_cad",
   "hyperframes",
+  "resource2skill",
   "openmontage",
   "vimax",
   "shorts",
@@ -61,6 +62,7 @@ const EXTERNAL_AGENT_DISPLAY_NAME_BY_KIND = {
   hardware_blueprint: "Hardware Blueprint",
   parametric_cad: "Parametric CAD",
   hyperframes: "Hyperframes",
+  resource2skill: "Resource2Skill",
   openmontage: "OpenMontage",
   vimax: "ViMax",
   shorts: "Shorts",
@@ -105,6 +107,7 @@ const EXTERNAL_AGENT_API_SLUG_BY_KIND = {
   hardware_blueprint: "hardware-blueprint",
   parametric_cad: "cad",
   hyperframes: "hyperframes",
+  resource2skill: "resource2skill",
   openmontage: "openmontage",
   vimax: "vimax",
   shorts: "shorts",
@@ -446,6 +449,12 @@ export type ExternalAgentRun =
       brief: string;
     }
   | {
+      kind: "resource2skill";
+      runId: string;
+      /** The artifact brief, including an optional domain flag. */
+      brief: string;
+    }
+  | {
       kind: "openmontage";
       runId: string;
       /** The production brief, minus the slash token. */
@@ -696,6 +705,12 @@ export function parseExternalAgentRun(value: unknown): ExternalAgentRun | null {
     return { kind: "hyperframes", runId, brief };
   }
 
+  if (candidate.kind === "resource2skill") {
+    const brief = boundedString(candidate.brief, MAX_TASK_LENGTH);
+    if (!brief) return null;
+    return { kind: "resource2skill", runId, brief };
+  }
+
   if (candidate.kind === "openmontage") {
     const brief = boundedString(candidate.brief, MAX_TASK_LENGTH);
     if (!brief) return null;
@@ -781,6 +796,7 @@ interface ExternalAgentRunFields {
   hardwareBlueprintRun?: { runId: string } | null;
   parametricCadRun?: { runId: string } | null;
   hyperframesRun?: { runId: string } | null;
+  resource2SkillRun?: { runId: string } | null;
   openMontageRun?: { runId: string } | null;
   vimaxRun?: { runId: string } | null;
   shortsRun?: { runId: string } | null;
@@ -831,6 +847,7 @@ export const EXTERNAL_AGENT_RUN_FIELD_BY_KIND = {
   hardware_blueprint: "hardwareBlueprintRun",
   parametric_cad: "parametricCadRun",
   hyperframes: "hyperframesRun",
+  resource2skill: "resource2SkillRun",
   openmontage: "openMontageRun",
   vimax: "vimaxRun",
   shorts: "shortsRun",
@@ -893,6 +910,7 @@ export function externalAgentMessageFields(
   hardwareBlueprintRun?: { runId: string; brief: string };
   parametricCadRun?: { runId: string; brief: string };
   hyperframesRun?: { runId: string; brief: string };
+  resource2SkillRun?: { runId: string; brief: string };
   openMontageRun?: { runId: string; brief: string };
   vimaxRun?: { runId: string; brief: string };
   shortsRun?: { runId: string; task: string };
@@ -1096,6 +1114,12 @@ export function externalAgentMessageFields(
   if (run.kind === "hyperframes") {
     return {
       hyperframesRun: { runId: run.runId, brief: run.brief },
+      ...outcomeField,
+    };
+  }
+  if (run.kind === "resource2skill") {
+    return {
+      resource2SkillRun: { runId: run.runId, brief: run.brief },
       ...outcomeField,
     };
   }

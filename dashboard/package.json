@@ -12,9 +12,12 @@
     "sync:skills": "node --experimental-strip-types scripts/sync-skills-catalog.ts",
     "validate:garden": "node --experimental-strip-types ../scripts/validate-breadboard-garden.ts",
     "migrate:semantics": "node --experimental-strip-types ../scripts/migrate-garden-semantics.ts",
-    "evaluate:retrieval": "node --experimental-strip-types ../scripts/evaluate-semantic-retrieval.ts"
+    "evaluate:retrieval": "node --experimental-strip-types ../scripts/evaluate-semantic-retrieval.ts",
+    "prose:score": "node --experimental-strip-types scripts/prose-score.mjs",
+    "vendor:slop-rules": "node scripts/vendor-slop-rules.mjs"
   },
   "dependencies": {
+    "@cantoo/pdf-lib": "^2.8.2",
     "@composio/core": "^0.13.1",
     "@firecrawl/anydoc": "^0.1.7",
     "@langchain/core": "^1.2.5",

@@ -21,6 +21,7 @@ import {
 } from "../deep-tutor/identity.ts";
 import type { MeetingNotesDefaults } from "../meeting-notes/identity.ts";
 import type { ParametricCadRequest } from "../cad/identity.ts";
+import { CAD_BACKEND_PREFERENCES, type CadBackendPreference } from "../cad/engines.ts";
 import type { ShortsAspectRatio, ShortsResolution } from "../shorts/identity.ts";
 import type {
   VimaxAspectRatio,
@@ -252,7 +253,15 @@ export interface HardwarePreferences {
   board: string | null;
   prototypeType: HardwareBlueprintRequest["prototypeType"];
   firmwarePlatform: HardwareBlueprintRequest["firmwarePlatform"];
+  /** Whether a run designs mechanical CAD at all. */
   enclosure: "auto" | "always" | "never";
+  /**
+   * Which engine builds it when it does. Kept separate from `enclosure` on
+   * purpose: one decides whether there is a part, the other decides who makes
+   * it. A stored value that predates this option reads as "auto", so nothing
+   * changes for anyone who never opens the setting.
+   */
+  cadBackend: CadBackendPreference;
 }
 
 export function hardwarePreferences(values: AgentSettingValues): HardwarePreferences {
@@ -261,6 +270,7 @@ export function hardwarePreferences(values: AgentSettingValues): HardwarePrefere
     prototypeType: choice(values, "prototype", ["breadboard", "perfboard", "pcb"] as const),
     firmwarePlatform: choice(values, "firmware", ["arduino", "platformio"] as const),
     enclosure: choice(values, "enclosure", ["auto", "always", "never"] as const) ?? "auto",
+    cadBackend: choice(values, "cadBackend", CAD_BACKEND_PREFERENCES) ?? "auto",
   };
 }
 

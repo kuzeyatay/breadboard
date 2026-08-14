@@ -602,6 +602,9 @@ export default function KnowledgeTerminal({ scope }: Props) {
   return (
     <>
       <section
+        // Same as the dashboard dock: a viewport-positioned bar gives up its
+        // own right edge when the artifact dock opens beside it.
+        data-terminal-dock
         style={terminalStyle}
         className={terminalClassName}
       >

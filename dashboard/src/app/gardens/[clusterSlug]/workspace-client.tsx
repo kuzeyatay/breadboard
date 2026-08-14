@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   memo,
   useState,
   useRef,
@@ -12,7 +13,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { forkCluster } from "@/app/actions/clusters";
 import AssistantComposer from "@/app/components/assistant-composer";
-import BackLink from "@/app/components/back-link";
 import AssistantMessageActions, {
   MessageActionsSlot,
 } from "@/app/components/assistant-message-actions";
@@ -81,6 +81,7 @@ import InlineSocialsManagerRun from "@/app/components/hermes/inline-socials-mana
 import InlineHardwareBlueprintRun from "@/app/components/hermes/inline-hardware-blueprint-run";
 import InlineParametricCadRun from "@/app/components/hermes/inline-parametric-cad-run";
 import InlineHyperframesRun from "@/app/components/hermes/inline-hyperframes-run";
+import InlineResource2SkillRun from "@/app/components/hermes/inline-resource2skill-run";
 import InlineOpenMontageRun from "@/app/components/hermes/inline-openmontage-run";
 import InlineOpenworkRun from "@/app/components/hermes/inline-openwork-run";
 import InlineOpenscienceRun from "@/app/components/hermes/inline-openscience-run";
@@ -103,6 +104,10 @@ import {
   briefFromHyperframesCommand,
   hyperframesUserMessage,
 } from "@/lib/hyperframes/identity.ts";
+import {
+  briefFromResource2SkillCommand,
+  resource2SkillUserMessage,
+} from "@/lib/resource2skill/identity.ts";
 import {
   briefFromOpenMontageCommand,
   openMontageUserMessage,
@@ -132,6 +137,7 @@ import {
 import LearnConfirmationDialog, {
   type LearnDestructiveAction,
 } from "@/app/components/learn-confirmation-dialog";
+import ViewportPopover from "@/app/components/viewport-popover";
 import KnowledgeGraph from "@/app/components/knowledge-graph";
 import NavbarFlowerWind from "@/app/components/navbar-flower-wind";
 import { useToast, Toaster } from "@/app/components/toast";
@@ -143,6 +149,7 @@ import {
   normalizeChatTokenUsage,
   type ChatTokenUsage,
 } from "@/lib/chat-token-usage";
+import { formatAssistantModelName } from "@/lib/ai-models";
 import { chatTimeSeparatorLabels } from "@/lib/chat-time-separators";
 import type { LocalWorkflowSummary, WorkflowRunResponse } from "@/lib/workflows/types";
 import {
@@ -351,6 +358,7 @@ interface Message {
   hardwareBlueprintRun?: { runId: string; brief: string };
   parametricCadRun?: { runId: string; brief: string };
   hyperframesRun?: { runId: string; brief: string };
+  resource2SkillRun?: { runId: string; brief: string };
   openMontageRun?: { runId: string; brief: string };
   openworkRun?: { runId: string; task: string };
   openscienceRun?: { runId: string; task: string };
@@ -512,6 +520,7 @@ type LearnStatus =
 
 interface LearnJobInfo {
   id: string;
+  model: string;
   status: LearnStatus;
   updatedAt?: string;
   currentStep?: string;
@@ -628,7 +637,6 @@ const ACCEPTED =
   ".pdf,.jpg,.jpeg,.png,.webp,.txt,.md,.csv,.docx,.pptx,.xlsx,.zip";
 const HANDWRITING_FILE_RE = /\.(pdf|jpg|jpeg|png|webp)$/i;
 const EMPTY_MESSAGES: Message[] = [];
-const LEARN_SETTLED_INDICATOR_VISIBLE_MS = 2 * 60 * 1000;
 
 function formatLearnTotalTokenCount(value: number): string {
   const count = Math.max(0, Math.trunc(value));
@@ -642,8 +650,15 @@ function formatLearnMetricTokenCount(value: number): string {
 
 function displayLearnError(message?: string): string {
   const value = message?.trim() ?? "";
-  if (/^connection error\.?$/i.test(value)) {
-    return "ChatMock was not connected. Start or restart ChatMock, then choose Retry Learn.";
+  if (/^the learn worker stopped without completing\b/i.test(value)) {
+    return "Learn stopped responding before completion. Your garden was restored and is safe to retry.";
+  }
+  if (
+    /^connection error\.?$/i.test(value) ||
+    /^(?:chatmock\s+)?is not connected\b/i.test(value) ||
+    /^the ai service is not connected\b/i.test(value)
+  ) {
+    return "The AI service connection was lost during Learn. Retry Learn; if it fails again, restart Breadboard's AI service.";
   }
   return value;
 }
@@ -877,6 +892,7 @@ function hasRunningExternalAgent(message: Message): boolean {
         message.hardwareBlueprintRun ||
         message.parametricCadRun ||
         message.hyperframesRun ||
+        message.resource2SkillRun ||
         message.openMontageRun ||
         message.openworkRun ||
         message.openscienceRun ||
@@ -1003,6 +1019,7 @@ const ChatTranscript = memo(function ChatTranscript({
           msg.hardwareBlueprintRun ??
           msg.parametricCadRun ??
           msg.hyperframesRun ??
+          msg.resource2SkillRun ??
           msg.openMontageRun ??
           msg.openworkRun ??
           msg.openscienceRun ??
@@ -1369,6 +1386,22 @@ const ChatTranscript = memo(function ChatTranscript({
                   }
                   onTerminal={(result) =>
                     onExternalAgentTerminal(msg.hyperframesRun!.runId, result)
+                  }
+                />
+              ) : msg.resource2SkillRun ? (
+                <InlineResource2SkillRun
+                  runId={msg.resource2SkillRun!.runId}
+                  brief={msg.resource2SkillRun!.brief}
+                  persistedContent={msg.content}
+                  persistedOutcome={msg.externalAgentOutcome}
+                  persistedUsage={msg.usage}
+                  onRetry={
+                    i === lastAssistantIndex && !isStreaming
+                      ? () => onRetryAssistant(i)
+                      : undefined
+                  }
+                  onTerminal={(result) =>
+                    onExternalAgentTerminal(msg.resource2SkillRun!.runId, result)
                   }
                 />
               ) : msg.openMontageRun ? (
@@ -1820,6 +1853,15 @@ export default function WorkspaceClient({
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const activeChatIdRef = useRef<number | null>(null);
+  // `null` initially means "pick the newest persisted chat". After the user
+  // presses New chat it means something different: keep a blank, unsaved
+  // draft selected until its first turn creates the real row. A ref keeps
+  // background history reconciliation from reopening the previous chat.
+  const pendingNewChatRef = useRef(false);
+  // As in the Terminal rail, history responses that overlapped a rename are
+  // stale by definition. Dropping them prevents a slow refresh from briefly
+  // restoring the old title over the optimistic one.
+  const chatHistoryEpoch = useRef(0);
   const [inlineArtifactRetireVersion, setInlineArtifactRetireVersion] = useState(0);
   const [loadingChats, setLoadingChats] = useState(true);
   const [viewPublicChats, setViewPublicChats] = useState(false);
@@ -1827,10 +1869,8 @@ export default function WorkspaceClient({
     null,
   );
   const [editingChatId, setEditingChatId] = useState<number | null>(null);
+  const editingChatIdRef = useRef<number | null>(null);
   const [editingChatTitle, setEditingChatTitle] = useState("");
-  const [savingChatTitleId, setSavingChatTitleId] = useState<number | null>(
-    null,
-  );
   const [isForking, setIsForking] = useState(false);
   const [input, setInput] = useState("");
   const [agentBrowserAgent, setAgentBrowserAgent] =
@@ -1895,6 +1935,7 @@ export default function WorkspaceClient({
     | "hardware-blueprint"
     | "parametric-cad"
     | "hyperframes"
+    | "resource2skill"
     | "openmontage"
     | "openwork"
     | "openscience"
@@ -1927,6 +1968,7 @@ export default function WorkspaceClient({
     | "hardware-blueprint"
     | "parametric-cad"
     | "hyperframes"
+    | "resource2skill"
     | "openmontage"
     | "openwork"
     | "openscience"
@@ -2032,10 +2074,12 @@ export default function WorkspaceClient({
     string[] | null
   >(null);
   const [learnDocumentMenuOpen, setLearnDocumentMenuOpen] = useState(false);
+  const learnDocumentMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   // Syllabus: the document Learn treats as the course study guide rather than as
   // subject matter. null means "no syllabus".
   const [learnSyllabusSlug, setLearnSyllabusSlug] = useState<string | null>(null);
   const [learnSyllabusMenuOpen, setLearnSyllabusMenuOpen] = useState(false);
+  const learnSyllabusMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [learnSyllabusUploading, setLearnSyllabusUploading] = useState(false);
   // "I want to learn everything introductory about electronics" — a syllabus
   // written to order, for learners who have material but no course outline.
@@ -2043,8 +2087,6 @@ export default function WorkspaceClient({
   const [learnSyllabusGenerating, setLearnSyllabusGenerating] = useState(false);
   const learnSyllabusInputRef = useRef<HTMLInputElement | null>(null);
   const [learnTimerNowMs, setLearnTimerNowMs] = useState(() => Date.now());
-  const [showSettledLearnIndicator, setShowSettledLearnIndicator] =
-    useState(false);
   const learnSkipManualReviewRef = useRef(false);
   const lastSyncedLearnSelectionRef = useRef<string | null>(null);
   const lastSyncedLearnSyllabusRef = useRef<string | null>(null);
@@ -2227,37 +2269,8 @@ export default function WorkspaceClient({
     return () => window.clearInterval(id);
   }, [learnState?.job?.id, learnState?.job?.timerStartedAt]);
 
-  useEffect(() => {
-    const job = learnState?.job;
-    const active = learnBusy || isLearnActive(job?.status);
-    if (active) {
-      setShowSettledLearnIndicator(true);
-      return;
-    }
-    if (!job) {
-      setShowSettledLearnIndicator(false);
-      return;
-    }
-
-    const updatedAtMs = Date.parse(job.updatedAt ?? "");
-    const settledAgeMs = Number.isFinite(updatedAtMs)
-      ? Math.max(0, Date.now() - updatedAtMs)
-      : 0;
-    const remainingMs = Math.max(
-      0,
-      LEARN_SETTLED_INDICATOR_VISIBLE_MS - settledAgeMs,
-    );
-    setShowSettledLearnIndicator(remainingMs > 0);
-    if (remainingMs === 0) return;
-
-    const id = window.setTimeout(
-      () => setShowSettledLearnIndicator(false),
-      remainingMs,
-    );
-    return () => window.clearTimeout(id);
-  }, [learnBusy, learnState?.job]);
-
   const fetchChatSessions = useCallback(async () => {
+    const epoch = chatHistoryEpoch.current;
     try {
       const params = new URLSearchParams({ clusterSlug });
       if (canViewPublicChats && viewPublicChats)
@@ -2266,9 +2279,16 @@ export default function WorkspaceClient({
       if (!res.ok) throw new Error("Failed to load chats");
       const data = await res.json();
       const sessions = (data.sessions ?? []) as ChatSession[];
+      if (
+        chatHistoryEpoch.current !== epoch ||
+        editingChatIdRef.current !== null
+      ) {
+        return;
+      }
       setConfirmDeleteChatId(null);
       setChatSessions(sessions);
       setActiveChatId((current) => {
+        if (pendingNewChatRef.current) return null;
         if (current && sessions.some((s) => s.id === current)) return current;
         return sessions[0]?.id ?? null;
       });
@@ -2413,6 +2433,9 @@ export default function WorkspaceClient({
           return;
         case "hyperframes":
           await launchHyperframes(request.brief);
+          return;
+        case "resource2skill":
+          await launchResource2Skill(request.brief);
           return;
         case "openmontage":
           await launchOpenMontage(request.brief);
@@ -2734,6 +2757,12 @@ export default function WorkspaceClient({
   }
 
   function openUploadModal() {
+    // A dismissed upload stays owned by this workspace. Reopen its live
+    // progress instead of clearing the files or replacing its controller.
+    if (isUploading) {
+      setShowUpload(true);
+      return;
+    }
     uploadCanceledRef.current = false;
     uploadAbortControllerRef.current = null;
     setUploadFiles([]);
@@ -2756,6 +2785,12 @@ export default function WorkspaceClient({
       uploadCanceledRef.current = true;
       uploadAbortControllerRef.current?.abort();
     }
+    setShowUpload(false);
+  }
+
+  function continueUploadInBackground() {
+    if (!isUploading) return;
+    setSourceDocsExpanded(true);
     setShowUpload(false);
   }
 
@@ -3041,6 +3076,8 @@ export default function WorkspaceClient({
       if (successCount > 0) {
         addToast(
           `Added ${successCount} file${successCount > 1 ? "s" : ""} with ${generationLabel}${figureCount > 0 ? `, ${figureCount} figure${figureCount === 1 ? "" : "s"}` : ""}${snapshotCount > 0 ? ` and ${snapshotCount} source snapshot${snapshotCount === 1 ? "" : "s"}` : ""}`,
+          "success",
+          "Upload complete",
         );
         for (const warning of screenshotWarnings) addToast(warning);
         for (const warning of mapWarnings) addToast(warning);
@@ -3364,6 +3401,8 @@ export default function WorkspaceClient({
       if (!res.ok || !data.session)
         throw new Error(data.error ?? "Failed to create chat");
       const session = data.session as ChatSession;
+      pendingNewChatRef.current = false;
+      chatHistoryEpoch.current += 1;
       setChatSessions((previous) => [session, ...previous]);
       setActiveChatId(session.id);
       return session;
@@ -3408,8 +3447,37 @@ export default function WorkspaceClient({
     }
   }
 
-  async function handleNewChat() {
-    await createChatSession();
+  function handleNewChat() {
+    // Match Terminal: switching to a fresh chat is local and immediate. The
+    // durable session is created by the first message, so repeatedly pressing
+    // New chat never leaves empty rows in Recents.
+    pendingNewChatRef.current = true;
+    chatHistoryEpoch.current += 1;
+    setActiveChatId(null);
+    setConfirmDeleteChatId(null);
+    cancelRenameChat();
+    setInput("");
+    setChatAttachments([]);
+    setAttachmentDistillStatus(null);
+    setExternalAgentStatus("");
+    setAgentBrowserAgent(null);
+    setDeepResearchAgent(null);
+    setOpenCodeAgent(null);
+    setCodexAgent(null);
+    setOpenPlanterAgent(null);
+    setAgentReachAgent(null);
+    setGetDocAgent(null);
+    setMeetingNotesAgent(null);
+    setDeepTutorAgent(null);
+    setCareerOpsAgent(null);
+    setTradingAgentsAgent(null);
+    setVibeTradingAgent(null);
+    setStockAnalystAgent(null);
+    setPaperTraderAgent(null);
+    setDeerFlowAgent(null);
+    setShortsAgent(null);
+    setFormsmithAgent(null);
+    setRufloAgent(null);
     textareaRef.current?.focus();
   }
 
@@ -3454,40 +3522,38 @@ export default function WorkspaceClient({
   // ── Garden note generation ──────────────────────────────────────────────────
 
   function startRenameChat(session: ChatSession) {
-    if (
-      streamingChatIdsRef.current.has(session.id) ||
-      session.isOwn === false
-    ) {
-      return;
-    }
+    if (session.isOwn === false) return;
     setConfirmDeleteChatId(null);
+    editingChatIdRef.current = session.id;
     setEditingChatId(session.id);
     setEditingChatTitle(session.title);
   }
 
   function cancelRenameChat() {
+    editingChatIdRef.current = null;
     setEditingChatId(null);
     setEditingChatTitle("");
   }
 
-  async function saveChatTitle(sessionId: number) {
+  function commitChatRename(sessionId: number) {
     const title = editingChatTitle.trim().replace(/\s+/g, " ");
-    if (!title) {
-      addToast("Chat name cannot be empty");
-      return;
-    }
-
     const session = chatSessions.find((item) => item.id === sessionId);
     if (!session || session.isOwn === false) return;
+    cancelRenameChat();
+    if (!title || title === session.title) return;
+    void renameChatSession(session, title);
+  }
 
-    const previousSessions = chatSessions;
-    setSavingChatTitleId(sessionId);
-    setChatSessions((prev) =>
-      prev.map((item) => (item.id === sessionId ? { ...item, title } : item)),
+  async function renameChatSession(session: ChatSession, title: string) {
+    chatHistoryEpoch.current += 1;
+    setChatSessions((current) =>
+      current.map((item) =>
+        item.id === session.id ? { ...item, title } : item,
+      ),
     );
 
     try {
-      const res = await fetch(`/api/chat-sessions/${sessionId}`, {
+      const res = await fetch(`/api/chat-sessions/${session.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -3496,12 +3562,29 @@ export default function WorkspaceClient({
       if (!res.ok || !data.success) {
         throw new Error(data.error ?? "Failed to rename chat");
       }
-      cancelRenameChat();
+      const canonical = data?.session?.title;
+      if (typeof canonical === "string" && canonical !== title) {
+        setChatSessions((current) =>
+          current.map((item) =>
+            item.id === session.id && item.title === title
+              ? { ...item, title: canonical }
+              : item,
+          ),
+        );
+      }
     } catch (err) {
-      setChatSessions(previousSessions);
+      // Only undo this request's value. If another rename landed while the
+      // request was in flight, that newer title remains authoritative.
+      setChatSessions((current) =>
+        current.map((item) =>
+          item.id === session.id && item.title === title
+            ? { ...item, title: session.title }
+            : item,
+        ),
+      );
       addToast(err instanceof Error ? err.message : "Failed to rename chat");
     } finally {
-      setSavingChatTitleId(null);
+      chatHistoryEpoch.current += 1;
     }
   }
 
@@ -3636,7 +3719,11 @@ export default function WorkspaceClient({
             body: JSON.stringify({
               sourceOnly: learnSourceOnly,
               ...(learnIncludedSourceSlugs !== null
-                ? { includedSourceIds: learnIncludedSourceSlugs }
+                ? {
+                    includedSourceIds: learnIncludedSourceSlugs.filter(
+                      (sourceSlug) => sourceSlug !== learnSyllabusSlug,
+                    ),
+                  }
                 : {}),
               ...(learnSyllabusSlug
                 ? { syllabusSourceId: learnSyllabusSlug }
@@ -6691,6 +6778,56 @@ export default function WorkspaceClient({
     }
   }
 
+  async function launchResource2Skill(brief: string) {
+    if (!brief || externalAgentLaunchRef.current) {
+      if (!brief) setExternalAgentStatus("Describe the artifact Resource2Skill should build.");
+      return;
+    }
+    externalAgentLaunchRef.current = "resource2skill";
+    setLaunchingExternalAgent("resource2skill");
+    setExternalAgentStatus("");
+    const userContent = resource2SkillUserMessage(brief);
+    const prepared = await prepareExternalAgentSession(userContent);
+    if (!prepared) {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      return;
+    }
+    updateChatMessages(prepared.session.id, [
+      ...prepared.session.messages,
+      { id: `resource2skill-pending-${crypto.randomUUID()}`, role: "user", content: userContent, createdAt: new Date().toISOString() },
+    ]);
+    try {
+      const response = await fetch("/api/resource2skill/runs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ brief, model, reasoningEffort, chatSessionId: prepared.session.id }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.run?.runId) {
+        throw new Error(typeof data?.message === "string" ? data.message : typeof data?.error === "string" ? data.error : "The Resource2Skill run could not start.");
+      }
+      setChatStreaming(prepared.session.id, true);
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        { role: "assistant", content: "", resource2SkillRun: { runId: String(data.run.runId), brief }, externalAgentOutcome: "running" },
+        prepared.title,
+      );
+    } catch (error) {
+      await commitExternalAgentTurn(
+        prepared.session,
+        userContent,
+        { role: "assistant", content: `The Resource2Skill run could not start: ${error instanceof Error ? error.message : "unknown error"}` },
+        prepared.title,
+      );
+    } finally {
+      externalAgentLaunchRef.current = null;
+      setLaunchingExternalAgent(null);
+      textareaRef.current?.focus();
+    }
+  }
+
   async function launchOpenMontage(brief: string) {
     if (!brief || externalAgentLaunchRef.current) {
       if (!brief) setExternalAgentStatus("Tell OpenMontage what video to produce.");
@@ -7415,6 +7552,14 @@ export default function WorkspaceClient({
       return;
     }
 
+    const resource2SkillBrief = briefFromResource2SkillCommand(text);
+    if (resource2SkillBrief !== null) {
+      setInput("");
+      setChatAttachments([]);
+      void launchResource2Skill(resource2SkillBrief);
+      return;
+    }
+
     const productionBrief = briefFromOpenMontageCommand(text);
     if (productionBrief !== null) {
       setInput("");
@@ -8060,11 +8205,17 @@ export default function WorkspaceClient({
   const availableLearnSourceSlugSet = new Set(
     sourceDocuments.map((doc) => doc.slug),
   );
+  // The syllabus controls lesson order and scope; it is not itself a teaching
+  // document. Keep it out of both the usable count and the checkbox selection.
+  const learnEligibleSourceDocuments = sourceDocuments.filter(
+    (doc) => doc.slug !== learnSyllabusSlug,
+  );
   const effectiveLearnIncludedSourceSlugs =
     learnIncludedSourceSlugs === null
-      ? sourceDocuments.map((doc) => doc.slug)
+      ? learnEligibleSourceDocuments.map((doc) => doc.slug)
       : learnIncludedSourceSlugs.filter((sourceSlug) =>
-          availableLearnSourceSlugSet.has(sourceSlug),
+          availableLearnSourceSlugSet.has(sourceSlug) &&
+          sourceSlug !== learnSyllabusSlug,
         );
   const effectiveLearnIncludedSourceSlugSet = new Set(
     effectiveLearnIncludedSourceSlugs,
@@ -8155,7 +8306,7 @@ export default function WorkspaceClient({
         throw new Error("Syllabus uploaded but no document slug was returned");
       }
 
-      setLearnSyllabusSlug(slug);
+      chooseLearnSyllabusDocument(slug);
       setLearnSyllabusMenuOpen(false);
       await fetchDocuments();
       addToast(
@@ -8206,7 +8357,7 @@ export default function WorkspaceClient({
         throw new Error("The syllabus was written but no document slug came back");
       }
 
-      setLearnSyllabusSlug(slug);
+      chooseLearnSyllabusDocument(slug);
       setLearnSyllabusPrompt("");
       setLearnSyllabusMenuOpen(false);
       await fetchDocuments();
@@ -8224,10 +8375,33 @@ export default function WorkspaceClient({
     }
   }
 
-  function toggleLearnSourceDocument(sourceSlug: string) {
+  function chooseLearnSyllabusDocument(sourceSlug: string | null) {
+    const previousSyllabusSlug = learnSyllabusSlug;
+    setLearnSyllabusSlug(sourceSlug);
+
+    // A document has one role in a Learn run. Reserving it as the syllabus
+    // removes it from the teaching selection. When the role moves to another
+    // document, the former syllabus becomes teaching material again.
     setLearnIncludedSourceSlugs((current) => {
       const selected = new Set(
         current ?? sourceDocuments.map((doc) => doc.slug),
+      );
+      if (previousSyllabusSlug) selected.add(previousSyllabusSlug);
+      if (sourceSlug) selected.delete(sourceSlug);
+      return sourceDocuments
+        .map((doc) => doc.slug)
+        .filter((slug) => selected.has(slug));
+    });
+  }
+
+  function toggleLearnSourceDocument(sourceSlug: string) {
+    if (sourceSlug === learnSyllabusSlug) return;
+    setLearnIncludedSourceSlugs((current) => {
+      const selected = new Set(
+        current ??
+          sourceDocuments
+            .filter((doc) => doc.slug !== learnSyllabusSlug)
+            .map((doc) => doc.slug),
       );
       if (selected.has(sourceSlug)) selected.delete(sourceSlug);
       else selected.add(sourceSlug);
@@ -8254,18 +8428,18 @@ export default function WorkspaceClient({
       learnState?.scopedRepair,
     );
     const progress = Math.max(0, Math.min(100, job?.progressPercent ?? 0));
-    const displayProgress =
-      status === "complete" || status === "failed" ? 100 : progress;
-    // The syllabus steers the lessons instead of becoming one, so it never
-    // counts toward the teaching material a run needs.
-    const learnTeachingSourceSlugs = effectiveLearnIncludedSourceSlugs.filter(
-      (sourceSlug) => sourceSlug !== learnSyllabusSlug,
-    );
+    // POSTing a retry briefly leaves the last settled job in learnState until
+    // the new durable job is returned by status polling. Do not paint that old
+    // failure as if it belonged to the retry now starting.
+    const startingLearnAction = learnBusy && !isLearnActive(status);
+    const showFailedState = status === "failed" && !startingLearnAction;
+    const displayProgress = startingLearnAction
+      ? 2
+      : status === "complete" || status === "failed"
+        ? 100
+        : progress;
+    const learnTeachingSourceSlugs = effectiveLearnIncludedSourceSlugs;
     const hasSelectedLearnSources = learnTeachingSourceSlugs.length > 0;
-    const syllabusIsSelectedAsSource = Boolean(
-      learnSyllabusSlug &&
-        effectiveLearnIncludedSourceSlugs.includes(learnSyllabusSlug),
-    );
     const canStart =
       Boolean(learnState?.hasSources) &&
       hasSelectedLearnSources &&
@@ -8312,7 +8486,7 @@ export default function WorkspaceClient({
       : status === "complete"
         ? "Lessons complete."
         : status === "failed"
-          ? "Learn failed before completion."
+          ? null
           : status === "cancelled"
             ? "Learn run cancelled."
             : status === "awaiting_confirmation"
@@ -8322,8 +8496,11 @@ export default function WorkspaceClient({
               : learnState?.hasTextbook
                 ? "Ready to repair current validation issues."
                 : "Ready to generate lessons.";
-    const stageMessage =
-      status === "cancelled" || staleReviewForExistingGarden
+    const stageMessage = startingLearnAction
+      ? status === "failed"
+        ? "Starting Learn retry..."
+        : "Starting Learn..."
+      : status === "failed" || status === "cancelled" || staleReviewForExistingGarden
         ? ""
         : job?.currentStep ||
           activeStageMessage[status] ||
@@ -8334,7 +8511,7 @@ export default function WorkspaceClient({
       job?.currentPageTitle ? `Page: ${job.currentPageTitle}.` : null,
       !hasSelectedLearnSources
         ? learnSyllabusDocument
-          ? `Only the syllabus is selected; choose at least one of the ${sourceDocuments.length} documents to teach from.`
+          ? "The syllabus is reserved for planning; select at least one other document to teach from."
           : `No source documents selected from ${sourceDocuments.length} available.`
         : null,
       status === "awaiting_confirmation" && !staleReviewForExistingGarden
@@ -8380,8 +8557,8 @@ export default function WorkspaceClient({
     return (
       <section className="bb-neu-learn-tray neu-surface-raised mx-auto mt-4 max-h-[55vh] w-[calc(100%_-_2rem)] max-w-5xl shrink-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-950/70 p-3">
         <div className="flex flex-col gap-2">
-          <div className="flex min-h-8 items-center justify-between gap-3">
-            <div className="flex shrink-0 items-center gap-2">
+          <div className="flex min-h-8 items-start justify-between gap-3">
+            <div className="flex h-8 shrink-0 items-center gap-2">
               <p className="text-sm font-medium text-white">Learn</p>
               {learnState?.sourceSetChanged && (
                 <span className="rounded-md border border-amber-700/50 bg-amber-950/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
@@ -8390,11 +8567,16 @@ export default function WorkspaceClient({
               )}
             </div>
 
-            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+            <div className="flex min-w-0 flex-1 items-start gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
               <div className="relative">
                 <button
+                  ref={learnDocumentMenuButtonRef}
                   type="button"
-                  onClick={() => setLearnDocumentMenuOpen((open) => !open)}
+                  onClick={() => {
+                    setLearnSyllabusMenuOpen(false);
+                    setLearnDocumentMenuOpen((open) => !open);
+                  }}
                   className="neu-button flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
                   aria-expanded={learnDocumentMenuOpen}
                   aria-haspopup="menu"
@@ -8419,8 +8601,8 @@ export default function WorkspaceClient({
                       d="M14.25 3.75v3h3M9.5 11h5M9.5 14.5h5"
                     />
                   </svg>
-                  Documents {effectiveLearnIncludedSourceSlugs.length}/
-                  {sourceDocuments.length}
+                  Documents {learnTeachingSourceSlugs.length}/
+                  {learnEligibleSourceDocuments.length}
                   <svg
                     className={`h-3 w-3 transition-transform ${learnDocumentMenuOpen ? "rotate-180" : ""}`}
                     viewBox="0 0 20 20"
@@ -8435,10 +8617,11 @@ export default function WorkspaceClient({
                   </svg>
                 </button>
                 {learnDocumentMenuOpen ? (
-                  <div
-                    className="neu-popover absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2"
-                    role="menu"
-                    aria-label="Documents included in Learn"
+                  <ViewportPopover
+                    anchorRef={learnDocumentMenuButtonRef}
+                    ariaLabel="Documents included in Learn"
+                    className="neu-popover fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2"
+                    onClose={() => setLearnDocumentMenuOpen(false)}
                   >
                     <div className="mb-2 flex items-center justify-between border-b border-gray-800 pb-2">
                       <div>
@@ -8446,30 +8629,34 @@ export default function WorkspaceClient({
                           Documents for Learn
                         </p>
                         <p className="mt-0.5 text-[10px] text-gray-600">
-                          Unchecked documents are excluded from this run.
+                          The syllabus is reserved for planning. Unchecked
+                          documents are excluded from this run.
                         </p>
                       </div>
                       <button
                         type="button"
                         onClick={() =>
                           setLearnIncludedSourceSlugs(
-                            effectiveLearnIncludedSourceSlugs.length ===
-                              sourceDocuments.length
+                            learnTeachingSourceSlugs.length ===
+                              learnEligibleSourceDocuments.length
                               ? []
-                              : sourceDocuments.map((doc) => doc.slug),
+                              : learnEligibleSourceDocuments.map(
+                                  (doc) => doc.slug,
+                                ),
                           )
                         }
                         disabled={learnDocumentSelectionLocked}
                         className="text-[10px] text-gray-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                       >
-                        {effectiveLearnIncludedSourceSlugs.length ===
-                        sourceDocuments.length
+                        {learnTeachingSourceSlugs.length ===
+                        learnEligibleSourceDocuments.length
                           ? "Clear all"
                           : "Select all"}
                       </button>
                     </div>
                     <div className="max-h-56 space-y-1 overflow-y-auto">
                       {sourceDocuments.map((doc) => {
+                        const isSyllabus = doc.slug === learnSyllabusSlug;
                         const checked = effectiveLearnIncludedSourceSlugSet.has(
                           doc.slug,
                         );
@@ -8481,7 +8668,16 @@ export default function WorkspaceClient({
                         return (
                           <label
                             key={doc.slug}
-                            className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-gray-900"
+                            className={`flex items-start gap-2 rounded-md px-2 py-1.5 ${
+                              isSyllabus
+                                ? "cursor-not-allowed bg-gray-900/50 opacity-60"
+                                : "cursor-pointer hover:bg-gray-900"
+                            }`}
+                            title={
+                              isSyllabus
+                                ? "Used as the syllabus and excluded from teaching documents"
+                                : undefined
+                            }
                           >
                             <input
                               type="checkbox"
@@ -8489,14 +8685,20 @@ export default function WorkspaceClient({
                               onChange={() =>
                                 toggleLearnSourceDocument(doc.slug)
                               }
-                              disabled={learnDocumentSelectionLocked}
+                              disabled={
+                                learnDocumentSelectionLocked || isSyllabus
+                              }
                               className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
                             />
                             <span className="min-w-0">
                               <span className="block truncate text-xs text-gray-300">
                                 {fileLabel}
                               </span>
-                              {doc.description ? (
+                              {isSyllabus ? (
+                                <span className="mt-0.5 block text-[10px] text-gray-500">
+                                  Used as syllabus — not teaching material
+                                </span>
+                              ) : doc.description ? (
                                 <span className="mt-0.5 block truncate text-[10px] text-gray-600">
                                   {doc.description}
                                 </span>
@@ -8511,13 +8713,17 @@ export default function WorkspaceClient({
                         This selection is locked for the current Learning Map.
                       </p>
                     ) : null}
-                  </div>
+                  </ViewportPopover>
                 ) : null}
               </div>
               <div className="relative">
                 <button
+                  ref={learnSyllabusMenuButtonRef}
                   type="button"
-                  onClick={() => setLearnSyllabusMenuOpen((open) => !open)}
+                  onClick={() => {
+                    setLearnDocumentMenuOpen(false);
+                    setLearnSyllabusMenuOpen((open) => !open);
+                  }}
                   className="neu-button flex items-center gap-1.5 rounded-md border border-gray-800 px-2 py-1 text-xs text-gray-400 transition-colors hover:border-gray-700 hover:text-gray-200"
                   aria-expanded={learnSyllabusMenuOpen}
                   aria-haspopup="menu"
@@ -8542,7 +8748,15 @@ export default function WorkspaceClient({
                       d="M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h4.5a1.5 1.5 0 0 0 1.5-1.5z"
                     />
                   </svg>
-                  <span className="max-w-40 truncate">
+                  <span
+                    className="max-w-28 truncate sm:max-w-32"
+                    title={
+                      learnSyllabusDocument
+                        ? learnSyllabusDocument.name ||
+                          learnSyllabusDocument.title
+                        : undefined
+                    }
+                  >
                     {learnSyllabusDocument
                       ? `Syllabus: ${learnSyllabusDocument.name || learnSyllabusDocument.title}`
                       : "Syllabus: none"}
@@ -8561,10 +8775,11 @@ export default function WorkspaceClient({
                   </svg>
                 </button>
                 {learnSyllabusMenuOpen ? (
-                  <div
-                    className="neu-popover absolute right-0 top-full z-30 mt-1 w-80 max-w-[80vw] rounded-lg border border-gray-800 bg-gray-950 p-2"
-                    role="menu"
-                    aria-label="Syllabus for Learn"
+                  <ViewportPopover
+                    anchorRef={learnSyllabusMenuButtonRef}
+                    ariaLabel="Syllabus for Learn"
+                    className="neu-popover fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-lg border border-gray-800 bg-gray-950 p-2"
+                    onClose={() => setLearnSyllabusMenuOpen(false)}
                   >
                     <div className="mb-2 border-b border-gray-800 pb-2">
                       <p className="text-xs font-medium text-gray-200">
@@ -8582,7 +8797,7 @@ export default function WorkspaceClient({
                           type="radio"
                           name="learn-syllabus"
                           checked={learnSyllabusSlug === null}
-                          onChange={() => setLearnSyllabusSlug(null)}
+                          onChange={() => chooseLearnSyllabusDocument(null)}
                           disabled={learnDocumentSelectionLocked}
                           className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
                         />
@@ -8605,7 +8820,9 @@ export default function WorkspaceClient({
                               type="radio"
                               name="learn-syllabus"
                               checked={learnSyllabusSlug === doc.slug}
-                              onChange={() => setLearnSyllabusSlug(doc.slug)}
+                              onChange={() =>
+                                chooseLearnSyllabusDocument(doc.slug)
+                              }
                               disabled={learnDocumentSelectionLocked}
                               className="mt-0.5 h-3.5 w-3.5 border-gray-700 bg-gray-950 accent-white disabled:opacity-40"
                             />
@@ -8680,15 +8897,6 @@ export default function WorkspaceClient({
                           </>
                         ) : null}
                       </div>
-                    ) : null}
-                    {syllabusIsSelectedAsSource ? (
-                      <p className="mt-2 rounded-md border border-gray-800 bg-gray-900/60 px-2 py-1.5 text-[10px] text-gray-400">
-                        {learnSyllabusDocument?.name ??
-                          learnSyllabusDocument?.title}{" "}
-                        is also checked under Documents. As the syllabus it
-                        plans the lessons and is left out of the material they
-                        teach from.
-                      </p>
                     ) : null}
                     <div className="mt-2 border-t border-gray-800 pt-2">
                       <label
@@ -8822,7 +9030,7 @@ export default function WorkspaceClient({
                         The syllabus is locked for the current Learning Map.
                       </p>
                     ) : null}
-                  </div>
+                  </ViewportPopover>
                 ) : null}
               </div>
               <label className="flex items-center gap-1.5 text-xs text-gray-500">
@@ -8898,7 +9106,7 @@ export default function WorkspaceClient({
                   Rebuild entire garden
                 </button>
               )}
-              {hasLearnData && (
+              {hasLearnData && !active && (
                 <button
                   type="button"
                   onClick={handleClearLearnData}
@@ -8909,7 +9117,7 @@ export default function WorkspaceClient({
                   Clear Learn data
                 </button>
               )}
-              {showPrimaryAction && (
+              {showPrimaryAction && !active && (
                 <button
                   type="button"
                   onClick={
@@ -8959,13 +9167,14 @@ export default function WorkspaceClient({
                   {learnCancelBusy ? "Stopping..." : "Stop"}
                 </button>
               )}
+              </div>
               {!active &&
                 (status !== "awaiting_confirmation" ||
                   staleReviewForExistingGarden) && (
                   <button
                     type="button"
                     onClick={() => setLearnPanelOpen(false)}
-                    className="neu-button-icon flex h-8 w-8 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
+                    className="neu-button-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gray-800 text-gray-500 transition-colors hover:border-gray-700 hover:text-gray-300"
                     aria-label="Close Learn panel"
                     title="Close"
                   >
@@ -8990,7 +9199,7 @@ export default function WorkspaceClient({
 
         {!hasSelectedLearnSources ? (
           <p className="mt-2 text-xs text-amber-400">
-            Select at least one document before starting Learn.
+            Select at least one teaching document before starting Learn.
           </p>
         ) : null}
 
@@ -9001,7 +9210,7 @@ export default function WorkspaceClient({
                 className={[
                   "h-full rounded-full transition-all",
                   active ? "learn-progress-pulse" : "",
-                  status === "failed"
+                  showFailedState
                     ? "bg-red-500"
                     : status === "complete"
                       ? "bg-emerald-400"
@@ -9015,7 +9224,7 @@ export default function WorkspaceClient({
                 Finished generating lessons. The garden has been refreshed.
               </p>
             ) : null}
-            {status === "failed" && job?.error ? (
+            {showFailedState && job?.error ? (
               <p className="mt-2 text-xs text-red-300">
                 {displayLearnError(job.error)}
               </p>
@@ -9091,18 +9300,31 @@ export default function WorkspaceClient({
                     title: `${formatExactTokenCount(learnTokenUsage.totalTokens)} total tokens`,
                   },
                 ].map((metric) => (
-                  <div key={metric.label} className="flex items-baseline gap-1">
-                    <dt className="text-gray-600">{metric.label}</dt>
-                    <dd
-                      className="font-mono tabular-nums text-gray-200"
-                      title={metric.title}
-                    >
-                      {learnTokenUsage.estimated ? "~" : ""}
-                      {metric.label === "Total"
-                        ? formatLearnTotalTokenCount(metric.value)
-                        : formatLearnMetricTokenCount(metric.value)}
-                    </dd>
-                  </div>
+                  <Fragment key={metric.label}>
+                    <div className="flex items-baseline gap-1">
+                      <dt className="text-gray-600">{metric.label}</dt>
+                      <dd
+                        className="font-mono tabular-nums text-gray-200"
+                        title={metric.title}
+                      >
+                        {learnTokenUsage.estimated ? "~" : ""}
+                        {metric.label === "Total"
+                          ? formatLearnTotalTokenCount(metric.value)
+                          : formatLearnMetricTokenCount(metric.value)}
+                      </dd>
+                    </div>
+                    {metric.label === "Total" && job?.model ? (
+                      <div className="flex items-baseline gap-1">
+                        <dt className="text-gray-600">Model:</dt>
+                        <dd
+                          className="font-mono tabular-nums text-gray-200"
+                          title={`Model making these calls: ${job.model}`}
+                        >
+                          {formatAssistantModelName(job.model)}
+                        </dd>
+                      </div>
+                    ) : null}
+                  </Fragment>
                 ))}
               </dl>
             ) : (
@@ -9265,69 +9487,6 @@ export default function WorkspaceClient({
       clickTimers.clear();
     };
   }, []);
-
-  function renderCollapsedLearnIndicator() {
-    const job = learnState?.job;
-    if (!isOwner || learnPanelOpen || (!job && !learnBusy)) return null;
-
-    const status = job?.status;
-    const active = learnBusy || isLearnActive(status);
-    if (!active && !showSettledLearnIndicator) return null;
-    const label = active
-      ? job?.currentStep || "Learn is running"
-      : status === "complete"
-        ? "Learn finished"
-        : status === "failed"
-          ? "Learn failed"
-          : status === "awaiting_confirmation"
-            ? "Learning map is waiting for review"
-            : status === "cancelled"
-              ? "Learn was cancelled"
-              : "Open Learn panel";
-    const tone =
-      status === "complete"
-        ? "border-gray-700 bg-gray-900 text-[#4f8a62]"
-        : status === "failed"
-          ? "border-gray-700 bg-gray-900 text-[#b85c5c]"
-          : status === "awaiting_confirmation"
-            ? "border-[#a77f2b] bg-[#c59a3d] text-[var(--paper-raised)]"
-            : "border-gray-700 bg-gray-900 text-gray-400";
-
-    return (
-      <button
-        type="button"
-        onClick={() => setLearnPanelOpen(true)}
-        className={`neu-button-icon absolute right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full border transition hover:scale-105 ${tone}`}
-        aria-label={`Open Learn panel. ${label}`}
-        title={`${label}. Open Learn panel`}
-      >
-        {active ? (
-          <Spinner className="h-5 w-5" />
-        ) : status === "complete" || status === "failed" ? (
-          <span
-            className="h-5 w-5 rounded-full border-[3px] border-current"
-            aria-hidden="true"
-          />
-        ) : status === "awaiting_confirmation" ? (
-          <svg
-            className="h-5 w-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.1}
-            aria-hidden="true"
-          >
-            <path strokeLinecap="round" d="M9.5 8.5v7M14.5 8.5v7" />
-          </svg>
-        ) : (
-          <span
-            className="h-3 w-3 rounded-full border-2 border-current"
-            aria-hidden="true"
-          />
-        )}
-      </button>
-    );
-  }
 
   function renderMarkdownRows(items: DocInfo[]) {
     return (
@@ -10133,22 +10292,86 @@ export default function WorkspaceClient({
               </div>
             )}
             <div className="max-h-44 overflow-y-auto">
+              {isUploading && (
+                <div className="border-b border-gray-800/70 py-1">
+                  {uploadFiles.map((file) => {
+                    const key = fileKey(file);
+                    const status = uploadStatuses[key] ?? "pending";
+                    const step = uploadSteps[key];
+                    const error = uploadErrors[key];
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={openUploadModal}
+                        className="group flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-gray-800/50"
+                        aria-label={`View upload progress for ${file.name}`}
+                        title="View upload progress"
+                      >
+                        {status === "done" ? (
+                          <svg
+                            className="h-4 w-4 shrink-0 text-green-400"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2.5}
+                            aria-hidden="true"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="m4.5 12.75 6 6 9-13.5"
+                            />
+                          </svg>
+                        ) : status === "error" ? (
+                          <span
+                            className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-red-400"
+                            aria-hidden="true"
+                          >
+                            !
+                          </span>
+                        ) : (
+                          <Spinner className="h-4 w-4 shrink-0 text-gray-500" />
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs text-gray-300 group-hover:text-white">
+                            {file.name}
+                          </span>
+                          <span
+                            className={`block truncate text-[11px] ${status === "error" ? "text-red-400" : "text-gray-600"}`}
+                          >
+                            {status === "done"
+                              ? "Uploaded"
+                              : status === "error"
+                                ? error || "Upload failed"
+                                : status === "uploading"
+                                  ? step || "Uploading…"
+                                  : "Waiting to upload…"}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               {loadingDocs ? (
                 <div className="flex justify-center py-6">
                   <Spinner className="w-4 h-4 text-gray-700" />
                 </div>
               ) : sourceDocuments.length === 0 ? (
-                <div className="flex flex-col items-center py-6 px-4 text-center">
-                  <p className="text-xs text-gray-600 mb-2">
-                    No source documents yet
-                  </p>
-                  <button
-                    onClick={openUploadModal}
-                    className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
-                  >
-                    Upload your first
-                  </button>
-                </div>
+                !isUploading && (
+                  <div className="flex flex-col items-center py-6 px-4 text-center">
+                    <p className="text-xs text-gray-600 mb-2">
+                      No source documents yet
+                    </p>
+                    <button
+                      onClick={openUploadModal}
+                      className="text-xs text-gray-500 hover:text-white underline underline-offset-2 transition-colors"
+                    >
+                      Upload your first
+                    </button>
+                  </div>
+                )
               ) : filteredSourceDocuments.length === 0 ? (
                 <div className="flex flex-col items-center px-4 py-6 text-center">
                   <p className="text-xs text-gray-600">
@@ -10433,11 +10656,28 @@ export default function WorkspaceClient({
       >
         <NavbarFlowerWind />
         <div className="relative z-10 flex items-center gap-3">
-          <BackLink
-            fallbackHref="/dashboard"
-            fallbackLabel="Back to dashboard"
+          {/* Garden chat is the top of its own surface: always leave to the
+              dashboard. Routing it through the nav trail made it and the Quartz
+              garden each other's back target, which is a loop with no exit. */}
+          <Link
+            href="/dashboard"
             className="text-gray-500 hover:text-white transition-colors text-sm flex items-center gap-1.5"
-          />
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"
+              />
+            </svg>
+            Back to dashboard
+          </Link>
           <span className="text-gray-700">/</span>
           <Link
             href={`/garden/${clusterSlug}${primarySourceDocument ? `?note=${encodeURIComponent(primarySourceDocument.slug)}` : ""}`}
@@ -10494,24 +10734,34 @@ export default function WorkspaceClient({
                 learnState?.hasSources
                   ? learnPanelOpen
                     ? "Close Learn panel"
-                    : "Open Learn panel"
+                    : learnBusy ||
+                        learnCancelBusy ||
+                        isLearnActive(learnState?.job?.status)
+                      ? "Learn is running. Open Learn panel"
+                      : "Open Learn panel"
                   : "Upload sources before learning"
               }
               className="neu-button-primary flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white text-gray-950 font-medium rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <svg
-                className="w-3.5 h-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.8}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
-                />
-              </svg>
+              {learnBusy ||
+              learnCancelBusy ||
+              isLearnActive(learnState?.job?.status) ? (
+                <Spinner className="h-3.5 w-3.5" />
+              ) : (
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 6.75v10.5m0-10.5c-1.5-1-3.5-1.5-6-1.5v10.5c2.5 0 4.5.5 6 1.5m0-10.5c1.5-1 3.5-1.5 6-1.5v10.5c-2.5 0-4.5.5-6 1.5"
+                  />
+                </svg>
+              )}
               {learnPanelOpen ? "Close Learn panel" : "Open Learn panel"}
             </button>
           )}
@@ -10623,11 +10873,7 @@ export default function WorkspaceClient({
                         return (
                           <li key={session.id} className="relative group">
                             {isEditingChat ? (
-                              <form
-                                onSubmit={(e) => {
-                                  e.preventDefault();
-                                  void saveChatTitle(session.id);
-                                }}
+                              <div
                                 className={[
                                   "neu-inset flex items-center gap-1 rounded-lg px-2 py-1.5",
                                   session.id === activeChatId
@@ -10640,67 +10886,28 @@ export default function WorkspaceClient({
                                   onChange={(e) =>
                                     setEditingChatTitle(e.target.value)
                                   }
+                                  onBlur={() => commitChatRename(session.id)}
                                   onKeyDown={(e) => {
-                                    if (e.key === "Escape") {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      commitChatRename(session.id);
+                                    } else if (e.key === "Escape") {
                                       e.preventDefault();
                                       cancelRenameChat();
                                     }
                                   }}
                                   autoFocus
-                                  disabled={savingChatTitleId === session.id}
+                                  maxLength={200}
+                                  aria-label={`Rename ${session.title}`}
                                   className="neu-control min-w-0 flex-1 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-white outline-none focus:border-gray-500 disabled:opacity-50"
                                 />
-                                <button
-                                  type="submit"
-                                  disabled={savingChatTitleId === session.id}
-                                  className="shrink-0 rounded p-1 text-gray-500 transition-colors hover:bg-gray-800 hover:text-white disabled:opacity-40"
-                                  aria-label="Save chat name"
-                                  title="Save"
-                                >
-                                  {savingChatTitleId === session.id ? (
-                                    <Spinner className="h-3.5 w-3.5" />
-                                  ) : (
-                                    <svg
-                                      className="h-3.5 w-3.5"
-                                      fill="none"
-                                      viewBox="0 0 24 24"
-                                      stroke="currentColor"
-                                      strokeWidth={2}
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        d="m4.5 12.75 6 6 9-13.5"
-                                      />
-                                    </svg>
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={cancelRenameChat}
-                                  disabled={savingChatTitleId === session.id}
-                                  className="shrink-0 rounded p-1 text-gray-600 transition-colors hover:bg-gray-800 hover:text-white disabled:opacity-40"
-                                  aria-label="Cancel rename"
-                                  title="Cancel"
-                                >
-                                  <svg
-                                    className="h-3.5 w-3.5"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                    stroke="currentColor"
-                                    strokeWidth={2}
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      d="M6 18 18 6M6 6l12 12"
-                                    />
-                                  </svg>
-                                </button>
-                              </form>
+                              </div>
                             ) : (
                               <button
-                                onClick={() => setActiveChatId(session.id)}
+                                onClick={() => {
+                                  pendingNewChatRef.current = false;
+                                  setActiveChatId(session.id);
+                                }}
                                 onDoubleClick={() => startRenameChat(session)}
                                 className={[
                                   "bb-neu-conversation-row w-full text-left px-3 py-2 pr-14 text-sm rounded-lg transition-colors flex items-center gap-2",
@@ -10759,8 +10966,7 @@ export default function WorkspaceClient({
                                       e.stopPropagation();
                                       startRenameChat(session);
                                     }}
-                                    disabled={streamingChatIds.has(session.id)}
-                                    className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-white disabled:hidden"
+                                    className="shrink-0 p-0.5 text-gray-600 transition-colors hover:text-white"
                                     aria-label="Rename chat"
                                     title="Rename chat"
                                   >
@@ -11120,7 +11326,6 @@ export default function WorkspaceClient({
             a widened map panel is pushed off-screen (clipped by the root overflow). */}
         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-gray-900">
           {renderLearnPanel()}
-          {renderCollapsedLearnIndicator()}
           <main ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 py-6">
             <ChatTranscript
               clusterName={clusterName}
@@ -11271,6 +11476,7 @@ export default function WorkspaceClient({
               onSelectHardwareBlueprint={() => {}}
               onSelectParametricCad={() => {}}
               onSelectHyperframes={() => {}}
+              onSelectResource2Skill={() => {}}
               onSelectOpenMontage={() => {}}
               onSelectOpenwork={() => {}}
               onSelectOpenscience={() => {}}
@@ -11842,7 +12048,9 @@ export default function WorkspaceClient({
         <div
           className="bb-modal-backdrop fixed inset-0 z-50 flex items-center justify-center px-4"
           onClick={(e) => {
-            if (e.target === e.currentTarget) closeUploadModal();
+            if (e.target !== e.currentTarget) return;
+            if (isUploading) continueUploadInBackground();
+            else closeUploadModal();
           }}
         >
           <div className="bb-modal-panel neu-dialog w-full max-w-md rounded-2xl border p-6">
@@ -12136,28 +12344,39 @@ export default function WorkspaceClient({
               )}
 
               {/* Actions */}
-              <div className="flex gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={closeUploadModal}
-                  className="neu-button flex-1 py-2.5 text-sm disabled:opacity-40"
-                >
-                  {allDoneOrError
-                    ? "Close"
-                    : isUploading
-                      ? "Cancel upload"
-                      : "Cancel"}
-                </button>
-                {!allDoneOrError && (
+              <div className="space-y-3 pt-1">
+                <div className="flex gap-3">
                   <button
-                    type="submit"
-                    disabled={uploadFiles.length === 0 || isUploading}
-                    className="neu-button-primary flex flex-1 items-center justify-center gap-2 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                    type="button"
+                    onClick={closeUploadModal}
+                    className="neu-button flex-1 py-2.5 text-sm disabled:opacity-40"
                   >
-                    {isUploading && <Spinner />}
-                    {isUploading
-                      ? `Uploading… (${Object.values(uploadStatuses).filter((s) => s === "done").length}/${uploadFiles.length})`
-                      : `Upload ${uploadFiles.length > 0 ? `${uploadFiles.length} file${uploadFiles.length > 1 ? "s" : ""}` : ""}`}
+                    {allDoneOrError
+                      ? "Close"
+                      : isUploading
+                        ? "Cancel upload"
+                        : "Cancel"}
+                  </button>
+                  {!allDoneOrError && (
+                    <button
+                      type="submit"
+                      disabled={uploadFiles.length === 0 || isUploading}
+                      className="neu-button-primary flex flex-1 items-center justify-center gap-2 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isUploading && <Spinner />}
+                      {isUploading
+                        ? `Uploading… (${Object.values(uploadStatuses).filter((s) => s === "done").length}/${uploadFiles.length})`
+                        : `Upload ${uploadFiles.length > 0 ? `${uploadFiles.length} file${uploadFiles.length > 1 ? "s" : ""}` : ""}`}
+                    </button>
+                  )}
+                </div>
+                {isUploading && (
+                  <button
+                    type="button"
+                    onClick={continueUploadInBackground}
+                    className="neu-button w-full py-2.5 text-sm"
+                  >
+                    Close &amp; continue in background
                   </button>
                 )}
               </div>

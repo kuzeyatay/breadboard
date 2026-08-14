@@ -94,6 +94,13 @@ function pageAnchors(dir, pageRel) {
     .split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
 }
 
+test("missing structured-artifact guidance never tells users to register a figure as text", () => {
+  const message = describeMissingAnchorFailure(["S1.P197.F1"]);
+  assert.match(message, /extracted from their preserved source-PDF pages/i);
+  assert.match(message, /must not be registered as text anchors/i);
+  assert.match(message, /Retry Learn/i);
+});
+
 describe("source-anchor registration pipeline", { skip }, () => {
   // -------------------------------------------------------------------------
   // Test 1: a missing generated semantic anchor fails the audit.

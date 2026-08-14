@@ -280,6 +280,20 @@ export const OFFICE_WRITE_TOOLS: readonly string[] = [
   "office_export",
 ];
 
+// watermarks-remover: report and strip AI provenance marks — invisible Unicode
+// carriers, C2PA/Content Credentials, EXIF/XMP, document container properties.
+// The vendored scripts are stdlib Python, and every path they are handed is
+// confined to the turn's workspace; an attached file is addressed by the name
+// the user attached it under, never by a path the model composed.
+export const WATERMARK_TOOLS = [
+  "watermark_inspect",
+  "watermark_clean",
+  "watermark_audit",
+] as const;
+
+/** The one that writes a file, for auditing and the UI's copy. */
+export const WATERMARK_WRITE_TOOLS: readonly string[] = ["watermark_clean"];
+
 // The build loop: read a file, change it, look for the next thing to change.
 // Hermes ships its own `file` toolset and it stays off — those tools take
 // absolute paths and enforce no root, so they would reach the whole filesystem
@@ -354,6 +368,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
+      ...WATERMARK_TOOLS,
       ...WORKSPACE_TOOLS,
       ...SUPER_AGENT_TOOLS,
       ...gbrain,
@@ -383,6 +398,7 @@ export function allowedToolsForSurface(surface: HermesSurface): string[] {
     ...CALENDAR_TOOLS,
     ...PLAN_TOOLS,
     ...OFFICE_TOOLS,
+    ...WATERMARK_TOOLS,
     ...WORKSPACE_TOOLS,
     ...SUPER_AGENT_TOOLS,
     ...gbrain,

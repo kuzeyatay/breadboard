@@ -11,6 +11,7 @@ import {
 } from "@/lib/quartz-garden-index";
 import { publishQuartzAfterMutation } from "@/lib/quartz-publish";
 import { requireUserId } from "@/lib/server-auth";
+import { uniqueGardenSlug } from "@/lib/garden-slug";
 import {
   createFolder,
   deleteFolder,
@@ -161,27 +162,8 @@ function toCluster(
   };
 }
 
-function slugifyClusterName(name: string): string {
-  const slug = name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return slug || "garden";
-}
-
 function uniqueClusterSlug(name: string): string {
-  const base = slugifyClusterName(name);
-  let slug = base;
-  let counter = 2;
-
-  while (db.prepare("SELECT 1 FROM clusters WHERE slug = ?").get(slug)) {
-    slug = `${base}-${counter}`;
-    counter += 1;
-  }
-
-  return slug;
+  return uniqueGardenSlug(db, name);
 }
 
 function resolveChildPath(

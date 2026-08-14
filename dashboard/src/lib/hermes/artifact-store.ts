@@ -10,6 +10,8 @@ import {
   inspectArtifactImport,
 } from "./artifact-import.ts";
 import { isChatHighlight } from "../conversations/highlights.ts";
+import { scrubbed } from "../watermarks/scrub-text.ts";
+import { scrubFileInPlace } from "../watermarks/scrub-file.ts";
 import {
   ARTIFACT_KINDS,
   type ArtifactEventType,
@@ -136,6 +138,17 @@ export interface CreateImportedArtifactInput extends Omit<
    * failed run from leaving a finished-looking copy of its own input behind.
    */
   status?: Extract<ArtifactStatus, "ready" | "generating">;
+  /**
+   * Strip AI provenance metadata from the imported copy. On by default, because
+   * the overwhelming majority of imports are files Breadboard just produced —
+   * a generated image, an authored document — and those are exactly what the
+   * user meant by wanting no watermarks on their own output.
+   *
+   * Pass `false` for a file Breadboard merely *fetched* on the user's behalf.
+   * A downloaded paper's XMP carries its authors, DOI and license; stripping
+   * that is not hygiene, it is destroying somebody else's bibliographic record.
+   */
+  scrubProvenance?: boolean;
 }
 
 function storageRoot(configured?: string): string {
@@ -186,14 +199,25 @@ function publicError(value: string | null): { code: string; message: string } | 
     : null;
 }
 
+/**
+ * Every string that becomes artifact content passes through here — create,
+ * update, append and the validated-publish path all call it — which makes it
+ * the one place invisible-Unicode marks can be removed from written artifacts
+ * without depending on each producer to remember.
+ *
+ * The scrub runs before the size check so the ceiling is measured against what
+ * is actually stored, and it only ever removes invisible characters: no visible
+ * character, no code, no math and no anchor is touched. See scrub-text.ts.
+ */
 function validateContent(content: unknown): string {
   if (typeof content !== "string") {
     throw new ArtifactStoreError(400, "invalid_artifact_content", "Artifact content must be text for this renderer.");
   }
-  if (Buffer.byteLength(content, "utf8") > MAX_ARTIFACT_CONTENT_BYTES) {
+  const clean = scrubbed(content);
+  if (Buffer.byteLength(clean, "utf8") > MAX_ARTIFACT_CONTENT_BYTES) {
     throw new ArtifactStoreError(413, "artifact_too_large", `Artifact content exceeds ${MAX_ARTIFACT_CONTENT_BYTES} bytes.`);
   }
-  return content;
+  return clean;
 }
 
 function sanitizeFilename(value: string | undefined, title: string, extension: string): string {
@@ -773,6 +797,12 @@ export function createImportedArtifact(
   fs.mkdirSync(path.dirname(storedOutputPath), { recursive: true });
   const temporary = `${storedOutputPath}.${process.pid}.${Date.now()}.tmp`;
   fs.copyFileSync(sourcePath, temporary, fs.constants.COPYFILE_EXCL);
+  // Scrub the staged copy, never the caller's original: the source may be a
+  // file in the user's own workspace that they still want as it was. Doing it
+  // before the rename also means the verification below runs on the bytes that
+  // will actually be stored, so a scrub that somehow changed the format is
+  // caught here rather than shipped.
+  if (input.scrubProvenance !== false) scrubFileInPlace(temporary);
   fs.renameSync(temporary, storedOutputPath);
   try {
     const copied = inspectArtifactImport(storedOutputPath, input.kind);
@@ -949,6 +979,8 @@ export interface ImportArtifactVersionInput {
   metadata?: Record<string, unknown>;
   /** Replaces the artifact's title when the new version is of something else. */
   title?: string;
+  /** As on an import: off only for a file Breadboard fetched rather than made. */
+  scrubProvenance?: boolean;
   database?: Database.Database;
   storageRoot?: string;
 }
@@ -1050,6 +1082,9 @@ export function importArtifactVersion(input: ImportArtifactVersionInput): Artifa
   fs.mkdirSync(path.dirname(storedOutputPath), { recursive: true });
   const temporary = `${storedOutputPath}.${process.pid}.${Date.now()}.tmp`;
   fs.copyFileSync(sourcePath, temporary, fs.constants.COPYFILE_EXCL);
+  // Same rule as the first import: scrub the staged copy, before the hash is
+  // taken, so the recorded hash describes the bytes that were actually stored.
+  if (input.scrubProvenance !== false) scrubFileInPlace(temporary);
   fs.renameSync(temporary, storedOutputPath);
 
   const { byteSize, contentHash } = hashFileStreaming(storedOutputPath);

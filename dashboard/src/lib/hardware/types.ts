@@ -48,10 +48,19 @@ export interface HardwareProjectRequest {
   inputs: RequestedPeripheral[];
   outputs: RequestedPeripheral[];
 
+  /**
+   * Passive optical and mechanical requirements that belong in the physical
+   * assembly, not on an electrical net. Optional for stored v1 designs; new
+   * requests are normalised to an array before compilation.
+   */
+  physicalParts?: RequestedPeripheral[];
+
   communication: CommunicationInterface[];
 
   power: {
     source: PowerSource;
+    /** Exact battery, cell, or supply module requested by the person. */
+    part?: string;
     voltage?: number;
     maximumCurrentMa?: number;
   };
@@ -208,6 +217,14 @@ export interface HardwareDesign {
   bom: BomItem[];
   assemblySteps: AssemblyStep[];
 
+  /**
+   * Parts researched for this design after a local catalogue lookup failed or
+   * only found a mechanical placeholder.  The definition snapshot makes the
+   * artifact deterministic after a reload; it never mutates the shared,
+   * source-controlled component library.
+   */
+  componentResearch?: ComponentResearchRecord[];
+
   powerEstimate?: PowerEstimate;
   firmware?: FirmwareProject;
   circuitJson?: unknown;
@@ -320,6 +337,32 @@ export interface ComponentDefinition {
     /** Approximate assembled mass when the source documents it. */
     massGrams?: number;
   };
+}
+
+export type ComponentResearchStatus =
+  | "used"
+  | "reference-only"
+  | "not-found"
+  | "insufficient-evidence"
+  | "timed-out"
+  | "deferred";
+
+export interface ComponentResearchSource {
+  title: string;
+  url: string;
+  kind: "manufacturer-product" | "manufacturer-datasheet" | "distributor" | "other";
+}
+
+/** One bounded, source-backed online lookup retained with the blueprint. */
+export interface ComponentResearchRecord {
+  /** The exact phrase from the person's request. */
+  requestedAs: string;
+  status: ComponentResearchStatus;
+  /** Why the result was or was not safe for the deterministic compiler. */
+  note: string;
+  /** Present only when enough facts were found to create a useful record. */
+  definition?: ComponentDefinition;
+  sources: ComponentResearchSource[];
 }
 
 /** Controller-only metadata: what the compiler is allowed to allocate. */

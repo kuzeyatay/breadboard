@@ -12,6 +12,8 @@ import {
   levelShiftDecision,
 } from "./electrical.ts";
 import type { CompiledCircuit, CompilerNote } from "./compiler.ts";
+import { firmwareDriver } from "./firmware-drivers.ts";
+import { resolveComponentPhrase } from "./resolver.ts";
 import type {
   ComponentDefinition,
   ComponentInstance,
@@ -39,11 +41,13 @@ export const VALIDATION_RULES = [
   "INVALID_CONTROLLER_PIN",
   "BOOT_STRAP_PIN_WARNING",
   "ELECTRICAL_PLACEHOLDER",
+  "RESEARCHED_FIRMWARE_DRIVER_MISSING",
   "MISSING_PRODUCT_REQUIREMENT",
   "PHYSICAL_DESIGN_INCOMPLETE",
   "UNSUPPORTED_COMPONENT",
   "UNKNOWN_ELECTRICAL_VALUE",
   "EMPTY_DESIGN",
+  "REQUESTED_POWER_PART_MISSING",
   "PREFERRED_COMPONENT_MISSING",
   "FORBIDDEN_COMPONENT_PRESENT",
   "FORM_FACTOR_MISMATCH",
@@ -81,6 +85,8 @@ const RULE_DESCRIPTIONS: Record<ValidationRule, string> = {
     "Flags pins that work but constrain boot or are shared with the USB console.",
   ELECTRICAL_PLACEHOLDER:
     "No active mechanical or BOM placeholder is mistaken for a real, electrically specified part.",
+  RESEARCHED_FIRMWARE_DRIVER_MISSING:
+    "Every I²C, SPI and UART device has an exact firmware driver before generated firmware claims it is functional.",
   MISSING_PRODUCT_REQUIREMENT:
     "A product-level request includes the physical subsystems it needs to perform its stated function.",
   PHYSICAL_DESIGN_INCOMPLETE:
@@ -89,6 +95,8 @@ const RULE_DESCRIPTIONS: Record<ValidationRule, string> = {
   UNKNOWN_ELECTRICAL_VALUE:
     "Reports figures the component library does not document, instead of guessing them.",
   EMPTY_DESIGN: "The request produced an actual circuit rather than a bare board.",
+  REQUESTED_POWER_PART_MISSING:
+    "An explicitly requested cell or supply module is either in the design or explained here.",
   PREFERRED_COMPONENT_MISSING:
     "Every part the request named as preferred is either in the design or explained here.",
   FORBIDDEN_COMPONENT_PRESENT: "No part the request ruled out ended up in the circuit anyway.",
@@ -121,7 +129,7 @@ function makeContext(circuit: CompiledCircuit): RuleContext {
     }
   }
   const definitionOf = (instance: ComponentInstance) =>
-    componentDefinition(instance.definitionId);
+    componentDefinition(instance.definitionId, circuit.scopedDefinitions);
   return {
     circuit,
     definitionOf,
@@ -130,7 +138,7 @@ function makeContext(circuit: CompiledCircuit): RuleContext {
     parts: circuit.components.filter(
       (instance) =>
         instance.id !== circuit.controllerInstance.id &&
-        componentDefinition(instance.definitionId)?.category !== "prototyping",
+        componentDefinition(instance.definitionId, circuit.scopedDefinitions)?.category !== "prototyping",
     ),
   };
 }
@@ -608,7 +616,7 @@ function inductiveLoadProtectionMissing(context: RuleContext): ValidationResult[
         const other = context.circuit.components.find(
           (candidate) => candidate.id === connection.componentId,
         );
-        return componentDefinition(other?.definitionId ?? "")?.category === "semiconductor" &&
+        return componentDefinition(other?.definitionId ?? "", context.circuit.scopedDefinitions)?.category === "semiconductor" &&
           other?.definitionId.startsWith("diode");
       }),
     );
@@ -697,15 +705,27 @@ function unknownElectricalValues(context: RuleContext): ValidationResult[] {
   for (const instanceId of context.circuit.currentEstimate.unknownComponentIds) {
     const instance = context.circuit.components.find((candidate) => candidate.id === instanceId);
     if (!instance) continue;
+    const placement = context.circuit.peripherals.find(
+      (candidate) => candidate.instance.id === instanceId,
+    );
+    const definition = context.definitionOf(instance);
+    const hasDocumentedCurrent = definition?.electrical.typicalCurrentMa !== undefined;
+    const isUnwiredActiveLoad = hasDocumentedCurrent && placement?.supplyNetId === null;
     findings.push(
       result(
         "UNKNOWN_ELECTRICAL_VALUE",
         "warning",
-        `${instance.reference} has no documented current draw`,
-        `The library has no current figure for ${instance.name}, so it is missing from the total. The estimate below is a lower bound.`,
+        isUnwiredActiveLoad
+          ? `${instance.reference} is not connected to a supply rail`
+          : `${instance.reference} has no documented current draw`,
+        isUnwiredActiveLoad
+          ? `${instance.name} is an active load but has no compiled supply connection. Its documented current cannot be assigned to a real rail, so the estimate below remains a lower bound.`
+          : `The library has no current figure for ${instance.name}, so it is missing from the total. The estimate below is a lower bound.`,
         [instance.id],
         [],
-        "Check the part's datasheet and confirm the supply can carry it before powering up.",
+        isUnwiredActiveLoad
+          ? "Connect the part to a compatible supply rail, then recompile and validate the complete load budget."
+          : "Check the part's datasheet and confirm the supply can carry it before powering up.",
       ),
     );
   }
@@ -760,6 +780,24 @@ function electricalPlaceholders(context: RuleContext): ValidationResult[] {
   return findings;
 }
 
+function missingFirmwareDrivers(context: RuleContext): ValidationResult[] {
+  return context.circuit.peripherals.flatMap((placement) => {
+    if (!["i2c", "spi", "uart"].includes(placement.interfaceKind)) return [];
+    if (firmwareDriver(placement.definition.id)) return [];
+    return [
+      result(
+        "RESEARCHED_FIRMWARE_DRIVER_MISSING",
+        "error",
+        `${placement.instance.reference} has no verified firmware driver`,
+        `${placement.definition.name} has a documented ${placement.interfaceKind.toUpperCase()} interface, but pin-level wiring alone is not enough to initialise or operate it. Generic firmware must not report it ready.`,
+        [placement.instance.id],
+        [],
+        "Add and test a driver for this exact manufacturer part, or choose a supported module with an existing driver.",
+      ),
+    ];
+  });
+}
+
 /**
  * Electrical correctness cannot prove that a product does what its brief says.
  * Keep a small set of high-confidence, product-level completeness checks here
@@ -779,6 +817,7 @@ function missingProductRequirements(
     request.purpose,
     ...request.inputs.map((entry) => entry.type),
     ...request.outputs.map((entry) => entry.type),
+    ...(request.physicalParts ?? []).map((entry) => entry.type),
   ]
     .join(" ")
     .toLowerCase();
@@ -790,6 +829,12 @@ function missingProductRequirements(
 
   const instancesByDefinition = new Map(
     context.circuit.components.map((instance) => [instance.definitionId, instance]),
+  );
+  const declaredPhysicalDefinitions = new Set(
+    (request.physicalParts ?? []).flatMap((entry) => {
+      const outcome = resolveComponentPhrase(entry.type, context.circuit.scopedDefinitions);
+      return outcome.status === "resolved" ? [outcome.definition.id] : [];
+    }),
   );
   const requirements = [
     {
@@ -815,7 +860,11 @@ function missingProductRequirements(
   ] as const;
 
   return requirements.flatMap((requirement) => {
-    if (requirement.accepted.some((id) => instancesByDefinition.has(id))) return [];
+    if (
+      requirement.accepted.some(
+        (id) => instancesByDefinition.has(id) || declaredPhysicalDefinitions.has(id),
+      )
+    ) return [];
     return [
       result(
         "MISSING_PRODUCT_REQUIREMENT",
@@ -858,6 +907,7 @@ export function validateCircuit(
   return [
     ...fromCompilerNotes(circuit.notes),
     ...electricalPlaceholders(context),
+    ...missingFirmwareDrivers(context),
     ...missingProductRequirements(context, request, sourceBrief),
     ...nothingConnected(context),
     ...powerVoltageOutOfRange(context),

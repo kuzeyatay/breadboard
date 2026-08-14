@@ -4,6 +4,7 @@ import {
   INTERNAL_CONCEPT_TYPE,
   LEARNING_PAGE_ORDER,
   TEXTBOOK_PAGE_TYPE,
+  isLearnAuthoredLesson,
   isInternalConceptMetadata,
   isLegacySubtopicRelPath,
   readingOrderRank,
@@ -12,6 +13,40 @@ import {
 } from "../src/lib/learning-garden.ts";
 
 describe("learning garden metadata", () => {
+  test("distinguishes Learn lessons from document-ingestion learning pages", () => {
+    assert.equal(
+      isLearnAuthoredLesson({
+        type: "learning-page",
+        relPath: "1. Engineering Electromagnetics/vector-fields.md",
+        internal: "true",
+      }),
+      false,
+    );
+    assert.equal(
+      isLearnAuthoredLesson({
+        type: "learning-map",
+        relPath: "learning/Learning Map.md",
+      }),
+      false,
+    );
+    assert.equal(
+      isLearnAuthoredLesson({
+        type: "learning-page",
+        relPath: "learning/1. Fields/1.1 Vector Fields.md",
+        generatedBy: "learn_button",
+      }),
+      true,
+    );
+    assert.equal(
+      isLearnAuthoredLesson({
+        type: "textbook-page",
+        relPath: "learning/1. Fields/1.1 Vector Fields.md",
+        generated_by: "learn_button",
+      }),
+      true,
+    );
+  });
+
   test("hides internal ConceptNodes from published/default views", () => {
     const metadata = {
       knowledge_type: INTERNAL_CONCEPT_TYPE,

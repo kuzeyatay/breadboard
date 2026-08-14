@@ -20,6 +20,7 @@ import {
   LEARNING_SECTION_TYPE,
   LEARNING_SECTION_TYPES,
   LEGACY_GENERATED_TOPIC_FOLDER,
+  isLearnAuthoredLesson,
   isInternalConceptMetadata,
   isLegacySubtopicRelPath,
   readingOrderRank,
@@ -2268,7 +2269,6 @@ export async function writeDocumentKnowledge({
   });
   const sourceImages = uniqueNonEmpty(
     cleanPages.map((page) => page.imagePath ?? "").filter(Boolean),
-    40,
   );
 
   const sourceFrontmatter: Record<string, string | string[]> = {
@@ -2767,13 +2767,6 @@ export function scanClusterKnowledge(
       }
     }
   }
-
-  const isLearnAuthoredLesson = (node: KnowledgeNode): boolean =>
-    node.type === LEARNING_PAGE_TYPE &&
-    node.relPath.replace(/\\/g, "/").startsWith(`${LEARNING_FOLDER}/`) &&
-    node.internal !== "true" &&
-    node.draft !== "true" &&
-    (node.generatedBy === "learn_button" || node.generated_by === "learn_button");
 
   const sourceNodes = nodes.filter((node) => node.type === "source-document");
   const textbookNodes = nodes.filter(isLearnAuthoredLesson);

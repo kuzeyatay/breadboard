@@ -140,6 +140,90 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(reasoning_delta["reasoning_content"], "Checked sources.")
         self.assertEqual(reasoning_delta["reasoning_summary"], "Checked sources.")
 
+    def test_legacy_stream_keeps_native_web_search_internal(self) -> None:
+        upstream = FakeUpstream(
+            [
+                {
+                    "type": "response.web_search_call.in_progress",
+                    "item_id": "ws_1",
+                },
+                {
+                    "type": "response.web_search_call.searching",
+                    "item_id": "ws_1",
+                },
+                {
+                    "type": "response.web_search_call.completed",
+                    "item_id": "ws_1",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+                },
+                {"type": "response.output_text.delta", "delta": "Grounded answer"},
+                {"type": "response.completed", "response": {"id": "resp_search"}},
+            ]
+        )
+
+        translated = b"".join(
+            sse_translate_chat(upstream, model="gpt-5.6-sol", created=1)
+        ).decode("utf-8")
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in translated.splitlines()
+            if line.startswith("data: {")
+        ]
+        deltas = [event["choices"][0]["delta"] for event in events if event.get("choices")]
+        finish_reasons = [
+            event["choices"][0]["finish_reason"]
+            for event in events
+            if event.get("choices") and event["choices"][0].get("finish_reason")
+        ]
+
+        self.assertFalse(any("tool_calls" in delta for delta in deltas))
+        self.assertEqual(
+            "".join(delta.get("content", "") for delta in deltas),
+            "Grounded answer",
+        )
+        self.assertEqual(finish_reasons, ["stop"])
+
+    @patch("chatmock.routes_openai.start_upstream_request")
+    def test_chat_completions_does_not_duplicate_function_web_search(self, mock_start) -> None:
+        app = create_app(default_web_search=True)
+        client = app.test_client()
+        mock_start.return_value = (
+            FakeUpstream(
+                [
+                    {"type": "response.output_text.delta", "delta": "hello"},
+                    {"type": "response.completed", "response": {"id": "resp_search_tool"}},
+                ]
+            ),
+            None,
+        )
+
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "research this"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the web",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        outbound_tools = mock_start.call_args.kwargs["tools"]
+        self.assertEqual(
+            [(tool.get("type"), tool.get("name")) for tool in outbound_tools],
+            [("function", "web_search")],
+        )
+
     def test_ollama_tags_list(self) -> None:
         response = self.client.get("/api/tags")
         body = response.get_json()

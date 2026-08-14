@@ -273,7 +273,8 @@ test("the artifact opens with the design named and measured", () => {
   assert.match(html, /Revision 2/);
   assert.match(html, /96\.8 × 69\.8 × 30\.4 mm/);
   assert.match(html, /2 bodies/);
-  assert.match(html, /Validated with warnings/);
+  assert.match(html, /Geometry passed with warnings/);
+  assert.match(html, /do not by themselves prove assembly fit, strength, ergonomics/);
 });
 
 test("the 3D preview loads through the authenticated CAD route", () => {
@@ -335,7 +336,10 @@ test("the parameters panel exposes editable values with their ranges", () => {
 });
 
 test("an expanded CAD panel can be collapsed and reopened", () => {
-  assert.match(artifactComponentSource, /useState<CadPanel \| null>\(initialPanel\)/);
+  assert.match(
+    artifactComponentSource,
+    /useState<CadPanel \| null>\(\s*initialPanel === "assembly" && !assembly \? "parameters" : initialPanel,?\s*\)/,
+  );
   assert.match(
     artifactComponentSource,
     /setTab\(\(current\) => \(current === id \? null : id\)\)/,
@@ -444,7 +448,7 @@ test("an invalid design is labelled as such", () => {
       },
     },
   });
-  assert.match(html, /Not valid/);
+  assert.match(html, /Geometry checks failed/);
   assert.match(html, /Validation \(1\)/);
 });
 
@@ -455,4 +459,107 @@ test("the panel refuses to submit without a conversation to publish into", () =>
   const button = /Rebuild with these values/.exec(html);
   assert.ok(button, "the rebuild button is missing");
   assert.match(html.slice(0, button.index), /disabled=""/);
+});
+
+// ---------------------------------------------------------------------------
+// What attaches where
+// ---------------------------------------------------------------------------
+
+/** The same design, with the assembly a multi-body part is required to carry. */
+const ASSEMBLED = {
+  ...DESIGN,
+  designSpec: {
+    ...DESIGN.designSpec,
+    components: [
+      ...DESIGN.designSpec.components,
+      { id: "pi-4b", name: "Raspberry Pi 4B", quantity: 1, bodyRole: "reference" },
+    ],
+    assembly: {
+      overview: "Two printed bodies: the board sits in the shell and the lid screws down.",
+      hardware: [
+        {
+          id: "lid_screws",
+          name: "M2.5 × 10 mm self-tapping screw",
+          quantity: 4,
+          purpose: "Through the lid into the shell's corner bosses.",
+        },
+      ],
+      steps: [
+        {
+          order: 2,
+          summary: "Close the lid onto the four corner bosses.",
+          parts: ["lid", "shell"],
+          hardware: ["lid_screws"],
+          detail: "Do not overtighten a self-tapping screw in a printed boss.",
+        },
+        {
+          order: 1,
+          summary: "Seat the board in the shell's rail pocket.",
+          parts: ["shell", "pi-4b"],
+        },
+      ],
+      notes: ["Measure the printed bosses before ordering screws."],
+    },
+  },
+};
+
+test("a multi-body design opens on what attaches where", () => {
+  const html = render({ design: ASSEMBLED });
+  const trigger = html.match(/<button[^>]*id="cad-assembly-trigger"[^>]*>/)?.[0] ?? "";
+  assert.match(trigger, /aria-expanded="true"/, "assembly does not lead");
+  assert.match(
+    html,
+    /<section[^>]*id="cad-assembly-panel"[^>]*aria-labelledby="cad-assembly-trigger"/,
+  );
+
+  // The design says what it is, above every panel.
+  assert.match(html, /A wall-mounted enclosure with a removable lid\./);
+  assert.match(html, /the board sits in the shell and the lid screws down/);
+
+  // Printed bodies, with the kernel's own measurement of each one.
+  assert.match(html, /Printed parts/);
+  assert.match(html, /91\.3 × 64\.3 × 2\.4 mm/);
+
+  // Bought parts are separated from printed ones, and quantified.
+  assert.match(html, /Hardware to supply/);
+  assert.match(html, /4 × M2\.5 × 10 mm self-tapping screw/);
+  assert.match(html, /Parts this design makes room for/);
+  assert.match(html, /Raspberry Pi 4B/);
+
+  // Steps run in build order whatever order they were stored in, and name the
+  // parts they join rather than repeating their ids.
+  const first = html.indexOf("Seat the board");
+  const second = html.indexOf("Close the lid");
+  assert.ok(first > 0 && second > first, "assembly steps are not in build order");
+  assert.match(html, /Lid · Shell · 4 × M2\.5 × 10 mm self-tapping screw/);
+  assert.match(html, /Measure the printed bosses before ordering screws\./);
+});
+
+test("a design with no assembly recorded still opens on its parameters", () => {
+  const html = render();
+  assert.doesNotMatch(html, /id="cad-assembly-panel"/);
+  const trigger = html.match(/<button[^>]*id="cad-parameters-trigger"[^>]*>/)?.[0] ?? "";
+  assert.match(trigger, /aria-expanded="true"/);
+});
+
+test("geometry written by the recovery template says so", () => {
+  const fromTemplate = render({
+    design: {
+      ...ASSEMBLED,
+      provenance: { ...DESIGN.provenance, geometryAuthor: "deterministic-template" },
+    },
+  });
+  assert.match(fromTemplate, /built-in recovery template/);
+
+  // Designs built before the field existed still carry it in the model string.
+  const legacy = render({
+    design: {
+      ...ASSEMBLED,
+      provenance: { ...DESIGN.provenance, model: "gpt-5.6-sol + deterministic fallback" },
+    },
+  });
+  assert.match(legacy, /built-in recovery template/);
+
+  // A model-written design is not labelled.
+  assert.doesNotMatch(render({ design: ASSEMBLED }), /built-in recovery template/);
 });

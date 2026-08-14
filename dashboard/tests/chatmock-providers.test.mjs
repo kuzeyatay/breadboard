@@ -84,11 +84,15 @@ test("the desktop shell passes the sentinel to its services", () => {
 
 test("the providers panel is reachable, on the Accounts tab", () => {
   const dialog = source("src/app/components/settings-dialog.tsx");
-  assert.match(dialog, /<SettingsProviders onOpenAccount=/);
+  assert.match(dialog, /<SettingsProviders \/>/);
   // Accounts and providers are one page. A tab of its own would put "the
   // accounts I have" and "how I get another" behind different clicks again.
   assert.doesNotMatch(dialog, /value: "providers"/);
   assert.match(dialog, /label: "Accounts"/);
+  // And neither half sends the reader to the other: those two buttons only
+  // scrolled, which is a jump that signs nothing in.
+  assert.doesNotMatch(dialog, /scrollIntoView/);
+  assert.doesNotMatch(dialog, /onOpenAccount|onOpenProviders/);
 });
 
 test("the providers panel never renders a stored key back to the browser", () => {

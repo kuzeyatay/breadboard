@@ -22,6 +22,7 @@
     "setup:sf3d": "node scripts/setup-sf3d.mjs",
     "setup:manim": "node scripts/setup-manim.mjs",
     "setup:audio-analyzer": "node scripts/setup-audio-analyzer.mjs",
+    "setup:resource2skill": "node scripts/setup-resource2skill.mjs",
     "test:cad": "node scripts/test-cad.mjs",
     "dev:cliproxy": "node scripts/start-cliproxy.mjs",
     "test:dashboard": "npm --prefix dashboard test",

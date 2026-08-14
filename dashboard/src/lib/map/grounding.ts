@@ -79,7 +79,7 @@ const ASK_PATTERNS: { ask: GeographicAsk; pattern: RegExp }[] = [
   {
     ask: "proximity",
     pattern:
-      /\b(near(?:by|est)?|closest|close to|around (?:here|there|me|us)|within walking distance|in the area|next to|around|yakin(?:in|da|inda)?|en yakin|civarinda|yakinlarinda)\b/,
+      /\b(near(?:by|est)?|closest|close to|around (?:here|there|me|us)|within walking distance|in the area|next to|(?:what|which) (?:is|are) around (?!\d)|(?:restaurants?|cafes?|bars?|hotels?|shops?|stores?|museums?|parks?|pharmac(?:y|ies)|places?|things to do)\b.{0,40}\baround|yakin(?:in|da|inda)?|en yakin|civarinda|yakinlarinda)\b/,
   },
   {
     ask: "hours",

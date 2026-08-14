@@ -168,6 +168,8 @@ test('concurrent Learn calls report every in-flight and completed request', asyn
 test('Learn persistence uses a job-scoped atomic usage table', () => {
   const source = fs.readFileSync(new URL('../src/lib/learn.ts', import.meta.url), 'utf8');
   assert.match(source, /CREATE TABLE IF NOT EXISTS learn_job_token_usage/);
+  assert.match(source, /model\s+TEXT NOT NULL DEFAULT 'gpt-5\.6-sol'/);
+  assert.match(source, /model: row\.model\?\.trim\(\) \|\| LEARN_MODEL/);
   assert.match(source, /started_requests = started_requests \+ 1/);
   assert.match(source, /completed_requests = completed_requests \+ 1/);
   assert.match(source, /input_tokens = input_tokens \+ \?/);
@@ -204,6 +206,10 @@ test('Learn panel renders live job usage without Council activity', () => {
   assert.match(source, /learnTokenUsage\.inFlightCalls/);
   assert.match(source, /learnTokenUsage\.unreportedCalls/);
   assert.match(source, /Waiting for usage/);
+  assert.match(
+    source,
+    /metric\.label === "Total" && job\?\.model[\s\S]*?<dt className="text-gray-600">Model:<\/dt>[\s\S]*?<dd[\s\S]*?className="font-mono tabular-nums text-gray-200"[\s\S]*?formatAssistantModelName\(job\.model\)/,
+  );
   assert.match(
     usagePanelSource,
     /metric\.label === "Total"[\s\S]*?formatLearnTotalTokenCount\(metric\.value\)/,

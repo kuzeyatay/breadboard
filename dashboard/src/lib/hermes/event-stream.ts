@@ -439,6 +439,12 @@ function driveSessionEventPump(
           });
         }
       };
+      // A successfully queued delegated run is the evidence-gathering action
+      // for this parent turn. Its prose is only a handoff, so applying the
+      // factual-answer web gate here would replace a valid handoff with the
+      // misleading "I couldn't verify" fallback while the worker is running.
+      const webGroundingAppliesToCompletion = () =>
+        webGroundingRequired() && lastAgentLaunchRequestId === 0;
       const recordCompletedTool = (
         event: CompletedToolEvent,
         audit = true,
@@ -556,12 +562,12 @@ function driveSessionEventPump(
           assistantText = enforceRequiredWebEvidence(
             assistantText,
             evidence,
-            webGroundingRequired(),
+            webGroundingAppliesToCompletion(),
           );
         }
         const verification = assessVerification(assistantText, evidence, {
           geographicGroundingRequired: geographicGroundingRequired(),
-          webGroundingRequired: webGroundingRequired(),
+          webGroundingRequired: webGroundingAppliesToCompletion(),
         });
         try {
           persistAssistantOnce(
@@ -843,7 +849,7 @@ function driveSessionEventPump(
               const groundedAssistantText = enforceRequiredWebEvidence(
                 assistantText,
                 evidence,
-                webGroundingRequired(),
+                webGroundingAppliesToCompletion(),
               );
               if (groundedAssistantText !== assistantText) {
                 assistantText = groundedAssistantText;
@@ -869,7 +875,7 @@ function driveSessionEventPump(
                 timestamp: new Date().toISOString(),
                 payload: assessVerification(assistantText, evidence, {
                   geographicGroundingRequired: geographicGroundingRequired(),
-                  webGroundingRequired: webGroundingRequired(),
+                  webGroundingRequired: webGroundingAppliesToCompletion(),
                 }),
               });
               finalize("idle");

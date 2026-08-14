@@ -16,7 +16,18 @@ export type CADUnits = "mm" | "inch";
 export type ManufacturingProcess = "fdm" | "sla" | "sls" | "unknown";
 export type CADParameterSource = "user" | "default" | "derived";
 export type CADBodyRole = "primary" | "lid" | "fastener" | "reference" | "other";
-export type CADExportFormat = "step" | "stl" | "glb" | "3mf" | "source" | "spec" | "report";
+export type CADExportFormat =
+  | "step"
+  | "stl"
+  | "glb"
+  | "3mf"
+  /** The native SolidWorks part. Only ever present on a SolidWorks build. */
+  | "sldprt"
+  | "source"
+  /** The SolidWorks operation program, in place of `source` on that backend. */
+  | "operations"
+  | "spec"
+  | "report";
 export type CADStatus = "draft" | "valid" | "valid-with-warnings" | "invalid";
 
 export interface CADValidationIssue {
@@ -74,6 +85,46 @@ export interface CADAssumption {
   userEditable: boolean;
 }
 
+/** A bought item the printed bodies are assembled with. Never a printed body. */
+export interface CADAssemblyHardware {
+  id: string;
+  /** What to buy, said the way a supplier lists it: "M3 × 12 socket cap screw". */
+  name: string;
+  quantity: number;
+  /** Where it goes. */
+  purpose?: string;
+}
+
+/**
+ * One join. `parts` names the bodies and reference envelopes the step brings
+ * together — component ids, so a step can be read against the components list
+ * and against the named solids the program returned.
+ */
+export interface CADAssemblyStep {
+  order: number;
+  summary: string;
+  parts: string[];
+  hardware?: string[];
+  detail?: string;
+}
+
+/**
+ * What attaches to what.
+ *
+ * The measurements say the part is valid; they never say which body is which,
+ * which face the board lands on, or which screw holds the lid. That knowledge
+ * only exists at design time, so it is recorded with the design rather than
+ * left in a chat message that scrolls away.
+ */
+export interface CADAssembly {
+  /** The assembled product in one or two sentences. */
+  overview: string;
+  hardware: CADAssemblyHardware[];
+  steps: CADAssemblyStep[];
+  /** Tools, adhesives, or preparation the steps assume. */
+  notes?: string[];
+}
+
 export interface CADExportSettings {
   stlLinearTolerance: number;
   stlAngularTolerance: number;
@@ -94,6 +145,11 @@ export interface CADDesignSpec {
   components: CADComponent[];
   constraints: CADConstraint[];
   assumptions: CADAssumption[];
+  /**
+   * How the printed bodies and bought parts go together. Absent on designs
+   * built before this was recorded, and on a single body with no hardware.
+   */
+  assembly?: CADAssembly;
   exportSettings: CADExportSettings;
   /**
    * The declared overall size, in millimetres, that validation measures the
@@ -161,6 +217,12 @@ export interface CADProvenance {
   pythonVersion: string;
   serviceVersion: string;
   model: string;
+  /**
+   * Who wrote the geometry program. New revisions are always model-authored.
+   * `deterministic-template` remains readable only so artifacts saved before
+   * deterministic CAD substitution was removed keep their honest provenance.
+   */
+  geometryAuthor?: "model" | "deterministic-template";
   generatedAt: string;
   parentRevision?: number;
   /** Milliseconds the CAD kernel spent, excluding model time. */

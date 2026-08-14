@@ -8,7 +8,7 @@
 // element for a part managed to load.
 
 import { useMemo, useRef } from "react";
-import { componentDefinition } from "@/lib/hardware/components/index.ts";
+import { componentDefinitionForDesign } from "@/lib/hardware/components/index.ts";
 import { netLegend, netStyle } from "@/lib/hardware/net-style.ts";
 import type { ComponentInstance, ElectricalNet, HardwareDesign } from "@/lib/hardware/types";
 import PartGraphic from "./part-graphic";
@@ -40,7 +40,7 @@ function canvasSize(design: HardwareDesign): { width: number; height: number } {
   let width = 640;
   let height = 420;
   for (const instance of design.components) {
-    const definition = componentDefinition(instance.definitionId);
+    const definition = componentDefinitionForDesign(design, instance.definitionId);
     if (!definition || !instance.position) continue;
     width = Math.max(width, instance.position.x + definition.visual.width + 48);
     height = Math.max(height, instance.position.y + definition.visual.height + 48);
@@ -59,7 +59,7 @@ export function contentBox(design: HardwareDesign): ContentBox {
   let maxX = Number.NEGATIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
   for (const instance of design.components) {
-    const definition = componentDefinition(instance.definitionId);
+    const definition = componentDefinitionForDesign(design, instance.definitionId);
     if (!definition || !instance.position) continue;
     minX = Math.min(minX, instance.position.x);
     minY = Math.min(minY, instance.position.y);
@@ -83,12 +83,13 @@ export function contentBox(design: HardwareDesign): ContentBox {
 function endpointsOf(
   net: ElectricalNet,
   byId: Map<string, ComponentInstance>,
+  design: HardwareDesign,
 ): Endpoint[] {
   const points: Endpoint[] = [];
   for (const connection of net.connections) {
     const instance = byId.get(connection.componentId);
     if (!instance?.position) continue;
-    const definition = componentDefinition(instance.definitionId);
+    const definition = componentDefinitionForDesign(design, instance.definitionId);
     const anchor = definition?.visual.pinAnchors[connection.pinId];
     if (!definition || !anchor) continue;
     points.push({
@@ -141,8 +142,8 @@ export default function WiringView({ design, selection, onSelect }: WiringViewPr
   const canvas = useMemo(() => canvasSize(design), [design]);
   const wires = useMemo(
     () =>
-      design.nets.flatMap((net, index) => routeNet(net, endpointsOf(net, byId), index)),
-    [byId, design.nets],
+      design.nets.flatMap((net, index) => routeNet(net, endpointsOf(net, byId, design), index)),
+    [byId, design],
   );
   const legend = useMemo(() => netLegend(design.nets.map((net) => net.role)), [design.nets]);
 
@@ -209,7 +210,7 @@ export default function WiringView({ design, selection, onSelect }: WiringViewPr
           }}
         >
           {design.components.map((instance) => {
-            const definition = componentDefinition(instance.definitionId);
+            const definition = componentDefinitionForDesign(design, instance.definitionId);
             if (!definition || !instance.position) return null;
             const dim = active && !highlighted.componentIds.has(instance.id);
             const chosen = selection.componentIds.includes(instance.id);

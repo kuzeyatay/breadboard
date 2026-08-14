@@ -20,6 +20,10 @@ const confirmationDialogSource = fs.readFileSync(
   ),
   "utf8",
 );
+const modelCallIndicatorSource = fs.readFileSync(
+  new URL("../src/app/components/model-call-indicator.tsx", import.meta.url),
+  "utf8",
+);
 
 test("Learn panel omits Council activity and its polling", () => {
   assert.doesNotMatch(workspaceSource, /Council activity/);
@@ -27,12 +31,19 @@ test("Learn panel omits Council activity and its polling", () => {
   assert.doesNotMatch(workspaceSource, /learnEvents/);
 });
 
-test("Learn panel reports the active step without a redundant running subtitle", () => {
+test("Learn panel reports one failure message without redundant status or stage copy", () => {
   assert.doesNotMatch(
     workspaceSource,
     /Learn is running\. \$\{Math\.round\(progress\)\}% complete\./,
   );
-  assert.match(workspaceSource, /Learn failed before completion\./);
+  assert.doesNotMatch(workspaceSource, /Learn failed before completion\./);
+  assert.match(workspaceSource, /const showFailedState = status === "failed" && !startingLearnAction/);
+  assert.match(workspaceSource, /showFailedState && job\?\.error/);
+  assert.match(
+    workspaceSource,
+    /status === "failed" \|\| status === "cancelled" \|\| staleReviewForExistingGarden/,
+  );
+  assert.match(workspaceSource, /Starting Learn retry\.\.\./);
   assert.doesNotMatch(workspaceSource, /Internal stage:/);
   assert.match(workspaceSource, /const stageMessage =/);
   assert.match(workspaceSource, /stageMessage \|\| null/);
@@ -48,10 +59,22 @@ test("Learn panel reports the active step without a redundant running subtitle",
   assert.match(learnSource, /Lesson generation failed; last internal step:/);
 });
 
+test("abandoned Learn recovery states the observed failure without claiming an app restart", () => {
+  assert.match(
+    learnSource,
+    /Learn stopped responding before completion\. Your garden was restored and is safe to retry\./,
+  );
+  assert.doesNotMatch(learnSource, /Interrupted by an app restart/);
+  assert.match(
+    workspaceSource,
+    /the learn worker stopped without completing[\s\S]*?Learn stopped responding before completion/,
+  );
+});
+
 test("Learn keeps controls up and current-step copy below the progress bar", () => {
   assert.match(
     workspaceSource,
-    /<div className="flex flex-col gap-2">[\s\S]*?<div className="flex min-h-8 items-center justify-between gap-3">[\s\S]*?<div className="flex shrink-0 items-center gap-2">[\s\S]*?<p className="text-sm font-medium text-white">Learn<\/p>[\s\S]*?<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">/,
+    /<div className="flex flex-col gap-2">[\s\S]*?<div className="flex min-h-8 items-start justify-between gap-3">[\s\S]*?<div className="flex h-8 shrink-0 items-center gap-2">[\s\S]*?<p className="text-sm font-medium text-white">Learn<\/p>[\s\S]*?<div className="flex min-w-0 flex-1 items-start gap-2">[\s\S]*?<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">/,
   );
   assert.match(
     workspaceSource,
@@ -60,6 +83,39 @@ test("Learn keeps controls up and current-step copy below the progress bar", () 
   assert.match(
     workspaceSource,
     /status === "cancelled" \|\| staleReviewForExistingGarden[\s\S]*?\? ""/,
+  );
+});
+
+test("an active Learn run shows one action instead of wrapping disabled actions", () => {
+  assert.match(workspaceSource, /\{hasLearnData && !active && \(/);
+  assert.match(workspaceSource, /\{showPrimaryAction && !active && \(/);
+  assert.match(workspaceSource, /\{active && \([\s\S]*?Stopping\.\.\./);
+});
+
+test("model call labels are plain text without a badge or status dot", () => {
+  assert.match(
+    modelCallIndicatorSource,
+    /className="inline-flex items-center whitespace-nowrap text-gray-500"/,
+  );
+  assert.match(
+    workspaceSource,
+    /metric\.label === "Total" && job\?\.model[\s\S]*?<dt className="text-gray-600">Model:<\/dt>[\s\S]*?<dd[\s\S]*?className="font-mono tabular-nums text-gray-200"/,
+  );
+  assert.doesNotMatch(
+    modelCallIndicatorSource,
+    /text-\[10px\]|rounded-full|border-gray|bg-gray|bg-emerald/,
+  );
+});
+
+test("a long syllabus name cannot push the Learn close button into the controls", () => {
+  assert.match(workspaceSource, /max-w-28 truncate sm:max-w-32/);
+  assert.match(
+    workspaceSource,
+    /<div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">[\s\S]*?<\/div>\s*\{!active &&[\s\S]*?aria-label="Close Learn panel"/,
+  );
+  assert.match(
+    workspaceSource,
+    /aria-label="Close Learn panel"[\s\S]*?className="h-3\.5 w-3\.5"/,
   );
 });
 
@@ -83,11 +139,16 @@ test("destructive Learn actions use the custom confirmation dialog", () => {
   assert.match(confirmationDialogSource, /cancelRef\.current\?\.focus\(\)/);
 });
 
-test("rebuild and clear dialogs use the readable semantic light-theme palette", () => {
+test("rebuild and clear dialogs use concise copy and the readable semantic light-theme palette", () => {
   assert.match(confirmationDialogSource, /Rebuild the entire garden\?/);
-  assert.match(confirmationDialogSource, /Clear all Learn data\?/);
+  assert.match(confirmationDialogSource, /Clear Learn data\?/);
+  assert.match(
+    confirmationDialogSource,
+    /This permanently deletes all generated Learn content and history\. This cannot be undone\./,
+  );
   assert.match(confirmationDialogSource, /Before you rebuild/);
-  assert.match(confirmationDialogSource, /What stays/);
+  assert.doesNotMatch(confirmationDialogSource, /What stays/);
+  assert.match(confirmationDialogSource, /\{content\.guidance && \(/);
   assert.match(confirmationDialogSource, /bg-\[var\(--paper-raised\)\]/);
   assert.match(confirmationDialogSource, /text-\[var\(--ink-muted\)\]/);
   assert.match(confirmationDialogSource, /bg-\[var\(--danger\)\]/);

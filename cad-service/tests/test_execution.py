@@ -178,6 +178,24 @@ class ExecutionTest(unittest.TestCase):
         self.assertEqual(codes.get("disconnected_bodies"), "warning")
         self.assertTrue(passed(result.issues), [i.model_dump() for i in result.issues])
 
+    def test_overlapping_printed_bodies_fail_assembly_validation(self):
+        source = (
+            "import cadquery as cq\n"
+            "def build_model(params):\n"
+            "    first = cq.Workplane('XY').box(20, 20, 10)\n"
+            "    second = cq.Workplane('XY').box(20, 20, 10).translate((10, 0, 0))\n"
+            "    return {'chassis': first, 'carriage': second}\n"
+        )
+        outcome = build(source, expectations={"expectedSolidCount": 2})
+        self.assertTrue(outcome.result.ok, outcome.result.failure)
+        collisions = [
+            issue for issue in outcome.result.issues
+            if issue.code == "assembly_interference"
+        ]
+        self.assertEqual(len(collisions), 1)
+        self.assertAlmostEqual(collisions[0].actual, 2_000.0, places=3)
+        self.assertFalse(passed(outcome.result.issues))
+
     def test_an_empty_model_is_refused(self):
         outcome = build("def build_model(params):\n    return None\n")
         self.assertFalse(outcome.result.ok)

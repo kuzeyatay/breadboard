@@ -1,5 +1,6 @@
 import { formatExactTokenCount, formatTokenCount } from "@/lib/chat-token-usage";
 import type { IngestTokenUsage } from "@/lib/ingest-token-usage";
+import ModelCallIndicator from "@/app/components/model-call-indicator";
 
 function formatTotalTokenCount(value: number): string {
   const count = Math.max(0, Math.trunc(value));
@@ -37,6 +38,7 @@ export default function DocumentIngestionTokenUsage({
         : "Document ingestion token usage"}
     >
       <span className="font-medium text-gray-400">Tokens</span>
+      <ModelCallIndicator model={usage.model} />
       {usage.reportedCalls > 0 ? metrics.map((metric) => (
         <span key={metric.label} className="flex items-baseline gap-1">
           <span>{metric.label}</span>

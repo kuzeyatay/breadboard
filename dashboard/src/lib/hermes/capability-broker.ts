@@ -32,6 +32,7 @@ import {
   MANIM_TOOLS,
   MAP_TOOLS,
   OFFICE_TOOLS,
+  WATERMARK_TOOLS,
   OMH_TOOLS,
   PLAN_TOOLS,
   IMAGE_TO_3D_TOOLS,
@@ -228,6 +229,7 @@ export const BROKERED_TOOLS: readonly string[] = [
       ...CALENDAR_TOOLS,
       ...PLAN_TOOLS,
       ...OFFICE_TOOLS,
+      ...WATERMARK_TOOLS,
       ...WORKSPACE_TOOLS,
       ...SUPER_AGENT_TOOLS,
       "shell",
@@ -756,6 +758,14 @@ function buildToolMap(
   for (const tool of OFFICE_TOOLS) {
     map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
   }
+  // "What metadata does this photo carry?" and "strip the Content Credentials
+  // from it" are hygiene over the user's own files, so like document authoring
+  // they do not depend on the turn's capability class. The scripts only ever
+  // see the turn's workspace or a file the user attached to this very
+  // conversation, and cleaning writes a new copy rather than overwriting.
+  for (const tool of WATERMARK_TOOLS) {
+    map[tool] = authenticated && (surface === "dashboard_terminal" || surface === "garden_chat");
+  }
   // The build loop works the same directory OfficeCLI and the loop kit already
   // work, so it follows the same rule: no dependence on the turn's capability
   // class, because nothing here reaches the user's filesystem. That is the whole
@@ -804,6 +814,9 @@ function buildToolMap(
     for (const tool of PLAN_TOOLS) map[tool] = false;
     // Office documents live in one person's workspace, and these tools write.
     for (const tool of OFFICE_TOOLS) map[tool] = false;
+    // The files these read are one person's uploads and one person's workspace,
+    // and this surface is the anonymous public one.
+    for (const tool of WATERMARK_TOOLS) map[tool] = false;
   }
   return map;
 }

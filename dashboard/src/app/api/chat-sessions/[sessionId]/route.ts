@@ -25,6 +25,10 @@ import {
   type ExternalAgentRun,
 } from "@/lib/conversations/external-agent-runs";
 import { cancelRunningExternalAgentRuns } from "@/lib/conversations/external-agent-cancel";
+import {
+  ensureConversationForLegacyChatSession,
+  renameConversation,
+} from "@/lib/conversations/store";
 import { cancelRuntimeSessionWork } from "@/lib/hermes/session-cancel";
 import { listRuntimeSessionsForChatSession } from "@/lib/hermes/runtime-store";
 
@@ -185,7 +189,7 @@ function normalizeExternalAgent(
 
 function cleanTitle(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const title = value.trim().replace(/\s+/g, " ").slice(0, 80);
+  const title = value.trim().replace(/\s+/g, " ").slice(0, 200);
   return title || null;
 }
 
@@ -308,19 +312,31 @@ export async function PATCH(
   }
 
   const body = await request.json();
-  const title = cleanTitle(body.title);
+  const title = body.title === undefined ? undefined : cleanTitle(body.title);
+  if (body.title !== undefined && !title) {
+    return NextResponse.json(
+      { error: "A chat needs a name." },
+      { status: 400 },
+    );
+  }
   const messages =
     body.messages === undefined ? undefined : normalizeMessages(body.messages);
   if (body.messages !== undefined && !messages) {
     return NextResponse.json({ error: "Invalid messages" }, { status: 400 });
   }
 
+  const conversation = title
+    ? ensureConversationForLegacyChatSession(sessionAccess.id, userId)
+    : null;
   const update = db.transaction(() => {
-    if (title) {
-      db.prepare(
-        "UPDATE chat_sessions SET title = ?, updated_at = datetime('now') WHERE id = ?",
-      ).run(title, sessionAccess.id);
-    } else {
+    if (title && conversation) {
+      // Garden Chat and Terminal are two views of the same canonical
+      // conversation. Use the canonical rename so both stores change together,
+      // and so renaming remains a label edit rather than Recent activity.
+      renameConversation(conversation, title, db);
+    }
+
+    if (messages !== undefined) {
       db.prepare(
         "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?",
       ).run(sessionAccess.id);
@@ -377,7 +393,10 @@ export async function PATCH(
   });
 
   update();
-  return NextResponse.json({ success: true });
+  const saved = db
+    .prepare("SELECT id, title, updated_at FROM chat_sessions WHERE id = ?")
+    .get(sessionAccess.id);
+  return NextResponse.json({ success: true, session: saved });
 }
 
 /**

@@ -1,7 +1,7 @@
 // The component library: the single place a definition or controller profile is
 // looked up from. Nothing outside this module may invent a part.
 
-import type { ComponentDefinition, ControllerProfile } from "../types.ts";
+import type { ComponentDefinition, ControllerProfile, HardwareDesign } from "../types.ts";
 import { ACTUATOR_DEFINITIONS } from "./actuators.ts";
 import { BASIC_DEFINITIONS } from "./basics.ts";
 import { COMMS_DEFINITIONS } from "./comms.ts";
@@ -35,8 +35,30 @@ const byId = new Map(COMPONENT_DEFINITIONS.map((definition) => [definition.id, d
 const allProfiles = [...CONTROLLER_PROFILES, ...AVR_CONTROLLER_PROFILES];
 const profilesById = new Map(allProfiles.map((profile) => [profile.definitionId, profile]));
 
-export function componentDefinition(id: string): ComponentDefinition | null {
+export function componentDefinition(
+  id: string,
+  scopedDefinitions: readonly ComponentDefinition[] = [],
+): ComponentDefinition | null {
+  // A source-backed definition discovered for one blueprint may deliberately
+  // replace a mechanical placeholder with the same stable id. It wins only in
+  // that blueprint's scope; the shared catalogue remains immutable.
+  for (let index = scopedDefinitions.length - 1; index >= 0; index -= 1) {
+    if (scopedDefinitions[index]?.id === id) return scopedDefinitions[index];
+  }
   return byId.get(id) ?? null;
+}
+
+export function scopedDefinitionsForDesign(design: HardwareDesign): ComponentDefinition[] {
+  return (design.componentResearch ?? []).flatMap((record) =>
+    record.status === "used" && record.definition ? [record.definition] : [],
+  );
+}
+
+export function componentDefinitionForDesign(
+  design: HardwareDesign,
+  id: string,
+): ComponentDefinition | null {
+  return componentDefinition(id, scopedDefinitionsForDesign(design));
 }
 
 export function controllerProfile(definitionId: string): ControllerProfile | null {

@@ -1,10 +1,11 @@
-// The only two places a language model touches a hardware blueprint.
+// The two language-model steps implemented in this file.
 //
 //   1. Reading a sentence into a HardwareProjectRequest or a modification.
 //   2. Writing the application logic inside an already-generated firmware
 //      skeleton, against a contract of fixed parts and fixed pin constants.
 //
-// Both go through Breadboard's configured provider (ChatMock), so the agent
+// Source-backed component research is a separate, bounded adapter in
+// component-discovery.ts. All three go through Breadboard's configured provider (ChatMock), so the agent
 // follows whatever model the user selected. Neither result is trusted until Zod
 // has validated it, and one structured repair is attempted before giving up.
 
@@ -197,6 +198,19 @@ const TURN_TOOL_PARAMETERS: Record<string, unknown> = {
             required: ["type", "quantity"],
           },
         },
+        physicalParts: {
+          type: "array",
+          description:
+            "Passive optical and mechanical parts required by the physical assembly. These are not electrical inputs or outputs.",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string" },
+              quantity: { type: "integer", minimum: 1 },
+            },
+            required: ["type", "quantity"],
+          },
+        },
         communication: {
           type: "array",
           items: {
@@ -208,6 +222,10 @@ const TURN_TOOL_PARAMETERS: Record<string, unknown> = {
           type: "object",
           properties: {
             source: { type: "string", enum: ["usb", "battery", "external-supply", "unknown"] },
+            part: {
+              type: "string",
+              description: "The exact battery, cell, or supply module the person named.",
+            },
             voltage: { type: "number" },
             maximumCurrentMa: { type: "number" },
           },
@@ -233,7 +251,7 @@ const TURN_TOOL_PARAMETERS: Record<string, unknown> = {
           required: ["beginnerFriendly", "preferredComponents", "forbiddenComponents"],
         },
       },
-      required: ["purpose", "inputs", "outputs", "communication", "power", "prototypeType", "firmware", "constraints"],
+      required: ["purpose", "inputs", "outputs", "physicalParts", "communication", "power", "prototypeType", "firmware", "constraints"],
     },
     modification: {
       type: "object",
@@ -264,12 +282,13 @@ const TURN_TOOL_PARAMETERS: Record<string, unknown> = {
               requestedPurpose: { type: "string" },
               source: {
                 type: "object",
-                properties: {
-                  source: {
-                    type: "string",
-                    enum: ["usb", "battery", "external-supply", "unknown"],
-                  },
-                  voltage: { type: "number" },
+                  properties: {
+                    source: {
+                      type: "string",
+                      enum: ["usb", "battery", "external-supply", "unknown"],
+                    },
+                    part: { type: "string" },
+                    voltage: { type: "number" },
                   maximumCurrentMa: { type: "number" },
                 },
                 required: ["source"],
@@ -309,17 +328,22 @@ const TURN_SYSTEM_PROMPT = [
   "- When they describe a finished product instead of a parts list (\"something Kindle-like\", \"a plant waterer\"), work out",
   "  which parts that product needs and list them, naming each one from the component library below. `inputs` and `outputs`",
   "  must never both be empty: a request that resolves to a bare board is not a design anyone can build.",
-  "- Never leave the project to the compiler's imagination and never ask a follow-up question instead of choosing: pick the",
-  "  closest library parts, then use `note` to say in one sentence which parts you assumed and which part the library does",
-  "  not carry (an e-paper panel or an SD card, say), so the person can correct you.",
+  "- Never leave the project to the compiler's imagination and never ask a follow-up question instead of choosing. Use an",
+  "  exact library part when one genuinely matches. If a necessary part or capability is absent, preserve the person's name",
+  "  verbatim in inputs or outputs instead of silently replacing or dropping it; the next stage can research a real part online.",
+  "  Use `note` to name assumptions and any part that still needs research, so the person can correct you.",
   "- Leave `controller` empty when they did not name a board. Never substitute a board they did name.",
-  "- Sensors and buttons go in `inputs`; displays, LEDs, servos and relays go in `outputs`.",
+  "- Sensors and buttons go in `inputs`; electrically driven displays, LEDs, servos and relays go in `outputs`.",
+  "- Passive optics, mounts, clips, cases, chassis parts and other mechanically integrated references go in `physicalParts`, never in electrical inputs or outputs.",
+  "- Put a battery, cell, or supply module in `power.part` only when the person explicitly named that exact part. A generic request for portable or battery power sets only `power.source`.",
+  "- `preferredComponents` contains only exact components the person explicitly named. Do not turn inferred packaging choices, custom PCBs, or mechanical requirements into component preferences.",
+  "- Do not add a camera or other vision sensor to an AR or wearable request unless the person asked to capture, scan, detect, recognise, photograph, record, or see the environment.",
   "- Default ordinary bench projects to prototypeType \"breadboard\". Default worn, clip-on and compact portable products to \"pcb\"; a full-size solderless breadboard is not a wearable assembly.",
-  "- A near-eye or AR display must name the complete physical chain: a microdisplay, focusing/collimating optic, optical combiner, and a positively retained eyeglass mount. Use the matching optical and mechanical references from the library; never describe a normal OLED plus a box as AR glasses.",
+  "- A near-eye or AR display must name the complete chain: put the electrically connected microdisplay in `outputs`, and put the focusing/collimating optic, optical combiner, and positively retained eyeglass mount in `physicalParts`. Use matching library references; never describe a normal OLED plus a box as AR glasses.",
   "- Default beginnerFriendly true, power source \"usb\", and firmware platformio + cpp unless the product brief requires otherwise.",
   "- Add \"wifi\" or \"bluetooth\" to `communication` only when the project actually needs a network.",
   "",
-  "The component library. Every part the compiler can build with is here, and nothing else:",
+  "The local component library. Parts outside it are researched before compilation; never invent their specifications:",
   libraryCatalogue(),
 ].join("\n");
 

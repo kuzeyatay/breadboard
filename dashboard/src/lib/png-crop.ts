@@ -17,7 +17,7 @@ const CHANNELS_BY_COLOR_TYPE: Record<number, number> = {
   6: 4, // RGBA
 };
 
-interface DecodedPng {
+export interface DecodedPng {
   width: number;
   height: number;
   channels: number;
@@ -152,6 +152,57 @@ export function encodePng(decoded: DecodedPng): Buffer {
     pngChunk("IDAT", zlib.deflateSync(raw, { level: 6 })),
     pngChunk("IEND", Buffer.alloc(0)),
   ]);
+}
+
+/**
+ * Shrink a page snapshot before sending it to a vision model. Detection only
+ * needs the page layout; crops are still made from the original buffer. The
+ * nearest-neighbour pass intentionally keeps this dependency-free and tends to
+ * preserve the hard edges of charts, tables, and equations.
+ */
+export function resizePngToMaxDimension(
+  buffer: Buffer,
+  maxDimension = 768,
+): Buffer | null {
+  const decoded = decodePng(buffer);
+  if (!decoded) return null;
+  const limit = Math.max(64, Math.trunc(maxDimension));
+  const largestDimension = Math.max(decoded.width, decoded.height);
+  if (largestDimension <= limit) return buffer;
+
+  const scale = limit / largestDimension;
+  const width = Math.max(1, Math.round(decoded.width * scale));
+  const height = Math.max(1, Math.round(decoded.height * scale));
+  const pixels = Buffer.alloc(width * height * decoded.channels);
+
+  for (let y = 0; y < height; y += 1) {
+    const sourceY = Math.min(
+      decoded.height - 1,
+      Math.floor(((y + 0.5) * decoded.height) / height),
+    );
+    for (let x = 0; x < width; x += 1) {
+      const sourceX = Math.min(
+        decoded.width - 1,
+        Math.floor(((x + 0.5) * decoded.width) / width),
+      );
+      const sourceOffset = (sourceY * decoded.width + sourceX) * decoded.channels;
+      const targetOffset = (y * width + x) * decoded.channels;
+      decoded.pixels.copy(
+        pixels,
+        targetOffset,
+        sourceOffset,
+        sourceOffset + decoded.channels,
+      );
+    }
+  }
+
+  return encodePng({
+    width,
+    height,
+    channels: decoded.channels,
+    colorType: decoded.colorType,
+    pixels,
+  });
 }
 
 export interface CropBox {

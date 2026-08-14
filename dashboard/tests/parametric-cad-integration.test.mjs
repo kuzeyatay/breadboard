@@ -45,10 +45,8 @@ const { ensureArtifactSchema } = await import("../src/lib/hermes/artifact-schema
 const { runCadTool } = await import("../src/lib/cad/tools.ts");
 const { cadDefaults } = await import("../src/lib/cad/defaults.ts");
 const { parseStoredCadArtifact } = await import("../src/lib/cad/schemas.ts");
-const { enclosureFallbackFromDesign, physicalDesignCoverageIssues } = await import(
-  "../src/lib/cad/board-enclosures.ts"
-);
 const { buildCadManifest } = await import("../src/lib/cad/artifact.ts");
+const { applyParameterUpdate } = await import("../src/lib/cad/parameter-action.ts");
 const store = await import("../src/lib/cad/project-store.ts");
 
 // ---------------------------------------------------------------------------
@@ -894,6 +892,39 @@ test("parametric CAD, end to end", { skip, concurrency: false }, async (t) => {
       const project = store.getCadProject(projectId, harnessValue.database);
       // Revision 1 never became current, so revision 2 is the first the user opens.
       assert.equal(project.current_revision, 2);
+
+      // A later slider change that violates the same bed constraint is a
+      // recorded failed attempt, not a successful parameter update. The CAD
+      // tool contract and the artifact-panel action must agree on that point.
+      const tooLarge = await runCadTool(
+        "cad_update_parameters",
+        { projectId, parameters: { length: 400, width: 300 } },
+        toolContext,
+      );
+      assert.equal(tooLarge.ok, false, JSON.stringify(tooLarge));
+      assert.equal(tooLarge.error, "cad_validation_failed");
+      assert.equal(tooLarge.validationPassed, false);
+      assert.equal(tooLarge.status, "invalid");
+      assert.ok(tooLarge.issues.some((issue) => issue.code === "exceeds_printer_bed"));
+      assert.equal(store.getCadProject(projectId, harnessValue.database).current_revision, 2);
+
+      await assert.rejects(
+        applyParameterUpdate({
+          userId: 1,
+          projectId,
+          conversationPublicId: "conv_terminal",
+          values: { length: 400, width: 300 },
+          database: harnessValue.database,
+          storageRoot: harnessValue.storageRoot,
+          env: serviceEnv,
+        }),
+        (error) =>
+          error?.code === "cad_validation_failed" &&
+          /last valid revision is unchanged/i.test(error.message),
+      );
+      const afterRejectedPanelUpdate = store.getCadProject(projectId, harnessValue.database);
+      assert.equal(afterRejectedPanelUpdate.current_revision, 2);
+      assert.ok(afterRejectedPanelUpdate.latest_revision > 2);
     } finally {
       harnessValue.database.close();
       fs.rmSync(harnessValue.root, { recursive: true, force: true });
@@ -1002,79 +1033,134 @@ test("parametric CAD, end to end", { skip, concurrency: false }, async (t) => {
     }
   });
 
-  await t.test("the Hardware Blueprint fallback is limited to a simple enclosure", async () => {
+  await t.test("a build records what attaches where, and keeps it", async () => {
     const harnessValue = harness();
     const toolContext = context(harnessValue);
     try {
-      const fallback = enclosureFallbackFromDesign({
-        userBrief: "put this weather station in an enclosure with a lid",
-        designTitle: "Weather station",
-        controllerDefinitionId: "esp32-devkit-v1",
-        controllerName: "ESP32 DevKit V1",
-        peripherals: [],
-        prototypeType: "pcb",
-        process: "fdm",
-        wallThickness: 2.4,
-        clearance: 0.3,
-        printerBed: { x: 220, y: 220, z: 250 },
-      });
-      assert.ok(fallback);
+      // The plan deliberately arrives without an assembly and without the
+      // constraint the product needs, which is the situation the source phase
+      // used to have no way out of.
       const projectId = await createProject(
         harnessValue,
         toolContext,
-        fallback.designSpec,
-        fallback.parameters,
+        {
+          name: "vented-tray",
+          description: "A tray and a lid.",
+          units: "mm",
+          manufacturingProcess: "fdm",
+          parameters: [
+            parameter("length", "Length", 40, { unit: "mm" }),
+            parameter("width", "Width", 20, { unit: "mm" }),
+            parameter("thickness", "Thickness", 4, { unit: "mm" }),
+            parameter("lid_thickness", "Lid thickness", 2, { unit: "mm" }),
+          ],
+          components: [
+            { id: "base", name: "Tray", quantity: 1, bodyRole: "primary" },
+            { id: "lid", name: "Lid", quantity: 1, bodyRole: "lid" },
+          ],
+          constraints: [],
+          assumptions: [],
+          exportSettings: {
+            stlLinearTolerance: 0.1,
+            stlAngularTolerance: 0.25,
+            generateStep: true,
+            generateStl: true,
+            generateGlb: true,
+            generate3mf: false,
+          },
+        },
+        { length: 40, width: 20, thickness: 4, lid_thickness: 2 },
       );
+
       const built = await runCadTool(
         "cad_generate_model",
         {
           projectId,
-          source: fallback.source,
-          parameters: fallback.parameters,
-          note: fallback.note,
+          source: [
+            "import cadquery as cq",
+            "",
+            'DEFAULT_PARAMS = {"length": 40.0, "width": 20.0, "thickness": 4.0, "lid_thickness": 2.0}',
+            "",
+            "",
+            "def build_model(params):",
+            "    p = {**DEFAULT_PARAMS, **params}",
+            '    base = cq.Workplane("XY").box(p["length"], p["width"], p["thickness"])',
+            '    lid = cq.Workplane("XY").box(p["length"], p["width"], p["lid_thickness"]).translate(',
+            '        (0, 0, p["thickness"] / 2.0 + p["lid_thickness"] / 2.0 + 2.0)',
+            "    )",
+            '    return {"base": base, "lid": lid}',
+            "",
+          ].join("\n"),
+          parameters: { length: 40, width: 20, thickness: 4, lid_thickness: 2 },
+          note: "First build.",
+          constraints: [
+            {
+              id: "closure_retention",
+              type: "hole",
+              description: "Two M3 screws hold the lid to the tray.",
+              expected: 3.4,
+              unit: "mm",
+            },
+          ],
+          assembly: {
+            overview: "A tray with a screwed-down lid.",
+            hardware: [
+              {
+                id: "lid_screws",
+                name: "M3 × 8 mm socket cap screw",
+                quantity: 2,
+                purpose: "Through the lid into the tray.",
+              },
+            ],
+            steps: [
+              {
+                order: 1,
+                summary: "Screw the lid to the tray.",
+                parts: ["lid", "base"],
+                hardware: ["lid_screws"],
+              },
+            ],
+          },
         },
         toolContext,
       );
       assert.equal(built.ok, true, JSON.stringify(built));
       assert.equal(built.validationPassed, true, JSON.stringify(built.issues));
       assert.equal(built.measurements.solidCount, 2);
-      assert.doesNotMatch(fallback.source, /clip_slot_width/);
-      assert.match(fallback.designSpec.name, /weather station enclosure/i);
+
+      // The design the reader opens carries it.
       const manifest = buildCadManifest({
         projectId,
         disclaimers: ["Validation here is geometric."],
         database: harnessValue.database,
       });
       assert.ok(manifest);
-      assert.deepEqual(
-        physicalDesignCoverageIssues(
-          {
-            userBrief: "put this weather station in an enclosure with a lid",
-            designTitle: "Weather station",
-            controllerDefinitionId: "esp32-devkit-v1",
-            controllerName: "ESP32 DevKit V1",
-            peripherals: [],
-            prototypeType: "pcb",
-          },
-          manifest,
+      assert.equal(manifest.designSpec.assembly.steps.length, 1);
+      assert.equal(manifest.designSpec.assembly.hardware[0].quantity, 2);
+      assert.deepEqual(manifest.designSpec.assembly.steps[0].parts, ["lid", "base"]);
+      assert.ok(
+        manifest.designSpec.constraints.some(
+          (constraint) => constraint.id === "closure_retention",
         ),
-        [],
+        "a constraint submitted with the geometry is not recorded",
       );
-      assert.equal(
-        enclosureFallbackFromDesign({
-          userBrief: "design AR glasses that fit onto my glasses",
-          designTitle: "Universal Clip-On AR Glasses",
-          controllerDefinitionId: "esp32-devkit-v1",
-          controllerName: "ESP32 DevKit V1",
-          peripherals: [],
-          prototypeType: "pcb",
-          process: "fdm",
-          wallThickness: 2.4,
-          clearance: 0.3,
-          printerBed: { x: 220, y: 220, z: 250 },
-        }),
-        null,
+
+      // And so does the project a follow-up turn reads back.
+      const reopened = await runCadTool(
+        "cad_get_project",
+        { projectId, includeSource: false },
+        toolContext,
       );
+      assert.equal(reopened.designSpec.assembly.steps[0].summary, "Screw the lid to the tray.");
+      assert.ok(
+        reopened.designSpec.constraints.some(
+          (constraint) => constraint.id === "closure_retention",
+        ),
+      );
+
+      // The stored manifest still reads back through its own schema.
+      const stored = parseStoredCadArtifact(JSON.parse(JSON.stringify(manifest)));
+      assert.equal(stored.ok, true, JSON.stringify(stored.issues ?? []));
     } finally {
       harnessValue.database.close();
       fs.rmSync(harnessValue.root, { recursive: true, force: true });

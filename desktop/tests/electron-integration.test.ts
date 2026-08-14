@@ -21,8 +21,13 @@ test(
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bb-electron-integration-"));
     const resultFile = path.join(fixture, "result.json");
     const htmlFile = path.join(fixture, "index.html");
+    const recoveryFile = path.join(fixture, "recovery.html");
     const dashboardFile = path.join(fixture, "dashboard.html");
     fs.writeFileSync(htmlFile, "<!doctype html><html><body>bridge fixture</body></html>");
+    fs.writeFileSync(
+      recoveryFile,
+      "<!doctype html><html><head><title>fixture recovery</title></head><body>reconnecting</body></html>",
+    );
     fs.writeFileSync(
       dashboardFile,
       "<!doctype html><html><head><title>fixture dashboard</title></head><body>dashboard</body></html>",
@@ -42,6 +47,7 @@ app.whenReady().then(async () => {
   const manager = new WindowManager({
     allowed: { origins: new Set() },
     startupHtmlPath: ${JSON.stringify(htmlFile)},
+    recoveryHtmlPath: ${JSON.stringify(recoveryFile)},
     preloadPath: ${JSON.stringify(preload)},
     initialTheme: "dark",
   });
@@ -111,6 +117,45 @@ app.whenReady().then(async () => {
     windowCount: require("electron").BrowserWindow.getAllWindows().length,
   };
 
+  // A dashboard renderer can disappear while the supervised Next.js service
+  // restarts. The visible window should become a local recovery scene while a
+  // fresh dashboard paints offscreen, then be replaced in one finished swap.
+  const recoveryPage = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("recovery page did not appear")), 10_000);
+    dashboardWindow.webContents.on("did-finish-load", async () => {
+      if (dashboardWindow.isDestroyed()) return;
+      const title = await dashboardWindow.webContents.executeJavaScript("document.title");
+      if (title !== "fixture recovery") return;
+      clearTimeout(timer);
+      resolve({
+        title,
+        visible: dashboardWindow.isVisible(),
+        theme: new URL(dashboardWindow.webContents.getURL()).searchParams.get("theme"),
+      });
+    });
+  });
+  dashboardWindow.webContents.forcefullyCrashRenderer();
+  const recovery = await recoveryPage;
+  const recoveredWindow = await new Promise((resolve, reject) => {
+    const started = Date.now();
+    const poll = () => {
+      if (manager.window && manager.window !== dashboardWindow) return resolve(manager.window);
+      if (Date.now() - started > 15_000) return reject(new Error("dashboard was not recovered"));
+      setTimeout(poll, 20);
+    };
+    poll();
+  });
+  const recovered = {
+    replacedFailedWindow: dashboardWindow.isDestroyed(),
+    visible: recoveredWindow.isVisible(),
+    opacity: recoveredWindow.getOpacity(),
+    onScreen: recoveredWindow.getPosition()[0] > -10000,
+    keptBounds: JSON.stringify(recoveredWindow.getBounds()) === JSON.stringify(startupBounds),
+    title: await recoveredWindow.webContents.executeJavaScript("document.title"),
+    url: recoveredWindow.webContents.getURL(),
+    windowCount: require("electron").BrowserWindow.getAllWindows().length,
+  };
+
   fs.writeFileSync(resultFile, JSON.stringify({
     keys,
     versions,
@@ -123,8 +168,10 @@ app.whenReady().then(async () => {
     preferences,
     preloading,
     swap,
+    recovery,
+    recovered,
   }));
-  dashboardWindow.destroy();
+  recoveredWindow.destroy();
   app.quit();
 }).catch((error) => {
   fs.writeFileSync(resultFile, JSON.stringify({ error: error.stack || String(error) }));
@@ -167,6 +214,21 @@ app.whenReady().then(async () => {
       };
       swap: {
         replacedTheStartupWindow: boolean;
+        visible: boolean;
+        opacity: number;
+        onScreen: boolean;
+        keptBounds: boolean;
+        title: string;
+        url: string;
+        windowCount: number;
+      };
+      recovery: {
+        title: string;
+        visible: boolean;
+        theme: string | null;
+      };
+      recovered: {
+        replacedFailedWindow: boolean;
         visible: boolean;
         opacity: number;
         onScreen: boolean;
@@ -230,5 +292,17 @@ app.whenReady().then(async () => {
     // Exactly one window survives the swap; a hidden leftover would keep the
     // app alive after the last visible window closed.
     assert.equal(result.swap.windowCount, 1);
+
+    assert.equal(result.recovery.title, "fixture recovery");
+    assert.equal(result.recovery.visible, true);
+    assert.equal(result.recovery.theme, "dark");
+    assert.equal(result.recovered.replacedFailedWindow, true);
+    assert.equal(result.recovered.visible, true);
+    assert.equal(result.recovered.opacity, 1);
+    assert.equal(result.recovered.onScreen, true);
+    assert.equal(result.recovered.keptBounds, true);
+    assert.equal(result.recovered.title, "fixture dashboard");
+    assert.match(result.recovered.url, /dashboard\.html$/);
+    assert.equal(result.recovered.windowCount, 1);
   },
 );

@@ -205,6 +205,12 @@ def ollama_chat() -> Response:
     stream_req = bool(stream_req)
     tools_req = payload.get("tools") if isinstance(payload.get("tools"), list) else []
     tools_responses = convert_tools_chat_to_responses(normalize_ollama_tools(tools_req))
+    has_function_web_search = any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "web_search"
+        for tool in tools_responses
+    )
     tool_choice = payload.get("tool_choice", "auto")
     parallel_tool_calls = bool(payload.get("parallel_tool_calls", False))
 
@@ -222,7 +228,11 @@ def ollama_chat() -> Response:
                     _log_json("OUT POST /api/chat", err)
                 return jsonify(err), 400
             extra_tools.append(_t)
-        if not extra_tools and bool(current_app.config.get("DEFAULT_WEB_SEARCH")):
+        if (
+            not extra_tools
+            and not has_function_web_search
+            and bool(current_app.config.get("DEFAULT_WEB_SEARCH"))
+        ):
             rtc = payload.get("responses_tool_choice")
             if not (isinstance(rtc, str) and rtc == "none"):
                 extra_tools = [{"type": "web_search"}]

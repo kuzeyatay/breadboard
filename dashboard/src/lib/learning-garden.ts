@@ -95,6 +95,36 @@ export function isLearningPageRelPath(relPath = ""): boolean {
   return normalizedRelPath(relPath).startsWith(`${LEARNING_FOLDER.toLowerCase()}/`);
 }
 
+/**
+ * True only for a learner lesson produced by the Learn pipeline.
+ *
+ * Document ingestion also creates internal `learning-page` nodes in numbered
+ * source folders. Those are source-derived planning material, not evidence
+ * that the user has run Learn, so path and ownership metadata are required in
+ * addition to the page type.
+ */
+export function isLearnAuthoredLesson(node: {
+  type?: string;
+  breadboardType?: string;
+  relPath?: string;
+  internal?: string;
+  draft?: string;
+  generatedBy?: string;
+  generated_by?: string;
+}): boolean {
+  const type = (node.type || node.breadboardType || "").replace(/_/g, "-");
+  const generatedBy = (node.generatedBy || node.generated_by || "")
+    .replace(/[ -]+/g, "_")
+    .toLowerCase();
+  return (
+    LEARNING_PAGE_TYPES.has(type) &&
+    isLearningPageRelPath(node.relPath) &&
+    node.internal?.toLowerCase() !== "true" &&
+    node.draft?.toLowerCase() !== "true" &&
+    generatedBy === "learn_button"
+  );
+}
+
 export function shouldPublishGardenPage({
   metadata,
   relPath,

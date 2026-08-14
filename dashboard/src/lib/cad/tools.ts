@@ -14,6 +14,7 @@
 import { z } from "zod";
 import db from "../db.ts";
 import { cadDefaults, type CadDefaults } from "./defaults.ts";
+import { DEFAULT_CAD_ENGINE, type CadEngineId } from "./engines.ts";
 import { CadServiceError, describeCadFailure } from "./errors.ts";
 import {
   cadServiceExecute,
@@ -21,7 +22,11 @@ import {
   type CadExpectations,
   type CadExportRequest,
 } from "./service.ts";
+import { buildWithSolidWorks } from "./solidworks/backend.ts";
+import { SUPPORTED_OPERATIONS } from "./solidworks/operations.ts";
 import {
+  cadAssemblySchema,
+  cadConstraintSchema,
   cadDesignSpecDraftSchema,
   parseWithSchema,
   type CADDesignSpecDraft,
@@ -41,6 +46,8 @@ import {
 import { CAD_VALIDATION_DISCLAIMER, engineeringReviewNotice, type CadSafetyDecision } from "./safety.ts";
 import {
   CAD_DESIGN_SCHEMA_VERSION,
+  type CADAssembly,
+  type CADConstraint,
   type CADDesignSpec,
   type CADExportFormat,
   type CADMeasurements,
@@ -96,6 +103,11 @@ export interface CadToolContext {
   instruction: string;
   safety: CadSafetyDecision;
   defaults: CadDefaults;
+  /**
+   * The CAD backend this turn builds on. Absent means CadQuery, which is what
+   * every caller that predates the setting means.
+   */
+  engine?: CadEngineId;
   signal?: AbortSignal;
   emit?: (type: string, payload: Record<string, unknown>) => void;
   database?: Database.Database;
@@ -112,6 +124,8 @@ export interface CadToolContext {
    * is the record that does.
    */
   lastBuild?: {
+    /** Project this build belongs to; revision numbers are only project-local. */
+    projectId: string;
     revision: number;
     status: CADStatus;
     issues: CADValidationIssue[];
@@ -147,6 +161,18 @@ const generateModelArgs = z.object({
   timeoutMs: z.number().int().min(1_000).max(120_000).default(45_000),
   /** What changed, for the revision log. */
   note: z.string().max(2_000).default(""),
+  /**
+   * Constraints this program implements, merged into the specification by id.
+   *
+   * The source-generation phase can only send geometry, so without this a
+   * requirement the plan forgot to record could never be satisfied however
+   * many times the program was rewritten. Claiming a constraint here proves
+   * nothing on its own — the acceptance gate still looks for the feature in the
+   * geometry — but it lets the design say what the program was written to do.
+   */
+  constraints: z.array(cadConstraintSchema).max(120).optional(),
+  /** How the bodies this program returns go together, for the same reason. */
+  assembly: cadAssemblySchema.optional(),
 });
 
 const validateModelArgs = z.object({
@@ -158,8 +184,8 @@ const exportModelArgs = z.object({
   projectId: z.string().min(1),
   revision: z.number().int().min(1).optional(),
   formats: z
-    .array(z.enum(["step", "stl", "glb", "3mf", "source", "spec", "report"]))
-    .max(8)
+    .array(z.enum(["step", "stl", "glb", "3mf", "sldprt", "source", "operations", "spec", "report"]))
+    .max(10)
     .default([]),
 });
 
@@ -290,6 +316,67 @@ const DESIGN_SPEC_SCHEMA: Record<string, unknown> = {
         required: ["id", "description", "reason", "userEditable"],
       },
     },
+    assembly: {
+      type: "object",
+      description:
+        "How the finished bodies go together. Required whenever the design has more than one " +
+        "printable body or needs any bought part — a person holding seven printed pieces cannot " +
+        "tell from the geometry which one clamps what. Name real parts in `parts` using the " +
+        "component ids above, and real hardware in `hardware`.",
+      properties: {
+        overview: {
+          type: "string",
+          description: "The assembled product in one or two sentences.",
+        },
+        hardware: {
+          type: "array",
+          description:
+            "Bought items only — screws, inserts, pads, magnets, adhesive. Never a printed body.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              name: {
+                type: "string",
+                description: 'What to order, e.g. "M3 × 12 socket cap screw".',
+              },
+              quantity: { type: "integer", minimum: 1 },
+              purpose: { type: "string", description: "Where it goes." },
+            },
+            required: ["id", "name", "quantity"],
+          },
+        },
+        steps: {
+          type: "array",
+          description: "In build order. Each step says what attaches to what, and with which item.",
+          items: {
+            type: "object",
+            properties: {
+              order: { type: "integer", minimum: 1 },
+              summary: { type: "string" },
+              parts: {
+                type: "array",
+                description: "Component ids this step joins, including reference envelopes.",
+                items: { type: "string" },
+              },
+              hardware: {
+                type: "array",
+                description: "Hardware ids used in this step.",
+                items: { type: "string" },
+              },
+              detail: { type: "string" },
+            },
+            required: ["order", "summary", "parts"],
+          },
+        },
+        notes: {
+          type: "array",
+          description: "Tools or preparation the steps assume.",
+          items: { type: "string" },
+        },
+      },
+      required: ["overview", "hardware", "steps"],
+    },
     exportSettings: {
       type: "object",
       properties: {
@@ -381,6 +468,77 @@ export const CAD_TOOL_DEFINITIONS: ToolDefinition[] = [
         parameters: { type: "object", additionalProperties: true },
         timeoutMs: { type: "integer", minimum: 1000, maximum: 120000 },
         note: { type: "string", description: "One sentence on what this build changes." },
+        constraints: {
+          type: "array",
+          description:
+            "Constraints this program implements, merged into the design specification by id. " +
+            "Send one whenever a required feature has no constraint recording it — the geometry " +
+            "still has to show the feature, but the specification should say what it is for.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              type: {
+                type: "string",
+                enum: [
+                  "dimension",
+                  "clearance",
+                  "wall-thickness",
+                  "alignment",
+                  "symmetry",
+                  "hole",
+                  "fit",
+                  "printability",
+                  "custom",
+                ],
+              },
+              description: { type: "string" },
+              expected: {},
+              tolerance: { type: "number" },
+              unit: { type: "string" },
+            },
+            required: ["id", "type", "description"],
+          },
+        },
+        assembly: {
+          type: "object",
+          description:
+            "How the bodies this program returns go together: overview, bought hardware, and " +
+            "ordered steps naming the component ids each one joins. Send it whenever the design " +
+            "has more than one body or any bought part and the specification has none yet.",
+          properties: {
+            overview: { type: "string" },
+            hardware: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string" },
+                  quantity: { type: "integer", minimum: 1 },
+                  purpose: { type: "string" },
+                },
+                required: ["id", "name", "quantity"],
+              },
+            },
+            steps: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  order: { type: "integer", minimum: 1 },
+                  summary: { type: "string" },
+                  parts: { type: "array", items: { type: "string" } },
+                  hardware: { type: "array", items: { type: "string" } },
+                  detail: { type: "string" },
+                },
+                required: ["order", "summary", "parts"],
+              },
+            },
+            notes: { type: "array", items: { type: "string" } },
+          },
+          required: ["overview", "hardware", "steps"],
+        },
       },
       required: ["projectId", "source", "parameters"],
     },
@@ -412,7 +570,7 @@ export const CAD_TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "array",
           items: {
             type: "string",
-            enum: ["step", "stl", "glb", "3mf", "source", "spec", "report"],
+            enum: ["step", "stl", "glb", "3mf", "sldprt", "source", "operations", "spec", "report"],
           },
         },
       },
@@ -467,6 +625,52 @@ export const CAD_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
 ];
+
+/**
+ * The `cad_generate_model` contract for the SolidWorks backend.
+ *
+ * The tool is the same tool — same project, same validation, same revision —
+ * but its `source` argument cannot be. SolidWorks is a feature-history
+ * application driven one operation at a time, so what it takes is the ordered
+ * operation program described in `./solidworks/operations.ts`.
+ */
+const SOLIDWORKS_GENERATE_MODEL: ToolDefinition = {
+  name: "cad_generate_model",
+  description:
+    "Build the part in SolidWorks from an ordered operation program, export it, measure the " +
+    "result, validate it, and store the result as a new revision. Returns structured " +
+    "measurements and validation issues — read them before saying anything about the part.",
+  parameters: {
+    type: "object",
+    properties: {
+      projectId: { type: "string" },
+      source: {
+        type: "string",
+        description:
+          "A JSON document: {\"name\": \"<part name>\", \"units\": \"mm\", \"operations\": [...]}. " +
+          `Supported operations are ${SUPPORTED_OPERATIONS.join(", ")}. A sketch is ` +
+          '{"op":"sketch","plane":"Front|Top|Right","entities":[...]} where an entity is a line, ' +
+          "rectangle, circle, arc or polygon in millimetres; extrude and cut take a depth in " +
+          "millimetres and act on the sketch just closed. There is no chamfer, Hole Wizard, " +
+          "revolve, sweep, loft or pattern on this backend — a plain hole is a circle followed " +
+          "by a cut deep enough to pass through.",
+      },
+      entrypoint: { type: "string" },
+      parameters: { type: "object", additionalProperties: true },
+      timeoutMs: { type: "integer", minimum: 1000, maximum: 120000 },
+      note: { type: "string", description: "One sentence on what this build changes." },
+    },
+    required: ["projectId", "source", "parameters"],
+  },
+};
+
+/** The tool contracts for one backend. CadQuery's are the shipped defaults. */
+export function cadToolDefinitions(engine: CadEngineId = DEFAULT_CAD_ENGINE): ToolDefinition[] {
+  if (engine !== "solidworks") return CAD_TOOL_DEFINITIONS;
+  return CAD_TOOL_DEFINITIONS.map((tool) =>
+    tool.name === "cad_generate_model" ? SOLIDWORKS_GENERATE_MODEL : tool,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Deriving what validation should check from the design specification
@@ -566,6 +770,38 @@ function normalizeIssues(issues: CadExecuteResponse["issues"]): CADValidationIss
   }));
 }
 
+/**
+ * A slider that never reaches the geometry is worse than no slider: it claims
+ * adjustability the exported part does not have. CadQuery programs read values
+ * from a parameter mapping, so every editable parameter must be accessed by
+ * the program rather than merely listed in DEFAULT_PARAMS or a comment.
+ */
+export function unusedCadParameterIssues(
+  source: string,
+  spec: Pick<CADDesignSpec, "parameters">,
+): CADValidationIssue[] {
+  const code = source.replace(/#.*$/gm, "");
+  return spec.parameters.flatMap((parameter) => {
+    if (!parameter.editable) return [];
+    const escaped = parameter.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const bracket = new RegExp(
+      `\\b[A-Za-z_]\\w*\\s*\\[\\s*["']${escaped}["']\\s*\\]`,
+    );
+    const get = new RegExp(
+      `\\b[A-Za-z_]\\w*\\s*\\.get\\(\\s*["']${escaped}["']`,
+    );
+    if (bracket.test(code) || get.test(code)) return [];
+    return [{
+      code: "unused_parameter",
+      severity: "error" as const,
+      message: `The editable parameter '${parameter.label}' is declared but the geometry program never reads it.`,
+      feature: parameter.id,
+      repairHint:
+        "Use this parameter in the named geometric feature, or remove it instead of presenting a no-op control.",
+    }];
+  });
+}
+
 function measurementsFrom(response: CadExecuteResponse, units: string): CADMeasurements {
   const box = response.boundingBox ?? { x: 0, y: 0, z: 0 };
   return {
@@ -612,6 +848,32 @@ function specWithParameters(
     });
   }
   return { ...spec, parameters: updated };
+}
+
+/**
+ * The stored specification, updated with what this build says it implements.
+ *
+ * Constraints merge by id — a repaired program restates the requirement it now
+ * satisfies rather than duplicating it — and an assembly replaces the previous
+ * one outright, because the bodies it describes are the ones this program
+ * returns.
+ */
+function specWithSubmittedIntent(
+  spec: CADDesignSpec,
+  submitted: { constraints?: CADConstraint[]; assembly?: CADAssembly },
+): CADDesignSpec {
+  if (!submitted.constraints?.length && !submitted.assembly) return spec;
+  const constraints = [...spec.constraints];
+  for (const constraint of submitted.constraints ?? []) {
+    const existing = constraints.findIndex((candidate) => candidate.id === constraint.id);
+    if (existing >= 0) constraints[existing] = constraint;
+    else constraints.push(constraint);
+  }
+  return {
+    ...spec,
+    constraints: constraints.slice(0, 120),
+    ...(submitted.assembly ? { assembly: submitted.assembly } : {}),
+  };
 }
 
 function projectSpec(project: CadProjectRow): CADDesignSpec {
@@ -667,32 +929,45 @@ export async function buildAndRecord(
   const expectations = expectationsFromSpec(spec, context.defaults);
   const revision = nextRevisionNumber(input.project.id, database);
   const parentRevision = input.project.latest_revision || null;
+  const engine: CadEngineId = context.engine ?? DEFAULT_CAD_ENGINE;
 
   context.emit?.("cad.execution.started", {
     projectId: input.project.id,
     revision,
+    engine,
     sourceBytes: Buffer.byteLength(input.source, "utf8"),
   });
+
+  const executeRequest = {
+    source: input.source,
+    entrypoint: input.entrypoint,
+    parameters: input.parameters,
+    timeoutMs: input.timeoutMs,
+    exports: exportRequests(spec),
+    expectations,
+    linearTolerance: spec.exportSettings.stlLinearTolerance,
+    angularTolerance: spec.exportSettings.stlAngularTolerance,
+  };
 
   let response: CadExecuteResponse;
   const startedAt = Date.now();
   try {
-    response = await cadServiceExecute(
-      {
-        source: input.source,
-        entrypoint: input.entrypoint,
-        parameters: input.parameters,
-        timeoutMs: input.timeoutMs,
-        exports: exportRequests(spec),
-        expectations,
-        linearTolerance: spec.exportSettings.stlLinearTolerance,
-        angularTolerance: spec.exportSettings.stlAngularTolerance,
-      },
-      {
-        ...(context.env ? { env: context.env } : {}),
-        ...(context.signal ? { signal: context.signal } : {}),
-      },
-    );
+    // The two backends diverge here and nowhere else: from the response
+    // onwards, a SolidWorks build is measured, validated, exported and recorded
+    // by exactly the code a CadQuery build is.
+    response =
+      engine === "solidworks"
+        ? await buildWithSolidWorks({
+            source: input.source,
+            request: executeRequest,
+            ...(context.env ? { env: context.env } : {}),
+            ...(context.signal ? { signal: context.signal } : {}),
+            ...(context.emit ? { emit: context.emit } : {}),
+          })
+        : await cadServiceExecute(executeRequest, {
+            ...(context.env ? { env: context.env } : {}),
+            ...(context.signal ? { signal: context.signal } : {}),
+          });
   } catch (error) {
     const serviceError =
       error instanceof CadServiceError
@@ -705,6 +980,7 @@ export async function buildAndRecord(
     const failure = describeCadFailure(serviceError.code, serviceError.message);
     context.emit?.("cad.execution.failed", { projectId: input.project.id, revision, ...failure });
     context.lastBuild = {
+      projectId: input.project.id,
       revision,
       status: "invalid",
       issues: [],
@@ -727,6 +1003,7 @@ export async function buildAndRecord(
       ...(raw?.line ? { line: raw.line } : {}),
     });
     context.lastBuild = {
+      projectId: input.project.id,
       revision,
       status: "invalid",
       issues: [],
@@ -763,7 +1040,10 @@ export async function buildAndRecord(
       : input.parameters;
   const recordedSpec = specWithParameters(input.spec, effectiveParameters);
 
-  const issues = normalizeIssues(response.issues);
+  const issues = [
+    ...normalizeIssues(response.issues),
+    ...(engine === "cadquery" ? unusedCadParameterIssues(input.source, recordedSpec) : []),
+  ];
   const status = statusFromIssues(issues);
   const passed = status !== "invalid";
   const measurements = measurementsFrom(response, recordedSpec.units);
@@ -785,13 +1065,16 @@ export async function buildAndRecord(
   // rebuild.
   const validation = { passed, checkedAt, issues, expectations };
   const provenance = {
-    engine: response.engine || "cadquery",
+    engine: response.engine || engine,
     engineVersion: response.engineVersion,
+    // Even a SolidWorks part is measured through OpenCascade, because its STEP
+    // export is what produced the numbers recorded here.
     kernel: "opencascade",
     kernelVersion: response.kernelVersion,
     pythonVersion: response.pythonVersion,
     serviceVersion: "1.0.0",
     model: context.model,
+    geometryAuthor: "model" as const,
     generatedAt: checkedAt,
     ...(parentRevision ? { parentRevision } : {}),
     buildDurationMs: response.durationMs,
@@ -813,7 +1096,9 @@ export async function buildAndRecord(
       ...(exported.angularTolerance ? { angularTolerance: exported.angularTolerance } : {}),
     });
   }
-  files.push({ format: "source", content: input.source });
+  // The design's source, under the slot that matches what it actually is: a
+  // CadQuery program, or a SolidWorks operation list.
+  files.push({ format: engine === "solidworks" ? "operations" : "source", content: input.source });
   files.push({ format: "spec", content: `${JSON.stringify(spec, null, 2)}\n` });
   files.push({
     format: "report",
@@ -856,7 +1141,7 @@ export async function buildAndRecord(
     formats: files.map((file) => file.format),
   });
 
-  context.lastBuild = { revision, status, issues };
+  context.lastBuild = { projectId: input.project.id, revision, status, issues };
 
   return {
     ok: true,
@@ -1013,8 +1298,14 @@ async function generateModelTool(
     };
   }
   const project = requireProject(context, parsed.value.projectId);
-  const spec = projectSpec(project);
+  const spec = specWithSubmittedIntent(projectSpec(project), parsed.value);
   context.attemptsRemaining -= 1;
+  // Kept on the project as well as on the revision: a follow-up turn reads the
+  // project's specification, and a constraint or assembly recorded only against
+  // one revision would vanish the next time the design is opened.
+  if (parsed.value.constraints?.length || parsed.value.assembly) {
+    saveProjectSpec(project.id, spec, context);
+  }
 
   context.emit?.("cad.source.generated", {
     projectId: project.id,
@@ -1057,7 +1348,7 @@ async function generateModelTool(
     projectId: project.id,
     revision: outcome.revision,
     status: outcome.status,
-    validationPassed: outcome.status !== "invalid",
+    validationPassed: true,
     measurements: outcome.measurements,
     issues: (outcome.issues ?? []).filter((issue) => issue.severity !== "info"),
     attemptsRemaining: context.attemptsRemaining,
@@ -1243,6 +1534,21 @@ async function updateParametersTool(
 ): Promise<CadToolResult> {
   const parsed = parseWithSchema(updateParametersArgs, rawArguments, "The CAD parameter update");
   if (!parsed.ok) return invalidArguments("The CAD parameter update", parsed.issues);
+  // A CadQuery program reads its dimensions from `params`, so replaying it with
+  // new values really does change the geometry. A SolidWorks operation program
+  // holds its dimensions as literal numbers, so the same replay would rebuild
+  // the identical part while reporting the parameters as changed.
+  if ((context.engine ?? DEFAULT_CAD_ENGINE) === "solidworks") {
+    return {
+      ok: false,
+      error: "unsupported_on_engine",
+      message:
+        "cad_update_parameters is not available on the SolidWorks backend: an operation program " +
+        "holds its dimensions as literal numbers, so there is nothing to override.",
+      repairHint:
+        "Call cad_generate_model with the whole operation program, with the new numbers written into it.",
+    };
+  }
   if (context.attemptsRemaining <= 0) {
     return {
       ok: false,
@@ -1316,12 +1622,42 @@ async function updateParametersTool(
       retryable: outcome.failure?.retryable ?? true,
     };
   }
+  // `buildAndRecord` deliberately distinguishes execution from validation:
+  // an executable solid is recorded even when it violates the specification,
+  // so the model can inspect and repair it. A parameter action, however, is a
+  // user-facing mutation of an already usable design. Reporting that mutation
+  // as successful would make the invalid attempt look like the new design even
+  // though the project store correctly kept the last good revision current.
+  if (outcome.status !== "valid" && outcome.status !== "valid-with-warnings") {
+    const blocking = (outcome.issues ?? []).filter((issue) => issue.severity === "error");
+    return {
+      ok: false,
+      error: "cad_validation_failed",
+      message:
+        blocking.length > 0
+          ? `The parameter update built revision ${outcome.revision}, but it failed CAD validation: ${blocking
+              .slice(0, 3)
+              .map((issue) => issue.message)
+              .join("; ")}`
+          : `The parameter update built revision ${outcome.revision}, but it did not produce a valid CAD result.`,
+      repairHint:
+        blocking[0]?.repairHint ??
+        "Choose parameter values that satisfy the design constraints; the last valid revision remains current.",
+      retryable: true,
+      projectId: project.id,
+      revision: outcome.revision,
+      status: outcome.status ?? "invalid",
+      validationPassed: false,
+      measurements: outcome.measurements,
+      issues: (outcome.issues ?? []).filter((issue) => issue.severity !== "info"),
+    };
+  }
   return {
     ok: true,
     projectId: project.id,
     revision: outcome.revision,
     status: outcome.status,
-    validationPassed: outcome.status !== "invalid",
+    validationPassed: true,
     changed: Object.entries(parsed.value.parameters).map(([id, value]) => ({
       id,
       from: previous[id] ?? null,

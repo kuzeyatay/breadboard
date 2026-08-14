@@ -17,6 +17,10 @@ const workspaceSource = fs.readFileSync(
   new URL("../src/app/gardens/[clusterSlug]/workspace-client.tsx", import.meta.url),
   "utf8",
 );
+const viewportPopoverSource = fs.readFileSync(
+  new URL("../src/app/components/viewport-popover.tsx", import.meta.url),
+  "utf8",
+);
 const planRouteSource = fs.readFileSync(
   new URL("../src/app/api/gardens/[gardenId]/learn/plan/route.ts", import.meta.url),
   "utf8",
@@ -275,6 +279,12 @@ describe("Learn syllabus API surface", () => {
 });
 
 describe("Learn panel syllabus controls", () => {
+  test("the menus escape the Learn tray's scrolling boundary", () => {
+    assert.equal(countMatches(workspaceSource, /<ViewportPopover/g), 2);
+    assert.match(viewportPopoverSource, /createPortal\(/);
+    assert.match(viewportPopoverSource, /window\.addEventListener\("scroll", place, true\)/);
+  });
+
   test("the panel offers picking an existing document or uploading one", () => {
     assert.match(workspaceSource, /Syllabus for Learn/);
     assert.match(workspaceSource, /name="learn-syllabus"/);
@@ -288,7 +298,7 @@ describe("Learn panel syllabus controls", () => {
       workspaceSource,
       /formData\.append\("sourceLabel", "Syllabus"\)[\s\S]{0,200}formData\.append\("generateMap", "false"\)/,
     );
-    assert.match(workspaceSource, /setLearnSyllabusSlug\(slug\)/);
+    assert.match(workspaceSource, /chooseLearnSyllabusDocument\(slug\)/);
   });
 
   test("the chosen syllabus is sent with every Learn action", () => {
@@ -301,11 +311,38 @@ describe("Learn panel syllabus controls", () => {
   test("the syllabus does not count as material to teach from", () => {
     assert.match(
       workspaceSource,
-      /learnTeachingSourceSlugs = effectiveLearnIncludedSourceSlugs\.filter\(/,
+      /learnEligibleSourceDocuments = sourceDocuments\.filter\(/,
     );
     assert.match(
       workspaceSource,
-      /Only the syllabus is selected; choose at least one of the/,
+      /Documents \{learnTeachingSourceSlugs\.length\}\/\s*\{learnEligibleSourceDocuments\.length\}/,
+    );
+    assert.match(
+      workspaceSource,
+      /Used as syllabus — not teaching material/,
+    );
+    assert.match(
+      workspaceSource,
+      /Select at least one teaching document before starting Learn/,
+    );
+  });
+
+  test("choosing a syllabus removes it from the teaching selection", () => {
+    assert.match(
+      workspaceSource,
+      /function chooseLearnSyllabusDocument\(sourceSlug: string \| null\)/,
+    );
+    assert.match(
+      workspaceSource,
+      /if \(previousSyllabusSlug\) selected\.add\(previousSyllabusSlug\)/,
+    );
+    assert.match(
+      workspaceSource,
+      /if \(sourceSlug\) selected\.delete\(sourceSlug\)/,
+    );
+    assert.match(
+      workspaceSource,
+      /learnDocumentSelectionLocked \|\| isSyllabus/,
     );
   });
 

@@ -250,12 +250,48 @@ export async function publishCadDesign(input: {
   previousArtifactId?: string | null;
   database?: Database.Database;
 }): Promise<ArtifactRow | null> {
-  const content = `${JSON.stringify(input.manifest, null, 2)}\n`;
-  const metadata = artifactMetadata(input.manifest);
-  const title = `CAD: ${input.manifest.title}`.slice(0, 240);
-  const assistantMessageId = input.context.assistantMessageId;
-
   try {
+    // Treat the database as the publication authority. A caller-supplied
+    // manifest can name an explicit failed attempt (parameter rebuilding used
+    // to do exactly that), or can simply be stale after another revision won a
+    // race. Only the project's current, validated revision may become a user-
+    // facing artifact, and the bytes published below are rebuilt from that
+    // stored revision rather than trusted from the caller.
+    if (
+      (input.manifest.status !== "valid" && input.manifest.status !== "valid-with-warnings") ||
+      input.manifest.validation.passed !== true ||
+      input.manifest.validation.issues.some((issue) => issue.severity === "error")
+    ) {
+      return null;
+    }
+    const project = getCadProject(input.manifest.projectId, input.database);
+    if (
+      !project ||
+      project.user_id !== input.context.userId ||
+      project.current_revision !== input.manifest.revision ||
+      (project.status !== "valid" && project.status !== "valid-with-warnings")
+    ) {
+      return null;
+    }
+    const manifest = buildCadManifest({
+      projectId: project.id,
+      revision: project.current_revision,
+      disclaimers: input.manifest.disclaimers,
+      ...(input.database ? { database: input.database } : {}),
+    });
+    if (
+      !manifest ||
+      (manifest.status !== "valid" && manifest.status !== "valid-with-warnings") ||
+      manifest.validation.passed !== true ||
+      manifest.validation.issues.some((issue) => issue.severity === "error")
+    ) {
+      return null;
+    }
+
+    const content = `${JSON.stringify(manifest, null, 2)}\n`;
+    const metadata = artifactMetadata(manifest);
+    const title = `CAD: ${manifest.title}`.slice(0, 240);
+    const assistantMessageId = input.context.assistantMessageId;
     const existing = input.previousArtifactId
       ? getArtifactById(input.previousArtifactId, input.database)
       : null;
@@ -297,7 +333,7 @@ export async function publishCadDesign(input: {
       ...(input.database ? { database: input.database } : {}),
     });
     setCadProjectArtifact({
-      projectId: input.manifest.projectId,
+      projectId: manifest.projectId,
       artifactId: artifact.id,
       ...(input.database ? { database: input.database } : {}),
     });

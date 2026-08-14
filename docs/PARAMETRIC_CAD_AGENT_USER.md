@@ -82,6 +82,13 @@ wireframe, the grid (labelled with its millimetre spacing), the bounding box,
 and — on a multi-part design — a toggle per body so you can look inside a closed
 enclosure.
 
+**Assembly.** What the thing is, which printed body is which — each with the
+size the kernel measured — the hardware you have to buy with its sizes and
+quantities, and the ordered steps that say what attaches to what and with which
+screw. A design of more than one body opens here, because a render shows shapes
+and not intent. Parts the design only makes room for, such as the board or a
+battery, are listed separately: it reserves their space, it does not print them.
+
 **Parameters.** Every dimension the design depends on, named. Change one and
 press *Rebuild with these values*: the part is rebuilt and re-validated on your
 machine, and becomes a new revision. Nothing overwrites what you had.
@@ -95,6 +102,13 @@ even when the files exported fine.
 the validation report.
 
 **Revisions.** Every version, what changed, and which parameters moved.
+
+If the model-written program cannot be completed, fails validation, or misses a
+feature the product was required to have, Breadboard returns no CAD artifact and
+keeps the concrete failure for diagnosis. It never substitutes a generic box,
+mount, or product template. Retry or refine the request after addressing the
+reported problem; an absent result is safer than a plausible-looking part that
+does not implement the request.
 
 ---
 

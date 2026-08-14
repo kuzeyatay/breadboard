@@ -210,34 +210,191 @@ function inputId(label: string, index: number): string {
   return safeId(label).replace(/-/g, "_") || `input_${index + 1}`;
 }
 
-function requiredInputsForUnit(unit: LearningUnitContract): VisualizationOpportunityInput[] {
-  const declared = unit.interactiveVisual?.learnerManipulates ?? [];
+interface GroundedQuestionRelationship {
+  inputs: string[];
+  outputs: string[];
+}
+
+const GENERIC_VISUAL_CONTRACT_IDS = new Set([
+  "input",
+  "input_1",
+  "main_output",
+  "output",
+  "parameter",
+  "result",
+  "step",
+  "value",
+]);
+const GENERIC_VISUAL_CONTRACT_LABEL_RE =
+  /^(?:control|exploration level|input|main output|output|parameter|process step|result|step|value)$/i;
+
+function cleanQuestionPhrase(value: string): string {
+  return value
+    .replace(/^[\s,:;-]+|[\s,?.:;-]+$/g, "")
+    .replace(/^(?:a|an|the)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Extract only relationships that the learning contract states explicitly.
+ * This is intentionally conservative: a missing match is a planning defect,
+ * not permission to invent a generic slider called `step` or `parameter`.
+ */
+function groundedRelationshipFromQuestion(question: string): GroundedQuestionRelationship {
+  const compactQuestion = question.replace(/\s+/g, " ").trim();
+  if (!compactQuestion) return { inputs: [], outputs: [] };
+
+  const changing = compactQuestion.match(
+    /\b(?:changing|varying|adjusting|increasing|decreasing)\s+(.+?)\s+(?:alters?|affects?|changes?|shapes?|influences?|controls?|determines?|modifies?|shifts?)\s+(.+?)(?:\s+over time)?[?.]?$/i,
+  );
+  if (changing) {
+    return {
+      inputs: [cleanQuestionPhrase(changing[1])].filter(Boolean),
+      outputs: [cleanQuestionPhrase(changing[2])].filter(Boolean),
+    };
+  }
+
+  const changesWith = compactQuestion.match(
+    /\b(?:how|why)\s+(?:does|do)\s+(.+?)\s+(?:change|vary|evolve|respond)\s+(?:with|as)\s+(.+?)[?.]?$/i,
+  );
+  if (changesWith) {
+    return {
+      inputs: [cleanQuestionPhrase(changesWith[2])].filter(Boolean),
+      outputs: [cleanQuestionPhrase(changesWith[1])].filter(Boolean),
+    };
+  }
+
+  const directRelationship = compactQuestion.match(
+    /\b(?:how|why)\s+(?:does|do|must|can)\s+(.+?)\s+(?:encodes?|generates?|produces?|determines?|acts?\s+like)\s+(.+?)(?=,\s*(?:and|while|but)\b|\?|$)/i,
+  );
+  if (directRelationship) {
+    return {
+      inputs: [cleanQuestionPhrase(directRelationship[1])].filter(Boolean),
+      outputs: [cleanQuestionPhrase(directRelationship[2])].filter(Boolean),
+    };
+  }
+
+  const motionAlongPath = compactQuestion.match(
+    /\bhow\s+does\s+.+?\s+when\s+(.+?)\s+(?:moves?|travels?|progresses?)\s+(along|through|across)\s+(.+?)[?.]?$/i,
+  );
+  if (motionAlongPath) {
+    const movingEntity = cleanQuestionPhrase(motionAlongPath[1]);
+    const preposition = motionAlongPath[2].toLowerCase();
+    const path = cleanQuestionPhrase(motionAlongPath[3]);
+    return {
+      inputs: movingEntity && path
+        ? [`${movingEntity} position ${preposition} ${path}`]
+        : [],
+      // The response is selected from the unit's explicit concepts below; the
+      // question's pre-"when" clause is not parsed into an invented quantity.
+      outputs: [],
+    };
+  }
+
+  const whenChanges = compactQuestion.match(
+    /\b(?:what happens to|how does)\s+(.+?)\s+when\s+(.+?)\s+(?:changes?|varies?|increases?|decreases?)[?.]?$/i,
+  );
+  if (whenChanges) {
+    return {
+      inputs: [cleanQuestionPhrase(whenChanges[2])].filter(Boolean),
+      outputs: [cleanQuestionPhrase(whenChanges[1])].filter(Boolean),
+    };
+  }
+
+  return { inputs: [], outputs: [] };
+}
+
+function explicitComparisonCases(unit: LearningUnitContract): string[] {
+  const question = unit.learningQuestion.replace(/\s+/g, " ").trim();
+  const versus = question.match(/\b(.+?)\s+(?:versus|vs\.?)\s+(.+?)(?:\?|\s+(?:under|when|across)\b)/i);
+  if (versus) {
+    return [cleanQuestionPhrase(versus[1]), cleanQuestionPhrase(versus[2])]
+      .filter(Boolean)
+      .slice(-2);
+  }
+  const between = question.match(/\b(?:difference|trade-?off)\s+between\s+(.+?)\s+and\s+(.+?)[?.]?$/i);
+  if (between) {
+    return [cleanQuestionPhrase(between[1]), cleanQuestionPhrase(between[2])].filter(Boolean);
+  }
+  return [];
+}
+
+export function requiredGeneratedVisualizationContractProblems(input: {
+  opportunities: readonly VisualizationOpportunity[];
+  decisions: readonly VisualizationRouteDecision[];
+}): string[] {
+  const routeByOpportunity = new Map(
+    input.decisions.map((decision) => [decision.opportunityId, decision]),
+  );
+  const problems: string[] = [];
+  for (const opportunity of input.opportunities) {
+    const route = routeByOpportunity.get(opportunity.id);
+    if (opportunity.requirement !== "required" || route?.route !== "generated_module") continue;
+    if (opportunity.requiredInputs.length === 0) {
+      problems.push(
+        `${opportunity.id}: required generated visualization has no source-grounded learner input; repair the learning-unit contract with a specific variable, case, or process position`,
+      );
+    }
+    for (const control of opportunity.requiredInputs) {
+      if (
+        GENERIC_VISUAL_CONTRACT_IDS.has(control.id.toLowerCase()) ||
+        GENERIC_VISUAL_CONTRACT_LABEL_RE.test(control.label.trim())
+      ) {
+        problems.push(
+          `${opportunity.id}: required generated visualization uses generic input "${control.id}"/"${control.label}"; repair the learning-unit contract with the source-backed learner action`,
+        );
+      }
+    }
+    if (opportunity.requiredOutputs.length === 0) {
+      problems.push(
+        `${opportunity.id}: required generated visualization has no source-grounded observable output`,
+      );
+    }
+    for (const output of opportunity.requiredOutputs) {
+      if (
+        GENERIC_VISUAL_CONTRACT_IDS.has(output.id.toLowerCase()) ||
+        GENERIC_VISUAL_CONTRACT_LABEL_RE.test(output.label.trim())
+      ) {
+        problems.push(
+          `${opportunity.id}: required generated visualization uses generic output "${output.id}"/"${output.label}"; repair the learning-unit contract with the source-backed response`,
+        );
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
+function requiredInputsForUnit(
+  unit: LearningUnitContract,
+  groundingUnit: LearningUnitContract = unit,
+): VisualizationOpportunityInput[] {
+  const declared = [
+    ...(groundingUnit.interactiveVisual?.learnerManipulates ?? []),
+    ...(groundingUnit.interactiveVisualPlan?.visualIntent?.learnerManipulates ?? []),
+  ];
   const formulaTerms = unit.sourceFormulas.flatMap((formula) => formula.termsToDefine);
-  const labels = [...new Set([...declared, ...formulaTerms])].filter(Boolean).slice(0, 8);
-  if (unit.role === "comparison" && labels.length === 0) {
+  const questionRelationship = groundedRelationshipFromQuestion(unit.learningQuestion);
+  const labels = [...new Set([...declared, ...formulaTerms, ...questionRelationship.inputs])]
+    .map(cleanQuestionPhrase)
+    .filter((label) => label && !GENERIC_VISUAL_CONTRACT_LABEL_RE.test(label))
+    .slice(0, 8);
+  const comparisonCases = explicitComparisonCases(unit);
+  if (unit.role === "comparison" && labels.length === 0 && comparisonCases.length >= 2) {
     return [
       {
-        id: "case",
-        label: "Case to inspect",
+        id: inputId(`${comparisonCases.join(" versus ")} case`, 0),
+        label: `${comparisonCases.join(" versus ")} case`,
         type: "select",
-        options: ["Case A", "Case B"],
-        defaultValue: "Case A",
+        options: comparisonCases,
+        defaultValue: comparisonCases[0],
       },
     ];
   }
-  if (labels.length === 0 && priorityForUnit(unit) !== "low") {
-    return [
-      {
-        id: "step",
-        label: interactionGoalForUnit(unit) === "step_through_process" ? "Process step" : "Exploration level",
-        type: "slider",
-        min: 0,
-        max: 1,
-        step: 0.05,
-        defaultValue: 0.5,
-      },
-    ];
-  }
+  // Do not synthesize a generic control. A required generated visualization
+  // without a source-grounded learner action is rejected by the planning gate
+  // below, where the contract can be repaired before generation spends tokens.
+  if (labels.length === 0) return [];
   return labels.map((label, index) => ({
     id: inputId(label, index),
     label,
@@ -247,6 +404,32 @@ function requiredInputsForUnit(unit: LearningUnitContract): VisualizationOpportu
     step: 0.01,
     defaultValue: 0.5,
   }));
+}
+
+function requiredOutputsForUnit(
+  unit: LearningUnitContract,
+  goal: VisualizationInteractionGoal,
+  groundingUnit: LearningUnitContract = unit,
+): VisualizationOpportunityOutput[] {
+  const questionRelationship = groundedRelationshipFromQuestion(unit.learningQuestion);
+  const labels = [
+    ...questionRelationship.outputs,
+    groundingUnit.interactiveVisual?.expectedInsight,
+    groundingUnit.interactiveVisualPlan?.visualIntent?.expectedInsight,
+    unit.interactiveVisual?.expectedInsight,
+    unit.newConcepts[0],
+    unit.semanticConcepts?.find((concept) => concept.role === "primary")?.preferredLabel,
+    unit.title,
+  ]
+    .map((label) => cleanQuestionPhrase(label ?? ""))
+    .filter((label) => label && !GENERIC_VISUAL_CONTRACT_LABEL_RE.test(label));
+  const label = labels[0];
+  if (!label) return [];
+  return [{
+    id: inputId(label, 0),
+    label,
+    representation: outputRepresentation(goal, unit),
+  }];
 }
 
 function outputRepresentation(
@@ -285,13 +468,23 @@ export function analyzeVisualizationOpportunities(input: {
   gardenId: string;
   learningMap: ProposedLearningMap;
   learningUnits: LearningUnitContract[];
+  /**
+   * Pre-necessity contracts may carry an explicit, already-grounded learner
+   * action. They are evidence only: renderer/type selection still uses the
+   * post-necessity units so a stale visual type cannot influence routing.
+   */
+  groundingUnits?: LearningUnitContract[];
 }): VisualizationOpportunity[] {
+  const groundingById = new Map(
+    (input.groundingUnits ?? input.learningUnits).map((unit) => [unit.id, unit]),
+  );
   return input.learningUnits
     .filter((unit) => {
       const requirement = unit.interactiveVisualPlan?.requirement;
       return requirement === "required" || requirement === "recommended" || requirement === "optional";
     })
     .map((unit) => {
+    const groundingUnit = groundingById.get(unit.id) ?? unit;
     const visualPlan = unit.interactiveVisualPlan!;
     const priority = priorityForUnit(unit);
     const interactionGoal = interactionGoalForUnit(unit);
@@ -348,14 +541,8 @@ export function analyzeVisualizationOpportunities(input: {
       learnerQuestion: unit.learningQuestion || unit.title,
       pedagogicalReason,
       interactionGoal,
-      requiredInputs: requiredInputsForUnit(unit),
-      requiredOutputs: [
-        {
-          id: "main_output",
-          label: unit.interactiveVisual?.expectedInsight || unit.title,
-          representation: outputRepresentation(interactionGoal, unit),
-        },
-      ],
+      requiredInputs: requiredInputsForUnit(unit, groundingUnit),
+      requiredOutputs: requiredOutputsForUnit(unit, interactionGoal, groundingUnit),
       ...(unit.interactiveVisual?.visualType
         ? { preferredRenderer: unit.interactiveVisual.visualType }
         : {}),
@@ -491,11 +678,18 @@ export function buildVisualizationPlan(input: {
   const opportunities = analyzeVisualizationOpportunities({
     ...input,
     learningUnits: necessityPlan.learningUnits,
+    groundingUnits: input.learningUnits,
   });
   const selected = selectVisualizationRoutes({
     opportunities,
     learningUnits: necessityPlan.learningUnits,
   });
+  const opportunityContractProblems = requiredGeneratedVisualizationContractProblems(selected);
+  if (opportunityContractProblems.length > 0) {
+    throw new Error(
+      `Visualization opportunity contract validation failed: ${opportunityContractProblems.join("; ")}`,
+    );
+  }
   return {
     schemaVersion: 1,
     gardenId: input.gardenId,

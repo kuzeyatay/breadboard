@@ -164,6 +164,80 @@ test("the overview says what every part is there to do and how it is reached", (
   assert.ok(markup.includes("mA typical."), "no rail reports its load");
 });
 
+test("online component definitions and source links survive into every artifact view", () => {
+  const definition = {
+    id: "researched-acme-qx9",
+    aliases: ["Acme QX9 button module", "QX9"],
+    name: "Acme QX9 button module",
+    category: "input",
+    description: "A manufacturer-documented digital button module.",
+    manufacturer: "Acme",
+    manufacturerPartNumber: "QX9",
+    electrical: {
+      minimumSupplyVoltage: 3,
+      typicalSupplyVoltage: 3.3,
+      maximumSupplyVoltage: 3.6,
+      logicVoltage: 3.3,
+      typicalCurrentMa: 1,
+      maximumCurrentMa: 2,
+    },
+    interfaces: ["digital"],
+    pins: [
+      { id: "VCC", label: "VCC", electricalType: "power-input", functions: ["supply-3v3"] },
+      { id: "GND", label: "GND", electricalType: "ground", functions: ["ground"] },
+      { id: "OUT", label: "OUT", electricalType: "digital-output", functions: ["digital-out"] },
+    ],
+    rules: {},
+    visual: {
+      renderer: "generic",
+      assetId: "researched-component",
+      width: 96,
+      height: 62,
+      pinAnchors: { VCC: { x: 2, y: 12 }, GND: { x: 94, y: 12 }, OUT: { x: 2, y: 24 } },
+    },
+    mechanical: { length: 18, width: 14, height: 4 },
+  };
+  const record = {
+    requestedAs: "Acme QX9 button module",
+    status: "used",
+    note: "A documented module was found and used.",
+    definition,
+    sources: [
+      {
+        title: "Acme QX9 datasheet",
+        url: "https://components.example.com/qx9.pdf",
+        kind: "manufacturer-datasheet",
+      },
+    ],
+  };
+  const { design: researched } = buildDesign({
+    request: {
+      ...WEATHER_STATION,
+      purpose: "Read a documented button module",
+      inputs: [{ type: "Acme QX9 button module", quantity: 1 }],
+      outputs: [],
+      communication: [],
+    },
+    designId: "hwd_researched_artifact",
+    componentResearch: [record],
+  });
+
+  const overviewMarkup = render(React.createElement(HardwareBlueprintArtifact, { design: researched }));
+  assert.ok(overviewMarkup.includes("Online component research (1)"));
+  assert.ok(overviewMarkup.includes("Acme QX9 datasheet"));
+  assert.ok(overviewMarkup.includes('href="https://components.example.com/qx9.pdf"'));
+  assert.ok(overviewMarkup.includes("QX9"));
+
+  const wiringMarkup = render(
+    React.createElement(WiringView, { design: researched, selection: EMPTY, onSelect: () => {} }),
+  );
+  assert.ok(wiringMarkup.includes("Acme QX9 button module"));
+  const schematicMarkup = render(
+    React.createElement(SchematicView, { design: researched, selection: EMPTY, onSelect: () => {} }),
+  );
+  assert.ok(schematicMarkup.includes("Acme QX9 button module"));
+});
+
 test("the overview reads its figures from the design, never from its own prose", () => {
   const overview = designOverview(design);
   assert.ok(design.powerEstimate, "the design carries no power estimate");

@@ -20,6 +20,9 @@ export const CLAUDE_CODE_MODELS = [
   "claude-opus-5",
   "claude-sonnet-5",
   "claude-haiku-4-5-20251001",
+  // Last because it is not a rung on the Opus/Sonnet/Haiku ladder: Fable is a
+  // separate model picked for what it writes, not for how much it costs.
+  "claude-fable-5",
 ] as const;
 
 /** A virtual account id. It contains no credential and is safe to send to UI. */

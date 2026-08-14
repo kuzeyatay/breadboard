@@ -4,6 +4,7 @@ import {
   RUNTIME_AGENT_PROFILES,
 } from "./capability-combinations.ts";
 import type { PublicAgencyAgent } from "./agency-agents-client.ts";
+import { agencyAgentToken } from "./agency-agent-command.ts";
 
 export interface DirectCommandGroups {
   skills: CommandHubItem[];
@@ -17,7 +18,7 @@ function agencyCommand(agent: PublicAgencyAgent): CommandHubItem {
     id: agent.id,
     kind: "agent",
     slug: agent.slug,
-    token: `agent:${agent.slug}`,
+    token: agencyAgentToken(agent.slug),
     name: agent.name,
     description: agent.description,
     category: agent.divisionLabel,

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Reconnecting to Breadboard</title>
+    <script src="./theme.js"></script>
+    <link rel="stylesheet" href="./recovery.css" />
+  </head>
+  <body>
+    <header class="desktop-titlebar" aria-label="Window controls"></header>
+    <main class="recovery" aria-labelledby="recovery-title">
+      <div class="mark" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
+      <section class="message">
+        <p class="eyebrow">Breadboard</p>
+        <h1 id="recovery-title">Reconnecting to your workspace</h1>
+        <p class="detail">
+          The local dashboard is restarting. Your chats and garden are safe,
+          and this window will return as soon as it is ready.
+        </p>
+      </section>
+      <div class="pulse" aria-hidden="true">
+        <i></i><i></i><i></i>
+      </div>
+      <p class="visually-hidden" role="status" aria-live="polite">
+        Reconnecting to Breadboard. No action is needed.
+      </p>
+    </main>
+  </body>
+</html>

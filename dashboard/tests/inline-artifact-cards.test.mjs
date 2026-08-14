@@ -45,6 +45,14 @@ const nativePdfViewer = fs.readFileSync(
   ),
   "utf8",
 );
+const globals = fs.readFileSync(
+  new URL("../src/app/globals.css", import.meta.url),
+  "utf8",
+);
+const terminal = fs.readFileSync(
+  new URL("../src/app/components/hermes/dashboard-agent-terminal.tsx", import.meta.url),
+  "utf8",
+);
 
 test("created artifacts render as persistent response-owned file cards", () => {
   assert.match(cards, /\/api\/hermes\/artifacts\?\$\{query\}/);
@@ -110,7 +118,7 @@ test("a run card's own actions land below the artifacts too", () => {
 
   for (const transcript of [runtimePanel, gardenWorkspace]) {
     const messagesStart = transcript.indexOf("messages.map");
-    const slotOpen = transcript.indexOf("<MessageActionsSlot>", messagesStart);
+    const slotOpen = transcript.indexOf("<MessageActionsSlot", messagesStart);
     const ownerCard = transcript.indexOf("<InlineArtifactCards", messagesStart);
     const slotClose = transcript.indexOf("</MessageActionsSlot>", ownerCard);
     assert.ok(slotOpen > messagesStart);
@@ -149,10 +157,9 @@ test("gadgets use the standard artifact placeholder until opened", () => {
   assert.doesNotMatch(cards, /import InlineGadget|isGadgetArtifact/);
   assert.match(cards, /<ArtifactFileIcon kind=\{artifact\.kind\} \/>/);
   assert.match(viewer, /if \(isGadget\) \{\s*return <InlineGadget artifact=\{artifact\} \/>/);
-  assert.match(
-    viewer,
-    /hardwareBlueprint \|\| vimaxFilm \|\| socialsPost \|\| isGadget[\s\S]*?"h-\[92vh\] max-h-\[92vh\] max-w-\[min\(88rem,96vw\)\]"/,
-  );
+  // A gadget draws its own canvas, so it opens the wider of the two docks.
+  assert.match(viewer, /const wideDock =[\s\S]*?isGadget/);
+  assert.match(viewer, /const WIDE_DOCK_WIDTH = "clamp\(/);
 });
 
 test("both runtime and legacy garden chats pin artifact cards to their owning message", () => {
@@ -200,18 +207,45 @@ test("PDF artifact clicks open Breadboard's native full-page PDF viewer", () => 
   assert.match(nativePdfViewer, /readOnly \? "PDF artifact" : "PDF source"/);
 });
 
-test("Markdown artifacts retain the document preview modal", () => {
+test("Markdown artifacts keep their document reading surface in the dock", () => {
   assert.match(
     viewer,
     /artifact\.kind === "markdown"[\s\S]*?<ArtifactDocumentViewport>[\s\S]*?<article[\s\S]*?<ChatMarkdown content=\{text\}/,
   );
-  // Full-height and wide: the modal is a reading surface, not a preview chip.
-  assert.match(
-    viewer,
-    /usesDocumentViewer[\s\S]*?"h-\[92vh\] max-h-\[92vh\] max-w-\[min\(76rem,95vw\)\]"/,
-  );
+  // The document viewport owns its own scrolling, so the dock body must not
+  // pad or scroll around it.
   assert.match(
     viewer,
     /usesDocumentViewer \? "overflow-hidden p-0" : "overflow-auto px-5 py-4"/,
   );
+});
+
+test("an opened artifact docks to the right instead of covering the chat", () => {
+  // An artifact is read while the conversation about it continues, so the
+  // viewer is a panel beside the chat rather than a dialog over it: no scrim
+  // on a chat that still takes messages, and nothing modal about it.
+  assert.doesNotMatch(viewer, /aria-modal/);
+  assert.match(viewer, /className="bb-artifact-dock fixed inset-y-0 right-0/);
+  // Narrow viewports have no width to share, so there — and only there — the
+  // dock covers the app and carries a scrim to dismiss it.
+  assert.match(viewer, /bb-modal-backdrop fixed inset-0 z-\[69\] lg:hidden/);
+  assert.match(viewer, /lg:w-\[var\(--bb-artifact-dock-width\)\]/);
+
+  // The shell gives the width up rather than being covered by the panel.
+  assert.match(viewer, /root\.dataset\.artifactDock = "open"/);
+  assert.match(viewer, /root\.style\.setProperty\("--bb-artifact-dock-width", width\)/);
+  assert.match(
+    globals,
+    /html\[data-artifact-dock="open"\] body \{\s*padding-right: var\(--bb-artifact-dock-width\);/,
+  );
+  // A viewport-positioned bottom dock cannot be moved by page padding.
+  assert.match(
+    globals,
+    /html\[data-artifact-dock="open"\] \[data-terminal-dock\] \{\s*right: var\(--bb-artifact-dock-width\);/,
+  );
+  assert.match(terminal, /data-terminal-dock/);
+
+  // The archive and the transcript each own a viewer, so the reserved width is
+  // reference counted: the last dock to close hands it back.
+  assert.match(viewer, /openDocks -= 1;\s*if \(openDocks > 0\) return;/);
 });

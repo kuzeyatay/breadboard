@@ -1,0 +1,4 @@
+interface:
+  display_name: "Resource2Skill"
+  short_description: "Create polished artifacts from distilled skills"
+  default_prompt: "Use $resource2skill to build a polished artifact from my brief."

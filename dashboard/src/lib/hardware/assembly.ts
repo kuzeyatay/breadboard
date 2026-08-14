@@ -17,8 +17,12 @@ interface StepDraft {
   warning?: string;
 }
 
-function pinLabel(instance: ComponentInstance, pinId: string): string {
-  const definition = componentDefinition(instance.definitionId);
+function pinLabel(
+  instance: ComponentInstance,
+  pinId: string,
+  circuit: CompiledCircuit,
+): string {
+  const definition = componentDefinition(instance.definitionId, circuit.scopedDefinitions);
   return definition?.pins.find((pin) => pin.id === pinId)?.label ?? pinId;
 }
 
@@ -26,9 +30,10 @@ function pinLabel(instance: ComponentInstance, pinId: string): string {
 function endpoint(
   instance: ComponentInstance | undefined,
   pinId: string,
+  circuit: CompiledCircuit,
 ): string {
   if (!instance) return pinId;
-  return `${instance.reference} ${pinLabel(instance, pinId)}`;
+  return `${instance.reference} ${pinLabel(instance, pinId, circuit)}`;
 }
 
 export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] {
@@ -51,7 +56,7 @@ export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] 
   });
 
   const board = circuit.components.find(
-    (instance) => componentDefinition(instance.definitionId)?.category === "prototyping" &&
+    (instance) => componentDefinition(instance.definitionId, circuit.scopedDefinitions)?.category === "prototyping" &&
       instance.definitionId === "breadboard-830",
   );
   drafts.push({
@@ -86,7 +91,7 @@ export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] 
   if (groundNet) {
     drafts.push({
       title: "Establish the ground rail",
-      instruction: buildNetInstruction(groundNet, byId, controller, "ground"),
+      instruction: buildNetInstruction(groundNet, byId, controller, "ground", circuit),
       componentIds: groundNet.connections.map((connection) => connection.componentId),
       netIds: [groundNet.id],
       verification:
@@ -98,7 +103,7 @@ export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] 
     const voltage = net.nominalVoltage ?? 0;
     drafts.push({
       title: `Establish the ${voltage} V rail`,
-      instruction: buildNetInstruction(net, byId, controller, "power"),
+      instruction: buildNetInstruction(net, byId, controller, "power", circuit),
       componentIds: net.connections.map((connection) => connection.componentId),
       netIds: [net.id],
       warning:
@@ -124,7 +129,7 @@ export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] 
         // needs each of its pins named, or the instruction is unfollowable.
         if (connections.length > 2) {
           const perPin = connections
-            .map(({ net, pinId }) => `${pinLabel(instance, pinId)} to ${net.name}`)
+            .map(({ net, pinId }) => `${pinLabel(instance, pinId, circuit)} to ${net.name}`)
             .join(", ");
           return `${label}: ${perPin}`;
         }
@@ -134,7 +139,7 @@ export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] 
               (connection) => connection.componentId !== instance.id,
             );
             return other
-              ? `${net.name} (${endpoint(byId.get(other.componentId), other.pinId)})`
+              ? `${net.name} (${endpoint(byId.get(other.componentId), other.pinId, circuit)})`
               : net.name;
           })
           .join(" and ");
@@ -166,7 +171,7 @@ export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] 
   for (const net of busNets) {
     drafts.push({
       title: `Connect ${net.name}`,
-      instruction: buildNetInstruction(net, byId, controller, "signal"),
+      instruction: buildNetInstruction(net, byId, controller, "signal", circuit),
       componentIds: net.connections.map((connection) => connection.componentId),
       netIds: [net.id],
       verification: `${net.name} reaches every device listed and nothing else.`,
@@ -184,7 +189,7 @@ export function generateAssemblySteps(circuit: CompiledCircuit): AssemblyStep[] 
     drafts.push({
       title: "Connect the remaining signals",
       instruction: signalNets
-        .map((net) => buildNetInstruction(net, byId, controller, "signal"))
+        .map((net) => buildNetInstruction(net, byId, controller, "signal", circuit))
         .join(" "),
       componentIds: [
         ...new Set(signalNets.flatMap((net) => net.connections.map((c) => c.componentId))),
@@ -280,6 +285,7 @@ function buildNetInstruction(
   byId: Map<string, ComponentInstance>,
   controller: ComponentInstance,
   kind: "ground" | "power" | "signal",
+  circuit: CompiledCircuit,
 ): string {
   const controllerEnd = net.connections.find(
     (connection) => connection.componentId === controller.id,
@@ -291,13 +297,13 @@ function buildNetInstruction(
       (connection) => byId.get(connection.componentId)?.definitionId === "power-rails",
     );
     const rail = railComponent
-      ? `Run a wire from ${endpoint(controller, controllerEnd?.pinId ?? "GND")} to the − rail of ${
+      ? `Run a wire from ${endpoint(controller, controllerEnd?.pinId ?? "GND", circuit)} to the − rail of ${
           byId.get(railComponent.componentId)?.reference ?? "the breadboard"
         }. `
       : "";
     const rest = others
       .filter((connection) => connection !== railComponent)
-      .map((connection) => endpoint(byId.get(connection.componentId), connection.pinId));
+      .map((connection) => endpoint(byId.get(connection.componentId), connection.pinId, circuit));
     return `${rail}${
       rest.length
         ? `Then run a wire from ${rest.join(", from ")} to the same ground rail.`
@@ -311,27 +317,27 @@ function buildNetInstruction(
       (connection) => byId.get(connection.componentId)?.definitionId === "power-rails",
     );
     const rail = railComponent
-      ? `Run a wire from ${endpoint(controller, controllerEnd?.pinId ?? "")} to the + rail of ${
+      ? `Run a wire from ${endpoint(controller, controllerEnd?.pinId ?? "", circuit)} to the + rail of ${
           byId.get(railComponent.componentId)?.reference ?? "the breadboard"
         }. `
       : "";
     const rest = others
       .filter((connection) => connection !== railComponent)
-      .map((connection) => endpoint(byId.get(connection.componentId), connection.pinId));
+      .map((connection) => endpoint(byId.get(connection.componentId), connection.pinId, circuit));
     return `${rail}${
       rest.length
         ? `Then run a wire from the ${voltage} V rail to ${rest.join(", and to ")}.`
-        : `Bring ${voltage} V to ${endpoint(controller, controllerEnd?.pinId ?? "")}.`
+        : `Bring ${voltage} V to ${endpoint(controller, controllerEnd?.pinId ?? "", circuit)}.`
     }`.trim();
   }
 
   const from = controllerEnd
-    ? endpoint(controller, controllerEnd.pinId)
+    ? endpoint(controller, controllerEnd.pinId, circuit)
     : others[0]
-      ? endpoint(byId.get(others[0].componentId), others[0].pinId)
+      ? endpoint(byId.get(others[0].componentId), others[0].pinId, circuit)
       : net.name;
   const targets = (controllerEnd ? others : others.slice(1)).map((connection) =>
-    endpoint(byId.get(connection.componentId), connection.pinId),
+    endpoint(byId.get(connection.componentId), connection.pinId, circuit),
   );
   if (!targets.length) return `${net.name} has only one end and needs no wire yet.`;
   return `Connect ${from} to ${targets.join(" and to ")} on the ${net.name} net.`;
